@@ -230,7 +230,7 @@ test("generation removes obsolete modules and check refuses missing or extra mod
   }
 });
 
-test("route names can match helpers or schema names, and reference-only definitions typecheck", () => {
+test("route names can be keywords or match helpers and schemas, and reference-only definitions typecheck", () => {
   // Stay below web/ so TypeScript resolves this package's Zod dependency.
   const copy = mkdtempSync(join(packageSource, "..", ".client-typecheck-"));
   try {
@@ -241,7 +241,7 @@ test("route names can match helpers or schema names, and reference-only definiti
         definitions: { Alias: { $ref: "#/definitions/Leaf" }, Leaf: { type: "boolean" } },
       } },
       descriptors: [],
-      routes: ["routes", "routePath", "exampleSchema"].map((name) => ({
+      routes: ["routes", "routePath", "exampleSchema", "class", "delete", "null"].map((name) => ({
         name, method: "GET", path: "/example", auth: "none", response: "Example",
       })),
     });

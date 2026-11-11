@@ -180,11 +180,11 @@ export function generate(document) {
     const code = `{method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, textParams: ${quote(textParams)}, headers: ${quote(headers)}, auth: ${quote(route.auth)}, request: ${route.request ? `schema_${route.request}` : "null"}, response: schema_${route.response}} as const;`;
     const imports = [...new Set([route.request, route.response].filter(Boolean))].sort().map((name) =>
       `import { ${identifier(name)} as schema_${name} } from "../schemas/${name}.generated.js";`).join("\n");
-    modules[`routes/${route.name}.generated.ts`] = header(`${imports}\n\nexport const ${route.name} = ${code}\n`);
+    modules[`routes/${route.name}.generated.ts`] = header(`${imports}\n\nexport const route = ${code}\n`);
     return `  ${route.name}: route_${route.name},`;
   });
   const routes = `import type { z } from "zod";
-${document.routes.map((route) => `import { ${route.name} as route_${route.name} } from "./routes/${route.name}.generated.js";`).join("\n")}
+${document.routes.map((route) => `import { route as route_${route.name} } from "./routes/${route.name}.generated.js";`).join("\n")}
 
 /** Routes registered in pp-api, from pp_api::client_contract::CLIENT_ROUTES. */
 export const routes = {

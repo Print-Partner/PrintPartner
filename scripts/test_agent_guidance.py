@@ -169,6 +169,23 @@ class AgentGuidanceTests(unittest.TestCase):
         self.assertIn(f"{len(GUIDANCE.DOCUMENTS)} documents", result.stdout)
         self.assertIn("tracked Markdown pages passed", result.stdout)
 
+    def test_qa_skills_defer_to_the_shared_workflow(self):
+        root = SCRIPT.resolve().parents[1]
+        workflow = (root / "docs/development/agent-workflow.md").read_text(encoding="utf-8")
+        self.assertIn("control-print-partner.mjs launch", workflow)
+        self.assertIn("verify.py launch", workflow)
+        shared = "../../../docs/development/agent-workflow.md#"
+        for name, sections in (("pp-mission-qa", ("choose-the-runtime", "web-ui", "rust-gateway", "report-and-clean-up")),
+                               ("pp-verify", ("web-ui", "dialogs-and-other-client-only-state", "rust-gateway",
+                                              "desktop-app", "check-and-attach-evidence"))):
+            skill = (root / f".claude/skills/{name}/SKILL.md").read_text(encoding="utf-8")
+            for section in sections:
+                self.assertIn(shared + section, skill)
+            # A second copy of the launch recipe would drift from the shared one.
+            self.assertNotIn("control-print-partner.mjs", skill)
+            self.assertNotIn("verify.py launch", skill)
+            self.assertNotIn("$QA_ROOT", skill)
+
     def test_real_ignore_rules_allow_templates_but_not_secrets(self):
         cases = {
             "AGENTS.md": False,

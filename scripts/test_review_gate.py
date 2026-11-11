@@ -27,6 +27,8 @@ SUITES = {1: (".github/workflows/review-gate.yml", "pull_request_target"),
           # Same head SHA, but the run came from PR 8 into another base, or lists both PRs.
           6: (CLAUDE, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
           8: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "main"}}, {"number": 8, "base": {"ref": "release"}}]),
+          # A Claude run on this head that lists no pull request.
+          11: (CLAUDE, "pull_request", []),
           # Stacked PR 7 into release: the runs list that base.
           12: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "release"}}]),
           # review-gate from the right file and event, but listed for a PR into another base (that
@@ -156,7 +158,9 @@ class ReviewGateStepTests(unittest.TestCase):
                                                              run("claude-security-review", suite=6)],
                  "claude runs that also list a PR into another base": [run("claude-code-review", suite=8),
                                                                        run("claude-security-review", suite=8)],
-                 "security run from another base": [run("claude-code-review"), run("claude-security-review", suite=6)]}
+                 "security run from another base": [run("claude-code-review"), run("claude-security-review", suite=6)],
+                 "claude runs with no pull request": [run("claude-code-review", suite=11),
+                                                      run("claude-security-review", suite=11)]}
         for label, checks in cases.items():
             with self.subTest(label):
                 result = self.assertFails(checks=checks)

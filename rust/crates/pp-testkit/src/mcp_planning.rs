@@ -20,11 +20,12 @@ pub fn save(path: &Path, key: &str, value: &Value) -> rusqlite::Result<()> {
     )?;
     Ok(())
 }
+// API-key last-used bookkeeping is outside the proposed Build operation.
 pub fn state(path: &Path) -> rusqlite::Result<Vec<Vec<Vec<String>>>> {
     let db = Connection::open(path)?;
     [
         "SELECT * FROM profile_layers ORDER BY id",
-        "SELECT * FROM app_settings ORDER BY tenant_id,key",
+        "SELECT * FROM app_settings WHERE key <> 'api_keys_v1' ORDER BY tenant_id,key",
         "SELECT * FROM plan_decisions ORDER BY id",
     ]
     .into_iter()

@@ -465,3 +465,76 @@ async fn gre_1197_autosave_keeps_and_recompute_carries_the_draft_header() {
     assert_eq!(draft_header(&server, 3), draft_header(&server, 2));
     server.close().await;
 }
+
+#[tokio::test]
+async fn order_edits_create_a_draft_and_preview_three_header_changes() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    json_reply(
+        server
+            .request(Method::POST, "/plans/1/drafts/2/abandon")
+            .json(&abandon_body(0)),
+        200,
+    )
+    .await;
+    let before = build_header(&server);
+    let accepted = accepted_rows(&server);
+    let mut proposed = before.clone();
+    proposed["order_number"] = json!("Preview-order");
+    proposed["customer"] = json!("Synthetic customer");
+    proposed["due_date"] = json!("2026-12-15");
+    let saved = json_reply(
+        put(
+            &server,
+            Some("order-preview"),
+            &body(Value::Null, Value::Null, proposed),
+        ),
+        200,
+    )
+    .await;
+    let draft = saved["receipt"]["draft_id"].as_i64().unwrap();
+    assert!(draft > 2);
+    let path = format!("/api/v2/plans/1/drafts/{draft}");
+    let workspace = json_reply(server.request(Method::GET, &path), 200).await;
+    let conflicts = workspace["reconciliation"]["conflicts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let decisions: Vec<Value> = conflicts.iter().map(|conflict| {
+        json!({"kind": "replace", "target_draft_part_id": conflict["target_draft_part_id"]})
+    }).collect();
+    let reconciliation = json!({
+        "expected_snapshot_digest": workspace["draft"]["snapshot_digest"],
+        "decisions": decisions,
+    });
+    json_reply(
+        server
+            .request(Method::PUT, &format!("{path}/reconciliation"))
+            .header("Idempotency-Key", "order-preview-units")
+            .json(&reconciliation),
+        200,
+    )
+    .await;
+    let preview = json_reply(
+        server.request(Method::GET, &format!("{path}/accept-preview")),
+        200,
+    )
+    .await;
+    assert_eq!(preview["kind"], "changed");
+    assert_eq!(
+        preview["changes"]["header"],
+        json!([
+            {"field":"order_number","old":before["order_number"],"new":"Preview-order"},
+            {"field":"customer","old":null,"new":"Synthetic customer"},
+            {"field":"due_date","old":null,"new":"2026-12-15"}
+        ])
+    );
+    assert_eq!(preview["revision"]["expected_header_version"], 1);
+    assert_eq!(build_header(&server), before);
+    assert_eq!(accepted_rows(&server), accepted);
+    let server = server.restart().await;
+    let reread = json_reply(server.request(Method::GET, &format!("{path}/header")), 200).await;
+    assert_eq!(reread["draft"], saved["receipt"]["header"]);
+    assert_eq!(build_header(&server), before);
+    server.close().await;
+}

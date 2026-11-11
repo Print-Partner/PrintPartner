@@ -339,6 +339,9 @@ impl Accept {
                     ("builds", json!(builds)),
                 ],
             ),
+            AcceptOutcome::ExperimentOrderRequiresPromotion => {
+                conflict("experiment_order_requires_promotion", None)
+            }
             AcceptOutcome::BuildArchived => domain_error("build_archived"),
             AcceptOutcome::TokenAllocationFailed => domain_error("token_allocation_failed"),
             AcceptOutcome::ReconciliationRequired { reason } => refusal(

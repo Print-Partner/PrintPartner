@@ -1,4 +1,6 @@
 #[cfg(feature = "desktop_rebuild")]
+mod diagnostics;
+#[cfg(feature = "desktop_rebuild")]
 pub mod production;
 
 use anyhow::{Context, Result, bail};

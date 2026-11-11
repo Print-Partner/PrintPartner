@@ -292,7 +292,22 @@ PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
 
 `just ci` passes its arguments to `python3 scripts/local-ci.py`, which holds the only list of steps. Without [just](https://github.com/casey/just), run `python3 scripts/local-ci.py` from the repository root with the same arguments. Agents run it, or `just ci --fast` for a normal PR, before they push, as [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) says.
 
-It runs the steps below in the order that `just ci --list` prints, and continues after a failure, so one run reports every failure. At the end it prints one `PASS`, `FAIL` or `SKIP` line for each step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
+It runs the steps below in the order that `just ci --list` prints and continues after ordinary step failures. An artifact-freshness failure is an exception: it stops the run before nextest, and later steps are not run or listed. The summary prints `PASS`, `FAIL` or `SKIP` for each completed or skipped step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
+
+Runtime nextest needs matching web builds and `rust/bundle-manifest.json`. Selecting
+`nextest-off`, `nextest-on`, or `--fast --only nextest-affected` also runs `web-assets`
+first, even with `--only`. This applies to `pp-check iter` too: it calls this script.
+Before each nextest step, a local check compares the manifest with a temporary
+measurement from the existing release generator. Commit metadata is ignored: a new
+Git commit alone does not require a rebuild. Runtime Node identity is checked;
+`PP_TEST_NODE` must match the Node used by `web-assets`. A mismatch stops the run before
+nextest, with one message naming `just ci --only web-assets` (Node 24.21.0).
+An explicit `--skip web-assets` avoids the build but still checks freshness; stale
+assets fail rather than launching tests. This matters after `node-fixtures`, which
+reinstalls dependencies for Node 22 and can rebuild measured server files. The
+freshness check measures built files and dependencies; the automatic build also
+covers source edits that have not been compiled. Direct `cargo nextest` commands
+do not run this preparation or check.
 
 Normal PRs run the fast set instead, and sensitive PRs, as the [merge gate](definition-of-done.md#merge-gate) defines them, run the full `just ci`:
 
@@ -520,7 +535,7 @@ These failures are common:
 
 `rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
 
-Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binary in `pp-core`, the `server_binary_routes` binary in `pp-server` (formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `gateway_mount` binary in `pp-core` and the `server_binary_routes` binary in `pp-server` (both formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 
@@ -824,3 +839,5 @@ The job has no job-level `if`. GitHub counts a skipped required job as a pass, s
 `scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on all four required workflows and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
 
 [CI controls](ci-controls.md#turn-on-the-merge-queue) records the merge_queue rule that turned the queue on.
+
+The Rust client generator writes route modules under `web/packages/rust-client/src/routes/` and named schema modules under `src/schemas/`, with generated indexes preserving package imports. After merging main, rerun the rust-client generator; do not hand-merge generated files. Its `--verify` checks the recursive file inventory and hashes without Cargo; `--check` also compares fresh Rust output and runs contract round trips.

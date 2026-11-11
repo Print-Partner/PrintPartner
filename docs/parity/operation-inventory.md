@@ -35,7 +35,7 @@ Active phase: **P1**
 | path-hints | 1 | none | Node only; Rust writes nothing | Uncategorized | - |
 | community-manifests | 1 | none | Node only; Rust writes nothing | Uncategorized | - |
 | accepted-thumbnails | 3 | none | Node only; Rust writes nothing | Uncategorized | - |
-| custom-filaments | 1 | none | Node only; Rust writes nothing | Uncategorized | - |
+| custom-filaments | 1 | 1 | in step | Uncategorized | - |
 | filament-catalog | 1 | none | Node only; Rust writes nothing | Uncategorized | - |
 | assistant-domain | 1 | none | Node only; Rust writes nothing | Uncategorized | - |
 
@@ -585,4 +585,4 @@ A route counts as migrated only when its owner in the generated inputs is Rust.
 | docs/parity/journey-route-misses.json | b5a462bb575e9fc8b78eb71f31c5b250fd0b320cb5fd52b0bb752ef39a41883b |
 | docs/plan/inventory-roster.json | f7ecdf4874753d68c84c33417283afe70f8ace32b752fabe59a03534d1452b99 |
 | rust/crates/pp-gateway/operations.json | 0fc32f72f8ec0ebe34793d190ad530f52a5d46fc9a0ab272b193028f82d727fc |
-| rust/crates/pp-gateway/ownership-manifest.json | 9a68e965741634ac16f7b1e60940d05b42b718ae8c4fe5424809ca0cd3916a2a |
+| rust/crates/pp-gateway/ownership-manifest.json | 5ba8243bdcecebc1f69d025c2e42b320cd0d88903dcc618e37db9feeeec102f0 |

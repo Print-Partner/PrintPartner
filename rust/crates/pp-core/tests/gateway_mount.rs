@@ -678,6 +678,178 @@ mod with_feature {
         fixture.stop().await;
     }
 
+    /// `PUT /api/v2/modules/{module}` with `body`, and its status and body.
+    async fn set_module(
+        fixture: &Fixture,
+        session: Option<&str>,
+        module: &str,
+        body: &str,
+    ) -> (u16, Value) {
+        let cookie = match session {
+            Some(session) => format!("{}; {session}", fixture.desktop),
+            None => fixture.desktop.clone(),
+        };
+        let response = fixture
+            .client
+            .put(format!("{}/api/v2/modules/{module}", fixture.origin))
+            .header("origin", &fixture.origin)
+            .header("cookie", cookie)
+            .header("content-type", "application/json")
+            .body(body.to_owned())
+            .send()
+            .await
+            .unwrap();
+        (
+            response.status().as_u16(),
+            response.json().await.unwrap_or(Value::Null),
+        )
+    }
+
+    /// The stored text of a `default`-tenant setting.
+    fn stored(fixture: &Fixture, key: &str) -> Option<String> {
+        rusqlite::Connection::open(fixture.root.join("data").join("print-partner.db"))
+            .unwrap()
+            .query_row(
+                "SELECT value FROM app_settings WHERE tenant_id='default' AND key=?1",
+                [key],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    /// Each Module turns on and off through the route; the answer, `/health`
+    /// and the feature toggles that workers admit sends by all show it, and
+    /// stored keys the route does not own stay.
+    #[tokio::test]
+    async fn module_route_turns_each_module_on_and_off_and_health_follows() {
+        let fixture = Fixture::start("1").await;
+        let session = fixture.register().await;
+        put(&fixture, "feature_toggles", r#"{"farm":true,"kept_key":7}"#);
+        let plan_layer = r#"{"orders":false}"#;
+        put(&fixture, "feature_toggles:plan:1", plan_layer);
+        let names = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"];
+        for (index, name) in names.into_iter().enumerate() {
+            for (choice, expected) in [("false", off(name, "turned_off")), ("true", on(name))] {
+                let body = format!(r#"{{"on": {choice}}}"#);
+                let (status, answer) = set_module(&fixture, Some(&session), name, &body).await;
+                assert_eq!(status, 200, "{name} {choice}: {answer}");
+                assert_eq!(answer["modules"][index], expected, "{name} {choice}");
+                let (_, modules) = health_modules(&fixture, None).await;
+                assert_eq!(answer["modules"], modules, "{name} {choice}");
+            }
+        }
+        let toggles: Value =
+            serde_json::from_str(&stored(&fixture, "feature_toggles").unwrap()).unwrap();
+        assert_eq!(
+            toggles,
+            json!({"bambu": true, "farm": true, "kept_key": 7, "orders": true, "spoolman": true})
+        );
+        assert_eq!(
+            stored(&fixture, "build_tracking_assembly").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            stored(&fixture, "feature_toggles:plan:1").as_deref(),
+            Some(plan_layer),
+            "a Plan override stays"
+        );
+
+        set_module(&fixture, Some(&session), "farm", r#"{"on": false}"#).await;
+        use pp_storage::features::modules::Module;
+        let token = session.strip_prefix("pp_session=").unwrap().to_owned();
+        let features = fixture
+            .owner
+            .lock()
+            .unwrap()
+            .features_with_policy(pp_core::rebuild_api::desktop_policy())
+            .unwrap();
+        let view = features
+            .read(
+                pp_storage::read_model::Credential::Session(pp_storage::auth::Secret::new(token)),
+                None,
+                &AtomicBool::new(false),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert!(
+            !view.effective().enabled(Module::Farm.feature().unwrap()),
+            "send admission reads the same toggle"
+        );
+        fixture.stop().await;
+    }
+
+    /// No session, an unknown Module or a body other than `{"on": bool}`
+    /// changes nothing. Unreadable stored toggles refuse a feature Module with
+    /// Node's 500 and stay as stored, as `/health` reports them.
+    #[tokio::test]
+    async fn module_route_refuses_without_writing() {
+        let fixture = Fixture::start("1").await;
+        let session = fixture.register().await;
+        let on_body = r#"{"on": true}"#;
+        let (status, _) = set_module(&fixture, None, "farm", on_body).await;
+        assert_eq!(status, 401);
+        let (status, _) =
+            set_module(&fixture, Some("pp_session=not-a-session"), "farm", on_body).await;
+        assert_eq!(status, 401, "storage refuses an unknown session");
+        let (status, body) = set_module(&fixture, Some(&session), "printers", on_body).await;
+        assert_eq!((status, &body["detail"]), (404, &json!("Module not found")));
+        for bad in [
+            r#"{"on": "yes"}"#,
+            "{}",
+            r#"{"on": true, "plan": 1}"#,
+            "not json",
+        ] {
+            let (status, _) = set_module(&fixture, Some(&session), "farm", bad).await;
+            assert_eq!(status, 400, "{bad}");
+        }
+        assert_eq!(stored(&fixture, "feature_toggles"), None);
+
+        let corrupt = r#"{"farm":"yes"}"#;
+        put(&fixture, "feature_toggles", corrupt);
+        let (status, body) = set_module(&fixture, Some(&session), "orders", on_body).await;
+        assert_eq!(status, 500, "{body}");
+        assert_eq!(body["code"], json!("FEATURE_TOGGLES_INVALID"));
+        assert_eq!(
+            stored(&fixture, "feature_toggles").as_deref(),
+            Some(corrupt)
+        );
+        let (_, modules) = health_modules(&fixture, None).await;
+        assert_eq!(modules[2], off("orders", "setting_unreadable"));
+        let (status, body) =
+            set_module(&fixture, Some(&session), "assembly_tracking", on_body).await;
+        assert_eq!(status, 200, "assembly tracking is its own setting: {body}");
+        assert_eq!(body["modules"][4], on("assembly_tracking"));
+
+        let mut statuses = Vec::new();
+        for _ in 0..31 {
+            let (status, _) =
+                set_module(&fixture, Some(&session), "assembly_tracking", on_body).await;
+            statuses.push(status);
+        }
+        // Three requests above reached the write and used the window: the
+        // unknown session, the refused orders change and the assembly change.
+        assert_eq!(statuses.iter().filter(|status| **status == 200).count(), 27);
+        assert_eq!(statuses.last(), Some(&429), "30 changes a minute");
+        fixture.stop().await;
+    }
+
+    /// With the rebuild flag off the route is not mounted, so nothing in Rust
+    /// writes a Module and Node keeps `PATCH /settings/features`.
+    #[tokio::test]
+    async fn module_route_is_absent_with_the_flag_off() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = open(root.path());
+        let product = product_router(
+            DesktopRebuild::from_value(Some("0")),
+            Arc::clone(&owner),
+            "http://127.0.0.1:9",
+            None,
+        )
+        .unwrap();
+        assert!(product.is_none(), "no product route, this one included");
+        close(owner);
+    }
+
     /// A module read that cannot get a reader within its 100 ms wait must not
     /// fail liveness: `/health` still answers 200 with its other fields and
     /// every module `setting_unreadable`, and recovers when readers free up.

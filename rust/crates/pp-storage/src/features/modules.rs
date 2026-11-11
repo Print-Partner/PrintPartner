@@ -9,14 +9,14 @@ use super::USER_KEY;
 use crate::{SettingSnapshot, SettingsClient};
 use anyhow::Result;
 use pp_domain::features::{Feature, Source, Toggles, resolve};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Node's `PUT /settings/build-tracking` key. Missing, empty or `"0"` is off.
 pub const ASSEMBLY_TRACKING_KEY: &str = "build_tracking_assembly";
 
 /// An optional product area that can be off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Module {
@@ -33,6 +33,18 @@ pub enum Module {
 }
 
 impl Module {
+    /// The feature toggle that holds this module's state, or `None` for
+    /// assembly tracking, which is the `build_tracking_assembly` setting.
+    pub fn feature(self) -> Option<Feature> {
+        match self {
+            Module::Farm => Some(Feature::Farm),
+            Module::Spoolman => Some(Feature::Spoolman),
+            Module::Orders => Some(Feature::Orders),
+            Module::Bambu => Some(Feature::Bambu),
+            Module::AssemblyTracking => None,
+        }
+    }
+
     /// Every module, in the order health lists them.
     pub const ALL: [Module; 5] = [
         Module::Farm,
@@ -107,12 +119,21 @@ pub(crate) fn status_in(
     tenant: &str,
     module: Module,
 ) -> Result<ModuleStatus> {
-    let toggles = crate::snapshot(connection, tenant, USER_KEY)?;
-    let assembly = crate::snapshot(connection, tenant, ASSEMBLY_TRACKING_KEY)?;
-    statuses(&toggles, &assembly)
+    statuses_in(connection, tenant)?
         .into_iter()
         .find(|status| status.module() == module)
         .ok_or_else(|| anyhow::anyhow!("Module status missing"))
+}
+
+/// Every module's effective state for `tenant`, read on `connection` so it
+/// shares the caller's transaction.
+pub(crate) fn statuses_in(
+    connection: &rusqlite::Connection,
+    tenant: &str,
+) -> Result<Vec<ModuleStatus>> {
+    let toggles = crate::snapshot(connection, tenant, USER_KEY)?;
+    let assembly = crate::snapshot(connection, tenant, ASSEMBLY_TRACKING_KEY)?;
+    Ok(statuses(&toggles, &assembly))
 }
 
 fn statuses(toggles: &SettingSnapshot, assembly: &SettingSnapshot) -> Vec<ModuleStatus> {
@@ -124,12 +145,8 @@ fn statuses(toggles: &SettingSnapshot, assembly: &SettingSnapshot) -> Vec<Module
     Module::ALL
         .into_iter()
         .map(|module| {
-            let feature = match module {
-                Module::Farm => Feature::Farm,
-                Module::Spoolman => Feature::Spoolman,
-                Module::Orders => Feature::Orders,
-                Module::Bambu => Feature::Bambu,
-                Module::AssemblyTracking => return assembly_status(assembly),
+            let Some(feature) = module.feature() else {
+                return assembly_status(assembly);
             };
             let Some(effective) = &effective else {
                 return off(module, ModuleOffReason::SettingUnreadable);

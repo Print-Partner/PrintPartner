@@ -42,6 +42,8 @@ mod loopback;
 #[cfg(feature = "desktop_rebuild")]
 pub mod mcp;
 #[cfg(feature = "desktop_rebuild")]
+pub mod modules;
+#[cfg(feature = "desktop_rebuild")]
 mod multipart_form;
 #[cfg(feature = "desktop_rebuild")]
 pub mod planning;

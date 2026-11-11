@@ -5,7 +5,7 @@ description: Work on Print Partner agent readiness. Use when picking up a readin
 
 # Print Partner readiness
 
-Readiness work is tracked in Linear under [GRE-1067](https://linear.app/greetz/issue/GRE-1067), one sub-issue per group of criteria. The baseline is Factory readiness report `f29b55f1-7038-4694-98b0-153675cdcb15`: 59.3%, Level 3, on main `6448fb2f`.
+Readiness work is tracked in Linear under [GRE-1067](https://linear.app/greetz/issue/GRE-1067), one sub-issue per group of criteria. The baseline is readiness report `f29b55f1-7038-4694-98b0-153675cdcb15`: 59.3%, Level 3, on main `6448fb2f`.
 
 ## Pick up a sub-issue
 

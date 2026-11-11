@@ -326,7 +326,7 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
     };
     for (version, expected) in [
         (schema::CURRENT_VERSION + 1, "newer than supported"),
-        (30, "upgrade database schema version 30"),
+        (30, "cannot upgrade database schema version 30 "),
         (0, "no schema version"),
     ] {
         let refused = refuse(version, "full", &[]);
@@ -335,6 +335,12 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
             "schema {version}: {refused}"
         );
     }
+    let old_backup = refuse(30, "full", &[]).to_string();
+    assert!(
+        old_backup.contains("Restore this backup into Print Partner v3.3.0 and make a new backup")
+    );
+    assert!(!old_backup.contains("Incompatible storage"));
+    assert!(!old_backup.contains("start it once"));
     let refused = refuse(34, "database-only", &[]);
     assert!(
         matches!(&refused, Refusal::InvalidArchive(detail) if detail.contains("full backup")),

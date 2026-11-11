@@ -518,8 +518,8 @@ jobs:
   rust-windows:
     name: rust (windows)
     needs: changes
-    # Explicit jobs keep each required check present when selection skips it. Main, merge groups,
-    # the nightly run and manual runs always select Windows; a PR selects it by label or path.
+    # Explicit jobs preserve skipped check reports. Main, merge groups, nightly and manual
+    # runs always select Windows; a ready PR selects it only with the ci:cross-os label.
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
     runs-on: windows-latest
     env:

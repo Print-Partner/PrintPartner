@@ -18,12 +18,12 @@ const RESPAWN_READY_FUSE: Duration = Duration::from_secs(50);
 #[path = "runtime_m0/drain.rs"]
 mod drain;
 
-#[path = "runtime_m0/slice0_mount.rs"]
-mod slice0_mount;
+#[path = "runtime_m0/launcher_start.rs"]
+mod launcher_start;
 
 #[cfg(feature = "desktop_rebuild")]
-#[path = "runtime_m0/ticket_t_4_watcher_proof.rs"]
-mod ticket_t_4_watcher_proof;
+#[path = "runtime_m0/watcher_proof.rs"]
+mod watcher_proof;
 
 #[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/farm_reads.rs"]
@@ -52,8 +52,8 @@ mod release;
 use release::{launch, launch_from_manifest};
 
 #[cfg(target_os = "linux")]
-#[path = "runtime_m0/ticket_t_68_desktop_account_mapping.rs"]
-mod ticket_t_68_desktop_account_mapping;
+#[path = "runtime_m0/desktop_account_mapping.rs"]
+mod desktop_account_mapping;
 
 /// The Node child's status channel of a Node-backed runtime.
 fn compat(runtime: &CoreRuntime) -> tokio::sync::watch::Receiver<CoreStatus> {

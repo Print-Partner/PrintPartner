@@ -1,9 +1,9 @@
 ---
 name: pp-mission-qa
-description: Start, drive, and stop Print Partner during Mission user testing. Use for local or Factory Environment QA of a migration slice.
+description: Start, drive, and stop Print Partner for user testing of a migration slice. Use for local QA of a slice in Claude Code or any agent.
 ---
 
-# Mission user testing
+# User testing of a migration slice
 
 Read [AGENTS.md](../../../AGENTS.md) and the slice's acceptance criteria, or its exported [task brief](../../../docs/development/agent-workflow.md#start-from-a-task-brief). Static checks and unit tests belong to `pp-readiness`. User testing uses the existing launchers in the shared [agent and contributor workflow](../../../docs/development/agent-workflow.md#verify-in-a-running-app), not a second QA platform:
 

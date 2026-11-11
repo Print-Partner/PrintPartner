@@ -84,7 +84,11 @@ class RatchetTests(unittest.TestCase):
             p.name: dict.fromkeys(("module", "item", "statement"), 0)
             for p in (self.root / "crates").iterdir()
         })
-        (self.root / "desktop-rebuild-baseline.json").write_text(json.dumps(counts))
+        directory = self.root / "desktop-rebuild-baseline"
+        directory.mkdir(exist_ok=True)
+        for crate, values in counts.items():
+            (directory / f"{crate}.json").write_text(json.dumps({crate: values}))
+        (self.root / "desktop-rebuild-baseline.json").unlink(missing_ok=True)
 
     def baseline(self, unwrap=0, command=0):
         self.placement_baseline()
@@ -111,13 +115,19 @@ class RatchetTests(unittest.TestCase):
         self.git("commit", "-q", "--allow-empty", "-m", "main")
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
-    def check(self, allow_raise=False):
-        self.placement_baseline()
+    def publish_shared_placements(self, counts):
+        shutil.rmtree(self.root / "desktop-rebuild-baseline")
+        (self.root / "desktop-rebuild-baseline.json").write_text(json.dumps(counts))
+        self.commit_main()
+
+    def check(self, allow_raise=False, *, write_placement=True, arguments=()):
+        if write_placement:
+            self.placement_baseline()
         environment = {key: value for key, value in os.environ.items() if key != RAISE_OVERRIDE}
         if allow_raise:
             environment[RAISE_OVERRIDE] = "1"
         return subprocess.run(
-            ["python3", str(self.root / "scripts" / "check-ast-grep.py")],
+            ["python3", str(self.root / "scripts" / "check-ast-grep.py"), *arguments],
             text=True,
             capture_output=True,
             env=environment,
@@ -268,11 +278,167 @@ class RatchetTests(unittest.TestCase):
                 self.assertIn("0 classified = 0 text gates", result.stdout)
 
     def test_placement_first_landing_is_reported(self):
-        (self.root / "desktop-rebuild-baseline.json").unlink()
+        shutil.rmtree(self.root / "desktop-rebuild-baseline")
         self.commit_main()
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("desktop-rebuild raise check skipped (first landing)", result.stdout)
+
+    def test_shared_placement_migration_keeps_the_statement_cap(self):
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature="desktop_rebuild")] let x=1; }')
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+        self.publish_main()
+        self.publish_shared_placements(self.placements)
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("layout migration", result.stdout)
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature="desktop_rebuild")] let x=1;'
+                    ' #[cfg(feature="desktop_rebuild")] let y=2; }')
+        self.placements["pp-source"]["statement"] = 2
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised over origin/main (1 -> 2)", result.stdout)
+
+    def test_shared_placement_migration_allows_module_and_item_growth(self):
+        self.publish_shared_placements({"pp-source": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)})
+        self.source("pp-source/src/lib.rs",
+                    'fn production() { value.unwrap(); }'
+                    '#[cfg(feature="desktop_rebuild")] mod m;'
+                    '#[cfg(feature="desktop_rebuild")] struct S;')
+        self.placements = {"pp-source": {"module": 1, "item": 1, "statement": 0}}
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_invalid_shared_main_data_cannot_skip_the_raise_check(self):
+        self.publish_shared_placements({"pp-source": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)})
+        (self.root / "desktop-rebuild-baseline.json").write_text("[]")
+        self.commit_main()
+        result = self.check()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("placement baseline must map crates", result.stderr)
+        self.assertNotIn("raise check skipped", result.stdout)
+
+    def test_split_main_does_not_fall_back_to_a_shared_crate_allowance(self):
+        (self.root / "desktop-rebuild-baseline.json").write_text(json.dumps({
+            "pp-other": {"module": 0, "item": 0, "statement": 9},
+        }))
+        self.commit_main()
+        self.source("pp-other/src/lib.rs",
+                    'fn f() { #[cfg(feature="desktop_rebuild")] let x=1; }')
+        self.placements = {
+            "pp-source": {"module": 0, "item": 0, "statement": 0},
+            "pp-other": {"module": 0, "item": 0, "statement": 1},
+        }
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("pp-other: statement baseline raised over origin/main (0 -> 1)", result.stdout)
+
+    def test_first_placement_landing_can_initialize_statement_counts(self):
+        shutil.rmtree(self.root / "desktop-rebuild-baseline")
+        self.commit_main()
+        self.source("pp-source/src/lib.rs",
+                    'fn production() { value.unwrap(); }'
+                    'fn f() { #[cfg(feature="desktop_rebuild")] let x=1; }')
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("desktop-rebuild raise check skipped (first landing)", result.stdout)
+
+    def test_missing_zero_count_crate_file_fails(self):
+        (self.root / "desktop-rebuild-baseline/pp-source.json").unlink()
+        result = self.check(write_placement=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("counts differ from desktop-rebuild-baseline/pp-source.json", result.stdout)
+
+    def test_baseline_for_absent_crate_fails(self):
+        path = self.root / "desktop-rebuild-baseline/pp-absent.json"
+        path.write_text(json.dumps({"pp-absent": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)}))
+        result = self.check(write_placement=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("pp-absent: counts differ", result.stdout)
+
+    def test_crate_filename_cannot_borrow_another_crates_counts(self):
+        path = self.root / "desktop-rebuild-baseline/pp-source.json"
+        path.rename(path.with_name("pp-other.json"))
+        result = self.check(write_placement=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("must contain only its named crate", result.stderr)
+
+    def test_invalid_per_crate_counts_fail_locally_and_on_main(self):
+        for invalid in (True, -1, "0"):
+            with self.subTest(invalid=invalid):
+                path = self.root / "desktop-rebuild-baseline/pp-source.json"
+                path.write_text(json.dumps({"pp-source": {"module": 0, "item": 0, "statement": invalid}}))
+                result = self.check(write_placement=False)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("nonnegative module/item/statement counts", result.stderr)
+                self.commit_main()
+                result = self.check()
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("nonnegative module/item/statement counts", result.stderr)
+                self.commit_main()
+
+    def test_generator_splits_shared_data_and_is_idempotent(self):
+        self.publish_shared_placements({"pp-source": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)})
+        result = self.check(write_placement=False, arguments=("--write-placement-baseline",))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        directory = self.root / "desktop-rebuild-baseline"
+        self.assertEqual([p.name for p in directory.iterdir()], ["pp-source.json"])
+        self.assertFalse((self.root / "desktop-rebuild-baseline.json").exists())
+        before = (directory / "pp-source.json").read_bytes()
+        result = self.check(write_placement=False, arguments=("--write-placement-baseline",))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((directory / "pp-source.json").read_bytes(), before)
+
+    def test_generator_removes_stale_crate_files(self):
+        path = self.root / "desktop-rebuild-baseline/pp-absent.json"
+        path.write_text(json.dumps({"pp-absent": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)}))
+        result = self.check(write_placement=False, arguments=("--write-placement-baseline",))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(path.exists())
+
+    def test_generator_cannot_legitimize_a_statement_raise(self):
+        self.source("pp-source/src/lib.rs",
+                    'fn production() { value.unwrap(); }'
+                    'fn f() { #[cfg(feature="desktop_rebuild")] let x=1; }')
+        result = self.check(allow_raise=True, write_placement=False,
+                            arguments=("--write-placement-baseline",))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+
+    def test_edits_to_different_crates_merge_without_shared_baseline_conflicts(self):
+        self.source("pp-source/src/lib.rs", "fn source() {}")
+        self.source("pp-other/src/lib.rs", "fn other() {}")
+        self.publish_main(unwrap=0)
+        empty = dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)
+        self.git("checkout", "-q", "-b", "crate-source")
+        self.source("pp-source/src/lib.rs", '#[cfg(feature="desktop_rebuild")] struct S;')
+        self.placements = {"pp-source": {**empty, "item": 1}, "pp-other": empty}
+        self.placement_baseline()
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "source crate")
+        self.git("checkout", "-q", "-b", "crate-other", "refs/remotes/origin/main")
+        self.source("pp-other/src/lib.rs", '#[cfg(feature="desktop_rebuild")] struct S;')
+        self.placements = {"pp-source": empty, "pp-other": {**empty, "item": 1}}
+        self.placement_baseline()
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "other crate")
+        self.git("merge", "--no-edit", "crate-source")
+        result = self.check(write_placement=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_per_crate_main_lookup_works_below_the_git_root(self):
+        nested = self.root / "rust"
+        nested.mkdir()
+        for path in self.root.iterdir():
+            if path.name not in (".git", "rust"):
+                shutil.move(path, nested / path.name)
+        self.root = nested
+        self.commit_main()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_matching_baseline_passes(self):
         result = self.check()

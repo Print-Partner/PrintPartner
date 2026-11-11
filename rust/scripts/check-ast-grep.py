@@ -17,6 +17,7 @@ import tempfile
 BASE_REF = "origin/main"
 RAISE_OVERRIDE = "PP_AST_GREP_ALLOW_BASELINE_RAISE"
 PLACEMENT_FILE = "desktop-rebuild-baseline.json"
+PLACEMENT_DIR = "desktop-rebuild-baseline"
 PLACEMENT_CLASSES = ("module", "item", "statement")
 PLACEMENT_RULES = {f"desktop-rebuild-{name}" for name in PLACEMENT_CLASSES}
 
@@ -204,28 +205,73 @@ def parse_placement(text):
     return baseline
 
 
-def check_placement(root, hits):
-    baseline = parse_placement((root / PLACEMENT_FILE).read_text())
-    counts = placement_counts(root, hits)
+def parse_crate_placement(text, path):
+    baseline = parse_placement(text)
+    if path.parent != Path(PLACEMENT_DIR) or path.suffix != ".json" or baseline.keys() != {path.stem}:
+        raise ValueError(f"{path}: placement baseline must contain only its named crate")
+    return baseline
+
+
+def local_placements(root):
+    if (root / PLACEMENT_FILE).exists():
+        raise ValueError("shared placement baseline remains; run --write-placement-baseline")
+    baseline = {}
+    for path in sorted((root / PLACEMENT_DIR).glob("*.json")):
+        baseline.update(parse_crate_placement(path.read_text(), path.relative_to(root)))
+    return baseline
+
+
+def main_placements(root):
+    files = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", BASE_REF, "--", PLACEMENT_DIR],
+        cwd=root, text=True, capture_output=True, check=True,
+    )
+    if files.stdout:
+        baseline = {}
+        for file in files.stdout.splitlines():
+            shown = subprocess.run(["git", "show", f"{BASE_REF}:./{file}"],
+                                   cwd=root, text=True, capture_output=True, check=True)
+            baseline.update(parse_crate_placement(shown.stdout, Path(file)))
+        return baseline
+    # Until the split lands, the shared file still owns each crate's cap.
     spec = f"{BASE_REF}:./{PLACEMENT_FILE}"
-    previous = subprocess.run(["git", "show", spec], cwd=root, text=True, capture_output=True)
-    if previous.returncode:
-        # Distinguish first landing from a broken reference or git invocation.
-        if subprocess.run(["git", "cat-file", "-e", spec], cwd=root, capture_output=True).returncode != 128:
-            raise ValueError("could not read placement baseline from main")
-        main = {}
+    legacy = subprocess.run(
+        ["git", "ls-tree", "--name-only", BASE_REF, "--", PLACEMENT_FILE],
+        cwd=root, text=True, capture_output=True, check=True,
+    )
+    if not legacy.stdout:
         print(f"desktop-rebuild raise check skipped (first landing): {BASE_REF} has no {PLACEMENT_FILE}")
-    else:
-        main = parse_placement(previous.stdout)
+        return None
+    previous = subprocess.run(["git", "show", spec], cwd=root, text=True, capture_output=True, check=True)
+    print(f"desktop-rebuild layout migration: comparing with {BASE_REF}'s shared {PLACEMENT_FILE}")
+    return parse_placement(previous.stdout)
+
+
+def write_placements(root, hits):
+    directory = root / PLACEMENT_DIR
+    directory.mkdir(exist_ok=True)
+    counts = placement_counts(root, hits)
+    for crate, values in counts.items():
+        (directory / f"{crate}.json").write_text(json.dumps({crate: values}, indent=2) + "\n")
+    for path in directory.glob("*.json"):
+        if path.stem not in counts:
+            path.unlink()
+    (root / PLACEMENT_FILE).unlink(missing_ok=True)
+
+
+def check_placement(root, hits):
+    baseline = local_placements(root)
+    counts = placement_counts(root, hits)
+    main = main_placements(root)
     status = 0
     for crate in sorted(counts.keys() | baseline.keys()):
         actual = counts.get(crate, dict.fromkeys(PLACEMENT_CLASSES, 0))
         print(f"desktop-rebuild {crate}: " + ", ".join(f"{k}={actual[k]}" for k in PLACEMENT_CLASSES))
         if counts.get(crate) != baseline.get(crate):
-            print(f"desktop-rebuild {crate}: counts differ from {PLACEMENT_FILE}")
+            print(f"desktop-rebuild {crate}: counts differ from {PLACEMENT_DIR}/{crate}.json")
             status = 1
-        before = main.get(crate, {}).get("statement", 0)
-        if previous.returncode == 0 and baseline.get(crate, {}).get("statement", 0) > before:
+        before = (main or {}).get(crate, {}).get("statement", 0)
+        if main is not None and baseline.get(crate, {}).get("statement", 0) > before:
             print(f"desktop-rebuild {crate}: statement baseline raised over {BASE_REF} ({before} -> {baseline[crate]['statement']})")
             status = 1
     if status:
@@ -369,6 +415,10 @@ def main():
         )
     hits = command_hits_with_canonical_names(root, json.loads(scan.stdout))
     hits = complete_placement_hits(root, hits)
+    if sys.argv[1:] == ["--write-placement-baseline"]:
+        write_placements(root, hits)
+    elif sys.argv[1:]:
+        raise ValueError("usage: check-ast-grep.py [--write-placement-baseline]")
     placement_status = check_placement(root, hits)
     hits = [hit for hit in hits if hit["ruleId"] not in PLACEMENT_RULES]
     counts = Counter(hit["ruleId"] for hit in hits)

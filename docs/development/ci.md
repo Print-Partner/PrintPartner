@@ -345,7 +345,7 @@ attributes across every crate, including tests. It recursively inspects
 conditional attributes applied by `cfg_attr`, so
 `#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]` counts too. Each outer
 attachment counts once, even if it contains several matching predicates.
-`rust/desktop-rebuild-baseline.json` records three classes: `module` (mod/use),
+`rust/desktop-rebuild-baseline/<crate>.json` records three classes per crate: `module` (mod/use),
 `item` (including variants and fields), and `statement` (statements,
 expressions, match arms and ambiguous attachments). Stacked attributes,
 comments, raw attribute names such as `r#cfg`, and escaped feature strings do
@@ -370,6 +370,20 @@ module and item counts may grow. Statement counts may not rise per crate over
 `origin/main`, even with `PP_AST_GREP_ALLOW_BASELINE_RAISE=1`. The first landing
 establishes the placement baseline and reports the skipped raise check. This
 step runs in both `just ci --fast` and the full `just ci`.
+
+Regenerate the placement files with
+`python3 rust/scripts/check-ast-grep.py --write-placement-baseline`. The command
+writes one map entry per crate, removes stale crate files and the old shared
+file, then runs the checks. It cannot authorize a statement-count increase.
+Identical files keep identical contents, so updates in different crates merge
+without editing a shared inventory or manifest.
+
+Each statement cap comes from the same crate's file on `origin/main`. During
+the layout migration, when main has no per-crate directory yet, the checker
+uses that crate's entry in main's shared `desktop-rebuild-baseline.json`.
+Once main uses per-crate files, a missing crate file means a zero cap; it never
+borrows an allowance from a leftover shared file. A missing or extra local
+crate file fails the exact inventory check, including zero-count crates.
 
 `cfg!(feature = "desktop_rebuild")` expressions are excluded from these counts
 (17 uses at the review baseline). Child [GRE-1397](https://linear.app/greetz/issue/GRE-1397/count-desktop-rebuild-cfg-expressions-in-the-placement-ratchet)

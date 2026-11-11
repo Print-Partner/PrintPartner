@@ -71,7 +71,7 @@ fn bytes(data: &Installation) -> Vec<(String, Vec<u8>)> {
 async fn duplicate_is_detached_and_parent_delete_writes_no_database_bytes() {
     let (data, owner, app) = open();
     let db = Connection::open(data.database_path()).unwrap();
-    let baseline = fixtures::prepare_parent(&db);
+    let baseline = fixtures::prepare_parent(&db).unwrap();
     let copied = send(
         &app,
         "POST",
@@ -83,7 +83,7 @@ async fn duplicate_is_detached_and_parent_delete_writes_no_database_bytes() {
     let build = copied.1["build_id"].as_i64().unwrap();
     let draft = copied.1["draft_id"].as_i64().unwrap();
     assert_eq!(copied.1["parent_build_id"], 1);
-    fixtures::assert_detached(&db, build, draft, &baseline);
+    fixtures::assert_detached(&db, build, draft, &baseline).unwrap();
     let before = bytes(&data);
     let refused = send(&app, "DELETE", "/api/v2/plans/1", None).await;
     assert_eq!(refused.0, 409);
@@ -106,7 +106,7 @@ async fn verify_restart_and_delete(data: &Installation, owner: WriterOwner, buil
     owner.shutdown().unwrap();
     let owner = WriterOwner::open(data.path(), Limits::default()).unwrap().0;
     let db = Connection::open(data.database_path()).unwrap();
-    fixtures::assert_restricted_and_archive(&db, build);
+    fixtures::assert_restricted_and_archive(&db, build).unwrap();
     let app = router(&owner, Some("true"));
     assert_eq!(send(&app, "DELETE", "/plans/1", None).await.0, 409);
     assert_eq!(
@@ -172,7 +172,7 @@ async fn duplicate_refuses_invalid_names_missing_builds_and_flag_off_without_wri
 async fn experiment_accept_preview_refuses_order_authority_before_writing() {
     let (data, owner, app) = open();
     let db = Connection::open(data.database_path()).unwrap();
-    fixtures::prepare_order_claim(&db);
+    fixtures::prepare_order_claim(&db).unwrap();
     let before = bytes(&data);
     let answer = send(&app, "GET", "/plans/1/drafts/2/accept-preview", None).await;
     assert_eq!(answer.0, 409, "{answer:?}");

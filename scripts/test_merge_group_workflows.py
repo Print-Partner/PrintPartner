@@ -248,9 +248,12 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     selected = "needs.changes.outputs.relevant != 'false'"
                     if job_id == "rust-windows":
                         selected = "needs.changes.outputs.windows != 'false'"
+                    label_guard = ""
+                    if job_id == "rust-windows":
+                        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
-                                     f"(needs.changes.result != 'success' || {selected}))")
+                                     f"{label_guard}(needs.changes.result != 'success' || {selected}))")
                     checkout = next(step for step in job["steps"]
                                     if step.get("uses", "").startswith("actions/checkout@"))
                     self.assertNotIn("ref", checkout.get("with", {}))
@@ -324,7 +327,15 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                                         "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
                     self.assertEqual(output.read_text(), f"macos={macos}\nintel={intel}\n")
 
-    def test_macos_jobs_use_the_platform_selector(self):
+    def test_cross_os_requires_label_even_if_input_selection_fails(self):
+        workflow = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os'))"
+        for job in ("rust-windows", "rust-macos"):
+            condition = workflow["jobs"][job]["if"]
+            self.assertIn(f"{label_guard} && (needs.changes.result != 'success'", condition)
+
+    def test_macos_jobs_use_the_label_selector(self):
         for filename in ("rust-cross-os.yml", "desktop-native-macos.yml"):
             workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
                                  Loader=yaml.BaseLoader)

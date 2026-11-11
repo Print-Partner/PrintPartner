@@ -1,8 +1,8 @@
 name: Rust cross-OS
 
 # Relevant PRs test Rust on Linux. Windows runs on main, merge groups, nightly and manual
-# runs, and on a PR only when the Windows tier selects it (ci:windows or ci:full label, or a
-# Windows-relevant path). Ready PRs test macOS by platform-sensitive path or macos / ci:full / ci:cross-os label. PR gate keeps clippy + doctests for both feature states (macOS PRs
+# runs. Ready PRs test Windows and macOS only with ci:cross-os.
+# PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
 # desktop_rebuild on; macOS PRs skip it.
 # On PRs, nextest uses rdeps(=crate) for changed rust/crates/* (see
@@ -58,7 +58,6 @@ jobs:
       relevant: ${{ steps.select.outputs.relevant }}
       windows: ${{ steps.windows.outputs.windows }}
       macos: ${{ steps.macos.outputs.macos }}
-      macos_runs_on: ${{ steps.runner.outputs.macos_runs_on }}
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
       linux_kind: ${{ steps.runner.outputs.linux_kind }}
@@ -79,7 +78,7 @@ jobs:
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py
           python3 scripts/ci-path-filter.py rust
           python3 scripts/ci-affected-nextest-filter.py
-      - name: Select the Windows tier
+      - name: Select Windows PR coverage
         id: windows
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -87,7 +86,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: python3 scripts/ci-path-filter.py windows
-      - name: Select the macOS tier
+      - name: Select macOS PR coverage
         id: macos
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -95,15 +94,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: python3 scripts/ci-path-filter.py macos
-      - name: Select the Rust runners
+      - name: Select the Linux Rust runner
         id: runner
         env:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           RUN_ID: ${{ github.run_id }}
-          REF: ${{ github.ref }}
-          PP_MAC_RUNNER: ${{ vars.PP_MAC_RUNNER }}
           PP_RUST_RUNNER: ${{ vars.PP_RUST_RUNNER }}
           PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}
           # Optional: a read-only token that can list self-hosted runners.
@@ -356,13 +353,6 @@ jobs:
       - name: doctests (desktop_rebuild on)
         if: ${{ !cancelled() && steps.assets.outcome == 'success' && (env.RUST_OS != 'macos' || github.event_name != 'pull_request') }}
         run: cargo test --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --doc --features desktop_rebuild
-      - name: Detach the macOS test volume
-        if: always() && env.RUST_OS == 'macos'
-        run: |
-          if mount | grep -q ' on /Volumes/pptmp '; then
-            hdiutil detach /Volumes/pptmp
-          fi
-          rm -f "$RUNNER_TEMP/pptmp.sparseimage"
       - name: sccache stats
         if: always() && env.PP_RUNNER_KIND == 'pp-local'
         continue-on-error: true
@@ -512,12 +502,12 @@ jobs:
   rust-macos:
     name: rust (macos)
     needs: changes
-    # Labels or platform-sensitive paths select PRs; non-PR events always run.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
+    # Only ci:cross-os selects PRs; non-PR events always run.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    runs-on: ${{ fromJSON(needs.changes.outputs.macos_runs_on || '"macos-26"') }}
+    runs-on: macos-26
     env:
       RUST_OS: macos
       CARGO_SCOPE: --workspace
@@ -530,7 +520,7 @@ jobs:
     needs: changes
     # Explicit jobs keep each required check present when selection skips it. Main, merge groups,
     # the nightly run and manual runs always select Windows; a PR selects it by label or path.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
     runs-on: windows-latest
     env:
       RUST_OS: windows

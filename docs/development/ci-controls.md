@@ -26,7 +26,7 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `.github/dependabot.yml` and `.github/zizmor.yml`.
 - `rust/scripts/check-*` and `rust/deny.toml`.
 - The action pin, CI tool pin, desktop workflow, and workaround checks and their tests.
-- The Windows tier selector `scripts/ci-path-filter.py` and its test `scripts/test_ci_path_filter.py`.
+- The CI job selector `scripts/ci-path-filter.py` and its test `scripts/test_ci_path_filter.py`.
 - The duplication checker, its tests, and `scripts/duplication-baseline.json`.
 - The PR evidence checker and its test, and the `scripts/linear/` directory.
   Linear PR sync runs a script from that directory with the Linear secret. Python imports files next to that script before the standard library.
@@ -43,7 +43,7 @@ For other paths, including documentation-only PRs, both jobs are skipped and sti
 Non-PR runs always execute both linters.
 Both jobs fail if the `changes` job fails, so a broken filter cannot skip a required check.
 Both jobs have only `contents: read` permission and disable persisted checkout credentials.
-A new PR push cancels that PR's older run. Pushes to `main` share one group per workflow: one run executes and one waits, and a newer push replaces the waiting run, which GitHub reports as cancelled. Other non-PR runs have their own group, except Rust cross-OS and Native macOS bundle: merge groups use the queue ref (`github.ref`) and cancel older runs of that entry. Branch deletion alone does not trigger cancellation; dropped groups without replacement runs still need manual cancellation.
+A new PR push cancels that PR's older run. Pushes to `main` share one group per workflow: one run executes and one waits, and a newer push replaces the waiting run, which GitHub reports as cancelled. Other non-PR runs have their own group and never wait for or cancel another run.
 
 Actionlint 1.7.12 checks workflow syntax and embedded shell commands with ShellCheck.
 The job verifies the actionlint download against its SHA-256 checksum before execution.
@@ -57,17 +57,24 @@ Its default pin policy requires every external action, including `actions/*`, to
 
 ## Cross-OS capacity
 
-PR Windows and macOS jobs run by label or platform-sensitive path; see the
-[event table and macOS tier](ci.md#macos-tier). Merge groups and main pushes run
-all cross-OS jobs. Main's Rust macOS job can select an idle `pp-local-mac` using
-the existing hosted runner selector and read-only runner-list token, with hosted
-fallback. `PP_MAC_RUNNER=hosted` disables it. No PR or merge-group code runs on
-that persistent Mac; no secrets or permissions are added to its job.
+Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
+labels do not select them. Job-level skips preserve check reports. Main pushes,
+merge groups, schedules and manual runs keep full coverage; Linux PR selection
+and the required contexts remain unchanged. See the
+[event table](ci.md#cross-os-pr-label).
 
-The ruleset snapshot is unchanged: `actionlint`, `zizmor`, `rust (linux)`,
-`Lint Evidence block` and `review-gate` remain the required contexts. Windows,
-macOS and native bundle checks remain advisory. Runner registration and making
-`duplication` required are separate owner actions.
+The stale merge-group canceller runs every ten minutes or by manual dispatch
+on main. It has only `actions: write`, needed for the cancel-run endpoint, and
+uses only `GITHUB_TOKEN`. It checks out no code and downloads only main's public
+script. It lists only the two cross-OS workflows and cancels queued/in-progress
+merge-group runs only after their queue ref returns 404. Other read errors abort
+the pass before any cancellation. This narrow new permission does not alter any
+build job's permissions or secrets. See [Superseded runs](ci.md#superseded-runs).
+
+The Mac runner stays unused. A follow-up must wait for Chad to configure a
+restricted runner group: selected workflows pinned to main, with fork access
+disabled. Repository YAML alone cannot enforce that trust boundary. Runner VM
+registration and making `duplication` required also remain owner work.
 
 ## Existing findings
 

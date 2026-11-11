@@ -3,7 +3,7 @@ name: Native macOS bundle
 on:
   workflow_dispatch:
   # Job conditions keep skipped check reports present. Hosted macOS runs on
-  # ready PRs selected by macOS-sensitive paths or macos / ci:full / ci:cross-os labels. Main, merge groups, nightly and manual
+  # ready PRs only with the ci:cross-os label. Main, merge groups, nightly and manual
   # runs select every macOS job, including Intel, regardless of changed paths.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]

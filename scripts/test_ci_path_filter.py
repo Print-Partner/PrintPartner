@@ -39,19 +39,6 @@ class CiPathFilterTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(ci_filter.relevant(path, "rust"))
 
-    def test_native_inputs(self):
-        for path in ["rust/crates/pp-desktop/src/main.rs", "web/apps/web/src/App.tsx",
-                     ".github/workflows/desktop-native-macos.yml",
-                     "scripts/native_image_diagnostics.py",
-                     "scripts/test_native_image_cleanup.py", "scripts/ci-path-filter.py",
-                     "scripts/verify-rust-gateway/test_launch.py",
-                     "scripts/verify-rust-gateway/verify.py",
-                     "scripts/verify-rust-gateway/future_helper.py"]:
-            self.assertTrue(ci_filter.relevant(path, "native"))
-        for path in ["README.md", "docs/ci.md", ".github/workflows/pr-evidence.yml",
-                     "rust/crates/pp-desktop/README.md"]:
-            self.assertFalse(ci_filter.relevant(path, "native"))
-
     def test_linux_setup_selects_rust(self):
         self.assertTrue(ci_filter.relevant("scripts/setup-ci-linux.sh", "rust"))
 
@@ -64,7 +51,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "actions", "native"]:
+        for kind in ["rust", "actions"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))
@@ -98,15 +85,13 @@ class CiPathFilterTests(unittest.TestCase):
             git("config", "user.name", "Proof")
             base = commit("README.md")
             docs = commit("docs/space and\nnewline.md")
-            for kind in ["rust", "actions", "native"]:
+            for kind in ["rust", "actions"]:
                 self.assertEqual(select(base, docs, kind)[0], "relevant=false\n")
             git("checkout", "-q", "--detach", base)
             helper = commit("scripts/verify-rust-gateway/verify.py")
-            self.assertEqual(select(base, helper, "native")[0], "relevant=true\n")
             self.assertEqual(select(base, helper, "rust")[0], "relevant=false\n")
             git("checkout", "-q", "--detach", base)
             diagnostics = commit("scripts/native_image_diagnostics.py")
-            self.assertEqual(select(base, diagnostics, "native")[0], "relevant=true\n")
             self.assertEqual(select(base, diagnostics, "rust")[0], "relevant=false\n")
             git("checkout", "-q", "--detach", base)
             fixture = commit("fixtures/parity/jobs-model/jobs-model.json")
@@ -121,148 +106,22 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertEqual(select(advanced_base, git("rev-parse", "HEAD"), "rust")[0], "relevant=true\n")
 
 
-    def test_macos_labels_and_platform_content(self):
-        from unittest.mock import patch
+    def test_cross_os_cli_is_label_only_on_prs(self):
+        for kind in ("windows", "macos"):
+            for event in ("pull_request", "merge_group", "push", "schedule", "workflow_dispatch"):
+                for labels in ([], ["macos", "ci:windows", "ci:full"], ["ci:cross-os"]):
+                    with self.subTest(kind=kind, event=event, labels=labels), tempfile.TemporaryDirectory() as directory:
+                        output, summary = Path(directory, "output"), Path(directory, "summary")
+                        result = subprocess.run(
+                            ["python3", "-B", str(SCRIPT), kind], check=True, capture_output=True, text=True,
+                            env={**os.environ, "EVENT_NAME": event, "PR_LABELS": json.dumps(labels),
+                                 "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)})
+                        expected = str(event != "pull_request" or "ci:cross-os" in labels).lower()
+                        self.assertEqual(output.read_text(), f"{kind}={expected}\n")
+                        self.assertEqual(result.stdout, f"{kind} inputs changed: {expected}\n")
+                        self.assertEqual(summary.read_text(), result.stdout)
 
-        for label in ("macos", "ci:full", "ci:cross-os"):
-            self.assertTrue(ci_filter.select("pull_request", "0" * 40, "0" * 40,
-                                             "macos", [label]))
-        self.assertTrue(ci_filter.select("pull_request", "0" * 40, "0" * 40,
-                                         "windows", ["ci:cross-os"]))
-        for kind in ("macos", "windows"):
-            for event in ("merge_group", "push", "schedule", "workflow_dispatch"):
-                self.assertTrue(ci_filter.select(event, "", "", kind))
-        for path, text, expected in (
-            ("rust/crates/pp-core/src/a.rs", b"fn a() {}", False),
-            ("docs/ci.md", b"macos", False),
-            ("web/apps/web/src/App.tsx", b"export {}", False),
-            ("rust/crates/pp-core/src/a.rs", b'#[cfg(target_os = "macos")]', True),
-            ("web/apps/server/src/a.ts", b"process.platform === 'darwin'", True),
-            ("rust/scripts/desktop-bundle.sh", b"", True),
-            ("scripts/ci-rust-runner.py", b"", True),
-            (".github/workflows/desktop-native-macos.yml", b"", True),
-            ("web/package-lock.json", b"", True),
-        ):
-            with self.subTest(path=path, text=text), patch.object(
-                    ci_filter.subprocess, "check_output", return_value=text):
-                self.assertEqual(ci_filter.windows_relevant(path, "base", "head", "macos"), expected)
-        # Removed platform code must still select macOS from the base copy.
-        with patch.object(ci_filter.subprocess, "check_output", side_effect=[b"fn a() {}", b"darwin"]):
-            self.assertTrue(ci_filter.windows_relevant("rust/crates/pp-core/src/a.rs", "base", "head", "macos"))
-
-    def test_windows_tier(self):
-        for event in ["push", "merge_group", "schedule", "workflow_dispatch"]:
-            self.assertTrue(ci_filter.select(event, "", "", "windows"))
-        self.assertTrue(ci_filter.select("pull_request", "", "", "windows"))
-        for label in ["ci:full", "ci:windows"]:
-            self.assertTrue(ci_filter.select("pull_request", "0" * 40, "0" * 40, "windows", [label]))
-        self.assertFalse(ci_filter.WINDOWS_LABELS.intersection(["macos", "ci:macos"]))
-        with tempfile.TemporaryDirectory() as directory:
-            def git(*args):
-                return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
-
-            def commit(path, text):
-                file = Path(directory, path)
-                file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_text(text)
-                git("add", "--", path)
-                git("commit", "-qm", "proof")
-                return git("rev-parse", "HEAD")
-
-            def windows(base, head, labels=()):
-                output = Path(directory, "output")
-                output.write_text("")
-                subprocess.check_output(
-                    ["python3", str(SCRIPT), "windows"], cwd=directory, text=True,
-                    env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
-                         "HEAD_SHA": head, "PR_LABELS": json.dumps(list(labels)),
-                         "GITHUB_OUTPUT": str(output),
-                         "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
-                return output.read_text()
-
-            git("init", "-q")
-            git("config", "user.email", "proof@example.com")
-            git("config", "user.name", "Proof")
-            base = commit("README.md", "base\n")
-            cases = [
-                ("rust/crates/pp-api/src/lib.rs", "fn a() {}\n", "windows=false\n"),
-                ("web/apps/web/src/App.tsx", "export {}\n", "windows=false\n"),
-                ("docs/a.md", "text\n", "windows=false\n"),
-                ("rust/crates/pp-os/src/new.rs", "fn a() {}\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/state.rs", "#[cfg(windows)]\nmod w;\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/perm.rs", "use std::os::unix::fs::PermissionsExt;\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/unix_only.rs", "#[cfg(unix)]\nfn a() {}\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/grouped.rs", "use std::{fs, os::unix::fs::PermissionsExt};\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/any.rs", "#[cfg(any(unix, test))]\nfn a() {}\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/stream.rs", "use tokio::net::UnixStream;\n", "windows=true\n"),
-                ("web/apps/server/src/desktop.ts", "process.platform === 'win32'\n", "windows=true\n"),
-                ("web/apps/server/src/pipe.ts", "const p = '\\\\.\\pipe\\x';\n", "windows=true\n"),
-                ("web/apps/server/src/plain.ts", "export const a = 1;\n", "windows=false\n"),
-                ("web/apps/server/src/sep.ts", "const k = key.replace(/\\\\/g, \"/\");\n", "windows=true\n"),
-                ("web/apps/server/src/plat.ts", "if (process.platform !== \"linux\") return;\n", "windows=true\n"),
-                ("web/apps/server/src/proc.ts", "readFileSync(\"/proc/sys/kernel/random/boot_id\");\n", "windows=true\n"),
-                ("web/apps/server/src/join.ts", "const p = parts.join(path.sep);\n", "windows=true\n"),
-                ("web/apps/server/src/up.ts",
-                 "import { relative, sep } from \"node:path\";\nif (p.startsWith(`..${sep}`)) {}\n", "windows=true\n"),
-                ("web/apps/server/src/all.ts", "const k = key.replaceAll(\"\\\\\", \"/\");\n", "windows=true\n"),
-                ("web/apps/server/src/single.ts", "const k = key.split('\\\\');\n", "windows=true\n"),
-                ("web/apps/server/src/separate.ts", "const separator = \", \";\n", "windows=false\n"),
-                (".gitattributes", "rust/** text=auto eol=lf\n", "windows=true\n"),
-                ("web/apps/server/package.json", "{}\n", "windows=true\n"),
-                ("web/packages/contracts/package.json", "{}\n", "windows=true\n"),
-                ("web/apps/web/package.json", "{}\n", "windows=true\n"),
-                ("web/packages/domain/src/paths.ts", "export const k = (p: string) => p.split('\\\\');\n", "windows=true\n"),
-                ("web/packages/domain/src/plain.ts", "export const a = 1;\n", "windows=false\n"),
-                ("rust/crates/pp-core/src/bang.rs", "fn a() { if cfg!(unix) {} }\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/attr.rs", "#[cfg_attr(unix, derive(Debug))]\nstruct A;\n", "windows=true\n"),
-                ("rust/crates/pp-core/src/fam.rs", "#[cfg(target_family = \"unix\")]\nfn a() {}\n", "windows=true\n"),
-                ("rust/crates/pp-core/Cargo.toml", "[target.'cfg(windows)'.dependencies]\n", "windows=true\n"),
-                ("rust/Cargo.lock", "lock\n", "windows=true\n"),
-                ("web/package.json", "{}\n", "windows=true\n"),
-                ("web/package-lock.json", "{}\n", "windows=true\n"),
-                ("web/scripts/atomic-package-build.mjs", "x\n", "windows=true\n"),
-                ("rust/scripts/build-desktop-manifest.py", "x\n", "windows=true\n"),
-                ("rust/scripts/desktop_workspaces.py", "x\n", "windows=true\n"),
-                ("rust/scripts/fetch-historical-schema-commits.sh", "x\n", "windows=true\n"),
-                ("rust/crates/pp-desktop/tauri.conf.json", "{}\n", "windows=true\n"),
-                ("rust/crates/pp-desktop/icons/icon.ico", "ico\n", "windows=true\n"),
-                (".github/workflows/web-ci.yml", "name: x\n", "windows=true\n"),
-                ("scripts/ci-path-filter.py", "x\n", "windows=true\n"),
-            ]
-            for path, text, expected in cases:
-                git("checkout", "-q", "--detach", base)
-                head = commit(path, text)
-                with self.subTest(path=path):
-                    self.assertEqual(windows(base, head), expected)
-            git("checkout", "-q", "--detach", base)
-            with_marker = commit("rust/crates/pp-core/src/w.rs", "#[cfg(windows)]\nmod w;\n")
-            git("checkout", "-q", with_marker)
-            head = commit("rust/crates/pp-core/src/w.rs", "fn a() {}\n")
-            self.assertEqual(windows(with_marker, head), "windows=true\n")
-            git("checkout", "-q", "--detach", with_marker)
-            head = commit("rust/crates/pp-core/src/w.rs", "fn a() {}\n")
-            git("checkout", "-q", "--detach", with_marker)
-            moved = commit("rust/crates/pp-core/src/w.rs", "fn b() {}\n")
-            self.assertEqual(windows(moved, head), "windows=true\n")
-            # A deletion is judged on the base copy: no marker skips Windows, a marker selects it.
-            for path, text, expected in [
-                ("web/apps/server/src/gone.ts", "export const a = 1;\n", "windows=false\n"),
-                ("rust/crates/pp-core/src/gone.rs", "fn a() {}\n", "windows=false\n"),
-                ("rust/crates/pp-core/src/gone_w.rs", "#[cfg(windows)]\nmod w;\n", "windows=true\n"),
-            ]:
-                git("checkout", "-q", "--detach", base)
-                added = commit(path, text)
-                git("rm", "-q", "--", path)
-                git("commit", "-qm", "delete")
-                with self.subTest(deleted=path):
-                    self.assertEqual(windows(added, git("rev-parse", "HEAD")), expected)
-            self.assertTrue(ci_filter.windows_relevant("rust/crates/pp-core/src/none.rs", base, base))
-            git("checkout", "-q", "--detach", base)
-            head = commit("rust/crates/pp-api/src/lib.rs", "fn a() {}\n")
-            self.assertEqual(windows(base, head, ["ci:windows"]), "windows=true\n")
-            self.assertEqual(windows(base, head, ["ci:full"]), "windows=true\n")
-            self.assertEqual(windows(base, head, ["macos"]), "windows=false\n")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_cross_os_does_not_read_paths_even_when_git_is_unavailable(self):
+        for kind in ("windows", "macos"):
+            self.assertFalse(ci_filter.select("pull_request", None, None, kind))
+            self.assertTrue(ci_filter.select("pull_request", None, None, kind, ["ci:cross-os"]))

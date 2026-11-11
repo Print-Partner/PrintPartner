@@ -97,7 +97,13 @@ impl SourceReads {
         // Stored Node paths can mix separators with a Windows verbatim prefix.
         // Drop that prefix before resolving, so Windows treats both separators alike.
         let candidate = node_resolve(&pp_os::display_path(stored));
-        let workspace = node_resolve(&self.repos).join(source.to_string());
+        let repos = node_resolve(&pp_os::display_path(&self.repos));
+        let workspace = repos.join(source.to_string());
+        let configured =
+            pp_os::display_path(&fs::canonicalize(&repos).ok()?).join(source.to_string());
+        if !candidate.starts_with(&workspace) && !candidate.starts_with(&configured) {
+            return None;
+        }
         let meta = fs::symlink_metadata(&workspace).ok()?;
         if meta.file_type().is_symlink() || !meta.is_dir() {
             return None;

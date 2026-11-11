@@ -451,19 +451,63 @@ mod confirmation_tests {
             None
         );
     }
+    #[cfg(unix)]
+    #[test]
+    fn mcp_source_workspace_requires_lexical_and_canonical_containment() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let data = std::fs::canonicalize(root.path()).unwrap().join("data");
+        let workspace = data.join("repos/2");
+        std::fs::create_dir_all(workspace.join("nested")).unwrap();
+        let alias = root.path().join("data-alias");
+        symlink(&data, &alias).unwrap();
+        let shortcut = root.path().join("external-shortcut");
+        symlink(&workspace, &shortcut).unwrap();
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        symlink(&outside, workspace.join("escape")).unwrap();
+        symlink(workspace.join("nested"), workspace.join("inside")).unwrap();
+        symlink(&workspace, data.join("repos/3")).unwrap();
+        for configured in [&data, &alias] {
+            let reads = crate::working_drafts::source_reads::SourceReads::new(configured);
+            for path in [
+                workspace.clone(),
+                workspace.join("nested"),
+                workspace.join("inside"),
+                configured.join("repos/2"),
+            ] {
+                assert_eq!(
+                    reads.node_root(2, path.to_str()),
+                    Some(std::fs::canonicalize(&path).unwrap()),
+                    "{path:?}"
+                );
+            }
+            for path in [
+                &shortcut,
+                &shortcut.join("nested"),
+                &workspace.join("escape"),
+            ] {
+                assert_eq!(reads.node_root(2, path.to_str()), None, "{path:?}");
+            }
+            assert_eq!(reads.node_root(3, data.join("repos/3").to_str()), None);
+        }
+    }
     #[cfg(windows)]
     #[test]
-    fn mcp_source_workspace_accepts_windows_case_alias() {
+    fn mcp_source_workspace_windows_case_alias_must_match_configuration() {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("repos/2");
         std::fs::create_dir_all(&workspace).unwrap();
         let upper = workspace.to_str().unwrap().to_uppercase();
         let data = std::fs::canonicalize(root.path()).unwrap();
-        let reads = crate::working_drafts::source_reads::SourceReads::new(&data);
-        assert_eq!(
-            reads.node_root(2, Some(&upper)),
-            Some(std::fs::canonicalize(workspace).unwrap())
-        );
+        let upper_data = PathBuf::from(root.path().to_str().unwrap().to_uppercase());
+        for (configured, allowed) in [(data.as_path(), false), (upper_data.as_path(), true)] {
+            let reads = crate::working_drafts::source_reads::SourceReads::new(configured);
+            assert_eq!(
+                reads.node_root(2, Some(&upper)),
+                allowed.then(|| std::fs::canonicalize(&workspace).unwrap())
+            );
+        }
     }
     fn fixture() -> (tempfile::TempDir, rusqlite::Connection) {
         let root = tempfile::tempdir().unwrap();

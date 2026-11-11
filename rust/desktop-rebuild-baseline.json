@@ -1,6 +1,6 @@
 {
   "pp-api": {
-    "module": 56,
+    "module": 59,
     "item": 165,
     "statement": 23
   },
@@ -10,8 +10,8 @@
     "statement": 0
   },
   "pp-compat": {
-    "module": 0,
-    "item": 4,
+    "module": 1,
+    "item": 6,
     "statement": 1
   },
   "pp-contracts": {
@@ -20,7 +20,7 @@
     "statement": 0
   },
   "pp-core": {
-    "module": 42,
+    "module": 43,
     "item": 40,
     "statement": 7
   },

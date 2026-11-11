@@ -23,6 +23,11 @@ impl crate::WriterOwner {
 }
 
 impl AdminFiles {
+    /// Admitted owner directory for core diagnostics.
+    pub fn data_directory(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub fn custom_filaments(&self) -> CustomFilaments {
         custom_filaments(&self.data_dir)
     }

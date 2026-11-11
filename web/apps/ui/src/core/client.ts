@@ -13,21 +13,31 @@ export class CoreError extends Error {
     readonly detail?: string,
     /** The problem's Node-compatible `code`, such as `draft_changed`. */
     readonly code?: string,
+    readonly conflictingBuilds: readonly string[] = [],
   ) {
     super(`Rust core answered ${status} for ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "CoreError";
   }
 }
 
-/** The `detail` and `code` of a problem+json error body, when it has them. */
-async function problem(response: Response): Promise<{ detail?: string; code?: string }> {
+/** The problem code, detail and holding Build names, when present. */
+async function problem(
+  response: Response,
+): Promise<{ detail?: string; code?: string; conflictingBuilds?: string[] }> {
   const body: unknown = await response.json().catch(() => undefined);
   if (typeof body !== "object" || body === null) return {};
   const text = (key: string) => {
     const value: unknown = (body as Record<string, unknown>)[key];
     return typeof value === "string" ? value : undefined;
   };
-  return { detail: text("detail"), code: text("code") };
+  const builds: unknown = (body as Record<string, unknown>).builds;
+  const conflictingBuilds = Array.isArray(builds)
+    ? builds.flatMap((build: unknown) => {
+        if (typeof build !== "object" || build === null || !("name" in build)) return [];
+        return typeof build.name === "string" && build.name.trim() ? [build.name] : [];
+      })
+    : [];
+  return { detail: text("detail"), code: text("code"), conflictingBuilds };
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -43,8 +53,8 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
   }
   const response = await fetch(path, { ...init, credentials: "same-origin" });
   if (!response.ok) {
-    const { detail, code } = await problem(response);
-    throw new CoreError(response.status, path, detail, code);
+    const { detail, code, conflictingBuilds } = await problem(response);
+    throw new CoreError(response.status, path, detail, code, conflictingBuilds);
   }
   return response;
 }

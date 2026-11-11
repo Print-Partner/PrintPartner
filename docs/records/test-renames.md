@@ -14,6 +14,7 @@ row verbatim when moving records.
 
 | Crate | Rename records |
 | --- | --- |
+| `pp-api` | [pp-api](test-renames/pp-api.md) |
 | `pp-api-types` | [pp-api-types](test-renames/pp-api-types.md) |
 | `pp-core` | [pp-core](test-renames/pp-core.md) |
 | `pp-desktop` | [pp-desktop](test-renames/pp-desktop.md) |

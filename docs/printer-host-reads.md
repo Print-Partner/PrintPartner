@@ -76,7 +76,8 @@ other kinds return an unsupported result without connecting. The response has
 A probe makes one unauthenticated GET through the existing driver and checked
 network guard. It accepts no credentials, saves nothing and never sends a print.
 The overall deadline is eight seconds, with one probe at a time and ten per
-minute. Reasons contain neither the address nor upstream reply text. A 401 or
+minute; busy refusals do not consume that quota. Invalid request bodies return
+an `invalid_printer_probe` problem. Reasons contain neither the address nor upstream reply text. A 401 or
 403 reports that credentials are needed. Capability names come from recognized
 protocol information; unreported capabilities stay absent. Saving is a separate,
 explicit action. LAN discovery and its recorded announcements remain GRE-1370.

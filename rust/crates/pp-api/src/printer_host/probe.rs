@@ -63,16 +63,26 @@ pub fn printer_probe_router(
     })
 }
 
-async fn probe(State(app): State<App>, Json(request): Json<PrinterProbeRequest>) -> Response {
+async fn probe(
+    State(app): State<App>,
+    body: Result<Json<PrinterProbeRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let request = match body {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return crate::problem::coded(
+                error.status(),
+                "Invalid printer probe request",
+                "invalid_printer_probe",
+            );
+        }
+    };
     if request.kind.len() > 32 || request.address.is_empty() || request.address.len() > 2048 {
         return crate::problem::coded(
             StatusCode::BAD_REQUEST,
             "Invalid printer kind or address",
             "invalid_printer_probe",
         );
-    }
-    if let Some(after) = app.calls.consume("probe", 10) {
-        return super::throttled(after);
     }
     let Ok(_active) = app.active.try_acquire() else {
         return crate::problem::coded(
@@ -81,6 +91,9 @@ async fn probe(State(app): State<App>, Json(request): Json<PrinterProbeRequest>)
             "printer_probe_busy",
         );
     };
+    if let Some(after) = app.calls.consume("probe", 10) {
+        return super::throttled(after);
+    }
     match tokio::time::timeout(Duration::from_secs(8), app.port.probe(request)).await {
         Ok(result) => Json(result).into_response(),
         Err(_) => Json(PrinterProbeResult {

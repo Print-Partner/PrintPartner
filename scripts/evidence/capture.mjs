@@ -108,6 +108,11 @@ async function main() {
     for (const { path, file: name } of shots) {
       await guarded(page.goto(new URL(path, uiOrigin).href), `opening ${path} failed`);
       await settle(page, path);
+      if (config.reviewPlan) {
+        await guarded(page.getByRole("button", { name: "Review and accept", exact: true }).click(), "opening Accept preview failed");
+        await guarded(page.getByRole("dialog").waitFor(), "Accept gate did not open");
+        await guarded(page.getByRole("dialog").getByText("Checking what Accept would change.").waitFor({ state: "hidden" }), "Accept preview did not settle");
+      }
       const file = join(outDir, name);
       if (display) {
         // The installed evidence tool captures the display; move its file into outDir.

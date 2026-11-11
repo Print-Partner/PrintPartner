@@ -27,7 +27,7 @@ from publisher import EVIDENCE_BIN
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-STEP_NAMES = ("settle-reconciliation", "snapshot")
+STEP_NAMES = ("settle-reconciliation", "snapshot", "duplicate-order")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
 HARNESS_DIR = ROOT / "rust/target/evidence-harness"
@@ -239,6 +239,7 @@ def parse_args(argv):
     parser.add_argument("--module", choices=MODULES, action="append", default=[],
                         help="turn this Module on in the seed before start; repeat for more")
     parser.add_argument("--out", type=Path, help="directory for the PNGs (default: a new temporary directory)")
+    parser.add_argument("--review-plan", action="store_true", help="open Review and accept on Plan shots")
     parser.add_argument("--full-page", action="store_true", help="capture the whole scrolled page")
     parser.add_argument("--rebuild", action="store_true", help="build even if the checkout is unchanged")
     parser.add_argument("--display", nargs="?", const=os.environ.get("EVIDENCE_DISPLAY", ":99"),
@@ -282,7 +283,7 @@ def display_geometry(name):
 
 def capture(args, origin, ui_origin, credential, out_dir, node, browser_tmp):
     config = {"root": str(ROOT), "coreOrigin": origin, "uiOrigin": ui_origin, "shots": [{"path": path, "file": shot_name(path)} for path in args.shot],
-              "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
+              "reviewPlan": args.review_plan, "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
     if args.display:
         width, height = display_geometry(args.display)
         config["display"] = {"name": args.display, "width": width, "height": height, "evidenceBin": EVIDENCE_BIN}

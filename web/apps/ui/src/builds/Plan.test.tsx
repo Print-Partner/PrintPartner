@@ -222,6 +222,107 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("Order fields in the Accept gate", () => {
+  it("creates a draft from order edits and previews all three saved fields", async () => {
+    let saved: DraftHeaderView["draft"] = null;
+    const inner = core({ open: false });
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/header" && init?.method === "PUT") {
+        saved = {
+          header: JSON.parse(String(init.body)).header,
+          header_version: 1,
+          updated_at: "2026-11-11T00:00:00.000Z",
+        };
+        return Promise.resolve(
+          json({
+            receipt: { ...RECEIPT, header: saved },
+            header: { draft_id: 9, build: BUILD, draft: saved },
+          }),
+        );
+      }
+      if (saved) {
+        if (path === "/api/v2/plans/2/drafts")
+          return Promise.resolve(json({ ...workspace(), drafts: [DRAFT] }));
+        if (path === "/api/v2/plans/2/drafts/9/header")
+          return Promise.resolve(json({ draft_id: 9, build: BUILD, draft: saved }));
+        if (path.endsWith("/accept-preview")) {
+          const result = preview(1);
+          result.changes.header = [
+            { field: "order_number", old: BUILD.order_number, new: saved.header.order_number },
+            { field: "customer", old: null, new: saved.header.customer },
+            { field: "due_date", old: null, new: saved.header.due_date },
+          ];
+          return Promise.resolve(json(result));
+        }
+      }
+      return inner(path, init);
+    });
+    renderAt(fetchMock);
+    await screen.findByText(NO_DRAFT);
+    fireEvent.change(field("Order number"), { target: { value: "PO-42" } });
+    fireEvent.change(field("Customer"), { target: { value: "Synthetic customer" } });
+    const due = screen.getByLabelText("Due date");
+    fireEvent.change(due, { target: { value: "2026-12-15" } });
+    fireEvent.blur(due);
+    await screen.findByText(/Saved to the draft/);
+    expect(writes(fetchMock)).toHaveLength(1);
+    expect(writes(fetchMock)[0]!.body).toEqual({
+      expected_base: BASE,
+      expected_draft: null,
+      expected_header_version: null,
+      header: {
+        ...BUILD,
+        order_number: "PO-42",
+        customer: "Synthetic customer",
+        due_date: "2026-12-15",
+      },
+    });
+    await screen.findByText(DRAFT_OPEN);
+    fireEvent.click(screen.getByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog");
+    for (const [label, value] of [
+      ["Order number", "PO-42"],
+      ["Customer", "Synthetic customer"],
+      ["Due date", "2026-12-15"],
+    ]) {
+      const row = await within(gate).findByRole("row", { name: new RegExp(label!) });
+      expect(within(row).getByText(value!)).toBeTruthy();
+    }
+    expect(writes(fetchMock)).toHaveLength(1);
+  });
+
+  it.each(["preview", "accept"])(
+    "names every holding Build in a duplicate-order %s refusal",
+    async (stage) => {
+      const refusal = () =>
+        json(
+          { code: "duplicate_order", builds: [{ name: "Other kit" }, { name: "Spare kit" }] },
+          409,
+        );
+      const fetchMock = core({
+        preview: stage === "preview" ? refusal : undefined,
+        write: (path) => (path.endsWith("/apply") ? refusal() : undefined),
+      });
+      renderAt(fetchMock);
+      fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+      const gate = await screen.findByRole("dialog");
+      if (stage === "accept") {
+        await within(gate).findByText(/Print Partner saves a snapshot/);
+        fireEvent.click(within(gate).getByRole("button", { name: "Accept", exact: true }));
+      }
+      const alert = await within(gate).findByRole("alert");
+      expect(alert.textContent).toContain("Order already held by: Other kit, Spare kit");
+      expect(writes(fetchMock)).toHaveLength(stage === "accept" ? 1 : 0);
+      if (stage === "preview")
+        expect(
+          within(gate)
+            .getByRole("button", { name: "Accept", exact: true })
+            .getAttribute("aria-disabled"),
+        ).toBe("true");
+    },
+  );
+});
+
 describe("UI6-01 Plan edits autosave to the draft", () => {
   it("saves a header edit to the open draft, naming the draft and header it read", async () => {
     const fetchMock = core({

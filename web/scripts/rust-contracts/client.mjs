@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { URL, fileURLToPath } from "node:url";
 
 export const generatorVersion = "rust-client-zod/1";
@@ -56,14 +56,23 @@ export function generate(document) {
   // A DTO shares its const with an identical definition of the same name.
   for (const [name, root] of Object.entries(document.dtos)) declare(name, shape(root));
   const emitted = new Map();
-  const lines = [];
+  const modules = {};
+  const dependencies = new Map();
   function reference(name, visiting) {
+    assert(/^[A-Za-z][A-Za-z0-9_]*$/.test(name), `Invalid Rust schema name ${name}`);
+    const parent = visiting.at(-1);
+    if (parent) {
+      if (!dependencies.has(parent)) dependencies.set(parent, new Set());
+      dependencies.get(parent).add(name);
+    }
     if (!emitted.has(name)) {
       assert(!visiting.includes(name), `Recursive Rust schema ${name} is unsupported`);
       assert(named.has(name), `Missing Rust schema definition ${name}`);
       const code = emit(named.get(name), [...visiting, name]);
       emitted.set(name, identifier(name));
-      lines.push(`const ${identifier(name)} = ${code};`);
+      const imports = [...(dependencies.get(name) ?? [])].sort().map((dependency) =>
+        `import { ${identifier(dependency)} } from "./${dependency}.generated.js";`).join("\n");
+      modules[`schemas/${name}.generated.ts`] = header(`${code.includes("z.") || Object.hasOwn(document.dtos, name) ? 'import { z } from "zod";\n' : ""}${imports}${imports ? "\n" : ""}\nexport const ${identifier(name)} = ${code};\n${Object.hasOwn(document.dtos, name) ? `export type ${name} = z.output<typeof ${identifier(name)}>;\n` : ""}`);
     }
     return emitted.get(name);
   }
@@ -155,7 +164,7 @@ export function generate(document) {
   }
   const dtoNames = Object.keys(document.dtos).sort();
   for (const name of dtoNames) reference(name, []);
-  const schemas = `import { z } from "zod";\n\n${lines.join("\n")}\n\n${dtoNames.map((name) => `export { ${identifier(name)} };\nexport type ${name} = z.output<typeof ${identifier(name)}>;`).join("\n")}\n\n/** Every covered DTO schema by its Rust contract name. */\nexport const dtoSchemas = {${dtoNames.map((name) => `${name}: ${identifier(name)}`).join(", ")}} as const;\n`;
+  const schemas = `${dtoNames.map((name) => `import { ${identifier(name)} } from "./schemas/${name}.generated.js";\nexport { ${identifier(name)} } from "./schemas/${name}.generated.js";\nexport type { ${name} } from "./schemas/${name}.generated.js";`).join("\n")}\n\n/** Every covered DTO schema by its Rust contract name. */\nexport const dtoSchemas = {${dtoNames.map((name) => `${name}: ${identifier(name)}`).join(", ")}} as const;\n`;
   const routeNames = new Set();
   const routeLines = document.routes.map((route) => {
     assert(/^[a-z][A-Za-z]+$/.test(route.name) && !routeNames.has(route.name), `Invalid route name ${route.name}`);
@@ -168,10 +177,14 @@ export function generate(document) {
     for (const param of textParams) assert(params.includes(param), `Route ${route.name} names unknown text parameter ${param}`);
     const headers = route.headers ?? [];
     for (const name of headers) assert(/^[A-Za-z][A-Za-z-]*$/.test(name), `Route ${route.name} names invalid header ${name}`);
-    return `  ${route.name}: {method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, textParams: ${quote(textParams)}, headers: ${quote(headers)}, auth: ${quote(route.auth)}, request: ${route.request ? `dto.${identifier(route.request)}` : "null"}, response: dto.${identifier(route.response)}},`;
+    const code = `{method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, textParams: ${quote(textParams)}, headers: ${quote(headers)}, auth: ${quote(route.auth)}, request: ${route.request ? `schema_${route.request}` : "null"}, response: schema_${route.response}} as const;`;
+    const imports = [...new Set([route.request, route.response].filter(Boolean))].sort().map((name) =>
+      `import { ${identifier(name)} as schema_${name} } from "../schemas/${name}.generated.js";`).join("\n");
+    modules[`routes/${route.name}.generated.ts`] = header(`${imports}\n\nexport const route = ${code}\n`);
+    return `  ${route.name}: route_${route.name},`;
   });
   const routes = `import type { z } from "zod";
-import * as dto from "./schemas.generated.js";
+${document.routes.map((route) => `import { route as route_${route.name} } from "./routes/${route.name}.generated.js";`).join("\n")}
 
 /** Routes registered in pp-api, from pp_api::client_contract::CLIENT_ROUTES. */
 export const routes = {
@@ -203,7 +216,10 @@ export function routePath<N extends RouteName>(name: N, params: RouteParams<N>):
 `;
   const descriptors = descriptorTables(document, named, dtoNames);
   const index = `export * from "./descriptors.generated.js";\nexport * from "./routes.generated.js";\nexport * from "./schemas.generated.js";\n`;
-  return { "descriptors.generated.ts": header(descriptors), "index.ts": header(index), "routes.generated.ts": header(routes), "schemas.generated.ts": header(schemas) };
+  const files = { ...modules, "descriptors.generated.ts": header(descriptors), "routes.generated.ts": header(routes), "schemas.generated.ts": header(schemas) };
+  const inventory = [...Object.keys(files), "index.ts"].sort();
+  files["index.ts"] = header(`// Generated files: ${JSON.stringify(inventory)}\n${index}`);
+  return files;
 }
 
 const isStringLiteral = (branch) => branch.type === "string" && branch.enum?.length === 1 && typeof branch.enum[0] === "string" && Object.keys(branch).every((key) => ["type", "enum", "description"].includes(key));
@@ -236,13 +252,16 @@ export const ${table.name} = {
 ${rows.join("\n")}
 } as const satisfies Record<dto.${table.dto}[${quote(table.key)}], dto.${table.dto}>;`;
   });
-  return `import type * as dto from "./schemas.generated.js";\n\n${tables.join("\n\n")}\n`;
+  return tables.length ? `import type * as dto from "./schemas.generated.js";\n\n${tables.join("\n\n")}\n` : "";
 }
 
 /** Fails unless `directory` holds exactly the generated files with intact content hashes. */
 export function verifyIntegrity(directory = packageSource) {
-  const names = readdirSync(directory).sort();
-  assert.deepEqual(names, ["descriptors.generated.ts", "index.ts", "routes.generated.ts", "schemas.generated.ts"], "rust-client src must hold only generated files");
+  const names = generatedPaths(directory);
+  const index = readFileSync(join(directory, "index.ts"), "utf8");
+  const inventory = /^\/\/ Generated files: (.+)$/m.exec(index);
+  assert(inventory, "index.ts: missing generated file inventory");
+  assert.deepEqual(names, JSON.parse(inventory[1]), "rust-client src must hold only generated files (no missing files)");
   for (const name of names) {
     const text = readFileSync(join(directory, name), "utf8");
     const match = /^(?:\/\/ .*\n){2}\/\/ Content SHA256: ([a-f0-9]{64})\n/.exec(text);
@@ -254,12 +273,34 @@ export function verifyIntegrity(directory = packageSource) {
 /** Fails unless `directory` matches `files` exactly. Never writes. */
 export function compare(files, directory = packageSource) {
   verifyIntegrity(directory);
+  assert.deepEqual(generatedPaths(directory), Object.keys(files).sort(), "Generated file set drift from Rust; run generate");
   for (const [name, text] of Object.entries(files)) assert.equal(readFileSync(join(directory, name), "utf8"), text, `${name}: drift from Rust; run generate`);
+}
+
+/** Recursively list regular generated files; refuse symlinks and special files. */
+function generatedPaths(directory, prefix = "") {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = prefix + entry.name;
+    if (entry.isDirectory()) return generatedPaths(join(directory, entry.name), `${path}/`);
+    assert(entry.isFile(), `${path}: only generated files are allowed`);
+    return [path];
+  }).sort();
+}
+
+/** Replace generated output, including modules removed from the Rust contract. */
+export function writeGenerated(files, directory = packageSource) {
+  // This directory belongs exclusively to the generator.
+  rmSync(directory, { recursive: true, force: true });
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(directory, name)), { recursive: true });
+    writeFileSync(join(directory, name), text);
+  }
+  verifyIntegrity(directory);
 }
 
 /** Runs pp-api's exporter into a fresh temporary directory and returns the document path. */
 export function exportDocument() {
-  const directory = mkdtempSync(join(tmpdir(), "pp-rust-client-"));
+  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pp-rust-client-"));
   const path = join(directory, "document.json");
   const result = spawnSync(process.env.CARGO ?? "cargo", ["run", "--quiet", "--locked", "--manifest-path", "rust/Cargo.toml", "-p", "pp-api", "--features", "codegen", "--bin", "export-rust-client", "--", path], { cwd: repo, stdio: ["ignore", "inherit", "inherit"] });
   assert.equal(result.status, 0, "Rust client contract export failed");
@@ -276,9 +317,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     try {
       const files = generate(JSON.parse(readFileSync(documentPath, "utf8")));
       if (mode === "--write") {
-        mkdirSync(packageSource, { recursive: true });
-        for (const [name, text] of Object.entries(files)) writeFileSync(join(packageSource, name), text);
-        verifyIntegrity();
+        writeGenerated(files);
       } else {
         compare(files);
         const test = spawnSync(process.execPath, ["--conditions=development", "--import", "tsx", "--test", "scripts/rust-contracts/client.test.mjs"], { cwd: join(repo, "web"), stdio: "inherit", env: { ...process.env, PP_RUST_CLIENT_DOCUMENT: documentPath } });

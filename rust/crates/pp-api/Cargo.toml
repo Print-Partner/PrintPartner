@@ -16,6 +16,7 @@ desktop_rebuild = [
     "dep:rmcp",
     "dep:serde_path_to_error",
     "axum/multipart",
+    "time/formatting",
 ]
 codegen = ["desktop_rebuild", "dep:schemars", "pp-storage/codegen"]
 

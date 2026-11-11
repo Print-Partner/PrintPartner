@@ -1,7 +1,7 @@
 #![cfg(feature = "desktop_rebuild")]
 use pp_api::builds::{BuildHttpConfig, build_router};
 use pp_storage::{Limits, WriterOwner};
-use pp_testkit::{Fixture, Installation};
+use pp_testkit::{Fixture, Installation, build_experiments as fixtures};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 #[path = "support/loopback.rs"]
@@ -71,20 +71,7 @@ fn bytes(data: &Installation) -> Vec<(String, Vec<u8>)> {
 async fn duplicate_is_detached_and_parent_delete_writes_no_database_bytes() {
     let (data, owner, app) = open();
     let db = Connection::open(data.database_path()).unwrap();
-    db.execute(
-        "UPDATE build_profiles SET order_number='PO-7' WHERE id=1",
-        [],
-    )
-    .unwrap();
-    let parent: (i64, i64) = db
-        .query_row(
-            "SELECT accepted_plan_revision_id,accepted_plan_version FROM build_profiles WHERE id=1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    let original = db.query_row::<String,_,_>("SELECT group_concat(required_unit_token,',') FROM plan_revision_required_units WHERE revision_id=?1",[parent.0],|r|r.get(0)).unwrap();
-    db.execute("UPDATE parts SET filament_color_id='new-filament',filament_custom_hex='#112233',spoolman_spool_id='spool-42' WHERE profile_id=1",[]).unwrap();
+    let baseline = fixtures::prepare_parent(&db);
     let copied = send(
         &app,
         "POST",
@@ -96,58 +83,7 @@ async fn duplicate_is_detached_and_parent_delete_writes_no_database_bytes() {
     let build = copied.1["build_id"].as_i64().unwrap();
     let draft = copied.1["draft_id"].as_i64().unwrap();
     assert_eq!(copied.1["parent_build_id"], 1);
-    let header: (Option<String>,Option<i64>,i64,Option<String>) = db.query_row("SELECT order_number,accepted_plan_revision_id,accepted_plan_version,archived_at FROM build_profiles WHERE id=?1", [build], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(header, (None, None, 0, None));
-    let count = |sql: &str, id: i64| db.query_row::<i64, _, _>(sql, [id], |r| r.get(0)).unwrap();
-    assert_eq!(
-        count("SELECT count(*) FROM parts WHERE profile_id=?1", build),
-        0
-    );
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM plan_revisions WHERE profile_id=?1",
-            build
-        ),
-        0
-    );
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM plan_draft_parts WHERE draft_id=?1 AND base_revision_part_id IS NOT NULL",
-            draft
-        ),
-        0
-    );
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM plan_draft_parts WHERE draft_id=?1",
-            draft
-        ),
-        count(
-            "SELECT count(*) FROM plan_revision_parts WHERE revision_id=?1",
-            parent.0
-        )
-    );
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM profile_layers WHERE profile_id=?1",
-            build
-        ),
-        count("SELECT count(*) FROM profile_layers WHERE profile_id=?1", 1)
-    );
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM build_experiments WHERE parent_build_id=?1",
-            1
-        ),
-        1
-    );
-    assert_eq!(db.query_row::<String,_,_>("SELECT group_concat(required_unit_token,',') FROM plan_revision_required_units WHERE revision_id=?1",[parent.0],|r|r.get(0)).unwrap(),original);
-    assert_eq!(db.query_row::<i64,_,_>("SELECT count(*) FROM (SELECT part_key,quantity_effective,included,notes,role_override FROM plan_revision_parts WHERE revision_id=?1 EXCEPT SELECT part_key,quantity_effective,included,notes,role_override FROM plan_draft_parts WHERE draft_id=?2)",rusqlite::params![parent.0,draft],|r|r.get(0)).unwrap(),0);
-    let assignment: (String,String,String) = db.query_row("SELECT filament_color_id,filament_custom_hex,spoolman_spool_id FROM plan_draft_parts WHERE draft_id=?1 LIMIT 1",[draft],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
-    assert_eq!(
-        assignment,
-        ("new-filament".into(), "#112233".into(), "spool-42".into())
-    );
+    fixtures::assert_detached(&db, build, draft, &baseline);
     let before = bytes(&data);
     let refused = send(&app, "DELETE", "/api/v2/plans/1", None).await;
     assert_eq!(refused.0, 409);
@@ -170,28 +106,8 @@ async fn verify_restart_and_delete(data: &Installation, owner: WriterOwner, buil
     owner.shutdown().unwrap();
     let owner = WriterOwner::open(data.path(), Limits::default()).unwrap().0;
     let db = Connection::open(data.database_path()).unwrap();
-    // The FK also protects ancestry from a caller outside the HTTP adapter.
-    db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    assert!(
-        db.execute("DELETE FROM build_profiles WHERE id=1", [])
-            .is_err()
-    );
-    assert_eq!(
-        db.query_row::<i64, _, _>(
-            "SELECT parent_build_id FROM build_experiments WHERE build_id=?1",
-            [build],
-            |r| r.get(0)
-        )
-        .unwrap(),
-        1
-    );
+    fixtures::assert_restricted_and_archive(&db, build);
     let app = router(&owner, Some("true"));
-    // Archived experiments still preserve their parent's ancestry.
-    db.execute(
-        "UPDATE build_profiles SET archived_at='2026-11-10' WHERE id=?1",
-        [build],
-    )
-    .unwrap();
     assert_eq!(send(&app, "DELETE", "/plans/1", None).await.0, 409);
     assert_eq!(
         send(&app, "DELETE", &format!("/plans/{build}"), None)
@@ -256,7 +172,7 @@ async fn duplicate_refuses_invalid_names_missing_builds_and_flag_off_without_wri
 async fn experiment_accept_preview_refuses_order_authority_before_writing() {
     let (data, owner, app) = open();
     let db = Connection::open(data.database_path()).unwrap();
-    db.execute_batch("INSERT INTO build_profiles(id,tenant_id,name) VALUES(99,'default','Parent'); INSERT INTO build_experiments(build_id,parent_build_id) VALUES(1,99); INSERT INTO plan_draft_headers(draft_id,tenant_id,name,order_number,header_version,updated_at) VALUES(2,'default','Experiment','PO-9',1,'2026-11-10');").unwrap();
+    fixtures::prepare_order_claim(&db);
     let before = bytes(&data);
     let answer = send(&app, "GET", "/plans/1/drafts/2/accept-preview", None).await;
     assert_eq!(answer.0, 409, "{answer:?}");

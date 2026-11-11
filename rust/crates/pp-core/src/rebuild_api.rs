@@ -226,7 +226,7 @@ pub fn read_router(
         history_client,
         planning_client,
         workflow_client,
-        (admin_files, app_settings, features),
+        (admin_files, app_settings, features, filament_client),
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -247,6 +247,7 @@ pub fn read_router(
                 guard.admin_files()?,
                 guard.app_settings_with_policy(policy)?,
                 guard.features_with_policy(policy)?,
+                guard.filaments_with_policy(policy)?,
             ),
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
@@ -265,22 +266,16 @@ pub fn read_router(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
         Arc::clone(&owner),
     );
+    let admin_config = AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     let admin = admin_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        admin_config.clone(),
         accepted_client.clone(),
         admin_files.clone(),
     );
-    let probe = pp_api::printer_host::probe::printer_probe_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        accepted_client.clone(),
-        Arc::new(crate::printer_host::probe::Probe(HostReads::new()?)),
-    );
+    let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
+    let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = modules_router(config.clone(), features);
-    let settings_routes = settings_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        accepted_client.clone(),
-        app_settings,
-    );
+    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
@@ -312,6 +307,7 @@ pub fn read_router(
             .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(modules)
+            .merge(filaments)
             .merge(settings_routes)
             .merge(probe)
             .merge(events)
@@ -449,6 +445,19 @@ pub fn product_router(
 
 /// API keys route to the default tenant under the single-account policy.
 pub(crate) const DESKTOP_TENANT: &str = "default";
+
+fn filaments(
+    config: AdminHttpConfig,
+    reads: &pp_storage::read_model::ReadClient,
+    client: pp_storage::filaments::FilamentClient,
+) -> Result<Router> {
+    Ok(pp_api::filaments::filament_router(
+        config,
+        reads.clone(),
+        client,
+        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
+    ))
+}
 
 #[cfg(test)]
 mod tests {

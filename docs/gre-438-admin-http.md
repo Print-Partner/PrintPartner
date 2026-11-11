@@ -154,9 +154,13 @@ files. The live-format version is 1; regenerate its declaration with
 access is checked before connector lookup and again after the network read.
 Disabled access withholds Spoolman colors and the stored default connector.
 Rust refuses updates to a Node-valid store it cannot decode losslessly (for
-example, an isolated UTF-16 surrogate), preserving the original file. Catalog reads still return those custom colors
-with their escaped UTF-16 values intact, using the same Node-compatible parser
-as `GET /filaments/custom`.
+example, an isolated UTF-16 surrogate or nesting past 128 levels). POST and
+DELETE return a 400 problem without writing, preserving the original file bytes.
+Only a real JSON syntax failure uses Node's empty-store fallback. Catalog reads
+still preserve escaped UTF-16 values using the same Node-compatible parser as
+`GET /filaments/custom`. For a store nested past 128 levels, both GET aliases
+keep today's 200 response: custom GET returns `{"filaments":[]}`; catalog GET
+returns the bundled colors and `custom_colors: []`. Neither GET changes the file.
 External requests use the existing bounded, checked Rust connector. Connector
 failures return a generic message so configuration and credentials stay private.
 

@@ -56,6 +56,7 @@ async fn filament_journey_aliases_validation_admission_and_restart() {
     )
     .unwrap();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    std::fs::write(directory.path().join("custom_filaments.json"), b"not json").unwrap();
     let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
     exercise_aliases(&client, &origin).await;
     let kept: Value = client
@@ -125,63 +126,86 @@ async fn filament_journey_aliases_validation_admission_and_restart() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn valid_node_store_outside_serde_range_is_never_replaced() {
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(
-        directory.path().join("print-partner.db"),
-        include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
-    )
-    .unwrap();
-    let path = directory.path().join("custom_filaments.json");
-    let original = br#"{"filaments":[{"id":"keep","display_name":"\ud800"}]}"#;
-    std::fs::write(&path, original).unwrap();
-    let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
-    let client = reqwest::Client::new();
-    for prefix in ["", "/api/v1"] {
-        let reply = client
-            .get(format!("{origin}{prefix}/filaments/catalog"))
-            .header("cookie", "pp_session=read-fixture-secret")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(reply.status(), 200);
-        let body: std::collections::HashMap<String, Box<serde_json::value::RawValue>> =
-            serde_json::from_str(&reply.text().await.unwrap()).unwrap();
-        assert_eq!(
-            body["custom_colors"].get(),
-            r#"[{"id":"keep","display_name":"\ud800","swatch_url":""}]"#
-        );
-        assert_eq!(
-            serde_json::from_str::<Vec<Value>>(body["colors"].get())
-                .unwrap()
-                .len(),
-            252
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(
-            client
-                .delete(format!("{origin}{prefix}/filaments/custom/keep"))
+    let surrogate = r#"{"filaments":[{"id":"keep","display_name":"\ud800"}]}"#.to_owned();
+    let nested = format!("{}0{}", "[".repeat(130), "]".repeat(130));
+    let deep = format!(
+        r##"{{"filaments":[{{"id":"keep","display_name":"Keep","product_line":"Custom","hex":"#123456","combo_label":"Keep","metadata":{nested}}}]}}"##
+    );
+    for (original, custom) in [
+        (
+            surrogate,
+            r#"[{"id":"keep","display_name":"\ud800","swatch_url":""}]"#,
+        ),
+        (deep, "[]"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("print-partner.db"),
+            include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
+        )
+        .unwrap();
+        let path = directory.path().join("custom_filaments.json");
+        std::fs::write(&path, &original).unwrap();
+        let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
+        let client = reqwest::Client::new();
+        for prefix in ["", "/api/v1"] {
+            let reply = client
+                .get(format!("{origin}{prefix}/filaments/custom"))
                 .header("cookie", "pp_session=read-fixture-secret")
-                .header("origin", &origin)
                 .send()
                 .await
-                .unwrap()
-                .status(),
-            400
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), original);
+                .unwrap();
+            assert_eq!(reply.status(), 200);
+            assert_eq!(
+                reply.text().await.unwrap(),
+                if custom == "[]" {
+                    r#"{"filaments":[]}"#
+                } else {
+                    &original
+                }
+            );
+            let reply = client
+                .get(format!("{origin}{prefix}/filaments/catalog"))
+                .header("cookie", "pp_session=read-fixture-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), 200);
+            let body: std::collections::HashMap<String, Box<serde_json::value::RawValue>> =
+                serde_json::from_str(&reply.text().await.unwrap()).unwrap();
+            assert_eq!(body["custom_colors"].get(), custom);
+            assert_eq!(
+                serde_json::from_str::<Vec<Value>>(body["colors"].get())
+                    .unwrap()
+                    .len(),
+                252
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());
+            for (method, suffix) in [
+                (reqwest::Method::POST, ""),
+                (reqwest::Method::DELETE, "/keep"),
+            ] {
+                let request = client
+                    .request(
+                        method.clone(),
+                        format!("{origin}{prefix}/filaments/custom{suffix}"),
+                    )
+                    .header("cookie", "pp_session=read-fixture-secret")
+                    .header("origin", &origin);
+                let request = if method == reqwest::Method::POST {
+                    request.json(&json!({"display_name":"new", "hex":"123456"}))
+                } else {
+                    request
+                };
+                let reply = request.send().await.unwrap();
+                assert_eq!(reply.status(), 400);
+                assert_eq!(reply.headers()["content-type"], "application/problem+json");
+                assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());
+            }
+        }
+        serving.stop().await.unwrap();
+        owner.shutdown().unwrap();
     }
-    let reply = client
-        .post(format!("{origin}/filaments/custom"))
-        .header("cookie", "pp_session=read-fixture-secret")
-        .header("origin", &origin)
-        .json(&json!({"display_name":"new","hex":"123456"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reply.status(), 400);
-    assert_eq!(std::fs::read(path).unwrap(), original);
-    serving.stop().await.unwrap();
-    owner.shutdown().unwrap();
 }
 
 struct RevokeOnRead(std::path::PathBuf);

@@ -103,12 +103,11 @@ pub(super) fn execute(
     let mut store = match std::fs::read(&path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(store) => store,
-            Err(_) => match crate::source_scan::node_json::property(
+            Err(_) => match serde_json::from_str::<Box<serde_json::value::RawValue>>(
                 &String::from_utf8_lossy(&bytes),
-                "filaments",
             ) {
-                crate::source_scan::node_json::Property::Unparsable => json!({"filaments":[]}),
-                _ => {
+                Err(_) => json!({"filaments":[]}),
+                Ok(_) => {
                     return Ok(Outcome::Refused(
                         400,
                         "Custom filament store cannot be safely updated",

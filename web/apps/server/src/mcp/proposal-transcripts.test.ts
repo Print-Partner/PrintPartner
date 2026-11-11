@@ -14,7 +14,7 @@ import { StatusExecution } from "../integrations/status-execution.js";
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,6 +99,7 @@ async function runScenario(
 ): Promise<{ transcript: Record<string, unknown>; dataDir: string; cleanup: () => Promise<void> }> {
   const dataDir = mkdtempSync(join(tmpdir(), "pp-mcp-transcript-"));
   const sqlite = new SqliteDatabase(dataDir);
+  if (seed) copyFileSync(resolve(FIXTURE_DIR,"../../../rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db"),sqlite.dbPath);
   sqlite.connect();
   if (seed) {
     for (const statement of seed.replaceAll("<data-dir>", dataDir.replaceAll("'", "''")).split(";").filter((s) => s.trim())) getDb(sqlite).run(sql.raw(statement));

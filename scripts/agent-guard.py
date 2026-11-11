@@ -1025,6 +1025,21 @@ def coordinator_merge(args, cwd):
     return bool(number and squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
 
 
+def trusted_comment_bodies(pages, authors):
+    """Return the bodies of PR comments whose author is in authors; refuse malformed pages."""
+    if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+        raise ValueError("missing PR comment pages")
+    bodies = []
+    for page in pages:
+        for comment in page:
+            login, body = comment["user"]["login"], comment["body"]
+            if not isinstance(login, str) or not login or not isinstance(body, str):
+                raise ValueError("missing comment author or body")
+            if login in authors:
+                bodies.append(body)
+    return bodies
+
+
 def coordinator_merge_reason(args, cwd):
     """Check files and trusted score records for an already validated merge command."""
     try:
@@ -1070,16 +1085,7 @@ def coordinator_merge_reason(args, cwd):
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
         pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
-        if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
-            raise ValueError("missing PR comment pages")
-        bodies = []
-        for page in pages:
-            for comment in page:
-                login, body = comment["user"]["login"], comment["body"]
-                if not isinstance(login, str) or not login or not isinstance(body, str):
-                    raise ValueError("missing comment author or body")
-                if login in authors:
-                    bodies.append(body)
+        bodies = trusted_comment_bodies(pages, authors)
         # author= records the head branch's author vendor, supplied by the
         # coordinator. Never infer a model vendor from the GitHub login.
         author_vendors = set()

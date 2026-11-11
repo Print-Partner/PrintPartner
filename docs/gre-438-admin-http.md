@@ -74,9 +74,9 @@ own routes and there is no dual write or fallback.
 
 `fixtures/admin/settings-cases.json` lists 52 requests;
 `fixtures/admin/settings-oracle.json` records Node's reply and the three stored
-rows after each one. `settings_routes_http` replays them and matches status,
-cache header and stored rows on all 52, and the body on every `200` and on
-each `400` with a `detail`. These differ by design:
+rows after each one. `settings_routes_http` replays them and matches status on
+48 requests, and cache headers and stored rows on all 52. It matches the body
+on every `200` and each Node `400` with a `detail`. These differ by design:
 
 - Errors are `application/problem+json`; the `detail` matches Node's.
 - An empty or unparsable JSON body answers `400` `Request is invalid` instead
@@ -84,10 +84,13 @@ each `400` with a `detail`. These differ by design:
 - Rust also answers `400` for JSON that Fastify accepts but `serde_json`
   refuses: a leading byte order mark, invalid UTF-8, a number out of `f64`
   range such as `1e400`, or nesting past 128 levels.
-- A chunked empty body with no content type answers `500`; Fastify answers
+- A chunked empty body with no content type answers `400`; Fastify answers
   `415`.
-- A `null` body, or a `PUT` with no body and no content type, answers `500`
-  `Internal Server Error`, where Node answers its `TypeError`.
+- A `null` JSON body, or a `PUT` with no body and no content type, answers
+  `400` with the malformed-request problem type and detail `Request is invalid`,
+  without writing. Node answers `500` with its `TypeError`. The four recorded
+  cases assert this intended difference; separate HTTP coverage checks both
+  bodies on all three routes at `/` and `/api/v1` (GRE-1368).
 - A stored `integrations` value with an unpaired UTF-16 surrogate escape holds
   no integrations for Rust, so the Spoolman `PUT` answers `400` where Node
   would accept it.

@@ -103,10 +103,10 @@ async fn add(
         Ok(Json(body)) => body,
         Err(error) => {
             return failure(
-                if error.status() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE
-                } else {
+                if error.status() == StatusCode::UNPROCESSABLE_ENTITY {
                     StatusCode::BAD_REQUEST
+                } else {
+                    error.status()
                 },
                 "Request is invalid",
             );

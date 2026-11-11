@@ -121,11 +121,13 @@ export function ModuleList({ modules }: { modules: NonNullable<Health["modules"]
           <p>Saved Builds and history stay in place.</p>
           {!choice.on && <p>Turning this off does not stop a printer or undo completed work.</p>}
           {writing && <p role="status">Saving Module state.</p>}
-          {unavailable && <p>{OFFLINE_REASON}</p>}
-          {choiceUnavailable && <p>The core cannot read this Module's setting yet.</p>}
+          <div id={`${unavailableId}-confirmation`}>
+            {unavailable && <p>{OFFLINE_REASON}</p>}
+            {choiceUnavailable && <p>The core cannot read this Module's setting yet.</p>}
+          </div>
           <div className="pp-actions">
             <button type="button" className="pp-button" onClick={() => setChoice(null)}>{writing ? "Close" : "Cancel"}</button>
-            <button type="button" className="pp-button pp-button-primary" aria-disabled={unavailable || choiceUnavailable || writing || undefined} onClick={confirm}>
+            <button type="button" className="pp-button pp-button-primary" aria-describedby={`${unavailableId}-confirmation`} aria-disabled={unavailable || choiceUnavailable || writing || undefined} onClick={confirm}>
               Confirm Module change
             </button>
           </div>

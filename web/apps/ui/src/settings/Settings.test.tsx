@@ -321,6 +321,7 @@ describe("Module changes use the Rust route", () => {
     });
     const confirm = screen.getByRole("button", { name: "Confirm Module change" });
     await waitFor(() => expect(confirm.getAttribute("aria-disabled")).toBe("true"));
+    expect(screen.getByRole("button", { name: "Confirm Module change", description: /cannot read/ })).toBe(confirm);
     fireEvent.click(confirm);
     expect(writes).toHaveLength(0);
   });
@@ -336,6 +337,7 @@ describe("Module changes use the Rust route", () => {
     await queryClient.refetchQueries({ queryKey: ["core", "health"] });
     const confirm = screen.getByRole("button", { name: "Confirm Module change" });
     await waitFor(() => expect(confirm.getAttribute("aria-disabled")).toBe("true"));
+    expect(screen.getByRole("button", { name: "Confirm Module change", description: /Offline:/ })).toBe(confirm);
     fireEvent.click(confirm);
     expect(writes).toHaveLength(0);
   });

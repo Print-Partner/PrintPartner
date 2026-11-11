@@ -34,7 +34,7 @@ feature-off reader retains its existing error classification.
 
 D9 is complete with the [final coverage and integration audit](../desktop-rebuild-d9-audit.md).
 Required-unit planning integration belongs to GRE-606 D11. Manifest option observation is
-GRE-604 D10b, described below.
+GRE-604 D10b, described in [D10b manifest observation receipt](d10b-manifest-observation.md).
 No runtime caller is added. Future user-visible callers must also check
 `PP_DESKTOP_REBUILD` for exactly `1` or `true`.
 

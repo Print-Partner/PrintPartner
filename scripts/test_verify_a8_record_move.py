@@ -30,6 +30,17 @@ class RecordMoveTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 VERIFY.verify_bytes(self.path, self.original, changed)
 
+    def test_listed_text_rewrite_passes_and_others_fail(self):
+        path = "docs/records/d9-build-graph.md"
+        original = b"# Receipt\n\nGRE-604 D10b, described below.\n"
+        repaired = (b"# Receipt\n\nGRE-604 D10b, described in "
+                    b"[D10b manifest observation receipt](d10b-manifest-observation.md).\n")
+        VERIFY.verify_bytes(path, original, repaired)
+        with self.assertRaises(ValueError):
+            VERIFY.verify_bytes(path, original, repaired.replace(b"described in", b"covered in"))
+        with self.assertRaises(ValueError):
+            VERIFY.verify_bytes(path, b"# Receipt\n", b"# Receipt\n")
+
     def test_unlisted_target_edit_fails(self):
         with self.assertRaises(ValueError):
             VERIFY.verify_bytes(self.path, self.original,

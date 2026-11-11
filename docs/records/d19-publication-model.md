@@ -7,7 +7,7 @@ validation, and Required-unit token remapping from the source-sync reference.
 The optional `pp-contracts` dependency supplies `UnmappableLink`; the boundary
 check rejects this dependency if it becomes required or reachable by default.
 
-PR 2 adds the transaction entry described below. PR 3 adds `PublicationClient`,
+PR 2 adds the transaction entry described in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md). PR 3 adds `PublicationClient`,
 authenticated admission, schema installation, and writer `Envelope` dispatch.
 
 `node fixtures/parity/plan-publication/generate.mjs` regenerates literal Node

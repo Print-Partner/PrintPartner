@@ -51,6 +51,16 @@ LINK_REWRITES = {
             b"records/d19-publication-client.md#production-setup-in-rust-gre-1209",
     },
 }
+# Sentences that said "described below" of a section that now has its own record. Each exact
+# replacement is applied once to the parent bytes before the link comparison.
+TEXT_REWRITES = {
+    "docs/records/d9-build-graph.md": ((b"GRE-604 D10b, described below.",
+        b"GRE-604 D10b, described in [D10b manifest observation receipt](d10b-manifest-observation.md)."),),
+    "docs/records/d10b-manifest-observation.md": ((b"GRE-644 slice 1 wires its build graph manifest commands, described below.",
+        b"GRE-644 slice 1 wires its build graph manifest commands, described in [GRE-644 manifest commands, slice 1](manifest-commands.md)."),),
+    "docs/records/d19-publication-model.md": ((b"PR 2 adds the transaction entry described below.",
+        b"PR 2 adds the transaction entry described in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md)."),),
+}
 # The repaired links all use bare destinations without titles or parentheses.
 LINK_TARGET = re.compile(rb"(\[[^\]\n]*\]\()([^\s()]+)(\))")
 
@@ -58,6 +68,10 @@ LINK_TARGET = re.compile(rb"(\[[^\]\n]*\]\()([^\s()]+)(\))")
 def verify_bytes(path, original, actual):
     """Require the fixed original bytes with exactly the listed destination repairs."""
     rewrites = LINK_REWRITES.get(path, {})
+    for before, after in TEXT_REWRITES.get(path, ()):
+        if original.count(before) != 1:
+            raise ValueError(f"Listed text rewrite not found exactly once: {path}")
+        original = original.replace(before, after)
     expected = LINK_TARGET.sub(
         lambda match: match[1] + rewrites.get(match[2], match[2]) + match[3], original)
     if actual != expected:
@@ -102,14 +116,15 @@ def main():
         raise ValueError("Source differs beyond the nine exact pointer substitutions")
     for path in COPIED:
         verify_bytes(path, git_bytes("show", f"{PARENT}:{path}"), (ROOT / path).read_bytes())
+    newline = b"\n"
     for title, slug, _, _, section in sections:
-        print(f"{title} | docs/records/{slug}.md | {section.count(b'\n')}")
+        print(f"{title} | docs/records/{slug}.md | {section.count(newline)}")
     print(f"Moved lines (including headings and trailing blank lines): {total}")
     if total != 2258:
         raise ValueError(f"Moved lines {total} differ from the plan's 2258")
     print("Plan expected 2258: MATCH")
-    print(f"{SOURCE}: {original.count(b'\n')} -> {actual.count(b'\n')} lines")
-    print("PASS: nine records match parent bytes except heading levels and listed link-target repairs.")
+    print(f"{SOURCE}: {original.count(newline)} -> {actual.count(newline)} lines")
+    print("PASS: nine records match parent bytes except heading levels and the listed text and link-target repairs.")
     print("PASS: nine pointer targets exist; all other source bytes are unchanged.")
     print("PASS: docs/families.md matches the parent except the listed link-target repair.")
 

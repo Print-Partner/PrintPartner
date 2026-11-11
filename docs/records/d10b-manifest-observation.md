@@ -1,7 +1,7 @@
 # D10b manifest observation receipt
 
 GRE-604 D10b adds `pp_storage::manifest_options::observation` behind `desktop_rebuild`.
-GRE-644 slice 1 wires its build graph manifest commands, described below. HTTP routes remain deferred.
+GRE-644 slice 1 wires its build graph manifest commands, described in [GRE-644 manifest commands, slice 1](manifest-commands.md). HTTP routes remain deferred.
 
 `capture` reads the build, its stored kit, and its ordered source layers in one transaction.
 `basis_matches` repeats the capture, so a later transaction can reject a stale observation.

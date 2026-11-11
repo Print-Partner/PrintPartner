@@ -379,7 +379,7 @@ Identical files keep identical contents, so updates in different crates merge
 without editing a shared inventory or manifest.
 
 Each statement cap comes from the same crate's file on `origin/main`. During
-the layout migration, when main has no per-crate directory yet, the checker
+the layout migration, when main has no per-crate baseline files yet, the checker
 uses that crate's entry in main's shared `desktop-rebuild-baseline.json`.
 Once main uses per-crate files, a missing crate file means a zero cap; it never
 borrows an allowance from a leftover shared file. A missing or extra local

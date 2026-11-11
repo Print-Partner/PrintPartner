@@ -222,21 +222,28 @@ def local_placements(root):
 
 
 def main_placements(root):
+    reference = subprocess.run(
+        ["git", "rev-parse", "--verify", BASE_REF + "^{commit}"],
+        cwd=root, text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    print(f"desktop-rebuild: comparing with {BASE_REF} at {reference}")
     files = subprocess.run(
-        ["git", "ls-tree", "-r", "--name-only", BASE_REF, "--", PLACEMENT_DIR],
+        ["git", "ls-tree", "-r", "--name-only", reference, "--", PLACEMENT_DIR],
         cwd=root, text=True, capture_output=True, check=True,
     )
-    if files.stdout:
+    paths = [Path(file) for file in files.stdout.splitlines()
+             if Path(file).parent == Path(PLACEMENT_DIR) and Path(file).suffix == ".json"]
+    if paths:
         baseline = {}
-        for file in files.stdout.splitlines():
-            shown = subprocess.run(["git", "show", f"{BASE_REF}:./{file}"],
+        for file in paths:
+            shown = subprocess.run(["git", "show", f"{reference}:./{file.as_posix()}"],
                                    cwd=root, text=True, capture_output=True, check=True)
-            baseline.update(parse_crate_placement(shown.stdout, Path(file)))
+            baseline.update(parse_crate_placement(shown.stdout, file))
         return baseline
     # Until the split lands, the shared file still owns each crate's cap.
-    spec = f"{BASE_REF}:./{PLACEMENT_FILE}"
+    spec = f"{reference}:./{PLACEMENT_FILE}"
     legacy = subprocess.run(
-        ["git", "ls-tree", "--name-only", BASE_REF, "--", PLACEMENT_FILE],
+        ["git", "ls-tree", "--name-only", reference, "--", PLACEMENT_FILE],
         cwd=root, text=True, capture_output=True, check=True,
     )
     if not legacy.stdout:

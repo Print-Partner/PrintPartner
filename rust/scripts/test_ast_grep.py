@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 RUST = Path(__file__).resolve().parents[1]
@@ -439,6 +440,36 @@ class RatchetTests(unittest.TestCase):
         self.commit_main()
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_nonbaseline_notes_are_ignored_locally_and_on_main(self):
+        (self.root / "desktop-rebuild-baseline/README.md").write_text("Placement notes.\n")
+        self.commit_main()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_main_layout_change_during_read_cannot_skip_the_statement_cap(self):
+        counts = {"pp-source": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)}
+        self.publish_shared_placements(counts)
+        old = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.placement_baseline()
+        self.commit_main()
+        new = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.git("update-ref", "refs/remotes/origin/main", old)
+        run = subprocess.run
+        moved = False
+
+        def advance_main(args, **kwargs):
+            nonlocal moved
+            result = run(args, **kwargs)
+            if args[:2] == ["git", "ls-tree"] and not moved:
+                moved = True
+                self.git("update-ref", "refs/remotes/origin/main", new)
+            return result
+
+        with patch.object(CHECKER.subprocess, "run", side_effect=advance_main):
+            baseline = CHECKER.main_placements(self.root)
+        self.assertTrue(moved)
+        self.assertEqual(baseline, counts)
 
     def test_matching_baseline_passes(self):
         result = self.check()

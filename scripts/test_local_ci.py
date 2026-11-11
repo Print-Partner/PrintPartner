@@ -69,8 +69,23 @@ class LocalReleaseArtifactTests(unittest.TestCase):
             with self.subTest(measured=measured):
                 self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(measured)))
 
+    def test_commit_only_change_keeps_existing_assets_fresh(self):
+        self.manifest.write_text(json.dumps({**self.stored, "commit": "b" * 40}))
+        measured = {**self.stored, "commit": self.env["GITHUB_SHA"]}
+        self.assertTrue(artifacts.fresh(self.root, self.env, self.measure(measured)))
+
+    def test_a_different_runtime_node_still_requires_matching_assets(self):
+        original = {**self.stored, "node_version": "v24.21.0", "node_sha256": "original"}
+        self.manifest.write_text(json.dumps(original))
+        for changed in [{**original, "node_sha256": "different"},
+                        {**original, "node_version": "v22.23.3"}]:
+            with self.subTest(changed=changed):
+                self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(changed)))
+
     def test_missing_invalid_manifest_or_generator_failure_fails(self):
         self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(self.stored, code=1)))
+        self.manifest.write_text("[]")
+        self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(self.stored)))
         self.manifest.write_text("not json")
         self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(self.stored)))
         self.manifest.unlink()

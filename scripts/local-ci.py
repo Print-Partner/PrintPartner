@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run the required Rust CI checks locally, in CI order, and report every step.
+"""Run the required Rust CI checks locally, in CI order, and report step outcomes.
 
+A stale release-artifact check stops the run before nextest; later steps are not run.
 Each step copies its command lines from the workflow step named in `ci`;
 scripts/test_local_ci.py fails when a copied line no longer matches the workflow.
 A step whose tool, pinned version or host is missing is reported as SKIP with the

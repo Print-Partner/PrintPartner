@@ -23,7 +23,15 @@ def fresh(root, env, run=subprocess.run):
                  "--output", str(measured), "--commit", env["GITHUB_SHA"]],
                 cwd=root, env=env, capture_output=True, text=True,
             )
-            return result.returncode == 0 and json.loads(measured.read_text()) == stored
+            if result.returncode:
+                return False
+            current = json.loads(measured.read_text())
+            if not isinstance(stored, dict) or not isinstance(current, dict):
+                return False
+            # A new Git commit does not change the measured runtime files.
+            stored.pop("commit", None)
+            current.pop("commit", None)
+            return current == stored
     except (OSError, ValueError, KeyError):
         return False
 
@@ -32,8 +40,9 @@ def main():
     if fresh(ROOT, os.environ):
         print("Release artifacts match rust/bundle-manifest.json")
         return 0
-    print(f"Stale or missing rust/bundle-manifest.json or web assets; nextest was not started. "
-          f"Rebuild with Node 24.21.0: {REBUILD}", file=sys.stderr)
+    print(f"Missing or mismatched rust/bundle-manifest.json, web assets, or runtime Node; nextest was not started. "
+          f"Rebuild with Node 24.21.0: {REBUILD}. "
+          "Ensure PP_TEST_NODE matches the Node used by web-assets.", file=sys.stderr)
     return 1
 
 

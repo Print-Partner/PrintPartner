@@ -52,9 +52,12 @@ LINK_REWRITES = {
             b"records/d19-publication-client.md#production-setup-in-rust-gre-1209",
     },
 }
-# Sentences that said "described below" of a section that now has its own record. Each exact
-# replacement is applied once to the parent bytes before the link comparison.
+# Sentences that said "described below" of a section that now has its own record, and the one
+# link label that named the moved anchor. Each exact replacement is applied once to the parent
+# bytes before the link comparison.
 TEXT_REWRITES = {
+    "docs/families.md": ((b"[desktop-rebuild.md#production-setup-in-rust-gre-1209](",
+        b"[records/d19-publication-client.md#production-setup-in-rust-gre-1209]("),),
     "docs/records/d9-build-graph.md": ((b"GRE-604 D10b, described below.",
         b"GRE-604 D10b, described in [D10b manifest observation receipt](d10b-manifest-observation.md)."),),
     "docs/records/d10b-manifest-observation.md": ((b"GRE-644 slice 1 wires its build graph manifest commands, described below.",
@@ -162,7 +165,7 @@ def main():
     print(f"{SOURCE}: {original.count(newline)} -> {actual.count(newline)} lines")
     print("PASS: nine records match parent bytes except heading levels and the listed text and link-target repairs.")
     print("PASS: nine pointer targets exist; the D19 client pointer lists its sections; all other source bytes are unchanged.")
-    print("PASS: docs/families.md matches the parent except the listed link-target repair.")
+    print("PASS: docs/families.md matches the parent except the listed label and link-target repair.")
 
 
 if __name__ == "__main__":

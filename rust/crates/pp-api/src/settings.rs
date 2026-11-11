@@ -2,6 +2,8 @@
 //! `/settings/spoolman-default`, as Node's `routes/settings.ts` serves them
 //! (GRE-1357). `fixtures/admin/settings-oracle.json` records Node's replies.
 
+mod secrets;
+
 use crate::accepted::{failure, read_error};
 use crate::admin::{AdminHttpConfig, Gate, response};
 use crate::loopback::PresentedCredential;
@@ -41,7 +43,7 @@ struct App {
     wait: Duration,
 }
 
-/// Mounts the three settings at `/` and `/api/v1` when `PP_DESKTOP_REBUILD`
+/// Mounts the supported settings at `/` and `/api/v1` when `PP_DESKTOP_REBUILD`
 /// was exactly `1` or `true`; otherwise nothing. The admin gate proves the
 /// credential first, as Node's auth hook runs before each handler.
 pub fn settings_router(
@@ -54,6 +56,7 @@ pub fn settings_router(
         return Router::new();
     };
     let routes = Router::new()
+        .merge(secrets::routes())
         .route(
             "/settings/date-format",
             get(get_date_format).put(put_date_format),
@@ -228,6 +231,17 @@ async fn read(
     presented: PresentedCredential,
     key: Key,
 ) -> Result<Option<String>, Box<Response>> {
+    match read_outcome(app, presented, key).await? {
+        Outcome::Value(value) => Ok(value),
+        _ => Err(Box::new(unreadable())),
+    }
+}
+
+async fn read_outcome(
+    app: &App,
+    presented: PresentedCredential,
+    key: Key,
+) -> Result<Outcome, Box<Response>> {
     let client = app.settings.clone();
     let wait = app.wait;
     let outcome = tokio::task::spawn_blocking(move || {
@@ -239,13 +253,7 @@ async fn read(
         )
     })
     .await;
-    match settled(outcome)? {
-        Outcome::Value(value) => Ok(value),
-        _ => Err(Box::new(failure(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal Server Error",
-        ))),
-    }
+    settled(outcome)
 }
 
 async fn write(

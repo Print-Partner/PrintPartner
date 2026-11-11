@@ -519,7 +519,9 @@ async fn start_rust_resources(
     desktop_rebuild: DesktopRebuild,
 ) -> Result<Resources> {
     let assets = input
-        .assets
+        .bundle
+        .web_root
+        .join("apps/ui/dist")
         .canonicalize()
         .context("React assets unavailable")?;
     let data_dir = prepare_data_dir(&input.data_dir)?;
@@ -566,9 +568,7 @@ async fn start_rust_resources(
     let gateway = Gateway::start_rust_only(
         listener,
         assets,
-        // `pp-server` and `pp-desktop` still ship the old `apps/web` build;
-        // GRE-1294 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
-        pp_gateway::ServedUi::Legacy,
+        pp_gateway::ServedUi::Replacement,
         move |status| product.merge(status_routes.mount(status)),
         receiver,
         hosts,

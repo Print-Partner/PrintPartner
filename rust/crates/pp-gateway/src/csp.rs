@@ -44,7 +44,17 @@ impl Fixture {
                     listener,
                     root,
                     ui,
-                    |_| axum::Router::new(),
+                    |_| {
+                        axum::Router::new()
+                            .route(
+                                "/printers/{id}/files/content",
+                                axum::routing::get(|| async { "printer bytes" }),
+                            )
+                            .route(
+                                "/settings/api-keys",
+                                axum::routing::get(|| async { "settings response" }),
+                            )
+                    },
                     receiver,
                     Arc::new(NoHosts),
                 )
@@ -239,4 +249,69 @@ fn csp_template_is_one_header_line_with_both_placeholders() {
     assert_eq!(template.matches("{nonce}").count(), 1);
     assert_eq!(template.matches("{ws_origin}").count(), 1);
     assert!(!template.contains("unsafe"));
+}
+
+#[tokio::test]
+async fn replacement_spa_documents_and_deep_links_keep_the_nonce_policy() {
+    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    for path in [
+        "/",
+        "/today",
+        "/farm",
+        "/farm/log",
+        "/builds/12/history",
+        "/states/printers",
+    ] {
+        let response = fixture.get("GET", path, None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/html; charset=utf-8"
+        );
+        let header = policy(&response);
+        let html = body(response).await;
+        assert_eq!(header, fixture.replacement(Some(nonce_of(&html))), "{path}");
+    }
+    for path in ["/assets/missing.js", "/icons/missing.svg", "/missing.css"] {
+        let response = fixture.get("GET", path, None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert!(!body(response).await.contains("<html>"));
+    }
+}
+
+#[test]
+fn replacement_fallback_excludes_service_namespaces_and_file_paths() {
+    for path in [
+        "/printers/1/files/content",
+        "/printers/1/cameras/view",
+        "/unknown-screen",
+        "/auth/register",
+        "/mcp",
+        "/__desktop/bootstrap",
+        "/__runtime",
+        "/api",
+        "/api/v2/builds",
+        "/ws",
+        "/ws/printers",
+        "/health",
+        "/health/ready",
+        "/assets",
+        "/icons",
+        "/builds/app.js",
+    ] {
+        assert!(!assets::is_replacement_client_path(path), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn replacement_navigation_preserves_root_api_routes() {
+    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    for (path, expected) in [
+        ("/printers/1/files/content", "printer bytes"),
+        ("/settings/api-keys", "settings response"),
+    ] {
+        let response = fixture.get("GET", path, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body(response).await, expected);
+    }
 }

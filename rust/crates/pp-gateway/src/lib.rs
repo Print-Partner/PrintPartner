@@ -1035,7 +1035,7 @@ async fn handle(
     let document = matches!(request.method().as_str(), "GET" | "HEAD")
         && (header(&request, "sec-fetch-mode") == Some("navigate")
             || header(&request, "accept").is_some_and(|v| v.contains("text/html")));
-    let spa = is_spa_client_path(&path);
+    let spa = state.asset_policy.is_spa_client_path(&path);
     if (document && spa)
         || path.starts_with("/assets/")
         || path.starts_with("/icons/")

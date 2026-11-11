@@ -125,6 +125,7 @@ manifest = {
     'node_version': subprocess.check_output([str(args.node), '--version'], text=True).strip(),
     'node_sha256': digest(args.node),
     'frontend': inventory(frontend),
+    'replacement_frontend': inventory(web / 'apps/ui/dist') if (web / 'apps/ui/dist').exists() else {},
     'backend': backend,
     'contracts': inventory(web / ARTIFACTS['contracts']),
     'domain': inventory(web / ARTIFACTS['domain']),
@@ -135,7 +136,7 @@ encoded = (json.dumps(manifest, sort_keys=True, separators=(',', ':')) + '\n').e
 args.output.parent.mkdir(parents=True, exist_ok=True)
 args.output.write_bytes(encoded)
 print(json.dumps({'manifest_sha256': hashlib.sha256(encoded).hexdigest(),
-                  'measured_files': sum(len(manifest[key]) for key in ['frontend', 'backend', 'contracts', 'domain', 'metadata']) + 1,
+                  'measured_files': sum(len(manifest[key]) for key in ['frontend', 'replacement_frontend', 'backend', 'contracts', 'domain', 'metadata']) + 1,
                   'dependency_files': len(manifest['dependencies']['files']),
                   'dependency_links': len(manifest['dependencies']['links']),
                   'node_version': manifest['node_version']}))

@@ -78,6 +78,7 @@ async fn slice0_mount_launcher_in_child() {
     let origin = runtime.origin().to_owned();
     let desktop = desktop_cookie(&mut runtime).await;
     assert_runtime_json(&origin, &desktop, rust).await;
+    assert_served_ui(&origin, &desktop, rust).await;
     if rust {
         let (status, _, body) = request(
             &origin,
@@ -157,5 +158,48 @@ async fn assert_runtime_json(origin: &str, desktop: &str, rust: bool) {
         assert!(state.get("rust").is_none(), "{state}");
         assert_eq!(state["compat"]["state"], "ready", "{state}");
         assert!(state["compat"]["pid"].is_u64(), "{state}");
+    }
+}
+
+/// Both gates select the replacement bundle and policy together. The legacy
+/// runtime still serves the old bundle, including when only one gate is on.
+async fn assert_served_ui(origin: &str, desktop: &str, rust: bool) {
+    let response = reqwest::Client::new()
+        .get(format!("{origin}/"))
+        .header("cookie", desktop)
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let html = response.text().await.unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../web/apps");
+    let expected = std::fs::read_to_string(root.join(if rust {
+        "ui/dist/index.html"
+    } else {
+        "web/dist/index.html"
+    }))
+    .unwrap();
+    if rust {
+        assert!(policy.starts_with("default-src 'none'; script-src 'self';"));
+        let nonce = policy
+            .split("'nonce-")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        let element = format!("<meta name=\"pp-style-nonce\" nonce=\"{nonce}\">");
+        assert_eq!(html.replace(&element, ""), expected);
+    } else {
+        assert_eq!(html, expected);
+        assert_eq!(
+            policy,
+            "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        );
     }
 }

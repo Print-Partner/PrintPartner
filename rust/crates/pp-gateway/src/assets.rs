@@ -153,6 +153,13 @@ const NONCE_META_NAME: &str = "pp-style-nonce";
 const MAX_DOCUMENT_BYTES: u64 = 1 << 20;
 
 impl Policy {
+    pub(super) fn is_spa_client_path(&self, path: &str) -> bool {
+        match self {
+            Self::Legacy => super::is_spa_client_path(path),
+            Self::Replacement { .. } => is_replacement_client_path(path),
+        }
+    }
+
     pub(super) fn replacement(origin: &str) -> Self {
         let authority = origin.strip_prefix("http://").unwrap_or(origin);
         Self::Replacement {
@@ -365,4 +372,20 @@ fn content_type(path: &Path, relative: &str) -> &'static str {
         Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
+}
+
+// Restrict fallback to UI roots so legacy root-level API aliases remain routes.
+pub(super) fn is_replacement_client_path(path: &str) -> bool {
+    !path.split('/').any(|segment| segment.contains('.'))
+        && (matches!(
+            path,
+            "/" | "/settings" | "/login" | "/setup" | "/forgot-password" | "/reset-password"
+        ) || ["/today", "/builds", "/farm", "/library", "/states", "/type"]
+            .iter()
+            .any(|prefix| {
+                path == *prefix
+                    || path
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            }))
 }

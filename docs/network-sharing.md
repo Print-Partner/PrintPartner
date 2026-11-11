@@ -34,7 +34,14 @@ The gateway sets `Content-Security-Policy` on every document and asset it serves
 
   Each document response gets a fresh 128-bit nonce. The gateway reads `index.html` (never its `.gz` sibling) and inserts `<meta name="pp-style-nonce" nonce="<nonce>">` right after the `<head>` start tag, or after the doctype when there is no `<head>` tag. The document is always sent uncoded, even to a client that refuses `identity`. [`web/apps/ui/src/csp.ts`](../web/apps/ui/src/csp.ts) hands the nonce to Radix's scroll lock, the one library that inserts a `<style>` element at run time, and turns on Zod's jitless mode so Zod does not probe `new Function`. Asset responses carry the same policy without a nonce.
 
-  Today `pp-server`, `pp-desktop` and the Rust-only Docker image still serve the old `apps/web` build in the Rust-only runtime, so they pass `ServedUi::Legacy` and send the legacy policy. That build needs `blob:` thumbnails, an inline theme script, Google Fonts and un-nonced `<style>` elements, which the replacement policy blocks. The replacement policy takes effect when [GRE-1294](https://linear.app/greetz/issue/GRE-1294) serves `apps/ui` from the Rust-only runtime and passes `ServedUi::Replacement`.
+  With both rebuild gates on, `pp-server` and `pp-desktop` select the measured
+  `web/apps/ui/dist` build and pass `ServedUi::Replacement`. The default runtime
+  keeps the old build and legacy policy. Rust-only startup verifies the separate
+  `replacement_frontend` inventory before the gateway serves any of those bytes;
+  an absent or changed inventory refuses startup. SPA fallback covers replacement
+  client paths such as `/today`, `/farm/log` and `/builds/12/history`; file
+  requests and service routes keep their existing handling. Docker packaging follows in
+  [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
 
 Checks:
 

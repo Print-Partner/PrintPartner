@@ -25,6 +25,8 @@ pub(crate) struct ReleaseManifest {
     pub(crate) commit: String,
     node_sha256: String,
     frontend: BTreeMap<String, String>,
+    #[serde(default)]
+    replacement_frontend: BTreeMap<String, String>,
     backend: BTreeMap<String, String>,
     contracts: BTreeMap<String, String>,
     domain: BTreeMap<String, String>,
@@ -229,7 +231,7 @@ fn community_manifests_prefix(bundle: &Bundle) -> Result<(std::path::PathBuf, St
 }
 
 /// The release check for a Rust-only start, which runs no Node child. It checks
-/// the embedded identity, the served frontend (exact inventory) and the
+/// the embedded identity, the served replacement frontend (exact inventory) and the
 /// community manifests Rust reads (exact inventory, when the release has any).
 /// It does not measure the Node executable, the Node backend, the workspace
 /// packages or `node_modules`, so they may be absent: the Docker image ships
@@ -248,7 +250,7 @@ fn verify_rust_only_with(
         release.runtime_version == bundle.runtime_version && release.commit == bundle.commit,
         "Requested release differs from embedded identity"
     );
-    verify_files(assets, &release.frontend, true, stop)?;
+    verify_files(assets, &release.replacement_frontend, true, stop)?;
     let (directory, prefix) = community_manifests_prefix(bundle)?;
     let manifests: BTreeMap<String, String> = release
         .backend
@@ -463,7 +465,7 @@ mod tests {
             "pp-rust-only-{}",
             hex::encode(rand::random::<[u8; 8]>())
         ));
-        let assets = root.join("web/apps/web/dist");
+        let assets = root.join("web/apps/ui/dist");
         let bundle = Bundle {
             node: root.join("absent/node"),
             entry: root.join("web/apps/server/dist/current/desktop.js"),
@@ -482,7 +484,8 @@ mod tests {
             "runtime_version": "1.0.0-web",
             "commit": "abc",
             "node_sha256": "0".repeat(64),
-            "frontend": {
+            "frontend": {"legacy.html": "0".repeat(64)},
+            "replacement_frontend": {
                 "index.html": measure(&assets.join("index.html")).unwrap(),
                 "assets/app.js": measure(&assets.join("assets/app.js")).unwrap(),
             },
@@ -508,9 +511,24 @@ mod tests {
     }
 
     #[test]
+    fn rust_only_serves_only_the_measured_replacement_inventory() {
+        let (root, bundle, mut release) = rust_only_fixture();
+        let assets = root.join("web/apps/ui/dist");
+        let stop = CancellationToken::new();
+        verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap();
+        // The legacy inventory cannot authorize replacement bytes.
+        std::mem::swap(&mut release.frontend, &mut release.replacement_frontend);
+        assert!(verify_rust_only_with(&release, &bundle, &assets, &stop).is_err());
+        release.replacement_frontend.clear();
+        let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Release inventory empty");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rust_only_release_needs_no_node_files() {
         let (root, bundle, release) = rust_only_fixture();
-        let assets = root.join("web/apps/web/dist");
+        let assets = root.join("web/apps/ui/dist");
         let stop = CancellationToken::new();
         // No Node executable, backend code, workspace packages or node_modules exist.
         verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap();

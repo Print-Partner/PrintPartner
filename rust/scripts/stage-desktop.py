@@ -77,6 +77,9 @@ node.parent.mkdir(parents=True)
 shutil.copy2(node_binary, node)
 for path in ARTIFACTS.values():
     shutil.copytree(source / path, web / path)
+# The replacement UI is static-only; it needs no Node workspace dependencies.
+if (source / 'apps/ui/dist').exists():
+    shutil.copytree(source / 'apps/ui/dist', web / 'apps/ui/dist')
 for path in ['package.json', 'package-lock.json', 'apps/server/package.json',
              'packages/contracts/package.json', 'packages/domain/package.json']:
     target = web / path

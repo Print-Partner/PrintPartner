@@ -213,7 +213,10 @@ class StageWorkspaceLinkTests(unittest.TestCase):
         write(self.web / "apps/ui/dist/index.html", "<!doctype html>")
         result = self.build_manifest()
         self.assertEqual(result.returncode, 0, result.stderr)
-        after = json.loads((self.root / "manifest.json").read_text())["dependencies"]
+        measured = json.loads((self.root / "manifest.json").read_text())
+        self.assertIn("index.html", measured["replacement_frontend"])
+        self.assertIn("desktop-build.json", measured["frontend"])
+        after = measured["dependencies"]
         self.assertEqual(after, before)
 
 

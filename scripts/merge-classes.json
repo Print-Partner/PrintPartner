@@ -4,9 +4,6 @@
     ".github/**",
     ".factory/**",
     ".claude/**",
-    "AGENTS.md",
-    "docs/development/definition-of-done.md",
-    "docs/development/ci-controls.md",
     "docs/development/main-ci-controls.ruleset.json",
     "rust/rules/runtime-process-command.yml",
     "cosign.pub",
@@ -36,6 +33,9 @@
     "rust/scripts/check-macos-bundle.py"
   ],
   "sensitive": [
+    "AGENTS.md",
+    "docs/development/definition-of-done.md",
+    "docs/development/ci-controls.md",
     "rust/rules/**",
     "rust/scripts/check-*",
     "rust/scripts/test_ast_grep.py",

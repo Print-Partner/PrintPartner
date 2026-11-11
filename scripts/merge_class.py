@@ -48,7 +48,8 @@ def glob_regex(pattern):
         else:
             out.append(re.escape(pattern[i]))
             i += 1
-    return re.compile("^" + "".join(out) + "$")
+    # Case-insensitive: a case-insensitive checkout writes .Claude/x and .claude/x to the same file.
+    return re.compile("^" + "".join(out) + "$", re.IGNORECASE)
 
 
 def load_classes(path=CLASSES):

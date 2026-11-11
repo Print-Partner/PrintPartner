@@ -17,7 +17,9 @@ class ClassifyTests(unittest.TestCase):
         for path in [
             ".github/workflows/review-gate.yml",
             "scripts/agent-guard.py",
-            "docs/development/definition-of-done.md",
+            # Owner decision 2026-11-11: the classifier is part of the safety guard.
+            "scripts/merge_class.py",
+            "scripts/merge-classes.json",
             "rust/deny.toml",
             "rust/scripts/check-macos-bundle.py",
             "scripts/linear/pr_status_sync.py",
@@ -29,10 +31,19 @@ class ClassifyTests(unittest.TestCase):
         ]:
             self.assertEqual(mc.path_class(path, self.classes), "owner", path)
 
+    def test_case_variants_of_owner_paths_are_owner(self):
+        # A case-insensitive checkout writes these over the real owner files.
+        for path in (".GITHOOKS/pre-commit", ".Claude/hooks/guard.py", "Scripts/agent-guard.py", "COSIGN.PUB"):
+            self.assertEqual(mc.path_class(path, self.classes), "owner", path)
+
     def test_sensitive_paths(self):
         for path in [
             "rust/rules/no-unwrap-expect.yml",
             "rust/scripts/check-ast-grep.py",
+            # Owner decision 2026-11-11: the rules documents are sensitive, not owner.
+            "AGENTS.md",
+            "docs/development/definition-of-done.md",
+            "docs/development/ci-controls.md",
             # The checkers' tests merge as sensitive PRs too (merge gate).
             "rust/scripts/test_ast_grep.py",
             "rust/scripts/test_clippy_limits.py",

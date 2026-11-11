@@ -32,6 +32,17 @@ quote old commands; they are not edited.
 | `rust/crates/pp-core/tests/runtime_m0/ticket_t_3_drain_repeated_upload.rs` | `rust/crates/pp-core/tests/runtime_m0/repeated_upload.rs` | T-3 (GRE-448) |
 | `rust/crates/pp-core/tests/runtime_m0/ticket_t_4_watcher_proof.rs` | `rust/crates/pp-core/tests/runtime_m0/watcher_proof.rs` | T-4 (GRE-449, GRE-335) |
 | `rust/crates/pp-core/tests/runtime_m0/ticket_t_68_desktop_account_mapping.rs` | `rust/crates/pp-core/tests/runtime_m0/desktop_account_mapping.rs` | T-68 |
+| `rust/crates/pp-storage/tests/gre_636_advisory_lock.rs` | `rust/crates/pp-storage/tests/advisory_lock.rs` | GRE-636 |
+| `rust/crates/pp-storage/tests/ticket_t_12_directory.rs` | `rust/crates/pp-storage/tests/directory_permissions.rs` | T-12 |
+| `rust/crates/pp-storage/tests/ticket_t_28_streams.rs` | `rust/crates/pp-storage/tests/job_status_streams.rs` | GRE-410 (T-28-streams) |
+| `rust/crates/pp-storage/tests/ticket_t_61_checkoff.rs` | `rust/crates/pp-storage/tests/checkoff_verification.rs` | T-61-checkoff |
+| `rust/crates/pp-storage/tests/ticket_t_61_plates.rs` | `rust/crates/pp-storage/tests/plate_revisions.rs` | GRE-1189, GRE-1184 (T-61-plates) |
+| `rust/crates/pp-storage/tests/ticket_t_61_read_model.rs` | `rust/crates/pp-storage/tests/read_model_batches.rs` | T-61 |
+| `rust/crates/pp-storage/tests/ticket_t_61_required_units.rs` | `rust/crates/pp-storage/tests/required_unit_histories.rs` | T-61 (required units) |
+| `rust/crates/pp-storage/tests/ticket_t_7_writer.rs` | `rust/crates/pp-storage/tests/writer_owner.rs` | T-7 |
+| `rust/crates/pp-storage/tests/ticket_t_8_archive.rs` | `rust/crates/pp-storage/tests/archive_backups.rs` | GRE-403 (T-8-archive) |
+| `rust/crates/pp-storage/tests/ticket_t_8_archive_retention.rs` | `rust/crates/pp-storage/tests/archive_retention.rs` | GRE-403 (T-8-archive) |
+| `rust/crates/pp-storage/src/working_drafts/tests/ticket_t_10_draftreads.rs` | `rust/crates/pp-storage/src/working_drafts/tests/draft_reads.rs` | GRE-1052 (T-10-draftreads) |
 | `rust/crates/pp-api/tests/ticket_t_10_fixtures.rs` | `rust/crates/pp-api/tests/node_fixture_replay.rs` | T-10 (GRE-451 parity fixtures) |
 | `rust/crates/pp-api/tests/ticket_t_26_send_queue_http.rs` | `rust/crates/pp-api/tests/send_queue_http.rs` | GRE-365, GRE-1215 (T-26) |
 | `rust/crates/pp-api/tests/ticket_t_61_read_model_http.rs` | `rust/crates/pp-api/tests/accepted_plan_checkoff_http.rs` | GRE-415 (T-61) |

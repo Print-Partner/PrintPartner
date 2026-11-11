@@ -1,7 +1,7 @@
 //! T-30: a second owner of the same data directory is refused, and a different
 //! data directory runs independently. The cross-process cases (two processes,
 //! SIGKILL release, Rust runtime against standalone Node) are in
-//! pp-storage/tests/gre_636_advisory_lock.rs.
+//! pp-storage/tests/advisory_lock.rs.
 
 use pp_storage::lease::StorageLease;
 

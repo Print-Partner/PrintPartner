@@ -9,7 +9,7 @@ valid:
   - "enum E { #[cfg(feature = \"desktop_rebuild\")] A }"
   - "struct S(#[cfg(feature = \"desktop_rebuild\")] u8);"
   - "fn f() { #[cfg(feature = \"desktop_rebuild\")] let x = 1; }"
-  - "fn f() { #[cfg(any(feature = \"desktop_rebuild\", test))] #[allow(unused)] work(); }"
+  - "fn f() { #[cfg(any(feature = \"desktop_rebuild\", test))] #[doc(hidden)] work(); }"
   - "fn f() { match x { #[cfg(feature = \"desktop_rebuild\")] A => (), _ => () } }"
   - "fn f() { let x = S { #[cfg(feature = \"desktop_rebuild\")] x: 1 }; }"
   - "fn f() { #![cfg(feature = \"desktop_rebuild\")] let x=1; }"
@@ -33,7 +33,7 @@ valid:
   - "extern \"C\" { #![cfg(feature=\"desktop_rebuild\")] fn f(); }"
 invalid:
   - "#[cfg(feature = \"desktop_rebuild\")] mod m;"
-  - "#[cfg(not(feature = \"desktop_rebuild\"))] #[allow(unused)] /* gap */ use crate::m;"
+  - "#[cfg(not(feature = \"desktop_rebuild\"))] #[doc(hidden)] /* gap */ use crate::m;"
   - "#![cfg(feature = \"desktop_rebuild\")] fn f() {}"
   - "mod m { #![cfg(feature = \"desktop_rebuild\")] fn f() {} }"
   - "fn f() { #[cfg(feature = \"desktop_rebuild\")] use crate::m; }"

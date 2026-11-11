@@ -4,7 +4,7 @@
 //! to that certificate. Every read goes to the loopback TLS broker in
 //! `pp_testkit::bambu`; nothing here talks to a real printer.
 use super::farm_reads::settings_rows;
-use super::ticket_t_4_watcher_proof::{
+use super::watcher_proof::{
     proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
 use super::{request, temporary};

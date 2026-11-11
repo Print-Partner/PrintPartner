@@ -93,6 +93,8 @@ Every Plan change, including rename, order, customer and due date, lands in a dr
 
 Before the gate can preview, the draft's Required-unit reconciliation must be settled: the units already printed for the accepted Plan are matched to the draft's Parts. When the preview answers `409 reconciliation_required`, the gate shows a **Match printed units** step in place of the changes, and Accept stays off with "Match the printed units first." If the draft's `reconciliation` lists no conflicts (no match selected yet, or a stale one), the gate sends the core's automatic match once (`PUT /api/v2/plans/{id}/drafts/{draft_id}/reconciliation` with `decisions: []`, the draft's `expected_snapshot_digest` and an `Idempotency-Key`). If it lists conflicts, the gate asks each in plain words with one choice per decision: for a Part that matches several accepted Parts, which one's printed units it keeps or new units (`select_exact_predecessor`, `replace`); for a Part that changed since it was accepted, keep the units printed for it or new units (`accept_prior_completion`, `replace`). Two Parts cannot pick the same printed units. A `predecessor_claimed` conflict has no choice of its own: the core judges each send afresh, so the gate offers **Start the match over** (`decisions: []`) to ask every question again, or the user changes the Parts. The match runs after any queued draft save and names the snapshot that save left. A lost send, or the next send of the same decisions after an unconfirmed outcome, reuses the key and body. The workspace it returns replaces the cached draft, so the next write names the new snapshot. If the answer still lists conflicts, focus moves to the step's heading. Otherwise the gate previews again and moves focus to "Printed units matched: N kept, N new, N no longer needed." The automatic match is sent only before any other send from the gate, so it never replaces the user's answers. If the preview still answers `reconciliation_required` after a match, the gate does not resend on its own; it says so and offers **Match printed units**. Rust's Accept runs the automatic match itself when no match is selected, so an Accept refusal `422 reconciliation_required` means the selection is unresolved or stale; the gate then previews again and shows the same step. A draft whose match is already settled sees no step.
 
+The Accept gate names the holding Builds when a proposed order number is refused as a duplicate. The draft stays open; change its order number or archive the holding Build before trying again.
+
 One order is one Build, enforced transactionally (Accept refuses `duplicate_order`; see [Order authority](../draft-headers.md#order-authority-gre-1095)). A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
 
 History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate.
@@ -206,6 +208,20 @@ Machine and STEP conversion are parked. GRE-1007 stays untouched and outside thi
 ### A live contradiction to fix
 
 `web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged. GRE-1140 added that copy to the replacement UI ([Change a Build safely](#change-a-build-safely)). The old Node guide is unchanged unless the owner asks. The Rust workflow projection's Open Plan action, which Today and MCP share, now says "Changes save to a draft as you make them, and the Build changes only when you accept it." (GRE-1355). Only the old Node copy (`web/packages/domain/src/build-workflow.ts` and the guide) still says "Changes save automatically."
+
+### Replacement Help
+
+The header Help button, command palette and `?` shortcut open the same dialog.
+Help describes Today, Builds, Farm, Library and Settings from the shared destination
+list. Its links close Help and open the chosen destination. Help explains where
+keyboard shortcuts work and lets the user turn single-key shortcuts off.
+
+The Plan changes section still reads `planCopy.ts`, shared with the Plan and History
+tabs: saved drafts survive app closure, and only explicit Accept changes the Build.
+GRE-1106 covers this Help slice and the replacement-UI copy scan. GRE-1384 carries
+UI13-01 (first Source and Build on disposable data) and UI13-03 (every empty state
+names the next useful action). Source import, Build creation, Settings and printer
+discovery are outside this Help slice.
 
 ## Open questions
 

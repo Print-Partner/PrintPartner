@@ -74,7 +74,7 @@ pub struct Activated {
     pub schema_version: u64,
 }
 
-/// Runs on the writer thread for [`Envelope::Restore`].
+/// Runs on the writer thread for [`Envelope::Control`].
 fn activate(
     shared: &Shared,
     readers: &ReaderPool,

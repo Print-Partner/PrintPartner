@@ -254,7 +254,9 @@ impl InstallationClient {
             ensure!(!queue.closed && !queue.restoring, "Storage stopped");
             queue
                 .pending
-                .push_back(Envelope::Restore(activation::Command { staged, reply }));
+                .push_back(Envelope::Control(crate::storage_control::Command::Restore(
+                    activation::Command { staged, reply },
+                )));
             self.client.shared.changed.notify_all();
         }
         receiver

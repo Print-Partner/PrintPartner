@@ -52,8 +52,8 @@ pub mod read_model;
 pub mod required_units;
 #[cfg(feature = "desktop_rebuild")]
 pub mod restore;
-#[cfg(not(feature = "desktop_rebuild"))]
-mod restore_disabled;
+mod storage_control;
+use storage_control::execute as control;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
@@ -71,11 +71,7 @@ pub mod versions;
 pub mod working_drafts;
 mod writer_admission;
 #[cfg(feature = "desktop_rebuild")]
-use restore::activation::{Command as RestoreCommand, execute as restore_run};
-#[cfg(feature = "desktop_rebuild")]
 use restore::recover as recover_restore;
-#[cfg(not(feature = "desktop_rebuild"))]
-use restore_disabled::{Command as RestoreCommand, execute as restore_run};
 #[cfg(not(feature = "desktop_rebuild"))]
 fn recover_restore(_: &Path) -> Result<()> {
     Ok(())
@@ -144,15 +140,15 @@ enum WriterControl {
     AdmitDiskQuota(u32),
 }
 enum Envelope {
-    #[cfg_attr(not(feature = "desktop_rebuild"), allow(dead_code))]
-    Restore(RestoreCommand),
     #[cfg(feature = "desktop_rebuild")]
     WorkingDraft {
         command: working_drafts::Command,
         reply: mpsc::Sender<Result<working_drafts::Outcome>>,
     },
     #[cfg(feature = "desktop_rebuild")]
-    WorkingDraftWrite { command: working_drafts::Write },
+    WorkingDraftWrite {
+        command: working_drafts::Write,
+    },
     #[cfg(feature = "desktop_rebuild")]
     BuildGraph {
         command: build_graph::Command,
@@ -258,10 +254,7 @@ enum Envelope {
         policy: auth::AuthPolicy,
         reply: mpsc::Sender<Result<auth::Reply>>,
     },
-    WriterControl {
-        control: WriterControl,
-        reply: mpsc::Sender<Result<u32>>,
-    },
+    Control(storage_control::Command),
 }
 #[cfg(feature = "desktop_rebuild")]
 fn stop_poisoned_queue(
@@ -861,7 +854,6 @@ impl WriterOwner {
                 #[cfg(feature = "desktop_rebuild")]
                 let authority_changed = matches!(envelope, Envelope::Auth { .. });
                 match envelope {
-                    Envelope::Restore(c) => restore_run(&mut connection, &worker, &mut state, c),
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::NativeSecrets { command, reply } => {
                         let _ = reply.send(native_secrets::execute(
@@ -1048,9 +1040,7 @@ impl WriterOwner {
                         );
                         let _ = reply.send(result);
                     }
-                    Envelope::WriterControl { control, reply } => {
-                        let _ = reply.send(writer_control(&connection, control));
-                    }
+                    Envelope::Control(c) => control(&mut connection, &worker, &mut state, c),
                 }
                 #[cfg(feature = "desktop_rebuild")]
                 worker
@@ -1087,33 +1077,34 @@ impl WriterOwner {
 
     fn writer_control(&self, control: WriterControl) -> Result<u32> {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let receiver = {
-            let mut queue = self
-                .client
-                .shared
-                .queue
-                .lock()
-                .map_err(|_| anyhow!("Writer admission poisoned"))?;
-            loop {
-                ensure!(!queue.closed && !queue.restoring, "Storage stopped");
-                if queue.pending.len() < self.client.shared.capacity {
-                    let (reply, receiver) = mpsc::channel();
-                    queue
-                        .pending
-                        .push_back(Envelope::WriterControl { control, reply });
-                    self.client.shared.changed.notify_all();
-                    break receiver;
-                }
-                ensure!(Instant::now() < deadline, "Writer queue full");
-                queue = self
+        let receiver =
+            {
+                let mut queue = self
                     .client
                     .shared
-                    .changed
-                    .wait_timeout(queue, Duration::from_millis(5))
-                    .map_err(|_| anyhow!("Writer admission poisoned"))?
-                    .0;
-            }
-        };
+                    .queue
+                    .lock()
+                    .map_err(|_| anyhow!("Writer admission poisoned"))?;
+                loop {
+                    ensure!(!queue.closed && !queue.restoring, "Storage stopped");
+                    if queue.pending.len() < self.client.shared.capacity {
+                        let (reply, receiver) = mpsc::channel();
+                        queue.pending.push_back(Envelope::Control(
+                            storage_control::Command::Query { control, reply },
+                        ));
+                        self.client.shared.changed.notify_all();
+                        break receiver;
+                    }
+                    ensure!(Instant::now() < deadline, "Writer queue full");
+                    queue = self
+                        .client
+                        .shared
+                        .changed
+                        .wait_timeout(queue, Duration::from_millis(5))
+                        .map_err(|_| anyhow!("Writer admission poisoned"))?
+                        .0;
+                }
+            };
         receiver
             .recv()
             .map_err(|_| anyhow!("Writer stopped without disk quota result"))?

@@ -69,6 +69,14 @@ pub mod versions;
 pub mod working_drafts;
 mod writer_admission;
 
+#[cfg(feature = "desktop_rebuild")]
+use restore::recover as recover_restore;
+
+#[cfg(not(feature = "desktop_rebuild"))]
+fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
 use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 pub use schema::SchemaReady;
@@ -662,8 +670,7 @@ impl WriterOwner {
         };
         // Recovery removes uploads and stages. Admit the live schema first so
         // an older runtime cannot discard a newer installation's recovery copy.
-        #[cfg(feature = "desktop_rebuild")]
-        if let Err(error) = restore::recover(lease.data_dir()) {
+        if let Err(error) = recover_restore(lease.data_dir()) {
             lease.abandon();
             return Err(error);
         }

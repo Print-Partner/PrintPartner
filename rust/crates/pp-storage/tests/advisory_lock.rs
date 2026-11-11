@@ -1,3 +1,4 @@
+//! GRE-636.
 //! Unix only: the child processes report signals and plant symbolic links.
 #![cfg(unix)]
 

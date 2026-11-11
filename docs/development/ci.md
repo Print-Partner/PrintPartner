@@ -353,6 +353,23 @@ just report --ci 1626 1622         # add workflow wall times and push-to-green f
 
 `just report` runs `python3 -I scripts/maintainability-report.py` with your arguments. It reads every file of the revision through `git cat-file`, never the working tree, so uncommitted edits do not move a number. Each history row (commits on `lib.rs` in 30 days, variant headers added in 7 days, `lib.rs` lines per family-touching commit) uses `git log --since/--until` ending at that revision's commit date, so a pinned revision gives the same numbers on any day. Fetch `origin` first, because the default revision is `origin/main`.
 
+`--base REV` compares two revisions. The report measures `--base` and `--rev` (default `HEAD` when `--base` is given) and prints only the rows whose value differs, as `| Measure | Base | Head | Change |`. When both cells hold numbers in the same text, Change gives each number's signed difference, such as `+201 / +161 / +2`; otherwise it says `values differ`, and the Base and Head columns show both. When no row differs it prints `No measure changed.` instead of a table. The history rows of both revisions end at the head's commit date, so they count only the commits the head adds. Paste the output under Evidence: a PR must not make a measure worse unless its ticket says so. `--base` cannot be combined with `--ci` or PR numbers, which sample live CI rather than a revision.
+
+```sh
+git fetch origin
+just report --rev HEAD --base origin/main
+```
+
+A branch that adds one page under `docs/` prints:
+
+```text
+| Measure | Base | Head | Change |
+| --- | --- | --- | --- |
+| Tracked Markdown pages / docs pages / docs named after tickets outside docs/records | 261 / 150 / 54 | 262 / 151 / 54 | +1 / +1 / +0 |
+```
+
+Every row compares the two whole trees. When `main` has moved past the branch's fork point, merge `origin/main` into the branch first, or pass the merge base (`--base "$(git merge-base origin/main HEAD)"`), so main's own changes do not show as the branch's.
+
 Two parts need `gh` and change with every CI run, so each prints a "sample taken" row with the UTC time:
 
 - `--ci` samples the wall times of the successful runs among the last 10 completed `rust-cross-os.yml` and `web-ci.yml` runs, for pull requests and for `main`. A run under 6 minutes is excluded as too short to have run a job's suites.
@@ -457,7 +474,7 @@ These failures are common:
 
 `rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
 
-Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binaries, `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binary in `pp-core`, the `server_binary_routes` binary in `pp-server` (formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 

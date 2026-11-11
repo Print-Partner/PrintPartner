@@ -692,14 +692,24 @@ body {
   width: min(48rem, 100%);
 }
 
-.pp-gate-section h3 {
+.pp-gate-section h3,
+.pp-help-section h3 {
   margin: 16px 0 4px;
   font-size: var(--text-md);
 }
 
-.pp-gate-section ul {
+.pp-gate-section ul,
+.pp-help-section ul {
   margin: 0;
   padding-left: 1.25rem;
+}
+
+.pp-help-section ul {
+  margin-bottom: 8px;
+}
+
+.pp-help-section li + li {
+  margin-top: 4px;
 }
 
 .pp-gate-snapshot,

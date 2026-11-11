@@ -560,23 +560,21 @@ fn ticket_t_61_read_model_plate_and_history_corruption_is_explicit() {
     }
 }
 
-#[test]
-fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
+/// Workflow facts for one Build with no jobs, no Checkoff work and the given Sources and Plan.
+fn workflow_facts(
+    sources: pp_storage::read_model::workflow::Sources,
+    accepted_plan: pp_storage::read_model::workflow::Accepted,
+) -> pp_storage::read_model::workflow::Facts {
     use pp_storage::read_model::workflow::{
-        self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Working,
+        Build, Checkoff, Facts, PlateState, Production, Working,
     };
-    let mut facts = Facts {
+    Facts {
         build: Build {
             id: 1,
             name: "Build".into(),
         },
-        sources: Sources::Empty,
-        accepted_plan: Accepted::Ready {
-            revision_id: 1,
-            plan_version: 1,
-            total_units: 1,
-            remaining_units: 2,
-        },
+        sources,
+        accepted_plan,
         working_plan: Working::None,
         production: Production {
             plate_state: PlateState::NotStarted,
@@ -593,7 +591,39 @@ fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
             match_suggestions: 0,
         },
         stock: Default::default(),
-    };
+    }
+}
+
+#[test]
+fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
+    // GRE-1355: Today, the Build overview, the Builds list and MCP all read this
+    // reason. Autosave writes a draft; only Accept changes the Build. The wording matches
+    // web/apps/ui/src/builds/planCopy.ts (GRE-1140).
+    use pp_storage::read_model::workflow::{self, Accepted, ActionKind, Sources};
+    let facts = workflow_facts(Sources::Ready { attached_count: 1 }, Accepted::None);
+    let action = workflow::resolve(&facts).unwrap().next_action;
+    assert_eq!(action.kind, ActionKind::CreateWorkingPlan);
+    assert_eq!(action.label, "Open Plan");
+    assert_eq!(
+        action.reason,
+        "Sources are ready. Open Plan to choose files, quantities, and colors. \
+         Changes save to a draft as you make them, and the Build changes only when you accept it."
+    );
+    assert!(!action.reason.contains("save automatically"));
+}
+
+#[test]
+fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
+    use pp_storage::read_model::workflow::{self, Accepted, Sources};
+    let mut facts = workflow_facts(
+        Sources::Empty,
+        Accepted::Ready {
+            revision_id: 1,
+            plan_version: 1,
+            total_units: 1,
+            remaining_units: 2,
+        },
+    );
     assert!(workflow::resolve(&facts).is_err());
     facts.accepted_plan = Accepted::None;
     facts.production.queued_jobs = 9_007_199_254_740_991;

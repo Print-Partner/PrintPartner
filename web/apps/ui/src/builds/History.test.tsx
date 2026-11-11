@@ -9,6 +9,7 @@ import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
+import { HISTORY_EMPTY } from "./planCopy";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -179,7 +180,9 @@ describe("UI8-01 History lists the Build's records from one read", () => {
       "/builds/2/history",
       core(() => json({ plan_id: 2, entries: [], next_cursor: null })),
     );
-    expect(await screen.findByText("Nothing has happened to this Build yet.")).toBeTruthy();
+    expect(await screen.findByText(HISTORY_EMPTY)).toBeTruthy();
+    expect(HISTORY_EMPTY).toMatch(/^Nothing has happened to this Build yet\./);
+    expect(HISTORY_EMPTY).toMatch(/snapshots Accept saves/);
   });
 });
 

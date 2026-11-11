@@ -194,7 +194,7 @@ pub(super) fn js_integer(value: Option<&Value>, min: f64) -> Option<i64> {
 }
 
 /// JavaScript truthiness.
-fn truthy(value: &Value) -> bool {
+pub(super) fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(b) => *b,

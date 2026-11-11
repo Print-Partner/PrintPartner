@@ -45,7 +45,7 @@ Cargo features:
 ## Tests
 
 - `tests/autosave_snapshots.rs`: `insta` snapshots in `tests/snapshots` over `web/packages/contracts/test-fixtures/desktop/autosave-v1.json`.
-- `tests/ticket_t_9_semantics.rs`, `tests/ticket_t_63_contracts.rs`: shared accept/reject corpora under `web/packages/contracts/test-fixtures` and `web/scripts/rust-contracts`. The schema drift test against `web/scripts/rust-contracts/schemas.json` runs only with `--features codegen`.
+- `tests/schema_semantics.rs`, `tests/node_boundary_contracts.rs`: shared accept/reject corpora under `web/packages/contracts/test-fixtures` and `web/scripts/rust-contracts`. The schema drift test against `web/scripts/rust-contracts/schemas.json` runs only with `--features codegen`.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-api-types

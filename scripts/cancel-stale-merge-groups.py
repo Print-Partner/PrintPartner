@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cancel unmerged cross-OS queue runs after their ref returns HTTP 404."""
 
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -29,10 +30,32 @@ def api(path, method='GET', paginate=False):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def stale_runs(repository, request):
-    """Preflight every listing and ref before issuing any cancellation."""
-    main_ref = request(f'repos/{repository}/git/ref/heads/main')
-    if not isinstance(main_ref, dict) or main_ref.get('ref') != 'refs/heads/main':
+def ref_exists(repository, branch, request):
+    try:
+        ref = request(f'repos/{repository}/git/ref/heads/{quote(branch, safe="/")}')
+    except ApiError as error:
+        if error.status == 404:
+            return False
+        raise
+    if not isinstance(ref, dict) or ref.get('ref') != f'refs/heads/{branch}':
+        raise ValueError('Unexpected ref response')
+    return True
+
+
+def merged(repository, number, request):
+    pr = request(f'repos/{repository}/pulls/{number}')
+    if (not isinstance(pr, dict) or pr.get('number') != number
+            or pr.get('state') not in {'open', 'closed'} or 'merged_at' not in pr):
+        raise ValueError('Unexpected PR response')
+    stamp = pr['merged_at']
+    if stamp is not None and (not isinstance(stamp, str) or not stamp or pr['state'] != 'closed'):
+        raise ValueError('Unexpected merged PR state')
+    return stamp is not None
+
+
+def stale_runs(repository, request, now):
+    """Preflight all run/ref/PR reads before writes; squash ancestry is irrelevant."""
+    if not ref_exists(repository, 'main', request):
         raise ValueError('Cannot verify main ref access')
     candidates = {}
     for workflow in WORKFLOWS:
@@ -42,42 +65,28 @@ def stale_runs(repository, request):
             for page in pages:
                 for run in page['workflow_runs']:
                     branch = run.get('head_branch') or ''
-                    if (run.get('event') == 'merge_group' and run.get('status') in STATUSES
-                            and branch.startswith('gh-readonly-queue/')):
-                        run_id = run['id']
-                        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
-                            raise ValueError('Invalid run id')
-                        sha = run.get('head_sha', '')
-                        if not re.fullmatch(r'[0-9a-f]{40}', sha):
-                            raise ValueError('Invalid head SHA')
-                        candidates[run_id] = (branch, sha)
-    gone = set()
-    for branch in sorted({branch for branch, _ in candidates.values()}):
-        try:
-            ref = request(f'repos/{repository}/git/ref/heads/{quote(branch, safe="/")}')
-        except ApiError as error:
-            if error.status != 404:
-                raise
-            gone.add(branch)
-        else:
-            if not isinstance(ref, dict) or ref.get('ref') != f'refs/heads/{branch}':
-                raise ValueError('Unexpected ref response')
-    unmerged = set()
-    for sha in sorted({sha for branch, sha in candidates.values() if branch in gone}):
-        comparison = request(f'repos/{repository}/compare/{sha}...main')
-        if not isinstance(comparison, dict):
-            raise ValueError('Invalid comparison response')
-        status = comparison.get('status')
-        # main is the head of this comparison: ahead means sha is its ancestor.
-        if status in {'behind', 'diverged'}:
-            unmerged.add(sha)
-        elif status not in {'identical', 'ahead'}:
-            raise ValueError('Unexpected comparison status')
-    return sorted(run_id for run_id, (branch, sha) in candidates.items()
-                  if branch in gone and sha in unmerged)
+                    if (run.get('event') != 'merge_group' or run.get('status') not in STATUSES
+                            or not branch.startswith('gh-readonly-queue/')):
+                        continue
+                    match = re.fullmatch(r'gh-readonly-queue/main/pr-([1-9][0-9]*)-[0-9a-f]{40}', branch)
+                    if not match:
+                        raise ValueError('Unparseable queue ref')
+                    run_id = run['id']
+                    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
+                        raise ValueError('Invalid run id')
+                    created = datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
+                    if created.utcoffset() is None:
+                        raise ValueError('Run creation time must include timezone')
+                    candidates[run_id] = (branch, int(match[1]), created)
+    gone = {branch for branch in sorted({branch for branch, _, _ in candidates.values()})
+            if not ref_exists(repository, branch, request)}
+    landed = {number: merged(repository, number, request)
+              for number in sorted({number for branch, number, _ in candidates.values() if branch in gone})}
+    return [(run_id, branch) for run_id, (branch, number, created) in sorted(candidates.items())
+            if branch in gone and not landed[number] and now - created > timedelta(minutes=10)]
 
 
-def main(env=None, request=None):
+def main(env=None, request=None, now=None):
     env = os.environ if env is None else env
     request = api if request is None else request
     repository = env.get('GH_REPO', '')
@@ -85,13 +94,16 @@ def main(env=None, request=None):
         print('::error::GH_REPO must be owner/repository')
         return 1
     try:
-        runs = stale_runs(repository, request)
+        runs = stale_runs(repository, request, now or datetime.now(timezone.utc))
     except (ApiError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         print(f'::error::Preflight failed; cancelled nothing: {error}')
         return 1
     cancelled = 0
-    for run_id in runs:
+    for run_id, branch in runs:
         try:
+            if ref_exists(repository, branch, request):
+                print(f'Skipped run {run_id}: queue ref reappeared')
+                continue
             request(f'repos/{repository}/actions/runs/{run_id}/cancel', method='POST')
         except ApiError as error:
             if error.status == 409:

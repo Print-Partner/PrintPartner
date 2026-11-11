@@ -64,15 +64,19 @@ and the required contexts remain unchanged. See the
 [event table](ci.md#cross-os-pr-label).
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch
-on main. Its minimum permissions are `actions: write` for cancellation and
-`contents: read` for ref and ancestry checks, using only `GITHUB_TOKEN`. It checks
-out no code and downloads only main's public script. Startup must successfully
-read the expected main ref. It selects only the two cross-OS workflows' queued or
-in-progress merge-group runs with a missing queue ref (404), then preserves any
-run SHA already in main's history. Thus merged groups' advisory checks can finish.
-Read failures abort before cancellation; a cancel 409 skips the finished run and
-continues. These permissions do not alter build jobs' permissions or secrets.
-See [Superseded runs](ci.md#superseded-runs).
+on main. Its minimum permissions are `actions: write` for cancellation,
+`contents: read` for refs and `pull-requests: read` for PR merge state, using only
+`GITHUB_TOKEN`. It checks out no code and downloads only main's public script.
+Startup must read the expected main ref. It selects only the two cross-OS
+workflows' queue runs whose ref is gone and PR is open or closed without merging,
+and whose run is more than ten minutes old. A merged PR is always preserved;
+ancestry cannot identify squash merges. Unparseable refs, PR read errors and
+unexpected states abort preflight without cancellation. Each ref is rechecked
+before cancellation; reappeared refs are skipped. A final probe failure stops
+further writes, and cancel 409 skips a finished run and continues. Concurrency
+keys include queue ref and head SHA to isolate reused names; reruns of the same
+pair can cancel older runs of that pair. Build-job permissions and secrets stay
+unchanged. See [Superseded runs](ci.md#superseded-runs).
 
 The Mac runner stays unused. A follow-up must wait for Chad to configure a
 restricted runner group: selected workflows pinned to main, with fork access

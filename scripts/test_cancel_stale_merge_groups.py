@@ -1,6 +1,7 @@
-"""Exercise canceller preflight, main and the real CLI with a fake gh executable."""
+"""Test squash-merged versus stale queue runs, preflight and the real CLI."""
 
 import contextlib
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import io
 import json
@@ -20,18 +21,20 @@ spec = importlib.util.spec_from_file_location('canceller', SCRIPT)
 canceller = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(canceller)
 REPO = 'Print-Partner/PrintPartner'
-BRANCH = 'gh-readonly-queue/main/pr-1-sha'
 SHA = 'a' * 40
+BRANCH = f'gh-readonly-queue/main/pr-1-{SHA}'
+NOW = datetime(2026, 11, 11, 4, tzinfo=timezone.utc)
 
 
-def run(run_id=1, branch=BRANCH, event='merge_group', status='queued', sha=SHA):
-    return {'id': run_id, 'head_branch': branch, 'head_sha': sha, 'event': event, 'status': status}
+def run(run_id=1, branch=BRANCH, event='merge_group', status='queued', minutes=20):
+    return {'id': run_id, 'head_branch': branch, 'head_sha': SHA, 'event': event, 'status': status,
+            'created_at': (NOW - timedelta(minutes=minutes)).isoformat()}
 
 
 class Api:
-    def __init__(self, runs=(), refs=None, fail_listing=False, comparisons=None, cancel_status=None):
-        self.runs, self.refs, self.fail_listing = list(runs), refs or {}, fail_listing
-        self.comparisons, self.cancel_status = comparisons or {}, cancel_status or {}
+    def __init__(self, runs=(), refs=None, prs=None, cancel_status=None, fail_listing=False):
+        self.runs, self.refs, self.prs = list(runs), refs or {}, prs or {}
+        self.cancel_status, self.fail_listing = cancel_status or {}, fail_listing
         self.calls = []
 
     def __call__(self, path, method='GET', paginate=False):
@@ -39,29 +42,27 @@ class Api:
         if '/workflows/' in path:
             if self.fail_listing:
                 raise canceller.ApiError(503)
-            # Multiple pages and duplicate listings must not drop or repeat cancellations.
             return [{'workflow_runs': self.runs[:1]}, {'workflow_runs': self.runs[1:]}]
         if '/git/ref/heads/' in path:
             branch = unquote(path.split('/git/ref/heads/')[1])
             status = self.refs.get(branch, 200 if branch == 'main' else 404)
+            if isinstance(status, list):
+                status = status.pop(0)
             if status != 200:
                 raise canceller.ApiError(status)
-            return {'ref': f'refs/heads/{branch}'}
-        if '/compare/' in path:
-            sha = path.split('/compare/')[1].split('...')[0]
-            status = self.comparisons.get(sha, 'diverged')
-            if isinstance(status, int):
-                raise canceller.ApiError(status)
-            return {'status': status}
-        self.assert_cancel(path, method)
+            return {'ref': f'refs/heads/{branch}', 'object': {'sha': 'b' * 40}}
+        if '/pulls/' in path:
+            number = int(path.split('/pulls/')[1])
+            pr = self.prs.get(number, {'number': number, 'state': 'open', 'merged_at': None})
+            if isinstance(pr, int):
+                raise canceller.ApiError(pr)
+            return pr
+        if method != 'POST' or not path.endswith('/cancel'):
+            raise AssertionError((path, method))  # In particular, no compare endpoint is allowed.
         status = self.cancel_status.get(int(path.split('/runs/')[1].split('/')[0]))
         if status:
             raise canceller.ApiError(status)
         return None
-
-    def assert_cancel(self, path, method):
-        if method != 'POST' or not path.endswith('/cancel'):
-            raise AssertionError((path, method))
 
     def cancelled(self):
         return [path for path, method, _ in self.calls if method == 'POST']
@@ -71,7 +72,7 @@ class CancellerTests(unittest.TestCase):
     def main(self, api):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = canceller.main({'GH_REPO': REPO}, api)
+            code = canceller.main({'GH_REPO': REPO}, api, NOW)
         return code, output.getvalue()
 
     def test_gone_ref_cancels_only_target_runs_once(self):
@@ -81,53 +82,81 @@ class CancellerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(api.cancelled(), [f'repos/{REPO}/actions/runs/{n}/cancel' for n in (1, 2)])
         self.assertIn('Cancelled 2 stale merge-group run(s)', output)
-        listings = [path for path, _, paginate in api.calls if paginate]
-        self.assertEqual(len(listings), 4)
-        for workflow in canceller.WORKFLOWS:
-            for status in canceller.STATUSES:
-                self.assertIn(f'repos/{REPO}/actions/workflows/{workflow}/runs?status={status}&per_page=100', listings)
+        self.assertEqual(sum(paginate for _, _, paginate in api.calls), 4)
 
-    def test_live_ref_is_never_cancelled(self):
-        api = Api([run()], {BRANCH: 200})
+    def test_squash_merged_pr_survives_even_with_diverged_queue_sha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(['git', *args], cwd=directory, text=True).strip()
+            git('init', '-q', '-b', 'main')
+            git('config', 'user.name', 'Squash fixture')
+            git('config', 'user.email', 'fixture@example.com')
+            file = Path(directory, 'file')
+            file.write_text('base')
+            git('add', 'file')
+            git('commit', '-qm', 'base')
+            git('checkout', '-qb', 'queue')
+            file.write_text('group')
+            git('commit', '-qam', 'queue group')
+            queue_sha = git('rev-parse', 'HEAD')
+            git('checkout', '-q', 'main')
+            git('merge', '--squash', 'queue')
+            git('commit', '-qm', 'squash landed')
+            main_sha = git('rev-parse', 'HEAD')
+            self.assertEqual(git('rev-list', '--left-right', '--count', f'{queue_sha}...main').split(), ['1', '1'])
+            pr = {'number': 1, 'state': 'closed', 'merged_at': '2026-11-11T03:55:00Z',
+                  'merge_commit_sha': main_sha}
+            fixture = {**run(), 'head_sha': queue_sha}
+            api = Api([fixture], prs={1: pr})
+            self.assertEqual(self.main(api)[0], 0)
+            self.assertEqual(api.cancelled(), [])
+            self.assertFalse(any('/compare/' in path for path, _, _ in api.calls))
+
+    def test_open_pr_requeued_under_new_ref_cancels_only_old_run(self):
+        new_ref = f'gh-readonly-queue/main/pr-1-{"c" * 40}'
+        api = Api([run(), run(2, branch=new_ref)], refs={new_ref: 200})
         self.assertEqual(self.main(api)[0], 0)
-        self.assertEqual(api.cancelled(), [])
+        self.assertEqual(api.cancelled(), [f'repos/{REPO}/actions/runs/1/cancel'])
 
-    def test_api_error_cancels_nothing_even_after_a_gone_ref(self):
-        for status in (401, 403, 429, 500):
-            api = Api([run(), run(2, BRANCH + '-later')], {BRANCH + '-later': status})
-            code, output = self.main(api)
-            self.assertEqual(code, 1)
-            self.assertIn('cancelled nothing', output)
+    def test_dequeued_open_and_closed_unmerged_prs_cancel(self):
+        for state in ('open', 'closed'):
+            api = Api([run()], prs={1: {'number': 1, 'state': state, 'merged_at': None}})
+            self.assertEqual(self.main(api)[0], 0)
+            self.assertEqual(len(api.cancelled()), 1)
+
+    def test_young_or_future_run_is_skipped(self):
+        for minutes in (-1, 0, 9, 10):
+            api = Api([run(minutes=minutes)])
+            self.assertEqual(self.main(api)[0], 0)
             self.assertEqual(api.cancelled(), [])
-        api = Api([run()], fail_listing=True)
-        self.assertEqual(self.main(api)[0], 1)
-        self.assertEqual(api.cancelled(), [])
 
-    def test_startup_main_ref_must_be_readable(self):
-        for status in (401, 403, 404, 500):
-            api = Api([run()], {'main': status})
-            code, output = self.main(api)
-            self.assertEqual(code, 1)
-            self.assertIn('cancelled nothing', output)
-            self.assertEqual(api.calls, [(f'repos/{REPO}/git/ref/heads/main', 'GET', False)])
-            self.assertEqual(api.cancelled(), [])
-        def wrong_ref(*args, **kwargs):
-            return {'ref': 'refs/heads/other'}
-        self.assertEqual(self.main(wrong_ref)[0], 1)
-
-    def test_merged_groups_survive_and_superseded_groups_cancel(self):
-        for status, cancelled in (('identical', False), ('ahead', False),
-                                  ('behind', True), ('diverged', True)):
-            with self.subTest(status=status):
-                api = Api([run()], comparisons={SHA: status})
-                self.assertEqual(self.main(api)[0], 0)
-                self.assertEqual(bool(api.cancelled()), cancelled)
-                self.assertIn((f'repos/{REPO}/compare/{SHA}...main', 'GET', False), api.calls)
-
-    def test_comparison_failure_aborts_all_cancellations(self):
-        for status in (403, 404, 503, 'unknown'):
-            api = Api([run(), run(2, sha='b' * 40)], comparisons={'b' * 40: status})
+    def test_pr_error_unexpected_state_or_unparseable_ref_aborts_before_writes(self):
+        other = f'gh-readonly-queue/main/pr-2-{"b" * 40}'
+        for pr in (401, 403, 404, 500, {'number': 2, 'state': 'unknown', 'merged_at': None},
+                   {'number': 2, 'state': 'open'}):
+            api = Api([run(), run(2, branch=other)], prs={2: pr})
             self.assertEqual(self.main(api)[0], 1)
+            self.assertEqual(api.cancelled(), [])
+        for branch in ('gh-readonly-queue/main/pr-2-bad', 'gh-readonly-queue/other/pr-2-' + SHA):
+            api = Api([run(), run(2, branch=branch)])
+            self.assertEqual(self.main(api)[0], 1)
+            self.assertEqual(api.cancelled(), [])
+
+    def test_ref_errors_and_startup_main_failure_cancel_nothing(self):
+        for status in (401, 403, 429, 500):
+            api = Api([run()], refs={BRANCH: status})
+            self.assertEqual(self.main(api)[0], 1)
+            self.assertEqual(api.cancelled(), [])
+        for status in (401, 403, 404, 500):
+            api = Api([run()], refs={'main': status})
+            self.assertEqual(self.main(api)[0], 1)
+            self.assertEqual(len(api.calls), 1)
+        self.assertEqual(self.main(Api([run()], fail_listing=True))[0], 1)
+
+    def test_ref_reappearing_before_cancel_is_skipped_and_read_failure_stops(self):
+        for status, expected in ((200, 0), (403, 1)):
+            api = Api([run()], refs={BRANCH: [404, status]})
+            self.assertEqual(self.main(api)[0], expected)
             self.assertEqual(api.cancelled(), [])
 
     def test_finished_run_conflict_does_not_stop_later_cancellations(self):
@@ -138,75 +167,65 @@ class CancellerTests(unittest.TestCase):
         self.assertIn('Skipped finished run 1', output)
         self.assertIn('Cancelled stale merge-group run 2', output)
         self.assertIn('Cancelled 1 stale merge-group run(s)', output)
-        api = Api([run(), run(2)], cancel_status={1: 403})
-        self.assertEqual(self.main(api)[0], 1)
-        self.assertEqual(len(api.cancelled()), 1)
 
-    def test_special_characters_in_queue_branch_are_encoded_and_decoded(self):
-        branch = 'gh-readonly-queue/main/pr-1+revision#?%'
-        for status in (200, 404):
-            api = Api([run(branch=branch)], {branch: status})
-            self.assertEqual(self.main(api)[0], 0)
-            self.assertEqual(bool(api.cancelled()), status == 404)
-            self.assertIn((f'repos/{REPO}/git/ref/heads/gh-readonly-queue/main/pr-1%2Brevision%23%3F%25',
-                           'GET', False), api.calls)
+    def test_special_characters_in_ref_probe_are_encoded_and_decoded(self):
+        branch = 'gh-readonly-queue/main/pr-1+revision#%'
+        api = Api(refs={branch: 200})
+        self.assertTrue(canceller.ref_exists(REPO, branch, api))
+        self.assertIn('%2Brevision%23%25', api.calls[0][0])
+        # The sweep deliberately rejects this name because it isn't a queue PR/SHA ref.
+        self.assertEqual(self.main(Api([run(branch=branch)]))[0], 1)
 
-    def test_cli_and_gh_http_status_handling(self):
-        for status, main_status, comparison, cancel_status, expected, cancelled in (
-            (200, 200, 'diverged', 202, 0, 0),
-            (404, 200, 'diverged', 202, 0, 1),
-            (403, 200, 'diverged', 202, 1, 0),
-            (503, 200, 'diverged', 202, 1, 0),
-            (404, 403, 'diverged', 202, 1, 0),
-            (404, 404, 'diverged', 202, 1, 0),
-            (404, 200, 'ahead', 202, 0, 0),
-            (404, 200, 'identical', 202, 0, 0),
-            (404, 200, 'diverged', 409, 0, 0),
-        ):
-            with self.subTest(status=status, main=main_status, comparison=comparison, cancel=cancel_status), tempfile.TemporaryDirectory() as directory:
+    def test_cli_outputs_with_squash_merged_stale_young_and_error_fixtures(self):
+        for mode, expected, count in (('merged', 0, 0), ('old', 0, 1), ('young', 0, 0),
+                                      ('pr-error', 1, 0), ('main-error', 1, 0), ('conflict', 0, 0)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 fake = root / 'gh'
                 fake.write_text('''#!/usr/bin/env python3
+from datetime import datetime, timedelta, timezone
 import json, os, sys
 from urllib.parse import unquote
 args = sys.argv[1:]
 with open(os.environ['CALLS'], 'a') as log:
     log.write(json.dumps(args) + '\\n')
-path = args[3]
+path, mode = args[3], os.environ['MODE']
+def error(status):
+    print(f'gh: request failed (HTTP {status})', file=sys.stderr)
+    sys.exit(1)
 if '/workflows/' in path:
+    created = datetime.now(timezone.utc) - timedelta(minutes=1 if mode == 'young' else 20)
     print(json.dumps([{'workflow_runs': [{'id': 17, 'event': 'merge_group',
-          'head_branch': 'gh-readonly-queue/main/pr-1-sha', 'head_sha': 'a' * 40, 'status': 'queued'}]}]))
+          'head_branch': 'gh-readonly-queue/main/pr-1-' + 'a' * 40,
+          'created_at': created.isoformat(), 'status': 'queued'}]}]))
 elif '/git/ref/heads/' in path:
     branch = unquote(path.split('/git/ref/heads/')[1])
-    status = int(os.environ['MAIN_STATUS'] if branch == 'main' else os.environ['REF_STATUS'])
-    if status != 200:
-        print(f'gh: request failed (HTTP {status})', file=sys.stderr)
-        sys.exit(1)
-    print(json.dumps({'ref': 'refs/heads/' + branch}))
-elif '/compare/' in path:
-    print(json.dumps({'status': os.environ['COMPARISON']}))
-elif '/cancel' in path and os.environ['CANCEL_STATUS'] != '202':
-    print('gh: request failed (HTTP ' + os.environ['CANCEL_STATUS'] + ')', file=sys.stderr)
-    sys.exit(1)
+    if branch != 'main': error(404)
+    if mode == 'main-error': error(403)
+    print(json.dumps({'ref': 'refs/heads/main', 'object': {'sha': 'b' * 40}}))
+elif '/pulls/' in path:
+    if mode == 'pr-error': error(403)
+    print(json.dumps({'number': 1, 'state': 'closed' if mode == 'merged' else 'open',
+                      'merged_at': '2026-11-11T03:55:00Z' if mode == 'merged' else None}))
+elif '/cancel' in path:
+    if mode == 'conflict': error(409)
+else:
+    raise AssertionError(path)
 ''')
                 fake.chmod(0o755)
                 calls = root / 'calls'
                 result = subprocess.run([sys.executable, '-B', str(SCRIPT)], capture_output=True, text=True,
                                         env={**os.environ, 'PATH': f'{root}:{os.environ["PATH"]}',
-                                             'GH_REPO': REPO, 'CALLS': str(calls), 'REF_STATUS': str(status),
-                                             'MAIN_STATUS': str(main_status), 'COMPARISON': comparison,
-                                             'CANCEL_STATUS': str(cancel_status)})
+                                             'GH_REPO': REPO, 'CALLS': str(calls), 'MODE': mode})
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 posted = [json.loads(line) for line in calls.read_text().splitlines() if 'POST' in line]
-                self.assertEqual(len(posted), int(status == 404 and main_status == 200
-                                                  and comparison == 'diverged'))
-                self.assertIn(f'Cancelled {cancelled} stale' if expected == 0 else 'cancelled nothing',
-                              result.stdout)
+                self.assertEqual(len(posted), int(mode in ('old', 'conflict')))
+                self.assertIn(f'Cancelled {count} stale' if expected == 0 else 'cancelled nothing', result.stdout)
 
     def test_workflow_has_minimum_permissions_and_never_checks_out_code(self):
         workflow = yaml.load((ROOT / '.github/workflows/cancel-stale-merge-groups.yml').read_text(),
                              Loader=yaml.BaseLoader)
-        self.assertEqual(workflow['permissions'], {'actions': 'write', 'contents': 'read'})
+        self.assertEqual(workflow['permissions'], {'actions': 'write', 'contents': 'read', 'pull-requests': 'read'})
         self.assertEqual(set(workflow['on']), {'schedule', 'workflow_dispatch'})
         job = workflow['jobs']['cancel']
         self.assertEqual(job['if'], "github.ref == 'refs/heads/main'")

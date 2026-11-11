@@ -17,10 +17,10 @@ on:
 permissions:
   contents: read
 
-# Main pushes share one non-cancelling group. PRs and merge-group queue refs
+# Main pushes share one non-cancelling group. PRs and merge-group ref/SHA pairs
 # cancel older runs of the same entry, including reruns. Other events use run_id.
 concurrency:
-  group: native-macos-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && github.ref || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
+  group: native-macos-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('{0}-{1}', github.ref, github.event.merge_group.head_sha) || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 defaults:

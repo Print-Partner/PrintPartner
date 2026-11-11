@@ -437,6 +437,7 @@ class MainPushConcurrencyTests(unittest.TestCase):
                     expected = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
                     self.assertIn("github.event_name == 'merge_group'", concurrency["group"])
                     self.assertIn("github.ref", concurrency["group"])
+                    self.assertIn("github.event.merge_group.head_sha", concurrency["group"])
                 self.assertEqual(cancel, expected)
                 self.assertIn("github.run_id", concurrency["group"])
                 if path.name in self.EACH_PUSH:

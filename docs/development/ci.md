@@ -579,7 +579,7 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
   - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `ci:cross-os` label and is not a draft. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups share their queue ref and cancel older runs of the same ref. Nightly and manual runs keep their own group. The scheduled canceller below handles refs that disappear.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups share their queue ref and head SHA and cancel older runs of that same pair. Nightly and manual runs keep their own group. The scheduled canceller below handles refs that disappear.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -721,7 +721,7 @@ Pull requests restore only. Each install logs
 
 ### Superseded runs
 
-Pull requests cancel superseded runs. Rust cross-OS and Native macOS bundle also cancel older runs with the same merge-group ref. Every CI workflow
+Pull requests cancel superseded runs. Rust cross-OS and Native macOS bundle also cancel older runs with the same merge-group ref and head SHA. Every CI workflow
 groups a pull request by workflow and ref (or PR number) with
 `cancel-in-progress: true`, so a new push replaces the older run, except `linear-pr-sync.yml`, which must not be cancelled. A run that is already running on `main` is never
 cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
@@ -743,7 +743,7 @@ commit it replaced: the duplication check and the ast-grep ratchet in
 compares a push with `github.event.before`; it is bounded like the rest, and the
 merge-group run of the same commit and the PR runs compare against current `main`.
 Tag pushes, other branches, merge groups, the schedule and manual runs keep their
-own `run_id` group, except Rust cross-OS and Native macOS bundle merge groups, which use the queue ref. Queue refs change when entries are superseded, so concurrency does not cancel dropped or superseded entries by itself. A rerun (attempt 2 and
+own `run_id` group, except Rust cross-OS and Native macOS bundle merge groups, which use the queue ref and merge-group head SHA. Queue refs change when entries are superseded, so concurrency does not cancel dropped or superseded entries by itself. A rerun (attempt 2 and
 later, which `main-red` starts for failed `main` runs) also keeps its `run_id` group, so it
 never replaces the pending run and, because the original has finished, does not wait.
 
@@ -753,25 +753,33 @@ never replaces the pending run and, because the original has finished, does not 
 | first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
 | `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
 | `push` of a tag or another branch, other `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
-| Rust cross-OS / Native macOS bundle `merge_group`, including reruns | workflow and queue ref | `true` |
+| Rust cross-OS / Native macOS bundle `merge_group`, including reruns | workflow, queue ref and merge-group head SHA | `true` |
 | rerun of another non-PR run | the original run's `run_id` | `false` |
 | rerun of a `pull_request` run | same as the PR group | `true` |
+
+The head SHA isolates different groups if GitHub reuses a queue ref name. A
+rerun with the same ref and merge-group head SHA still shares the original group
+and cancels an older run of that same pair. This concurrency behavior does not
+determine whether a disappeared queue entry merged; the canceller uses PR state.
 
 `cancel-stale-merge-groups.yml` runs every ten minutes and supports manual
 dispatch on main. It downloads only main's public Python script, checks out
 nothing, and receives only `GITHUB_TOKEN` with the minimum permissions:
-`actions: write` for cancellation and `contents: read` for ref and ancestry checks.
-It first requires a successful read of `refs/heads/main` with the expected ref;
-any failure, including 404, aborts without cancelling anything. It paginates queued
-and in-progress runs of `rust-cross-os.yml` and `desktop-native-macos.yml`, selects
-only `merge_group` runs on `gh-readonly-queue/` branches, and queries each queue ref.
-An explicit queue-ref 404 is necessary but not sufficient: merged entries also lose
-their refs. For each absent ref it checks `compare/{head_sha}...main`. Status
-`identical` or `ahead` means the run SHA is in main's history, so that run is kept;
-only `behind` or `diverged` can be cancelled. A live queue ref is never cancelled.
-All reads finish before writes. Any read API error or unexpected comparison status
-aborts preflight without cancelling anything. A cancel-endpoint 409 means the run
-finished meanwhile: skip it and continue. Other cancel API errors stop further writes.
+`actions: write` for cancellation, `contents: read` for refs, and
+`pull-requests: read` to distinguish merged PRs from dropped or superseded groups.
+Startup requires a successful read of the expected `refs/heads/main`; even a
+main-ref 404 aborts. It paginates queued/in-progress runs of the two cross-OS
+workflows and accepts only `merge_group` runs on
+`gh-readonly-queue/main/pr-<number>-<40-character-sha>` branches.
+For a missing queue ref (404), it reads `pulls/<number>`. A PR with `merged_at`
+is preserved: squash merges do not preserve queue-commit ancestry, so there is
+no commit comparison. Open or closed-unmerged PRs qualify only when the run is
+more than ten minutes old. Younger runs and live queue refs are preserved.
+Unparseable refs, unexpected PR states, and read errors abort preflight before
+any cancellation. All preflight reads finish before writes. Immediately before
+each cancellation it rechecks the queue ref and skips a reappeared ref. A failure
+at this final probe stops further writes; prior cancellations cannot be undone.
+A cancel 409 skips the finished run and continues; other cancel errors stop writes.
 Other workflows and PR/main runs are never selected.
 GitHub schedules can be delayed, so ten minutes is an interval, not a guarantee.
 The workflow and main script must land before the scheduled job can run.

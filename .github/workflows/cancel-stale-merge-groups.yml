@@ -6,10 +6,11 @@ on:
   workflow_dispatch:
 
 # Minimum permissions: actions:write to cancel runs, contents:read to verify
-# refs and ancestry. No checkout, PR trigger or repository secrets.
+# refs, pull-requests:read to distinguish merged PRs. No checkout or PR trigger.
 permissions:
   actions: write
   contents: read
+  pull-requests: read
 
 concurrency:
   group: cancel-stale-merge-groups

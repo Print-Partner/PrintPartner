@@ -18,6 +18,13 @@ valid:
   - "#[r#cfg(feature = \"desktop_rebuild\")] fn f() {}"
   - "fn f() { #[cfg_attr(feature = \"desktop_rebuild\", allow(unused))] struct S; }"
   - "fn f() { #[cfg_attr(all(feature = \"desktop_rebuild\", unix), allow(unused))] let x = 1; }"
+  - "#[cfg(feature=\"desktop_rebuild\")] extern crate foo;"
+  - "#[cfg(feature=\"desktop_rebuild\")] node_case!(x);"
+  - "mod m { #[cfg(feature=\"desktop_rebuild\")] node_case! { x } }"
+  - "trait T { #[cfg(feature=\"desktop_rebuild\")] methods!(); }"
+  - "impl S { #![cfg(feature=\"desktop_rebuild\")] fn f() {} }"
+  - "trait T { #![cfg(feature=\"desktop_rebuild\")] fn f(); }"
+  - "fn f() { #[cfg(feature=\"desktop_rebuild\")] node_case!(x); }"
 invalid:
   - "#[cfg(feature = \"desktop_rebuild\")] mod m;"
   - "#[cfg(not(feature = \"desktop_rebuild\"))] #[allow(unused)] /* gap */ use crate::m;"

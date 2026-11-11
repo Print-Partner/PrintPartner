@@ -47,34 +47,64 @@ utils:
                     - kind: line_comment
                     - kind: block_comment
   item:
-    all:
-      - kind: attribute_item
-      - any:
+    any:
+      - all:
+          - kind: inner_attribute_item
           - inside:
-              kind: ordered_field_declaration_list
-          - precedes:
-              any:
-                - kind: function_item
-                - kind: function_signature_item
-                - kind: struct_item
-                - kind: enum_item
-                - kind: union_item
-                - kind: type_item
-                - kind: const_item
-                - kind: static_item
-                - kind: trait_item
-                - kind: impl_item
-                - kind: foreign_mod_item
-                - kind: macro_definition
-                - kind: enum_variant
-                - kind: field_declaration
-                - kind: associated_type
-              stopBy:
-                not:
+              all:
+                - kind: declaration_list
+                - inside:
+                    any:
+                      - kind: impl_item
+                      - kind: trait_item
+                      - kind: foreign_mod_item
+      - all:
+          - kind: attribute_item
+          - any:
+              - inside:
+                  kind: ordered_field_declaration_list
+              - precedes:
                   any:
-                    - kind: attribute_item
-                    - kind: line_comment
-                    - kind: block_comment
+                    - kind: function_item
+                    - kind: function_signature_item
+                    - kind: struct_item
+                    - kind: enum_item
+                    - kind: union_item
+                    - kind: type_item
+                    - kind: const_item
+                    - kind: static_item
+                    - kind: trait_item
+                    - kind: impl_item
+                    - kind: foreign_mod_item
+                    - kind: macro_definition
+                    - kind: enum_variant
+                    - kind: field_declaration
+                    - kind: associated_type
+                    - kind: extern_crate_declaration
+                  stopBy:
+                    not:
+                      any:
+                        - kind: attribute_item
+                        - kind: line_comment
+                        - kind: block_comment
+              - all:
+                  - inside:
+                      any:
+                        - kind: source_file
+                        - kind: declaration_list
+                  - precedes:
+                      any:
+                        - kind: macro_invocation
+                        - all:
+                            - kind: expression_statement
+                            - has:
+                                kind: macro_invocation
+                      stopBy:
+                        not:
+                          any:
+                            - kind: attribute_item
+                            - kind: line_comment
+                            - kind: block_comment
 rule:
   all:
       - matches: gate

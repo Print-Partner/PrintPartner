@@ -163,6 +163,16 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("pp-other: statement baseline raised", result.stdout)
 
+    def test_item_macro_and_extern_crate_do_not_raise_statement_count(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg(feature="desktop_rebuild")] extern crate foo;'
+                    '#[cfg(feature="desktop_rebuild")] node_case!(x);'
+                    'impl S { #![cfg(feature="desktop_rebuild")] fn f() {} }')
+        self.placements = {"pp-source": {"module": 0, "item": 3, "statement": 0}}
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_macro_token_gates_count_as_statements(self):
         for code in (
             'fn f() { json!({ #[cfg(feature="desktop_rebuild")] "x": 1 }); }',

@@ -331,7 +331,9 @@ including tests. `rust/desktop-rebuild-baseline.json` records three classes:
 `module` (mod/use), `item` (including variants and fields), and `statement`
 (statements, expressions and match arms). Stacked attributes, raw feature strings and comments do not
 change attachment. Raw attribute names such as `r#cfg` and escaped feature strings count too. A `use` or
-nested item inside a function body still counts as module or item.
+nested item inside a function body still counts as module or item. Gates on
+item-level macro invocations, extern crate declarations and inner impl/trait
+attributes count as items; macro calls inside a function body count as statements.
 An independent text scan checks that every gate has exactly one class. Gates
 inside macro token trees (`json!`, `vec!`, `select!`, and `macro_rules!`, for
 example) count as statements because their attachment is opaque to the parser.

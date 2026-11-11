@@ -14,6 +14,7 @@ valid:
   - "fn f() { #![cfg(feature = \"desktop_rebuild\")] let x=1; }"
   - "fn f() { #[cfg(feature = \"desktop_rebuild\")] use crate::m; }"
   - "fn f() { #[cfg_attr(all(feature = \"desktop_rebuild\", unix), allow(unused))] let x = 1; }"
+  - "fn f() { #[cfg(feature=\"desktop_rebuild\")] node_case!(x); }"
 invalid:
   - "#[cfg(feature = \"desktop_rebuild\")] fn f() {}"
   - "fn f() { #[cfg(feature = \"desktop_rebuild\")] struct S; }"
@@ -24,3 +25,9 @@ invalid:
   - "struct S { #[cfg_attr(feature = \"desktop_rebuild\", serde(default))] x: u8 }"
   - "#[r#cfg(feature = \"desktop_rebuild\")] fn f() {}"
   - "fn f() { #[cfg_attr(feature = \"desktop_rebuild\", allow(unused))] struct S; }"
+  - "#[cfg(feature=\"desktop_rebuild\")] extern crate foo;"
+  - "#[cfg(feature=\"desktop_rebuild\")] node_case!(x);"
+  - "mod m { #[cfg(feature=\"desktop_rebuild\")] node_case! { x } }"
+  - "trait T { #[cfg(feature=\"desktop_rebuild\")] methods!(); }"
+  - "impl S { #![cfg(feature=\"desktop_rebuild\")] fn f() {} }"
+  - "trait T { #![cfg(feature=\"desktop_rebuild\")] fn f(); }"

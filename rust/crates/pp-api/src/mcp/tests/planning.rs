@@ -84,9 +84,9 @@ async fn mcp_planning_confirmation_preserves_failed_proposals_and_account_isolat
         serde_json::from_str::<Value>(&pending).unwrap()["actions"][0]["id"],
         id
     );
-    for build in [2, 999] {
+    for build in [2, 999999] {
         for (tool, message) in [
-            ("add_addon", "Plan not found"),
+            ("add_addon", "plan_id and source_name required"),
             (
                 "propose_update_build_brief",
                 "Build planning brief not found",
@@ -150,12 +150,15 @@ async fn propose(
         .unwrap()
         .to_owned()
 }
-async fn assert_refused(server: &McpServer, headers: &[(String, String)], id: &str) {
+async fn assert_refused(server: &McpServer, headers: &[(String, String)], id: &str, detail: &str) {
     let database = server._directory.join("print-partner.db");
     let before = pp_testkit::mcp_planning::state(&database).unwrap();
     let (text, error) = call(server, headers, "confirm_apply", json!({"action_id":id})).await;
     assert!(error, "{text}");
-    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["ok"], false);
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({"ok":false,"detail":detail})
+    );
     assert_eq!(before, pp_testkit::mcp_planning::state(&database).unwrap());
     let (pending, _) = call(server, headers, "list_pending_actions", json!({})).await;
     assert!(
@@ -167,14 +170,27 @@ async fn assert_refused(server: &McpServer, headers: &[(String, String)], id: &s
     );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_planning_addon_revalidates_source_at_confirmation() {
+async fn mcp_planning_addon_revalidates_build_and_source_at_confirmation() {
     let outside = tempfile::tempdir().unwrap();
-    for sql in [
-        "UPDATE projects SET last_synced_at=NULL WHERE id=2".to_owned(),
-        "DELETE FROM projects WHERE id=2".to_owned(),
-        format!(
-            "UPDATE projects SET local_path='{}' WHERE id=2",
-            outside.path().to_str().unwrap().replace('\'', "''")
+    for (sql, detail) in [
+        (
+            "UPDATE projects SET last_synced_at=NULL WHERE id=2".to_owned(),
+            "Source is not synced: Addon",
+        ),
+        (
+            "DELETE FROM projects WHERE id=2".to_owned(),
+            "Source not found: Addon",
+        ),
+        (
+            format!(
+                "UPDATE projects SET local_path='{}' WHERE id=2",
+                outside.path().to_str().unwrap().replace('\'', "''")
+            ),
+            "Source is not synced: Addon",
+        ),
+        (
+            "DELETE FROM build_profiles WHERE id=1".to_owned(),
+            "Plan not found",
         ),
     ] {
         let (server, headers) = keyed(SEED).await;
@@ -193,7 +209,7 @@ async fn mcp_planning_addon_revalidates_source_at_confirmation() {
         )
         .await;
         pp_testkit::mcp_planning::edit(&database, &sql).unwrap();
-        assert_refused(&server, &headers, &id).await;
+        assert_refused(&server, &headers, &id, detail).await;
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -222,7 +238,13 @@ async fn mcp_planning_brief_confirmation_validates_current_evidence_and_enums() 
             pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief).unwrap();
         }
         if case != "valid" {
-            assert_refused(&server, &headers, &id).await;
+            let detail = match case {
+                "removed" | "slot" => "Source contribution identity, evidence, or slot is invalid",
+                "enum" => "Source contribution responsibility is invalid",
+                "finding" => "Invalid compatibility finding",
+                _ => unreachable!(),
+            };
+            assert_refused(&server, &headers, &id, detail).await;
             continue;
         }
         let (text, error) = call(&server, &headers, "confirm_apply", json!({"action_id":id})).await;

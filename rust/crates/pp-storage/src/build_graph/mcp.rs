@@ -64,7 +64,11 @@ pub(crate) fn execute(
         return brief(tx, account, request);
     }
     if !build_exists(tx, account, *build)? {
-        return Ok(failure("Plan not found"));
+        return Ok(failure(if *apply {
+            "Plan not found"
+        } else {
+            "plan_id and source_name required"
+        }));
     }
     let needle =
         crate::read_model::views::js_trim(params["source_name"].as_str().unwrap_or_default());
@@ -77,7 +81,11 @@ pub(crate) fn execute(
         return Ok(failure(&missing_source(&sources, needle)));
     };
     if request.source_stamp.as_ref() != Some(source) {
-        return Ok(failure("Source changed since the proposal; propose again"));
+        return Ok(failure(if *apply {
+            "Source changed since the proposal; propose again"
+        } else {
+            "Source changed during proposal preparation; try again"
+        }));
     }
     let synced = request.source_allowed && source.3.as_ref().is_some_and(|s| !s.is_empty());
     if !synced {
@@ -475,9 +483,18 @@ mod confirmation_tests {
     }
     #[test]
     fn mcp_planning_confirmation_refusals_preserve_state() {
-        for (changed, detail) in [
-            (true, "Source changed since the proposal; propose again"),
-            (false, "Source not found: Gone"),
+        for (changed, apply, detail) in [
+            (
+                true,
+                true,
+                "Source changed since the proposal; propose again",
+            ),
+            (
+                true,
+                false,
+                "Source changed during proposal preparation; try again",
+            ),
+            (false, true, "Source not found: Gone"),
         ] {
             let (root, mut db) = fixture();
             let path = root.path().join("print-partner.db");
@@ -487,7 +504,7 @@ mod confirmation_tests {
                 1,
                 "add_addon".into(),
                 json!({"source_name":"Addon","suggested_excludes":["x.stl"]}),
-                Some(json!({})),
+                apply.then(|| json!({})),
             );
             let result = if changed {
                 request.source_stamp = sources(&tx, "default")
@@ -518,7 +535,14 @@ mod confirmation_tests {
                 )
             }
             .unwrap();
-            assert_eq!(result, json!({"ok":false,"detail":detail}));
+            assert_eq!(
+                result,
+                if apply {
+                    json!({"ok":false,"detail":detail})
+                } else {
+                    json!({"error":detail})
+                }
+            );
             tx.commit().unwrap();
             assert_eq!(before, pp_testkit::mcp_planning::state(&path).unwrap());
         }

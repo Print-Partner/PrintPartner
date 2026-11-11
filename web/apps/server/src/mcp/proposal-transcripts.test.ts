@@ -326,6 +326,8 @@ describe("Build planning proposal parity", () => {
     const scenario = "build-planning/addon-brief";
     const seed = readFileSync(join(FIXTURE_DIR,"build-planning/seed.sql"),"utf8");
     const run = await runScenario(scenario,"Rust storage addon and brief proposal/confirm identity",async (s) => {
+      await s.call("add_addon", {plan_id:999999,source_name:"Addon"});
+      await s.call("add_addon", {plan_id:2,source_name:"Addon"});
       await s.call("add_addon", {plan_id:1,source_name:"Addon"});
       await s.call("confirm_apply", {action_id:s.lastProposedId(),suggested_excludes:[" custom.stl "]});
       await s.call("propose_update_build_brief", {plan_id:1,requirements:[{key:" size ",value:" 350 ",status:"satisfied"}]});

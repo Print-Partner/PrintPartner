@@ -8,6 +8,48 @@
         "params": {
           "name": "add_addon",
           "arguments": {
+            "plan_id": 999999,
+            "source_name": "Addon"
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"plan_id and source_name required\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "add_addon",
+          "arguments": {
+            "plan_id": 2,
+            "source_name": "Addon"
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"plan_id and source_name required\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "add_addon",
+          "arguments": {
             "plan_id": 1,
             "source_name": "Addon"
           }

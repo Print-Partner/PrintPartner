@@ -18,6 +18,7 @@
 //! ```
 
 pub mod bambu;
+pub mod mcp_planning;
 pub mod moonraker;
 pub mod node_path;
 pub mod node_schema;

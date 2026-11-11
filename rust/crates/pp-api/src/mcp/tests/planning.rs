@@ -84,23 +84,25 @@ async fn mcp_planning_confirmation_preserves_failed_proposals_and_account_isolat
         serde_json::from_str::<Value>(&pending).unwrap()["actions"][0]["id"],
         id
     );
-    for (tool, message) in [
-        ("add_addon", "plan_id and source_name required"),
-        (
-            "propose_update_build_brief",
-            "Build planning brief not found",
-        ),
-    ] {
-        assert_eq!(
-            call(
-                &server,
-                &headers,
-                tool,
-                json!({"plan_id":2,"source_name":"Secret"})
-            )
-            .await,
-            (json!({"error":message}).to_string(), true)
-        );
+    for build in [2, 999] {
+        for (tool, message) in [
+            ("add_addon", "Plan not found"),
+            (
+                "propose_update_build_brief",
+                "Build planning brief not found",
+            ),
+        ] {
+            assert_eq!(
+                call(
+                    &server,
+                    &headers,
+                    tool,
+                    json!({"plan_id":build,"source_name":"Secret"})
+                )
+                .await,
+                (json!({"error":message}).to_string(), true)
+            );
+        }
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -127,4 +129,141 @@ async fn keyed(seed: &str) -> (McpServer, Vec<(String, String)>) {
     let credential = format!("Bearer {}", instance.create_key().await.1);
     let headers = session(&instance, &credential).await;
     (instance, headers)
+}
+
+async fn propose(
+    server: &McpServer,
+    headers: &[(String, String)],
+    tool: &str,
+    args: Value,
+) -> String {
+    let before = pp_testkit::mcp_planning::state(&server._directory.join("print-partner.db"));
+    let (text, error) = call(server, headers, tool, args).await;
+    assert!(!error, "{text}");
+    assert_eq!(
+        before,
+        pp_testkit::mcp_planning::state(&server._directory.join("print-partner.db"))
+    );
+    serde_json::from_str::<Value>(&text).unwrap()["action"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+async fn assert_refused(server: &McpServer, headers: &[(String, String)], id: &str) {
+    let database = server._directory.join("print-partner.db");
+    let before = pp_testkit::mcp_planning::state(&database);
+    let (text, error) = call(server, headers, "confirm_apply", json!({"action_id":id})).await;
+    assert!(error, "{text}");
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["ok"], false);
+    assert_eq!(before, pp_testkit::mcp_planning::state(&database));
+    let (pending, _) = call(server, headers, "list_pending_actions", json!({})).await;
+    assert!(
+        serde_json::from_str::<Value>(&pending).unwrap()["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == id)
+    );
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_planning_addon_revalidates_source_at_confirmation() {
+    let outside = tempfile::tempdir().unwrap();
+    for sql in [
+        "UPDATE projects SET last_synced_at=NULL WHERE id=2".to_owned(),
+        "DELETE FROM projects WHERE id=2".to_owned(),
+        format!(
+            "UPDATE projects SET local_path='{}' WHERE id=2",
+            outside.path().to_str().unwrap().replace('\'', "''")
+        ),
+    ] {
+        let (server, headers) = keyed(SEED).await;
+        let database = server._directory.join("print-partner.db");
+        pp_testkit::mcp_planning::save(
+            &database,
+            "kit_manifest_1",
+            &json!({"exclude":["keep.stl"]}),
+        );
+        let id = propose(
+            &server,
+            &headers,
+            "add_addon",
+            json!({"plan_id":1,"source_name":"Addon","suggested_excludes":["new.stl"]}),
+        )
+        .await;
+        pp_testkit::mcp_planning::edit(&database, &sql);
+        assert_refused(&server, &headers, &id).await;
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_planning_brief_confirmation_validates_current_evidence_and_enums() {
+    for case in ["valid", "removed", "slot", "enum", "finding"] {
+        let (server, headers) = keyed(SEED).await;
+        let database = server._directory.join("print-partner.db");
+        let mut brief = pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1");
+        brief["draft_id"] = json!(42);
+        brief["evidence"] = json!([{"id":"e1","url":"https://example.test/source","normalized_url":"https://example.test/source","kind":"mod"}]);
+        pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief);
+        let mut args = json!({"plan_id":1,"contributions":[{"id":"c1","evidence_id":"e1","slot":"toolhead","responsibility":"printable_parts","confidence":"high","evidence_text":"Confirmed source","path_scopes":["parts/"]}],"compatibility_findings":[{"id":"f1","subject":"Toolhead","detail":"Confirmed fit","status":"satisfied","evidence_ids":["e1"]}]});
+        if case == "slot" {
+            args["contributions"][0]["slot"] = json!("bad-slot");
+        }
+        if case == "enum" {
+            args["contributions"][0]["responsibility"] = json!("unknown");
+        }
+        if case == "finding" {
+            args["compatibility_findings"][0]["status"] = json!("unknown");
+        }
+        let id = propose(&server, &headers, "propose_update_build_brief", args).await;
+        if case == "removed" {
+            brief["evidence"] = json!([]);
+            pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief);
+        }
+        if case != "valid" {
+            assert_refused(&server, &headers, &id).await;
+            continue;
+        }
+        let (text, error) = call(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+        assert!(!error, "{text}");
+        let saved = pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1");
+        assert!(saved.get("draft_id").is_none());
+        assert_eq!(saved["contributions"][0]["evidence_id"], "e1");
+        assert_eq!(saved["compatibility_findings"][0]["status"], "satisfied");
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_planning_addon_uses_the_data_directory_catalog_slot() {
+    let (server, headers) = keyed(SEED).await;
+    let path = server._directory.join("kit-catalog.yaml");
+    std::fs::write(&path, json!({"addon_categories":{"toolhead":{"rule":"pick_one","replaces_slot":"custom_head","sources":[{"name":"Addon"},{"name":"Base"}]}}}).to_string()).unwrap();
+    let (text, error) = call(
+        &server,
+        &headers,
+        "add_addon",
+        json!({"plan_id":1,"source_name":"Addon"}),
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert!(
+        serde_json::from_str::<Value>(&text).unwrap()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["slot"] == "custom_head")
+    );
+    std::fs::remove_file(path).unwrap();
+    let (text, error) = call(
+        &server,
+        &headers,
+        "add_addon",
+        json!({"plan_id":1,"source_name":"Addon"}),
+    )
+    .await;
+    assert!(!error, "{text}");
+    assert!(
+        serde_json::from_str::<Value>(&text).unwrap()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["slot"] != "custom_head")
+    );
 }

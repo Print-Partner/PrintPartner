@@ -31,3 +31,5 @@ Every other product tool still answers that it has no Rust port. `get_farm_statu
 - How to create and rotate the API key in the desktop app and the Docker image.
 - How MCP access works when network sharing is on.
 - The tool list and its schemas.
+
+Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge_conflicts.yaml` falls back to the shipped copy. Confirmation writes its decision log in the same transaction as the change. Storage errors answer `Build planning is unavailable`.

@@ -21,6 +21,7 @@ fn list(v: &Value) -> Vec<String> {
         .collect()
 }
 fn prose_parts(line: &str) -> Vec<(String, Option<String>)> {
+    let line = trim(line);
     let Ok(paths) = regress::Regex::with_flags(r"[\w./-]+\.stl", "i") else {
         return Vec::new();
     };
@@ -30,7 +31,16 @@ fn prose_parts(line: &str) -> Vec<(String, Option<String>)> {
             .map(|m| s[m.range()].to_owned())
             .unwrap_or_else(|| s.to_owned())
     };
-    if let Some((from, to)) = line.split_once("->").or_else(|| line.split_once('→')) {
+    let arrow = [
+        line.find("->").map(|i| (i, 2)),
+        line.find('→').map(|i| (i, 3)),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|(i, n)| *i > 0 && *i + *n < line.len())
+    .min_by_key(|(i, _)| *i);
+    if let Some((i, n)) = arrow {
+        let (from, to) = (&line[..i], &line[i + n..]);
         return vec![(first(trim(from)), Some(first(trim(to))))];
     }
     paths
@@ -50,6 +60,7 @@ fn parts(row: &Value) -> Vec<(String, Option<String>)> {
             .get("from_slug_or_path")
             .filter(|v| !v.is_null())
             .or_else(|| part.get("from"))
+            .filter(|v| !v.is_null())
             .map(super::js_string)
             .unwrap_or_default();
         if trim(&from).is_empty() {
@@ -95,18 +106,19 @@ fn explain(name: &str, docs: &Value) -> Option<Source> {
             r["source_name"]
                 .as_str()
                 .or_else(|| r["name"].as_str())
-                .is_some_and(|s| s == name)
+                .is_some_and(|s| trim(s) == name)
         })
         .or_else(|| {
             rows.into_iter().flatten().find(|r| {
                 r["source_name"]
                     .as_str()
                     .or_else(|| r["name"].as_str())
-                    .is_some_and(|s| s.to_lowercase() == name.to_lowercase())
+                    .is_some_and(|s| trim(s).to_lowercase() == name.to_lowercase())
             })
         });
     let resolved = row
         .and_then(|r| r["source_name"].as_str().or_else(|| r["name"].as_str()))
+        .map(trim)
         .unwrap_or(name);
     let mut conflicts = Vec::new();
     let mut slots = Vec::new();
@@ -115,13 +127,14 @@ fn explain(name: &str, docs: &Value) -> Option<Source> {
         .and_then(|cats| {
             cats.iter()
                 .filter(|(_, c)| c["rule"] == "pick_one")
-                .find(|(_, c)| {
+                .filter(|(_, c)| {
                     c["sources"]
                         .as_array()
                         .into_iter()
                         .flatten()
                         .any(|s| s["name"] == resolved)
                 })
+                .next_back()
         });
     if row.is_none() && category.is_none() {
         return None;
@@ -130,7 +143,11 @@ fn explain(name: &str, docs: &Value) -> Option<Source> {
     let row = row.unwrap_or(&empty);
     conflicts.extend(list(&row["conflicts_with"]));
     conflicts.extend(list(&row["conflicts"]));
-    slots.extend(list(row.get("replaces_slots").unwrap_or(&row["slots"])));
+    slots.extend(list(
+        row.get("replaces_slots")
+            .filter(|v| !v.is_null())
+            .unwrap_or(&row["slots"]),
+    ));
     if slots.is_empty() {
         let kind = row["kind"].as_str().unwrap_or_default().to_lowercase();
         for (needle, slot) in [
@@ -149,6 +166,7 @@ fn explain(name: &str, docs: &Value) -> Option<Source> {
     if slots.is_empty() {
         let prose = list(&row["replaces"]).join(" ").to_lowercase();
         if prose.contains("probe")
+            || prose.contains("zendstop")
             || prose.contains("z_endstop")
             || prose.contains("z-endstop")
             || prose.contains("z endstop")
@@ -170,7 +188,7 @@ fn explain(name: &str, docs: &Value) -> Option<Source> {
                 .map(str::to_owned),
         );
         slots.push(
-            docs["default_catalog"]["addon_categories"][id]["replaces_slot"]
+            docs["catalog"]["addon_categories"][id]["replaces_slot"]
                 .as_str()
                 .unwrap_or(id)
                 .into(),
@@ -264,4 +282,22 @@ pub fn check(name: &str, layers: &[String], docs: &Value) -> Value {
         }
     }
     json!({"warnings":warnings,"suggested_excludes":excludes,"conflicts":conflicts})
+}
+#[test]
+fn addon_compatibility_preserves_node_aliases_and_category_order() {
+    let docs = json!({"sources":[{"source_name":" A ","replaces_slots":null,"slots":["explicit"],"replaces_parts":[{"from":null}]},{"source_name":"Z","replaces":["zendstop"]}],"catalog":{"addon_categories":{"first":{"rule":"pick_one","sources":[{"name":"A"},{"name":"Early"}]},"toolhead":{"rule":"pick_one","replaces_slot":"custom_head","sources":[{"name":"A"},{"name":"Late"}]}}},"default_catalog":{"addon_categories":{"toolhead":{"replaces_slot":"shipped_head"}}}});
+    let source = explain("A", &docs).unwrap();
+    assert_eq!(source.name, "A");
+    assert_eq!(source.slots, ["explicit", "custom_head"]);
+    assert_eq!(source.conflicts, ["Late"]);
+    assert!(source.parts.is_empty());
+    assert_eq!(explain("Z", &docs).unwrap().slots, ["probe"]);
+    assert_eq!(
+        prose_parts("A → B -> C"),
+        vec![("A".into(), Some("B -> C".into()))]
+    );
+    assert_eq!(
+        prose_parts("A -> B → C"),
+        vec![("A".into(), Some("B → C".into()))]
+    );
 }

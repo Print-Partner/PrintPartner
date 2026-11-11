@@ -399,3 +399,8 @@ fn proposed_addon(
         json!({"source_name":name,"layers":layers(tx,account,build,cancelled)?.into_iter().map(wire::layer).collect::<Vec<_>>(),"dismissed":dismissed}),
     )
 }
+#[test]
+fn mcp_planning_fuzzy_source_ties_keep_first() {
+    let rows = [(1, "Foo-A"), (2, "Foo-B")].map(|(id, s)| (id, s.into(), None, None));
+    assert_eq!(find(&rows, "Foo").map(|row| &row.1), Some(&rows[0].1));
+}

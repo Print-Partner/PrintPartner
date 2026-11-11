@@ -216,6 +216,35 @@ fn confirm_addon(
     let params = &request.params;
     let failure = |detail: &str| json!({"ok":false,"detail":detail});
     let build = PositiveId::new(*build as u64).map_err(|e| anyhow!(e))?;
+    let excludes = params["suggested_excludes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|v| {
+            if let Some(s) = v.as_str() {
+                s.to_owned()
+            } else {
+                v.to_string()
+            }
+        })
+        .map(|s| crate::read_model::views::js_trim(&s).to_owned())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let key = format!("kit_manifest_{build}", build = build.get());
+    let mut kit = json!({});
+    if !excludes.is_empty()
+        && let Some(raw) = setting(tx, account, &key)?
+    {
+        if crate::manifest_options::KitManifest::from_stored(&raw).is_err() {
+            return Ok(failure(
+                "stored kit is malformed or exceeds supported limits",
+            ));
+        }
+        kit = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(_) => return Ok(failure("stored kit is malformed")),
+        };
+    }
     let outcome = mutation(
         tx,
         account,
@@ -233,27 +262,7 @@ fn confirm_addon(
         )));
     };
     let mut result = json!({"layers":layers.into_iter().map(wire::layer).collect::<Vec<_>>()});
-    let excludes = params["suggested_excludes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|v| {
-            if let Some(s) = v.as_str() {
-                s.to_owned()
-            } else {
-                v.to_string()
-            }
-        })
-        .map(|s| crate::read_model::views::js_trim(&s).to_owned())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>();
     if !excludes.is_empty() {
-        let key = format!("kit_manifest_{build}", build = build.get());
-        let raw = setting(tx, account, &key)?.unwrap_or_default();
-        let kit = crate::manifest_options::KitManifest::from_stored(&raw).unwrap_or_default();
-        let mut bytes = Vec::new();
-        kit.write_json(&mut bytes);
-        let mut kit: Value = serde_json::from_slice(&bytes)?;
         let mut merged = kit["exclude"].as_array().cloned().unwrap_or_default();
         for s in excludes {
             let s = json!(s);

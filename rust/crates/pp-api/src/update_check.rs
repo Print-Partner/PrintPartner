@@ -52,16 +52,8 @@ impl UpdateCheck {
         {
             return value.clone();
         }
-        let now = time::OffsetDateTime::now_utc();
-        body["checked_at"] = json!(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-            now.year(),
-            u8::from(now.month()),
-            now.day(),
-            now.hour(),
-            now.minute(),
-            now.second(),
-            now.millisecond()
+        body["checked_at"] = json!(pp_storage::read_model::farm::iso_time(
+            std::time::SystemTime::now()
         ));
         let releases = format!("https://github.com/{}/releases", self.repo);
         body["release_notes_url"] = json!(releases);

@@ -58,16 +58,7 @@ impl Server {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
         let settings = owner.app_settings_with_policy(policy()).unwrap();
-        let router = settings_router(
-            config.clone(),
-            owner.accepted_reads().unwrap(),
-            settings.clone(),
-        )
-        .merge(pp_api::settings_support::support_router(
-            config,
-            owner.accepted_reads().unwrap(),
-            settings,
-        ));
+        let router = settings_router(config, owner.accepted_reads().unwrap(), settings);
         let cases: Value = serde_json::from_str(CASES).unwrap();
         Self {
             owner,

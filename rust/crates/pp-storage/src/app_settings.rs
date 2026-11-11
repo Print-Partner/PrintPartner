@@ -262,17 +262,7 @@ fn bindings(tx: &Transaction<'_>, tenant: &str, change: Bindings) -> Result<Outc
                     .map(Value::Number)
                     .unwrap_or(Value::Null)
             };
-            let now = time::OffsetDateTime::now_utc();
-            let stamp = format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-                now.year(),
-                u8::from(now.month()),
-                now.day(),
-                now.hour(),
-                now.minute(),
-                now.second(),
-                now.millisecond()
-            );
+            let stamp = crate::auth::timestamp_at(time::OffsetDateTime::now_utc());
             let entry = serde_json::json!({"integration_id": id, "profile_id": number, "updated_at": stamp});
             // Accessing a member of null throws in Node; don't mutate a broken list.
             if items.iter().any(Value::is_null) {

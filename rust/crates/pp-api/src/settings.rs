@@ -49,6 +49,8 @@ pub fn settings_router(
     client: ReadClient,
     settings: AppSettingsClient,
 ) -> Router {
+    let support =
+        crate::settings_support::support_router(config.clone(), client.clone(), settings.clone());
     let wait = config.wait;
     let Some(gate) = Gate::new(config, client) else {
         return Router::new();
@@ -73,6 +75,7 @@ pub fn settings_router(
             .layer(DefaultBodyLimit::max(BODY_LIMIT)),
     )
     .with_state(App { settings, wait })
+    .merge(support)
 }
 
 async fn get_date_format(

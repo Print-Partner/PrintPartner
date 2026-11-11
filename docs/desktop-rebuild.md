@@ -1972,6 +1972,46 @@ See [D11 required units (GRE-606)](records/d11-required-units.md).
 See [D19 publication model and production links, GRE-612 PR 1](records/d19-publication-model.md).
 See [D19 publication transaction and job conflicts, GRE-612 PR 2](records/d19-publication-transaction.md).
 See [D19 publication client and writer admission, GRE-612 PR 3](records/d19-publication-client.md).
+
+Its sections:
+
+- [D17 source scan: observation and settlement](records/d19-publication-client.md#d17-source-scan-observation-and-settlement)
+- [D17 source scan: schema 40](records/d19-publication-client.md#d17-source-scan-schema-40)
+- [D18 source sync: batch open and target claim](records/d19-publication-client.md#d18-source-sync-batch-open-and-target-claim)
+- [D20 Checkoff progress](records/d19-publication-client.md#d20-checkoff-progress)
+- [Domain event log, GRE-1088](records/d19-publication-client.md#domain-event-log-gre-1088)
+- [Domain event stream, GRE-1162](records/d19-publication-client.md#domain-event-stream-gre-1162)
+- [Printer Checkoff verify and dismiss (GRE-420)](records/d19-publication-client.md#printer-checkoff-verify-and-dismiss-gre-420)
+- [Manual complete (GRE-1169)](records/d19-publication-client.md#manual-complete-gre-1169)
+- [Checkoff bursts (GRE-1090)](records/d19-publication-client.md#checkoff-bursts-gre-1090)
+- [Manual Checkoff bursts (GRE-1191)](records/d19-publication-client.md#manual-checkoff-bursts-gre-1191)
+- [Print-file classification (GRE-1212)](records/d19-publication-client.md#print-file-classification-gre-1212)
+- [Print-file assignment storage (GRE-1217)](records/d19-publication-client.md#print-file-assignment-storage-gre-1217)
+- [Print-file assignment routes (GRE-1220, GRE-1255, GRE-1256)](records/d19-publication-client.md#print-file-assignment-routes-gre-1220-gre-1255-gre-1256)
+- [Accepted Plate workspace read (GRE-1189)](records/d19-publication-client.md#accepted-plate-workspace-read-gre-1189)
+- [Accepted Plate edits (GRE-1184)](records/d19-publication-client.md#accepted-plate-edits-gre-1184)
+- [Accepted Plate arrange (GRE-1200)](records/d19-publication-client.md#accepted-plate-arrange-gre-1200)
+- [Accepted Plate initialize (GRE-1202)](records/d19-publication-client.md#accepted-plate-initialize-gre-1202)
+- [Accepted Plate routes in Rust (GRE-419)](records/d19-publication-client.md#accepted-plate-routes-in-rust-gre-419)
+- [Production setup in Rust (GRE-1209)](records/d19-publication-client.md#production-setup-in-rust-gre-1209)
+- [Build header edit and archive in Rust (GRE-1231)](records/d19-publication-client.md#build-header-edit-and-archive-in-rust-gre-1231)
+- [Variant dimensions and selection in Rust (GRE-1221)](records/d19-publication-client.md#variant-dimensions-and-selection-in-rust-gre-1221)
+- [Plan features and decision append in Rust (GRE-1243)](records/d19-publication-client.md#plan-features-and-decision-append-in-rust-gre-1243)
+- [D21 accepted read JSON bodies, GRE-616 PR 1](records/d19-publication-client.md#d21-accepted-read-json-bodies-gre-616-pr-1)
+- [D21 published capture, GRE-616 PR 2](records/d19-publication-client.md#d21-published-capture-gre-616-pr-2)
+- [D22 Review JSON and workflow](records/d19-publication-client.md#d22-review-json-and-workflow)
+- [D23 auth HTTP wiring, GRE-617 PR 1](records/d19-publication-client.md#d23-auth-http-wiring-gre-617-pr-1)
+- [Password-change response parity, GRE-873](records/d19-publication-client.md#password-change-response-parity-gre-873)
+- [D24 drafts HTTP, GRE-619](records/d19-publication-client.md#d24-drafts-http-gre-619)
+- [Draft recompute, rebase and Accept (GRE-417)](records/d19-publication-client.md#draft-recompute-rebase-and-accept-gre-417)
+- [Draft-only autosave (GRE-418)](records/d19-publication-client.md#draft-only-autosave-gre-418)
+- [Draft header fields (GRE-1197)](records/d19-publication-client.md#draft-header-fields-gre-1197)
+- [D30 catalog HTTP reads, GRE-804](records/d19-publication-client.md#d30-catalog-http-reads-gre-804)
+- [D26 runtime wiring (a), GRE-818](records/d19-publication-client.md#d26-runtime-wiring-a-gre-818)
+- [D26 runtime wiring (b), GRE-819](records/d19-publication-client.md#d26-runtime-wiring-b-gre-819)
+- [D26 runtime wiring (c), GRE-820](records/d19-publication-client.md#d26-runtime-wiring-c-gre-820)
+- [D26 web app shell, GRE-621](records/d19-publication-client.md#d26-web-app-shell-gre-621)
+
 ## Bambu certificate pins (GRE-1245)
 
 Schema step 47 adds the Rust-only table `printer_tls_pins`, one row per tenant and

@@ -41,6 +41,13 @@ class RecordMoveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             VERIFY.verify_bytes(path, b"# Receipt\n", b"# Receipt\n")
 
+    def test_section_index_lists_level_three_headings_with_anchors(self):
+        record = b"# Receipt\n\n### Production setup (GRE-1209)\n\nText.\n\n#### Detail\n\n### Production setup (GRE-1209)\n"
+        self.assertEqual(VERIFY.section_index("d19-publication-client", record), (
+            b"\nIts sections:\n\n"
+            b"- [Production setup (GRE-1209)](records/d19-publication-client.md#production-setup-gre-1209)\n"
+            b"- [Production setup (GRE-1209)](records/d19-publication-client.md#production-setup-gre-1209-1)\n\n"))
+
     def test_unlisted_target_edit_fails(self):
         with self.assertRaises(ValueError):
             VERIFY.verify_bytes(self.path, self.original,

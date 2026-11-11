@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the A8 receipt move (GRE-1317) and its exact link repairs against the main it was cut from."""
 
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
@@ -61,6 +62,10 @@ TEXT_REWRITES = {
     "docs/records/d19-publication-model.md": ((b"PR 2 adds the transaction entry described below.",
         b"PR 2 adds the transaction entry described in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md)."),),
 }
+# The D19 client record holds the route sections desktop-rebuild.md used to carry (Production
+# setup, Accepted Plate routes, D24 drafts HTTP and others), so the source lists its ### sections
+# under that pointer.
+INDEXED = ("d19-publication-client",)
 # The repaired links all use bare destinations without titles or parentheses.
 LINK_TARGET = re.compile(rb"(\[[^\]\n]*\]\()([^\s()]+)(\))")
 
@@ -76,6 +81,35 @@ def verify_bytes(path, original, actual):
         lambda match: match[1] + rewrites.get(match[2], match[2]) + match[3], original)
     if actual != expected:
         raise ValueError(f"Bytes differ beyond the allowed link-target repairs: {path}")
+
+
+def heading_anchors(markdown):
+    """Return (heading line, anchor) in order, by check-agent-guidance.py's anchor rules."""
+    spec = importlib.util.spec_from_file_location("agent_guidance", ROOT / "scripts" / "check-agent-guidance.py")
+    guidance = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guidance)
+    found, seen, ordered = set(), {}, []
+    for line in guidance.prose(markdown, keep_code=True):
+        found.update(guidance.HTML_ANCHOR.findall(guidance.CODE_SPAN.sub("", line)))
+        heading = guidance.HEADING.match(line)
+        if heading:
+            slug = re.sub(r"[^\w\- ]", "", guidance.rendered_text(heading.group(1)).lower()).replace(" ", "-")
+            count = seen.get(slug, 0)
+            candidate = f"{slug}-{count}" if count else slug
+            while candidate in found:
+                count += 1
+                candidate = f"{slug}-{count}"
+            seen[slug] = count + 1
+            found.add(candidate)
+            ordered.append((line, candidate))
+    return ordered
+
+
+def section_index(slug, record):
+    """The list of a record's ### sections that the source keeps under its pointer."""
+    items = [f"- [{line[4:].strip()}](records/{slug}.md#{anchor})\n"
+             for line, anchor in heading_anchors(record.decode()) if line.startswith("### ")]
+    return ("\nIts sections:\n\n" + "".join(items) + "\n").encode()
 
 
 def git_bytes(*args):
@@ -109,6 +143,8 @@ def main():
             raise ValueError(f"Wrong record heading: {path}")
         verify_bytes(path.relative_to(ROOT).as_posix(), section[1:], record)
         pointer = f"See [{title}](records/{slug}.md).\n".encode()
+        if slug in INDEXED:
+            pointer += section_index(slug, record)
         expected = expected[:start] + pointer + expected[end:]
         total += section.count(b"\n")
     actual = (ROOT / SOURCE).read_bytes()
@@ -125,7 +161,7 @@ def main():
     print("Plan expected 2258: MATCH")
     print(f"{SOURCE}: {original.count(newline)} -> {actual.count(newline)} lines")
     print("PASS: nine records match parent bytes except heading levels and the listed text and link-target repairs.")
-    print("PASS: nine pointer targets exist; all other source bytes are unchanged.")
+    print("PASS: nine pointer targets exist; the D19 client pointer lists its sections; all other source bytes are unchanged.")
     print("PASS: docs/families.md matches the parent except the listed link-target repair.")
 
 

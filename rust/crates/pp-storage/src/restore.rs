@@ -249,8 +249,22 @@ impl InstallationClient {
                 metadata.scope == archive::MetadataScope::Full,
                 Refusal::InvalidArchive("restore needs a full backup".into())
             );
-            let schema_version = admit_schema(&staged)
-                .map_err(|error| Refusal::UnsupportedSchema(format!("{error:#}")))?;
+            let schema_version = admit_schema(&staged).map_err(|error| {
+                let detail = match error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<crate::versions::IncompatibleSchema>())
+                {
+                    Some(refusal) if !refusal.too_new() => format!(
+                        "cannot upgrade database schema version {} (this release opens schema {} to {}). \
+                         Restore this backup into Print Partner v3.3.0 and make a new backup, \
+                         then restore the new backup into this release. The live database was not changed.",
+                        refusal.found, refusal.oldest, refusal.newest
+                    ),
+                    Some(refusal) => refusal.to_string().trim_start_matches("Incompatible storage: ").to_owned(),
+                    None => format!("{error:#}"),
+                };
+                Refusal::UnsupportedSchema(detail)
+            })?;
             Ok((metadata, schema_version))
         })();
         drop(upload);

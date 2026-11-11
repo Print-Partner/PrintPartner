@@ -205,7 +205,7 @@ Machine and STEP conversion are parked. GRE-1007 stays untouched and outside thi
 
 ### A live contradiction to fix
 
-`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged. GRE-1140 added that copy to the replacement UI ([Change a Build safely](#change-a-build-safely)). The old Node guide is unchanged unless the owner asks. The Rust workflow projection's Open Plan action still ends "Changes save automatically."; it is shared with Today and MCP, and GRE-1355 tracks changing it.
+`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged. GRE-1140 added that copy to the replacement UI ([Change a Build safely](#change-a-build-safely)). The old Node guide is unchanged unless the owner asks. The Rust workflow projection's Open Plan action, which Today and MCP share, now says "Changes save to a draft as you make them, and the Build changes only when you accept it." (GRE-1355). Only the old Node copy (`web/packages/domain/src/build-workflow.ts` and the guide) still says "Changes save automatically."
 
 ## Open questions
 

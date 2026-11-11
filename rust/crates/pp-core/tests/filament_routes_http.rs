@@ -193,7 +193,7 @@ async fn exercise_aliases(client: &reqwest::Client, origin: &str) {
         client
             .request(method, format!("{origin}{path}"))
             .header("cookie", "pp_session=read-fixture-secret")
-            .header("origin", &origin)
+            .header("origin", origin)
     };
     for prefix in ["", "/api/v1"] {
         let path = format!("{prefix}/filaments/custom");

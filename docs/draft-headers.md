@@ -281,10 +281,10 @@ Build of a tenant. `pp-storage/src/order_authority.rs` owns the rule:
 The rule covers Rust Accept and Rust MCP under `desktop_rebuild` and
 `PP_DESKTOP_REBUILD`. Node writes order numbers without it: Node's Accept
 with the flag off, `POST /plans/:id/duplicate` (copies the order number),
-and kit import. Duplicating a Build as a detached experiment, promoting it,
-and order import are not built yet.
+and kit import. Rust duplication creates a [detached experiment](build-workflow.md#experiments).
+Promotion and order import are not built yet.
 
-There is no schema step: a unique index would need a normalized column and
+Order conflict enforcement has no schema step: a unique index would need a normalized column and
 would refuse the existing duplicates.
 
 Tests: `order_authority_*` in `pp-storage` (normalization, `claim`) and in

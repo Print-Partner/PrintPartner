@@ -1,16 +1,11 @@
 //! Shared by the MCP HTTP tests: the auth policy, a loopback listener, the
 //! raw reply and the JSON-RPC message in it.
-use pp_storage::auth;
 use reqwest::RequestBuilder;
 use serde_json::Value;
 
-pub fn policy() -> auth::AuthPolicy {
-    auth::AuthPolicy {
-        registration: auth::RegistrationPolicy::Open,
-        session_tenant: auth::SessionTenantPolicy::AccountTenant,
-        first_user: auth::FirstUserTenant::NewUser,
-    }
-}
+#[path = "auth_policy.rs"]
+mod auth_policy;
+pub use auth_policy::policy;
 
 /// A listener on a free loopback port, and its origin.
 pub async fn listen() -> (tokio::net::TcpListener, String) {

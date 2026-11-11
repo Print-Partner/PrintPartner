@@ -325,6 +325,41 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `clippy-limits` | Clippy complexity negative controls and baseline check, with both feature modes on Linux | `rust (linux)` (required) |
 | `node-fixtures` | The `--check` mode of each Node parity fixture generator, and the HTTP route inventory diff, on Node 22.23.3 | `desktop-contracts.yml` and `auth-admission-freshness.yml` |
 
+The `ast-grep` step counts `cfg(..desktop_rebuild..)` and `cfg_attr`
+attributes across every crate, including tests. It recursively inspects
+conditional attributes applied by `cfg_attr`, so
+`#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]` counts too. Each outer
+attachment counts once, even if it contains several matching predicates.
+`rust/desktop-rebuild-baseline.json` records three classes: `module` (mod/use),
+`item` (including variants and fields), and `statement` (statements,
+expressions, match arms and ambiguous attachments). Stacked attributes,
+comments, raw attribute names such as `r#cfg`, and escaped feature strings do
+not change attachment.
+
+A `use` or nested ordinary item inside a function body still counts as module
+or item. Item-level macro invocations, extern crate declarations and inner
+impl/trait/extern attributes stay in the frozen statement class. These forms
+were included in the original statement cap; an ambiguous attachment defaults
+to statement. Gates inside macro token trees (`json!`, `vec!`, `select!` and
+`macro_rules!`, for example) also count as statements.
+
+An independent text scan and the AST rules check each other: a text gate must
+have exactly one AST class (or the macro statement fallback), and an AST hit
+without a text gate fails coverage. The text scan ignores comments and literal
+contents. It inspects `cfg_attr` predicates and recursively applied `cfg` or
+`cfg_attr` attributes; `doc = "desktop_rebuild"` does not count. Inner
+crate/module gates count as module gates; inner block gates count as statements.
+
+Counts must match the baseline; update it when gates move or disappear. Only
+module and item counts may grow. Statement counts may not rise per crate over
+`origin/main`, even with `PP_AST_GREP_ALLOW_BASELINE_RAISE=1`. The first landing
+establishes the placement baseline and reports the skipped raise check. This
+step runs in both `just ci --fast` and the full `just ci`.
+
+`cfg!(feature = "desktop_rebuild")` expressions are excluded from these counts
+(17 uses at the review baseline). Child [GRE-1397](https://linear.app/greetz/issue/GRE-1397/count-desktop-rebuild-cfg-expressions-in-the-placement-ratchet)
+tracks counting them later.
+
 Except where noted below, each step runs the command lines of its workflow step without changes. The script sets the same environment that CI sets: `NEXTEST_FILTER`, `PP_TEST_NODE`, `VITE_PRINT_PARTNER_DESKTOP`, and `RUNNER_TEMP`. The cargo steps also get `INSTA_UPDATE=no`, so a snapshot mismatch fails the step instead of writing a `.snap.new` file. `RUNNER_TEMP` is under `$CARGO_TARGET_DIR/local-ci`, or under `rust/target/local-ci` if `CARGO_TARGET_DIR` is not set. The local command differs from CI in these ways:
 
 - It does not install tools. If a tool is not on `PATH`, or if its version is not the version that CI pins, the step is reported as `SKIP` with the reason. The pinned versions are Node 24.21.0, ast-grep 0.50.0, actionlint 1.7.12 and zizmor 1.31.1. The `workaround-ratchet` and `node-fixtures` steps are also skipped when `PP_SCHEMA_PARITY_NODE` does not point to Node 22.23.3.

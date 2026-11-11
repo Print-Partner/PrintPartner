@@ -3,6 +3,11 @@
 GRE-886 assessment, 2026-10-18. Repository baseline
 `852337c440ac38e86606aa776ac204dccde18df0`.
 
+Superseded note (2026-11-10): this is a dated snapshot. The current ruleset
+`25285698` requires `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block`
+and `review-gate`. `rust (windows)` was removed from required checks on 2026-11-08.
+The Droid review path was removed in the same change.
+
 The Evidence check is a PR-author-controlled reporting aid. It does not provide
 independent validation of the PR or its claimed evidence. Closing that trust gap
 requires a maintainer decision about enforcement outside the PR-owned workflow.

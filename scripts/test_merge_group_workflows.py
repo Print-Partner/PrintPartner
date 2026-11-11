@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -446,6 +447,48 @@ class MainPushConcurrencyTests(unittest.TestCase):
                 self.assertIn(self.MAIN_GROUP, concurrency["group"])
         self.assertGreaterEqual(checked, 13)
         self.assertGreaterEqual(bounded, 11)
+
+
+def workflow_triggers(text):
+    """Return the trigger names under a workflow's top-level on: key, read without a YAML library."""
+    lines = [line.split(" #")[0].rstrip() for line in text.splitlines() if not line.lstrip().startswith("#")]
+    for i, line in enumerate(lines):
+        match = re.match(r"""^["']?on["']?:\s*(.*)$""", line)
+        if not match:
+            continue
+        if match.group(1):
+            return set(re.findall(r"[A-Za-z_]+", match.group(1)))
+        found, indent = set(), None
+        for nested in lines[i + 1:]:
+            if not nested.strip():
+                continue
+            if not nested[0].isspace():
+                break
+            depth = len(nested) - len(nested.lstrip())
+            indent = depth if indent is None else indent
+            if depth == indent:
+                found.add(nested.strip().lstrip("- ").split(":")[0])
+        return found
+    return set()
+
+
+class RetiredLaneDispatchTests(unittest.TestCase):
+    # Moved from test_factory_hooks.py (deleted with Factory). Keeps the retired intake trigger locked.
+    def test_lane_dispatch_stays_disabled(self):
+        text = (ROOT / ".github/workflows/lane-dispatch.yml").read_text(encoding="utf-8")
+        self.assertEqual(workflow_triggers(text), {"workflow_dispatch"})
+        self.assertIn("disabled until the owner re-approves it", text)
+        self.assertRegex(text, r"(?m)^\s+exit 1$")
+        self.assertNotIn("secrets.", text)
+        # Re-enabling the push or schedule trigger, in block or inline form, must fail the first check.
+        for variant in (text.replace("on:\n", "on:\n  push:\n    branches: [main]\n"),
+                        text.replace("on:\n", 'on:\n  schedule:\n    - cron: "*/10 * * * *"\n'),
+                        text.replace("on:\n  workflow_dispatch:\n", "on: [push, workflow_dispatch]\n"),
+                        text.replace("on:\n  workflow_dispatch:\n", '"on":\n  workflow_dispatch:\n  schedule:\n'
+                                                                   '    - cron: "0 * * * *"\n')):
+            with self.subTest(variant=variant):
+                self.assertNotEqual(variant, text)
+                self.assertNotEqual(workflow_triggers(variant), {"workflow_dispatch"})
 
 
 if __name__ == "__main__":

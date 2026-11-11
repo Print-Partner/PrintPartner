@@ -92,7 +92,7 @@ STEPS = [
     Step("python-lint", "Ruff unused-import and complexity lint",
          ("python3 -B -m unittest discover -s scripts -p test_ruff_lint.py -v",
           "python3 -B -m unittest discover -s scripts -p test_operation_inventory.py -v",
-          "ruff check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks .claude/hooks"),
+          "ruff check scripts rust/scripts web/scripts slicer-sidecar .claude/hooks"),
          ("actionlint.yml#Lint Python with Ruff",),
          requires=(("python3", None), ("ruff", RUFF_VERSION))),
     Step("zizmor", "zizmor (required check)",

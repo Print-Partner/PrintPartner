@@ -212,6 +212,26 @@ pub fn read_router(
     api_key_tenant: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
+    read_router_with_updates(
+        rebuild,
+        owner,
+        auth,
+        origin,
+        api_key_tenant,
+        community_manifests,
+        false,
+    )
+}
+
+fn read_router_with_updates(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    auth: AuthRoutes,
+    origin: &str,
+    api_key_tenant: &str,
+    community_manifests: Option<&Path>,
+    server_updates: bool,
+) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
@@ -272,7 +292,8 @@ pub fn read_router(
     );
     let modules = modules_router(config.clone(), features);
     let settings_routes = settings_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+            .with_server_update_checks(server_updates),
         accepted_client.clone(),
         app_settings,
     );
@@ -392,6 +413,16 @@ pub fn product_router(
     origin: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
+    product_router_with_updates(rebuild, owner, origin, community_manifests, false)
+}
+
+pub(crate) fn product_router_with_updates(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    community_manifests: Option<&Path>,
+    server_updates: bool,
+) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
@@ -427,13 +458,14 @@ pub fn product_router(
             job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
         )
     };
-    let reads = read_router(
+    let reads = read_router_with_updates(
         rebuild,
         owner,
         auth,
         origin,
         DESKTOP_TENANT,
         community_manifests,
+        server_updates,
     )?;
     Ok(reads
         .zip(drafts)

@@ -207,10 +207,16 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
 rebuild gates. Settings and help use the existing credential and Origin gate
 at `/` and `/api/v1`.
 
-- `GET /settings/update-check` follows Node's enabled flag, version override,
+- Desktop and launcher startup fix update checks off and ignore the repository,
+  version override and cache environment variables, matching Node desktop.
+  Only `pp-server`/Docker opts into Node server environment settings. Disabled
+  desktop checks have no HTTP client and make no outbound request.
+- `GET /settings/update-check` on the server follows Node's enabled flag, version override,
   release response cap (1 MiB), version comparison, cache interval and
   `refresh=1`. Upstream failures return no latest release and expose no
-  upstream error text. Tests use a loopback fake, never GitHub.
+  upstream error text. The HTTP client follows no redirects and uses no proxy,
+  matching Node undici. Fetches run outside the cache lock and auth admission
+  permit. Tests use a loopback fake, never GitHub.
 - `GET`/`PUT /settings/printer-plan-bindings` and
   `DELETE /settings/printer-plan-bindings/{integration_id}` read or update
   `printer.plan_bindings`. Credential proof and each read-modify-write run

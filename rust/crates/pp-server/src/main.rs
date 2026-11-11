@@ -97,7 +97,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         runtime_version: format!("{version}-web"),
         commit: commit.context("--commit is required")?,
     };
-    let mut runtime = CoreRuntime::start_for_launcher(DesktopLaunch {
+    let mut runtime = CoreRuntime::start_for_server(DesktopLaunch {
         data_dir: data.context("--data is required")?,
         assets: web.join("apps/web/dist"),
         bundle,

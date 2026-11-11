@@ -36,6 +36,9 @@ pub fn support_router(
     settings: AppSettingsClient,
 ) -> Router {
     let wait = config.wait;
+    let updates = Arc::new(crate::update_check::UpdateCheck::from_startup(
+        config.server_updates,
+    ));
     let Some(gate) = Gate::new(config, reads) else {
         return Router::new();
     };
@@ -45,7 +48,6 @@ pub fn support_router(
             "/settings/printer-plan-bindings/{id}",
             axum::routing::delete(delete),
         )
-        .route("/settings/update-check", get(update))
         .route("/help/workflow", get(help));
     // Node exempts OpenAPI from both API-key and session authentication.
     let public = Router::new()
@@ -62,16 +64,24 @@ pub fn support_router(
         )
         .route("/api/v1/openapi.json", get(document))
         .route("/api/v2/openapi.json", get(document));
+    let update_routes = Router::new().route("/settings/update-check", get(update));
+    let update_routes = gate.clone().authentication_only().guard(
+        Router::new()
+            .merge(update_routes.clone())
+            .nest("/api/v1", update_routes),
+    );
     gate.guard(
         Router::new()
             .merge(routes.clone())
             .nest("/api/v1", routes)
+            .fallback(|| async { failure(StatusCode::NOT_FOUND, "Not Found") })
             .layer(DefaultBodyLimit::max(1024 * 1024)),
     )
+    .merge(update_routes)
     .with_state(App {
         settings,
         wait,
-        updates: Arc::new(crate::update_check::UpdateCheck::from_startup()),
+        updates,
     })
     .merge(public)
 }

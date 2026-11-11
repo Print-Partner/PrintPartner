@@ -375,6 +375,9 @@ async fn settings_support_bindings_match_node_and_survive_restart() {
         "/api/v1/help/workflow",
         "/settings/update-check",
         "/settings/printer-plan-bindings",
+        "/api/v1/plans.json",
+        "/api/v1/openapi.json/x",
+        "/api/x.json",
     ] {
         let anonymous = server
             .send(&json!({"method":"GET", "path":path}), &[])
@@ -409,12 +412,50 @@ async fn settings_support_bindings_match_node_and_survive_restart() {
         }
         assert_eq!(reply.json(), expected);
     }
+    let redirect = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("{}/openapi.json", server.origin))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redirect.status(), 302);
+    assert_eq!(redirect.headers()["location"], "/api/v1/openapi.json");
+    let desktop = server
+        .send(
+            &json!({"method":"GET", "path":"/settings/update-check?refresh=1"}),
+            &[COOKIE],
+        )
+        .await;
+    assert_eq!(desktop.json()["enabled"], false);
+    assert!(desktop.json()["checked_at"].is_null());
     let help = server
         .send(&json!({"method":"GET", "path":"/help/workflow"}), &[COOKIE])
         .await;
     assert_eq!(
         String::from_utf8(help.body).unwrap(),
         fixture["help_on"].as_str().unwrap()
+    );
+    server.stop().await;
+    rusqlite::Connection::open(directory.path().join("print-partner.db"))
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO app_settings VALUES('default','external_access_mode','off')",
+            [],
+        )
+        .unwrap();
+    let server = Server::start(directory.path(), Some("1")).await;
+    let help = server
+        .send(
+            &json!({"method":"GET", "path":"/api/v1/help/workflow"}),
+            &[COOKIE],
+        )
+        .await;
+    assert_eq!(
+        String::from_utf8(help.body).unwrap(),
+        fixture["help_off"].as_str().unwrap()
     );
     server.stop().await;
 }

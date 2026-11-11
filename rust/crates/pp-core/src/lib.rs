@@ -298,6 +298,7 @@ enum Selection {
     Node,
     /// The shipped launchers: Rust only when both rebuild gates are on.
     Launcher,
+    Server,
 }
 
 #[derive(Serialize, Debug)]
@@ -519,6 +520,7 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 async fn start_rust_resources(
     input: DesktopLaunch,
     desktop_rebuild: DesktopRebuild,
+    server_updates: bool,
 ) -> Result<Resources> {
     let assets = input
         .assets
@@ -557,11 +559,12 @@ async fn start_rust_resources(
     )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
-    let product = rebuild_api::product_router(
+    let product = rebuild_api::product_router_with_updates(
         desktop_rebuild,
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
+        server_updates,
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
@@ -603,12 +606,17 @@ impl CoreRuntime {
         Self::start_with_compat_config(input, SupervisorConfig::default()).await
     }
 
-    /// The start `pp-server` and `pp-desktop` use. With the `desktop_rebuild`
+    /// The start desktop launchers use. With the `desktop_rebuild`
     /// feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or `true`, no
     /// Node child starts: the Rust writer owns the data directory and the
     /// gateway serves the `pp-api` routers. Otherwise this is [`Self::start`].
     pub async fn start_for_launcher(input: DesktopLaunch) -> Result<Self> {
         Self::start_selected(input, SupervisorConfig::default(), Selection::Launcher).await
+    }
+
+    /// Standalone server startup; only this owner allows environment update checks.
+    pub async fn start_for_server(input: DesktopLaunch) -> Result<Self> {
+        Self::start_selected(input, SupervisorConfig::default(), Selection::Server).await
     }
 
     /// Start with a per-instance compatibility timing policy.
@@ -625,7 +633,8 @@ impl CoreRuntime {
         selection: Selection,
     ) -> Result<Self> {
         let desktop_rebuild = DesktopRebuild::from_env();
-        let rust_only = matches!(selection, Selection::Launcher) && desktop_rebuild.enabled();
+        let rust_only = matches!(selection, Selection::Launcher | Selection::Server)
+            && desktop_rebuild.enabled();
         let ownership = (desktop_rebuild.enabled() && !rust_only)
             .then(admit_bundled_manifest)
             .transpose()
@@ -651,7 +660,7 @@ impl CoreRuntime {
                 runtime.block_on(async move {
                     let resources = if rust_only {
                         #[cfg(feature = "desktop_rebuild")]
-                        { start_rust_resources(input, desktop_rebuild).await }
+                        { start_rust_resources(input, desktop_rebuild, matches!(selection, Selection::Server)).await }
                         #[cfg(not(feature = "desktop_rebuild"))]
                         { unreachable!("Rust-only runtime requires desktop_rebuild") }
                     } else {

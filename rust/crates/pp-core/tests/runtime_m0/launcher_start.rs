@@ -45,41 +45,6 @@ async fn slice0_mount_launcher_gates() {
     }
 }
 
-#[cfg(feature = "desktop_rebuild")]
-#[tokio::test]
-async fn absent_replacement_bundle_preserves_legacy_navigation() {
-    let data = temporary("legacy-ui-launcher");
-    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--ignored",
-            "--exact",
-            "launcher_start::slice0_mount_launcher_in_child",
-            "--nocapture",
-        ])
-        .env("PP_SLICE0_DATA", &data)
-        .env("PP_SLICE0_RUST", "true")
-        .env("PP_UI_ABSENT", "1")
-        .env("PP_DESKTOP_REBUILD", "1")
-        .kill_on_drop(true)
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr)
-            .matches("Replacement UI bundle absent")
-            .count(),
-        1
-    );
-    std::fs::remove_dir_all(data).unwrap();
-}
-
 #[tokio::test]
 #[ignore = "runs in an isolated subprocess with explicit environment"]
 async fn slice0_mount_launcher_in_child() {

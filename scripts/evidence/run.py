@@ -275,6 +275,25 @@ def turn_on_modules(seed, modules):
     say(f"turned on in the seed: {', '.join(modules)}")
 
 
+def seed_order_holder(seed, steps):
+    """Gives duplicate-order captures a holder in the disposable seed before startup."""
+    for step in steps:
+        if step["name"] != "duplicate-order":
+            continue
+        with sqlite3.connect(seed / "print-partner.db") as db:
+            holder = db.execute(
+                "SELECT id FROM build_profiles WHERE archived_at IS NULL AND id <> ? ORDER BY id LIMIT 1",
+                (step["arg"],),
+            ).fetchone()
+            if holder is None:
+                raise RuntimeError("no other synthetic Build for an order holder")
+            db.execute("UPDATE build_profiles SET order_number=? WHERE id=?",
+                       (f"EVIDENCE-ORDER-{step['arg']}", holder[0]))
+        db.close()
+    if any(step["name"] == "duplicate-order" for step in steps):
+        say("prepared an order holder in the disposable seed")
+
+
 def display_geometry(name):
     out = subprocess.run(["xdpyinfo", "-display", name], check=True, capture_output=True, text=True).stdout
     width, height = re.search(r"dimensions:\s+(\d+)x(\d+)", out).groups()
@@ -320,6 +339,7 @@ def session(args, work, out_dir, node, binary):
         run("npm", "--prefix", "web", "run", "--silent", "fixture:synthetic", "--", "--seed", args.seed, seed,
             stdout=subprocess.DEVNULL)
         turn_on_modules(seed, args.module)
+        seed_order_holder(seed, args.step)
         # verify.py copies the seed into its own temporary data directory under launch_tmp,
         # adds the Rust ownership marker, and removes the copy when it stops.
         env = dict(os.environ, PP_DESKTOP_REBUILD="1", TMPDIR=str(launch_tmp))

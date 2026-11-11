@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -93,6 +94,19 @@ class Spawn(unittest.TestCase):
                           stdout=subprocess.PIPE, text=True)
         out, _ = child.communicate(timeout=30)
         self.assertEqual(out.strip(), "[]")
+
+
+class OrderHolderSeed(unittest.TestCase):
+    def test_only_the_other_unarchived_build_gets_an_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            seed = Path(folder)
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                db.executescript("CREATE TABLE build_profiles(id INTEGER, order_number TEXT, archived_at TEXT);"
+                                 "INSERT INTO build_profiles VALUES(1,NULL,'2026-11-01'),(2,NULL,NULL),(3,NULL,NULL);")
+            run.seed_order_holder(seed, [{"name": "duplicate-order", "arg": 2}])
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                self.assertEqual(db.execute("SELECT id,order_number FROM build_profiles ORDER BY id").fetchall(),
+                                 [(1, None), (2, None), (3, "EVIDENCE-ORDER-2")])
 
 
 class CaptureNeverPublishes(unittest.TestCase):

@@ -682,6 +682,7 @@ enum ClientAttempt {
     SortBudget(usize),
     SortCancel(usize),
     SortMatch,
+    CorruptHints(&'static [u8]),
 }
 struct ClientReads {
     inner: Reads,
@@ -742,7 +743,10 @@ impl DraftReads for ClientReads {
                     ClientAttempt::Budget => b.limit_visits_after(1),
                     _ => {}
                 }
-                Ok(DocumentRead::Missing)
+                match self.attempt {
+                    ClientAttempt::CorruptHints(bytes) => Ok(DocumentRead::Bytes(bytes.to_vec())),
+                    _ => Ok(DocumentRead::Missing),
+                }
             }
             _ => Ok(DocumentRead::Missing),
         }
@@ -862,7 +866,9 @@ fn client_attempt(attempt: ClientAttempt) {
         } else {
             assert_eq!(
                 error.to_string(),
-                if matches!(attempt, ClientAttempt::SortBudget(_)) {
+                if matches!(attempt, ClientAttempt::CorruptHints(_)) {
+                    "InvalidDocument"
+                } else if matches!(attempt, ClientAttempt::SortBudget(_)) {
                     "LimitExceeded(ComparisonWork)"
                 } else {
                     "LimitExceeded(Visits)"
@@ -871,7 +877,9 @@ fn client_attempt(attempt: ClientAttempt) {
         }
         assert_eq!(
             visits.load(Ordering::Relaxed),
-            if matches!(
+            if matches!(attempt, ClientAttempt::CorruptHints(_)) {
+                0
+            } else if matches!(
                 attempt,
                 ClientAttempt::SortBudget(_) | ClientAttempt::SortCancel(_)
             ) {
@@ -1090,4 +1098,15 @@ fn valid_scans_do_not_report_would_wipe() {
     assert_eq!(keys, ["kept.stl"]);
     assert_eq!(paths, ["kept.stl"]);
     client_attempt(ClientAttempt::Match);
+}
+
+#[test]
+fn corrupt_path_hints_preserve_saved_draft_rows_and_files() {
+    for bytes in [
+        b"version: 1\nrules: [".as_slice(),
+        b"corrupt hints",
+        b"version: 1\nrules: null",
+    ] {
+        client_attempt(ClientAttempt::CorruptHints(bytes));
+    }
 }

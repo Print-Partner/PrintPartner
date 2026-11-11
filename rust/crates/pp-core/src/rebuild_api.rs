@@ -217,7 +217,7 @@ pub fn read_router(
         history_client,
         planning_client,
         workflow_client,
-        (admin_files, app_settings),
+        (admin_files, app_settings, filament_client),
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -237,6 +237,7 @@ pub fn read_router(
             (
                 guard.admin_files()?,
                 guard.app_settings_with_policy(policy)?,
+                guard.filaments_with_policy(policy)?,
             ),
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
@@ -258,6 +259,12 @@ pub fn read_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
         admin_files,
+    );
+    let filament_routes = pp_api::filaments::filament_router(
+        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        accepted_client.clone(),
+        filament_client,
+        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
     );
     let settings_routes = settings_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
@@ -299,6 +306,7 @@ pub fn read_router(
             .merge(planning)
             .merge(workflow)
             .merge(admin)
+            .merge(filament_routes)
             .merge(settings_routes)
             .merge(events)
             .merge(checkoff)

@@ -685,3 +685,47 @@ fn ticket_t_10_draftreads_filesystem_policy_follows_node_multi_user() {
         SourceFilesystemPolicy::Isolated
     );
 }
+
+#[test]
+fn path_hints_partial_and_corrupt_documents_preserve_last_good_read_and_recover() {
+    let data = Data::new();
+    let reads = data.reads();
+    let cancelled = AtomicBool::new(false);
+    let read = || {
+        let mut budget = PreparationBudget::new(&cancelled, PreparationLimits::default()).unwrap();
+        match reads.read_catalog_document(&catalog(CatalogPurpose::CustomHints), &mut budget)? {
+            DocumentRead::Bytes(bytes) => super::manifest::hints(&bytes, &mut budget),
+            DocumentRead::Missing => Ok(Vec::new()),
+            DocumentRead::Skipped(kind) => Err(ReadFailure::Io(kind)),
+        }
+    };
+    assert!(read().unwrap().is_empty());
+    let good = b"version: 1\nrules:\n  - path: chosen.stl\n    option_group: color\n    variant_id: blue\n    label: Blue\n";
+    let path = data.path("path-hints.yaml");
+    write(&path, good);
+    let saved = read().unwrap();
+    assert_eq!(saved.len(), 1);
+    for invalid in [
+        b"version: 1\nrules: [".as_slice(),
+        b"not yaml hints",
+        b"version: 1\nrules: null",
+    ] {
+        write(&data.path("hints-staged"), invalid);
+        assert_eq!(
+            read().unwrap(),
+            saved,
+            "a partial unpublished replacement leaves the last good read intact"
+        );
+        write(&path, invalid);
+        assert!(read().is_err());
+    }
+    write(&data.path("hints-staged"), good);
+    fs::rename(data.path("hints-staged"), &path).unwrap();
+    assert_eq!(read().unwrap(), saved);
+    assert_eq!(
+        SourceReads::new(&data.0).filesystem_policy(),
+        reads.filesystem_policy()
+    );
+    fs::remove_file(path).unwrap();
+    assert!(read().unwrap().is_empty());
+}

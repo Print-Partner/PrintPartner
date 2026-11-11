@@ -102,7 +102,7 @@ fn declared_versions_match_the_node_and_rust_sources() {
             "path-hints": {"node_reads": node_path_hints, "rust_writes": "none"},
             "community-manifests": {"node_reads": 1, "rust_writes": "none"},
             "accepted-thumbnails": {"node_reads": node_thumbnails, "rust_writes": "none"},
-            "custom-filaments": {"node_reads": 1, "rust_writes": "none"},
+            "custom-filaments": {"node_reads": 1, "rust_writes": 1},
             "filament-catalog": {"node_reads": 1, "rust_writes": "none"},
             "assistant-domain": {"node_reads": 1, "rust_writes": "none"},
         })

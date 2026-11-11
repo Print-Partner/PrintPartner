@@ -175,13 +175,7 @@ pub(super) fn execute(
         Request::Write(_) => crate::writer_admission::begin_immediate(connection, admission)?,
         Request::Read(_) => connection.transaction_with_behavior(TransactionBehavior::Deferred)?,
     };
-    let tenant = match command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, &secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, &routed_tenant, &secret)?,
-    };
+    let tenant = crate::read_model::read_tenant(&tx, &command.credential, command.policy)?;
     let outcome = match command.request {
         Request::Read(Key::DiscordNotify) => discord(&tx, &tenant)?,
         Request::Read(key) => Outcome::Value(read(&tx, &tenant, key.name())?),

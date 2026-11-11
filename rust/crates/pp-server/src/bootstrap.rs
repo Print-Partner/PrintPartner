@@ -22,10 +22,16 @@ Asks the pp-server running on <dir> for a fresh sign-in URL and prints it.
 The URL works once, within 60 seconds. Run it as the account that owns <dir>,
 for example: docker exec <container> pp-server bootstrap-url --data /data";
 
+/// The whole request: the client sends exactly this, then shuts down its
+/// write half. Anything else, longer, shorter or empty, is refused.
 const REQUEST: &[u8] = b"bootstrap-url\n";
+/// The server reads at most this much, so it can tell an over-long request
+/// from the exact one without buffering what a client sends.
+const MAX_REQUEST: u64 = 64;
 const URL_PREFIX: &str = "url ";
 const REFUSED: &[u8] = b"refused\n";
 const UNAVAILABLE: &[u8] = b"unavailable\n";
+const FAILED: &[u8] = b"failed\n";
 const TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
@@ -34,8 +40,15 @@ fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// Mints one URL; fails once the runtime is stopping.
-pub(crate) type Mint = Arc<dyn Fn() -> Result<String> + Send + Sync>;
+/// What one mint produced.
+pub(crate) enum Minted {
+    Url(String),
+    /// The runtime is draining and mints nothing more.
+    Stopping,
+}
+
+/// Mints one URL. An error is a failure other than the drain.
+pub(crate) type Mint = Arc<dyn Fn() -> Result<Minted> + Send + Sync>;
 
 /// The listening socket. Dropping it stops answering and removes the socket,
 /// on every exit path including an early return or a panic.
@@ -73,7 +86,18 @@ pub(crate) fn start(runtime: &pp_core::CoreRuntime, data_dir: &Path) -> Option<L
         return None;
     }
     let handle = runtime.handle();
-    let mint: Mint = Arc::new(move || Ok(handle.browser_launch_target()?.into_url()));
+    let mint: Mint = Arc::new(move || match handle.browser_launch_target() {
+        Ok(target) => Ok(Minted::Url(target.into_url())),
+        // pp-gateway's BootstrapMinter refuses with this once the drain begins.
+        Err(error)
+            if error
+                .chain()
+                .any(|cause| cause.to_string() == "Runtime is stopping") =>
+        {
+            Ok(Minted::Stopping)
+        }
+        Err(error) => Err(error),
+    });
     listen(data_dir, mint)
         .inspect_err(|error| eprintln!("pp-server bootstrap-url is unavailable: {error:#}"))
         .ok()
@@ -114,23 +138,29 @@ fn listen_for(data_dir: &Path, mint: Mint, owner: u32) -> Result<Listener> {
 }
 
 async fn answer(mut stream: tokio::net::UnixStream, owner: u32, mint: Mint) -> std::io::Result<()> {
-    // Read the request before answering, so a refusal is not lost to a reset
-    // from unread bytes.
+    // Read to the end of the request, which the client marks by shutting
+    // down its write half, before answering. A client that never ends it is
+    // cut off by the caller's timeout and gets no answer.
     let mut request = Vec::with_capacity(REQUEST.len());
     (&mut stream)
-        .take(REQUEST.len() as u64)
+        .take(MAX_REQUEST)
         .read_to_end(&mut request)
         .await?;
     if stream.peer_cred()?.uid() != owner || request != REQUEST {
         return stream.write_all(REFUSED).await;
     }
     match mint() {
-        Ok(url) => {
+        Ok(Minted::Url(url)) => {
             stream
                 .write_all(format!("{URL_PREFIX}{url}\n").as_bytes())
                 .await
         }
-        Err(_) => stream.write_all(UNAVAILABLE).await,
+        Ok(Minted::Stopping) => stream.write_all(UNAVAILABLE).await,
+        Err(error) => {
+            // A failed mint produced no URL, so its error holds none.
+            eprintln!("pp-server bootstrap-url: minting a sign-in URL failed: {error:#}");
+            stream.write_all(FAILED).await
+        }
     }
 }
 
@@ -236,13 +266,22 @@ fn request_as(data: &Path, uid: u32) -> Result<String> {
     );
     let mut stream = match std::os::unix::net::UnixStream::connect(&path) {
         Ok(stream) => stream,
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => bail!(not_running()),
+        // NotFound: the socket went away after the check above.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            bail!(not_running())
+        }
         Err(error) => return Err(error).context("Cannot reach pp-server"),
     };
     check_peer(&stream, uid)?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
     stream.write_all(REQUEST)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
     let mut answer = String::new();
     stream
         .take(4096)
@@ -257,6 +296,7 @@ fn request_as(data: &Path, uid: u32) -> Result<String> {
     match answer.as_bytes() {
         REFUSED => bail!("pp-server refused this account"),
         UNAVAILABLE => bail!("pp-server is stopping; start it again and retry"),
+        FAILED => bail!("pp-server could not create a sign-in URL; its stderr says why"),
         _ => bail!("pp-server sent an unexpected answer"),
     }
 }
@@ -282,9 +322,9 @@ mod tests {
         let seen = calls.clone();
         let mint: Mint = Arc::new(move || {
             let call = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(format!(
+            Ok(Minted::Url(format!(
                 "http://127.0.0.1:1/__desktop/bootstrap?token=t{call}"
-            ))
+            )))
         });
         (mint, calls)
     }
@@ -338,28 +378,68 @@ mod tests {
         drop(listener);
     }
 
-    #[tokio::test]
-    async fn a_malformed_request_is_refused() {
-        let (directory, listener, calls) = serving();
-        let path = directory.path().join(SOCKET);
-        let answer = tokio::task::spawn_blocking(move || {
+    /// Send `request` on a raw connection, end it, and return the answer.
+    async fn exchange(path: PathBuf, request: &'static [u8]) -> String {
+        tokio::task::spawn_blocking(move || {
             let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
-            stream.write_all(b"bootstrap-urX\n").unwrap();
+            stream.write_all(request).unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
             let mut answer = String::new();
             stream.read_to_string(&mut answer).unwrap();
             answer
         })
         .await
-        .unwrap();
-        assert_eq!(answer, "refused\n");
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_the_exact_request_gets_a_url() {
+        let (directory, listener, calls) = serving();
+        let path = directory.path().join(SOCKET);
+        for request in [
+            &b"bootstrap-urX\n"[..],
+            b"bootstrap-url\nANYTHING",
+            b"bootstrap-url",
+            b"",
+        ] {
+            let answer = exchange(path.clone(), request).await;
+            assert_eq!(answer, "refused\n", "{request:?}");
+        }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let answer = exchange(path, REQUEST).await;
+        assert_eq!(
+            answer,
+            "url http://127.0.0.1:1/__desktop/bootstrap?token=t0\n"
+        );
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_silent_client_is_cut_off_and_others_are_still_answered() {
+        let (directory, listener, _) = serving();
+        let path = directory.path().join(SOCKET);
+        let silent = tokio::task::spawn_blocking(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
+            let started = std::time::Instant::now();
+            let mut answer = Vec::new();
+            let _ = stream.read_to_end(&mut answer);
+            (answer, started.elapsed())
+        });
+        // While that connection waits, another client gets its URL.
+        let url = request_off_thread(directory.path(), effective_uid())
+            .await
+            .unwrap();
+        assert!(url.ends_with("token=t0"), "{url}");
+        let (answer, waited) = silent.await.unwrap();
+        assert!(answer.is_empty(), "{answer:?}");
+        assert!(waited >= TIMEOUT - Duration::from_millis(500), "{waited:?}");
         drop(listener);
     }
 
     #[tokio::test]
     async fn a_stopping_runtime_answers_unavailable() {
         let directory = directory();
-        let mint: Mint = Arc::new(|| bail!("Runtime is stopping"));
+        let mint: Mint = Arc::new(|| Ok(Minted::Stopping));
         let listener = listen(directory.path(), mint).unwrap();
         let error = request_off_thread(directory.path(), effective_uid())
             .await
@@ -369,6 +449,60 @@ mod tests {
             "pp-server is stopping; start it again and retry"
         );
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_failed_mint_answers_failed() {
+        let directory = directory();
+        let mint: Mint = Arc::new(|| bail!("Session mutex poisoned"));
+        let listener = listen(directory.path(), mint).unwrap();
+        let error = request_off_thread(directory.path(), effective_uid())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "pp-server could not create a sign-in URL; its stderr says why"
+        );
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_panic_unwinding_past_the_listener_removes_the_socket() {
+        let directory = directory();
+        let (mint, _) = counting_mint();
+        let path = directory.path().join(SOCKET);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _listener = listen(directory.path(), mint).unwrap();
+            assert!(path.exists());
+            panic!("serve() failed after the listener started");
+        }));
+        assert!(unwound.is_err());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_symlink_at_the_socket_name_is_left_alone() {
+        let directory = directory();
+        let path = directory.path().join(SOCKET);
+        let other_socket = directory.path().join("other.sock");
+        let _other = std::os::unix::net::UnixListener::bind(&other_socket).unwrap();
+        let file = directory.path().join("file");
+        std::fs::write(&file, b"kept").unwrap();
+        let (mint, _) = counting_mint();
+        for target in [&other_socket, &file] {
+            std::os::unix::fs::symlink(target, &path).unwrap();
+            let error = listen(directory.path(), mint.clone()).err().unwrap();
+            assert!(error.to_string().contains("is not this account's socket"));
+            assert_eq!(std::fs::read_link(&path).unwrap(), *target);
+            std::fs::remove_file(&path).unwrap();
+        }
+        assert!(
+            std::fs::symlink_metadata(&other_socket)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"kept");
     }
 
     #[tokio::test]

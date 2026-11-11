@@ -803,3 +803,73 @@ fn ticket_t_26_receipt_ids_fit_128_bytes_on_a_character_boundary() {
     assert_eq!(id.chars().count(), 42);
     assert_eq!(receipt_id("a.gcode"), "a.gcode");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_to_queue_takes_only_a_read_host_and_stages_inside_printer_uploads() {
+    let farm = Farm::open("http://127.0.0.1:9", &[]);
+    let settings = farm.owner.client();
+    let host = |printer: &str| {
+        let settings = settings.clone();
+        let printer = printer.to_owned();
+        std::thread::spawn(move || queue_host(&settings, &printer))
+            .join()
+            .unwrap()
+    };
+    assert_eq!(host("p-moon"), Ok("Micron host".into()));
+    assert_eq!(
+        host("p-gone"),
+        Err((StatusCode::NOT_FOUND, "Fleet printer not found".into()))
+    );
+    farm.database()
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='printer.fleet'",
+            [json!([
+                {"id": "p-moon", "integration_id": "moon"},
+                {"id": "p-bambu", "integration_id": "bam"},
+                {"id": "p-odd", "integration_id": "odd"},
+                {"id": "p-loose"}
+            ])
+            .to_string()],
+        )
+        .unwrap();
+    farm.database()
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='integrations'",
+            [json!([
+                {"id": "moon", "name": "Micron host", "type": "moonraker", "config": {"base_url": "http://127.0.0.1:9"}},
+                {"id": "bam", "name": "X1", "type": "bambu", "config": {}},
+                {"id": "odd", "name": "Odd", "type": "octoprint", "config": {}}
+            ])
+            .to_string()],
+        )
+        .unwrap();
+    for (printer, detail) in [
+        ("p-bambu", "Queue is not supported for bambu"),
+        ("p-odd", "Queue is not supported for octoprint"),
+        (
+            "p-loose",
+            "Printer is not linked to a host. Link a Moonraker or PrusaLink host in Settings.",
+        ),
+    ] {
+        assert_eq!(
+            host(printer),
+            Err((StatusCode::BAD_REQUEST, detail.into())),
+            "{printer}"
+        );
+    }
+
+    let path = PathBuf::from(stage(&farm.exports(), "Plate 1.gcode", b"G28\n").unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), b"G28\n");
+    assert_eq!(
+        staged(&farm.exports(), &path),
+        Ok(path.canonicalize().unwrap())
+    );
+    for hostile in ["../x.gcode", "a/b.gcode", "..", "/x.gcode", ""] {
+        assert!(stage(&farm.exports(), hostile, b"").is_err(), "{hostile}");
+    }
+    discard(&farm.exports(), &path.to_string_lossy());
+    assert!(
+        !path.parent().unwrap().exists(),
+        "Remove deletes the staged directory"
+    );
+}

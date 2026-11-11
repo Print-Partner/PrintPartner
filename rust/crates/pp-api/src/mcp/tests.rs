@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
+#[path = "tests/progress_reads.rs"]
+mod progress_reads;
 #[path = "tests/reads.rs"]
 mod reads;
 use mcp_rpc::{policy, rpc};

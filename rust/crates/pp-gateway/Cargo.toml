@@ -10,7 +10,10 @@ anyhow.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# Keep JSON object keys in insertion order. The shipped binaries already get
+# this through pp-core -> pp-storage; declaring it here keeps /__runtime and
+# other bodies in the same order when pp-gateway builds on its own.
+serde_json = { workspace = true, features = ["preserve_order"] }
 rand.workspace = true
 sha2.workspace = true
 hex.workspace = true

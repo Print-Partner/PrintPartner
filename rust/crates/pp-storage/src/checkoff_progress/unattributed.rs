@@ -147,6 +147,11 @@ fn prune(prints: Vec<Value>) -> Vec<Value> {
     kept
 }
 
+/// `listUnattributedPrints`: every stored print that pruning keeps.
+pub(super) fn list(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
+    Ok(prune(load_raw(tx, tenant)?))
+}
+
 fn save(tx: &Transaction<'_>, tenant: &str, prints: Vec<Value>) -> Result<()> {
     put(tx, tenant, PRINTS, &Value::Array(prune(prints)))
 }

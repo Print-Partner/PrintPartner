@@ -41,7 +41,7 @@ Five destinations in a left rail, plus a command palette.
 | Library | `G L` | Library Sources, import, sync, revisions |
 | Settings | `G ,` | Modules, integrations, sharing, devices, backups |
 
-The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` shows shortcuts.
+The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` opens Help, which explains how Plan changes save and lists the shortcuts.
 
 A Build workspace has tabs: **Overview, Sources, Plan, Production, Checkoff, History**. The Machine tab is parked with STEP conversion and is not part of this delivery.
 
@@ -95,7 +95,9 @@ Before the gate can preview, the draft's Required-unit reconciliation must be se
 
 One order is one Build, enforced transactionally (Accept refuses `duplicate_order`; see [Order authority](../draft-headers.md#order-authority-gre-1095)). A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
 
-History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate. Restoring a plan never rewinds printed evidence or a printer command.
+History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate.
+
+The replacement UI says the same thing everywhere it explains a Plan change: Help's **Plan changes** section, the Plan tab's draft line, and History's empty state (GRE-1140). Each change saves to the draft: a checkbox such as Included at once, and a typed field (name, order number, customer, due date or quantity) when it loses focus or on Enter. A saved draft survives a restart. Only Accept changes the Build. Accept first saves a snapshot of the accepted Plan it replaces when the core can restore one, and the preview's snapshot note says whether it will. History can restore such a snapshot as a draft. The wording lives in `web/apps/ui/src/builds/planCopy.ts`, and `planCopy.test.ts` fails if any replacement UI source says changes save automatically or that there is no acceptance step. Restoring a plan never rewinds printed evidence or a printer command.
 
 ### Handle prints the app could not match
 
@@ -144,7 +146,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Production setup | `GET` and `PATCH /plans/{id}/production-setup` (root only, as in Node) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1209); see [Production setup in Rust](../records/d19-publication-client.md#production-setup-in-rust-gre-1209) |
 | Build header edit and archive | `PATCH /plans/{id}`, `POST /plans/{id}/archive` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1231); see [Build header edit and archive in Rust](../records/d19-publication-client.md#build-header-edit-and-archive-in-rust-gre-1231) |
 | Variant dimensions and selection | `GET /plans/{id}/variant-dimensions`, `POST /plans/{id}/variant-selection` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1221); see [Variant dimensions and selection in Rust](../records/d19-publication-client.md#variant-dimensions-and-selection-in-rust-gre-1221) |
-| Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists |
+| Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists in Rust behind `desktop_rebuild`. The generated client's `listSources` and `listSourceActivity` read `/api/v1/sources` and `/api/v1/sources/activity` (GRE-1364). Library (`/library`) lists each Source with its revision, sync state and newest activity, and the Build Sources tab shows each layer's Source, its current revision, and the revision the Accepted Plan used, read from the Build's Plan freshness. Both are read only |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
 | Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
@@ -203,7 +205,7 @@ Machine and STEP conversion are parked. GRE-1007 stays untouched and outside thi
 
 ### A live contradiction to fix
 
-`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged.
+`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged. GRE-1140 added that copy to the replacement UI ([Change a Build safely](#change-a-build-safely)). The old Node guide is unchanged unless the owner asks. The Rust workflow projection's Open Plan action, which Today and MCP share, now says "Changes save to a draft as you make them, and the Build changes only when you accept it." (GRE-1355). Only the old Node copy (`web/packages/domain/src/build-workflow.ts` and the guide) still says "Changes save automatically."
 
 ## Open questions
 

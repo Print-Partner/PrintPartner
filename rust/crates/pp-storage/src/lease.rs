@@ -22,6 +22,8 @@ pub struct StorageLease {
     admitted: Arc<AdmittedDirectory>,
     runtime_dir: PathBuf,
     release_allowed: bool,
+    /// This acquisition created `printpartner.lock` rather than opening an existing one.
+    lock_created: bool,
 }
 
 struct CompatibilityReservation {
@@ -513,11 +515,13 @@ impl StorageLease {
             locked.abandon();
             return Err(error);
         }
+        #[cfg(all(test, unix))]
+        tests::record_runtime_dir(&runtime_dir);
         let LockedDirectory {
             admitted,
             lock,
             compatibility,
-            lock_created: _,
+            lock_created,
         } = locked;
         Ok(Self {
             advisory_lock: Some(lock),
@@ -525,10 +529,33 @@ impl StorageLease {
             admitted: Arc::new(admitted),
             runtime_dir,
             release_allowed: true,
+            lock_created,
         })
     }
     pub(crate) fn preflight(&self) -> Result<u64> {
+        #[cfg(all(test, unix))]
+        tests::before_owned_preflight()?;
         self.admitted.preflight_schema(true)
+    }
+    /// Give up a lease that failed before its owner used it, leaving the lease
+    /// files as found, like [`LockedDirectory::abandon`]: `.desktop-lease` and
+    /// `printpartner.lock` are removed only if this acquisition created them,
+    /// while the lock is still held and only when the name still refers to the
+    /// file it opened. The private runtime directory it created is removed.
+    pub(crate) fn abandon(mut self) {
+        self.release_allowed = false;
+        let _ = std::fs::remove_dir(&self.runtime_dir);
+        if let Some(mut compatibility) = self.compatibility.take() {
+            if !compatibility.created {
+                compatibility.held = false;
+            }
+            drop(compatibility);
+        }
+        if let Some(lock) = self.advisory_lock.take()
+            && self.lock_created
+        {
+            remove_created_lease(&self.admitted.directory, "printpartner.lock", &lock, true);
+        }
     }
     pub fn data_dir(&self) -> &Path {
         &self.admitted.path
@@ -612,6 +639,7 @@ impl StorageLease {
                 admitted: self.admitted.clone(),
                 runtime_dir: self.runtime_dir.clone(),
                 release_allowed: false,
+                lock_created: self.lock_created,
             };
             failed_releases()
                 .lock()
@@ -1043,9 +1071,118 @@ mod tests {
         assert!(format!("{error:#}").contains("Is a directory"), "{error:#}");
         assert!(CHECK_LOCK_DURING_RESERVATION_RELEASE.take().is_none());
         assert!(!path.join(".desktop-lease").exists());
-        let contender = File::open(path.join("printpartner.lock")).unwrap();
-        fs4::FileExt::try_lock(&contender).unwrap();
+        // GRE-1159: the lock file this call created is removed like on other refusals.
+        assert!(!path.join("printpartner.lock").exists());
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    thread_local! {
+        static FAIL_OWNED_PREFLIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static RUNTIME_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Remembers, per thread, the runtime directory the last acquired lease created.
+    pub(super) fn record_runtime_dir(path: &Path) {
+        RUNTIME_DIR.set(Some(path.to_path_buf()));
+    }
+
+    /// Fails `StorageLease::preflight` once when armed, after the lease is held.
+    pub(super) fn before_owned_preflight() -> Result<()> {
+        if FAIL_OWNED_PREFLIGHT.take() {
+            anyhow::bail!("forced owned preflight failure");
+        }
+        Ok(())
+    }
+
+    /// Writes a reused `printpartner.lock` and a Rust `.desktop-lease` leftover with old mtimes.
+    fn reused_leftovers(path: &Path) -> [std::time::SystemTime; 2] {
+        for (name, bytes) in [
+            ("printpartner.lock", &b""[..]),
+            (".desktop-lease", b"leftover reservation"),
+        ] {
+            std::fs::write(path.join(name), bytes).unwrap();
+            // Lease files must deny group and other write whatever the umask is.
+            std::fs::set_permissions(path.join(name), std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        [
+            set_old_mtime(&path.join("printpartner.lock")),
+            set_old_mtime(&path.join(".desktop-lease")),
+        ]
+    }
+
+    /// Opens the writer with a preflight failure and checks that the data directory,
+    /// recursively and byte for byte, is as it was before, and that no lock is held.
+    fn assert_refused_open_leaves_listing(path: &Path, owned: bool, expected: &str) {
+        let before = listing(path);
+        RUNTIME_DIR.take();
+        // A reservation this call created must go while the advisory lock is still held.
+        let created = !path.join(".desktop-lease").exists();
+        if created {
+            CHECK_LOCK_DURING_RESERVATION_RELEASE.set(Some(path.to_path_buf()));
+        }
+        FAIL_OWNED_PREFLIGHT.set(owned);
+        let result = crate::WriterOwner::open(path, crate::Limits::default());
+        FAIL_OWNED_PREFLIGHT.set(false);
+        let error = format!("{:#}", result.err().expect("preflight refused the writer"));
+        assert!(error.contains(expected), "{error}");
+        if created {
+            assert!(CHECK_LOCK_DURING_RESERVATION_RELEASE.take().is_none());
+        }
+        assert_eq!(listing(path), before);
+        // Only the second preflight runs after this lease created its runtime directory, which
+        // abandon removes. The path is this thread's lease, so parallel tests cannot disturb it.
+        match RUNTIME_DIR.take() {
+            Some(runtime_dir) => {
+                assert!(owned, "the first preflight runs before the lease exists");
+                assert!(!runtime_dir.exists(), "{}", runtime_dir.display());
+            }
+            None => assert!(!owned, "the lease recorded no runtime directory"),
+        }
+        for name in ["printpartner.lock", ".desktop-lease"] {
+            if let Ok(file) = File::open(path.join(name)) {
+                pp_os::try_lock(&file).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn gre_1159_failed_preflight_removes_the_lease_files_it_created() {
+        // The first preflight, under the lock, refuses a database that is a directory.
+        let path = directory();
+        std::fs::create_dir(path.join("print-partner.db")).unwrap();
+        assert_refused_open_leaves_listing(&path, false, "Is a directory");
+        std::fs::remove_dir_all(&path).unwrap();
+        // The second preflight runs after the lease is held.
+        let path = directory();
+        assert_refused_open_leaves_listing(&path, true, "forced owned preflight failure");
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn gre_1159_failed_preflight_leaves_reused_lease_files_unchanged() {
+        for owned in [false, true] {
+            let path = directory();
+            if !owned {
+                std::fs::create_dir(path.join("print-partner.db")).unwrap();
+            }
+            let mtimes = reused_leftovers(&path);
+            let expected = if owned {
+                "forced owned preflight failure"
+            } else {
+                "Is a directory"
+            };
+            assert_refused_open_leaves_listing(&path, owned, expected);
+            for (name, modified) in ["printpartner.lock", ".desktop-lease"].iter().zip(mtimes) {
+                let metadata = std::fs::metadata(path.join(name)).unwrap();
+                assert_eq!(
+                    metadata.modified().unwrap(),
+                    modified,
+                    "{name} owned={owned}"
+                );
+            }
+            std::fs::remove_dir_all(path).unwrap();
+        }
     }
 
     #[test]

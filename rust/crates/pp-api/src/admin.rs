@@ -51,7 +51,7 @@ pub struct AdminHttpConfig {
     host: String,
     api_key_tenant: String,
     enabled: bool,
-    wait: Duration,
+    pub(crate) wait: Duration,
 }
 
 impl AdminHttpConfig {
@@ -124,7 +124,12 @@ pub fn admin_router(config: AdminHttpConfig, client: ReadClient, files: AdminFil
         .with_state(app)
 }
 
-async fn guard(State(app): State<Gate>, request: axum::extract::Request, next: Next) -> Response {
+/// A request that passes carries its `PresentedCredential` as an extension.
+async fn guard(
+    State(app): State<Gate>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
     let Ok(_permit) = app.admission.try_acquire() else {
         return crate::problem::overloaded("Service temporarily unavailable");
     };
@@ -142,9 +147,10 @@ async fn guard(State(app): State<Gate>, request: axum::extract::Request, next: N
     let Some(presented) = principal(request.headers(), &app.config.api_key_tenant) else {
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
     };
-    if let Some(refused) = authenticate(&app, presented).await {
+    if let Some(refused) = authenticate(&app, presented.clone()).await {
         return refused;
     }
+    request.extensions_mut().insert(presented);
     next.run(request).await
 }
 
@@ -186,7 +192,7 @@ async fn custom_filaments(State(app): State<App>) -> Response {
 }
 
 /// Node's `onSend` hook marks every reply `private, no-store`.
-fn response(status: StatusCode, content_type: &str, body: String) -> Response {
+pub(crate) fn response(status: StatusCode, content_type: &str, body: String) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)

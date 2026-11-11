@@ -8,8 +8,6 @@
 
 mod key_table;
 
-use std::cmp::Ordering;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GcodeObjectFormat {
     ExcludeObjectOrca,
@@ -94,14 +92,32 @@ pub fn match_objects_to_filenames<S: AsRef<str>>(
     plate_matches: &[PlateMatch],
     library_filenames: &[S],
 ) -> Vec<(String, Vec<String>)> {
-    let index = index_filenames(library_filenames);
+    match_objects_to_index(plate_matches, &FilenameIndex::new(library_filenames))
+}
+
+/// `match_objects_to_filenames` against filenames interpreted once, for
+/// callers that match many prints against the same library.
+pub fn match_objects_to_index(
+    plate_matches: &[PlateMatch],
+    index: &FilenameIndex,
+) -> Vec<(String, Vec<String>)> {
     plate_matches
         .iter()
         .map(|plate| {
-            let filenames = matched_filenames(&plate.stl_basename, &index, true);
+            let filenames = matched_filenames(&plate.stl_basename, &index.0, true);
             (plate.stl_basename.clone(), filenames)
         })
         .collect()
+}
+
+/// Library filenames with their interpreted comparison keys.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilenameIndex(Vec<IndexedFilename>);
+
+impl FilenameIndex {
+    pub fn new<S: AsRef<str>>(filenames: &[S]) -> Self {
+        Self(index_filenames(filenames))
+    }
 }
 
 /// Matches one raw object name to library filenames, as
@@ -118,11 +134,7 @@ pub fn match_object_name_exact<S: AsRef<str>>(raw_name: &str, filenames: &[S]) -
     matched_filenames(raw_name, &index_filenames(filenames), false)
 }
 
-fn matched_filenames(
-    raw_name: &str,
-    index: &[IndexedFilename<'_>],
-    allow_fuzzy: bool,
-) -> Vec<String> {
+fn matched_filenames(raw_name: &str, index: &[IndexedFilename], allow_fuzzy: bool) -> Vec<String> {
     match match_indexed_name(&interpret_sliced_object_name(raw_name), index, allow_fuzzy) {
         SlicedObjectNameMatch::Matched(filename) => vec![filename.to_owned()],
         SlicedObjectNameMatch::Ambiguous(filenames) => {
@@ -371,17 +383,27 @@ enum SlicedObjectNameMatch<'a> {
     Unmatched,
 }
 
-struct IndexedFilename<'a> {
-    filename: &'a str,
+#[derive(Debug, Clone, PartialEq)]
+struct IndexedFilename {
+    filename: String,
     interpreted: InterpretedSlicedObjectName,
+    /// `interpreted.basename_key` without `_`, for the fuzzy step.
+    compact_key: String,
+    /// Orders fuzzy candidates with equal scores.
+    locale_key: LocaleKey,
 }
 
-fn index_filenames<S: AsRef<str>>(filenames: &[S]) -> Vec<IndexedFilename<'_>> {
+fn index_filenames<S: AsRef<str>>(filenames: &[S]) -> Vec<IndexedFilename> {
     filenames
         .iter()
-        .map(|filename| IndexedFilename {
-            filename: filename.as_ref(),
-            interpreted: interpret_sliced_object_name(filename.as_ref()),
+        .map(|filename| {
+            let interpreted = interpret_sliced_object_name(filename.as_ref());
+            IndexedFilename {
+                filename: filename.as_ref().to_owned(),
+                locale_key: LocaleKey::new(filename.as_ref()),
+                compact_key: interpreted.basename_key.replace('_', ""),
+                interpreted,
+            }
         })
         .collect()
 }
@@ -394,14 +416,14 @@ fn exact_outcome<'a>(rows: Vec<&'a str>) -> Option<SlicedObjectNameMatch<'a>> {
     }
 }
 
-fn exact_rows<'a>(
-    indexed: &[IndexedFilename<'a>],
+fn exact_rows(
+    indexed: &[IndexedFilename],
     key: impl Fn(&InterpretedSlicedObjectName) -> bool,
-) -> Vec<&'a str> {
+) -> Vec<&str> {
     indexed
         .iter()
         .filter(|row| key(&row.interpreted))
-        .map(|row| row.filename)
+        .map(|row| row.filename.as_str())
         .collect()
 }
 
@@ -416,18 +438,19 @@ fn levenshtein(left: &[u8], right: &[u8]) -> usize {
     if right.is_empty() {
         return left.len();
     }
+    // Two rows reused for the whole table: this runs once per library
+    // filename for every unmatched print, so per-row allocation dominated.
     let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
     for (left_index, left_byte) in left.iter().enumerate() {
-        let mut current = vec![left_index + 1];
+        current[0] = left_index + 1;
         for (right_index, right_byte) in right.iter().enumerate() {
             let substitution = previous[right_index] + usize::from(left_byte != right_byte);
-            current.push(
-                (current[right_index] + 1)
-                    .min(previous[right_index + 1] + 1)
-                    .min(substitution),
-            );
+            current[right_index + 1] = (current[right_index] + 1)
+                .min(previous[right_index + 1] + 1)
+                .min(substitution);
         }
-        previous = current;
+        std::mem::swap(&mut previous, &mut current);
     }
     previous[right.len()]
 }
@@ -451,21 +474,15 @@ fn semantic_tokens(key: &str) -> Vec<&str> {
     tokens
 }
 
-fn semantic_tokens_agree(left_key: &str, right_key: &str) -> bool {
-    let left = semantic_tokens(left_key);
-    let right = semantic_tokens(right_key);
-    let filtered = |tokens: &[&'_ str], keep: fn(&str) -> bool| -> Vec<String> {
-        tokens
-            .iter()
+fn semantic_tokens_agree(left: &[&str], right: &[&str]) -> bool {
+    let same = |keep: fn(&str) -> bool| {
+        left.iter()
             .filter(|token| keep(token))
-            .map(|token| (*token).to_owned())
-            .collect()
+            .eq(right.iter().filter(|token| keep(token)))
     };
     let is_number = |token: &str| token.bytes().all(|byte| byte.is_ascii_digit());
     let is_axis = |token: &str| matches!(token, "x" | "y" | "z");
-    if filtered(&left, is_number) != filtered(&right, is_number)
-        || filtered(&left, is_axis) != filtered(&right, is_axis)
-    {
+    if !same(is_number) || !same(is_axis) {
         return false;
     }
     CONTRAST_GROUPS.iter().all(|group| {
@@ -475,23 +492,30 @@ fn semantic_tokens_agree(left_key: &str, right_key: &str) -> bool {
     })
 }
 
-fn fuzzy_score(left_key: &str, right_key: &str) -> (usize, f64) {
-    let left = left_key.replace('_', "");
-    let right = right_key.replace('_', "");
+/// Edit distance and similarity of two keys with their `_` removed.
+fn fuzzy_score(left: &str, right: &str) -> (usize, f64) {
     let distance = levenshtein(left.as_bytes(), right.as_bytes());
     let longest = left.len().max(right.len()).max(1);
     (distance, 1.0 - distance as f64 / longest as f64)
 }
 
-/// `String.prototype.localeCompare` under ICU root/en-US collation. Exact for
-/// ASCII: controls are ignorable; spaces, punctuation and symbols sort before
-/// digits and case-folded letters; lowercase wins ties. Non-ASCII characters
-/// fall back to code point order after every ASCII character.
-fn locale_compare(left: &str, right: &str) -> Ordering {
-    const ORDER: &[u8] =
-        b"\t\n\x0B\x0C\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz";
-    let weights = |value: &str| -> Vec<(u32, bool)> {
-        value
+/// Sort key matching `String.prototype.localeCompare` under ICU
+/// root/en-US collation. Exact for ASCII: controls are ignorable; spaces,
+/// punctuation and symbols sort before digits and case-folded letters;
+/// lowercase wins ties. Non-ASCII characters fall back to code point order
+/// after every ASCII character. Primary weights compare first, then the
+/// uppercase flags.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LocaleKey {
+    primary: Vec<u32>,
+    uppercase: Vec<bool>,
+}
+
+impl LocaleKey {
+    fn new(value: &str) -> Self {
+        const ORDER: &[u8] =
+            b"\t\n\x0B\x0C\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz";
+        let (primary, uppercase) = value
             .chars()
             .filter_map(|c| {
                 if !c.is_ascii() {
@@ -501,17 +525,14 @@ fn locale_compare(left: &str, right: &str) -> Ordering {
                 let primary = ORDER.iter().position(|&byte| byte == folded)?;
                 Some((primary as u32, c.is_ascii_uppercase()))
             })
-            .collect()
-    };
-    let (left, right) = (weights(left), weights(right));
-    let primary = |weights: &[(u32, bool)]| weights.iter().map(|w| w.0).collect::<Vec<_>>();
-    primary(&left)
-        .cmp(&primary(&right))
-        .then_with(|| left.iter().map(|w| w.1).cmp(right.iter().map(|w| w.1)))
+            .unzip();
+        Self { primary, uppercase }
+    }
 }
 
 struct FuzzyRow<'a> {
     filename: &'a str,
+    locale_key: &'a LocaleKey,
     distance: usize,
     score: f64,
     semantic: bool,
@@ -519,7 +540,7 @@ struct FuzzyRow<'a> {
 
 fn match_indexed_name<'a>(
     observed: &InterpretedSlicedObjectName,
-    indexed: &[IndexedFilename<'a>],
+    indexed: &'a [IndexedFilename],
     allow_fuzzy: bool,
 ) -> SlicedObjectNameMatch<'a> {
     if observed.basename_key.is_empty() {
@@ -547,18 +568,20 @@ fn match_indexed_name<'a>(
     if !allow_fuzzy {
         return SlicedObjectNameMatch::Unmatched;
     }
+    let observed_compact = observed.unit_stem_key.replace('_', "");
+    let observed_tokens = semantic_tokens(&observed.unit_stem_key);
     let mut fuzzy: Vec<FuzzyRow<'a>> = indexed
         .iter()
         .map(|row| {
-            let (distance, score) =
-                fuzzy_score(&observed.unit_stem_key, &row.interpreted.basename_key);
+            let (distance, score) = fuzzy_score(&observed_compact, &row.compact_key);
             FuzzyRow {
-                filename: row.filename,
+                filename: row.filename.as_str(),
+                locale_key: &row.locale_key,
                 distance,
                 score,
                 semantic: semantic_tokens_agree(
-                    &observed.unit_stem_key,
-                    &row.interpreted.basename_key,
+                    &observed_tokens,
+                    &semantic_tokens(&row.interpreted.basename_key),
                 ),
             }
         })
@@ -567,7 +590,7 @@ fn match_indexed_name<'a>(
         right
             .score
             .total_cmp(&left.score)
-            .then_with(|| locale_compare(left.filename, right.filename))
+            .then_with(|| left.locale_key.cmp(right.locale_key))
     });
     let Some(best) = fuzzy.first() else {
         return SlicedObjectNameMatch::Unmatched;
@@ -641,7 +664,7 @@ mod tests {
     #[test]
     fn ascii_collation_matches_icu_order() {
         let mut names = ["b", "B", "a-b", "a_b", "ab", "A", "a1", "a b", "a.b"];
-        names.sort_by(|left, right| locale_compare(left, right));
+        names.sort_by_key(|name| LocaleKey::new(name));
         assert_eq!(
             names,
             ["A", "a b", "a_b", "a-b", "a.b", "a1", "ab", "b", "B"]

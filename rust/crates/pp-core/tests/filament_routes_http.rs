@@ -23,6 +23,15 @@ fn policy() -> AuthPolicy {
         first_user: FirstUserTenant::NewUser,
     }
 }
+fn seeded_directory() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("print-partner.db"),
+        include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
+    )
+    .unwrap();
+    directory
+}
 async fn start(directory: &std::path::Path, flag: Option<&str>) -> (WriterOwner, Serving, String) {
     start_with_reader(directory, flag, Arc::new(NoNetwork)).await
 }
@@ -49,12 +58,7 @@ async fn start_with_reader(
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn filament_journey_aliases_validation_admission_and_restart() {
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(
-        directory.path().join("print-partner.db"),
-        include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
-    )
-    .unwrap();
+    let directory = seeded_directory();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     std::fs::write(directory.path().join("custom_filaments.json"), b"not json").unwrap();
     let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
@@ -138,12 +142,7 @@ async fn valid_node_store_outside_serde_range_is_never_replaced() {
         ),
         (deep, "[]"),
     ] {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join("print-partner.db"),
-            include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
-        )
-        .unwrap();
+        let directory = seeded_directory();
         let path = directory.path().join("custom_filaments.json");
         std::fs::write(&path, &original).unwrap();
         let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
@@ -220,13 +219,8 @@ impl CatalogReader for RevokeOnRead {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn catalog_withholds_inflight_colors_after_feature_revocation() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = seeded_directory();
     let path = directory.path().join("print-partner.db");
-    std::fs::write(
-        &path,
-        include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
-    )
-    .unwrap();
     rusqlite::Connection::open(&path).unwrap().execute_batch("INSERT OR REPLACE INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"spoolman\":true}'),('default','default_spoolman_integration_id','s1'),('default','integrations','[{\"id\":\"s1\",\"type\":\"spoolman\",\"config\":{}}]');").unwrap();
     let (owner, mut serving, origin) =
         start_with_reader(directory.path(), Some("1"), Arc::new(RevokeOnRead(path))).await;

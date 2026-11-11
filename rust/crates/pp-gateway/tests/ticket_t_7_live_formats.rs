@@ -327,7 +327,16 @@ fn no_writer_declarations_have_family_literal_rules() {
         .filter(|(_, format)| format["rust_writes"] == "none")
         .map(|(name, _)| name.as_str())
         .collect();
-    assert_eq!(no_writers, families.keys().copied().collect());
+    let expected_no_writers: std::collections::BTreeSet<_> = families
+        .keys()
+        .copied()
+        .filter(|name| *name != "custom-filaments")
+        .collect();
+    assert_eq!(no_writers, expected_no_writers);
+    assert_eq!(
+        manifest["live_formats"]["custom-filaments"]["rust_writes"],
+        1
+    );
 
     let rule = include_str!("../../../rules/no-writer-family-literal.yml");
     let mut regexes = rule

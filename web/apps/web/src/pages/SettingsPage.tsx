@@ -135,6 +135,7 @@ export default function SettingsPage() {
   const [updateIntervalSaving, setUpdateIntervalSaving] = useState(false);
   const [discordSettings, setDiscordSettings] = useState<DiscordNotifySettings | null>(null);
   const [discordWebhookInput, setDiscordWebhookInput] = useState("");
+  const [discordReplacing, setDiscordReplacing] = useState(false);
   const [discordWebhookError, setDiscordWebhookError] = useState<string | null>(null);
   const [discordSaving, setDiscordSaving] = useState(false);
   const [discordTestStatus, setDiscordTestStatus] = useState<string | null>(null);
@@ -186,7 +187,8 @@ export default function SettingsPage() {
             loadResource("discord", async () => {
               const settings = await fetchDiscordNotifySettings();
               setDiscordSettings(settings);
-              setDiscordWebhookInput(settings.webhook_url ?? "");
+              setDiscordWebhookInput("");
+              setDiscordReplacing(false);
             }),
           ]),
       loadResource("sourceUpdates", async () => {
@@ -675,52 +677,85 @@ export default function SettingsPage() {
                   : "Loading Discord settings…"}
               </p>
             )}
-            <label className="block text-sm">
-              <span className="mb-1 block text-muted-foreground">Webhook URL</span>
-              <input
-                type="text"
-                className={`${inputClass} w-full max-w-md`}
-                placeholder="https://discord.com/api/webhooks/..."
-                autoComplete="off"
-                disabled={!discordReady || discordSaving}
-                value={discordWebhookInput}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  setDiscordWebhookInput(value);
-                  const trimmed = value.trim();
-                  setDiscordWebhookError(trimmed.length > 0 ? validateDiscordWebhookUrl(trimmed) : null);
-                }}
-                aria-invalid={discordWebhookError ? true : undefined}
-              />
-              {discordWebhookError && (
-                <p className="mt-1 text-sm text-destructive">{discordWebhookError}</p>
-              )}
-            </label>
-            <Button
-              disabled={
-                !discordReady ||
-                discordSaving ||
-                Boolean(discordWebhookError)
-              }
-              onClick={async () => {
-                const trimmed = discordWebhookInput.trim();
-                const error = trimmed.length > 0 ? validateDiscordWebhookUrl(trimmed) : null;
-                setDiscordWebhookError(error);
-                if (error) return;
-                setDiscordSaving(true);
-                setDiscordTestStatus(null);
-                try {
-                  const saved = await saveDiscordNotifySettings({ webhook_url: trimmed || null });
-                  setDiscordSettings(saved);
-                } catch (e) {
-                  setLoadError(e instanceof Error ? e.message : String(e));
-                } finally {
-                  setDiscordSaving(false);
-                }
-              }}
-            >
-              {discordSaving ? "Saving…" : "Save"}
-            </Button>
+            {discordSettings?.webhook_url && !discordReplacing ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">Webhook URL</p>
+                <p className="break-all text-sm" aria-label="Saved webhook URL">
+                  {discordSettings.webhook_url}
+                </p>
+                <Button
+                  variant="secondary"
+                  disabled={!discordReady || discordSaving}
+                  onClick={() => {
+                    setDiscordWebhookInput("");
+                    setDiscordWebhookError(null);
+                    setDiscordReplacing(true);
+                  }}
+                >
+                  Replace
+                </Button>
+              </div>
+            ) : (
+              <>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-muted-foreground">Webhook URL</span>
+                  <input
+                    type="text"
+                    className={`${inputClass} w-full max-w-md`}
+                    placeholder="https://discord.com/api/webhooks/..."
+                    autoComplete="off"
+                    disabled={!discordReady || discordSaving}
+                    value={discordWebhookInput}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setDiscordWebhookInput(value);
+                      const trimmed = value.trim();
+                      setDiscordWebhookError(trimmed.length > 0 ? validateDiscordWebhookUrl(trimmed) : null);
+                    }}
+                    aria-invalid={discordWebhookError ? true : undefined}
+                  />
+                  {discordWebhookError && (
+                    <p className="mt-1 text-sm text-destructive">{discordWebhookError}</p>
+                  )}
+                </label>
+                <Button
+                  disabled={
+                    !discordReady ||
+                    discordSaving ||
+                    Boolean(discordWebhookError)
+                  }
+                  onClick={async () => {
+                    const trimmed = discordWebhookInput.trim();
+                    const error = trimmed.length > 0 ? validateDiscordWebhookUrl(trimmed) : null;
+                    setDiscordWebhookError(error);
+                    if (error) return;
+                    setDiscordSaving(true);
+                    setDiscordTestStatus(null);
+                    try {
+                      const saved = await saveDiscordNotifySettings({ webhook_url: trimmed || null });
+                      setDiscordSettings(saved);
+                      setDiscordWebhookInput("");
+                      setDiscordReplacing(false);
+                    } catch (e) {
+                      setLoadError(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setDiscordSaving(false);
+                    }
+                  }}
+                >
+                  {discordSaving ? "Saving…" : "Save"}
+                </Button>
+                {discordSettings?.webhook_url && (
+                  <Button variant="secondary" disabled={discordSaving} onClick={() => {
+                    setDiscordWebhookInput("");
+                    setDiscordWebhookError(null);
+                    setDiscordReplacing(false);
+                  }}>
+                    Cancel
+                  </Button>
+                )}
+              </>
+            )}
             {discordSettings?.webhook_url && (
               <div className="space-y-2 pt-1">
                 <label

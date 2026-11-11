@@ -65,12 +65,23 @@ pub enum Outcome {
 // Secret-bearing commands and outcomes must never reveal their payload in errors.
 impl std::fmt::Debug for Write {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Write([REDACTED])")
+        match self {
+            Self::DateFormat(value) => f.debug_tuple("DateFormat").field(value).finish(),
+            Self::BuildTracking(value) => f.debug_tuple("BuildTracking").field(value).finish(),
+            Self::SpoolmanDefault(value) => f.debug_tuple("SpoolmanDefault").field(value).finish(),
+            Self::GithubPat(_) => f.write_str("GithubPat([REDACTED])"),
+            Self::DiscordNotify(_) => f.write_str("DiscordNotify([REDACTED])"),
+        }
     }
 }
 impl std::fmt::Debug for Outcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Outcome([REDACTED])")
+        match self {
+            Self::Value(_) => f.write_str("Value([REDACTED])"), // Can contain the stored PAT.
+            Self::Written => f.write_str("Written"),
+            Self::NotSpoolman => f.write_str("NotSpoolman"),
+            Self::DiscordNotify(_) => f.write_str("DiscordNotify([REDACTED])"),
+        }
     }
 }
 const DISCORD_KEYS: [&str; 4] = [
@@ -183,7 +194,7 @@ pub(super) fn execute(
         Request::Write(Write::DiscordNotify(values)) => {
             for (value, key) in values.iter().zip(DISCORD_KEYS) {
                 if let Some(value) = value {
-                    tx.execute("INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value", params![tenant, key, value])?;
+                    upsert(&tx, &tenant, key, value)?;
                 }
             }
             discord(&tx, &tenant)?
@@ -212,11 +223,16 @@ fn read(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Option<String>>
 }
 
 fn store(tx: &Transaction<'_>, tenant: &str, key: Key, value: &str) -> Result<Outcome> {
+    upsert(tx, tenant, key.name(), value)?;
+    Ok(Outcome::Written)
+}
+
+fn upsert(tx: &Transaction<'_>, tenant: &str, key: &str, value: &str) -> Result<()> {
     tx.execute(
         "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
-        params![tenant, key.name(), value],
+        params![tenant, key, value],
     )?;
-    Ok(Outcome::Written)
+    Ok(())
 }
 
 /// Node's `getIntegrationConfig(repo, id)?.type === "spoolman"`: the first
@@ -237,7 +253,32 @@ fn is_spoolman(integrations: Option<String>, id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_spoolman;
+    use super::{Outcome, Write, is_spoolman};
+
+    #[test]
+    fn debug_retains_nonsecret_variants_without_secret_values() {
+        assert_eq!(format!("{:?}", Outcome::Written), "Written");
+        assert_eq!(format!("{:?}", Outcome::NotSpoolman), "NotSpoolman");
+        assert_eq!(
+            format!("{:?}", Write::BuildTracking(true)),
+            "BuildTracking(true)"
+        );
+        for text in [
+            format!("{:?}", Write::GithubPat("obviously-fake-pat".into())),
+            format!(
+                "{:?}",
+                Write::DiscordNotify([Some("obviously-fake-hook".into()), None, None, None])
+            ),
+            format!("{:?}", Outcome::Value(Some("obviously-fake-pat".into()))),
+            format!(
+                "{:?}",
+                Outcome::DiscordNotify([Some("obviously-fake-hook".into()), None, None, None])
+            ),
+        ] {
+            assert!(text.contains("[REDACTED]"));
+            assert!(!text.contains("obviously-fake"));
+        }
+    }
 
     #[test]
     fn spoolman_lookup_takes_the_first_row_with_a_string_id() {

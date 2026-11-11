@@ -1,5 +1,8 @@
 use super::*;
 
+// GRE-1330 owns moving these Node-compatible app_settings bytes to native secrets.
+const MASKED_PAT: &str = "****";
+
 pub(super) fn routes() -> Router<App> {
     Router::new()
         .route("/settings/github-pat", get(get_pat).put(put_pat))
@@ -26,9 +29,18 @@ async fn put_pat(
         Ok(_) => return failure(StatusCode::BAD_REQUEST, "Token must be a string"),
         Err(error) => return *error,
     };
+    if token == MASKED_PAT {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "Enter a replacement token, not its mask",
+        );
+    }
     let configured = !token.is_empty();
     match write(&app, p, Write::GithubPat(token)).await {
-        Ok(_) => ok(&json!({"configured": configured, "masked": configured.then_some("****")})),
+        Ok(Outcome::Written) => {
+            ok(&json!({"configured": configured, "masked": configured.then_some(MASKED_PAT)}))
+        }
+        Ok(_) => unexpected_outcome(),
         Err(error) => *error,
     }
 }
@@ -55,9 +67,15 @@ async fn get_discord(
     Extension(p): Extension<PresentedCredential>,
 ) -> Response {
     match read_outcome(&app, p, Key::DiscordNotify).await {
-        Ok(Outcome::DiscordNotify(values)) => ok(&discord_body(values)),
-        Ok(_) => unreadable(),
+        Ok(outcome) => discord_response(outcome),
         Err(error) => *error,
+    }
+}
+
+fn discord_response(outcome: Outcome) -> Response {
+    match outcome {
+        Outcome::DiscordNotify(values) => ok(&discord_body(values)),
+        _ => unexpected_outcome(),
     }
 }
 
@@ -123,14 +141,27 @@ async fn put_discord(
         }
     }
     match write(&app, p, Write::DiscordNotify(values)).await {
-        Ok(Outcome::DiscordNotify(values)) => ok(&discord_body(values)),
-        Ok(_) => unreadable(),
+        Ok(outcome) => discord_response(outcome),
         Err(error) => *error,
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn impossible_storage_outcomes_are_internal_errors() {
+        for outcome in [
+            Outcome::Written,
+            Outcome::NotSpoolman,
+            Outcome::Value(Some("obviously-fake".into())),
+        ] {
+            assert_eq!(
+                discord_response(outcome).status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
     #[test]
     fn webhook_validation_and_redaction_never_echo_legacy_secrets() {
         for host in [

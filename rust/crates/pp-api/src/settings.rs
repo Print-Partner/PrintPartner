@@ -239,7 +239,7 @@ async fn read(
 ) -> Result<Option<String>, Box<Response>> {
     match read_outcome(app, presented, key).await? {
         Outcome::Value(value) => Ok(value),
-        _ => Err(Box::new(unreadable())),
+        _ => Err(Box::new(unexpected_outcome())),
     }
 }
 
@@ -314,6 +314,10 @@ fn settled(
             "Internal Server Error",
         ))),
     }
+}
+
+fn unexpected_outcome() -> Response {
+    failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
 }
 
 fn ok(body: &Value) -> Response {

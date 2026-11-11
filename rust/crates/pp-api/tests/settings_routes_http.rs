@@ -324,6 +324,10 @@ async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
         "../../../../fixtures/admin/secret-settings-oracle.json"
     ))
     .unwrap();
+    assert_eq!(
+        cases["steps"].as_array().unwrap().len(),
+        oracle["replies"].as_array().unwrap().len()
+    );
     let (directory, mut server) = seeded().await;
     server.keys = cases["keys"].clone();
     for (index, (step, node)) in cases["steps"]
@@ -334,6 +338,11 @@ async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
         .enumerate()
     {
         let reply = server.send(step, &[COOKIE]).await;
+        assert_eq!(
+            reply.cache_control.as_deref(),
+            Some("private, no-store"),
+            "step {index}"
+        );
         assert_eq!(
             reply.status,
             node["status"].as_u64().unwrap() as u16,
@@ -395,6 +404,52 @@ async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
     for path in ["github-pat", "discord-notify"] {
         let step = json!({"method":"GET","path":format!("/settings/{path}")});
         assert_eq!(server.send(&step, &[COOKIE]).await.status, 404);
+    }
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn secret_display_values_cannot_replace_stored_credentials() {
+    let (_directory, mut server) = seeded().await;
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/admin/secret-settings-cases.json"
+    ))
+    .unwrap();
+    server.keys = cases["keys"].clone();
+    for prefix in ["", "/api/v1"] {
+        for (route, field, display, secret) in [
+            (
+                "github-pat",
+                "token",
+                "masked",
+                "obviously-fake-roundtrip-pat",
+            ),
+            (
+                "discord-notify",
+                "webhook_url",
+                "webhook_url",
+                "https://discord.com/api/webhooks/123/obviously-fake-roundtrip-webhook",
+            ),
+        ] {
+            let path = format!("{prefix}/settings/{route}");
+            let request = |value: &Value| {
+                json!({"method":"PUT", "path":path,
+                "content_type":"application/json", "body":json!({(field):value}).to_string()})
+            };
+            let saved = server.send(&request(&json!(secret)), &[COOKIE]).await;
+            assert_eq!(saved.status, 200);
+            assert_eq!(saved.cache_control.as_deref(), Some("private, no-store"));
+            let body = saved.json();
+            assert_eq!(
+                body.as_object().unwrap().len(),
+                if route == "github-pat" { 2 } else { 4 }
+            );
+            let before = server.stored();
+            let refused = server.send(&request(&body[display]), &[COOKIE]).await;
+            assert_eq!(refused.status, 400);
+            assert_eq!(refused.cache_control.as_deref(), Some("private, no-store"));
+            assert_eq!(server.stored(), before);
+        }
     }
     server.stop().await;
 }

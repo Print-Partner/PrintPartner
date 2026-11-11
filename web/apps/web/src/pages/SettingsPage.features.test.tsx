@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -9,6 +9,7 @@ import {
   type FeatureSettings,
 } from "@print-partner/contracts";
 import SettingsPage from "./SettingsPage";
+import { fetchDiscordNotifySettings, saveDiscordNotifySettings } from "../api/endpoints/settings";
 
 const state = vi.hoisted((): { capabilities: string[]; featureSettings: FeatureSettings; patchCalls: unknown[]; fetchError: Error | null; patchError: Error | null } => ({
   capabilities: [],
@@ -208,6 +209,34 @@ describe("SettingsPage tenant feature toggles gate and controls", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it("keeps a saved redacted webhook out of the replacement input", async () => {
+    const saved = {
+      webhook_url: "https://discord.com/[REDACTED]",
+      notify_on_update: true,
+      notify_on_sync: false,
+      auto_sync_updates: true,
+    };
+    vi.mocked(fetchDiscordNotifySettings).mockResolvedValueOnce(saved);
+    vi.mocked(saveDiscordNotifySettings).mockResolvedValueOnce(saved);
+    renderSettingsPage();
+    expect(await screen.findByLabelText("Saved webhook URL")).toBeTruthy();
+    expect(screen.queryByLabelText("Webhook URL")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    const input = screen.getByLabelText("Webhook URL") as HTMLInputElement;
+    expect(input.value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Webhook URL")).toBeNull();
+    expect(saveDiscordNotifySettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    const replacement = "https://discord.com/api/webhooks/123/obviously-fake-replacement";
+    fireEvent.change(screen.getByLabelText("Webhook URL"), { target: { value: replacement } });
+    const section = screen.getByLabelText("Webhook URL").closest<HTMLElement>("[data-surface]")!;
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(saveDiscordNotifySettings).toHaveBeenCalledWith({ webhook_url: replacement }));
+    await screen.findByLabelText("Saved webhook URL");
+    expect(screen.queryByLabelText("Webhook URL")).toBeNull();
   });
 
   it("omits feature toggles controls when TENANT_FEATURE_TOGGLES_CAPABILITY is absent", () => {

@@ -223,6 +223,10 @@ Differences by design:
   Invalid legacy text returns `[REDACTED]`. Node returns the complete URL.
   A masked response is not a valid replacement URL; omit `webhook_url` to keep
   the stored value. These settings routes never return the stored secret.
+- Submitting the displayed PAT mask (`****`) as a replacement returns 400 without writing.
+  Discord redacted URLs also return 400; omit the field to keep the stored value.
+  The Settings page shows the saved URL as read-only text; Replace opens an empty input.
+- Impossible storage outcomes answer 500. Stored-data and request validation retain their existing mappings.
 - Errors use the Rust problem envelope, with Node validation detail where applicable.
 - Null Discord JSON bodies and non-string webhook values answer 400 rather than
   Node's TypeError. PAT null or absent bodies use the Rust malformed-request

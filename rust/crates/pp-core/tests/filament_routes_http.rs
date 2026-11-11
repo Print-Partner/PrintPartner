@@ -2,7 +2,7 @@
 use pp_api::{
     admin::{AdminHttpConfig, admin_router},
     filaments::{CatalogReader, filament_router},
-    serving::Serving,
+    fixtures::Served,
 };
 use pp_storage::{
     Limits, WriterOwner,
@@ -32,36 +32,40 @@ fn seeded_directory() -> tempfile::TempDir {
     .unwrap();
     directory
 }
-async fn start(directory: &std::path::Path, flag: Option<&str>) -> (WriterOwner, Serving, String) {
+async fn start(directory: &std::path::Path, flag: Option<&str>) -> (WriterOwner, Served, String) {
     start_with_reader(directory, flag, Arc::new(NoNetwork)).await
 }
 async fn start_with_reader(
     directory: &std::path::Path,
     flag: Option<&str>,
     reader: Arc<dyn CatalogReader>,
-) -> (WriterOwner, Serving, String) {
+) -> (WriterOwner, Served, String) {
     let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
-    let (listener, origin) = pp_testkit::http_listener().await.unwrap();
-    let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
-    let router = admin_router(
-        config.clone(),
-        owner.accepted_reads().unwrap(),
-        owner.admin_files().unwrap(),
-    )
-    .merge(filament_router(
-        config,
-        owner.accepted_reads().unwrap(),
-        owner.filaments_with_policy(policy()).unwrap(),
-        reader,
-    ));
-    (owner, Serving::start(listener, router), origin)
+    let server = Served::start(|origin| {
+        let config = AdminHttpConfig::from_startup(origin, "default", flag).unwrap();
+        admin_router(
+            config.clone(),
+            owner.accepted_reads().unwrap(),
+            owner.admin_files().unwrap(),
+        )
+        .merge(filament_router(
+            config,
+            owner.accepted_reads().unwrap(),
+            owner.filaments_with_policy(policy()).unwrap(),
+            reader,
+        ))
+    })
+    .await
+    .unwrap();
+    let origin = server.origin.clone();
+    (owner, server, origin)
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn filament_journey_aliases_validation_admission_and_restart() {
     let directory = seeded_directory();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     std::fs::write(directory.path().join("custom_filaments.json"), b"not json").unwrap();
-    let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
+    let (owner, serving, origin) = start(directory.path(), Some("1")).await;
     exercise_aliases(&client, &origin).await;
     let kept: Value = client
         .post(format!("{origin}/filaments/custom"))
@@ -101,7 +105,7 @@ async fn filament_journey_aliases_validation_admission_and_restart() {
     assert_eq!(saved, std::fs::read(&path).unwrap());
     serving.stop().await.unwrap();
     owner.shutdown().unwrap();
-    let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
+    let (owner, serving, origin) = start(directory.path(), Some("1")).await;
     let body: Value = client
         .get(format!("{origin}/filaments/custom"))
         .header("cookie", "pp_session=read-fixture-secret")
@@ -114,7 +118,7 @@ async fn filament_journey_aliases_validation_admission_and_restart() {
     assert_eq!(body, json!({"filaments":[kept]}));
     serving.stop().await.unwrap();
     owner.shutdown().unwrap();
-    let (owner, mut serving, origin) = start(directory.path(), None).await;
+    let (owner, serving, origin) = start(directory.path(), None).await;
     assert_eq!(
         client
             .get(format!("{origin}/filaments/catalog"))
@@ -145,7 +149,7 @@ async fn valid_node_store_outside_serde_range_is_never_replaced() {
         let directory = seeded_directory();
         let path = directory.path().join("custom_filaments.json");
         std::fs::write(&path, &original).unwrap();
-        let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
+        let (owner, serving, origin) = start(directory.path(), Some("1")).await;
         let client = reqwest::Client::new();
         for prefix in ["", "/api/v1"] {
             let reply = client
@@ -222,7 +226,7 @@ async fn catalog_withholds_inflight_colors_after_feature_revocation() {
     let directory = seeded_directory();
     let path = directory.path().join("print-partner.db");
     rusqlite::Connection::open(&path).unwrap().execute_batch("INSERT OR REPLACE INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"spoolman\":true}'),('default','default_spoolman_integration_id','s1'),('default','integrations','[{\"id\":\"s1\",\"type\":\"spoolman\",\"config\":{}}]');").unwrap();
-    let (owner, mut serving, origin) =
+    let (owner, serving, origin) =
         start_with_reader(directory.path(), Some("1"), Arc::new(RevokeOnRead(path))).await;
     let body: Value = reqwest::Client::new()
         .get(format!("{origin}/filaments/catalog"))

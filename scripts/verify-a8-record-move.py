@@ -63,7 +63,9 @@ TEXT_REWRITES = {
     "docs/records/d10b-manifest-observation.md": ((b"GRE-644 slice 1 wires its build graph manifest commands, described below.",
         b"GRE-644 slice 1 wires its build graph manifest commands, described in [GRE-644 manifest commands, slice 1](manifest-commands.md)."),),
     "docs/records/d19-publication-model.md": ((b"PR 2 adds the transaction entry described below.",
-        b"PR 2 adds the transaction entry described in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md)."),),
+        b"PR 2 adds the transaction entry described in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md)."),
+        (b"The transaction cases below also import",
+         b"The transaction cases in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md) also import"),),
 }
 # The D19 client record holds the route sections desktop-rebuild.md used to carry (Production
 # setup, Accepted Plate routes, D24 drafts HTTP and others), so the source lists its ### sections

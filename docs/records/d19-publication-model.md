@@ -20,7 +20,7 @@ The fixture header records the generating Node version. The generator imports
 `requiredUnitObjectName`. It extracts and executes the repository's inline
 accepted revision check, `projectionPlanningFieldsMatch`, and private
 `applyCheckoffRemap` and `strictProductionState` methods with row and setting
-adapters. It does not copy their implementations. The transaction cases below also import
+adapters. It does not copy their implementations. The transaction cases in [D19 publication transaction and job conflicts, GRE-612 PR 2](d19-publication-transaction.md) also import
 the real repository and SQLite database layer.
 
 Rust tests compare literal digests, progress, assignment coordinates, object

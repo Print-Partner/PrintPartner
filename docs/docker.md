@@ -50,7 +50,7 @@ docker run -d --name print-partner \
   --cap-drop ALL --security-opt no-new-privileges \
   -v pp-data:/data \
   pp-server:test
-docker logs print-partner    # first line: the origin, http://127.0.0.1:<port>
+docker logs print-partner    # includes the origin, http://127.0.0.1:<port>
 ```
 
 - **User.** The image runs as UID 1000, GID 1000 (`ppuser`) from the first instruction. It never starts as root and has no `gosu` or entrypoint `chown`.

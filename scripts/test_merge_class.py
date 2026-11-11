@@ -154,7 +154,7 @@ class ScoreTests(unittest.TestCase):
             self.line().replace("score=9", "score=nine"),
             self.line().replace("score=9", "score=" + "9" * 5000),
             self.line().replace("head=" + SHA, "head=abc"),
-            self.line() + " extra", "pp-score head=" + SHA,
+            self.line() + " extra", "pp-score head=" + SHA, self.line() + " ",
             self.line("gpt-6.1-sol", vendor="openai"),
             None,
         ):
@@ -172,7 +172,7 @@ class ScoreTests(unittest.TestCase):
         self.assertTrue(self.check(["Review complete.", self.line(sha=OTHER), self.line(), self.grok()]))
         # A record quoted in prose, a list bullet or backticks is not a record.
         for prose in ("prose " + self.line(), "- " + self.line(), "`" + self.line() + "`",
-                      "Post the pp-score line after the run."):
+                      "  " + self.line(), "Post the pp-score line after the run."):
             with self.subTest(prose=prose):
                 self.assertTrue(self.check([prose, self.line(), self.grok()]))
 

@@ -98,7 +98,7 @@ def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
     allowed_seats maps each seat to its vendor and vendors lists every vendor a record may name
     (scorer_seats and vendors in merge-classes.json), so a seat or vendor change is data only. Malformed records, unknown seats and same-vendor-as-author records refuse.
 
-    A score record is a line that starts with "pp-score "; every record must parse,
+    A score record is a line that starts with "pp-score " at column 0; every record must parse,
     including old ones. Other lines are ignored, including prose that mentions the
     token. Records for another head never count and are not checked against allowed_seats.
     """
@@ -119,9 +119,9 @@ def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
         if not isinstance(body, str):
             return False
         for line in body.splitlines():
-            if not line.strip().startswith("pp-score "):
+            if not line.startswith("pp-score "):
                 continue
-            match = record_pattern.fullmatch(line.strip())
+            match = record_pattern.fullmatch(line)
             if not match:
                 return False
             record_head, seat, vendor, score, author = match.groups()

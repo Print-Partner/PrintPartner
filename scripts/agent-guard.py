@@ -120,7 +120,10 @@ STALE_INPUT = ("Run a gh api request that reads a file as a separate command; "
                "other commands could change the file or directory before gh reads it.")
 COMMENT_EDIT = ("Only the coordinator worktree edits or deletes PR comments: a score record must not change "
                 "after it is posted. Post a new comment instead.")
-ISSUE_COMMENT_ID = re.compile(REPO_PATH + r"issues/comments/\d+$")
+COMMENT_ID = re.compile(REPO_PATH + r"(?:issues|pulls)/comments/\d+$")
+# GraphQL mutations that change or remove an existing comment.
+COMMENT_EDIT_MUTATIONS = {"updateIssueComment", "updatePullRequestReviewComment", "deleteIssueComment",
+                          "deletePullRequestReviewComment"}
 API_WRITE = ("Through gh api, agents may read and write PR or issue comments and review threads; "
              "other writes need the maintainer.")
 SAFE_PUSH_LONG = {"--atomic", "--dry-run", "--force-if-includes", "--ipv4", "--ipv6", "--no-atomic",
@@ -931,7 +934,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         return COMMENT_EDIT if edits and not coordinator_worktree(cwd) else None
     if args[:1] != ["api"]:
         return None
-    method, endpoint, fields, body, i = None, None, [], None, 1
+    method, endpoint, fields, body, headers, i = None, None, [], None, [], 1
     while i < len(args):
         arg = args[i]
         i += 1
@@ -966,11 +969,16 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
             fields.append((name, value))
         elif name == "--input":
             body = value
+        elif name in ("-H", "--header"):
+            headers.append(value)
     if endpoint is None:
         return None
     # gh sends POST when the request has fields or a body.
     method = (method or ("POST" if fields or body is not None else "GET")).upper()
+    override = any(header.partition(":")[0].strip().lower() == "x-http-method-override" for header in headers)
     if method in ("GET", "HEAD"):
+        if override and COMMENT_ID.search(urlsplit(endpoint).path.strip("/")) and not coordinator_worktree(cwd):
+            return COMMENT_EDIT
         return None
     if marker and not coordinator_worktree(cwd):
         return MARKER
@@ -1003,14 +1011,15 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     if graphql:
         for document in graphql_documents(fields, body, cwd):
             names = mutation_fields(document)
+            if names and COMMENT_EDIT_MUTATIONS & set(names) and not coordinator_worktree(cwd):
+                return COMMENT_EDIT
             if names is None or set(names) - ALLOWED_MUTATIONS:
                 return API_WRITE
-            if "updateIssueComment" in names and not coordinator_worktree(cwd):
-                return COMMENT_EDIT
         return None
     if method == "POST" and REVIEW_WRITES.search(path):
         return None if review_events(fields, body, cwd) <= {"", "COMMENT"} else API_WRITE
-    if method in ("PATCH", "PUT", "DELETE") and ISSUE_COMMENT_ID.search(path) and not coordinator_worktree(cwd):
+    # Any method but GET or HEAD on an existing comment, including POST and an implicit POST, edits it.
+    if COMMENT_ID.search(path) and not coordinator_worktree(cwd):
         return COMMENT_EDIT
     if method in ("POST", "PATCH") and COMMENT_WRITES.search(path):
         return None
@@ -1041,11 +1050,17 @@ def coordinator_merge(args, cwd):
     return bool(number and squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
 
 
+FILE_LIST_CAP = 3000
+
+
 def changed_paths(pages, changed_files):
     """Return every path a PR touches, both sides of each rename; refuse incomplete lists."""
     if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
         raise ValueError("missing PR file pages")
     files = [entry for page in pages for entry in page]
+    # The REST file list stops at 3000 entries, so a list of that size may be incomplete.
+    if type(changed_files) is int and changed_files >= FILE_LIST_CAP:
+        raise ValueError("PR file list at the API cap")
     if not files or type(changed_files) is not int or changed_files != len(files):
         raise ValueError("missing or incomplete PR files")
     paths = []
@@ -1058,11 +1073,12 @@ def changed_paths(pages, changed_files):
     return paths
 
 
-def trusted_comment_bodies(pages, authors):
+def trusted_comment_bodies(pages, authors, head):
     """Return (bodies, edited) for PR comments whose author is in authors; refuse malformed pages.
 
-    edited says a trusted comment that holds a pp-score record was changed after it was posted
-    (updated_at differs from created_at). A deleted record cannot be seen here (GRE-1408)."""
+    edited says a trusted comment holding a pp-score record for head was changed after it was
+    posted (updated_at differs from created_at). Records for older heads never count, so their
+    edits do not matter. A deleted record cannot be seen here (GRE-1408)."""
     if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
         raise ValueError("missing PR comment pages")
     bodies, edited = [], False
@@ -1073,7 +1089,7 @@ def trusted_comment_bodies(pages, authors):
                 raise ValueError("missing comment author or body")
             if login not in authors:
                 continue
-            if any(line.strip().startswith("pp-score ") for line in body.splitlines()):
+            if any(line.startswith(f"pp-score head={head} ") for line in body.splitlines()):
                 created, updated = comment["created_at"], comment["updated_at"]
                 if not isinstance(created, str) or not created or not isinstance(updated, str) or not updated:
                     raise ValueError("missing comment timestamps")
@@ -1143,7 +1159,7 @@ def coordinator_merge_reason(args, cwd):
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
         pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
-        bodies, edited = trusted_comment_bodies(pages, authors)
+        bodies, edited = trusted_comment_bodies(pages, authors, sha)
         if edited:
             return "Sensitive PR refused: a pp-score comment was edited after it was posted; edited records never count."
         record_pattern = merge_class.score_pattern(config["vendors"])
@@ -1152,7 +1168,7 @@ def coordinator_merge_reason(args, cwd):
         author_vendors = set()
         for body in bodies:
             for line in body.splitlines():
-                match = record_pattern.fullmatch(line.strip())
+                match = record_pattern.fullmatch(line)
                 if match and match.group(1) == sha:
                     author_vendors.add(match.group(5))
         author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None

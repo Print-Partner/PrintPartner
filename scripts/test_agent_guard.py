@@ -860,9 +860,18 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         missing = self.scores()
         del missing[1][0]["updated_at"]
         self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], missing))
+        # An edited record for an older head never counts, so its edit does not block the merge.
+        old = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b",
+                 "body": "pp-score head=" + "a" * 40 + " seat=grok-4.7 vendor=xai score=9 author=openai"}]]
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores() + old))
         # An edited comment without a score record does not matter.
         prose = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b", "body": "Handoff."}]]
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores() + prose))
+
+    def test_file_list_at_the_api_cap_refused(self):
+        paths = [f"docs/f{i}.md" for i in range(3000)]
+        self.assertIn("merge refused", self.check(paths))
+        self.assertIsNone(self.check(paths[:2999]))
 
     def test_head_moved_during_check_refused(self):
         self.assertIn("head changed", self.check(["docs/example.md"], head_after="a" * 40))
@@ -1027,7 +1036,15 @@ class CommentEditTests(unittest.TestCase):
              "gh pr comment 12 --edit-last -b edited", "gh pr comment 12 --delete-last --yes",
              "gh issue comment 12 --edit-last -b edited",
              "gh api graphql -f query='mutation { updateIssueComment(input: {id: \"X\", body: \"e\"}) "
-             "{ clientMutationId } }'")
+             "{ clientMutationId } }'",
+             # POST, an implicit POST (fields without -X), and a method-override header edit a comment too.
+             "gh api -X POST repos/o/r/issues/comments/34 -f body=edited",
+             "gh api repos/o/r/issues/comments/34 -f body=edited",
+             "gh api -H 'X-HTTP-Method-Override: PATCH' repos/o/r/issues/comments/34",
+             "gh api -X PATCH repos/o/r/pulls/comments/34 -f body=edited",
+             "gh api graphql -f query='mutation { updatePullRequestReviewComment(input: "
+             "{pullRequestReviewCommentId: \"X\", body: \"e\"}) { clientMutationId } }'",
+             "gh api graphql -f query='mutation { deleteIssueComment(input: {id: \"X\"}) { clientMutationId } }'")
 
     def test_lane_worktrees_cannot_edit_or_delete_comments(self):
         for command in self.EDITS:
@@ -1038,12 +1055,13 @@ class CommentEditTests(unittest.TestCase):
                         self.assertIn("edits or deletes PR comments", result.stderr)
 
     def test_coordinator_edits_comments_and_lanes_still_post(self):
-        for command in self.EDITS[:2] + self.EDITS[3:6]:
+        for command in self.EDITS[:2] + self.EDITS[3:7] + self.EDITS[7:9] + self.EDITS[10:12]:
             for result in self.results(command, self.coordinator, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
         for command in ("gh pr comment 12 -b ok", "gh api repos/o/r/issues/12/comments -f body=ok",
-                        "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok"):
+                        "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
+                        "gh api repos/o/r/issues/comments/34", "gh api -X GET repos/o/r/pulls/comments/34"):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)

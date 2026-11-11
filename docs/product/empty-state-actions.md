@@ -40,7 +40,7 @@ xvfb-run -a scripts/evidence/run.sh --empty-states --module farm --module orders
 ```
 
 `--empty-states` changes only the harness-generated synthetic seed before startup.
-It archives the seeded Builds and clears due dates, adds archived Build 1000
+It archives the seeded undated Builds, adds archived Build 1000
 without history, and removes waiting checkoff links, the Farm log and the send
 queue. Existing Plan histories stay intact. The capture selects Overdue on
 Builds to show an empty filter; it does not change real data or issue a send.

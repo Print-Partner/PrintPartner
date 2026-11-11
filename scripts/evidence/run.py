@@ -282,8 +282,8 @@ def prepare_empty_states(seed):
         raise SystemExit("empty states require a synthetic seed")
     with sqlite3.connect(seed / "print-partner.db") as db:
         # Keep the existing histories intact. An archived, newly seeded Build has
-        # no history and contributes no ranked task; every due date is absent.
-        db.execute("UPDATE build_profiles SET archived_at='2026-11-01T00:00:00Z', due_date=NULL")
+        # no history and contributes no ranked task. The seed has no due dates.
+        db.execute("UPDATE build_profiles SET archived_at='2026-11-01T00:00:00Z'")
         db.execute("INSERT INTO build_profiles(id,name,archived_at) VALUES(1000,?,?)",
                    ("Synthetic empty Build", "2026-11-01T00:00:00Z"))
         db.execute("DELETE FROM app_settings WHERE key IN "

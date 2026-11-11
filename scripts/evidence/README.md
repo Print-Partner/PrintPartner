@@ -91,7 +91,7 @@ How (`scripts/evidence/publisher.py`, tests in `test_publisher.py`):
 ## Empty-state audit
 
 `--empty-states` prepares only the generated synthetic seed: it archives the
-Builds, clears due dates and waiting checkoff links, clears the Farm log and send
+Builds, clears waiting checkoff links, clears the Farm log and send
 queue, and adds archived Build 1000 without history. Existing histories remain.
 The Builds shot selects Overdue to show the empty filter. Use both Modules:
 

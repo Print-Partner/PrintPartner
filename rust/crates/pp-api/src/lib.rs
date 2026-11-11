@@ -72,6 +72,8 @@ pub mod events;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm;
 #[cfg(feature = "desktop_rebuild")]
+pub mod filaments;
+#[cfg(feature = "desktop_rebuild")]
 pub mod file_assignments;
 #[cfg(feature = "desktop_rebuild")]
 pub mod fixtures;

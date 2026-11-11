@@ -1,6 +1,6 @@
 {
   "pp-api": {
-    "module": 55,
+    "module": 59,
     "item": 165,
     "statement": 23
   },
@@ -10,8 +10,8 @@
     "statement": 0
   },
   "pp-compat": {
-    "module": 0,
-    "item": 4,
+    "module": 1,
+    "item": 6,
     "statement": 1
   },
   "pp-contracts": {
@@ -20,7 +20,7 @@
     "statement": 0
   },
   "pp-core": {
-    "module": 42,
+    "module": 44,
     "item": 40,
     "statement": 7
   },
@@ -60,7 +60,7 @@
     "statement": 0
   },
   "pp-server": {
-    "module": 1,
+    "module": 2,
     "item": 0,
     "statement": 0
   },
@@ -75,8 +75,8 @@
     "statement": 3
   },
   "pp-storage": {
-    "module": 125,
-    "item": 397,
+    "module": 128,
+    "item": 403,
     "statement": 362
   },
   "pp-testkit": {

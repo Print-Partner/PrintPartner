@@ -53,7 +53,7 @@ async fn absent_replacement_bundle_preserves_legacy_navigation() {
         .args([
             "--ignored",
             "--exact",
-            "slice0_mount::slice0_mount_launcher_in_child",
+            "launcher_start::slice0_mount_launcher_in_child",
             "--nocapture",
         ])
         .env("PP_SLICE0_DATA", &data)

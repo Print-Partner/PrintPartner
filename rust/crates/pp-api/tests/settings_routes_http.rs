@@ -348,7 +348,9 @@ async fn settings_support_bindings_match_node_and_survive_restart() {
         let reply = server.send(&step, &[COOKIE]).await;
         assert_eq!(reply.status, node["status"].as_u64().unwrap() as u16);
         let mut body = reply.json();
-        normalize_stamps(&mut body["bindings"]);
+        if let Some(bindings) = body.get_mut("bindings") {
+            normalize_stamps(bindings);
+        }
         assert_eq!(body, node["body"]);
         let reader = server.owner.client().reader(WAIT).unwrap();
         let mut stored = match reader.snapshot("default", "printer.plan_bindings").unwrap() {

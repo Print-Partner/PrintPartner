@@ -4,11 +4,12 @@
 import process from "node:process";
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { URL } from "node:url";
-import { compare, exportDocument, generate, packageSource, verifyIntegrity } from "./client.mjs";
+import { compare, exportDocument, generate, packageSource, verifyIntegrity, writeGenerated } from "./client.mjs";
 import * as client from "../../packages/rust-client/src/index.ts";
 import { parseBuildWorkflowWorkspace } from "../../packages/contracts/src/build-workflow.ts";
 
@@ -166,12 +167,12 @@ test("Health decodes Node's captured /health bodies and Rust-only bodies with an
 });
 
 test("hand edits and stray files fail the check without cargo", () => {
-  const copy = mkdtempSync(join(tmpdir(), "pp-rust-client-edit-"));
+  const copy = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pp-rust-client-edit-"));
   try {
     cpSync(packageSource, copy, { recursive: true });
     verifyIntegrity(copy);
-    const path = join(copy, "schemas.generated.ts");
-    writeFileSync(path, readFileSync(path, "utf8").replace("z.string()", "z.any()"));
+    const path = join(copy, "schemas/Health.generated.ts");
+    writeFileSync(path, readFileSync(path, "utf8").replace("z.boolean()", "z.any()"));
     assert.throws(() => verifyIntegrity(copy), /hand edit detected/);
     cpSync(packageSource, copy, { recursive: true });
     writeFileSync(join(copy, "extra.ts"), "export {};\n");
@@ -188,4 +189,70 @@ test("a changed Rust schema is drift", () => {
   const unsupported = JSON.parse(JSON.stringify(document));
   unsupported.dtos.Health.properties.ok.format = "float";
   assert.throws(() => generate(unsupported), /Unsupported/);
+});
+
+test("new routes and DTOs leave existing route and schema modules unchanged", () => {
+  const before = generate(document);
+  const changed = JSON.parse(JSON.stringify(document));
+  changed.dtos.IsolatedResponse = { $schema: document.dialect, type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
+  changed.routes.push({ name: "readIsolated", method: "GET", path: "/isolated", auth: "credential", response: "IsolatedResponse" });
+  const after = generate(changed);
+  assert(after["routes/readIsolated.generated.ts"]);
+  assert(after["schemas/IsolatedResponse.generated.ts"]);
+  for (const [name, text] of Object.entries(before)) {
+    if (name.startsWith("routes/") || name.startsWith("schemas/")) assert.equal(after[name], text, name);
+  }
+  // Reordering DTO discovery must not change dependency imports or modules.
+  changed.dtos = Object.fromEntries(Object.entries(changed.dtos).reverse());
+  assert.deepEqual(generate(changed), after);
+});
+
+test("generation removes obsolete modules and check refuses missing or extra modules", () => {
+  const copy = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pp-rust-client-layout-"));
+  try {
+    const files = generate(document);
+    writeGenerated(files, copy);
+    const route = "routes/readHealth.generated.ts";
+    rmSync(join(copy, route));
+    assert.throws(() => verifyIntegrity(copy), /no missing files/);
+    writeGenerated(files, copy);
+    writeFileSync(join(copy, "routes/obsolete.generated.ts"), files[route]);
+    assert.throws(() => verifyIntegrity(copy), /only generated files/);
+    writeGenerated(files, copy);
+    compare(files, copy);
+    const changed = JSON.parse(JSON.stringify(document));
+    changed.routes = changed.routes.filter((route) => route.name !== "readHealth");
+    writeGenerated(generate(changed), copy);
+    compare(generate(changed), copy);
+    assert.throws(() => readFileSync(join(copy, route)), /ENOENT/);
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
+
+test("route names can be keywords or match helpers and schemas, and reference-only definitions typecheck", () => {
+  // Stay below web/ so TypeScript resolves this package's Zod dependency.
+  const copy = mkdtempSync(join(packageSource, "..", ".client-typecheck-"));
+  try {
+    const files = generate({
+      generator: document.generator, schemars: document.schemars, dialect: document.dialect,
+      dtos: { Example: {
+        $schema: document.dialect, $ref: "#/definitions/Alias",
+        definitions: { Alias: { $ref: "#/definitions/Leaf" }, Leaf: { type: "boolean" } },
+      } },
+      descriptors: [],
+      routes: ["routes", "routePath", "exampleSchema", "class", "delete", "null"].map((name) => ({
+        name, method: "GET", path: "/example", auth: "none", response: "Example",
+      })),
+    });
+    writeGenerated(files, copy);
+    const program = ts.createProgram(Object.keys(files).map((name) => join(copy, name)), {
+      noEmit: true, strict: true, noUnusedLocals: true, skipLibCheck: true,
+      target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    });
+    assert.deepEqual(ts.getPreEmitDiagnostics(program).map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")), []);
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
 });

@@ -4,6 +4,9 @@
 //! `web/apps/server/src/routes/admin-routes.oracle.test.ts` records from Node.
 #![cfg(feature = "desktop_rebuild")]
 
+#[path = "support/listener.rs"]
+mod listener;
+
 use pp_api::{admin::AdminHttpConfig, serving::Serving, settings::settings_router};
 use pp_storage::{
     Limits, SettingSnapshot, WriterOwner,
@@ -54,8 +57,7 @@ struct Server {
 impl Server {
     async fn start(directory: &Path, flag: Option<&str>) -> Self {
         let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (listener, origin) = listener::listen().await;
         let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
         let settings = owner.app_settings_with_policy(policy()).unwrap();
         let router = settings_router(config, owner.accepted_reads().unwrap(), settings);

@@ -8,18 +8,18 @@ identity is the follow-up.
 Each score occupies a line in this format, with a full lowercase head SHA:
 
 ```text
-pp-score head=<40 hex> seat=<seat-id> vendor=<openai|anthropic> score=<integer> author=<openai|anthropic>
+pp-score head=<40 hex> seat=<seat-id> vendor=<openai|anthropic|xai> score=<integer> author=<openai|anthropic|xai>
 ```
 
 The coordinator records the head branch's author vendor in `author=`.
 This is trusted coordinator metadata, not a vendor inferred from the GitHub
 account. All score records for the current head must agree on it.
 
-Only these seats are allowed: `gpt-6.1-sol` and `gpt-6-astra` from OpenAI,
-and `claude-fable-5-2` and `claude-opus-5-5` from Anthropic. A sensitive
-PR needs two distinct allowed seats from the vendor opposite its author,
-each scoring at least 9 on the exact head. Repeated seats count once.
-OpenCode, Cursor, Grok, and Pi seats do not qualify.
+The allowed seats are data: `scorer_seats` in `scripts/merge-classes.json` maps each seat to its
+vendor. Since 2026-11-11 (owner decision) they are `claude-opus-5-5` (Anthropic) and `grok-4.7`
+(xAI). A sensitive PR needs two allowed seats from two different vendors, neither of them the
+PR author's vendor (OpenAI for Sol lanes), each scoring at least 9 on the exact head. Repeated
+seats count once. Other seats do not qualify.
 
 Missing fields, malformed score lines, unknown seats or vendors, mismatched
 seat vendors, same-vendor scoring, conflicting author metadata, and scores

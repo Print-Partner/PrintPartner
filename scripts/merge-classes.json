@@ -50,9 +50,7 @@
     "poitee"
   ],
   "scorer_seats": {
-    "gpt-6.1-sol": "openai",
-    "gpt-6-astra": "openai",
-    "claude-fable-5-2": "anthropic",
-    "claude-opus-5-5": "anthropic"
+    "claude-opus-5-5": "anthropic",
+    "grok-4.7": "xai"
   }
 }

@@ -4,7 +4,8 @@
 classify: the most restrictive class of the changed paths. owner beats sensitive
 beats lane. coverage: every CODEOWNERS entry must match an owner or sensitive
 pattern, so a new owned path cannot slip past the classification unnoticed.
-scores: whether two distinct seats posted a score of 9 or more on the exact head.
+scores: whether two allowed seats from two different vendors, neither the PR author's vendor,
+posted a score of 9 or more on the exact head.
 """
 
 import argparse
@@ -17,10 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
 CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
 SCORE = re.compile(
-    r"pp-score head=([0-9a-f]{40}) seat=(\S+) vendor=(openai|anthropic)"
-    r" score=([0-9]+) author=(openai|anthropic)"
+    r"pp-score head=([0-9a-f]{40}) seat=(\S+) vendor=(openai|anthropic|xai)"
+    r" score=([0-9]+) author=(openai|anthropic|xai)"
 )
-VENDORS = {"openai", "anthropic"}
+VENDORS = {"openai", "anthropic", "xai"}
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -85,7 +86,10 @@ def uncovered(entries, classes):
 
 
 def has_two_scores(comments, head, author_vendor, allowed_seats):
-    """Require two allowed, independent seats at 9+; malformed records refuse.
+    """Require two allowed seats at 9+ from two different vendors, neither the author's vendor.
+
+    allowed_seats maps each seat to its vendor (scorer_seats in merge-classes.json), so the policy
+    is data. Malformed records, unknown seats and same-vendor-as-author records refuse.
 
     A score record is a line that starts with "pp-score "; every record must parse,
     including old ones. Other lines are ignored, including prose that mentions the
@@ -99,7 +103,7 @@ def has_two_scores(comments, head, author_vendor, allowed_seats):
                    for seat, vendor in allowed_seats.items())
             or not isinstance(comments, (list, tuple))):
         return False
-    seats = set()
+    seat_vendors = {}
     for body in comments:
         if not isinstance(body, str):
             return False
@@ -121,8 +125,8 @@ def has_two_scores(comments, head, author_vendor, allowed_seats):
                     return False
             except ValueError:
                 return False
-            seats.add(seat)
-    return len(seats) >= 2
+            seat_vendors[seat] = vendor
+    return len(set(seat_vendors.values())) >= 2
 
 
 def main(argv=None):

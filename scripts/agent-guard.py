@@ -70,8 +70,12 @@ VARIABLE_READS = {"get", "help", "list"}
 # automatic review. Outside the coordinator worktree, any command line that contains it in any case
 # or decodable encoding is refused, wherever it appears.
 MARKER_WORD = "pp-review-gate"
-MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or runs any command that names "
-          "pp-review-gate, in any case or encoding; report readiness to the coordinator instead.")
+# The coordinator's scorer record, which the sensitive-merge check trusts by comment author. Lanes post
+# as the same account, so the word gets the same protection as MARKER_WORD.
+SCORE_WORD = "pp-score"
+MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or pp-score records, or runs any "
+          "command that names pp-review-gate or pp-score, in any case or encoding; report readiness to the coordinator "
+          "instead.")
 # Shells whose -c script the guard classifies like a top-level command, and the long options they
 # accept before it. Any other option makes the script position unknown.
 SHELLS = {"sh", "bash", "zsh", "dash"}
@@ -812,7 +816,7 @@ def json_unescape(text):
 
 
 def names_marker(text):
-    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD.
+    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD or SCORE_WORD.
 
     The decoders (JSON and GraphQL escapes, URL encoding, HTML entities) are applied repeatedly in
     every order, up to four layers deep, and the match ignores case.
@@ -821,7 +825,7 @@ def names_marker(text):
     for _ in range(4):
         frontier = [decoded for value in frontier for decode in (json_unescape, unquote_plus, html.unescape)
                     if (decoded := decode(value)) not in forms and not forms.add(decoded)]
-    return any(MARKER_WORD in form.casefold() for form in forms)
+    return any(word in form.casefold() for form in forms for word in (MARKER_WORD, SCORE_WORD))
 
 
 def marker_reason(texts, files, cwd, alone, ansi_c=False):

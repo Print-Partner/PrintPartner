@@ -71,74 +71,88 @@ class CoverageTests(unittest.TestCase):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats"})
         self.assertEqual(data["scorer_authors"], ["poitee"])
-        self.assertEqual(data["scorer_seats"], {
-            "gpt-6.1-sol": "openai", "gpt-6-astra": "openai",
-            "claude-fable-5-2": "anthropic", "claude-opus-5-5": "anthropic",
-        })
+        self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai"})
 
 
 class ScoreTests(unittest.TestCase):
+    # Chad's policy of 2026-11-11: two allowed seats from two different vendors, neither the author's.
     def setUp(self):
         self.allowed = json.loads(mc.CLASSES.read_text())["scorer_seats"]
 
-    def line(self, seat="gpt-6.1-sol", sha=SHA, score=9, vendor="openai", author="anthropic"):
+    def line(self, seat="claude-opus-5-5", sha=SHA, score=9, vendor="anthropic", author="openai"):
         return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}"
 
-    def check(self, comments, author="anthropic", head=SHA):
-        return mc.has_two_scores(comments, head, author, self.allowed)
+    def grok(self, **kwargs):
+        return self.line("grok-4.7", vendor="xai", **kwargs)
 
-    def test_two_openai_seats_pass_for_anthropic(self):
-        self.assertTrue(self.check([self.line(), self.line("gpt-6-astra")]))
+    def check(self, comments, author="openai", head=SHA, allowed=None):
+        return mc.has_two_scores(comments, head, author, self.allowed if allowed is None else allowed)
 
-    def test_two_anthropic_seats_pass_for_openai(self):
-        self.assertTrue(self.check([
-            self.line(seat, vendor="anthropic", author="openai")
-            for seat in ("claude-fable-5-2", "claude-opus-5-5")
-        ], author="openai"))
+    def test_opus_and_grok_pass_on_a_sol_pr(self):
+        self.assertTrue(self.check([self.line(), self.grok()]))
 
-    def test_duplicate_seat_counts_once(self):
+    def test_sol_seat_on_a_sol_pr_refused(self):
+        self.assertFalse(self.check([self.line(), self.line("gpt-6.1-sol", vendor="openai")]))
+        # Even when Sol is an allowed seat, its record on an OpenAI-authored PR refuses.
+        allowed = {**self.allowed, "gpt-6.1-sol": "openai"}
+        self.assertFalse(self.check([self.line(), self.grok(), self.line("gpt-6.1-sol", vendor="openai")],
+                                    allowed=allowed))
+
+    def test_two_opus_seats_refused(self):
         self.assertFalse(self.check([self.line(), self.line(score=10)]))
+        # Two different seats from one vendor do not make two vendors.
+        allowed = {"claude-opus-5-5": "anthropic", "claude-fable-5-2": "anthropic"}
+        self.assertFalse(self.check([self.line(), self.line("claude-fable-5-2")], allowed=allowed))
+
+    def test_seat_list_is_data(self):
+        # A later swap is a one-line change to scorer_seats.
+        allowed = {"gpt-6.1-sol": "openai", "grok-4.7": "xai"}
+        self.assertTrue(self.check([self.line("gpt-6.1-sol", vendor="openai", author="anthropic"),
+                                    self.grok(author="anthropic")], author="anthropic", allowed=allowed))
+
+    def test_author_vendor_seat_refused(self):
+        self.assertFalse(self.check([self.line(author="anthropic"), self.grok(author="anthropic")],
+                                    author="anthropic"))
 
     def test_stale_head_does_not_count(self):
-        self.assertFalse(self.check([self.line(), self.line("gpt-6-astra", sha=OTHER)]))
+        self.assertFalse(self.check([self.line(), self.grok(sha=OTHER)]))
 
     def test_missing_or_unknown_author_vendor_refused(self):
         for author in (None, "", "unknown"):
-            self.assertFalse(self.check([self.line(), self.line("gpt-6-astra")], author=author))
+            self.assertFalse(self.check([self.line(), self.grok()], author=author))
 
     def test_invalid_record_refuses_even_with_two_good_scores(self):
-        good = [self.line(), self.line("gpt-6-astra")]
+        good = [self.line(), self.grok()]
         for bad in (
-            self.line(score=8), self.line(author="openai"),
-            self.line("unknown"), self.line(vendor="anthropic"),
+            self.line(score=8), self.line(author="anthropic"),
+            self.line("unknown"), self.line(vendor="xai"),
             self.line(vendor="unknown"), self.line(author="unknown"),
-            self.line().replace(" author=anthropic", ""),
-            self.line().replace(" vendor=openai", ""),
+            self.line().replace(" author=openai", ""),
+            self.line().replace(" vendor=anthropic", ""),
             self.line().replace("score=9", "score=nine"),
             self.line().replace("score=9", "score=" + "9" * 5000),
             self.line().replace("head=" + SHA, "head=abc"),
             self.line() + " extra", "pp-score head=" + SHA,
-            self.line("claude-opus-5-5", vendor="anthropic", author="openai"),
+            self.line("gpt-6.1-sol", vendor="openai"),
             None,
         ):
             with self.subTest(bad=bad):
                 self.assertFalse(self.check(good + [bad]))
 
     def test_all_unapproved_seats_refused(self):
-        for seat in ("opencode/pulse-alpha-free", "cursor/grok-4.7", "grok-4.7", "pi/halo/qwen38-flash"):
+        for seat in ("opencode/pulse-alpha-free", "cursor/grok-4.7", "gpt-6.1-sol", "pi/halo/qwen38-flash"):
             self.assertFalse(self.check([self.line(), self.line(seat)]))
 
     def test_head_must_be_full_sha(self):
-        self.assertFalse(self.check([self.line(), self.line("gpt-6-astra")], head="abc"))
+        self.assertFalse(self.check([self.line(), self.grok()], head="abc"))
 
     def test_prose_and_valid_stale_scores_are_ignored(self):
-        self.assertTrue(self.check(["Review complete.", self.line(sha=OTHER),
-                                   self.line(), self.line("gpt-6-astra")]))
+        self.assertTrue(self.check(["Review complete.", self.line(sha=OTHER), self.line(), self.grok()]))
         # A record quoted in prose, a list bullet or backticks is not a record.
         for prose in ("prose " + self.line(), "- " + self.line(), "`" + self.line() + "`",
                       "Post the pp-score line after the run."):
             with self.subTest(prose=prose):
-                self.assertTrue(self.check([prose, self.line(), self.line("gpt-6-astra")]))
+                self.assertTrue(self.check([prose, self.line(), self.grok()]))
 
 
 if __name__ == "__main__":

@@ -102,6 +102,66 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
 (cd web && UPDATE_ADMIN_ORACLE=1 npm run test -w @print-partner/server -- src/routes/admin-routes.oracle.test.ts)
 ```
 
+## Core diagnostics
+
+The feature and runtime switches also mount authenticated logging config
+(`GET`, `POST`), log tail (`GET`, `DELETE`), stats (`GET`) and `/metrics`
+(`GET`) at `/` and `/api/v1`. Both aliases share one view. Cookie writes
+require the listener Origin. Admission and credential checks use the admin gate.
+
+These routes describe Rust's `core.log`, including its six rotated archives,
+not Node's in-memory workflow logger. Reads use the desktop reader's limits:
+64 KiB per file and complete rows of at most 8 KiB. The view shows the
+newest 1,000 records. Clear observes up to 1,000 rows per file before that
+view cap, so every retained file contributes its end offset.
+Invalid rows are omitted. Every returned record passes the unchanged Scrubber
+again. Rows use the existing UI WorkflowLog shape. `id` is the stable file identity
+and end offset; `timestamp` converts epoch-second `time` to RFC 3339.
+Non-HTTP records use empty method/URL and zero duration/status. Original
+scrubbed core fields remain in `context`. Severity maps trace/debug to
+`debug`, info to `info`, warn to `warn`, and error/fatal to `error`.
+
+Config starts with `minSeverity: "info"`, `maxLogs: 1000` and
+`enableWorkflowTracking: true`. POST accepts only `minSeverity` and
+`enableWorkflowTracking`, with the same enum and boolean validation as Node.
+These settings filter the diagnostics view; the crash writer continues to
+record independently. Config is process-local and resets on restart.
+`severity` and `method` tail filters match exactly; `limit` defaults to 100,
+is capped at 1,000, and accepts nonnegative integers (zero returns no rows).
+Invalid query values return 400.
+
+DELETE records the current per-file end offsets and clears the view,
+not the retained crash files. Clear pins up to seven read handles until the
+next clear or view shutdown; deleted files can retain up to about 70 MiB.
+Renamed archives keep their identities; later appends have larger offsets.
+Restart creates a fresh view over retained files,
+as opposed to Node's empty in-memory buffer. It never unlinks an active writer
+or removes compat/supervisor records. Stats summarize the same bounded view:
+`totalLogs`, `bySeverity`, `byMethod`, `avgDuration` and `errorCount`.
+Rows without method do not contribute to `byMethod`; absent durations count
+as zero. Timestamps, methods and HTTP durations are not invented.
+
+`/metrics` returns Prometheus text version 0.0.4 with `core_log_records`
+gauges by severity and `app_info` with version and Rust runtime. Counts can
+fall after clear or rotation. Node HTTP counters, print-job totals, Plan
+progress and live printer gauges are not inferred from log messages or
+reported as fabricated zeroes; this endpoint makes no printer network calls.
+Read failures return 500 without exposing paths or raw records. All responses
+use `private, no-store`.
+
+| Node metric names | Rust status |
+| --- | --- |
+| `app_info` | Served with version and `runtime="rust"`; no Node-version label |
+| `http_requests_total`, `http_request_duration_ms` (quantiles), `http_request_duration_ms_sum`, `http_request_duration_ms_count`, `http_errors_total`, `http_success_total`, `http_error_rate` | Missing; HTTP instrumentation in GRE-1395 |
+| `plates_sent_total`, `plates_completed_total`, `plates_failed_total`, `filament_consumed_g` | Missing; domain metrics in GRE-1395 |
+| `plan_progress_collection_available`, `plan_progress_state`, `parts_remaining`, `printers_idle`, `printers_printing` | Missing; domain metrics in GRE-1395 |
+
+[GRE-1395](https://linear.app/greetz/issue/GRE-1395/port-remaining-node-http-request-and-domain-prometheus-metrics-to-rust)
+tracks the coordinator-approved split. `core_log_records` is a Rust-only gauge.
+The core writer currently captures info and above; selecting debug in the view
+cannot recover events the writer did not capture. External in-place truncation
+of a retained file is not supported; rotation creates a new file identity.
+
 ## Module write route (GRE-1341)
 
 `PUT /api/v2/modules/{module}` turns one Module on or off for the replacement

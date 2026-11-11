@@ -200,8 +200,8 @@ async fn catalog(
 }
 
 fn catalog_body(custom: Value) -> Option<Value> {
-    // ast-grep-ignore: no-writer-family-literal -- Bundled catalog is read-only; only custom-filaments changes write ownership.
     let mut body: Value = serde_json::from_str(include_str!(
+        // ast-grep-ignore: no-writer-family-literal -- Bundled catalog is read-only.
         "../../../../web/apps/server/src/data/ambrosia_fallback.json"
     ))
     .ok()?;

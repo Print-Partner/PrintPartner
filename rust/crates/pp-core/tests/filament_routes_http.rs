@@ -75,6 +75,7 @@ async fn filament_journey_aliases_validation_admission_and_restart() {
     assert_eq!(
         client
             .post(format!("{origin}/filaments/custom"))
+            .header("origin", &origin)
             .json(&json!({"display_name":"x","hex":"123456"}))
             .send()
             .await

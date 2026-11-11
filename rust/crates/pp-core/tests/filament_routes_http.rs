@@ -135,7 +135,42 @@ async fn valid_node_store_outside_serde_range_is_never_replaced() {
     let original = br#"{"filaments":[{"id":"keep","display_name":"\ud800"}]}"#;
     std::fs::write(&path, original).unwrap();
     let (owner, mut serving, origin) = start(directory.path(), Some("1")).await;
-    let reply = reqwest::Client::new()
+    let client = reqwest::Client::new();
+    for prefix in ["", "/api/v1"] {
+        let reply = client
+            .get(format!("{origin}{prefix}/filaments/catalog"))
+            .header("cookie", "pp_session=read-fixture-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), 200);
+        let body: std::collections::HashMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_str(&reply.text().await.unwrap()).unwrap();
+        assert_eq!(
+            body["custom_colors"].get(),
+            r#"[{"id":"keep","display_name":"\ud800","swatch_url":""}]"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(body["colors"].get())
+                .unwrap()
+                .len(),
+            252
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            client
+                .delete(format!("{origin}{prefix}/filaments/custom/keep"))
+                .header("cookie", "pp_session=read-fixture-secret")
+                .header("origin", &origin)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            400
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    let reply = client
         .post(format!("{origin}/filaments/custom"))
         .header("cookie", "pp_session=read-fixture-secret")
         .header("origin", &origin)

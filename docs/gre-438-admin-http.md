@@ -154,7 +154,9 @@ files. The live-format version is 1; regenerate its declaration with
 access is checked before connector lookup and again after the network read.
 Disabled access withholds Spoolman colors and the stored default connector.
 Rust refuses updates to a Node-valid store it cannot decode losslessly (for
-example, an isolated UTF-16 surrogate), preserving the original file.
+example, an isolated UTF-16 surrogate), preserving the original file. Catalog reads still return those custom colors
+with their escaped UTF-16 values intact, using the same Node-compatible parser
+as `GET /filaments/custom`.
 External requests use the existing bounded, checked Rust connector. Connector
 failures return a generic message so configuration and credentials stay private.
 

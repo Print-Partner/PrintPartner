@@ -31,7 +31,7 @@ pub enum Outcome {
     Added(Value),
     Deleted,
     Catalog {
-        custom: Value,
+        custom: String,
         default_id: Option<String>,
         integration: Option<Value>,
         allowed: bool,
@@ -96,6 +96,9 @@ pub(super) fn execute(
 ) -> Result<Outcome> {
     let tx = crate::writer_admission::begin_immediate(connection, deadline)?;
     let tenant = crate::read_model::read_tenant(&tx, &command.credential, command.policy)?;
+    if let Request::Catalog(query) = command.request {
+        return catalog_inputs(&tx, &tenant, &command.directory, query);
+    }
     let path = command.directory.join(STORE_FILE);
     let mut store = match std::fs::read(&path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
@@ -117,9 +120,6 @@ pub(super) fn execute(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({"filaments":[]}),
         Err(error) => return Err(error.into()),
     };
-    if let Request::Catalog(query) = command.request {
-        return catalog_inputs(&tx, &tenant, &mut store, query);
-    }
     let entries = match store.get_mut("filaments").and_then(Value::as_array_mut) {
         Some(entries) => entries,
         None => return Ok(Outcome::Refused(400, "Invalid custom filament store", "")),
@@ -172,7 +172,7 @@ pub(super) fn execute(
 fn catalog_inputs(
     tx: &rusqlite::Transaction<'_>,
     tenant: &str,
-    store: &mut Value,
+    directory: &std::path::Path,
     query: std::collections::HashMap<String, String>,
 ) -> Result<Outcome> {
     let plan = match query.get("profile_id") {
@@ -244,17 +244,39 @@ fn catalog_inputs(
     } else {
         None
     };
-    let custom = store
-        .get_mut("filaments")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| anyhow!("Invalid custom filament store"))?
-        .clone();
+    let custom = catalog_custom(directory)?;
     Ok(Outcome::Catalog {
-        custom: Value::Array(custom),
+        custom,
         default_id,
         integration,
         allowed,
     })
+}
+// Keep JSON strings as raw JSON: serde's String cannot hold lone UTF-16 surrogates.
+fn catalog_custom(directory: &std::path::Path) -> Result<String> {
+    use crate::source_scan::node_json::{Property, property};
+    let crate::admin::CustomFilaments::Body(body) = crate::admin::custom_filaments(directory)
+    else {
+        return Err(anyhow!("Invalid custom filament store"));
+    };
+    let Property::Value(list) = property(&body, "filaments") else {
+        return Err(anyhow!("Invalid custom filament store"));
+    };
+    let entries: Vec<Box<serde_json::value::RawValue>> = serde_json::from_str(&list)?;
+    let mut colors = Vec::new();
+    for entry in entries {
+        let mut fields = Vec::new();
+        for key in ["id", "display_name", "product_line", "hex", "combo_label"] {
+            match property(entry.get(), key) {
+                Property::Value(value) => fields.push(format!("\"{key}\":{value}")),
+                Property::Missing => {}
+                _ => return Err(anyhow!("Invalid custom filament entry")),
+            }
+        }
+        fields.push("\"swatch_url\":\"\"".into());
+        colors.push(format!("{{{}}}", fields.join(",")));
+    }
+    Ok(format!("[{}]", colors.join(",")))
 }
 fn js_string(value: &Value) -> String {
     match value {

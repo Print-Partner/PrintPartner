@@ -145,7 +145,7 @@ async fn catalog(
             Err(reply) => return *reply,
             _ => return failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         };
-    let Some(mut body) = catalog_body(custom) else {
+    let Some(mut body) = catalog_body() else {
         return failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
     };
     if allowed {
@@ -196,10 +196,10 @@ async fn catalog(
         Err(reply) => return *reply,
         _ => {}
     }
-    ok(body)
+    catalog_response(body, custom)
 }
 
-fn catalog_body(custom: Value) -> Option<Value> {
+fn catalog_body() -> Option<Value> {
     let mut body: Value = serde_json::from_str(include_str!(
         // ast-grep-ignore: no-writer-family-literal -- Bundled catalog is read-only.
         "../../../../web/apps/server/src/data/ambrosia_fallback.json"
@@ -224,22 +224,25 @@ fn catalog_body(custom: Value) -> Option<Value> {
         }
     }
     body["status"] = json!("ok");
-    body["custom_colors"] = Value::Array(
-        custom
-            .as_array()?
-            .iter()
-            .map(|item| {
-                let mut color = serde_json::Map::new();
-                for key in ["id", "display_name", "product_line", "hex", "combo_label"] {
-                    if let Some(value) = item.get(key) {
-                        color.insert(key.into(), value.clone());
-                    }
-                }
-                color.insert("swatch_url".into(), json!(""));
-                Value::Object(color)
-            })
-            .collect(),
-    );
     body["spoolman_colors"] = json!([]);
     Some(body)
+}
+
+fn catalog_response(body: Value, custom: String) -> Response {
+    #[derive(serde::Serialize)]
+    struct Catalog {
+        #[serde(flatten)]
+        body: Value,
+        custom_colors: Box<serde_json::value::RawValue>,
+    }
+    let encoded = serde_json::value::RawValue::from_string(custom).and_then(|custom_colors| {
+        serde_json::to_string(&Catalog {
+            body,
+            custom_colors,
+        })
+    });
+    match encoded {
+        Ok(body) => response(StatusCode::OK, "application/json; charset=utf-8", body),
+        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+    }
 }

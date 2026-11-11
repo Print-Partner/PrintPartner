@@ -1,5 +1,3 @@
-#[cfg(feature = "desktop_rebuild")]
-pub use logs::diagnostics;
 mod account_pin;
 pub use account_pin::DesktopAccountPin;
 pub mod drain;

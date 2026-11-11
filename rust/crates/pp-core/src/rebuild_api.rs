@@ -1,4 +1,4 @@
-use crate::DesktopRebuild;
+use crate::{DesktopRebuild, diagnostics};
 use anyhow::{Result, anyhow};
 use axum::Router;
 use pp_api::{
@@ -243,6 +243,7 @@ pub fn read_router(
             guard.accepted_plates(policy)?,
         )
     };
+    let endpoint = (origin, api_key_tenant);
     let config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
     // separately; MCP's Plan Accept uses this bundle's draft client (GRE-1236).
@@ -298,13 +299,7 @@ pub fn read_router(
             .merge(history)
             .merge(planning)
             .merge(workflow)
-            .merge(crate::diagnostics::router(
-                origin,
-                api_key_tenant,
-                &owner,
-                policy,
-                &admin_files,
-            )?)
+            .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(settings_routes)
             .merge(events)

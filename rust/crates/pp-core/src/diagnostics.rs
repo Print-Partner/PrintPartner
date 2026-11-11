@@ -2,7 +2,7 @@
 use anyhow::{Result, anyhow};
 use pp_api::{
     admin::AdminHttpConfig,
-    diagnostics::{LogRecords, diagnostics_router},
+    diagnostics::{LogRecord, LogRecords, diagnostics_router},
 };
 use pp_storage::{WriterOwner, admin::AdminFiles, auth::AuthPolicy};
 use std::{
@@ -12,17 +12,25 @@ use std::{
 
 struct CoreRecords(PathBuf);
 impl LogRecords for CoreRecords {
-    fn records(&self) -> std::io::Result<Vec<serde_json::Value>> {
-        pp_compat::diagnostics::records(&self.0)
+    fn records(&self) -> std::io::Result<Vec<LogRecord>> {
+        pp_compat::CoreLog::diagnostic_records(&self.0).map(|rows| {
+            rows.into_iter()
+                .map(|(file, retained_file, offset, value)| LogRecord {
+                    file,
+                    retained_file,
+                    offset,
+                    value,
+                })
+                .collect()
+        })
     }
 }
 
 pub(crate) fn router(
-    origin: &str,
-    account: &str,
     owner: &Arc<Mutex<WriterOwner>>,
     policy: AuthPolicy,
-    files: &AdminFiles,
+    files: AdminFiles,
+    (origin, account): (&str, &str),
 ) -> Result<axum::Router> {
     let reads = owner
         .lock()

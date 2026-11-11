@@ -1,4 +1,4 @@
-use crate::DesktopRebuild;
+use crate::{DesktopRebuild, diagnostics};
 use anyhow::{Result, anyhow};
 use axum::Router;
 use pp_api::{
@@ -32,7 +32,7 @@ use pp_storage::{
     },
     build_graph::BuildGraphClient,
     checkoff_progress::ProgressClient,
-    read_model::build_workflow::PendingInputs,
+    read_model::{ReadClient, build_workflow::PendingInputs},
     working_drafts::{
         WorkingDraftClient,
         observation::{DraftReads, PreparationLimits},
@@ -186,6 +186,14 @@ fn checkoff_routes(
     Ok(checkoff_router(config, client).merge(files))
 }
 
+fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
+    // Spoolman shortfalls read inventory through pp-net's checked connections.
+    Ok(accepted_router(
+        config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
+        client,
+    ))
+}
+
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
@@ -245,6 +253,7 @@ pub fn read_router(
             guard.accepted_plates(policy)?,
         )
     };
+    let endpoint = (origin, api_key_tenant);
     let config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
     // separately; MCP's Plan Accept uses this bundle's draft client (GRE-1236).
@@ -259,7 +268,7 @@ pub fn read_router(
     let admin = admin_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
-        admin_files,
+        admin_files.clone(),
     );
     let modules = modules_router(config.clone(), features);
     let settings_routes = settings_router(
@@ -267,13 +276,7 @@ pub fn read_router(
         accepted_client.clone(),
         app_settings,
     );
-    // Spoolman shortfalls read inventory through pp-net's checked connections.
-    let accepted = accepted_router(
-        config
-            .clone()
-            .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
-        accepted_client.clone(),
-    );
+    let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
@@ -301,6 +304,7 @@ pub fn read_router(
             .merge(history)
             .merge(planning)
             .merge(workflow)
+            .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(modules)
             .merge(settings_routes)

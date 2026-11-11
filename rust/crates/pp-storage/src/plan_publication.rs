@@ -248,7 +248,7 @@ fn inherit_live_filament(parts: &mut [DraftPart], predecessors: &[DraftPart]) {
     }
 }
 
-fn validate_projection(
+pub(crate) fn validate_projection(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
@@ -1704,6 +1704,17 @@ fn draft_header(
         }));
     }
     let proposed = state.header.order_number.as_deref();
+    if proposed
+        .and_then(crate::order_authority::normalize)
+        .is_some()
+        && tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM build_experiments WHERE build_id=?1)",
+            [profile],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(Err(Outcome::ExperimentOrderRequiresPromotion));
+    }
     let current = crate::working_drafts::header::build_header(tx, tenant, profile)?.order_number;
     if let Err(builds) =
         crate::order_authority::claim(tx, tenant, profile, current.as_deref(), proposed)?

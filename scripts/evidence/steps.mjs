@@ -75,8 +75,33 @@ async function snapshot(api, id) {
   return `accepted draft ${draft.draft_id} (${preview.kind}); snapshot stored`;
 }
 
+/** Proposes an order already held by another synthetic Build; never accepts it. */
+async function duplicateOrder(api, id) {
+  const { profiles: builds } = await api("GET", "/api/v2/plans");
+  const { build, base } = await api("GET", `${plan(id)}/drafts/header`);
+  const orderKey = (order) => (order ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  const holder = builds.find((other) => other.id !== id && !other.archived_at
+    && orderKey(other.order_number) && orderKey(other.order_number) !== orderKey(build.order_number));
+  if (!holder) throw new CaptureError("no synthetic Build holds a different order");
+  const draft = await openDraft(api, id);
+  const current = draft ? await api("GET", `${plan(id)}/drafts/${draft.draft_id}/header`) : null;
+  await api("PUT", `${plan(id)}/drafts/header`, {
+    expected_base: draft?.base ?? base,
+    expected_draft: draft ? {
+      draft_id: draft.draft_id, state: draft.state,
+      lifecycle_version: draft.lifecycle_version, snapshot_digest: draft.snapshot_digest,
+      base: draft.base,
+    } : null,
+    expected_header_version: current?.draft?.header_version ?? null,
+    header: { ...build, order_number: holder.order_number },
+  }, idempotent());
+  await settleReconciliation(api, id);
+  return "saved conflicting order to draft without accepting";
+}
+
 // Named setup steps. Each takes a Build ID; run.py checks names and arguments.
 export const STEPS = {
   "settle-reconciliation": settleReconciliation,
   snapshot,
+  "duplicate-order": duplicateOrder,
 };

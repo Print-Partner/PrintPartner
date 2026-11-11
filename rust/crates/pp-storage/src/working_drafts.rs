@@ -27,6 +27,7 @@ use std::{
 
 pub mod autosave;
 pub(crate) mod diff;
+pub(crate) mod experiment;
 pub mod header;
 pub mod observation;
 mod preparation;

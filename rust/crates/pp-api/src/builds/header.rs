@@ -110,3 +110,48 @@ pub(super) fn archive_refused(refusal: ArchiveRefusal) -> Response {
         ArchiveRefusal::Integrity => Refusal::Integrity.response(),
     }
 }
+
+/// Create a detached experiment; accepted choices become an editable draft.
+pub(super) async fn duplicate(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    received: Received,
+) -> Response {
+    let Some(build) = number_build_id(&id) else {
+        return missing_build(app, received.presented).await;
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Duplicate {
+        name: pp_storage::build_graph::BuildName,
+    }
+    let Ok(body) = serde_json::from_slice::<Duplicate>(&received.bytes) else {
+        return unreadable();
+    };
+    if received.contract == SummaryContract::LegacyV1 {
+        return failure(StatusCode::CONFLICT, "Duplicate this Build through /api/v2");
+    }
+    run(
+        app,
+        received.presented,
+        Method::POST,
+        received.path,
+        received.contract,
+        BuildCommand::Duplicate {
+            build,
+            name: body.name,
+        },
+    )
+    .await
+}
+
+pub(super) fn has_experiments(builds: Vec<pp_storage::build_graph::ExperimentBuild>) -> Response {
+    crate::problem::build(
+        crate::problem::problem(
+            StatusCode::CONFLICT,
+            "Build has experiments",
+            Some("build_has_experiments"),
+        ),
+        serde_json::Map::from_iter([("builds".into(), serde_json::json!(builds))]),
+    )
+}

@@ -1,16 +1,14 @@
 use crate::read_model::views::js_trim;
 use serde_json::{Value, json};
 fn string(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(s) => s.clone(),
-        Value::Array(a) => a.iter().map(string).collect::<Vec<_>>().join(","),
-        Value::Object(_) => "[object Object]".into(),
-        Value::Number(n) => ryu_js::Buffer::new()
-            .format(n.as_f64().unwrap_or_default())
-            .to_owned(),
-        _ => value.to_string(),
+    if value.is_null() {
+        String::new()
+    } else {
+        crate::checkoff_progress::links::js_string(value)
     }
+}
+fn known(evidence: &[Value], id: &Value) -> bool {
+    evidence.iter().any(|e| &e["id"] == id)
 }
 fn text(row: &Value, key: &str) -> String {
     js_trim(&string(&row[key])).into()
@@ -66,7 +64,6 @@ fn requirements(rows: Vec<Value>) -> Result<Vec<Value>, &'static str> {
     Ok(requirements)
 }
 fn contributions(rows: Vec<Value>, evidence: &[Value]) -> Result<Vec<Value>, &'static str> {
-    let known = |id: &Value| evidence.iter().any(|e| &e["id"] == id);
     let mut contributions = Vec::new();
     for row in rows {
         if !row.is_object() && !row.is_array() {
@@ -78,7 +75,7 @@ fn contributions(rows: Vec<Value>, evidence: &[Value]) -> Result<Vec<Value>, &'s
             text(&row, "slot"),
         );
         if id.is_empty()
-            || !known(&json!(evidence_id))
+            || !known(evidence, &json!(evidence_id))
             || !slot.starts_with(|c: char| c.is_ascii_lowercase())
             || !slot
                 .chars()
@@ -122,7 +119,6 @@ fn contributions(rows: Vec<Value>, evidence: &[Value]) -> Result<Vec<Value>, &'s
     Ok(contributions)
 }
 fn findings(rows: Vec<Value>, evidence: &[Value]) -> Result<Vec<Value>, &'static str> {
-    let known = |id: &Value| evidence.iter().any(|e| &e["id"] == id);
     let mut findings = Vec::new();
     for row in rows {
         if !row.is_object() && !row.is_array() {
@@ -144,7 +140,7 @@ fn findings(rows: Vec<Value>, evidence: &[Value]) -> Result<Vec<Value>, &'static
             .filter(|v| v.is_string())
             .cloned()
             .collect();
-        if !ids.iter().all(known) {
+        if !ids.iter().all(|id| known(evidence, id)) {
             return Err("Compatibility finding references unknown evidence");
         }
         findings.push(

@@ -25,6 +25,13 @@ impl Request {
             source_allowed: false,
         }
     }
+    fn failure(&self, detail: &str) -> Value {
+        if self.apply {
+            json!({"ok":false,"detail":detail})
+        } else {
+            json!({"error":detail})
+        }
+    }
 }
 fn setting(tx: &Transaction<'_>, account: &str, key: &str) -> Result<Option<String>> {
     Ok(tx
@@ -52,13 +59,7 @@ pub(crate) fn execute(
         apply,
         ..
     } = request;
-    let failure = |detail: &str| {
-        if *apply {
-            json!({"ok":false,"detail":detail})
-        } else {
-            json!({"error":detail})
-        }
-    };
+    let failure = |detail: &str| request.failure(detail);
     if request.tool == "propose_update_build_brief" {
         return brief(tx, account, request);
     }
@@ -177,13 +178,7 @@ fn brief(tx: &Transaction<'_>, account: &str, request: &Request) -> Result<Value
         apply,
         ..
     } = request;
-    let failure = |detail: &str| {
-        if *apply {
-            json!({"ok":false,"detail":detail})
-        } else {
-            json!({"error":detail})
-        }
-    };
+    let failure = |detail: &str| request.failure(detail);
     // Node's proposal checks the account-scoped setting even when the
     // requested Build no longer exists. Confirm also checks Build ownership.
     if *apply && !build_exists(tx, account, *build)? {

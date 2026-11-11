@@ -4,7 +4,7 @@ const SEED: &str =
     include_str!("../../../../../../fixtures/parity/mcp-proposals/build-planning/seed.sql");
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_planning_replays_node_text_and_confirmation_identity() {
-    let server = McpServer::seeded(SEED).await;
+    let (server, headers) = keyed(SEED).await;
     std::fs::create_dir_all(server._directory.join("repos/2")).unwrap();
     let documents: Value = serde_json::from_str(include_str!(
         "../../../../../../fixtures/parity/mcp-proposals/build-planning/documents.json"
@@ -18,8 +18,6 @@ async fn mcp_planning_replays_node_text_and_confirmation_identity() {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("compatibility.yaml"), source.to_string()).unwrap();
     }
-    let (_, key) = server.create_key().await;
-    let headers = session(&server, &format!("Bearer {key}")).await;
     let golden: Value = serde_json::from_str(include_str!(
         "../../../../../../fixtures/parity/mcp-proposals/build-planning/addon-brief.json"
     ))
@@ -65,9 +63,7 @@ async fn mcp_planning_replays_node_text_and_confirmation_identity() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_planning_confirmation_preserves_failed_proposals_and_account_isolation() {
-    let server = McpServer::seeded(SEED).await;
-    let (_, key) = server.create_key().await;
-    let headers = session(&server, &format!("Bearer {key}")).await;
+    let (server, headers) = keyed(SEED).await;
     let (text, error) = call(
         &server,
         &headers,
@@ -111,9 +107,7 @@ async fn mcp_planning_confirmation_preserves_failed_proposals_and_account_isolat
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_addon_refuses_an_isolated_source_outside_its_workspace() {
     let seed = SEED.replace("<data-dir>/repos/2", "/tmp/outside-source");
-    let server = McpServer::seeded(&seed).await;
-    let (_, key) = server.create_key().await;
-    let headers = session(&server, &format!("Bearer {key}")).await;
+    let (server, headers) = keyed(&seed).await;
     let expected = json!({"error":"Source \"Addon\" exists but is not synced. Ask the user to sync it before adding as an addon.","synced":false});
     assert_eq!(
         call(
@@ -125,4 +119,11 @@ async fn mcp_addon_refuses_an_isolated_source_outside_its_workspace() {
         .await,
         (expected.to_string(), true)
     );
+}
+
+async fn keyed(seed: &str) -> (McpServer, Vec<(String, String)>) {
+    let instance = McpServer::seeded(seed).await;
+    let credential = format!("Bearer {}", instance.create_key().await.1);
+    let headers = session(&instance, &credential).await;
+    (instance, headers)
 }

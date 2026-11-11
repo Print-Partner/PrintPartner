@@ -10,17 +10,14 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
-fn policy() -> AuthPolicy {
-    AuthPolicy {
-        registration: RegistrationPolicy::Open,
-        session_tenant: SessionTenantPolicy::AccountTenant,
-        first_user: FirstUserTenant::NewUser,
-    }
-}
 fn run(owner: &WriterOwner, tool: &str, params: Value) -> Value {
     let action = json!({"type":tool,"params":params,"label":"Fixture","summary":"Confirmed"});
     let outcome = owner
-        .build_graph_with_policy(policy())
+        .build_graph_with_policy(AuthPolicy {
+            registration: RegistrationPolicy::Open,
+            session_tenant: SessionTenantPolicy::AccountTenant,
+            first_user: FirstUserTenant::NewUser,
+        })
         .unwrap()
         .execute(
             Credential::Session(Secret::new("required-unit-fixture-secret".into())),

@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import re
 import tempfile
@@ -32,6 +33,48 @@ def fake_tools(directory, tools):
         tool.write_text(f"#!/bin/sh\necho '{version}'\n")
         tool.chmod(0o755)
     return directory
+
+
+artifact_spec = importlib.util.spec_from_file_location(
+    "local_release_artifacts", ROOT / "scripts/check-local-release-artifacts.py")
+artifacts = importlib.util.module_from_spec(artifact_spec)
+artifact_spec.loader.exec_module(artifacts)
+
+
+class LocalReleaseArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.manifest = self.root / "rust/bundle-manifest.json"
+        self.manifest.parent.mkdir()
+        self.stored = {"backend": {"entry.js": "original"}, "dependencies": {"files": {}}}
+        self.manifest.write_text(json.dumps(self.stored))
+        self.env = {"PP_TEST_NODE": "/pinned/node", "GITHUB_SHA": "a" * 40}
+
+    def measure(self, value, code=0):
+        def run(command, **kwargs):
+            output = Path(command[command.index("--output") + 1])
+            output.write_text(json.dumps(value))
+            self.assertEqual(command[command.index("--node") + 1], "/pinned/node")
+            return artifacts.subprocess.CompletedProcess(command, code)
+        return run
+
+    def test_matching_assets_pass_without_replacing_the_stored_manifest(self):
+        before = self.manifest.read_bytes()
+        self.assertTrue(artifacts.fresh(self.root, self.env, self.measure(self.stored)))
+        self.assertEqual(self.manifest.read_bytes(), before)
+
+    def test_changed_assets_and_dependency_inventory_fail(self):
+        for measured in [{"backend": {"entry.js": "changed"}, "dependencies": {"files": {}}},
+                         {**self.stored, "dependencies": {"files": {"added.js": "new"}}}]:
+            with self.subTest(measured=measured):
+                self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(measured)))
+
+    def test_missing_invalid_manifest_or_generator_failure_fails(self):
+        self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(self.stored, code=1)))
+        self.manifest.write_text("not json")
+        self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(self.stored)))
+        self.manifest.unlink()
+        self.assertFalse(artifacts.fresh(self.root, self.env, self.measure(self.stored)))
 
 
 class LocalCi:
@@ -289,6 +332,7 @@ class LocalCiTests(unittest.TestCase):
         left_out = ["nextest-off", "nextest-on", "doc-off", "doc-on"]
         expected = [("nextest-affected" if step == "nextest-on" else step)
                     for step in full if step == "nextest-on" or step not in left_out]
+        expected.insert(expected.index("nextest-affected"), "release-artifacts")
         self.assertEqual(ci.ran, expected)
         for step in left_out:
             self.assertNotIn(step, ci.summary)
@@ -318,7 +362,7 @@ class LocalCiTests(unittest.TestCase):
             self.assertNotIn(step + " ", ci.output)
         ci = LocalCi(self)
         self.assertEqual(ci("--fast", "--only", "fmt,nextest-affected"), 0)
-        self.assertEqual(ci.ran, ["fmt", "nextest-affected"])
+        self.assertEqual(ci.ran, ["web-assets", "fmt", "release-artifacts", "nextest-affected"])
         ci = LocalCi(self)
         self.assertEqual(ci("--fast", "--skip", "nextest-affected"), 0)
         self.assertEqual(ci.affected_calls, 0)
@@ -337,6 +381,31 @@ class LocalCiTests(unittest.TestCase):
         ci = LocalCi(self, fail={"nextest-affected"})
         self.assertEqual(ci("--fast"), 1)
         self.assertEqual(ci.summary["nextest-affected"], "FAIL")
+
+    def test_targeted_nextest_prepares_assets_in_both_modes(self):
+        for args, step in [((), "nextest-off"), ((), "nextest-on"),
+                           (("--fast",), "nextest-affected")]:
+            ci = LocalCi(self)
+            self.assertEqual(ci(*args, "--only", step), 0)
+            self.assertEqual(ci.ran, ["web-assets", "release-artifacts", step])
+
+    def test_each_nextest_mode_checks_assets_but_prepares_them_once(self):
+        ci = LocalCi(self)
+        self.assertEqual(ci("--only", "nextest-off,nextest-on"), 0)
+        self.assertEqual(ci.ran, ["web-assets", "release-artifacts", "nextest-off",
+                                  "release-artifacts", "nextest-on"])
+
+    def test_stale_assets_stop_before_nextest_and_later_steps(self):
+        ci = LocalCi(self, fail={"release-artifacts"})
+        self.assertEqual(ci("--only", "nextest-off,nextest-on,node-fixtures"), 1)
+        self.assertEqual(ci.ran, ["web-assets", "release-artifacts"])
+        self.assertEqual(ci.summary["release-artifacts"], "FAIL")
+        self.assertIn("nextest was not started", ci.output)
+
+    def test_skipping_web_assets_still_checks_before_nextest(self):
+        ci = LocalCi(self, fail={"release-artifacts"})
+        self.assertEqual(ci("--only", "nextest-off", "--skip", "web-assets"), 1)
+        self.assertEqual(ci.ran, ["release-artifacts"])
 
     def test_sccache_wraps_rustc_when_installed_and_changes_nothing_otherwise(self):
         missing = Path(self.enterContext(tempfile.TemporaryDirectory())) / "no-sccache"

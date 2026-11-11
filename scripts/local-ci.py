@@ -381,6 +381,9 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
         print(f"RUSTC_WRAPPER={env['RUSTC_WRAPPER']} CARGO_INCREMENTAL={env.get('CARGO_INCREMENTAL', '')}",
               flush=True)
     Path(env["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
+    nextest = [step for step in plan if step.id.startswith("nextest-") and not unmet(step, env)]
+    if nextest and "web-assets" not in skip and not any(step.id == "web-assets" for step in plan):
+        plan.insert(0, next(step for step in STEPS if step.id == "web-assets"))
     results = []
     for step in plan:
         reason = unmet(step, env)
@@ -388,6 +391,13 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
             print(f"\n== SKIP {step.id}: {reason}", flush=True)
             results.append(("SKIP", step, reason))
             continue
+        if step.id.startswith("nextest-"):
+            print(f"\n== CHECK release artifacts before {step.id}", flush=True)
+            code = run("release-artifacts", "python3 scripts/check-local-release-artifacts.py", ROOT, env)
+            if code:
+                results.append(("FAIL", Step("release-artifacts", "release artifact freshness"),
+                                "nextest was not started"))
+                break
         if step.id == FAST_NEXTEST:
             # The cargo steps' own NEXTEST_FILTER=all() would override the caller's.
             step = replace(step, env={**step.env, "NEXTEST_FILTER": affected(env)})

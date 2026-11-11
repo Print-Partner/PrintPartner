@@ -294,6 +294,19 @@ PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
 
 It runs the steps below in the order that `just ci --list` prints, and continues after a failure, so one run reports every failure. At the end it prints one `PASS`, `FAIL` or `SKIP` line for each step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
 
+Runtime nextest needs matching web builds and `rust/bundle-manifest.json`. Selecting
+`nextest-off`, `nextest-on`, or `--fast --only nextest-affected` also runs `web-assets`
+first, even with `--only`. This applies to `pp-check iter` too: it calls this script.
+Before each nextest step, a local check compares the manifest with a temporary
+measurement from the existing release generator. A mismatch stops the run before
+nextest, with one message naming `just ci --only web-assets` (Node 24.21.0).
+An explicit `--skip web-assets` avoids the build but still checks freshness; stale
+assets fail rather than launching tests. This matters after `node-fixtures`, which
+reinstalls dependencies for Node 22 and can rebuild measured server files. The
+freshness check measures built files and dependencies; the automatic build also
+covers source edits that have not been compiled. Direct `cargo nextest` commands
+do not run this preparation or check.
+
 Normal PRs run the fast set instead, and sensitive PRs, as the [merge gate](definition-of-done.md#merge-gate) defines them, run the full `just ci`:
 
 ```sh

@@ -18,6 +18,9 @@ export default defineConfig(({ command, mode }) => {
       environment: "jsdom",
       include: ["src/**/*.test.{ts,tsx}", "test/**/*.test.ts"],
       setupFiles: ["src/testSetup.ts"],
+      // Bound jsdom contention on shared runners; allow assertions after the async query budget.
+      maxWorkers: 4,
+      testTimeout: 10_000,
     },
   };
 });

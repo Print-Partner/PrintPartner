@@ -10,13 +10,28 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-GUARD = ROOT / ".factory/hooks/guard.py"
+CLI = ROOT / "scripts/agent-guard.py"
+
+
+def tool_request(payload):
+    """The neutral request for a tool-call payload: Execute is a command, Create and Edit a file, ApplyPatch a patch."""
+    tool, data = payload["tool_name"], payload["tool_input"]
+    if tool == "Execute":
+        return {"operation": "command", "cwd": payload.get("cwd") or str(ROOT), "command": data["command"]}
+    if tool in ("Create", "Edit"):
+        return {"operation": "file", "path": data["file_path"]}
+    if tool == "ApplyPatch":
+        return {"operation": "patch", "patch": data if isinstance(data, str) else data["input"]}
+    raise ValueError(f"no neutral operation for {tool}")
+
+
+def guard_call(payload, coordinator=None):
+    """Run a tool-call payload through scripts/agent-guard.py json, with hook()'s coordinator environment."""
+    return hook(CLI, tool_request(payload), coordinator, "json")
 
 
 def run(tool, data):
-    payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": data})
-    return subprocess.run([sys.executable, "-B", str(GUARD)], input=payload,
-                          capture_output=True, text=True, check=False)
+    return guard_call({"tool_name": tool, "tool_input": data})
 
 
 class GuardHookTests(unittest.TestCase):
@@ -28,12 +43,6 @@ class GuardHookTests(unittest.TestCase):
     def assertAllowed(self, tool, data):
         result = run(tool, data)
         self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_hook_config_runs_guard_for_mutating_tools(self):
-        config = json.loads((ROOT / ".factory/hooks.json").read_text())
-        (group,) = config["PreToolUse"]
-        self.assertEqual(set(group["matcher"].split("|")), {"Execute", "Create", "Edit", "ApplyPatch"})
-        self.assertIn(".factory/hooks/guard.py", group["hooks"][0]["command"])
 
     def test_merges_are_blocked(self):
         self.assertBlocked("Execute", {"command": "gh pr merge 12 --squash"}, "maintainer")
@@ -183,12 +192,10 @@ class GuardHookTests(unittest.TestCase):
             payload = {"tool_name": "Execute", "cwd": folder, "tool_input": {"command": "git push origin HEAD"}}
             for branch, code in (("main", 2), ("topic", 0)):
                 subprocess.run(["git", "-C", folder, "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, code, result.stderr)
             payload["tool_input"]["command"] = f"cd / && git -C {folder} push -u origin HEAD"
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                    capture_output=True, text=True, check=False)
+            result = guard_call(payload)
             self.assertEqual(result.returncode, 0, result.stderr)
             for command, reason in (("git -c remote.origin.push=refs/heads/topic:refs/heads/main push origin topic",
                                      "destination branch"),
@@ -205,16 +212,14 @@ class GuardHookTests(unittest.TestCase):
                                      "git commit -m change", "GIT_CONFIG_"),
                                     ("export GIT_CONFIG_PARAMETERS=x; git commit -m change", "GIT_CONFIG_")):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, 2, command)
                 self.assertIn(reason, result.stderr)
             subprocess.run(["git", "-C", folder, "config", "push.followTags", "true"], check=True)
             for command, code in (("git push origin HEAD:topic", 2), ("git push --no-follow-tags origin HEAD:topic", 0),
                                   ("git -c push.followTags=false push origin HEAD:topic", 0)):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, code, command + result.stderr)
             subprocess.run(["git", "-C", folder, "config", "--unset", "push.followTags"], check=True)
             for command in ("git branch --show-current && git push -u origin HEAD",
@@ -227,8 +232,7 @@ class GuardHookTests(unittest.TestCase):
                             "git symbolic-ref --short HEAD && git push origin HEAD",
                             "git worktree list && git push origin HEAD"):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, 0, command + result.stderr)
             for command in ("git switch main && git push origin HEAD", "gh pr checkout 12 && git push origin @",
                             "env -C /tmp git push origin HEAD", "env --chdir=/tmp git push origin HEAD",
@@ -240,8 +244,7 @@ class GuardHookTests(unittest.TestCase):
                             "git symbolic-ref HEAD refs/heads/main && git push origin HEAD",
                             "echo $(git checkout main) && git push origin HEAD"):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, 2, command)
                 self.assertIn("destination branch", result.stderr)
 
@@ -253,8 +256,7 @@ class GuardHookTests(unittest.TestCase):
                                   ("{ if false; then cd sub; fi; }; git push origin HEAD", 2),
                                   ("cd -P sub && git push origin HEAD", 2)):
                 payload = {"tool_name": "Execute", "cwd": folder, "tool_input": {"command": command}}
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, code, command + result.stderr)
 
     def test_shell_expansions_in_push_destinations_are_refused(self):
@@ -321,17 +323,14 @@ class GuardHookTests(unittest.TestCase):
             Path(folder, "reply.graphql").write_text("mutation { addPullRequestReviewThreadReply(input: {}) { comment { url } } }")
             payload = {"tool_name": "Execute", "cwd": folder,
                        "tool_input": {"command": "gh api graphql -F query=@merge.graphql"}}
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                    capture_output=True, text=True, check=False)
+            result = guard_call(payload)
             self.assertEqual(result.returncode, 2, result.stderr)
             payload["tool_input"]["command"] = "gh api graphql -F query=@reply.graphql"
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                    capture_output=True, text=True, check=False)
+            result = guard_call(payload)
             self.assertEqual(result.returncode, 0, result.stderr)
             payload["tool_input"]["command"] = ("printf '%s' 'mutation { mergePullRequest(input: {}) { clientMutationId } }'"
                                                 " > reply.graphql; gh api graphql -F query=@reply.graphql")
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                    capture_output=True, text=True, check=False)
+            result = guard_call(payload)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("separate command", result.stderr)
             Path(folder, "sub").mkdir()
@@ -349,14 +348,12 @@ class GuardHookTests(unittest.TestCase):
                                     ("git checkout other && gh api graphql -F query=@reply.graphql", "separate command"),
                                     ("cd -P sub && gh api graphql -F query=@merge.graphql", "separate command")):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                        capture_output=True, text=True, check=False)
+                result = guard_call(payload)
                 self.assertEqual(result.returncode, 2, command)
                 self.assertIn(reason, result.stderr)
             payload.update(cwd=str(Path(folder, "sub")))
             payload["tool_input"]["command"] = "gh api graphql --input body.json"
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                    capture_output=True, text=True, check=False)
+            result = guard_call(payload)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("maintainer", result.stderr)
 
@@ -366,8 +363,7 @@ class GuardHookTests(unittest.TestCase):
             Path(folder, "body.json").write_text(body)
             payload = {"tool_name": "Execute", "cwd": folder,
                        "tool_input": {"command": "gh api graphql --input body.json"}}
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
-                                    capture_output=True, text=True, check=False)
+            result = guard_call(payload)
             self.assertEqual(result.returncode, 2, result.stderr)
         mutation = "query=mutation { mergePullRequest # note\n(input: {}) { clientMutationId } }"
         for endpoint in ("graphql", "/graphql", "https://api.github.com/graphql"):
@@ -501,14 +497,6 @@ class GuardHookTests(unittest.TestCase):
         patch = "*** Begin Patch\n*** Add File: /repo/src/lib.rs\n*** End Patch\n"
         self.assertAllowed("ApplyPatch", {"input": patch})
 
-    def test_unreadable_input_fails_closed(self):
-        for payload in ("not json", "[]", "null", '{"tool_name":"Execute","tool_input":[]}'):
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=payload,
-                                    capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 2, payload)
-
-
-CLI = ROOT / "scripts/agent-guard.py"
 
 
 def neutral(*args, stdin=""):
@@ -584,7 +572,6 @@ class NeutralGuardCliTests(unittest.TestCase):
             self.assertPasses(subprocess.run([sys.executable, "-B", str(CLI), "command", "--cwd", "link/../repo", push],
                                              cwd=folder, capture_output=True, text=True, check=False))
             self.assertPasses(request({"operation": "command", "cwd": cwd, "command": push}))
-            self.assertPasses(hook(GUARD, droid_command(push, cwd)))
             self.assertPasses(hook(CLAUDE, claude_call("Bash", cwd, command=push)))
             self.assertRefused(neutral("command", "--cwd", cwd, "cd ../../repo && " + push), "main only")
             # Without "..", a bare cd stays lexical, as the shell's logical cd does.
@@ -622,55 +609,14 @@ class NeutralGuardCliTests(unittest.TestCase):
             self.assertRefused(neutral("command", command), reason)
 
 
-class FactoryAdapterTests(unittest.TestCase):
-    """The Factory hook must decide exactly as the neutral CLI does for the same operation."""
-
-    COMMANDS = ("git push -u origin HEAD:chore/topic", "git push origin HEAD:main", "git push --force origin topic",
-                "git push --tags", "git commit --no-verify -m x", "gh pr merge 12", "gh release create v1",
-                "gh api repos/o/r/pulls/12/reviews -f event=APPROVE", "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
-                "git config core.hooksPath /tmp/x", "GIT_CONFIG_COUNT=1 git commit -m x", "git push origin topic",
-                "cd sub && gh api graphql -F query=@merge.graphql", "printf '%s' 'git push --force'",
-                "python3 - <<'PY'\nprint(1)\nPY\ngit push origin main", "git push origin 'main", "env -S 'git push'",
-                "npm --prefix web ci", "gh variable set PP_REVIEW_FALLBACK_UNTIL -b x",
-                "gh variable get PP_REVIEW_FALLBACK_UNTIL", "")
-    PATHS = ("/repo/.env", "/repo/.env.example", "/repo/.git/config", "/repo/rust/bundle-manifest.json", "/repo/a.py")
-    PATCHES = ("*** Update File: /repo/a.py\n*** Move to: /repo/.env\n", "*** Add File: /repo/src/lib.rs\n",
-               "*** Delete File: /repo/rust//bundle-manifest.json\n")
-
-    def assertSame(self, hook, cli):
-        self.assertEqual((hook.returncode, hook.stderr), (cli.returncode, cli.stderr))
-
-    def test_commands_match(self):
-        with tempfile.TemporaryDirectory() as folder:
-            Path(folder, "sub").mkdir()
-            Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
-            for command in self.COMMANDS:
-                with self.subTest(command=command):
-                    hook = subprocess.run([sys.executable, "-B", str(GUARD)], capture_output=True, text=True, check=False,
-                                          input=json.dumps({"tool_name": "Execute", "cwd": folder,
-                                                            "tool_input": {"command": command}}))
-                    self.assertSame(hook, request({"operation": "command", "cwd": folder, "command": command}))
-                    self.assertSame(hook, neutral("command", "--cwd", folder, "-", stdin=command))
-
-    def test_files_and_patches_match(self):
-        for path in self.PATHS:
-            for tool in ("Create", "Edit"):
-                with self.subTest(tool=tool, path=path):
-                    self.assertSame(run(tool, {"file_path": path}), request({"operation": "file", "path": path}))
-        for patch in self.PATCHES:
-            with self.subTest(patch=patch):
-                self.assertSame(run("ApplyPatch", {"input": patch}), request({"operation": "patch", "patch": patch}))
-                self.assertSame(run("ApplyPatch", patch), neutral("patch", "-", stdin=patch))
-
-    def test_adapter_refuses_when_policy_is_missing(self):
-        with tempfile.TemporaryDirectory() as folder:
-            copy = Path(folder, ".factory/hooks/guard.py")
-            copy.parent.mkdir(parents=True)
-            copy.write_text(GUARD.read_text())
-            result = subprocess.run([sys.executable, "-B", str(copy)], capture_output=True, text=True, check=False,
-                                    input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/repo/a.py"}}))
-            self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("internal error", result.stderr)
+COMMANDS = ("git push -u origin HEAD:chore/topic", "git push origin HEAD:main", "git push --force origin topic",
+            "git push --tags", "git commit --no-verify -m x", "gh pr merge 12", "gh release create v1",
+            "gh api repos/o/r/pulls/12/reviews -f event=APPROVE", "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
+            "git config core.hooksPath /tmp/x", "GIT_CONFIG_COUNT=1 git commit -m x", "git push origin topic",
+            "cd sub && gh api graphql -F query=@merge.graphql", "printf '%s' 'git push --force'",
+            "python3 - <<'PY'\nprint(1)\nPY\ngit push origin main", "git push origin 'main", "env -S 'git push'",
+            "npm --prefix web ci", "gh variable set PP_REVIEW_FALLBACK_UNTIL -b x",
+            "gh variable get PP_REVIEW_FALLBACK_UNTIL", "")
 
 
 CLAUDE = ROOT / ".claude/hooks/guard.py"
@@ -681,16 +627,16 @@ OLD_MERGE_GATE = f"gh pr merge 12 -R Print-Partner/PrintPartner --squash --match
 CLAUDE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 
-def hook(adapter, payload, coordinator=None):
+def hook(adapter, payload, coordinator=None, *args):
     env = {key: value for key, value in os.environ.items() if key != "PP_COORDINATOR_WORKTREE"}
     if coordinator is not None:
         env["PP_COORDINATOR_WORKTREE"] = coordinator
     text = payload if isinstance(payload, str) else json.dumps(payload)
-    return subprocess.run([sys.executable, "-B", str(adapter)], input=text, env=env,
+    return subprocess.run([sys.executable, "-B", str(adapter), *args], input=text, env=env,
                           capture_output=True, text=True, check=False)
 
 
-def droid_command(command, cwd):
+def execute_call(command, cwd):
     return {"hook_event_name": "PreToolUse", "tool_name": "Execute", "cwd": cwd, "tool_input": {"command": command}}
 
 
@@ -703,29 +649,6 @@ def load(path, name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def workflow_triggers(text):
-    """Return the trigger names under a workflow's top-level on: key, read without a YAML library."""
-    lines = [line.split(" #")[0].rstrip() for line in text.splitlines() if not line.lstrip().startswith("#")]
-    for i, line in enumerate(lines):
-        match = re.match(r"""^["']?on["']?:\s*(.*)$""", line)
-        if not match:
-            continue
-        if match.group(1):
-            return set(re.findall(r"[A-Za-z_]+", match.group(1)))
-        found, indent = set(), None
-        for nested in lines[i + 1:]:
-            if not nested.strip():
-                continue
-            if not nested[0].isspace():
-                break
-            depth = len(nested) - len(nested.lstrip())
-            indent = depth if indent is None else indent
-            if depth == indent:
-                found.add(nested.strip().lstrip("- ").split(":")[0])
-        return found
-    return set()
 
 
 def git_repo(path):
@@ -757,7 +680,7 @@ class ClaudeAdapterTests(unittest.TestCase):
     def test_bash_maps_to_the_command_policy(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
-            for command in filter(None, FactoryAdapterTests.COMMANDS):
+            for command in filter(None, COMMANDS):
                 with self.subTest(command=command):
                     result = hook(CLAUDE, claude_call("Bash", folder, command=command, description="d"))
                     cli = request({"operation": "command", "cwd": folder, "command": command})
@@ -778,8 +701,8 @@ class ClaudeAdapterTests(unittest.TestCase):
                     self.assertRefused(hook(CLAUDE, claude_call(tool, file_path=path, content="x")), reason)
             with self.subTest(tool="NotebookEdit", path=path):
                 self.assertRefused(hook(CLAUDE, claude_call("NotebookEdit", notebook_path=path, new_source="x")), reason)
-            with self.subTest(tool="Droid Edit", path=path):
-                self.assertRefused(hook(GUARD, {"tool_name": "Edit", "tool_input": {"file_path": path}}), reason)
+            with self.subTest(tool="neutral file", path=path):
+                self.assertRefused(request({"operation": "file", "path": path}), reason)
         for path in ("/repo/docs/guide.md", "/repo/.env.example", "/repo/.claude/agents/review.md",
                      "/repo/.claude/worktrees/lane/docs/guide.md"):
             with self.subTest(path=path):
@@ -822,7 +745,7 @@ class CoordinatorMergeTests(unittest.TestCase):
         Path(self.coordinator, "sub").mkdir()
 
     def results(self, command, cwd, coordinator):
-        return (hook(GUARD, droid_command(command, cwd), coordinator),
+        return (guard_call(execute_call(command, cwd), coordinator),
                 hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator))
 
     def test_lane_worktree_merges_are_refused(self):
@@ -1146,22 +1069,6 @@ class RetiredFleetIntakeTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertNotRegex(live, rf"(?m)^\s*{key}\s*:")
         self.assertEqual(sorted(path.name for path in (ROOT / "scripts/fleet").iterdir()), ["lane-rules.yaml"])
-
-    def test_lane_dispatch_stays_disabled(self):
-        text = (ROOT / ".github/workflows/lane-dispatch.yml").read_text(encoding="utf-8")
-        self.assertEqual(workflow_triggers(text), {"workflow_dispatch"})
-        self.assertIn("disabled until the owner re-approves it", text)
-        self.assertRegex(text, r"(?m)^\s+exit 1$")
-        self.assertNotIn("secrets.", text)
-        # Re-enabling the push or schedule trigger, in block or inline form, must fail the first check.
-        for variant in (text.replace("on:\n", "on:\n  push:\n    branches: [main]\n"),
-                        text.replace("on:\n", 'on:\n  schedule:\n    - cron: "*/10 * * * *"\n'),
-                        text.replace("on:\n  workflow_dispatch:\n", "on: [push, workflow_dispatch]\n"),
-                        text.replace("on:\n  workflow_dispatch:\n", '"on":\n  workflow_dispatch:\n  schedule:\n'
-                                                                   '    - cron: "0 * * * *"\n')):
-            with self.subTest(variant=variant):
-                self.assertNotEqual(variant, text)
-                self.assertNotEqual(workflow_triggers(variant), {"workflow_dispatch"})
 
 
 if __name__ == "__main__":

@@ -36,6 +36,8 @@
   "sensitive": [
     "rust/rules/**",
     "rust/scripts/check-*",
+    "rust/scripts/test_ast_grep.py",
+    "rust/scripts/test_clippy_limits.py",
     "rust/ast-grep-baseline.json",
     "rust/clippy-limits-baseline.json",
     "rust/crates/**/snapshots/**",

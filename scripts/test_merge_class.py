@@ -30,6 +30,9 @@ class ClassifyTests(unittest.TestCase):
         for path in [
             "rust/rules/no-unwrap-expect.yml",
             "rust/scripts/check-ast-grep.py",
+            # The checkers' tests merge as sensitive PRs too (merge gate).
+            "rust/scripts/test_ast_grep.py",
+            "rust/scripts/test_clippy_limits.py",
             "rust/ast-grep-baseline.json",
             "rust/crates/pp-api/snapshots/route.snap",
             "scripts/duplication-baseline.json",

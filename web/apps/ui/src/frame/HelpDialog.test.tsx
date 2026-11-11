@@ -15,7 +15,7 @@ function openHelp(path = "/today") {
   vi.stubGlobal("fetch", requests);
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(<App router={router} queryClient={createQueryClient()} />);
-  const opener = screen.getByRole("button", { name: "Help", exact: true });
+  const opener = screen.getByRole("button", { name: "Help" });
   opener.focus();
   fireEvent.click(opener);
   return { router, requests, opener, dialog: screen.getByRole("dialog", { name: "Help" }) };

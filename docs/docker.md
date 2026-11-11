@@ -59,9 +59,24 @@ docker logs print-partner    # includes the origin, http://127.0.0.1:<port>
 - **Process tree.** `tini` is PID 1 and forwards signals. `pp-server` is its only child. In Rust-only mode `pp-server` starts no child process.
 - **Port.** `pp-server` binds `127.0.0.1` on a free port and saves it in `/data/desktop.toml`. Later starts reuse that port while it is free.
 
+## Sign in
+
+A browser gets in through a single-use sign-in URL. Ask the running server for one:
+
+```sh
+docker exec print-partner pp-server bootstrap-url --data /data
+```
+
+The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. Open it in a browser on the same host within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest.
+
+- **Where the URL goes.** Only to the terminal that ran the command. `pp-server` does not print or log it, and it is not in `docker logs` or the status file.
+- **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. The command also refuses a directory the caller does not own or that other accounts can write, and a socket whose server runs as another account. With a host bind mount for `/data` and no user-namespace remapping, a host process running as the data directory's UID can also reach the socket and get a URL. That is by design: that account already owns the data.
+- **No server running.** The command exits 1, prints `bootstrap-url: No pp-server is running on /data` to stderr, and changes nothing. If minting fails for another reason, the command says `pp-server could not create a sign-in URL; its stderr says why`, and `pp-server` writes the reason, never a URL, to its stderr.
+- **The socket.** Only a Rust-only start (`PP_DESKTOP_REBUILD=1`, as in this image) creates it, after startup, and removes it on shutdown. A socket left by a crashed server is replaced at the next start. If something else exists at that name, `pp-server` leaves it, prints `pp-server bootstrap-url is unavailable` to stderr, and serves without headless sign-in. The same happens when the socket path is too long for a Unix socket name: 107 bytes on Linux, 103 on macOS. `/data` is far below either.
+
 ## Volumes and the data directory
 
-`/data` holds the SQLite database (`print-partner.db` with its WAL), the ownership marker `.pp-rust-owned.json`, `desktop.toml`, the lock `printpartner.lock`, and the `sources`, `repos`, `covers`, `thumbs` and `exports` folders. Use a named volume or a local directory. Do not use a network filesystem.
+`/data` holds the SQLite database (`print-partner.db` with its WAL), the ownership marker `.pp-rust-owned.json`, `desktop.toml`, the lock `printpartner.lock`, the sign-in socket `.pp-server-bootstrap.sock` while the server runs, and the `sources`, `repos`, `covers`, `thumbs` and `exports` folders. Use a named volume or a local directory. Do not use a network filesystem.
 
 The storage writer opens only an empty directory or one that already carries the ownership marker. It refuses a non-empty directory without the marker and leaves it unchanged. So a Node image volume cannot be mounted directly; see [Importing Node data](#importing-node-data).
 
@@ -111,7 +126,6 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 ## What the Rust-only image cannot do yet
 
 - **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
-- **No headless sign-in.** The gateway admits a browser only through a single-use, 60-second bootstrap URL. The desktop app opens that URL. `pp-server` gives it only to tests (`--test-credential-file`). Until a headless sign-in path exists, a browser cannot open the UI from this image.
 - **MCP is off.** The gateway answers 403 to `/mcp` and `/api/v1/mcp` in Rust-only mode, whatever key a client sends.
 - **UI packaging.** Today's image includes only the measured `apps/web` build. The Rust-only runtime serves it with its existing SPA routes and policy and logs one line when `apps/ui/dist` is absent. An installed replacement bundle must pass its separate inventory check before it is served with the GRE-1117 CSP. Docker replacement UI packaging follows in [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
@@ -122,7 +136,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 python3 scripts/docker-rust-smoke.py pp-server:test
 ```
 
-The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches the loopback origin through host networking. It uses the test-only credential file for the bootstrap URL and never prints it. It removes its containers and volume on exit.
+The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches the loopback origin through host networking. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
 
 ## Importing Node data
 

@@ -1147,6 +1147,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "desktop_rebuild")]
+    fn refused_restore_recovery_removes_the_lease_files_it_created() {
+        let path = directory();
+        let work = path.join(".pp-restore");
+        std::fs::create_dir(&work).unwrap();
+        std::fs::write(work.join("unknown-backup"), b"preserve this backup").unwrap();
+
+        assert_refused_open_leaves_listing(&path, false, "holds unexpected entry unknown-backup");
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn gre_1159_failed_preflight_removes_the_lease_files_it_created() {
         // The first preflight, under the lock, refuses a database that is a directory.
         let path = directory();

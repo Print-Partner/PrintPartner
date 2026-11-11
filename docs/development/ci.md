@@ -292,7 +292,22 @@ PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
 
 `just ci` passes its arguments to `python3 scripts/local-ci.py`, which holds the only list of steps. Without [just](https://github.com/casey/just), run `python3 scripts/local-ci.py` from the repository root with the same arguments. Agents run it, or `just ci --fast` for a normal PR, before they push, as [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) says.
 
-It runs the steps below in the order that `just ci --list` prints, and continues after a failure, so one run reports every failure. At the end it prints one `PASS`, `FAIL` or `SKIP` line for each step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
+It runs the steps below in the order that `just ci --list` prints and continues after ordinary step failures. An artifact-freshness failure is an exception: it stops the run before nextest, and later steps are not run or listed. The summary prints `PASS`, `FAIL` or `SKIP` for each completed or skipped step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
+
+Runtime nextest needs matching web builds and `rust/bundle-manifest.json`. Selecting
+`nextest-off`, `nextest-on`, or `--fast --only nextest-affected` also runs `web-assets`
+first, even with `--only`. This applies to `pp-check iter` too: it calls this script.
+Before each nextest step, a local check compares the manifest with a temporary
+measurement from the existing release generator. Commit metadata is ignored: a new
+Git commit alone does not require a rebuild. Runtime Node identity is checked;
+`PP_TEST_NODE` must match the Node used by `web-assets`. A mismatch stops the run before
+nextest, with one message naming `just ci --only web-assets` (Node 24.21.0).
+An explicit `--skip web-assets` avoids the build but still checks freshness; stale
+assets fail rather than launching tests. This matters after `node-fixtures`, which
+reinstalls dependencies for Node 22 and can rebuild measured server files. The
+freshness check measures built files and dependencies; the automatic build also
+covers source edits that have not been compiled. Direct `cargo nextest` commands
+do not run this preparation or check.
 
 Normal PRs run the fast set instead, and sensitive PRs, as the [merge gate](definition-of-done.md#merge-gate) defines them, run the full `just ci`:
 
@@ -324,6 +339,41 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `clippy-off`, `clippy-on`, `nextest-off`, `nextest-on`, `doc-off`, `doc-on` | Steps 5 to 10 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `clippy-limits` | Clippy complexity negative controls and baseline check, with both feature modes on Linux | `rust (linux)` (required) |
 | `node-fixtures` | The `--check` mode of each Node parity fixture generator, and the HTTP route inventory diff, on Node 22.23.3 | `desktop-contracts.yml` and `auth-admission-freshness.yml` |
+
+The `ast-grep` step counts `cfg(..desktop_rebuild..)` and `cfg_attr`
+attributes across every crate, including tests. It recursively inspects
+conditional attributes applied by `cfg_attr`, so
+`#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]` counts too. Each outer
+attachment counts once, even if it contains several matching predicates.
+`rust/desktop-rebuild-baseline.json` records three classes: `module` (mod/use),
+`item` (including variants and fields), and `statement` (statements,
+expressions, match arms and ambiguous attachments). Stacked attributes,
+comments, raw attribute names such as `r#cfg`, and escaped feature strings do
+not change attachment.
+
+A `use` or nested ordinary item inside a function body still counts as module
+or item. Item-level macro invocations, extern crate declarations and inner
+impl/trait/extern attributes stay in the frozen statement class. These forms
+were included in the original statement cap; an ambiguous attachment defaults
+to statement. Gates inside macro token trees (`json!`, `vec!`, `select!` and
+`macro_rules!`, for example) also count as statements.
+
+An independent text scan and the AST rules check each other: a text gate must
+have exactly one AST class (or the macro statement fallback), and an AST hit
+without a text gate fails coverage. The text scan ignores comments and literal
+contents. It inspects `cfg_attr` predicates and recursively applied `cfg` or
+`cfg_attr` attributes; `doc = "desktop_rebuild"` does not count. Inner
+crate/module gates count as module gates; inner block gates count as statements.
+
+Counts must match the baseline; update it when gates move or disappear. Only
+module and item counts may grow. Statement counts may not rise per crate over
+`origin/main`, even with `PP_AST_GREP_ALLOW_BASELINE_RAISE=1`. The first landing
+establishes the placement baseline and reports the skipped raise check. This
+step runs in both `just ci --fast` and the full `just ci`.
+
+`cfg!(feature = "desktop_rebuild")` expressions are excluded from these counts
+(17 uses at the review baseline). Child [GRE-1397](https://linear.app/greetz/issue/GRE-1397/count-desktop-rebuild-cfg-expressions-in-the-placement-ratchet)
+tracks counting them later.
 
 Except where noted below, each step runs the command lines of its workflow step without changes. The script sets the same environment that CI sets: `NEXTEST_FILTER`, `PP_TEST_NODE`, `VITE_PRINT_PARTNER_DESKTOP`, and `RUNNER_TEMP`. The cargo steps also get `INSTA_UPDATE=no`, so a snapshot mismatch fails the step instead of writing a `.snap.new` file. `RUNNER_TEMP` is under `$CARGO_TARGET_DIR/local-ci`, or under `rust/target/local-ci` if `CARGO_TARGET_DIR` is not set. The local command differs from CI in these ways:
 
@@ -474,7 +524,7 @@ These failures are common:
 
 `rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
 
-Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binary in `pp-core`, the `server_binary_routes` binary in `pp-server` (formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `gateway_mount` binary in `pp-core` and the `server_binary_routes` binary in `pp-server` (both formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 
@@ -778,3 +828,5 @@ The job has no job-level `if`. GitHub counts a skipped required job as a pass, s
 `scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on all four required workflows and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
 
 [CI controls](ci-controls.md#turn-on-the-merge-queue) records the merge_queue rule that turned the queue on.
+
+The Rust client generator writes route modules under `web/packages/rust-client/src/routes/` and named schema modules under `src/schemas/`, with generated indexes preserving package imports. After merging main, rerun the rust-client generator; do not hand-merge generated files. Its `--verify` checks the recursive file inventory and hashes without Cargo; `--check` also compares fresh Rust output and runs contract round trips.

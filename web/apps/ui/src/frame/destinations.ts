@@ -9,24 +9,41 @@ export interface Destination {
   key: string;
   /** What the screen holds once its slice lands. */
   holds: string;
+  /** What the current screen lets the user do. */
+  help: string;
 }
 
 export const DESTINATIONS: readonly Destination[] = [
   {
+    help: "See ranked tasks, printer status and open Builds",
     label: "Today",
     path: "/today",
     key: "t",
     holds: "the pulse line, the hero task, ranked tasks and open Build cards",
   },
-  { label: "Builds", path: "/builds", key: "b", holds: "the Builds list and each Build workspace" },
-  { label: "Farm", path: "/farm", key: "f", holds: "printers, the queue and the farm log" },
   {
+    label: "Builds",
+    path: "/builds",
+    key: "b",
+    holds: "the Builds list and each Build workspace",
+    help: "Open a Build to review its Plan, check off printed units or read its History",
+  },
+  {
+    label: "Farm",
+    path: "/farm",
+    key: "f",
+    holds: "printers, the queue and the farm log",
+    help: "See printers, the queue and the farm log when the Farm module is on",
+  },
+  {
+    help: "Read Source revisions, sync status and recent Source activity",
     label: "Library",
     path: "/library",
     key: "l",
     holds: "Library Sources, import, sync and revisions",
   },
   {
+    help: "Check Modules and their availability; unfinished settings say Not available yet",
     label: "Settings",
     path: "/settings",
     key: ",",

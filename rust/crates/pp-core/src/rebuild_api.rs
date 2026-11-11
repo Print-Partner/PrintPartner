@@ -1,4 +1,4 @@
-use crate::DesktopRebuild;
+use crate::{DesktopRebuild, diagnostics};
 use anyhow::{Result, anyhow};
 use axum::Router;
 use pp_api::{
@@ -14,6 +14,7 @@ use pp_api::{
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpClients, McpHttpConfig, mcp_router},
+    modules::modules_router,
     planning::planning_router,
     plates::plates_router,
     settings::settings_router,
@@ -31,7 +32,7 @@ use pp_storage::{
     },
     build_graph::BuildGraphClient,
     checkoff_progress::ProgressClient,
-    read_model::build_workflow::PendingInputs,
+    read_model::{ReadClient, build_workflow::PendingInputs},
     working_drafts::{
         WorkingDraftClient,
         observation::{DraftReads, PreparationLimits},
@@ -185,6 +186,14 @@ fn checkoff_routes(
     Ok(checkoff_router(config, client).merge(files))
 }
 
+fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
+    // Spoolman shortfalls read inventory through pp-net's checked connections.
+    Ok(accepted_router(
+        config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
+        client,
+    ))
+}
+
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
@@ -217,7 +226,7 @@ pub fn read_router(
         history_client,
         planning_client,
         workflow_client,
-        (admin_files, app_settings),
+        (admin_files, app_settings, features),
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -237,12 +246,14 @@ pub fn read_router(
             (
                 guard.admin_files()?,
                 guard.app_settings_with_policy(policy)?,
+                guard.features_with_policy(policy)?,
             ),
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
         )
     };
+    let endpoint = (origin, api_key_tenant);
     let config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
     // separately; MCP's Plan Accept uses this bundle's draft client (GRE-1236).
@@ -257,20 +268,15 @@ pub fn read_router(
     let admin = admin_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
-        admin_files,
+        admin_files.clone(),
     );
+    let modules = modules_router(config.clone(), features);
     let settings_routes = settings_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
         app_settings,
     );
-    // Spoolman shortfalls read inventory through pp-net's checked connections.
-    let accepted = accepted_router(
-        config
-            .clone()
-            .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
-        accepted_client.clone(),
-    );
+    let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
@@ -298,7 +304,9 @@ pub fn read_router(
             .merge(history)
             .merge(planning)
             .merge(workflow)
+            .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
+            .merge(modules)
             .merge(settings_routes)
             .merge(events)
             .merge(checkoff)
@@ -680,6 +688,7 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "SetModuleRequest" => json!({"on": true}),
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,
@@ -835,7 +844,8 @@ mod tests {
                 .path
                 .replace("{id}", &build)
                 .replace("{draft_id}", "1")
-                .replace("{snapshot_id}", "1");
+                .replace("{snapshot_id}", "1")
+                .replace("{module}", "orders");
             let body = route.request.map(sample_body);
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await

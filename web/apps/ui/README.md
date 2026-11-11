@@ -169,7 +169,7 @@ Spoolman route, so it works with those Modules off.
   `POST /api/v2/plans/{id}/checkoff/bursts` with the accepted basis and a new
   idempotency key. The tally shows the receipt's counts and one Undo, which sends
   `/bursts/undo` with the receipt's undo token
-  ([Manual Checkoff bursts](../../../docs/desktop-rebuild.md#manual-checkoff-bursts-gre-1191)).
+  ([Manual Checkoff bursts](../../../docs/records/d19-publication-client.md#manual-checkoff-bursts-gre-1191)).
   Checkoff is not a Plan change and never goes through the Accept gate.
 - **Retry and refusals.** A send that got no answer is resent up to twice with
   the same key and the same body. After that, the alert's Retry resends it again
@@ -235,7 +235,7 @@ so a print that ends or a link that drops shows up without a reload.
   or a lost answer) is resent up to twice with the same key, and the alert's
   Retry resends it again with the same key. The core answers a repeated key
   with the first receipt and writes nothing, so a retry never counts twice
-  ([Checkoff bursts](../../../docs/desktop-rebuild.md#checkoff-bursts-gre-1090)).
+  ([Checkoff bursts](../../../docs/records/d19-publication-client.md#checkoff-bursts-gre-1090)).
   A refusal from the core (4xx) shows its detail and no Retry. Until a bed's
   confirm gets an answer, confirming that bed again reuses its key, so a write
   that landed while its answer was lost replays its receipt and Undo instead of

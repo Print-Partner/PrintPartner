@@ -771,7 +771,7 @@ fn bootstrap_rejected(request: &Request<Body>) -> Response<Body> {
         .into_response()
 }
 
-const BOOTSTRAP_REJECTED_PAGE: &str = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Print Partner sign-in link expired</title></head><body><h1>This sign-in link has expired</h1><p>Each Open in browser link works once, within 60 seconds.</p><p>Choose Open in browser from the Print Partner tray menu to get a new link.</p></body></html>";
+const BOOTSTRAP_REJECTED_PAGE: &str = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Print Partner sign-in link expired</title></head><body><h1>This sign-in link has expired</h1><p>Each sign-in link works once, within 60 seconds.</p><p>Choose Open in browser from the Print Partner tray menu to get a new link. On a server without a desktop, run <code>pp-server bootstrap-url --data &lt;data directory&gt;</code> as the account that runs it.</p></body></html>";
 
 fn node_unavailable() -> Response<Body> {
     let mut response = Response::new(Body::from(

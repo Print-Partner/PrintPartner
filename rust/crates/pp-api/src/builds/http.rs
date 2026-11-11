@@ -632,23 +632,8 @@ fn present(
             let profiles: Vec<_> = profiles.into_iter().filter_map(Result::ok).collect();
             json_response(StatusCode::OK, &json!(ProfileList { profiles }), head)
         }
-        BuildOutcome::Duplicated {
-            build_id,
-            parent_build_id,
-            draft_id,
-        } => json_response(
-            StatusCode::CREATED,
-            &json!({"build_id":build_id,"parent_build_id":parent_build_id,"draft_id":draft_id}),
-            head,
-        ),
-        BuildOutcome::HasExperiments { builds } => crate::problem::build(
-            crate::problem::problem(
-                StatusCode::CONFLICT,
-                "Build has experiments",
-                Some("build_has_experiments"),
-            ),
-            serde_json::Map::from_iter([("builds".into(), json!(builds))]),
-        ),
+        BuildOutcome::Duplicated(copy) => json_response(StatusCode::CREATED, &copy, head),
+        BuildOutcome::HasExperiments { builds } => super::header::has_experiments(builds),
         BuildOutcome::RenameTaken { name } => crate::problem::duplicate_build_name(&name),
         BuildOutcome::NameRequired => failure(StatusCode::BAD_REQUEST, "Profile name is required"),
         BuildOutcome::FeatureDisabled => crate::problem::coded(

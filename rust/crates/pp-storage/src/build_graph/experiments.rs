@@ -8,6 +8,13 @@ pub struct ExperimentBuild {
     pub name: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ExperimentCopy {
+    pub build_id: i64,
+    pub parent_build_id: i64,
+    pub draft_id: Option<i64>,
+}
+
 pub(crate) fn children(tx: &Transaction<'_>, build: i64) -> Result<Vec<ExperimentBuild>> {
     Ok(tx.prepare(
         "SELECT b.id,b.name FROM build_experiments e JOIN build_profiles b ON b.id=e.build_id WHERE e.parent_build_id=?1 ORDER BY b.id",
@@ -51,9 +58,9 @@ pub(crate) fn duplicate(
             params![format!("{prefix}{build}"),tenant,format!("{prefix}{parent}")])?;
     }
     let draft_id = crate::working_drafts::experiment::copy(tx, tenant, parent, build)?;
-    Ok(BuildOutcome::Duplicated {
+    Ok(BuildOutcome::Duplicated(ExperimentCopy {
         build_id: build,
         parent_build_id: parent,
         draft_id,
-    })
+    }))
 }

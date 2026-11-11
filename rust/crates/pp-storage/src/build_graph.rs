@@ -3,7 +3,7 @@ mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 mod experiments;
-pub use experiments::ExperimentBuild;
+pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
@@ -132,11 +132,7 @@ pub enum BuildOutcome {
     Touched {
         profile: Box<ProfileSummary>,
     },
-    Duplicated {
-        build_id: i64,
-        parent_build_id: i64,
-        draft_id: Option<i64>,
-    },
+    Duplicated(ExperimentCopy),
     HasExperiments {
         builds: Vec<ExperimentBuild>,
     },

@@ -144,3 +144,14 @@ pub(super) async fn duplicate(
     )
     .await
 }
+
+pub(super) fn has_experiments(builds: Vec<pp_storage::build_graph::ExperimentBuild>) -> Response {
+    crate::problem::build(
+        crate::problem::problem(
+            StatusCode::CONFLICT,
+            "Build has experiments",
+            Some("build_has_experiments"),
+        ),
+        serde_json::Map::from_iter([("builds".into(), serde_json::json!(builds))]),
+    )
+}

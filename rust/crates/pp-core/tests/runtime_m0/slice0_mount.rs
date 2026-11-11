@@ -293,5 +293,6 @@ async fn assert_legacy_navigation(origin: &str, desktop: &str) {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // This is not a legacy SPA path: the unchanged API admission rejects it.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

@@ -397,6 +397,30 @@ async fn settings_support_bindings_match_node_and_survive_restart() {
         cross_site["cross_site"] = json!(true);
         assert_eq!(server.send(&cross_site, &[COOKIE]).await.status, 403);
     }
+    assert_support_reads(&server, &fixture).await;
+    server.stop().await;
+    rusqlite::Connection::open(directory.path().join("print-partner.db"))
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO app_settings VALUES('default','external_access_mode','off')",
+            [],
+        )
+        .unwrap();
+    let server = Server::start(directory.path(), Some("1")).await;
+    let help = server
+        .send(
+            &json!({"method":"GET", "path":"/api/v1/help/workflow"}),
+            &[COOKIE],
+        )
+        .await;
+    assert_eq!(
+        String::from_utf8(help.body).unwrap(),
+        fixture["help_off"].as_str().unwrap()
+    );
+    server.stop().await;
+}
+
+async fn assert_support_reads(server: &Server, fixture: &Value) {
     for path in ["/api/v1/openapi.json", "/api/v2/openapi.json"] {
         let reply = server
             .send(&json!({"method":"GET", "path":path}), &[])
@@ -438,26 +462,6 @@ async fn settings_support_bindings_match_node_and_survive_restart() {
         String::from_utf8(help.body).unwrap(),
         fixture["help_on"].as_str().unwrap()
     );
-    server.stop().await;
-    rusqlite::Connection::open(directory.path().join("print-partner.db"))
-        .unwrap()
-        .execute(
-            "INSERT OR REPLACE INTO app_settings VALUES('default','external_access_mode','off')",
-            [],
-        )
-        .unwrap();
-    let server = Server::start(directory.path(), Some("1")).await;
-    let help = server
-        .send(
-            &json!({"method":"GET", "path":"/api/v1/help/workflow"}),
-            &[COOKIE],
-        )
-        .await;
-    assert_eq!(
-        String::from_utf8(help.body).unwrap(),
-        fixture["help_off"].as_str().unwrap()
-    );
-    server.stop().await;
 }
 
 fn normalize_stamps(value: &mut Value) {

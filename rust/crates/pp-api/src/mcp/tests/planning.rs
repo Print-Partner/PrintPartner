@@ -106,7 +106,8 @@ async fn mcp_planning_confirmation_preserves_failed_proposals_and_account_isolat
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_addon_refuses_an_isolated_source_outside_its_workspace() {
-    let seed = SEED.replace("<data-dir>/repos/2", "/tmp/outside-source");
+    let outside = tempfile::tempdir().unwrap();
+    let seed = SEED.replace("<data-dir>/repos/2", outside.path().to_str().unwrap());
     let (server, headers) = keyed(&seed).await;
     let expected = json!({"error":"Source \"Addon\" exists but is not synced. Ask the user to sync it before adding as an addon.","synced":false});
     assert_eq!(

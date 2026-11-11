@@ -267,7 +267,7 @@ async fn assert_legacy_navigation(origin: &str, desktop: &str) {
     for path in ["/settings", "/builds"] {
         let response = reqwest::Client::new()
             .get(format!("{origin}{path}"))
-            .header("cookie", &desktop)
+            .header("cookie", desktop)
             .header("accept", "text/html")
             .send()
             .await
@@ -288,7 +288,7 @@ async fn assert_legacy_navigation(origin: &str, desktop: &str) {
     }
     let response = reqwest::Client::new()
         .get(format!("{origin}/today"))
-        .header("cookie", &desktop)
+        .header("cookie", desktop)
         .header("accept", "text/html")
         .send()
         .await

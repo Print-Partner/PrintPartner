@@ -6,7 +6,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Purpose
 
-- Verifies the measured release, frontend and backend, against the embedded bundle manifest once during core startup (`verify_bundle`). A Rust-only start runs no Node child and calls `verify_rust_only_release` instead: identity, frontend and community manifests only. Before each child restart the supervisor rechecks only the backend files (`release::verify_backend`).
+- Verifies the measured release, frontend and backend, against the embedded bundle manifest once during core startup (`verify_bundle`). A Rust-only start runs no Node child. With `apps/ui/dist` installed, `pp-core` calls `snapshot_rust_only_release` to verify identity, the `replacement_frontend` inventory and community manifests, and retain the verified UI bytes. Without that bundle, it calls `verify_rust_only_legacy_release` against `frontend` and the same identity and community manifests. Before each child restart the supervisor rechecks only the backend files (`release::verify_backend`).
 - Spawns, watches, restarts with backoff, crash-guards, and stops the Node child (`Supervisor`).
 - Forwards HTTP to the child over a per-generation private channel with a private key (`Endpoint::forward`).
 - Owns the local log files, the one redaction policy, and the table of Node environment settings.
@@ -24,7 +24,10 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `Supervisor::start`, `start_with_config`, `disarm_restarts`, `shutdown` | Child lifecycle. `SpawnSpec` and `SupervisorConfig` configure it; `shutdown` returns `CompatExit`. |
 | `CompatHandle` | Clonable handle: `status` (`watch` of `Status`), `endpoint()`, `recover()` after the crash guard trips. |
 | `Endpoint` | `forward`, `rate_limit_bucket`, `bound_to`. |
-| `Bundle`, `MeasuredBundle`, `verify_bundle`, `verify_rust_only_release` | Release identity and the proof that its files match the manifest. |
+| `Bundle`, `MeasuredBundle`, `verify_bundle` | Release identity and the proof that the legacy frontend and backend match the manifest. |
+| `AssetSnapshot`, `snapshot_rust_only_release` | Immutable replacement UI bytes retained after identity, `replacement_frontend` and community-manifest verification. |
+| `verify_rust_only_release` | Verifies identity, `replacement_frontend` and community manifests without retaining the bytes. |
+| `verify_rust_only_legacy_release` | Verifies identity, `frontend` and community manifests when the replacement bundle is absent. |
 | `drain` | Process-group stop helpers: `drive_shutdown_group`, `reap_process_group`, `SIGTERM_GRACE`. On Windows the group is the child's Job Object. |
 | `redact` | `Scrubber`, `scrub`, `REDACTED`: the scrub policy for logs, the Logs view, and opt-in Sentry. |
 | `settings` | `ENVIRONMENT` maps each Node env name to an `Owner`; `fixed_env`. |

@@ -23,6 +23,11 @@ pub mod moonraker;
 pub mod node_path;
 pub mod node_schema;
 
+/// Keep the cookie pair from a response's `Set-Cookie` header for the next request.
+pub fn session_cookie(set_cookie: &str) -> String {
+    set_cookie.split(';').next().unwrap_or_default().to_owned()
+}
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,

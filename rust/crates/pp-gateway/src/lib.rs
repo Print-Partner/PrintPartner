@@ -2508,13 +2508,7 @@ impl Gateway {
             .unwrap();
         let response = handle(State(self.state.clone()), bootstrap).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        response.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned()
+        pp_testkit::session_cookie(response.headers()["set-cookie"].to_str().unwrap())
     }
 }
 

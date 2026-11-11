@@ -65,9 +65,12 @@ ruleset snapshot. The independent `release-audit` job runs without path selectio
 on every non-draft PR and on non-PR events, so documentation, license and
 screenshot audits remain covered when the heavy web jobs skip. The sitemap tests,
 design-token contrast check and workaround ratchet stay in `web`; their exact
-documentation inputs, all app-source Markdown and every Python path select
-`web`, as listed in the CI guide. The audit job's pinned Node setup, version
-assertion, read-only permissions and unconditional audit command
+documentation inputs and all app-source Markdown select `web`. Every path with
+a ratchet-scanned extension (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`,
+`.cjs`, `.rs`, `.py`, `.sh`, `.yml`, `.yaml`, `.css`, `.html`) also selects `web`.
+A test loads the ratchet's declarations and requires the filter's list to match.
+The audit job's pinned Node setup, version assertion, read-only permissions and
+unconditional audit command
 are checked by `test_merge_group_workflows.py`.
 
 This selection deliberately changes four CI guards, with regression tests:

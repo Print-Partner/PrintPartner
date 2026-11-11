@@ -43,9 +43,11 @@ The `web` kind covers non-Markdown files under `web/`, `scripts/`, `fixtures/`,
 package/configuration files, Docker and Compose inputs, Caddyfile and the Rust
 toolchain and root `LICENSE`. Markdown selects it anywhere under
 `web/apps/*/src/` and `fixtures/`, or for `web/DEPLOY.md` and the root
-legal/notices files. Every `.py` path also selects `web`, including Python
-outside those directories, because its workaround ratchet reads all tracked
-Python files.
+legal/notices files. The workaround ratchet scans tracked `.ts`, `.tsx`, `.mts`,
+`.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.rs`, `.py`, `.sh`, `.yml`, `.yaml`, `.css`
+and `.html` files. Every path with one of those extensions selects `web`,
+including files outside the directories above. A selection test loads the
+ratchet's extension declarations and requires the filter's list to match.
 
 The other documentation inputs read by tests in `web` select that job:
 `README.md`, `docs/README.md`, `docs/INSTALL.md`, `docs/index.html` and

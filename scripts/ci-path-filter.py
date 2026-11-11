@@ -9,6 +9,11 @@ import subprocess
 import sys
 
 
+# Kept in sync with workaround-ratchet.mjs by test_workaround_extensions_match_ratchet.
+WORKAROUND_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+                         ".rs", ".py", ".sh", ".yml", ".yaml", ".css", ".html")
+
+
 def relevant(path, kind):
     # A filter change must test its own consumers.
     if path in {"scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py",
@@ -24,7 +29,7 @@ def relevant(path, kind):
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
     if kind == "web" and (
-            path.endswith(".py")  # The workaround ratchet scans every tracked Python file.
+            path.endswith(WORKAROUND_EXTENSIONS)
             or path.startswith("docs/scripts/")
             or path in {"README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",
                         "docs/design-system.md", "docs/product/ui-tokens.md"}):

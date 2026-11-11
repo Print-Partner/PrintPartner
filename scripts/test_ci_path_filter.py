@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -45,6 +46,27 @@ class CiPathFilterTests(unittest.TestCase):
                          "docs/design-system-extra.md", "docs/product/other-tokens.md",
                          "web/apps/ui/src-extra/content.md"):
                 self.assertFalse(ci_filter.relevant(path, kind), (kind, path))
+
+    def test_workaround_extensions_match_ratchet(self):
+        source = SCRIPT.with_name("workaround-ratchet.mjs").read_text()
+
+        def declaration(name):
+            match = re.search(rf"const {name} = new Set\(\[(.*?)\]\);", source, re.S)
+            self.assertIsNotNone(match, f"cannot read ratchet extension declaration: {name}")
+            return match.group(1)
+
+        javascript = json.loads("[" + declaration("JAVASCRIPT_EXTENSIONS") + "]")
+        other = declaration("SOURCE_EXTENSIONS").replace("...JAVASCRIPT_EXTENSIONS,", "")
+        extensions = set(javascript + json.loads("[" + other.rstrip().removesuffix(",") + "]"))
+        self.assertEqual(set(ci_filter.WORKAROUND_EXTENSIONS), extensions)
+        for extension in extensions:
+            self.assertTrue(ci_filter.relevant(f"outside-inputs/file{extension}", "web"), extension)
+        for path in ("desktop/e2e/x.ts", ".devcontainer/x.sh", "docs/examples/x.yaml",
+                     "docs/kit-catalog.yaml", ".github/FUNDING.yml",
+                     ".github/ISSUE_TEMPLATE/bug.yml"):
+            self.assertTrue(ci_filter.relevant(path, "web"), path)
+        for extension in (".json", ".md", ".txt", ".tsx-extra"):
+            self.assertFalse(ci_filter.relevant(f"outside-inputs/file{extension}", "web"), extension)
 
     def test_web_test_inputs_do_not_select_ui(self):
         for path in ("README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",

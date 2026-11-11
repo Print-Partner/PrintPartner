@@ -38,7 +38,8 @@ def relevant(path, kind):
             or re.fullmatch(r"web/package[^/]*\.json", path) is not None)
 
 
-WINDOWS_LABELS = {"ci:full", "ci:windows"}
+WINDOWS_LABELS = {"ci:full", "ci:windows", "ci:cross-os"}
+MACOS_LABELS = {"macos", "ci:full", "ci:cross-os"}
 # Platform-gated code: Windows names, Unix-only code that needs a Windows counterpart, Linux-only
 # code whose fallback runs on Windows, and path-separator handling: node:path's `sep` (namespaced or
 # destructured), `path.win32`, a backslash string literal ("\\" or '\\') and a backslash regex (/\\/).
@@ -53,7 +54,12 @@ WINDOWS_FILES = {".gitattributes", "rust/Cargo.lock", "web/package.json", "web/p
                  "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
 
 
-def windows_relevant(path, base, head):
+def windows_relevant(path, base, head, kind="windows"):
+    if kind == "macos" and (path.startswith(("rust/scripts/", "scripts/verify-rust-gateway/"))
+                            or path in {"scripts/native_image_diagnostics.py",
+                                        "scripts/test_native_image_cleanup.py",
+                                        "scripts/ci-rust-runner.py", "scripts/test_ci_rust_runner.py"}):
+        return True
     # The Windows job builds every web workspace (npm ci, npm run build) and launches the Node child.
     if (path in WINDOWS_FILES or path.startswith(WINDOWS_PATHS)
             or re.fullmatch(r"web/(apps|packages)/[^/]+/package\.json", path)):
@@ -72,7 +78,8 @@ def windows_relevant(path, base, head):
         except subprocess.CalledProcessError:
             continue
         read = True
-        if WINDOWS_MARKERS.search(text.lower()):
+        if WINDOWS_MARKERS.search(text.lower()) or (kind == "macos" and
+                re.search(rb"macos|darwin|apple|appkit|corefoundation", text.lower())):
             return True
     return not read
 
@@ -80,7 +87,8 @@ def windows_relevant(path, base, head):
 def select(event, base, head, kind, labels=()):
     if event != "pull_request":
         return True
-    if kind == "windows" and WINDOWS_LABELS.intersection(labels):
+    if ((kind == "windows" and WINDOWS_LABELS.intersection(labels))
+            or (kind == "macos" and MACOS_LABELS.intersection(labels))):
         return True
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in (base, head)):
         return True
@@ -91,26 +99,26 @@ def select(event, base, head, kind, labels=()):
         ).decode("utf-8", errors="surrogateescape").split("\0")
     except subprocess.CalledProcessError:
         return True
-    if kind == "windows":
+    if kind in {"windows", "macos"}:
         try:
             old = subprocess.check_output(["git", "merge-base", base, head],
                                           stderr=subprocess.DEVNULL).decode().strip()
         except subprocess.CalledProcessError:
             return True
-        return any(windows_relevant(path, old, head) for path in paths if path)
+        return any(windows_relevant(path, old, head, kind) for path in paths if path)
     return any(relevant(path, kind) for path in paths if path)
 
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "actions", "native", "windows"}:
-        raise SystemExit("Expected rust, actions, native or windows")
+    if kind not in {"rust", "actions", "native", "windows", "macos"}:
+        raise SystemExit("Expected rust, actions, native, windows or macos")
     labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
                        os.environ.get("HEAD_SHA"), kind, labels)).lower()
     message = f"{kind} inputs changed: {value}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"{'windows' if kind == 'windows' else 'relevant'}={value}\n")
+        output.write(f"{kind if kind in {'windows', 'macos'} else 'relevant'}={value}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)

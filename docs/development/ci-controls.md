@@ -43,7 +43,7 @@ For other paths, including documentation-only PRs, both jobs are skipped and sti
 Non-PR runs always execute both linters.
 Both jobs fail if the `changes` job fails, so a broken filter cannot skip a required check.
 Both jobs have only `contents: read` permission and disable persisted checkout credentials.
-A new PR push cancels that PR's older run. Pushes to `main` share one group per workflow: one run executes and one waits, and a newer push replaces the waiting run, which GitHub reports as cancelled. Other non-PR runs have their own group and never wait for or cancel another run.
+A new PR push cancels that PR's older run. Pushes to `main` share one group per workflow: one run executes and one waits, and a newer push replaces the waiting run, which GitHub reports as cancelled. Other non-PR runs have their own group, except Rust cross-OS and Native macOS bundle: merge groups use the queue ref (`github.ref`) and cancel older runs of that entry. Branch deletion alone does not trigger cancellation; dropped groups without replacement runs still need manual cancellation.
 
 Actionlint 1.7.12 checks workflow syntax and embedded shell commands with ShellCheck.
 The job verifies the actionlint download against its SHA-256 checksum before execution.
@@ -54,6 +54,20 @@ There is no confidence filter.
 This keeps low-severity notices visible without adding the pedantic persona's style checks.
 The pinned `zizmor-action` runs online audits and emits job annotations without a SARIF upload or write permission.
 Its default pin policy requires every external action, including `actions/*`, to use a full commit SHA.
+
+## Cross-OS capacity
+
+PR Windows and macOS jobs run by label or platform-sensitive path; see the
+[event table and macOS tier](ci.md#macos-tier). Merge groups and main pushes run
+all cross-OS jobs. Main's Rust macOS job can select an idle `pp-local-mac` using
+the existing hosted runner selector and read-only runner-list token, with hosted
+fallback. `PP_MAC_RUNNER=hosted` disables it. No PR or merge-group code runs on
+that persistent Mac; no secrets or permissions are added to its job.
+
+The ruleset snapshot is unchanged: `actionlint`, `zizmor`, `rust (linux)`,
+`Lint Evidence block` and `review-gate` remain the required contexts. Windows,
+macOS and native bundle checks remain advisory. Runner registration and making
+`duplication` required are separate owner actions.
 
 ## Existing findings
 

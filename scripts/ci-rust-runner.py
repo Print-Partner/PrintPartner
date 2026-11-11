@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Pick the runners for the Rust and packaged-smoke jobs.
 
+Main macOS uses an idle pp-local-mac when the runner-list token confirms one;
+PP_MAC_RUNNER=hosted disables it. Every other event and any uncertain status
+uses macos-26. The Mac job receives no runner-list token.
+
 Main pushes and manual runs use pp-local for the Linux Rust jobs unless the
 PP_RUST_RUNNER repository variable says hosted or the fleet looks unavailable.
 Merge groups and the nightly schedule stay hosted: a merge group holds PR code that has
@@ -131,6 +135,31 @@ def choose(env, fetch, now):
     return LOCAL, "no pp-local Rust job queued for 15+ minutes"
 
 
+MACOS_LOCAL = ["self-hosted", "macOS", "ARM64", "pp-local-mac"]
+MACOS_HOSTED = "macos-26"
+
+
+def choose_macos(env, fetch):
+    """Only landed main code may use the Mac mini; require positive idle evidence."""
+    if env.get("EVENT_NAME") != "push" or env.get("REF") != "refs/heads/main":
+        return MACOS_HOSTED, "only main pushes may use pp-local-mac"
+    mode = env.get("PP_MAC_RUNNER", "").strip().lower() or "local"
+    if mode != "local" or not env.get("RUNNER_TOKEN"):
+        return MACOS_HOSTED, "hosted override or no runner-list token"
+    try:
+        runners = fetch(f"repos/{env['REPOSITORY']}/actions/runners?per_page=100",
+                        env["RUNNER_TOKEN"]).get("runners", [])
+        required = {label.lower() for label in MACOS_LOCAL}
+        for runner in runners:
+            labels = {label.get("name", "").lower() for label in runner.get("labels", [])}
+            if (required <= labels and runner.get("status") == "online"
+                    and runner.get("busy") is False):
+                return MACOS_LOCAL, "online idle pp-local-mac runner"
+    except (OSError, ValueError):
+        return MACOS_HOSTED, "cannot list Mac runners"
+    return MACOS_HOSTED, "no online idle pp-local-mac runner"
+
+
 def github_fetch(path, token):
     request = urllib.request.Request(f"https://api.github.com/{path}", headers={
         "Accept": "application/vnd.github+json",
@@ -149,11 +178,13 @@ def main():
     value = json.dumps(runs_on, separators=(",", ":"))
     paid = os.environ.get("EVENT_NAME") == "pull_request" and pr_mode(os.environ) != "hosted"
     smoke = json.dumps(BLACKSMITH["smoke"] if paid else "ubuntu-24.04")
+    macos, macos_reason = choose_macos(os.environ, github_fetch)
     message = f"Linux Rust runner: {value} ({reason}); packaged smoke {smoke}\n"
+    message += f"macOS Rust runner: {json.dumps(macos)} ({macos_reason})\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write(f"linux_runs_on={value}\nlinux_kind={runner_kind(runs_on)}\n"
-                     f"smoke_runs_on={smoke}\n")
+                     f"smoke_runs_on={smoke}\nmacos_runs_on={json.dumps(macos)}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)
 

@@ -50,6 +50,40 @@ class Api:
         return {"jobs": self.jobs[run_id][1]}
 
 
+class MacRunnerTests(unittest.TestCase):
+    def test_only_main_pushes_can_query_the_mac_fleet(self):
+        for event in ("pull_request", "pull_request_target", "merge_group", "schedule",
+                      "workflow_dispatch", "push"):
+            for ref in ("refs/heads/main", "refs/pull/1/merge", "refs/heads/other"):
+                api = Api()
+                env = {**BASE, "EVENT_NAME": event, "REF": ref, "RUNNER_TOKEN": "reader"}
+                runs_on, _ = runner.choose_macos(env, api)
+                self.assertEqual(runs_on, runner.MACOS_HOSTED)
+                self.assertEqual(bool(api.calls), event == "push" and ref == "refs/heads/main")
+
+    def test_main_requires_an_idle_online_runner_with_every_label(self):
+        mac = {"status": "online", "busy": False,
+               "labels": [{"name": name} for name in runner.MACOS_LOCAL]}
+        for candidates, expected in (([mac], runner.MACOS_LOCAL),
+                                      ([{**mac, "busy": True}], runner.MACOS_HOSTED),
+                                      ([{**mac, "busy": None}], runner.MACOS_HOSTED),
+                                      ([{**mac, "status": "offline"}], runner.MACOS_HOSTED),
+                                      ([pp_runner()], runner.MACOS_HOSTED),
+                                      ([], runner.MACOS_HOSTED)):
+            with self.subTest(candidates=candidates):
+                result, _ = runner.choose_macos({**BASE, "REF": "refs/heads/main",
+                                                "RUNNER_TOKEN": "reader"}, Api(runners=candidates))
+                self.assertEqual(result, expected)
+
+    def test_hosted_override_missing_token_and_api_failure_fall_back(self):
+        for extra in ({}, {"PP_MAC_RUNNER": "hosted", "RUNNER_TOKEN": "reader"},
+                      {"PP_MAC_RUNNER": "unknown", "RUNNER_TOKEN": "reader"},
+                      {"RUNNER_TOKEN": "reader"}):
+            result, _ = runner.choose_macos({**BASE, "REF": "refs/heads/main", **extra},
+                                            Api(fail=("/runners",)))
+            self.assertEqual(result, runner.MACOS_HOSTED)
+
+
 class RustRunnerTests(unittest.TestCase):
     def choose(self, api=None, **env):
         return runner.choose({**BASE, **env}, api or Api(), NOW)

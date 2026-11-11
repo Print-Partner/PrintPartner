@@ -121,6 +121,35 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertEqual(select(advanced_base, git("rev-parse", "HEAD"), "rust")[0], "relevant=true\n")
 
 
+    def test_macos_labels_and_platform_content(self):
+        from unittest.mock import patch
+
+        for label in ("macos", "ci:full", "ci:cross-os"):
+            self.assertTrue(ci_filter.select("pull_request", "0" * 40, "0" * 40,
+                                             "macos", [label]))
+        self.assertTrue(ci_filter.select("pull_request", "0" * 40, "0" * 40,
+                                         "windows", ["ci:cross-os"]))
+        for kind in ("macos", "windows"):
+            for event in ("merge_group", "push", "schedule", "workflow_dispatch"):
+                self.assertTrue(ci_filter.select(event, "", "", kind))
+        for path, text, expected in (
+            ("rust/crates/pp-core/src/a.rs", b"fn a() {}", False),
+            ("docs/ci.md", b"macos", False),
+            ("web/apps/web/src/App.tsx", b"export {}", False),
+            ("rust/crates/pp-core/src/a.rs", b'#[cfg(target_os = "macos")]', True),
+            ("web/apps/server/src/a.ts", b"process.platform === 'darwin'", True),
+            ("rust/scripts/desktop-bundle.sh", b"", True),
+            ("scripts/ci-rust-runner.py", b"", True),
+            (".github/workflows/desktop-native-macos.yml", b"", True),
+            ("web/package-lock.json", b"", True),
+        ):
+            with self.subTest(path=path, text=text), patch.object(
+                    ci_filter.subprocess, "check_output", return_value=text):
+                self.assertEqual(ci_filter.windows_relevant(path, "base", "head", "macos"), expected)
+        # Removed platform code must still select macOS from the base copy.
+        with patch.object(ci_filter.subprocess, "check_output", side_effect=[b"fn a() {}", b"darwin"]):
+            self.assertTrue(ci_filter.windows_relevant("rust/crates/pp-core/src/a.rs", "base", "head", "macos"))
+
     def test_windows_tier(self):
         for event in ["push", "merge_group", "schedule", "workflow_dispatch"]:
             self.assertTrue(ci_filter.select(event, "", "", "windows"))

@@ -1,4 +1,3 @@
-#![cfg(feature = "desktop_rebuild")]
 use pp_api::{
     admin::AdminHttpConfig,
     printer_host::probe::{

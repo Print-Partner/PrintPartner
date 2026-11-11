@@ -589,7 +589,7 @@ fn source_id(raw: &str) -> Option<i64> {
 async fn execute(app: &App, credentials: Credentials, request: CatalogRequest) -> Response {
     match dispatch(app, credentials, request).await {
         Ok(outcome) => match outcome {
-            Outcome::Sources(rows) => Json(wire::sources(rows)).into_response(),
+            Outcome::Sources(sources) => Json(wire::SourceList { sources }).into_response(),
             Outcome::Source(Some(row)) => match wire::source(*row) {
                 Ok(value) => Json(value).into_response(),
                 Err(_) => reject(StatusCode::INTERNAL_SERVER_ERROR, "Catalog unavailable"),
@@ -600,10 +600,12 @@ async fn execute(app: &App, credentials: Credentials, request: CatalogRequest) -
                 Err(_) => reject(StatusCode::INTERNAL_SERVER_ERROR, "Catalog unavailable"),
             },
             Outcome::Data(value) => Json(value).into_response(),
-            Outcome::Activity(events) => match wire::activity(events) {
-                Ok(value) => Json(value).into_response(),
-                Err(_) => reject(StatusCode::INTERNAL_SERVER_ERROR, "Catalog unavailable"),
-            },
+            Outcome::Activity(events) => {
+                match serde_json::to_value(wire::SourceActivity { events }) {
+                    Ok(value) => Json(value).into_response(),
+                    Err(_) => reject(StatusCode::INTERNAL_SERVER_ERROR, "Catalog unavailable"),
+                }
+            }
             Outcome::Preview(preview) => match wire::naming_preview_body(preview) {
                 Ok(value) => Json(value).into_response(),
                 Err(_) => reject(StatusCode::INTERNAL_SERVER_ERROR, "Catalog unavailable"),

@@ -2,7 +2,8 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`], [`crate::checkoff`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`] or
+//! [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -333,6 +334,24 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "SendQueue",
     ),
+    route("listSources", "GET", "/api/v1/sources", None, "SourceList"),
+    route(
+        "listSourceActivity",
+        "GET",
+        "/api/v1/sources/activity",
+        None,
+        "SourceActivity",
+    ),
+    ClientRoute {
+        text_params: &["module"],
+        ..route(
+            "setModule",
+            "PUT",
+            "/api/v2/modules/{module}",
+            Some("SetModuleRequest"),
+            "ModuleList",
+        )
+    },
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -479,6 +498,14 @@ mod codegen {
         schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
         schema(
+            "SetModuleRequest",
+            schemars::schema_for!(crate::modules::SetModuleRequest),
+        )?;
+        schema(
+            "ModuleList",
+            schemars::schema_for!(crate::modules::ModuleList),
+        )?;
+        schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),
         )?;
@@ -504,6 +531,14 @@ mod codegen {
             schemars::schema_for!(MatchSuggestionList),
         )?;
         schema("SendQueue", schemars::schema_for!(SendQueue))?;
+        schema(
+            "SourceList",
+            schemars::schema_for!(crate::catalog::wire::SourceList),
+        )?;
+        schema(
+            "SourceActivity",
+            schemars::schema_for!(crate::catalog::wire::SourceActivity),
+        )?;
         schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
         schema("FarmLogEntry", schemars::schema_for!(FarmLogEntry))?;
         schema(
@@ -1365,6 +1400,60 @@ mod codegen {
         ]
     }
 
+    /// A synced Source with every optional field, a Source never synced, and
+    /// one activity event of each kind the catalog records.
+    fn catalog_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::catalog::wire::{SourceActivity, SourceList};
+        use pp_storage::catalog::{SourceActivityEvent, SourceSummary};
+        let source = |id: i64, filled: bool| {
+            let text = |value: &str| filled.then(|| value.to_owned());
+            SourceSummary {
+                id,
+                name: format!("Source {UNICODE}"),
+                url: "https://example.com/kit.git".into(),
+                source_kind: "git".into(),
+                source_type: "kit".into(),
+                role: "primary".into(),
+                category: text(UNICODE),
+                branch: "main".into(),
+                tag: text("v1.2.0"),
+                local_path: None,
+                content_available: filled,
+                last_synced_at: text("2026-11-03T20:00:00.000Z"),
+                last_commit_sha: text(&"a".repeat(40)),
+                current_source_revision_id: filled.then_some(MAX_SAFE),
+                docs_url: text("https://example.com/docs"),
+                manifest_community_slug: text("kit"),
+                metadata: filled.then(|| Map::from_iter([("note".into(), json!(UNICODE))])),
+                naming_use_defaults: !filled,
+                update_status: text("updates_available"),
+                update_checked_at: text("2026-11-03T21:00:00.000Z"),
+                doc_count: if filled { MAX_SAFE } else { 0 },
+                catalog_metadata_version: filled.then_some(1),
+            }
+        };
+        let event = |id: i64, kind: &str, detail: Option<&str>| SourceActivityEvent {
+            id,
+            at: "2026-11-03T22:00:00.000Z".into(),
+            kind: kind.into(),
+            source_id: detail.is_none().then(|| MAX_SAFE.into()),
+            source_name: format!("Source {UNICODE}"),
+            detail: detail.map(str::to_owned),
+        };
+        let sources = vec![source(MAX_SAFE, true), source(1, false)];
+        let events = vec![
+            event(3, "source.sync_failed", Some("network unreachable")),
+            event(2, "source.updated", None),
+            event(1, "source.update_available", None),
+        ];
+        Ok(vec![
+            served("SourceList", "filled-and-empty", SourceList { sources })?,
+            served("SourceList", "none", SourceList { sources: vec![] })?,
+            served("SourceActivity", "every-kind", SourceActivity { events })?,
+            served("SourceActivity", "none", SourceActivity { events: vec![] })?,
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -1707,7 +1796,27 @@ mod codegen {
                 "modules-unreadable",
                 health(None, Some(pp_storage::features::modules::unreadable())),
             )?,
+            served(
+                "ModuleList",
+                "mixed",
+                crate::modules::ModuleList {
+                    modules: mixed_modules(),
+                },
+            )?,
         ];
+        for (name, value) in [
+            ("on", json!({"on": true})),
+            ("off", json!({"on": false})),
+            ("missing", json!({})),
+            ("not-boolean", json!({"on": "true"})),
+            ("extra-key", json!({"on": true, "plan": 1})),
+        ] {
+            cases.push(request::<crate::modules::SetModuleRequest>(
+                "SetModuleRequest",
+                name,
+                value,
+            ));
+        }
         for (index, value) in shortfalls().into_iter().enumerate() {
             cases.push(served(
                 "FilamentShortfalls",
@@ -1741,6 +1850,7 @@ mod codegen {
             },
         )?);
         cases.push(served("SendQueue", "every-state", queue)?);
+        cases.extend(catalog_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);

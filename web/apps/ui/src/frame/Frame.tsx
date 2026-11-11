@@ -5,59 +5,8 @@ import { PulseLine } from "../farm/PulseLine";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { ConnectionProvider, useConnection } from "./connection";
 import { DESTINATIONS, shortcutLabel } from "./destinations";
-import { Dialog } from "./Dialog";
+import { HelpDialog } from "./HelpDialog";
 import { useCharacterShortcuts, useShortcuts } from "./useShortcuts";
-
-const GLOBAL_SHORTCUTS: readonly { keys: string; action: string }[] = [
-  ...DESTINATIONS.map((d) => ({ keys: shortcutLabel(d), action: `Go to ${d.label}` })),
-  { keys: "Cmd/Ctrl K", action: "Open or close the command palette" },
-  { keys: "?", action: "Show keyboard shortcuts" },
-  { keys: "Esc", action: "Close the open dialog" },
-];
-
-function ShortcutList({
-  onClose,
-  characterKeys,
-  setCharacterKeys,
-}: {
-  onClose: () => void;
-  characterKeys: boolean;
-  setCharacterKeys: (on: boolean) => void;
-}) {
-  return (
-    <Dialog title="Keyboard shortcuts" onClose={onClose}>
-      <label className="pp-setting">
-        <input
-          type="checkbox"
-          checked={characterKeys}
-          onChange={(e) => setCharacterKeys(e.target.checked)}
-        />
-        Single-key shortcuts (G sequences and ?)
-      </label>
-      <table className="pp-shortcut-table">
-        <thead>
-          <tr>
-            <th scope="col">Keys</th>
-            <th scope="col">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {GLOBAL_SHORTCUTS.map((s) => (
-            <tr key={s.keys}>
-              <td>
-                <kbd className="pp-kbd">{s.keys}</kbd>
-              </td>
-              <td>{s.action}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <button type="button" className="pp-button" onClick={onClose}>
-        Close
-      </button>
-    </Dialog>
-  );
-}
 
 function ConnectionLine() {
   const status = useConnection();
@@ -94,7 +43,7 @@ function FrameBody() {
     })),
     {
       id: "shortcuts",
-      label: "Show keyboard shortcuts",
+      label: "Show keyboard shortcuts and help",
       shortcut: "?",
       run: () => setOverlay("help"),
     },
@@ -122,6 +71,14 @@ function FrameBody() {
         >
           Commands <kbd className="pp-kbd">Cmd/Ctrl K</kbd>
         </button>
+        <button
+          type="button"
+          className="pp-header-button"
+          aria-haspopup="dialog"
+          onClick={() => setOverlay("help")}
+        >
+          Help
+        </button>
       </header>
       <nav aria-label="Main" className="pp-rail">
         <ul>
@@ -144,7 +101,7 @@ function FrameBody() {
       </main>
       {overlay === "palette" && <CommandPalette commands={commands} onClose={close} />}
       {overlay === "help" && (
-        <ShortcutList
+        <HelpDialog
           onClose={close}
           characterKeys={characterKeys}
           setCharacterKeys={setCharacterKeys}

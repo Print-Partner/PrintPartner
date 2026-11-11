@@ -8,7 +8,7 @@ use checkoff_http::Fixture;
 use pp_api::{
     accepted::AcceptedHttpConfig,
     checkoff::checkoff_router,
-    mcp::{McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpHttpConfig, mcp_router},
     serving::Serving,
 };
 use pp_storage::{
@@ -56,27 +56,30 @@ impl Served {
         .merge(mcp_router(
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             auth.clone(),
-            owner
-                .build_graph_with_observations(
-                    mcp_rpc::policy(),
-                    Arc::new(owner.source_reads().unwrap()),
-                    Default::default(),
-                )
-                .unwrap(),
-            owner
-                .build_workflow(mcp_rpc::policy(), Arc::new(PendingInputs))
-                .unwrap(),
-            owner
-                .working_drafts_with_observations(
-                    mcp_rpc::policy(),
-                    Arc::new(owner.source_reads().unwrap()),
-                    Default::default(),
-                )
-                .unwrap(),
-            owner
-                .build_planning(mcp_rpc::policy(), owner.source_reads().unwrap())
-                .unwrap(),
-            progress,
+            McpClients {
+                builds: owner
+                    .build_graph_with_observations(
+                        mcp_rpc::policy(),
+                        Arc::new(owner.source_reads().unwrap()),
+                        Default::default(),
+                    )
+                    .unwrap(),
+                workflow: owner
+                    .build_workflow(mcp_rpc::policy(), Arc::new(PendingInputs))
+                    .unwrap(),
+                drafts: owner
+                    .working_drafts_with_observations(
+                        mcp_rpc::policy(),
+                        Arc::new(owner.source_reads().unwrap()),
+                        Default::default(),
+                    )
+                    .unwrap(),
+                planning: owner
+                    .build_planning(mcp_rpc::policy(), owner.source_reads().unwrap())
+                    .unwrap(),
+                progress,
+                accepted: owner.accepted_reads_with_policy(mcp_rpc::policy()).unwrap(),
+            },
         ));
         let bearer = match bearer {
             Some(bearer) => bearer,

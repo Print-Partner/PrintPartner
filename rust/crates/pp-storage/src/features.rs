@@ -19,6 +19,8 @@ use std::{
 
 pub mod modules;
 
+use modules::{Module, ModuleStatus};
+
 const USER_KEY: &str = "feature_toggles";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,8 +99,21 @@ pub struct FeatureClient {
 pub(super) struct Command {
     credential: Credential,
     policy: auth::AuthPolicy,
-    scope: Scope,
-    patch: Option<(Feature, Option<bool>)>,
+    change: Change,
+}
+
+enum Change {
+    /// Read, or patch one feature, in `scope`.
+    Feature(Scope, Option<(Feature, Option<bool>)>),
+    /// Turn a Module on or off for the user.
+    Module(Module, bool),
+}
+
+/// What the writer answers: a feature view, or every Module's state after a
+/// Module change.
+pub(super) enum Reply {
+    View(View),
+    Modules(Vec<ModuleStatus>),
 }
 
 impl WriterOwner {
@@ -119,7 +134,7 @@ impl FeatureClient {
         wait: Duration,
     ) -> Result<View> {
         let scope = plan.map_or(Scope::User, Scope::Plan);
-        self.submit(credential, scope, None, cancelled, wait)
+        view(self.submit(credential, Change::Feature(scope, None), cancelled, wait)?)
     }
     pub fn set(
         &self,
@@ -130,16 +145,38 @@ impl FeatureClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<View> {
-        self.submit(credential, scope, Some((feature, choice)), cancelled, wait)
+        let change = Change::Feature(scope, Some((feature, choice)));
+        view(self.submit(credential, change, cancelled, wait)?)
     }
+
+    /// Turns `module` on or off for the user, as the replacement Settings
+    /// screen does (GRE-1341), and answers every Module's state read in the
+    /// same transaction. A feature Module writes the user layer only: Plan
+    /// overrides and unknown stored keys stay. Assembly tracking writes
+    /// `build_tracking_assembly` as `"1"` or `"0"`, as Node's
+    /// `PUT /settings/build-tracking` does. An unreadable user layer refuses a
+    /// feature Module with [`InvalidLayer`] and writes nothing.
+    pub fn set_module(
+        &self,
+        credential: Credential,
+        module: Module,
+        on: bool,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Vec<ModuleStatus>> {
+        match self.submit(credential, Change::Module(module, on), cancelled, wait)? {
+            Reply::Modules(modules) => Ok(modules),
+            Reply::View(_) => Err(anyhow!("Module change answered a feature view")),
+        }
+    }
+
     fn submit(
         &self,
         credential: Credential,
-        scope: Scope,
-        patch: Option<(Feature, Option<bool>)>,
+        change: Change,
         cancelled: &AtomicBool,
         wait: Duration,
-    ) -> Result<View> {
+    ) -> Result<Reply> {
         let deadline = Instant::now() + wait;
         let mut queue = self
             .shared
@@ -168,8 +205,7 @@ impl FeatureClient {
             command: Command {
                 credential,
                 policy: self.policy,
-                scope,
-                patch,
+                change,
             },
             reply,
         });
@@ -181,14 +217,23 @@ impl FeatureClient {
     }
 }
 
+fn view(reply: Reply) -> Result<View> {
+    match reply {
+        Reply::View(view) => Ok(view),
+        Reply::Modules(_) => Err(anyhow!("Feature request answered Module states")),
+    }
+}
+
 pub(super) fn execute(
     connection: &mut Connection,
     command: Command,
     admission: crate::writer_admission::Deadline,
-) -> Result<View> {
-    let tx = match command.patch {
-        Some(_) => crate::writer_admission::begin_immediate(connection, admission)?,
-        None => connection.transaction_with_behavior(TransactionBehavior::Deferred)?,
+) -> Result<Reply> {
+    let tx = match command.change {
+        Change::Feature(_, None) => {
+            connection.transaction_with_behavior(TransactionBehavior::Deferred)?
+        }
+        _ => crate::writer_admission::begin_immediate(connection, admission)?,
     };
     let tenant = match command.credential {
         Credential::Session(secret) => auth::read_session_tenant(&tx, &secret, command.policy)?,
@@ -197,12 +242,33 @@ pub(super) fn execute(
             secret,
         } => auth::read_key_tenant(&tx, &routed_tenant, &secret)?,
     };
-    let plan = match command.scope {
+    let (scope, patch) = match command.change {
+        Change::Feature(scope, patch) => (scope, patch),
+        Change::Module(module, on) => {
+            match module.feature() {
+                Some(feature) => {
+                    let mut user = load(&tx, &tenant, USER_KEY)?;
+                    user.apply(&FeaturePatch(BTreeMap::from([(feature, Some(on))])));
+                    store_user(&tx, &tenant, &user)?;
+                }
+                None => write(
+                    &tx,
+                    &tenant,
+                    modules::ASSEMBLY_TRACKING_KEY,
+                    if on { "1" } else { "0" },
+                )?,
+            }
+            let modules = modules::statuses_in(&tx, &tenant)?;
+            tx.commit()?;
+            return Ok(Reply::Modules(modules));
+        }
+    };
+    let plan = match scope {
         Scope::User => None,
         Scope::Plan(id) => Some(id),
     };
     let mut layers = load_layers(&tx, &tenant, plan)?;
-    if let Some((feature, choice)) = command.patch {
+    if let Some((feature, choice)) = patch {
         let patch = FeaturePatch(BTreeMap::from([(feature, choice)]));
         match &mut layers.plan {
             Some((_, key, layer)) => {
@@ -216,7 +282,7 @@ pub(super) fn execute(
         }
     }
     tx.commit()?;
-    Ok(layers.into_view())
+    Ok(Reply::View(layers.into_view()))
 }
 
 struct Layers {
@@ -254,7 +320,12 @@ fn load_layers(tx: &Transaction<'_>, tenant: &str, plan: Option<PositiveId>) -> 
 /// admission reads it (Plan overrides do not apply). For routes the admin gate
 /// has already authenticated. `Ok(None)` when the stored toggles are invalid.
 pub fn bambu_enabled(client: &crate::SettingsClient, wait: Duration) -> Result<Option<bool>> {
-    let toggles = match client.reader(wait)?.snapshot("default", USER_KEY)? {
+    bambu_enabled_in(&client.reader(wait)?)
+}
+
+/// [`bambu_enabled`] on a reader the caller already holds.
+pub(crate) fn bambu_enabled_in(reader: &crate::ReaderCheckout) -> Result<Option<bool>> {
+    let toggles = match reader.snapshot("default", USER_KEY)? {
         SettingSnapshot::Missing => Toggles::default(),
         SettingSnapshot::Stored { value } => match serde_json::from_str(&value) {
             Ok(toggles) => toggles,
@@ -348,7 +419,7 @@ pub(crate) fn plan_features(
     })))
 }
 
-fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
+pub(crate) fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE id=?1 AND tenant_id=?2)",
         params![i64::try_from(plan.get())?, tenant],
@@ -401,15 +472,45 @@ fn read(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Option<Layer>> 
     Ok(Some(Layer { raw, toggles }))
 }
 
+/// A stored feature layer that is not an object whose feature keys all hold
+/// booleans. Nothing is written while it stays, and `GET /health` reports its
+/// Modules `setting_unreadable`.
+#[derive(Debug)]
+pub struct InvalidLayer {
+    key: String,
+}
+
+impl std::fmt::Display for InvalidLayer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Stored {} is invalid: expected an object of feature booleans",
+            self.key
+        )
+    }
+}
+
+impl std::error::Error for InvalidLayer {}
+
 fn load(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Layer> {
-    read(tx, tenant, key)?
-        .ok_or_else(|| anyhow!("Stored {key} is invalid: expected an object of feature booleans"))
+    read(tx, tenant, key)?.ok_or_else(|| {
+        InvalidLayer {
+            key: key.to_owned(),
+        }
+        .into()
+    })
 }
 
 /// The tenant layer keeps this client's own format: sorted keys, and no row
-/// once it is empty. Node owns `PATCH /settings/features`.
+/// once it is empty. Node owns `PATCH /settings/features`; the Rust-only
+/// runtime writes through `PUT /api/v2/modules/{module}` (GRE-1341).
 fn store_user(tx: &Transaction<'_>, tenant: &str, layer: &Layer) -> Result<()> {
-    let raw: BTreeMap<String, Value> = serde_json::from_str(&layer.raw.text())?;
+    // A member `RawObject` keeps but `serde_json` refuses (a lone surrogate
+    // escape, a number past `f64`) is unreadable as `/health` reads it too.
+    let raw: BTreeMap<String, Value> =
+        serde_json::from_str(&layer.raw.text()).map_err(|_| InvalidLayer {
+            key: USER_KEY.to_owned(),
+        })?;
     if raw.is_empty() {
         tx.execute(
             "DELETE FROM app_settings WHERE tenant_id=?1 AND key=?2",

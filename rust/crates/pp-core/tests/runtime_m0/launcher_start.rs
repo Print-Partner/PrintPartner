@@ -16,7 +16,7 @@ async fn slice0_mount_launcher_gates() {
             .args([
                 "--ignored",
                 "--exact",
-                "slice0_mount::slice0_mount_launcher_in_child",
+                "launcher_start::slice0_mount_launcher_in_child",
                 "--nocapture",
             ])
             .env("PP_SLICE0_DATA", &data)

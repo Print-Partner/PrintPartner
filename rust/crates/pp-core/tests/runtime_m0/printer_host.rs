@@ -6,7 +6,7 @@
 //! the same recorded traffic, and the printers see only read-only GETs: no
 //! upload and no print start.
 use super::farm_reads::settings_rows;
-use super::ticket_t_4_watcher_proof::{
+use super::watcher_proof::{
     production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
 use super::{request, temporary};

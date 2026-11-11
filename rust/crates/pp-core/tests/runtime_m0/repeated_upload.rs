@@ -1,3 +1,4 @@
+// T-3 (GRE-448): repeated starts, stops and EOF uploads send once.
 use std::{
     io::{Read, Write},
     path::Path,

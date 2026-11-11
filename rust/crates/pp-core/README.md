@@ -60,7 +60,7 @@ Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --n
 ## Tests
 
 - Unit tests in `src/` (`origin_tests.rs`, `review_observations_tests.rs`, `rust_startup/tests.rs` (Rust-only startup order on pp-testkit installations, feature only), `preferences/tests.rs`, `desktop_settings/tests.rs`, and others).
-- Lifecycle: `runtime_m0.rs` (with `runtime_m0/`), `ticket_t_30_single_instance.rs`, `ticket_t_3_drain.rs`, `shutdown_gate_wait_idle.rs`, `source_sync_process_admission.rs`, `ticket_t_53_capture.rs`.
+- Lifecycle: `runtime_m0.rs` (with `runtime_m0/`), `single_owner.rs`, `process_group_drain.rs`, `shutdown_gate_wait_idle.rs`, `source_sync_process_admission.rs`, `app_launch_capture.rs`.
 - Feature-only: `production_geometry.rs`, `profile_interpreter*.rs`, `source_acquisition_*.rs`, `source_import_*.rs`, and `rebuild_*_http.rs` (empty stubs without the feature).
 - Fixtures: `tests/fixtures/drain_child.rs` (compiled with `RUSTC`), `tests/fixtures/profile-parser/node-capture.json`, `tests/support/scratch.rs`, `tests/support/process.rs` (kill, stop and resume by PID: Unix signals, or `TerminateProcess`, `NtSuspendProcess` and `NtResumeProcess` on Windows), `tests/support/process_tree.rs` (descendants from `/proc`, `ps` or a Windows ToolHelp snapshot) and `src/tests.rs` (unit-test links, special entries, file access and self-termination per platform).
 - The tests run on Linux, macOS and Windows. A test that checks a Unix-only fact names its Windows counterpart in a comment. Runtime tests need built web assets and `rust/bundle-manifest.json`, and use `PP_TEST_NODE` (default `/usr/bin/node`).

@@ -26,6 +26,7 @@ It prints each PNG path and the command to publish them at the end, and exits 1 
 | `--step NAME:BUILD` | Setup step before the shots, run in the order given. See below. |
 | `--module NAME` | Turn a Module on (`farm`, `orders`, `bambu` or `spoolman`) before the core starts. Repeat for more. All four start off, so `/farm/...` paths need `--module farm`. |
 | `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed. |
+| `--review-plan` | Open Review and accept before capturing each Plan shot. |
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
@@ -36,6 +37,7 @@ It prints each PNG path and the command to publish them at the end, and exits 1 
 | Step | What it does through the Rust API |
 | --- | --- |
 | `settle-reconciliation:BUILD` | Resolves every conflict on the Build's open draft with a `replace` decision (`PUT .../drafts/{draft}/reconciliation`). Does nothing without an open draft or conflicts. |
+| `duplicate-order:BUILD` | Assign an order to another Build in the disposable seed before startup, save that order to the target draft through the API, then settle reconciliation. Never accepts. Combine with `--module orders --review-plan --shot /builds/2/plan`. |
 | `snapshot:BUILD` | Accepts the Build's open draft. Without an open draft it opens one by saving the current header unchanged. Settles reconciliation first. Accept stores a pre-apply snapshot only when the Build has an Accepted revision whose Source rows the core can still read: no snapshot without an Accepted revision or its input set, with a missing Source row, or with `legacy:` rows. The step reads `snapshot.saved_before_accept` from the accept preview and fails with `Build N: Accept saves no snapshot (<core note>)` before Accept when it is false. |
 
 `--module` is not an API step: no Rust route writes tenant Module choices yet (Node owns `PATCH /settings/features`). It writes the `default` tenant's `feature_toggles` setting in the generated seed, the row that route and Rust's `/health` read, before the copy is made.

@@ -1,12 +1,15 @@
 id: desktop-rebuild-item
 valid:
+  - "#[cfg_attr(docsrs, doc /* gap */ (cfg(feature=\"desktop_rebuild\")))] struct S;"
+  - "#[cfg_attr(test, all(feature=\"desktop_rebuild\"))] struct S;"
+  - "#[cfg_attr(docsrs, doc(cfg(feature=\"desktop_rebuild\")))] struct S;"
   - "#[cfg(feature = \"other\")] fn f() {}"
   - "const S: &str = \"#[cfg(feature = \\\"desktop_rebuild\\\")]\";"
   - "#[doc = \"desktop_rebuild\"] fn f() {}"
   - "#[cfg(feature = \"desktop_rebuild\")] mod m;"
-  - "#[cfg(not(feature = \"desktop_rebuild\"))] #[allow(unused)] /* gap */ use crate::m;"
+  - "#[cfg(not(feature = \"desktop_rebuild\"))] #[doc(hidden)] /* gap */ use crate::m;"
   - "fn f() { #[cfg(feature = \"desktop_rebuild\")] let x = 1; }"
-  - "fn f() { #[cfg(any(feature = \"desktop_rebuild\", test))] #[allow(unused)] work(); }"
+  - "fn f() { #[cfg(any(feature = \"desktop_rebuild\", test))] #[doc(hidden)] work(); }"
   - "fn f() { match x { #[cfg(feature = \"desktop_rebuild\")] A => (), _ => () } }"
   - "fn f() { let x = S { #[cfg(feature = \"desktop_rebuild\")] x: 1 }; }"
   - "#![cfg(feature = \"desktop_rebuild\")] fn f() {}"

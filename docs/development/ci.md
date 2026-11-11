@@ -356,9 +356,20 @@ module and item counts may grow. Statement counts may not rise per crate over
 establishes the placement baseline and reports the skipped raise check. This
 step runs in both `just ci --fast` and the full `just ci`.
 
-`cfg!(feature = "desktop_rebuild")` expressions are excluded from these counts
-(17 uses at the review baseline). Child [GRE-1397](https://linear.app/greetz/issue/GRE-1397/count-desktop-rebuild-cfg-expressions-in-the-placement-ratchet)
-tracks counting them later.
+`cfg!(feature = "desktop_rebuild")` expressions count as statements, including
+raw names, raw feature strings and escaped feature values. Lexical `cfg` and
+`cfg_attr` metas in macro call arguments also count as statements. The scanner
+does not expand macros: it conservatively counts that text even if a particular
+macro does not apply the meta as an attribute. Nested conditional metas count
+once. Documentation metadata such as
+`#[cfg_attr(docsrs, doc(cfg(feature = "desktop_rebuild")))]` does not count.
+
+The version 2 placement baseline includes the 17 existing `cfg!` expressions:
+pp-compat 2, pp-core 5, pp-desktop 1, pp-storage 9. When comparing with an
+unversioned baseline on `origin/main`, the checker adds only the `cfg!` inventory
+in main's source to its statement cap. Version 2 grants no further allowance.
+Regenerate with `python3 rust/scripts/check-ast-grep.py --write-placement-baseline`;
+the command writes the inventory and still fails if the statement cap rises.
 
 Except where noted below, each step runs the command lines of its workflow step without changes. The script sets the same environment that CI sets: `NEXTEST_FILTER`, `PP_TEST_NODE`, `VITE_PRINT_PARTNER_DESKTOP`, and `RUNNER_TEMP`. The cargo steps also get `INSTA_UPDATE=no`, so a snapshot mismatch fails the step instead of writing a `.snap.new` file. `RUNNER_TEMP` is under `$CARGO_TARGET_DIR/local-ci`, or under `rust/target/local-ci` if `CARGO_TARGET_DIR` is not set. The local command differs from CI in these ways:
 

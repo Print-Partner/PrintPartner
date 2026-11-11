@@ -279,7 +279,12 @@ function DueList({
     <>
       <DueFilters filter={filter} setFilter={setFilter} counts={counts} />
       {shown.length === 0 ? (
-        <p className="pp-muted">No Builds match this filter.</p>
+        <div>
+          <p className="pp-muted">No Builds match this filter.</p>
+          <button type="button" className="pp-button" onClick={() => setFilter("all")}>
+            Show all Builds
+          </button>
+        </div>
       ) : (
         <BuildsTable
           builds={shown}

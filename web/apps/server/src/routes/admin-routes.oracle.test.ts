@@ -1,6 +1,6 @@
 // Replays fixtures/admin through the Node app and checks the replies against
 // node-oracle.json and settings-oracle.json, which the Rust routes tests
-// (rust/crates/pp-api/tests/ticket_t_62_admin_http.rs and
+// (rust/crates/pp-api/tests/admin_http.rs and
 // settings_routes_http.rs) also replay.
 // UPDATE_ADMIN_ORACLE=1 rewrites the oracle files instead of checking them.
 import { createHash } from "node:crypto";

@@ -138,6 +138,15 @@ function farmLog(
 const row = (summary: string) => screen.getByText(summary).closest("tr")!;
 
 describe("UI8-04 farm log with undo where allowed", () => {
+  it("takes an empty log back to Farm without writing", async () => {
+    const fetchMock = core(() => json({ entries: [], next_cursor: null }));
+    renderAt("/farm/log", fetchMock);
+    const link = await screen.findByRole("link", { name: "View Farm" });
+    expect(link.getAttribute("href")).toBe("/farm");
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
   it("lists printer and queue actions with Undo only where the core allows it", async () => {
     renderAt("/farm/log", farmLog());
     await screen.findByText("Verified 1 bed on Voron 2.4");

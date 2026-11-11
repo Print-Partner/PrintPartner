@@ -6,11 +6,12 @@
 Checks, in order: no Node, npm, npx or Python in the runtime; the image user is
 1000:1000; `pp-server healthcheck --help`; a hardened start (read-only root,
 bounded /tmp, all capabilities dropped, no-new-privileges) on a fresh named
-volume; liveness and readiness; an account written to SQLite and read back
-after a restart; SIGTERM drains with a complete shutdown receipt and leaves no
-process behind. The container uses host networking so this script can reach
-pp-server's loopback origin; pp-server still binds 127.0.0.1 only. Sign-in
-URLs and cookies stay in memory and are never printed. Every container and
+volume; liveness and readiness; sign-in through `pp-server bootstrap-url`, whose
+URL works once and never appears in the container logs; an account written to
+SQLite and read back after a restart; SIGTERM drains with a complete shutdown
+receipt and leaves no process behind. The container uses host networking so
+this script can reach pp-server's loopback origin; pp-server still binds
+127.0.0.1 only. Sign-in URLs and cookies stay in memory and are never printed. Every container and
 volume it creates is removed on exit.
 """
 
@@ -105,10 +106,26 @@ def start(image, name, volume):
     origin = docker("logs", name).stdout.splitlines()[0].strip()
     if not origin.startswith("http://127.0.0.1:"):
         raise SystemExit(f"unexpected origin {origin!r}")
-    bootstrap = urllib.parse.urlsplit(credential["bootstrap_url"])
+    # Sign in as a headless operator would: the URL comes from docker exec, not
+    # from the test-only credential file.
+    url = docker("exec", name, "pp-server", "bootstrap-url", "--data", "/data").stdout.strip()
+    bootstrap = urllib.parse.urlsplit(url)
+    if f"{bootstrap.scheme}://{bootstrap.netloc}" != origin or bootstrap.path != "/__desktop/bootstrap":
+        raise SystemExit("bootstrap-url printed an unexpected URL")
     status, _, cookies = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
     if status != 303 or not cookies:
         raise SystemExit(f"bootstrap answered {status}")
+    status, _, _ = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
+    if status != 401:
+        raise SystemExit(f"a used bootstrap URL answered {status}")
+    logs = docker("logs", name)
+    token = urllib.parse.parse_qs(bootstrap.query)["token"][0]
+    if token in logs.stdout or token in logs.stderr or "__desktop/bootstrap" in logs.stdout + logs.stderr:
+        raise SystemExit("the bootstrap URL reached the container logs")
+    refused = docker("exec", "-u", "0", name, "pp-server", "bootstrap-url", "--data", "/data", check=False)
+    if refused.returncode == 0 or refused.stdout:
+        raise SystemExit("root, which does not own /data, got a bootstrap URL")
+    log("bootstrap-url: signed in once, a reused URL is refused, no URL in the logs, root is refused")
     return origin, cookies[0]
 
 

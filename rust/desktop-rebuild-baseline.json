@@ -2,7 +2,7 @@
   "version": 2,
   "crates": {
     "pp-api": {
-      "module": 55,
+      "module": 58,
       "item": 165,
       "statement": 23
     },
@@ -12,8 +12,8 @@
       "statement": 0
     },
     "pp-compat": {
-      "module": 0,
-      "item": 4,
+      "module": 1,
+      "item": 6,
       "statement": 3
     },
     "pp-contracts": {
@@ -22,7 +22,7 @@
       "statement": 0
     },
     "pp-core": {
-      "module": 41,
+      "module": 42,
       "item": 40,
       "statement": 12
     },

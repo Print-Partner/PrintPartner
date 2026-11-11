@@ -6,24 +6,22 @@ name: Review gate
 # comments). It never checks out or runs PR code, and it gets no secrets.
 #
 # It passes on a PR head when any of these holds for that exact head SHA:
-#   1. the droid-review job of .github/workflows/droid-review.yml succeeded
-#      and its log shows droid-action's review step ran (it skips silently);
-#   2. the claude-code-review job of .github/workflows/claude-review.yml
+#   1. the claude-code-review job of .github/workflows/claude-review.yml
 #      succeeded and claude-security-review succeeded or was neutral;
-#   For 1 and 2 the check suite must come from that workflow path on
+#   For 1 the check suite must come from that workflow path on
 #   pull_request, and GitHub must have run the default branch's copy of the
 #   file: its blob at the head equals the default branch's blob, or the PR does
 #   not change the file (the merge commit then carries the base's copy).
-#   3. a comment by the repository owner has a line that is exactly the
+#   2. a comment by the repository owner has a line that is exactly the
 #      coordinator marker, with lowercase hex and single spaces:
 #      <!-- pp-review-gate head=<40-char sha> reviewer=<model> findings=<n> -->
 # It fails, whatever else holds, when a check run named like one of these jobs
 # comes from any other workflow file or event, or when GitHub's file list for
 # the PR is incomplete (the files API stops at 3000). When a PR author other
-# than the owner changes a workflow, .github/zizmor.yml or
-# scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
-# the guard), as Dependabot's action bumps do, it needs both path 3 (the
-# owner's marker for that head) and path 1 or 2.
+# than the owner changes a workflow, .github/zizmor.yml, scripts/agent-guard.py
+# or .claude/ and .factory/ (agent hook and project configs that run commands),
+# as Dependabot's action bumps do, it needs both path 2 (the owner's marker for
+# that head) and path 1.
 # Every push or edit waits up to 30 minutes for the head's Claude jobs, then fails unless one
 # path holds. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
 # A PR into another branch runs that branch's copy of this file; see the note under the trigger.
@@ -34,7 +32,7 @@ on:
     # into another base, whose copy of this file could always pass. GitHub fills a run's
     # pull_requests from the PRs open from its head branch now, not from the PR that started it,
     # so this catches such a PR only while it is open; definition-of-done.md names the remaining
-    # risk. .github/zizmor.yml ignores the trigger by line: keep it on line 31.
+    # risk. .github/zizmor.yml ignores the trigger by line: keep it on line 29.
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, edited]
   merge_group:
@@ -73,19 +71,12 @@ jobs:
           REPO, PR, HEAD = os.environ["REPO"], os.environ["PR_NUMBER"], os.environ["HEAD_SHA"]
           AUTHOR, OWNER, DEFAULT = os.environ["AUTHOR"], os.environ["OWNER"], os.environ["DEFAULT_BRANCH"]
           ACTIONS_APP = 15368
-          # Workflows, zizmor config, the safety guard, and the hook configs that load it.
+          # Workflows, zizmor config, the safety guard, and the agent configs that load it or run commands.
           PROTECTED = re.compile(r"^(?:\.github/workflows/|\.github/zizmor\.yml$|scripts/agent-guard\.py$"
-                                 r"|\.factory/|\.claude/)")
-          # droid-action logs this when its review step ran. It reports job success when it skips the
-          # review (for example on a PR that changes droid-review.yml), so the conclusion alone is not enough.
-          # Only a whole runner line counts, and the log must hold exactly one such line for the step.
-          DROID_STEP = re.compile(r"^\ufeff?(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?##\[end-action "
-                                  r"id=__Factory-AI_droid-action\.droid;outcome=(\w+);"
-                                  r"conclusion=\w+;duration_ms=\d+\]\r?$", re.M)
+                                 r"|\.claude/|\.factory/)")
           # Each job check the gate reads, and the only workflow file and event that may produce it.
           ORIGINS = {
               "review-gate": (".github/workflows/review-gate.yml", "pull_request_target"),
-              "droid-review": (".github/workflows/droid-review.yml", "pull_request"),
               "claude-code-review": (".github/workflows/claude-review.yml", "pull_request"),
               "claude-security-review": (".github/workflows/claude-review.yml", "pull_request"),
           }
@@ -238,13 +229,6 @@ jobs:
                   if head == HEAD:
                       marker = f"{reviewer}, {findings} findings, {comment.get('html_url')}"
 
-          def droid_reviewed(run):
-              """Whether droid-action's review step ran in this job. The Actions job id is the check run id."""
-              result = subprocess.run(["gh", "api", "--allow-escape-sequences",
-                                       f"repos/{REPO}/actions/jobs/{run['id']}/logs"], capture_output=True, text=True)
-              return result.returncode == 0 and DROID_STEP.findall(result.stdout) == ["success"]
-
-
           def base_definition(path):
               """Whether GitHub ran the default branch's copy of a workflow file for this head."""
               if path not in files:
@@ -253,12 +237,7 @@ jobs:
               return head is not None and head == blob(path, DEFAULT)
 
 
-          droid, code, security = state("droid-review"), state("claude-code-review"), state("claude-security-review")
-          droid_ok = (droid == "success" and for_this_pr("droid-review") and base_definition(ORIGINS["droid-review"][0])
-                      and droid_reviewed(latest["droid-review"]))
-          if droid == "success" and not droid_ok:
-              droid = ("success, but the run is not this PR's into main, the Droid review did not run, "
-                       "or its workflow differs from main")
+          code, security = state("claude-code-review"), state("claude-security-review")
           claude_ok = (code == "success" and security in ("success", "neutral")
                        and for_this_pr("claude-code-review") and for_this_pr("claude-security-review")
                        and base_definition(ORIGINS["claude-code-review"][0]))
@@ -266,7 +245,7 @@ jobs:
               code = "success, but the run is not this PR's into main or its workflow differs from main"
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write(f"## Review gate for `{HEAD}`\n\n| Path | State |\n| --- | --- |\n"
-                            f"| droid-review | {droid} |\n| claude-code-review | {code} |\n"
+                            f"| claude-code-review | {code} |\n"
                             f"| claude-security-review | {security} |\n| coordinator marker | {marker or 'none'} |\n")
               for problem in problems:
                   summary.write(f"\n**Blocked:** {problem}\n")
@@ -279,22 +258,20 @@ jobs:
               print(f"::error::The PR head or base moved while judging {HEAD}; the run for the change judges it.")
               sys.exit(1)
           if touched:
-              if not (marker and (droid_ok or claude_ok)):
+              if not (marker and claude_ok):
                   print(f"::error::{AUTHOR} is not the repository owner and changes {', '.join(touched)}. "
-                        f"This PR needs both the owner's pp-review-gate marker for {HEAD} and a passing Droid "
-                        f"or Claude review; marker: {'yes' if marker else 'no'}, automated review: "
-                        f"{'yes' if droid_ok or claude_ok else 'no'}.")
+                        f"This PR needs both the owner's pp-review-gate marker for {HEAD} and a passing "
+                        f"Claude review; marker: {'yes' if marker else 'no'}, automated review: "
+                        f"{'yes' if claude_ok else 'no'}.")
                   sys.exit(1)
               print(f"Passed: owner marker for {HEAD} ({marker}) and an automated review cover {AUTHOR}'s "
                     f"changes to {', '.join(touched)}.")
-          elif droid_ok:
-              print(f"Passed: droid-review succeeded on {HEAD}.")
           elif claude_ok:
               print(f"Passed: claude-code-review succeeded and claude-security-review is {security} on {HEAD}.")
           elif marker:
               print(f"Passed: coordinator marker for {HEAD} ({marker}).")
           else:
-              print(f"::error::No finished review of {HEAD}: droid-review is {droid}, claude-code-review is {code}, "
+              print(f"::error::No finished review of {HEAD}: claude-code-review is {code}, "
                     f"claude-security-review is {security}, and no coordinator marker names this head. "
                     "A review from a workflow file this PR changes away from the default branch does not count.")
               sys.exit(1)

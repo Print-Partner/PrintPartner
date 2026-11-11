@@ -1,6 +1,6 @@
 # Agent and contributor workflow
 
-This is the shared procedure for any coding agent or person working on Print Partner. It needs a shell, Git, Python 3, and the toolchains in [AGENTS.md](../../AGENTS.md). Factory Droid is supported but not required. Its skills in `.factory/skills/` link to the sections below, and its project hook runs the safety guard for you.
+This is the shared procedure for any coding agent or person working on Print Partner. It needs a shell, Git, Python 3, and the toolchains in [AGENTS.md](../../AGENTS.md). The repo skills in `.claude/skills/` link to the sections below.
 
 The rules in AGENTS.md apply everywhere in this page.
 
@@ -36,7 +36,7 @@ When you stop with work in flight or hand it off, post a Handoff comment on the 
 
 ## Handoffs
 
-Any agent or person can take over Print Partner Desktop work: Capy, Factory Droid, Claude Code, Codex, or you. Everything needed to continue lives in four places, never only in one agent's chat or machine:
+Any agent or person can take over Print Partner Desktop work: Claude Code, Codex, or you. Everything needed to continue lives in four places, never only in one agent's chat or machine:
 
 | What | Where |
 | --- | --- |
@@ -93,13 +93,13 @@ python3 scripts/local-ci.py --list
 python3 scripts/local-ci.py --only <step-ids> --fail-on-skip
 ```
 
-`just guidance` checks local links and heading anchors in every tracked Markdown page; checks titles, skill metadata and Git trackability in AGENTS.md, this page, factory-missions.md and the repo skills; and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
+`just guidance` checks local links and heading anchors in every tracked Markdown page; checks titles, skill metadata and Git trackability in AGENTS.md, this page and the repo skills; and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
 
 ## Safety guard
 
 `scripts/agent-guard.py` checks one shell command, file edit, or patch before it runs. It refuses actions reserved for the maintainer. Exit 0 allows the operation. Exit 2 refuses it, or rejects input it does not understand, with the reason on stderr.
 
-Droid runs it automatically through `.factory/hooks.json` and the adapter `.factory/hooks/guard.py`. Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
+Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
 
 ```sh
 python3 -B scripts/agent-guard.py command --cwd "$PWD" 'git push -u origin HEAD:chore/topic'
@@ -137,7 +137,7 @@ The guard refuses merges (except the [coordinator's](#coordinator-merges)), forc
 - Every option of a wrapper the guard unwraps (`env`, `timeout`, `nice`, `time`, `sudo`, `exec`, `command`, `nohup`) must be one it knows. A bundle is read letter by letter, as the wrapper reads it (`timeout -k1s`, `env -vu HOME`), and a long option must match in full; an unknown option or an abbreviation such as `env --un` or `timeout --kill-a` makes the line unclassifiable, so it is refused.
 - A `gh` command found below the top level, as the program a runner runs, inside a `sh -c` script, or in an alias value, gets the same checks as a top-level one, so `xargs gh m` or `find -exec gh ext exec x` is refused like `gh m`. Interpreter code that names `gh` followed by words those checks refuse is refused too; like the rest of the interpreter rule this matches text, so `python3 -c 'print("gh is great")'` is refused.
 - Built-in `gh` commands that run or change code the guard cannot see are refused too: every `gh extension` (or `ext`, `extensions`) subcommand except `list` and `search`, so `exec`, `browse`, `create`, `remove`, `install`, and `upgrade`; `gh skill install`, `update`, and `publish`; `gh agent-task` except `list` and `view`, since `create` starts a remote agent that acts on the repo with the user's GitHub identity; every `gh codespace` subcommand; and `gh copilot`. Help forms stay allowed. `gh alias list` and `delete` and `gh attestation` stay allowed.
-- `gh alias set`, `gh alias import`, `gh extension install`, and `gh extension upgrade` are refused, and so are file edits under the `gh` config directory (`$GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`, `~/.config/gh/`), because an alias or extension runs commands the guard never sees. Relative paths, and a relative `GH_CONFIG_DIR`, resolve against the hook payload's `cwd` (the Droid adapter passes it; the Claude Code adapter passes only the path, so its edits resolve against the hook process's directory); a folder elsewhere that only looks like `.config/gh` is not the config.
+- `gh alias set`, `gh alias import`, `gh extension install`, and `gh extension upgrade` are refused, and so are file edits under the `gh` config directory (`$GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`, `~/.config/gh/`), because an alias or extension runs commands the guard never sees. Relative paths, and a relative `GH_CONFIG_DIR`, resolve against the hook payload's `cwd` (the Claude Code adapter passes it for every file tool); a folder elsewhere that only looks like `.config/gh` is not the config.
 - It refuses a git or gh command it cannot classify.
 
 The guard catches mistakes. Its threat model is a lane that runs a wrong or careless command, not one that hand-crafts gh config or shell tricks to get past it (design call on GRE-1280). It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control, and the owner merges them.
@@ -206,21 +206,25 @@ The command must stand alone: no other options such as `--admin`, `--auto`, or `
 }
 ```
 
-Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's absolute path. A Droid hook command can set the same variable.
+Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's absolute path.
 
 ## Writing and plans
 
-Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need. Droid users can run the `unslop` skill; the result is what counts.
+Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need.
 
-Before large or risky work, write the plan down and challenge it. Risky work includes moving operation ownership, persistence formats, printer sends, CI or security controls, and changes over about 1,500 lines. List how the plan could fail, check each risk against the code, and get open decisions answered by the owner before you build. The `grilling` skill does this in Droid.
+Before large or risky work, write the plan down and challenge it. Risky work includes moving operation ownership, persistence formats, printer sends, CI or security controls, and changes over about 1,500 lines. List how the plan could fail, check each risk against the code, and get open decisions answered by the owner before you build.
 
 ## Review and merge
 
-Every ready PR needs the required `review-gate` check. It passes on the PR's head when Factory Droid's `droid-review`, or Claude's code review together with its security review, succeeded on that head, or when the coordinator recorded its own review of that head. Droid review is suspended until a provider-neutral gate replaces it or the Factory quota returns, and the Claude reviews run only on the owner's own PRs from this repository. [Code review](definition-of-done.md#code-review) describes each path. The Claude reviews draw on the owner's subscription usage limits, so the Droid and coordinator paths stay. If you work in another tool, the checks still run on your PR. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. The coordinator merges from its own worktree once the [merge gate](definition-of-done.md#merge-gate) passes; lanes and other agents report readiness and never merge. A score that a lane posts with `post-score.sh` is a record only.
+Every ready PR needs the required `review-gate` check. It passes on the PR's head when Claude's code review together with its security review succeeded on that head, or when the coordinator recorded its own review of that head. The Claude reviews run only on the owner's own PRs from this repository. [Code review](definition-of-done.md#code-review) describes each path. If you work in another tool, the checks still run on your PR. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. The coordinator merges from its own worktree once the [merge gate](definition-of-done.md#merge-gate) passes; lanes and other agents report readiness and never merge. A score that a lane posts with `post-score.sh` is a record only.
 
 Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that quotes them verbatim; see [Fixes only](definition-of-done.md#fixes-only). `linear-pr-sync.yml` sets the ticket states that follow a PR, so don't move them yourself.
 
 Only the coordinator records a review. It runs an independent model review on a checkout pinned to the PR's head SHA, waits until every finding is answered and its thread resolved, and then posts a comment with a `pp-review-gate` marker naming that head, the reviewer model, and the finding count. The steps are in [Coordinator review record](definition-of-done.md#coordinator-review-record). The safety guard refuses marker comments from any other worktree; lanes report readiness instead.
+
+### Design calls
+
+Design decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (SQLite formats, immutable IDs, autosave, restart recovery, operation ownership) are pre-approved: the coordinator makes them and logs each one on the ticket with its reason. Lanes ask the coordinator instead of stopping for the owner. Anything else goes to the owner in one daily list: scope, cutover, defaults, data formats, and security posture. Work that depends on such a decision waits for the answer; pick other work meanwhile. See [Design calls](definition-of-done.md#design-calls).
 
 ## Verify in a running app
 
@@ -283,7 +287,7 @@ try {
 }
 ```
 
-`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container and the Factory cloud setup set the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Droid, the `agent-browser` skill works too if one session covers the interaction and the capture.
+`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container sets the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture.
 
 ### Rust gateway
 

@@ -171,6 +171,38 @@ impl Drop for PreparedMedia {
     }
 }
 
+/// Called before each write to a derived STL with the bytes already written to
+/// that file.
+pub trait WriteHook {
+    fn before_write(&mut self, written: u64);
+}
+/// The default hook; it does nothing and compiles away.
+pub struct NoWriteHook;
+impl WriteHook for NoWriteHook {
+    #[inline]
+    fn before_write(&mut self, _: u64) {}
+}
+impl<F: FnMut(u64)> WriteHook for F {
+    fn before_write(&mut self, written: u64) {
+        self(written)
+    }
+}
+/// What a conversion checks before each step: the cancel flag, and before each
+/// STL write, the caller's hook first.
+struct WriteGate<'a, H> {
+    cancelled: &'a AtomicBool,
+    hook: &'a mut H,
+}
+impl<H: WriteHook> WriteGate<'_, H> {
+    fn check(&self) -> Result<()> {
+        Ok(archive::check_cancel(self.cancelled)?)
+    }
+    fn before_write(&mut self, written: u64) -> Result<()> {
+        self.hook.before_write(written);
+        self.check()
+    }
+}
+
 impl SourceRoot {
     pub fn prepare_media(
         &mut self,
@@ -179,6 +211,27 @@ impl SourceRoot {
         directories: &[SourcePath],
         limits: MediaLimits,
         cancelled: &AtomicBool,
+    ) -> Result<PreparedMedia> {
+        self.prepare_media_on_write(
+            originals,
+            paths,
+            directories,
+            limits,
+            cancelled,
+            NoWriteHook,
+        )
+    }
+
+    /// [`Self::prepare_media`] that runs `hook` before each derived STL write,
+    /// so a caller can observe the conversion or cancel it at a known point.
+    pub fn prepare_media_on_write(
+        &mut self,
+        originals: &LocalFiles,
+        paths: &[SourcePath],
+        directories: &[SourcePath],
+        limits: MediaLimits,
+        cancelled: &AtomicBool,
+        mut hook: impl WriteHook,
     ) -> Result<PreparedMedia> {
         limits.validate()?;
         archive::check_cancel(cancelled)?;
@@ -223,6 +276,7 @@ impl SourceRoot {
                 limits,
                 cancelled,
                 &mut collisions,
+                &mut hook,
             )
         })();
         match outcome {
@@ -244,6 +298,7 @@ fn prepare(
     limits: MediaLimits,
     cancelled: &AtomicBool,
     collisions: &mut PathCollisions,
+    hook: &mut impl WriteHook,
 ) -> Result<()> {
     let mut ordered = paths.iter().collect::<Vec<_>>();
     ordered.sort_by(|a, b| a.as_str().split('/').cmp(b.as_str().split('/')));
@@ -292,7 +347,7 @@ fn prepare(
                 max_output_bytes: remaining,
                 ..limits
             },
-            cancelled,
+            WriteGate { cancelled, hook },
             collisions,
             &mut receipt_budget,
         )?;
@@ -600,7 +655,7 @@ fn convert(
     directory: &Directory,
     source_name: &str,
     limits: MediaLimits,
-    cancelled: &AtomicBool,
+    mut gate: WriteGate<'_, impl WriteHook>,
     collisions: &mut PathCollisions,
     receipt_budget: &mut ReceiptBudget,
 ) -> Result<ConversionReceipt> {
@@ -640,7 +695,7 @@ fn convert(
         .captures_iter(xml)
         .filter(|m| GRAMMAR.mesh.is_match(&m[2]))
     {
-        archive::check_cancel(cancelled)?;
+        gate.check()?;
         objects += 1;
         if objects > limits.max_objects {
             return Err(MediaError::Invalid("3MF has too many mesh objects"));
@@ -664,7 +719,7 @@ fn convert(
             faces: vec![],
         };
         for vertex in GRAMMAR.vertices.captures_iter(&matched[2]) {
-            archive::check_cancel(cancelled)?;
+            gate.check()?;
             vertices += 1;
             if vertices > limits.max_vertices {
                 return Err(MediaError::Invalid("3MF has too many vertices"));
@@ -681,7 +736,7 @@ fn convert(
             object.vertices.push(point);
         }
         for triangle in GRAMMAR.triangles.captures_iter(&matched[2]) {
-            archive::check_cancel(cancelled)?;
+            gate.check()?;
             triangles += 1;
             if triangles > limits.max_triangles {
                 return Err(MediaError::Invalid("3MF has too many triangles"));
@@ -719,7 +774,7 @@ fn convert(
             &solid,
             &object,
             limits.max_output_bytes - output_bytes,
-            cancelled,
+            &mut gate,
         )?;
         output.sync_all()?;
         output_bytes += byte_size;
@@ -794,11 +849,11 @@ fn write_stl(
     name: &str,
     object: &MeshObject,
     limit: u64,
-    cancelled: &AtomicBool,
+    gate: &mut WriteGate<'_, impl WriteHook>,
 ) -> Result<u64> {
     let mut bytes = 0;
     let mut append = |text: String| -> Result<()> {
-        archive::check_cancel(cancelled)?;
+        gate.before_write(bytes)?;
         if text.len() as u64 > limit - bytes {
             return Err(MediaError::Invalid(
                 "3MF derived STL output exceeds the size limit",

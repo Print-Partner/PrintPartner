@@ -8,8 +8,8 @@
 //! One deliberate difference: a setting that `serde_json` cannot parse, such as
 //! one with an unpaired UTF-16 surrogate escape, is invalid here, so monitoring
 //! fails closed where Node's `JSON.parse` would accept it.
-use crate::{SettingSnapshot, SettingsClient};
-use anyhow::Result;
+use crate::{SettingSnapshot, SettingsClient, tls_pins::Pin};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -49,16 +49,67 @@ pub struct WatchedHosts {
     /// username or password keeps its id with an empty `base_url`, so it is
     /// never polled.
     pub prusalink: Vec<StoredIntegration>,
+    /// The Bambu rows the watchers take, chosen the same way and sharing the
+    /// cap with the PrusaLink rows (GRE-1176).
+    pub bambu: Vec<BambuRow>,
+    /// The tenant's Bambu feature, filled in by [`read`] when there are Bambu
+    /// rows: `Some(enabled)`, or `None` for invalid stored toggles (and from
+    /// [`watched`] alone). The watchers connect to Bambu only when it is
+    /// `Some(true)`.
+    pub bambu_feature: Option<bool>,
+}
+
+/// A stored Bambu integration for the watchers. Not `Debug`: its config
+/// holds the LAN access code.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BambuRow {
+    pub id: String,
+    /// The stored `config` object, which the Bambu driver reads.
+    pub config: Value,
+    /// False only when `config.enabled` is exactly `false`.
+    pub enabled: bool,
+    /// The certificate pin stored for this integration, filled in by
+    /// [`read`]. `Err` holds why a stored pin is unreadable; it affects only
+    /// this row.
+    pub pin: Option<std::result::Result<Pin, String>>,
+}
+
+impl BambuRow {
+    /// The printer address the row names (`host`, `hostname` or `ip`, as
+    /// the driver reads them). The watchers take only a row that has one.
+    pub fn address(&self) -> Option<&str> {
+        ["host", "hostname", "ip"].iter().find_map(|name| {
+            self.config[name]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+    }
 }
 
 /// Read and project the stored setting. `Ok(None)` means the setting is
 /// malformed and monitoring must fail closed; `Err` means storage was busy.
 pub fn read(client: &SettingsClient, wait: Duration) -> Result<Option<WatchedHosts>> {
-    let raw = match client.reader(wait)?.snapshot(TENANT, INTEGRATIONS_KEY)? {
+    let checkout = client.reader(wait)?;
+    let raw = match checkout.snapshot(TENANT, INTEGRATIONS_KEY)? {
         SettingSnapshot::Stored { value } => Some(value),
         SettingSnapshot::Missing => None,
     };
-    Ok(watched(raw.as_deref()))
+    let Some(mut hosts) = watched(raw.as_deref()) else {
+        return Ok(None);
+    };
+    if !hosts.bambu.is_empty() {
+        let connection = checkout
+            .connection
+            .as_ref()
+            .context("checked out connection")?;
+        let mut pins = crate::tls_pins::all(connection)?;
+        for row in &mut hosts.bambu {
+            row.pin = pins.remove(&row.id);
+        }
+        hosts.bambu_feature = crate::features::bambu_enabled_in(&checkout)?;
+    }
+    Ok(Some(hosts))
 }
 
 /// The ids of the hosts the watchers actually poll: a watched Moonraker or
@@ -73,11 +124,16 @@ pub fn polled_ids(raw: Option<&str>) -> Option<Vec<String>> {
         .prusalink
         .into_iter()
         .map(|host| (host.id, host.base_url));
+    let bambu = hosts
+        .bambu
+        .into_iter()
+        .filter(|row| row.address().is_some());
     Some(
         moonraker
             .chain(prusalink)
             .filter(|(_, base_url)| !base_url.trim().is_empty())
             .map(|(id, _)| id)
+            .chain(bambu.map(|row| row.id))
             .collect(),
     )
 }
@@ -88,13 +144,15 @@ pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
     let moonraker = project(raw)?;
     let items = raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
     let mut prusalink: Vec<StoredIntegration> = Vec::new();
+    let mut bambu: Vec<BambuRow> = Vec::new();
     for item in items
         .as_ref()
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        if item["type"].as_str() != Some("prusalink") {
+        let kind = item["type"].as_str();
+        if !matches!(kind, Some("prusalink" | "bambu")) {
             continue;
         }
         let Some(id) = item["id"]
@@ -103,11 +161,22 @@ pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
         else {
             continue;
         };
-        if moonraker.len() + prusalink.len() >= MAX_HOSTS {
+        if moonraker.len() + prusalink.len() + bambu.len() >= MAX_HOSTS {
             break;
         }
-        if moonraker.iter().any(|host| host.id == id) || prusalink.iter().any(|host| host.id == id)
-        {
+        let taken = moonraker.iter().any(|host| host.id == id)
+            || prusalink.iter().any(|host| host.id == id)
+            || bambu.iter().any(|row| row.id == id);
+        if taken {
+            continue;
+        }
+        if kind == Some("bambu") {
+            bambu.push(BambuRow {
+                id: id.to_owned(),
+                config: item["config"].clone(),
+                enabled: item["config"]["enabled"] != Value::Bool(false),
+                pin: None,
+            });
             continue;
         }
         let mut host = stored(item, id);
@@ -127,6 +196,8 @@ pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
     Some(WatchedHosts {
         moonraker,
         prusalink,
+        bambu,
+        bambu_feature: None,
     })
 }
 

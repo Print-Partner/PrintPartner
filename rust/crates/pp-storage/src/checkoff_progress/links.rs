@@ -32,7 +32,7 @@ pub(crate) fn now() -> String {
     crate::auth::timestamp(0)
 }
 
-pub(super) fn uuid() -> String {
+pub(crate) fn uuid() -> String {
     let mut b = rand::random::<[u8; 16]>();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
@@ -194,7 +194,7 @@ pub(super) fn js_integer(value: Option<&Value>, min: f64) -> Option<i64> {
 }
 
 /// JavaScript truthiness.
-fn truthy(value: &Value) -> bool {
+pub(super) fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(b) => *b,

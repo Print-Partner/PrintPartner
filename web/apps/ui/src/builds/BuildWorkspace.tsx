@@ -26,7 +26,7 @@ export const BUILD_TABS = [
   },
 ] as const;
 
-interface BuildData {
+export interface BuildData {
   build: ProfileSummary;
   layers: ProfileLayers["layers"];
 }
@@ -40,7 +40,7 @@ function buildId(raw: string | undefined): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-const buildQuery = (id: number) => ({
+export const buildQuery = (id: number) => ({
   queryKey: ["core", "build", id],
   queryFn: async ({ signal }: { signal: AbortSignal }): Promise<BuildData> => {
     const [build, layers] = await Promise.all([

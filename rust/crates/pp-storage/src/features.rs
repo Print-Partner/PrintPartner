@@ -254,7 +254,12 @@ fn load_layers(tx: &Transaction<'_>, tenant: &str, plan: Option<PositiveId>) -> 
 /// admission reads it (Plan overrides do not apply). For routes the admin gate
 /// has already authenticated. `Ok(None)` when the stored toggles are invalid.
 pub fn bambu_enabled(client: &crate::SettingsClient, wait: Duration) -> Result<Option<bool>> {
-    let toggles = match client.reader(wait)?.snapshot("default", USER_KEY)? {
+    bambu_enabled_in(&client.reader(wait)?)
+}
+
+/// [`bambu_enabled`] on a reader the caller already holds.
+pub(crate) fn bambu_enabled_in(reader: &crate::ReaderCheckout) -> Result<Option<bool>> {
+    let toggles = match reader.snapshot("default", USER_KEY)? {
         SettingSnapshot::Missing => Toggles::default(),
         SettingSnapshot::Stored { value } => match serde_json::from_str(&value) {
             Ok(toggles) => toggles,
@@ -348,7 +353,7 @@ pub(crate) fn plan_features(
     })))
 }
 
-fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
+pub(crate) fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE id=?1 AND tenant_id=?2)",
         params![i64::try_from(plan.get())?, tenant],

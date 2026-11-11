@@ -96,10 +96,7 @@ fn server_reports_health(listen: Option<&str>) {
     let credential = root.join("credentials.json");
     let server = match listen {
         None => Server::start(&root),
-        Some(address) => Server::start_with(&root, |command| {
-            command.env("PP_LISTEN_ADDR", address);
-            command.args(["--test-credential-file".as_ref(), credential.as_os_str()]);
-        }),
+        Some(address) => Server::start_with_listener(&root, Some(address), Some(&credential)),
     };
     let (data, status) = (server.data.clone(), server.status.clone());
     let origin = server.origin().to_owned();

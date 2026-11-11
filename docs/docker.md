@@ -72,7 +72,7 @@ A browser gets in through a single-use sign-in URL. Ask the running server for o
 docker exec print-partner pp-server bootstrap-url --data /data
 ```
 
-The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. Open it in a browser on the same host within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest.
+The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. For a different published port, LAN address or specific-IP bind, replace its host and port with the reachable IP address; keep the path and query private. Open it within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest.
 
 - **Where the URL goes.** Only to the terminal that ran the command. `pp-server` does not print or log it, and it is not in `docker logs` or the status file.
 - **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. The command also refuses a directory the caller does not own or that other accounts can write, and a socket whose server runs as another account. With a host bind mount for `/data` and no user-namespace remapping, a host process running as the data directory's UID can also reach the socket and get a URL. That is by design: that account already owns the data.

@@ -99,6 +99,17 @@ fn take_bootstrap_url(runtime: &mut CoreRuntime, server_origin: &str) -> Result<
     Ok(format!("{server_origin}{path_and_query}"))
 }
 
+fn server_origin(origin: &str, listen: Option<std::net::SocketAddr>) -> Result<String> {
+    match listen {
+        Some(address) if !address.ip().is_unspecified() => {
+            let mut bound: std::net::SocketAddr = origin.trim_start_matches("http://").parse()?;
+            bound.set_ip(address.ip());
+            Ok(format!("http://{bound}"))
+        }
+        _ => Ok(origin.to_owned()),
+    }
+}
+
 /// `pp-server bootstrap-url`: prints a fresh sign-in URL from the running server.
 #[cfg(unix)]
 fn bootstrap_url(args: impl Iterator<Item = String>) -> Result<()> {
@@ -167,15 +178,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         listen,
     )
     .await?;
-    let server_origin = match listen {
-        Some(address) if !address.ip().is_unspecified() => {
-            let mut bound: std::net::SocketAddr =
-                runtime.origin().trim_start_matches("http://").parse()?;
-            bound.set_ip(address.ip());
-            format!("http://{bound}")
-        }
-        _ => runtime.origin().to_owned(),
-    };
+    let server_origin = server_origin(runtime.origin(), listen)?;
     if let Some(path) = credential_file {
         let url = take_bootstrap_url(&mut runtime, &server_origin)?;
         let child_pid = match runtime.handle().compat_status() {

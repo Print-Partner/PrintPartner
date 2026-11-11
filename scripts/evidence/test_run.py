@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,37 @@ class ParseArgs(unittest.TestCase):
         for argv in (("--publish", "7"), ("--note", "x")):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 parse("--shot", "/builds", *argv)
+
+
+class EmptyStates(unittest.TestCase):
+    def test_requires_synthetic_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                run.prepare_empty_states(Path(tmp))
+            self.assertFalse((Path(tmp) / "print-partner.db").exists())
+
+    def test_preserves_builds_and_history_but_removes_waiting_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = Path(tmp)
+            (seed / "SYNTHETIC-DATASET.json").write_text("{}")
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                db.executescript("""
+                    CREATE TABLE build_profiles(id INTEGER PRIMARY KEY,name TEXT,archived_at TEXT,due_date TEXT);
+                    CREATE TABLE app_settings(key TEXT,value TEXT);
+                    CREATE TABLE plan_revisions(id INTEGER PRIMARY KEY);
+                    INSERT INTO build_profiles VALUES(2,'Existing',NULL,'2026-10-01');
+                    INSERT INTO plan_revisions VALUES(9);
+                    INSERT INTO app_settings VALUES('printer.send_queue','[]');
+                    INSERT INTO app_settings VALUES('printer.farm_log','[]');
+                    INSERT INTO app_settings VALUES('printer.checkoff_links','[]');
+                    INSERT INTO app_settings VALUES('printer.fleet','kept');
+                """)
+            run.prepare_empty_states(seed)
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                self.assertEqual(db.execute("SELECT id FROM build_profiles ORDER BY id").fetchall(), [(2,), (1000,)])
+                self.assertEqual(db.execute("SELECT count(*) FROM build_profiles WHERE archived_at IS NULL OR due_date IS NOT NULL").fetchone(), (0,))
+                self.assertEqual(db.execute("SELECT * FROM plan_revisions").fetchall(), [(9,)])
+                self.assertEqual(db.execute("SELECT * FROM app_settings").fetchall(), [('printer.fleet', 'kept')])
 
 
 class Stop(Exception):

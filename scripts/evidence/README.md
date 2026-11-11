@@ -87,3 +87,17 @@ How (`scripts/evidence/publisher.py`, tests in `test_publisher.py`):
   - any fetch or push URL of `origin` (`git remote get-url [--push] --all origin`) is not exactly `https://github.com/Print-Partner/PrintPartner`, with or without `.git`. ssh and scp forms, userinfo, other spellings and other repositories are refused, so no accepted URL carries a token.
 - **A checked first publish.** A missing cache is cloned first (`git clone --quiet --no-checkout --filter=blob:none`) and checked the same way. A clone that fails or fails the check is removed.
 - **No output from git or the publisher.** Refusals name the cache path, never a URL. Any error while reading or parsing a remote counts as a refusal and is dropped, for example Python's `ValueError` for an NFKC-unsafe character in a host, which quotes the whole netloc. The publisher's stdout and stderr are captured. On success the harness prints only the evidence URLs it reports, matched against `https://github.com/Print-Partner/PrintPartner/...`. On failure it prints `publish failed (exit N)` and nothing else.
+
+## Empty-state audit
+
+`--empty-states` prepares only the generated synthetic seed: it archives the
+Builds, clears due dates and waiting checkoff links, clears the Farm log and send
+queue, and adds archived Build 1000 without history. Existing histories remain.
+The Builds shot selects Overdue to show the empty filter. Use both Modules:
+
+```sh
+xvfb-run -a scripts/evidence/run.sh --empty-states --module farm --module orders \
+  --shot /today --shot /builds --shot /builds/1000/history --shot /farm/log
+```
+
+See [empty-state actions](../../docs/product/empty-state-actions.md) for scope.

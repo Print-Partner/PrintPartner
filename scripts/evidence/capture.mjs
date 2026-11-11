@@ -108,6 +108,10 @@ async function main() {
     for (const { path, file: name } of shots) {
       await guarded(page.goto(new URL(path, uiOrigin).href), `opening ${path} failed`);
       await settle(page, path);
+      if (config.emptyStates && path === "/builds") {
+        await guarded(page.getByRole("radio", { name: /^Overdue/ }).click(), "selecting Overdue failed");
+        await guarded(page.getByText("No Builds match this filter.").waitFor(), "empty filter did not appear");
+      }
       const file = join(outDir, name);
       if (display) {
         // The installed evidence tool captures the display; move its file into outDir.

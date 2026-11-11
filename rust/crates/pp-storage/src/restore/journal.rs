@@ -158,6 +158,14 @@ impl Journal {
         };
         ensure!(
             journal.version == 1
+                && [&journal.live, &journal.incoming].into_iter().all(|names| {
+                    names.iter().any(|name| name == archive::DATABASE_FILE)
+                        && names
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            == names.len()
+                })
                 && named(&journal.staged, "staged-")
                 && named(&journal.prior, "prior-")
                 && journal

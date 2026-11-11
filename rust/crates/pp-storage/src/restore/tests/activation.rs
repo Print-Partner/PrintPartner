@@ -206,7 +206,7 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
 }
 
 #[test]
-fn invalid_confirmation_and_restore_ids_preserve_database_and_archive() {
+fn refused_restore_operations_preserve_database_and_archive() {
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();
     let client = owner.installation().unwrap();
@@ -237,6 +237,25 @@ fn invalid_confirmation_and_restore_ids_preserve_database_and_archive() {
     }
     owner.shutdown().unwrap();
     let database = pp_testkit::node_schema::database_files(&root);
+    let db = archive::DATABASE_FILE;
+    let work = root.join(WORK_DIR);
+    for (live, incoming) in [
+        (vec![], vec![db]),
+        (vec![db], vec![]),
+        (vec![db, db], vec![db]),
+        (vec![db], vec![db, db]),
+    ] {
+        std::fs::write(work.join("journal.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1, "state": "swapping", "staged": format!("staged-{}", staged.restore_id),
+            "prior": "prior-00000000000000000000000000000000", "live": live, "incoming": incoming,
+        })).unwrap()).unwrap();
+        let recovery = pp_testkit::snapshot(&work).unwrap();
+        let error = open(&root).err().expect("invalid journal must refuse");
+        assert!(format!("{error:#}").contains("Restore journal"));
+        assert!(pp_testkit::node_schema::database_files(&root) == database);
+        assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+        assert_eq!(pp_testkit::snapshot(&work).unwrap(), recovery);
+    }
     assert!(client.backup_to_temporary("closed").is_err());
     assert!(pp_testkit::node_schema::database_files(&root) == database);
     assert_eq!(std::fs::read(&backup.path).unwrap(), archive);

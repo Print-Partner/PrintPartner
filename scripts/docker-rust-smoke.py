@@ -136,7 +136,8 @@ def start(image, name, volume):
     # from the test-only credential file.
     url = docker("exec", name, "pp-server", "bootstrap-url", "--data", "/data").stdout.strip()
     bootstrap = urllib.parse.urlsplit(url)
-    if f"{bootstrap.scheme}://{bootstrap.netloc}" != origin or bootstrap.path != "/__desktop/bootstrap":
+    # bootstrap-url knows the container port, not Docker's published host port.
+    if f"{bootstrap.scheme}://{bootstrap.netloc}" != "http://127.0.0.1:8080" or bootstrap.path != "/__desktop/bootstrap":
         raise SystemExit("bootstrap-url printed an unexpected URL")
     status, _, cookies = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
     if status != 303 or not cookies:

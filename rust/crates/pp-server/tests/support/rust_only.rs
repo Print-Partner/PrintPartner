@@ -45,6 +45,7 @@ impl Server {
         let bundle = release::launch(data.clone()).bundle;
         let mut command = child_process::command(server_binary());
         command
+            .env_remove("PP_LISTEN_ADDR")
             .env("PP_DESKTOP_REBUILD", "1")
             .args(["--data".as_ref(), data.as_os_str()])
             .args(["--web".as_ref(), bundle.web_root.as_os_str()])

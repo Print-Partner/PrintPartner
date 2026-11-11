@@ -1,12 +1,12 @@
 # pp-gateway
 
-The loopback HTTP front door for one running app. It admits browser sessions, serves the React assets, and forwards each route to its owner, which today is the Node compatibility child.
+The HTTP front door for one running app. It admits browser sessions, serves the React assets, and sends each route to its selected Rust or Node owner. Desktop startup uses loopback; an explicit headless listener can accept network peers.
 
 Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
 
 ## Purpose
 
-- Listener admission: loopback-only bind, exact `Host` match, `Origin` checks on effects, single-use 60-second bootstrap links that become a `pp_desktop_<port>` session cookie.
+- Listener admission: loopback by default with an exact configured `Host`; explicit headless mode validates a literal-IP `Host` and matching browser `Origin`. Both modes check `Origin` on effects and use single-use 60-second bootstrap links that become a `pp_desktop_<port>` session cookie.
 - Serves `apps/web/dist` with gzip negotiation (`src/assets.rs`) and forwards admitted routes through `pp_compat::Endpoint`.
 - Answers a few routes itself: `/__desktop/bootstrap`, `/__desktop/rate-limit`, `/__runtime`, `POST /auth/logout`, and `/legal/summary` once that route is Rust-owned. It refuses `/mcp`.
 - Defines `RustStatus`, which `/__runtime` reports for a runtime started with `Gateway::start_rust_only`. `pp-core` owns the sender.
@@ -27,6 +27,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | --- | --- |
 | `Gateway::start(listener, assets, compat, owners)` | Validates `operations.json` against `OperationOwners` and starts serving. |
 | `Gateway::start_rust_only(listener, assets, ui, product, status, hosts)` | No Node child. `ui: ServedUi` names the build in `assets`. `ServedUi::Legacy` (the old `web/apps/web` build, which `pp-core` passes today) keeps the legacy `Content-Security-Policy` (`frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`) and serves documents and gzip siblings unchanged. `ServedUi::Replacement` (the `web/apps/ui` build) sends the policy in `src/replacement-csp.txt` on every asset, and gives each `index.html` response a fresh style nonce in `<meta name="pp-style-nonce">`, sent uncoded; see [Content security policy](../../../docs/network-sharing.md#content-security-policy). `product` builds the Rust routes from a `MoonrakerStatus` lookup (`lookup(id)` returns `StatusLookup`: `Status`, `NotWatched`, `Unavailable`; `observations()` returns the `PrinterObservations` port while the gateway lives); `hosts` is the `MoonrakerHosts` snapshot source (`HostReadError::Unavailable` keeps pollers through the grace period, `Invalid` stops them). |
+| `Gateway::start_rust_only_with_network(listener, network, assets, ui, product, status, hosts)` | Explicit headless admission when `network` is true. Preserves the real `ConnectInfo` peer and validates the browser-visible IP authority, including a published Docker port. Bootstrap admission remains required; `pp-core` keeps the product's account-login guards. MCP stays disabled. See [Docker admission](../../../docs/docker.md#run). |
 | `Gateway` methods | `origin`, `take_launch_target`, `bootstrap_minter`, `monitoring_control`, `printer_observations`, `shutdown_requested`, `begin_drain`, `wait_idle`, `finish_drain`, `stop`. |
 | `LaunchTarget`, `BootstrapMinter`, `MonitoringControl`, `ShutdownRequested` | First sign-in URL, new browser links, watcher suspend/resume, logout-triggered shutdown. |
 | `printer_host::HostReads` | `new()` (8 s deadline, 2 MiB replies), `test`, `browse`, `cameras` for one `HostTarget` (`Moonraker { base_url, api_key }` or `PrusaLink { base_url, username, password, storage }`); JSON values in Node's shapes. Read-only. |
@@ -51,7 +52,7 @@ python3 rust/scripts/gateway-operations.py fixtures/http/routes-inventory.json -
 
 ## Effects and flags
 
-- Accepts TCP on the loopback listener the caller binds; spawns Tokio tasks on the caller's runtime.
+- Accepts TCP on the caller's listener: loopback by default, or an explicit headless IP listener through `start_rust_only_with_network`. Spawns Tokio tasks on the caller's runtime.
 - Forwards requests over the Node child's Unix socket. Moonraker watchers open connections to configured printers.
 - Writes in the data directory: `source-sync-admission.json`, `operation-cutover.json`, and `operation-cutover-evidence.jsonl`.
 - Embeds `web/apps/server/src/data/source-sync-ownership.json`, `node-fenced-participants.json`, and `legal/LICENSE-SUMMARY.md` at compile time.

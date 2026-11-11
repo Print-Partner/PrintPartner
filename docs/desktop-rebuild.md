@@ -211,9 +211,9 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
     -E 'test(ticket_t_21) | test(ticket_t_22)'
   ```
 
-- The gateway listener is loopback only and passes the peer address to the
-  Rust routes as `ConnectInfo`; they refuse a non-loopback peer. LAN sharing is
-  not part of this mode.
+- Desktop startup stays loopback-only. Explicit headless listeners preserve
+  `ConnectInfo` and require login; see [Docker](docker.md#run). Desktop sharing
+  stays off.
 - Shutdown drains and stops the gateway, drops its routes, then shuts the
   writer down. If tracked shutdown work is still running, the writer and its
   lock are kept until the process exits. The receipt reports

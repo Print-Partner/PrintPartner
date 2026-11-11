@@ -1,6 +1,6 @@
 # pp-core
 
-Starts and stops one running app. It takes the storage lease, verifies the release, starts the Node child and the gateway, and shuts them down in a bounded order.
+Starts and stops one running app. It takes the storage lease, verifies the release, starts the gateway and any Node child, and shuts them down in a bounded order.
 
 Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
 
@@ -8,11 +8,11 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 - Composes `pp-storage`, `pp-compat`, and `pp-gateway` into `CoreRuntime`, run on a dedicated owner thread.
 - Node-backed startup: release verification, storage lease (refusing any ownership marker), cutover recovery, Source Sync admission, loopback port, Node readiness (32-second budget), then the gateway.
-- Rust-only startup (`start_for_launcher` with `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, in `rust_startup`): the storage writer takes the lease and makes the ownership marker decision first. Release verification, cutover recovery (no ownership index) and Source Sync admission run after it, only on an accepted directory; a failure in any of them shuts the writer down. Then the loopback port and the gateway with the `pp-api` routers. No Node child.
+- Rust-only startup (`start_for_launcher` or `start_for_server` with `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, in `rust_startup`): the storage writer takes the lease and makes the ownership marker decision first. Release verification, cutover recovery (no ownership index) and Source Sync admission run after it, only on an accepted directory; a failure in any of them shuts the writer down. Then the saved loopback listener, or the server's explicit IP listener, and the gateway with the `pp-api` routers. No Node child.
 - Shutdown: rejects new work, drains within `MUTATION_DRAIN`, stops Node and the gateway, releases the lease, and reports a `ShutdownReceipt`. It can commit one operation cutover during that drain.
 - Keeps the desktop state files: saved port, browser preferences, and desktop settings.
 - Owns process launch for performance captures; `pp-perf` owns the records.
-- Behind `desktop_rebuild`: provides `pp-api` router composition (`rebuild_api`) and the Source import and acquisition worker types. `CoreRuntime::start` never mounts those routers; `start_for_launcher` with both gates on serves them without Node.
+- Behind `desktop_rebuild`: provides `pp-api` router composition (`rebuild_api`) and the Source import and acquisition worker types. `CoreRuntime::start` never mounts those routers; `start_for_launcher` and `start_for_server` with both gates on serve them without Node.
 
 ## Not responsible for
 
@@ -28,6 +28,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | Item | What it does |
 | --- | --- |
 | `CoreRuntime::start(DesktopLaunch)` | Node-backed entry point. `start_with_compat_config` takes a `SupervisorConfig`. `start_for_launcher` is the launchers' entry point: Rust-only with both gates on, otherwise `start`. |
+| `CoreRuntime::start_for_server(DesktopLaunch, listen)` | Headless entry point. `listen: Option<SocketAddr>` selects an explicit IP listener only in Rust-only mode; `None` retains the saved loopback listener. `pp-server` parses `PP_LISTEN_ADDR` and passes it here. Desktop startup never reads that variable. |
 | `CoreRuntime` methods | `origin`, `handle`, `take_launch_target`, `shutdown_requested`, `shutdown`, `shutdown_with_cutover`, `origin_change`, `runtime_dir`, `desktop_rebuild`. |
 | `DesktopLaunch`, `VerifiedBundle`, `CoreStatus` | Launch input (`data_dir`, `bundle`, `assets`) and child status, re-exported from `pp-compat`. |
 | `RuntimeStatus`, `StatusReceiver`, `RustStatus` | What `CoreHandle::subscribe` returns: the Node child's `CoreStatus`, or the Rust-only runtime's `RustStatus` (no child `generation` or `pid`). |
@@ -50,7 +51,7 @@ Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --n
 ## Effects and flags
 
 - Threads: one `pp-core-owner` thread with a current-thread Tokio runtime per `CoreRuntime`.
-- Network: binds `127.0.0.1` on the port saved in `desktop.toml`, or a new port when that one is in use (`OriginChange::PersistedPortInUse`).
+- Network: defaults to `127.0.0.1` on the port saved in `desktop.toml`, or a new port when that one is in use (`OriginChange::PersistedPortInUse`). An explicit `start_for_server` listener bypasses the saved port and does not write `desktop.toml`; see [Docker admission](../../../docs/docker.md#run).
 - Files in the data directory: `desktop.toml`, `browser-preferences.json`, `desktop-settings.json`, plus what `pp-storage`, `pp-compat`, and `pp-gateway` write. Core reads its files through `pp-os` without following links and publishes them by rename, or by hard link for a first publication so a concurrent winner is never replaced. On Windows, where a directory cannot be flushed, both go through `pp-os`'s write-through moves (`publish_rename`, `publish_new`), as do the gateway's admission receipt and cutover record.
 - Child processes: the Node child through `pp-compat`. `perf_launch` spawns the measured command and reads `/proc`; `perf_seed` runs loopback Moonraker simulators on threads.
 - Env: `PP_DESKTOP_REBUILD` turns the rebuild on only when it is exactly `1` or `true` and the crate is built with `desktop_rebuild`. `layout` reads `PP_PORTABLE_DIR`, `APPDATA`, `LOCALAPPDATA`, and `XDG_*_HOME`. Desktop settings pass `PP_EXCHANGE_DIR`, `PP_COMPOSE_FILE`, and other paths to the Node child.

@@ -181,6 +181,7 @@ describe("UI8-01 History lists the Build's records from one read", () => {
       core(() => json({ plan_id: 2, entries: [], next_cursor: null })),
     );
     expect(await screen.findByText(HISTORY_EMPTY)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Plan" }).getAttribute("href")).toBe("/builds/2/plan");
     expect(HISTORY_EMPTY).toMatch(/^Nothing has happened to this Build yet\./);
     expect(HISTORY_EMPTY).toMatch(/snapshots Accept saves/);
   });

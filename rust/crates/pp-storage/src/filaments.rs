@@ -95,13 +95,7 @@ pub(super) fn execute(
     deadline: crate::writer_admission::Deadline,
 ) -> Result<Outcome> {
     let tx = crate::writer_admission::begin_immediate(connection, deadline)?;
-    let tenant = match command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, &secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, &routed_tenant, &secret)?,
-    };
+    let tenant = crate::read_model::read_tenant(&tx, &command.credential, command.policy)?;
     let path = command.directory.join(STORE_FILE);
     let mut store = match std::fs::read(&path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {

@@ -260,12 +260,7 @@ pub fn read_router(
         accepted_client.clone(),
         admin_files,
     );
-    let filament_routes = pp_api::filaments::filament_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        accepted_client.clone(),
-        filament_client,
-        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
-    );
+    let filaments = filaments(origin, api_key_tenant, &accepted_client, filament_client)?;
     let settings_routes = settings_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
@@ -306,7 +301,7 @@ pub fn read_router(
             .merge(planning)
             .merge(workflow)
             .merge(admin)
-            .merge(filament_routes)
+            .merge(filaments)
             .merge(settings_routes)
             .merge(events)
             .merge(checkoff)
@@ -443,6 +438,20 @@ pub fn product_router(
 
 /// API keys route to the default tenant under the single-account policy.
 pub(crate) const DESKTOP_TENANT: &str = "default";
+
+fn filaments(
+    origin: &str,
+    key: &str,
+    reads: &pp_storage::read_model::ReadClient,
+    client: pp_storage::filaments::FilamentClient,
+) -> Result<Router> {
+    Ok(pp_api::filaments::filament_router(
+        AdminHttpConfig::from_startup(origin, key, Some("1"))?,
+        reads.clone(),
+        client,
+        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
+    ))
+}
 
 #[cfg(test)]
 mod tests {

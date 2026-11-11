@@ -32,8 +32,7 @@ async fn start_with_reader(
     reader: Arc<dyn CatalogReader>,
 ) -> (WriterOwner, Serving, String) {
     let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let (listener, origin) = pp_testkit::http_listener().await.unwrap();
     let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
     let router = admin_router(
         config.clone(),

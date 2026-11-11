@@ -864,16 +864,7 @@ fn client_attempt(attempt: ClientAttempt) {
             );
             assert_eq!(error.to_string(), "Cancelled");
         } else {
-            assert_eq!(
-                error.to_string(),
-                if matches!(attempt, ClientAttempt::CorruptHints(_)) {
-                    "InvalidDocument"
-                } else if matches!(attempt, ClientAttempt::SortBudget(_)) {
-                    "LimitExceeded(ComparisonWork)"
-                } else {
-                    "LimitExceeded(Visits)"
-                }
-            );
+            assert_eq!(error.to_string(), hint_refusal_detail(attempt));
         }
         assert_eq!(
             visits.load(Ordering::Relaxed),
@@ -1108,5 +1099,13 @@ fn corrupt_path_hints_preserve_saved_draft_rows_and_files() {
         b"version: 1\nrules: null",
     ] {
         client_attempt(ClientAttempt::CorruptHints(bytes));
+    }
+}
+
+fn hint_refusal_detail(attempt: ClientAttempt) -> &'static str {
+    match attempt {
+        ClientAttempt::CorruptHints(_) => "InvalidDocument",
+        ClientAttempt::SortBudget(_) => "LimitExceeded(ComparisonWork)",
+        _ => "LimitExceeded(Visits)",
     }
 }

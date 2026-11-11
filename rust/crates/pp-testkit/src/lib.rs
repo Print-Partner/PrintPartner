@@ -521,5 +521,12 @@ fn create_new(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// A bound loopback listener and its HTTP origin for disposable HTTP fixtures.
+pub async fn http_listener() -> std::io::Result<(tokio::net::TcpListener, String)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    Ok((listener, origin))
+}
+
 #[cfg(test)]
 mod tests;

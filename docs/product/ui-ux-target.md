@@ -126,7 +126,7 @@ and keep cross-feature design rules here. Do not copy contract rows back into th
 
 ## Build order
 
-Every slice is one PR under about 1,500 changed lines, ships behind `desktop_rebuild`, and leaves the product in a usable state. Linear owns issue IDs and execution state; this table defines product order.
+Every slice is one PR under about 1,500 changed lines, ships behind `desktop_rebuild`, and leaves the product in a usable state. Linear owns issue IDs and execution state; slice numbers on the feature pages define product order.
 
 Delivery slices retain their numbers, 0 through 14, on the feature pages linked above.
 Read them in numeric order across pages; a page's later slice does not move ahead of

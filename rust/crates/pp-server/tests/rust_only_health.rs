@@ -98,6 +98,17 @@ fn redeem_bootstrap(origin: &str, credential: &Path) {
     }
 }
 
+fn assert_ready_probes(status: &Path) {
+    for (probe, line) in [
+        ("liveness", "liveness ok (ready)\n"),
+        ("readiness", "readiness ok (ready)\n"),
+    ] {
+        let output = healthcheck(probe, status);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), line);
+    }
+}
+
 fn server_reports_health(listen: Option<&str>) {
     let root = scratch::Scratch::new("pp-rust-only-health-");
     let data = root.join("data");
@@ -156,14 +167,7 @@ fn server_reports_health(listen: Option<&str>) {
     );
     assert_eq!(recorded["pid"], child.id());
     redeem_bootstrap(&origin, &credential);
-    for (probe, line) in [
-        ("liveness", "liveness ok (ready)\n"),
-        ("readiness", "readiness ok (ready)\n"),
-    ] {
-        let output = healthcheck(probe, &status);
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(String::from_utf8_lossy(&output.stdout), line);
-    }
+    assert_ready_probes(&status);
 
     let pid = libc::pid_t::try_from(child.id()).unwrap();
     // SAFETY: plain FFI call with the child's pid; no memory is shared.

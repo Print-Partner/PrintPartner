@@ -79,6 +79,14 @@ fn listen_address() -> Result<Option<std::net::SocketAddr>> {
         .transpose()
 }
 
+fn take_bootstrap_url(runtime: &mut CoreRuntime, server_origin: &str) -> Result<String> {
+    let url = runtime.take_launch_target()?.into_url();
+    let path_and_query = url
+        .strip_prefix(runtime.origin())
+        .context("Bootstrap URL does not match runtime origin")?;
+    Ok(format!("{server_origin}{path_and_query}"))
+}
+
 async fn serve(args: Vec<String>) -> Result<()> {
     let args::Arguments {
         data,
@@ -129,11 +137,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         _ => runtime.origin().to_owned(),
     };
     if let Some(path) = credential_file {
-        let url = runtime.take_launch_target()?.into_url();
-        let path_and_query = url
-            .strip_prefix(runtime.origin())
-            .context("Bootstrap URL does not match runtime origin")?;
-        let url = format!("{server_origin}{path_and_query}");
+        let url = take_bootstrap_url(&mut runtime, &server_origin)?;
         let child_pid = match runtime.handle().compat_status() {
             None => None,
             Some(status) => match *status.borrow() {

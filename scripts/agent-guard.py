@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import subprocess
+import time
 import sys
 from urllib.parse import unquote_plus, urlsplit
 
@@ -1061,6 +1062,12 @@ def trusted_comment_bodies(pages, authors):
     return bodies
 
 
+# Total time the coordinator merge check may spend in gh. It stays below the 60-second timeout of
+# the documented coordinator hook (agent-workflow.md): Claude Code lets the tool call run when a
+# hook times out, so the check must refuse on its own before that happens.
+GH_BUDGET_SECONDS = 45
+
+
 def coordinator_merge_reason(args, cwd):
     """Check files and trusted score records for an already validated merge command."""
     try:
@@ -1081,9 +1088,14 @@ def coordinator_merge_reason(args, cwd):
             del operands[index:index + 2]
         number = next(arg for arg in operands if re.fullmatch(r"[1-9][0-9]*", arg))
 
+        deadline = time.monotonic() + GH_BUDGET_SECONDS
+
         def gh_json(*arguments):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(["gh", *arguments], GH_BUDGET_SECONDS)
             result = subprocess.run(["gh", *arguments], cwd=cwd, capture_output=True,
-                                    text=True, timeout=30, check=True)
+                                    text=True, timeout=remaining, check=True)
             return json.loads(result.stdout)
 
         pr = gh_json("pr", "view", number, "--json", "headRefOid,changedFiles")

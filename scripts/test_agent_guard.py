@@ -899,6 +899,27 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         missing_old = {"files": [{"filename": "docs/x.yml", "status": "renamed"}]}
         self.assertIn("merge refused", self.check([], pr_override=missing_old))
 
+    def test_gh_budget_exhaustion_refused(self):
+        guard = load(CLI, "agent_guard_budget")
+        clock = iter([0.0, guard.GH_BUDGET_SECONDS + 1.0])
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(guard.subprocess, "run") as run:
+            self.assertIn("merge refused", guard.check_command(MERGE_FORM, "/coordinator"))
+            run.assert_not_called()
+
+    def test_gh_gets_only_the_remaining_budget(self):
+        guard = load(CLI, "agent_guard_remaining")
+        replies = [{"headRefOid": SHA, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]]]
+        responses = [subprocess.CompletedProcess("gh", 0, json.dumps(reply)) for reply in replies]
+        clock = iter([0.0, 5.0, 20.0])
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(guard.subprocess, "run", side_effect=responses) as run:
+            self.assertIsNone(guard.check_command(MERGE_FORM, "/coordinator"))
+            budget = guard.GH_BUDGET_SECONDS
+            self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [budget - 5.0, budget - 20.0])
+
     def test_gh_error_refused(self):
         for error in (OSError("gh unavailable"), subprocess.CalledProcessError(1, "gh"),
                       subprocess.TimeoutExpired("gh", 30)):

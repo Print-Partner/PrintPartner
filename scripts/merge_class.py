@@ -93,7 +93,7 @@ def has_two_scores(comments, head, author_vendor, allowed_seats):
 
     A score record is a line that starts with "pp-score "; every record must parse,
     including old ones. Other lines are ignored, including prose that mentions the
-    token. Valid records for another head never count toward this head.
+    token. Records for another head never count and are not checked against allowed_seats.
     """
     if (not isinstance(head, str) or not FULL_SHA.fullmatch(head)
             or not isinstance(author_vendor, str) or author_vendor not in VENDORS
@@ -114,10 +114,11 @@ def has_two_scores(comments, head, author_vendor, allowed_seats):
             if not match:
                 return False
             record_head, seat, vendor, score, author = match.groups()
-            if allowed_seats.get(seat) != vendor or vendor == author:
-                return False
+            # Older heads' records may name seats the owner has since dropped; they never count.
             if record_head != head:
                 continue
+            if allowed_seats.get(seat) != vendor or vendor == author:
+                return False
             if author != author_vendor:
                 return False
             try:

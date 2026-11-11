@@ -114,6 +114,12 @@ class ScoreTests(unittest.TestCase):
         self.assertFalse(self.check([self.line(author="anthropic"), self.grok(author="anthropic")],
                                     author="anthropic"))
 
+    def test_older_head_records_from_dropped_seats_do_not_block(self):
+        # A seat-list change must not block a PR whose earlier heads were scored by a dropped seat.
+        old = self.line("gpt-6.1-sol", sha=OTHER, vendor="openai", author="anthropic")
+        self.assertTrue(self.check([old, self.line(), self.grok()]))
+        self.assertFalse(self.check(["pp-score head=" + OTHER, self.line(), self.grok()]))
+
     def test_stale_head_does_not_count(self):
         self.assertFalse(self.check([self.line(), self.grok(sha=OTHER)]))
 

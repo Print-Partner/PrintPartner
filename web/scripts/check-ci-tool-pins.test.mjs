@@ -418,6 +418,30 @@ for (const name of ['web', 'web-build']) {
   }
 }
 
+for (const name of ['web', 'web-build']) {
+  test(`accept Web CI ${name} with exact changes dependency and selection`, t => {
+    const source = structuredClone(webCI);
+    source.jobs[name].needs = ['changes'];
+    source.jobs[name].if = "(github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))";
+    const result = run(t, JSON.stringify(source), [], 'web-ci.yml');
+    assert.equal(result.status, 0, result.stderr);
+  });
+  for (const [label, needs, condition] of [
+    ['missing dependency', undefined, "web"],
+    ['extra dependency', ['changes', 'skipped'], "web"],
+    ['wrong output', ['changes'], "ui"],
+  ]) {
+    test(`reject Web CI ${name} selection with ${label}`, t => {
+      const source = structuredClone(webCI);
+      if (needs) source.jobs[name].needs = needs;
+      source.jobs[name].if = `(github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.${condition} != 'false'))`;
+      const result = run(t, JSON.stringify(source), [], 'web-ci.yml');
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /INVALID_WEB_NODE_SETUP/);
+    });
+  }
+}
+
 test('reject Web CI lane patch mismatch despite matching runtime checks', t => {
   const source = JSON.parse(JSON.stringify(webCI));
   source.jobs['web-build'].steps[0].with['node-version'] = '22.23.4';

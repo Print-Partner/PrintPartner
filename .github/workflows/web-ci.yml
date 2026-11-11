@@ -3,40 +3,12 @@ name: Web CI
 on:
   workflow_call:
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, master]
-    paths:
-      - "web/**"
-      - "fixtures/**"
-      - "fixtures/drivers/bambu/**"
-      - "scripts/**"
-      - "manifests/**"
-      - "Caddyfile"
-      - "Dockerfile"
-      - "docker-entrypoint.sh"
-      - "docker-compose*.yml"
-      - "pp-compose.yml"
-      - "slicer-sidecar/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/**"
-      - ".github/actions/**"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths:
-      - "web/**"
-      - "fixtures/**"
-      - "fixtures/drivers/bambu/**"
-      - "scripts/**"
-      - "manifests/**"
-      - "Caddyfile"
-      - "Dockerfile"
-      - "docker-entrypoint.sh"
-      - "docker-compose*.yml"
-      - "pp-compose.yml"
-      - "slicer-sidecar/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/**"
-      - ".github/actions/**"
 
 permissions:
   contents: read
@@ -46,8 +18,36 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  web:
+  changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.web.outputs.relevant }}
+      ui: ${{ steps.ui.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select legacy and shared web inputs
+        id: web
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-path-filter.py web
+      - name: Select replacement UI inputs
+        id: ui
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-path-filter.py ui
+
+  web:
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))
     permissions:
       contents: read
       actions: read
@@ -111,7 +111,8 @@ jobs:
         run: npm run lint && npm run lint:dead && npm run typecheck && npm test
 
   web-build:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))
     permissions:
       contents: read
       actions: read
@@ -151,7 +152,8 @@ jobs:
   # The OrcaSlicer base image is about 1.7 GB. When the Actions cache has evicted it, the
   # registry pull alone can take 4 minutes, so this job has its own time limit (GRE-638).
   sidecar:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -177,8 +179,8 @@ jobs:
             -B -m unittest discover -v -p 'test_*.py'
 
   docker:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    needs: [web, web-build]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false')) && needs.web.result == 'success' && needs.web-build.result == 'success'
+    needs: [changes, web, web-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

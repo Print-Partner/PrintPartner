@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select required CI jobs from a complete PR diff; non-PR events always run."""
+"""Select required CI jobs from a complete PR diff; merge groups select only queue validation kinds."""
 
 import json
 import os
@@ -23,6 +23,28 @@ def relevant(path, kind):
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
+    if kind in {"ui", "web"}:
+        # Keep embedded legal text, hashed fixtures and the Docker deployment input.
+        if (path.endswith(".md")
+                and not path.startswith(("web/apps/server/src/data/", "fixtures/"))
+                and path not in {"web/DEPLOY.md", "LICENSE-SUMMARY.md", "ATTRIBUTION.md",
+                                 "THIRD_PARTY_NOTICES.md"}):
+            return False
+        shared = (path.startswith(("web/scripts/", "web/eslint", "web/knip", "web/tsconfig"))
+                  or re.fullmatch(r"web/package[^/]*\.json", path) is not None
+                  or path.startswith(("scripts/", "fixtures/", "manifests/", ".github/workflows/",
+                                      ".github/actions/"))
+                  or path in {".github/dependabot.yml", ".github/zizmor.yml",
+                              ".github/actionlint.yaml", ".github/actionlint.yml"})
+        if kind == "ui":
+            return shared or path.startswith(("web/apps/ui/", "web/packages/"))
+        # lint covers apps/ui and npm test/typecheck cover rust-client too. Keep those
+        # inputs selected until their commands move to the replacement UI job.
+        return (shared or path.startswith(("web/", "slicer-sidecar/", "rust/"))
+                or path in {"Caddyfile", "Dockerfile", ".dockerignore", "docker-entrypoint.sh",
+                            "pp-compose.yml", "rust-toolchain.toml", "LICENSE-SUMMARY.md",
+                            "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"}
+                or re.fullmatch(r"docker-compose[^/]*\.yml", path) is not None)
     # Markdown is not a Rust input, except the legal texts that pp-api and pp-gateway embed with
     # include_str!/include_bytes! and the fixture READMEs that sit inside hashed fixture trees.
     if path.endswith(".md") and not path.startswith(("web/apps/server/src/data/", "fixtures/")):
@@ -78,6 +100,8 @@ def windows_relevant(path, base, head):
 
 
 def select(event, base, head, kind, labels=()):
+    if event == "merge_group":
+        return kind in {"rust", "actions", "native", "windows", "ui"}
     if event != "pull_request":
         return True
     if kind == "windows" and WINDOWS_LABELS.intersection(labels):
@@ -103,8 +127,8 @@ def select(event, base, head, kind, labels=()):
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "actions", "native", "windows"}:
-        raise SystemExit("Expected rust, actions, native or windows")
+    if kind not in {"rust", "actions", "native", "windows", "ui", "web"}:
+        raise SystemExit("Expected rust, actions, native, windows, ui or web")
     labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
                        os.environ.get("HEAD_SHA"), kind, labels)).lower()

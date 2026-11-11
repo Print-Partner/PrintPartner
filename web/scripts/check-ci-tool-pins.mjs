@@ -104,8 +104,12 @@ function checkNodeLanes(workflow, file, names, code = 'WEB', condition, major = 
     const steps = Array.isArray(job?.steps) ? job.steps : [];
     const setups = steps.filter(step => mapping(step) && typeof step.uses === 'string'
       && step.uses.split('@')[0].toLowerCase() === 'actions/setup-node');
-    if (!mapping(job) || ['strategy', 'needs', 'continue-on-error'].some(key => Object.hasOwn(job, key))
-      || (condition === undefined ? hasCondition : jobCondition !== condition)
+    const selectedWeb = code === 'WEB' && ['web', 'web-build'].includes(name)
+      && JSON.stringify(job?.needs) === '["changes"]'
+      && job?.if === `(${draftGuard}) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))`;
+    if (!mapping(job) || ['strategy', 'continue-on-error'].some(key => Object.hasOwn(job, key))
+      || (Object.hasOwn(job ?? {}, 'needs') && !selectedWeb)
+      || (!selectedWeb && (condition === undefined ? hasCondition : jobCondition !== condition))
       || setups.length !== 1) {
       report(file, path, `INVALID_${code}_NODE_SETUP`, 'expected one setup-node step in each required lane with its permitted condition and without strategy or failure overrides');
       continue;

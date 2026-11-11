@@ -15,6 +15,33 @@ spec.loader.exec_module(ci_filter)
 
 
 class CiPathFilterTests(unittest.TestCase):
+    def test_ui_and_web_inputs(self):
+        for kind, paths in {
+            "ui": ["web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts"],
+            "web": ["web/apps/web/src/App.tsx", "web/apps/server/src/app.ts",
+                    "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
+                    "slicer-sidecar/main.py", "Dockerfile", ".dockerignore", "Caddyfile",
+                    "docker-compose.hosted.yml", "pp-compose.yml", "rust/Cargo.lock",
+                    "web/DEPLOY.md", "web/apps/server/src/data/legal/ATTRIBUTION.md",
+                    "fixtures/parity/README.md"],
+        }.items():
+            for path in paths + ["web/packages/contracts/src/index.ts", "web/scripts/tool.mjs",
+                                 "web/package-lock.json", "web/tsconfig.base.json",
+                                 "web/eslint.config.mjs", "scripts/check-github-actions-pinned.sh",
+                                 ".github/workflows/web-ci.yml", ".github/actions/example/action.yml",
+                                 "manifests/server.json", "fixtures/input.json"]:
+                with self.subTest(kind=kind, path=path):
+                    self.assertTrue(ci_filter.relevant(path, kind))
+            for path in ("docs/development/ci.md", "README.md", "web/apps/ui/README.md"):
+                self.assertFalse(ci_filter.relevant(path, kind), (kind, path))
+
+    def test_merge_groups_select_queue_validation_only(self):
+        for kind in ("rust", "actions", "native", "windows", "ui", "web"):
+            self.assertEqual(ci_filter.select("merge_group", "", "", kind), kind != "web")
+            for event in ("push", "schedule", "workflow_call", "workflow_dispatch"):
+                self.assertTrue(ci_filter.select(event, "", "", kind))
+            self.assertTrue(ci_filter.select("pull_request", "", "", kind))
+
     def test_rust_inputs(self):
         for path in ["rust/Cargo.lock", "rust/crates/pp-storage/src/lib.rs",
                      "rust-toolchain.toml", "web/package.json", "web/package-lock.json",
@@ -64,7 +91,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "actions", "native"]:
+        for kind in ["rust", "actions", "native", "ui", "web"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))
@@ -98,8 +125,19 @@ class CiPathFilterTests(unittest.TestCase):
             git("config", "user.name", "Proof")
             base = commit("README.md")
             docs = commit("docs/space and\nnewline.md")
-            for kind in ["rust", "actions", "native"]:
+            for kind in ["rust", "actions", "native", "ui", "web"]:
                 self.assertEqual(select(base, docs, kind)[0], "relevant=false\n")
+            for path, kind in (("web/apps/ui/src/App.tsx", "ui"),
+                               ("web/packages/rust-client/src/client.ts", "ui"),
+                               ("web/apps/server/src/app.ts", "web"),
+                               ("web/DEPLOY.md", "web")):
+                git("checkout", "-q", "--detach", base)
+                changed = commit(path)
+                self.assertEqual(select(base, changed, kind)[0], "relevant=true\n")
+                git("rm", path)
+                git("commit", "-qm", "delete input")
+                self.assertEqual(select(changed, git("rev-parse", "HEAD"), kind)[0],
+                                 "relevant=true\n")
             git("checkout", "-q", "--detach", base)
             helper = commit("scripts/verify-rust-gateway/verify.py")
             self.assertEqual(select(base, helper, "native")[0], "relevant=true\n")

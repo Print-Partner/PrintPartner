@@ -41,16 +41,22 @@ def job_runs(condition, contexts):
     if condition in ("", draft):
         return True
     prefix = f"({draft}) && ("
+    docker_guard = " && needs.web.result == 'success' && needs.web-build.result == 'success'"
+    if condition.endswith(docker_guard):
+        return (job_runs(condition[:-len(docker_guard)], contexts)
+                and all(contexts["needs"][job]["result"] == "success"
+                        for job in ("web", "web-build")))
     if not condition.startswith(prefix) or not condition.endswith(")"):
         raise ValueError(f"unsupported job condition: {condition!r}")
     rest = condition[len(prefix):-1]
     known = {
-        "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false')":
-            contexts["needs"]["changes"]["result"] != "success"
-            or contexts["needs"]["changes"]["outputs"]["relevant"] != "false",
         "!cancelled() && needs.rust-linux-build.result != 'skipped'":
             contexts["needs"]["rust-linux-build"]["result"] != "skipped",
     }
+    for kind in ("relevant", "windows", "web", "ui"):
+        known[f"!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.{kind} != 'false')"] = (
+            contexts["needs"]["changes"]["result"] != "success"
+            or contexts["needs"]["changes"]["outputs"][kind] != "false")
     if rest not in known:
         raise ValueError(f"unsupported job condition: {condition!r}")
     return known[rest]
@@ -92,7 +98,8 @@ class MergeGroupWorkflowTests(unittest.TestCase):
     def test_required_workflows_still_emit_job_checks_for_drafts(self):
         for filename, names in (("actionlint.yml", {"actionlint", "zizmor"}),
                                 ("rust-cross-os.yml", {"rust (linux)", "rust (windows)"}),
-                                ("pr-evidence.yml", {"Lint Evidence block"})):
+                                ("pr-evidence.yml", {"Lint Evidence block"}),
+                                ("web-ci.yml", {"web", "web-build", "sidecar", "docker"})):
             workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
                                  Loader=yaml.BaseLoader)
             self.assertNotIn("paths", workflow["on"]["pull_request"])
@@ -102,7 +109,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
 
     def test_required_workflows_accept_merge_group_fixture(self):
         for filename in ("actionlint.yml", "rust-cross-os.yml", "desktop-native-macos.yml",
-                         "pr-evidence.yml", "review-gate.yml"):
+                         "pr-evidence.yml", "review-gate.yml", "web-ci.yml"):
             with self.subTest(workflow=filename):
                 workflow = yaml.load(
                     (ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader
@@ -110,6 +117,39 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                 # No branches filter: the merge-group step checks base_ref itself, and a filter that
                 # skipped a group would leave the required check pending.
                 self.assertEqual(workflow["on"].get("merge_group"), {"types": [EVENT["action"]]})
+
+    def test_web_jobs_use_per_kind_selection_and_fail_closed(self):
+        workflow = yaml.load((ROOT / ".github/workflows/web-ci.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        jobs = workflow["jobs"]
+        for event in ("push", "pull_request", "merge_group"):
+            self.assertNotIn("paths", workflow["on"][event])
+            self.assertNotIn("paths-ignore", workflow["on"][event])
+        for kind in ("web", "ui"):
+            step = next(step for step in jobs["changes"]["steps"] if step.get("id") == kind)
+            self.assertEqual(step["run"], f"python3 scripts/ci-path-filter.py {kind}")
+            self.assertEqual(jobs["changes"]["outputs"][kind],
+                             "${{ steps." + kind + ".outputs.relevant }}")
+            self.assertEqual(step["env"], {
+                "EVENT_NAME": "${{ github.event_name }}",
+                "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha }}"})
+        checkout = jobs["changes"]["steps"][0]
+        self.assertEqual(checkout["with"]["fetch-depth"], "0")
+        self.assertEqual(checkout["with"]["persist-credentials"], "false")
+        for selected, result, runs in (("false", "success", False), ("true", "success", True),
+                                       ("", "failure", True)):
+            contexts = {"github": {"event_name": "merge_group"}, "needs": {
+                "changes": {"result": result, "outputs": {
+                    "web": selected, "ui": "true", "relevant": "true", "windows": "true"}},
+                "rust-linux-build": {"result": "success"},
+                "web": {"result": "success"}, "web-build": {"result": "success"}}}
+            for job_id in ("web", "web-build", "sidecar", "docker"):
+                job = jobs[job_id]
+                self.assertIn("changes", job["needs"])
+                self.assertEqual(job_runs(job["if"], contexts), runs, job_id)
+            contexts["needs"]["web"]["result"] = "failure"
+            self.assertFalse(job_runs(jobs["docker"]["if"], contexts))
 
     def test_review_gate_starts_only_for_prs_into_main(self):
         """A PR into another base runs that base's copy of the gate; main's copy never judges it."""
@@ -129,7 +169,8 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                      if rule["type"] == "required_status_checks"]
         self.assertEqual({check["context"] for check in checks}, set(required))
         contexts = {"github": {"event_name": EVENT_NAME}, "needs": {
-            "changes": {"result": "success", "outputs": {"relevant": "true"}},
+            "changes": {"result": "success", "outputs": {"relevant": "true", "windows": "true",
+                                                        "ui": "true", "web": "false"}},
             "rust-linux-build": {"result": "success"}}}
         for context, filename in required.items():
             with self.subTest(context=context):

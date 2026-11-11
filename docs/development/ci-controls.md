@@ -55,6 +55,22 @@ This keeps low-severity notices visible without adding the pedantic persona's st
 The pinned `zizmor-action` runs online audits and emits job annotations without a SARIF upload or write permission.
 Its default pin policy requires every external action, including `actions/*`, to use a full commit SHA.
 
+Web CI also uses job selection rather than workflow path filters. Its `changes`
+job publishes separate `web` and `ui` outputs. `web`, `web-build`, `sidecar` and
+`docker` use `web`; all four skip on merge groups, while the Rust, action,
+native, Windows and UI kinds stay selected. Pushes and manual/call events
+select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
+and commands retained. This adds no required check and does not edit the
+ruleset snapshot.
+
+This selection deliberately changes four CI guards, with regression tests:
+`checkNodeLanes` permits only the exact `needs: [changes]` and web-output
+condition for `web` and `web-build`; `job_runs()` understands per-kind outputs
+and Docker's success dependencies; the Markdown filter keeps embedded legal
+text, fixture trees and `web/DEPLOY.md` as web inputs; and merge groups are an
+exception to the rule that non-PR events select every kind. Chad approves these
+CI-control changes and merges after two scorer seats score the head 9 or more.
+
 ## Existing findings
 
 The first offline zizmor run reported twelve findings.

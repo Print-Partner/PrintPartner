@@ -1,5 +1,6 @@
 """Exercise the real ast-grep ratchet, including file and crate exemptions."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,9 +14,44 @@ RUST = Path(__file__).resolve().parents[1]
 RAISE_OVERRIDE = "PP_AST_GREP_ALLOW_BASELINE_RAISE"
 
 
+SPEC = importlib.util.spec_from_file_location("ast_checker", RUST / "scripts/check-ast-grep.py")
+CHECKER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CHECKER)
+
+
+class TextGateTests(unittest.TestCase):
+    def test_only_cfg_attr_predicate_counts(self):
+        for text, expected in (
+            ('#[cfg_attr(all(feature="desktop_rebuild", unix), allow(unused))] let x=1;', 1),
+            ('#[cfg_attr(test, doc="desktop_rebuild")] struct S;', 0),
+            ('#[r#cfg(feature=r###"desktop_rebuild"###)] fn f() {}', 1),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(len(CHECKER.text_gates(text.encode())), expected)
+
+    def test_escaped_feature_values_are_decoded(self):
+        for literal in (rb'"desktop\x5frebuild"', rb'"desktop\u{5f}rebuild"',
+                        rb'"desktop_rebui\u{6c}d"'):
+            code = b"#[cfg(feature=" + literal + b")] fn f() {}"
+            self.assertEqual(CHECKER.text_gates(code), {0})
+
+    def test_non_code_and_nested_comments_do_not_count(self):
+        gate = '#[cfg(feature="desktop_rebuild")]'
+        text = f'// {gate}\n/* outer /* {gate} */ end */ const S: &str = r##"{gate}"##;'
+        self.assertEqual(CHECKER.text_gates(text.encode()), set())
+        for prefix in ("r", "br", "cr"):
+            text = f'const S = {prefix}###"quoted " text {gate}"###;'
+            self.assertEqual(CHECKER.text_gates(text.encode()), set())
+
+    def test_character_literals_and_unicode_preserve_gate_offsets(self):
+        text = """const C: char = '"'; /* é */ #[cfg(feature="desktop_rebuild")] fn f() {}"""
+        data = text.encode()
+        self.assertEqual(CHECKER.text_gates(data), {data.index(b"#")})
+
+
 class RatchetTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="pp-ast-grep-", dir=RUST)
+        self.temp = tempfile.TemporaryDirectory(prefix="pp-ast-grep-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         shutil.copy(RUST / "sgconfig.yml", self.root)
@@ -84,6 +120,14 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("statement=1", result.stdout)
 
+    def test_escaped_statement_gate_is_classified(self):
+        self.source("pp-source/src/lib.rs",
+                    r'fn f() { #[cfg(feature="desktop\x5frebuild")] let x=1; }')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement=1", result.stdout)
+
     def test_statement_baseline_raise_cannot_hide_addition(self):
         self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 0}}
         self.publish_main()
@@ -118,6 +162,55 @@ class RatchetTests(unittest.TestCase):
         result = self.check()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("pp-other: statement baseline raised", result.stdout)
+
+    def test_macro_token_gates_count_as_statements(self):
+        for code in (
+            'fn f() { json!({ #[cfg(feature="desktop_rebuild")] "x": 1 }); }',
+            'fn f() { vec![#[cfg(feature="desktop_rebuild")] 1]; }',
+            'fn f() { select! { #[cfg(feature="desktop_rebuild")] x = f() => x }; }',
+            'macro_rules! m { () => { #[cfg(feature="desktop_rebuild")] let x=1; } }',
+        ):
+            with self.subTest(code=code):
+                self.source("pp-source/src/lib.rs", code)
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("statement=1", result.stdout)
+
+    def test_single_rule_cannot_drop_or_double_classify_a_gate(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg(feature="desktop_rebuild")] struct S;')
+        self.baseline()
+        rule = self.root / "rules/desktop-rebuild-item.yml"
+        original = rule.read_text()
+        for replacement in ("      - kind: function_item", "      - matches: gate"):
+            with self.subTest(replacement=replacement):
+                # Drop item coverage, or make the module rule overlap it.
+                target = rule if "kind:" in replacement else self.root / "rules/desktop-rebuild-module.yml"
+                before = target.read_text()
+                target.write_text(before.replace(
+                    "      - matches: item" if target == rule else "      - matches: module",
+                    replacement))
+                result = self.check()
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("placement coverage expected one class", result.stderr)
+                target.write_text(before)
+        rule.write_text(original)
+
+    def test_cfg_attr_body_is_not_a_feature_predicate(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg_attr(test, doc="desktop_rebuild")] struct S;')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 classified = 0 text gates", result.stdout)
+
+    def test_placement_first_landing_is_reported(self):
+        (self.root / "desktop-rebuild-baseline.json").unlink()
+        self.commit_main()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("desktop-rebuild raise check skipped (first landing)", result.stdout)
 
     def test_matching_baseline_passes(self):
         result = self.check()

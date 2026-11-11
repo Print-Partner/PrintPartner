@@ -21,6 +21,140 @@ PLACEMENT_CLASSES = ("module", "item", "statement")
 PLACEMENT_RULES = {f"desktop-rebuild-{name}" for name in PLACEMENT_CLASSES}
 
 
+# Lex independently of the Rust AST: token trees do not expose attribute nodes.
+# Keep byte offsets so coverage can be compared even after non-ASCII comments.
+RUST_TOKEN = re.compile(
+    rb'//[^\n]*|/\*|(?:br|cr|r)(?P<hashes>\#*)".*?"(?P=hashes)'
+    rb"|b?'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n]|[\xC2-\xF4][\x80-\xBF]+)'"
+    rb'|b?"(?:\\.|[^"\\])*"|r\#[A-Za-z_][A-Za-z_0-9]*'
+    rb'|[A-Za-z_][A-Za-z_0-9]*|[^\s]', re.DOTALL,
+)
+
+
+def rust_tokens(data):
+    tokens = []
+    cursor = 0
+    while match := RUST_TOKEN.search(data, cursor):
+        value = match.group()
+        cursor = match.end()
+        if value == b"/*":
+            depth = 1
+            while depth:
+                comment = re.search(rb"/\*|\*/", data[cursor:])
+                if comment is None:
+                    raise ValueError("unterminated Rust block comment")
+                depth += 1 if comment.group() == b"/*" else -1
+                cursor += comment.end()
+        elif not value.startswith(b"//"):
+            tokens.append((value, match.start()))
+    return tokens
+
+
+RUST_ESCAPE = re.compile(
+    rb'\\(?:x([0-9a-fA-F]{2})|u\{([0-9a-fA-F_]+)\}|(\r?\n\s*)|(.))',
+    re.DOTALL,
+)
+
+
+def feature_string(token):
+    """Decode Rust feature literals without interpreting strings as source."""
+    raw = re.fullmatch(rb'r(?P<h>\#*)"(.*)"(?P=h)', token, re.DOTALL)
+    if raw:
+        return raw[2]
+    if not (token.startswith(b'"') and token.endswith(b'"')):
+        return None
+
+    def unescape(match):
+        if match[1]:
+            return bytes([int(match[1], 16)])
+        if match[2]:
+            return chr(int(match[2].replace(b"_", b""), 16)).encode()
+        if match[3]:
+            return b""
+        return {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"0": b"\0",
+                b"\\": b"\\", b"'": b"'", b'"': b'"'}.get(match[4], match[0])
+
+    return RUST_ESCAPE.sub(unescape, token[1:-1])
+
+
+def text_gates(data):
+    """Find cfg/cfg_attr predicates mentioning the feature, ignoring non-code."""
+    tokens = rust_tokens(data)
+    gates = set()
+    for i, (value, offset) in enumerate(tokens):
+        if value != b"#":
+            continue
+        tail = i + 1
+        if tail < len(tokens) and tokens[tail][0] == b"!":
+            tail += 1
+        if tail + 2 >= len(tokens) or tokens[tail][0] != b"[":
+            continue
+        name = tokens[tail + 1][0].removeprefix(b"r#")
+        if name not in (b"cfg", b"cfg_attr") or tokens[tail + 2][0] != b"(":
+            continue
+        depth = 0
+        for index in range(tail + 3, len(tokens)):
+            token = tokens[index][0]
+            if depth == 0 and (token == b")" or (name == b"cfg_attr" and token == b",")):
+                break
+            if token in (b"(", b"[", b"{"):
+                depth += 1
+            elif token in (b")", b"]", b"}"):
+                depth -= 1
+            elif feature_string(token) == b"desktop_rebuild":
+                gates.add(offset)
+    return gates
+
+
+MACRO_RULE = """id: placement-macro
+language: Rust
+rule:
+  any:
+    - kind: macro_invocation
+    - kind: macro_definition
+"""
+
+
+def complete_placement_hits(root, hits):
+    """Every textual gate must have exactly one class, or be an opaque macro gate."""
+    macro_scan = subprocess.run(
+        ["ast-grep", "scan", "--inline-rules", MACRO_RULE, "--json=compact", "crates"],
+        cwd=root, text=True, capture_output=True, check=True,
+    )
+    macros = {}
+    for hit in json.loads(macro_scan.stdout):
+        macros.setdefault(hit["file"], []).append(hit["range"]["byteOffset"])
+    candidates = {}
+    for hit in hits:
+        if hit["ruleId"] in PLACEMENT_RULES:
+            candidates.setdefault(hit["file"], {}).setdefault(
+                hit["range"]["byteOffset"]["start"], []).append(hit)
+    result = [hit for hit in hits if hit["ruleId"] not in PLACEMENT_RULES]
+    total = 0
+    for path in sorted((root / "crates").rglob("*.rs")):
+        file = path.relative_to(root).as_posix()
+        data = path.read_bytes()
+        gates = text_gates(data)
+        total += len(gates)
+        for offset in sorted(gates):
+            classified = candidates.get(file, {}).get(offset, [])
+            if not classified and any(span["start"] <= offset < span["end"]
+                                      for span in macros.get(file, [])):
+                classified = [{
+                    "file": file, "ruleId": "desktop-rebuild-statement",
+                    "range": {"byteOffset": {"start": offset},
+                              "start": {"line": data[:offset].count(b"\n")}},
+                }]
+            if len(classified) != 1:
+                raise ValueError(f"{file}: byte {offset}: placement coverage expected one class, got {len(classified)}")
+            result.extend(classified)
+    classified_total = sum(hit["ruleId"] in PLACEMENT_RULES for hit in result)
+    if classified_total != total:
+        raise ValueError(f"placement coverage: {classified_total} classified != {total} text gates")
+    print(f"desktop-rebuild coverage: {classified_total} classified = {total} text gates")
+    return result
+
+
 def placement_counts(root, hits):
     """Include zero-count crates so the baseline is a complete inventory."""
     counts = {path.name: dict.fromkeys(PLACEMENT_CLASSES, 0)
@@ -53,6 +187,7 @@ def check_placement(root, hits):
         if subprocess.run(["git", "cat-file", "-e", spec], cwd=root, capture_output=True).returncode != 128:
             raise ValueError("could not read placement baseline from main")
         main = {}
+        print(f"desktop-rebuild raise check skipped (first landing): {BASE_REF} has no {PLACEMENT_FILE}")
     else:
         main = parse_placement(previous.stdout)
     status = 0
@@ -206,6 +341,7 @@ def main():
             f"unbaselined={sorted(loaded - (baseline.keys() | PLACEMENT_RULES))}"
         )
     hits = command_hits_with_canonical_names(root, json.loads(scan.stdout))
+    hits = complete_placement_hits(root, hits)
     placement_status = check_placement(root, hits)
     hits = [hit for hit in hits if hit["ruleId"] not in PLACEMENT_RULES]
     counts = Counter(hit["ruleId"] for hit in hits)

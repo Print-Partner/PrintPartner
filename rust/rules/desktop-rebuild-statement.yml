@@ -14,11 +14,12 @@ utils:
           kind: attribute
           has:
             kind: identifier
-            regex: '^cfg$'
+            regex: '^(r#)?cfg(_attr)?$'
       - has:
           any:
             - kind: string_literal
-              regex: '^"desktop_rebuild"$'
+              # Escaped literals are candidates; the checker decodes the value.
+              regex: '(?s)^"(desktop_rebuild|.*\\.*)"$'
             - kind: raw_string_literal
               regex: '^r#*"desktop_rebuild"#*$'
           stopBy: end

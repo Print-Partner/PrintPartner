@@ -574,7 +574,7 @@ def shell_commands(source):  # noqa: C901
                     if source[end:end + 1] == char or (char == "|" and source[end:end + 1] == "&"):
                         separator += source[end]
                         i = end
-                pipe = separator in ("|", "|&", "&")
+                pipe = separator in ("|", "|&")
                 logic = separator in ("&&", "||")
                 inside = tuple(groups)
                 depth += {"(": 1, ")": -1}.get(char, 0)
@@ -589,10 +589,13 @@ def shell_commands(source):  # noqa: C901
                     args = []
                 if separator == "&":
                     # Bash backgrounds the whole preceding and-or list, not just its last command.
+                    background = -next(counter)
                     for index in range(and_or_starts.get(inside, len(commands)), len(commands)):
                         words, scoped, conditional = commands[index]
                         path, stage = scoped if scoped else (inside, None)
-                        commands[index] = (words, (path, stage if stage is not None else next(counter)), conditional)
+                        # One subshell owns the list; nested groups and actual pipeline stages stay distinct.
+                        path = (*path[:len(inside)], background, *path[len(inside):])
+                        commands[index] = (words, (path, stage), conditional)
                 pending = not had_args and (piped or after_logic)
                 if separator not in ("&&", "||", "|", "|&", "(", ")") and not (separator == "\n" and pending):
                     and_or_starts[inside] = len(commands)
@@ -654,7 +657,7 @@ def wrapper_bundle(name, option):
     return 1, None
 
 
-def program(args):
+def program(args, cwd=None):
     """Return the executed program name, its arguments, whether a wrapper changed directory,
     and the environment assignments the command makes."""
     i, moved, assigned = 0, False, []
@@ -666,7 +669,7 @@ def program(args):
             i += 1
             continue
         name = PurePosixPath(word).name
-        if name not in WRAPPERS:
+        if name not in WRAPPERS or (name == "direnv" and args[i + 1:i + 2] != ["exec"]):
             if name in DECLARATIONS:
                 assigned += [arg for arg in args[i + 1:] if ASSIGNMENT.match(arg)]
             return name, args[i + 1:], moved, assigned
@@ -682,11 +685,15 @@ def program(args):
             moved = moved or flag in WRAPPER_CHDIR
             i += wrapper_option_words(name, option)
         if name == "direnv":
-            if args[i:i + 1] != ["exec"] or i + 2 >= len(args):
+            if i + 1 >= len(args):
                 raise Unclear
-            # direnv runs the child in DIR; relative git and request-file paths are unknown here.
-            moved = True
-            i += 2
+            target = args[i + 1]
+            if os.path.isdir(os.path.join(cwd or os.getcwd(), target)):
+                # Only a directory is an operand; a file in this position is itself the program.
+                moved = moved or target not in (".", "./")
+                i += 2
+            else:
+                i += 1
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
 
@@ -1526,7 +1533,7 @@ def hidden_merge(words, state, depth=0, strict=False, scan=True, start=0):
 
 def merge_in(args, depth, strict, state, scan):
     """The body of hidden_merge for one (words, depth, strict, scan); hidden_merge adds the memo and the limits."""
-    name, rest, *_ = program(args)
+    name, rest, *_ = program(args, state.get("cwd"))
     if name is None:
         return False
     if EXPANDED in name:
@@ -1581,13 +1588,13 @@ def merge_in(args, depth, strict, state, scan):
     return False
 
 
-def expanded_program(args):
+def expanded_program(args, cwd=None):
     """Whether the program this command runs comes from an expansion, or a runner gets an expanded argument.
 
     A runner such as flock FILE, watch -n 1, xargs -n 1, or ssh host takes options and operands before the
     program it runs, so any expanded argument of a runner counts.
     """
-    name, rest, *_ = program(args)
+    name, rest, *_ = program(args, cwd)
     if name is None:
         return False
     if EXPANDED in name:
@@ -1606,12 +1613,12 @@ def merge_help(args):
     return words[:2] == ["pr", "merge"] and bool(words[2:]) and all(arg in ("--help", "-h") for arg in words[2:])
 
 
-def redirects_gh_config(args):
+def redirects_gh_config(args, cwd=None):
     """Whether one simple command sets or clears a variable that moves gh's config: a prefix assignment, an
     export, declare, typeset, or readonly argument, an env NAME=... operand, unset of one of them, env -u of one
     of them, or env -i, which clears them all. Words that only look like an assignment, such as the data in
     gh pr comment --body HOME=/tmp or echo HOME=/tmp, do not count."""
-    name, rest, _, assigned = program(args)
+    name, rest, _, assigned = program(args, cwd)
     if any(word.split("=", 1)[0] in GH_CONFIG_VARIABLES for word in assigned):
         return True
     if name == "unset" and any(arg in GH_CONFIG_VARIABLES for arg in rest):
@@ -1621,7 +1628,7 @@ def redirects_gh_config(args):
                for i, word in enumerate(prefix))
 
 
-def redirect_scope(args, name, persistent, scoped):
+def redirect_scope(args, name, persistent, scoped, cwd=None):
     """Return (redirect in effect for this command, the line's redirect state for the commands after it).
 
     persistent is (line, groups): whether the line's own shell moved gh's config, and the ( ) subshells inside which
@@ -1633,7 +1640,7 @@ def redirect_scope(args, name, persistent, scoped):
     """
     line, moved_in = persistent
     path, stage = scoped if isinstance(scoped, tuple) else ((), None)
-    local = redirects_gh_config(args)
+    local = redirects_gh_config(args, cwd)
     if local and (name is None or name in DECLARATIONS or name == "unset") and stage is None and scoped is not True:
         if path:
             moved_in = moved_in | {path}
@@ -1781,7 +1788,7 @@ def hidden_reason(parsed, assigned, state):
     found by hidden_merge."""
     # G=gh; P=pr; M=merge; $G $P $M builds a command the guard cannot read. A line that sets a variable to gh
     # and runs a program named by an expansion is refused; an expansion used as data, as in echo $HOME, is not.
-    if assigns_gh(assigned) and any(expanded_program(args) for args, *_ in parsed):
+    if assigns_gh(assigned) and any(expanded_program(args, state.get("cwd")) for args, *_ in parsed):
         return SPLIT_GH
     # A PR merge is matched on each command's words after shell unquoting, so me''rge and $'m\\x65rge' still
     # count, while a quoted argument that only mentions the command (a comment body, a commit message, a grep
@@ -1809,7 +1816,7 @@ def check_line(command, cwd, outer, state):
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
             return None
-        commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
+        commands = [(*program(args, cwd), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.
         # An exported GIT_DIR or similar can also point a later push at another repository.
@@ -1824,10 +1831,11 @@ def check_line(command, cwd, outer, state):
             head_moves, config_unknown, env_config, persistent = (
                 head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], (outer[3], frozenset()))
         control = 0
+        scoped_cwds = {}
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             check_deadline()
             # A command that moves gh's config could point a gh it runs at aliases or extensions written anywhere.
-            redirected, persistent = redirect_scope(args, name, persistent, scoped)
+            redirected, persistent = redirect_scope(args, name, persistent, scoped, cwd)
             if redirected and runs_gh(name, rest):
                 return GH_REDIRECT
             # Prefixes such as "{" or "!" can come before a control keyword.
@@ -1842,9 +1850,14 @@ def check_line(command, cwd, outer, state):
                          and not (scoped or moved or conditional or control)
                          and not re.search(r"[$~`\x00]", targets[0]))
                 # A directory change inside a subshell has no single directory after it.
-                cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
+                if isinstance(scoped, tuple) and any(group < 0 for group in scoped[0]):
+                    # Preserve the parent cwd only for a modeled background subshell. Other unknown
+                    # directory changes keep the guard's existing conservative behavior.
+                    scoped_cwds[scoped] = None
+                else:
+                    cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
                 continue
-            here = None if moved else cwd
+            here = None if moved else scoped_cwds.get(scoped, cwd)
             if name in SHELLS:
                 script, unclear = shell_script(rest)
                 if unclear and re.search(r"\b(?:gh|git)\b", " ".join(rest)) and not coordinator_worktree(here):

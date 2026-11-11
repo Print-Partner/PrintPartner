@@ -1327,9 +1327,9 @@ class HiddenMergeTests(unittest.TestCase):
         guard = in_process(CLI)
         parsed = guard.shell_commands("a & b | c")
         self.assertEqual([args for args, _, _ in parsed], [["a"], ["b"], ["c"]])
-        stages = [scoped[1] for _, scoped, _ in parsed]
+        stages = [scoped[1] for _, scoped, _ in parsed[1:]]
         self.assertTrue(all(stage is not None for stage in stages))
-        self.assertEqual(len(set(stages)), 3)
+        self.assertEqual(len(set(stages)), 2)
         for command in ("true & echo hi | export HOME=/tmp; gh pr view 12",
                         "true & export HOME=/tmp | cat; gh pr view 12",
                         "export HOME=/tmp & gh pr view 12"):
@@ -1427,7 +1427,8 @@ class HiddenMergeTests(unittest.TestCase):
         self.assertTrue(parsed[2][1])
         self.assertFalse(parsed[3][1])
         grouped = guard.shell_commands("(a && b & c)")
-        self.assertTrue(all(scoped[1] is not None for _, scoped, _ in grouped[:2]))
+        self.assertEqual(grouped[0][1], grouped[1][1])
+        self.assertNotEqual(grouped[1][1], grouped[2][1])
         self.assertIsNone(grouped[2][1][1])
 
     def test_routine_wrapped_builds_and_background_jobs_stay_allowed(self):
@@ -1436,6 +1437,39 @@ class HiddenMergeTests(unittest.TestCase):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_background_list_exports_reach_only_their_own_subshell(self):
+        for command in ("export GH_CONFIG_DIR=/tmp/evil && gh pr view 12 &",
+                        "(export GH_CONFIG_DIR=/tmp/evil; gh pr view 12) &"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config redirected", result.stderr)
+        for command in ("export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12",
+                        "cargo build & npm run dev; wait"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_direnv_file_targets_are_programs(self):
+        for command in ("direnv exec /usr/bin/gh pr merge 12",
+                        "export GH_CONFIG_DIR=/tmp/evil; direnv exec /usr/bin/gh pr view 12",
+                        "direnv exec /usr/bin/git push -f"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        for command in ("direnv allow", "direnv status", "direnv reload",
+                        "direnv exec . git push origin topic"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "environment").mkdir()
+            self.assertEqual(guard.program(["direnv", "exec", "environment", "git", "status"], folder)[:2],
+                             ("git", ["status"]))
+            Path(folder, "tool").touch()
+            self.assertEqual(guard.program(["direnv", "exec", "tool", "arg"], folder)[:2], ("tool", ["arg"]))
 
     def test_hidden_merges_are_refused_everywhere(self):
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):

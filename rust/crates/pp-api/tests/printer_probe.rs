@@ -5,7 +5,7 @@ use pp_api::{
     },
 };
 use pp_storage::{Limits, WriterOwner};
-use pp_testkit::{Fixture, Installation};
+use pp_testkit::Installation;
 use std::{
     future::Future,
     pin::Pin,
@@ -43,12 +43,7 @@ impl PrinterProbePort for Fake {
 
 #[tokio::test]
 async fn authenticated_probe_does_not_write_and_limits_requests_before_network_work() {
-    let data = Installation::create(Fixture::Empty).unwrap();
-    std::fs::write(
-        data.database_path(),
-        include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db"),
-    )
-    .unwrap();
+    let data = Installation::with_authenticated_fixture().unwrap();
     let owner = WriterOwner::open(data.path(), Limits::default()).unwrap().0;
     let fake = Arc::new(Fake(AtomicUsize::new(0)));
     let router = |flag| {

@@ -107,6 +107,23 @@ pub const CLIENT_ROUTE: crate::client_contract::ClientRoute = crate::client_cont
 };
 
 #[cfg(feature = "codegen")]
+impl Serialize for crate::client_contract::ClientRoute {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut route = serializer.serialize_struct("ClientRoute", 8)?;
+        route.serialize_field("name", &self.name)?;
+        route.serialize_field("method", &self.method)?;
+        route.serialize_field("path", &self.path)?;
+        route.serialize_field("auth", self.auth.as_str())?;
+        route.serialize_field("request", &self.request)?;
+        route.serialize_field("response", &self.response)?;
+        route.serialize_field("text_params", &self.text_params)?;
+        route.serialize_field("headers", &self.headers)?;
+        route.end()
+    }
+}
+
+#[cfg(feature = "codegen")]
 pub fn client_document(mut document: serde_json::Value) -> Result<String, serde_json::Error> {
     use serde_json::json;
     document["dtos"]["PrinterProbeRequest"] =
@@ -119,11 +136,7 @@ pub fn client_document(mut document: serde_json::Value) -> Result<String, serde_
     document["dtos"]["PrinterProbeResult"] = serde_json::to_value(result_schema)?;
     if let Some(routes) = document["routes"].as_array_mut() {
         let route = CLIENT_ROUTE;
-        routes.push(
-            json!({"name":route.name,"method":route.method,"path":route.path,
-            "auth":route.auth.as_str(),"request":route.request,"response":route.response,
-            "text_params":route.text_params,"headers":route.headers}),
-        );
+        routes.push(serde_json::to_value(route)?);
     }
     if let Some(fixtures) = document["fixtures"].as_array_mut() {
         let request = PrinterProbeRequest {

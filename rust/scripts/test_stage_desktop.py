@@ -1,13 +1,10 @@
 import json
 import os
 import pathlib
-import runpy
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 from stage_dependencies import stage_locked_dependencies
 
@@ -179,28 +176,6 @@ class StageWorkspaceLinkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         links = json.loads((self.root / "manifest.json").read_text())["dependencies"]["links"]
         self.assertEqual(links, {"web/node_modules/@print-partner/contracts": "../../packages/contracts"})
-
-    @unittest.skipUnless(sys.platform == 'linux', 'Linux staging fixture')
-    def test_static_ui_stages_without_a_node_workspace_link(self):
-        shutil.copytree(self.web, self.source, dirs_exist_ok=True)
-        write(self.source / "apps/ui/dist/index.html", "replacement UI")
-        native = self.root / "native-node"
-        native.write_bytes(b"\x7fELF" + b"\0" * 32)
-        native.chmod(0o755)
-        output = self.root / "static-ui-stage"
-        identity = {"version": "v24.21.0", "abi": "137", "arch": "x64", "os": "linux"}
-        # Exercise the real staging order, with external Node probes and the
-        # manifest subprocess replaced. Native validation has separate tests.
-        argv = [str(SCRIPT), "--web", str(self.source), "--node", str(native),
-                "--output", str(output), "--commit", COMMIT]
-        with (mock.patch.object(sys, 'argv', argv),
-              mock.patch('subprocess.check_output', return_value=json.dumps(identity)),
-              mock.patch('subprocess.run'), mock.patch('builtins.print')):
-            runpy.run_path(str(SCRIPT), run_name='__main__')
-        web = output / 'web'
-        self.assertEqual((web / "apps/ui/dist/index.html").read_text(), "replacement UI")
-        self.assertFalse((web / "node_modules/@print-partner/ui").is_symlink())
-        self.assertTrue((web / "node_modules/@print-partner/contracts").is_symlink())
 
     def test_dangling_workspace_link_fails_the_manifest(self):
         stage_locked_dependencies(self.source, self.web, self.lock)

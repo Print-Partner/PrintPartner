@@ -83,9 +83,6 @@ for path in ['package.json', 'package-lock.json', 'apps/server/package.json',
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source / path, target)
 skipped_links = stage_locked_dependencies(source, web, json.loads((source / 'package-lock.json').read_text()))
-# Select Node workspace links before adding the static-only UI directory.
-if (source / 'apps/ui/dist').exists():
-    shutil.copytree(source / 'apps/ui/dist', web / 'apps/ui/dist')
 for name, relative in [('contracts', 'packages/contracts'), ('domain', 'packages/domain')]:
     alias = web / 'node_modules/@print-partner' / name
     if not alias.exists():

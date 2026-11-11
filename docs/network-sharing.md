@@ -40,7 +40,7 @@ The gateway sets `Content-Security-Policy` on every document and asset it serves
   `replacement_frontend` inventory before the gateway serves any of those bytes;
   an absent or changed inventory refuses startup. SPA fallback covers replacement
   client paths such as `/today`, `/farm/log` and `/builds/12/history`; file
-  requests and service routes keep their existing handling. Docker packaging follows in
+  requests and service routes keep their existing handling. Release packaging follows in
   [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
 
 Checks:

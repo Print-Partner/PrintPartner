@@ -119,7 +119,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         listen,
     )
     .await?;
-    let health_origin = match listen {
+    let server_origin = match listen {
         Some(address) if !address.ip().is_unspecified() => {
             let mut bound: std::net::SocketAddr =
                 runtime.origin().trim_start_matches("http://").parse()?;
@@ -130,6 +130,10 @@ async fn serve(args: Vec<String>) -> Result<()> {
     };
     if let Some(path) = credential_file {
         let url = runtime.take_launch_target()?.into_url();
+        let path_and_query = url
+            .strip_prefix(runtime.origin())
+            .context("Bootstrap URL does not match runtime origin")?;
+        let url = format!("{server_origin}{path_and_query}");
         let child_pid = match runtime.handle().compat_status() {
             None => None,
             Some(status) => match *status.borrow() {
@@ -158,13 +162,13 @@ async fn serve(args: Vec<String>) -> Result<()> {
     let stop_signal = platform::stop_signal()?;
     if let Some(Err(error)) = status
         .as_ref()
-        .map(|status| status.publish(health::State::Ready, Some(&health_origin)))
+        .map(|status| status.publish(health::State::Ready, Some(&server_origin)))
     {
         let receipt = runtime.shutdown().await;
         anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
         return Err(error);
     }
-    println!("{}", runtime.origin());
+    println!("{server_origin}");
     let shutdown_requested = runtime.shutdown_requested();
     tokio::select! {
         _ = stop_signal => {}

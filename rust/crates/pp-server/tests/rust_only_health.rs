@@ -11,7 +11,8 @@ mod release;
 mod scratch;
 
 use std::{
-    io::Read,
+    io::{Read, Write},
+    net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Output, Stdio},
     time::{Duration, Instant},
@@ -69,10 +70,39 @@ fn explicit_specific_listener_reports_health() {
     server_reports_health(Some("127.0.0.2:0"));
 }
 
+fn redeem_bootstrap(origin: &str, credential: &Path) {
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(credential).unwrap()).unwrap();
+    let url = receipt["bootstrap_url"].as_str().unwrap();
+    let path = url
+        .strip_prefix(origin)
+        .expect("bootstrap uses reachable origin");
+    let host = origin.trim_start_matches("http://");
+    for expected in ["HTTP/1.1 303", "HTTP/1.1 401"] {
+        let mut stream =
+            TcpStream::connect_timeout(&host.parse().unwrap(), Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with(expected), "bootstrap admission status");
+    }
+}
+
 fn server_reports_health(listen: Option<&str>) {
     let root = scratch::Scratch::new("pp-rust-only-health-");
     let data = root.join("data");
     let status = root.join("status.json");
+    let credential = root.join("credentials.json");
     let bundle = release::launch(data.clone()).bundle;
     let mut command = child_process::command(server_binary());
     command.env_remove("PP_LISTEN_ADDR");
@@ -86,6 +116,7 @@ fn server_reports_health(listen: Option<&str>) {
             .args(["--web".as_ref(), bundle.web_root.as_os_str()])
             .args(["--commit", &bundle.commit])
             .args(["--status-file".as_ref(), status.as_os_str()])
+            .args(["--test-credential-file".as_ref(), credential.as_os_str()])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -124,6 +155,7 @@ fn server_reports_health(listen: Option<&str>) {
         "Rust opened SQLite storage"
     );
     assert_eq!(recorded["pid"], child.id());
+    redeem_bootstrap(&origin, &credential);
     for (probe, line) in [
         ("liveness", "liveness ok (ready)\n"),
         ("readiness", "readiness ok (ready)\n"),
@@ -154,11 +186,10 @@ fn server_reports_health(listen: Option<&str>) {
         .read_to_string(&mut printed)
         .unwrap();
     let mut lines = printed.lines();
-    let canonical_origin = format!("http://127.0.0.1:{}", probe_address.port());
     assert_eq!(
         lines.next(),
-        Some(canonical_origin.as_str()),
-        "origin first"
+        Some(origin.as_str()),
+        "reachable origin first"
     );
     let receipt: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert!(

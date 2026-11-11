@@ -113,7 +113,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 - **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
 - **No headless sign-in.** The gateway admits a browser only through a single-use, 60-second bootstrap URL. The desktop app opens that URL. `pp-server` gives it only to tests (`--test-credential-file`). Until a headless sign-in path exists, a browser cannot open the UI from this image.
 - **MCP is off.** The gateway answers 403 to `/mcp` and `/api/v1/mcp` in Rust-only mode, whatever key a client sends.
-- **The old UI.** The image serves the measured desktop build of `apps/web`, the UI the Rust-only desktop serves. The replacement UI (`apps/ui`) is not served by any Rust runtime yet.
+- **UI packaging.** Today's image includes only the measured `apps/web` build. The Rust-only runtime serves it with its existing SPA routes and policy and logs one line when `apps/ui/dist` is absent. An installed replacement bundle must pass its separate inventory check before it is served with the GRE-1117 CSP. Docker replacement UI packaging follows in [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test

@@ -231,7 +231,7 @@ fn community_manifests_prefix(bundle: &Bundle) -> Result<(std::path::PathBuf, St
 }
 
 /// The release check for a Rust-only start, which runs no Node child. It checks
-/// the embedded identity, the served replacement frontend (exact inventory) and the
+/// the embedded identity, the selected frontend (exact inventory) and the
 /// community manifests Rust reads (exact inventory, when the release has any).
 /// It does not measure the Node executable, the Node backend, the workspace
 /// packages or `node_modules`, so they may be absent: the Docker image ships
@@ -240,17 +240,39 @@ pub fn verify_rust_only_release(bundle: &Bundle, assets: &Path) -> Result<()> {
     verify_rust_only_with(&manifest()?, bundle, assets, &CancellationToken::new())
 }
 
+/// Verify the legacy frontend when no replacement bundle is installed.
+pub fn verify_rust_only_legacy_release(bundle: &Bundle, assets: &Path) -> Result<()> {
+    let release = manifest()?;
+    verify_rust_only_frontend_with(
+        &release,
+        bundle,
+        assets,
+        &release.frontend,
+        &CancellationToken::new(),
+    )
+}
+
 fn verify_rust_only_with(
     release: &ReleaseManifest,
     bundle: &Bundle,
     assets: &Path,
     stop: &CancellationToken,
 ) -> Result<()> {
+    verify_rust_only_frontend_with(release, bundle, assets, &release.replacement_frontend, stop)
+}
+
+fn verify_rust_only_frontend_with(
+    release: &ReleaseManifest,
+    bundle: &Bundle,
+    assets: &Path,
+    frontend: &BTreeMap<String, String>,
+    stop: &CancellationToken,
+) -> Result<()> {
     ensure!(
         release.runtime_version == bundle.runtime_version && release.commit == bundle.commit,
         "Requested release differs from embedded identity"
     );
-    verify_files(assets, &release.replacement_frontend, true, stop)?;
+    verify_files(assets, frontend, true, stop)?;
     let (directory, prefix) = community_manifests_prefix(bundle)?;
     let manifests: BTreeMap<String, String> = release
         .backend

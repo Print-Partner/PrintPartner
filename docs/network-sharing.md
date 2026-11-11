@@ -38,7 +38,7 @@ The gateway sets `Content-Security-Policy` on every document and asset it serves
   `web/apps/ui/dist` build and pass `ServedUi::Replacement`. The default runtime
   keeps the old build and legacy policy. Rust-only startup verifies the separate
   `replacement_frontend` inventory before the gateway serves any of those bytes;
-  an absent or changed inventory refuses startup. SPA fallback covers replacement
+  a present replacement bundle with an absent or changed inventory refuses startup. If the replacement build is absent, startup logs that fact once and verifies and serves the legacy build with its existing SPA paths and policy. SPA fallback covers replacement
   client paths such as `/today`, `/farm/log` and `/builds/12/history`; file
   requests and service routes keep their existing handling. Release packaging follows in
   [GRE-1387](https://linear.app/greetz/issue/GRE-1387).

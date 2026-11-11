@@ -518,12 +518,16 @@ async fn start_rust_resources(
     input: DesktopLaunch,
     desktop_rebuild: DesktopRebuild,
 ) -> Result<Resources> {
-    let assets = input
-        .bundle
-        .web_root
-        .join("apps/ui/dist")
-        .canonicalize()
-        .context("React assets unavailable")?;
+    let replacement = input.bundle.web_root.join("apps/ui/dist");
+    let replacement_present = replacement.try_exists()?;
+    let assets = if replacement_present {
+        replacement
+    } else {
+        eprintln!("Replacement UI bundle absent");
+        input.assets
+    }
+    .canonicalize()
+    .context("React assets unavailable")?;
     let data_dir = prepare_data_dir(&input.data_dir)?;
     let verified_assets = assets.clone();
     let bundle = input.bundle;
@@ -542,7 +546,14 @@ async fn start_rust_resources(
         },
         // Rust-only mode runs no Node child, so only what Rust serves or reads is
         // measured: the frontend and the community manifests.
-        move || pp_compat::verify_rust_only_release(&bundle, &verified_assets).map(|()| bundle),
+        move || {
+            if replacement_present {
+                pp_compat::verify_rust_only_release(&bundle, &verified_assets)?;
+            } else {
+                pp_compat::verify_rust_only_legacy_release(&bundle, &verified_assets)?;
+            }
+            Ok(bundle)
+        },
     )
     .await?;
     let community_manifests = bundle.community_manifests_dir();
@@ -568,7 +579,11 @@ async fn start_rust_resources(
     let gateway = Gateway::start_rust_only(
         listener,
         assets,
-        pp_gateway::ServedUi::Replacement,
+        if replacement_present {
+            pp_gateway::ServedUi::Replacement
+        } else {
+            pp_gateway::ServedUi::Legacy
+        },
         move |status| product.merge(status_routes.mount(status)),
         receiver,
         hosts,

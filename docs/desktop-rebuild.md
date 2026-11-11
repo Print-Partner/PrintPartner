@@ -103,7 +103,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 - `Gateway::start_rust_only` takes a `ServedUi`. With `ServedUi::Replacement`
   (the `apps/ui` build), documents and assets carry the replacement UI's
   Content-Security-Policy, with a fresh style nonce on each document.
-  `pp-core` selects the verified `apps/ui/dist` build in this mode; the default
+  `pp-core` selects verified `apps/ui/dist` when installed, otherwise verified legacy UI; the default
   runtime keeps `apps/web/dist` and its legacy policy. See
   [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust

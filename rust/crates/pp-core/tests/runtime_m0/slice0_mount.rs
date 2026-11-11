@@ -45,12 +45,62 @@ async fn slice0_mount_launcher_gates() {
     }
 }
 
+#[cfg(feature = "desktop_rebuild")]
+#[tokio::test]
+async fn absent_replacement_bundle_preserves_legacy_navigation() {
+    let data = temporary("legacy-ui-launcher");
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "slice0_mount::slice0_mount_launcher_in_child",
+            "--nocapture",
+        ])
+        .env("PP_SLICE0_DATA", &data)
+        .env("PP_SLICE0_RUST", "true")
+        .env("PP_UI_ABSENT", "1")
+        .env("PP_DESKTOP_REBUILD", "1")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr)
+            .matches("Replacement UI bundle absent")
+            .count(),
+        1
+    );
+    std::fs::remove_dir_all(data).unwrap();
+}
+
 #[tokio::test]
 #[ignore = "runs in an isolated subprocess with explicit environment"]
 async fn slice0_mount_launcher_in_child() {
     let data = std::path::PathBuf::from(std::env::var_os("PP_SLICE0_DATA").unwrap());
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
-    let mut runtime = CoreRuntime::start_for_launcher(launch(data)).await.unwrap();
+    let absent = std::env::var_os("PP_UI_ABSENT").is_some();
+    let mut input = launch(data.clone());
+    if absent {
+        let web = data.join("image-web");
+        super::copy_directory(&input.assets, &web.join("apps/web/dist"));
+        super::copy_directory(
+            &input.bundle.community_manifests_dir().unwrap(),
+            &web.join("apps/server/dist/current/data/manifests"),
+        );
+        input.assets = web.join("apps/web/dist");
+        input.bundle.entry = web.join("apps/server/dist/current/desktop.js");
+        input.bundle.web_root = web;
+        // Keep the writer's data directory separate from the image's static files.
+        input.data_dir = data.join("data");
+    }
+    let mut runtime = CoreRuntime::start_for_launcher(input).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
     // The desktop tray holds a handle and its subscription for the process lifetime.
     let handle = runtime.handle();
@@ -78,7 +128,40 @@ async fn slice0_mount_launcher_in_child() {
     let origin = runtime.origin().to_owned();
     let desktop = desktop_cookie(&mut runtime).await;
     assert_runtime_json(&origin, &desktop, rust).await;
-    assert_served_ui(&origin, &desktop, rust).await;
+    assert_served_ui(&origin, &desktop, rust && !absent).await;
+    if absent {
+        for path in ["/settings", "/builds"] {
+            let response = reqwest::Client::new()
+                .get(format!("{origin}{path}"))
+                .header("cookie", &desktop)
+                .header("accept", "text/html")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()["content-security-policy"],
+                "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+            );
+            assert_eq!(
+                response.text().await.unwrap(),
+                std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../../web/apps/web/dist/index.html")
+                )
+                .unwrap()
+            );
+        }
+        let response = reqwest::Client::new()
+            .get(format!("{origin}/today"))
+            .header("cookie", &desktop)
+            .header("accept", "text/html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     if rust {
         let (status, _, body) = request(
             &origin,

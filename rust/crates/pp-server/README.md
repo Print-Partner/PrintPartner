@@ -23,7 +23,7 @@ Binary only (`src/main.rs`, `src/args.rs`); no library. Every flag takes a value
 | Argument | What it does |
 | --- | --- |
 | `--data DIR` | Required. Data directory passed to `DesktopLaunch::data_dir`. |
-| `--web DIR` | Required. Web workspace root. Reads `package.json` for the version (`<version>-web`), the default runtime runs `apps/server/dist/current/desktop.js` and serves `apps/web/dist`. With both rebuild gates on, serves verified `apps/ui/dist` without Node. |
+| `--web DIR` | Required. Web workspace root. Reads `package.json` for the version (`<version>-web`), the default runtime runs `apps/server/dist/current/desktop.js` and serves `apps/web/dist`. With both rebuild gates on, serves verified `apps/ui/dist` when installed, otherwise verified `apps/web/dist`, without Node. |
 | `--node PATH` | Node executable for the compatibility child. Required unless the start is Rust-only (`desktop_rebuild` compiled in and `PP_DESKTOP_REBUILD` exactly `1` or `true`). |
 | `--commit SHA` | Required. Must match the commit in the embedded bundle manifest. |
 | `--status-file PATH` | Optional. Keeps a JSON status file with `pid`, `state` (`starting`, `ready`, `stopping`) and, once ready, `origin`. Written atomically, removed on exit. `pp-server healthcheck` reads it. |

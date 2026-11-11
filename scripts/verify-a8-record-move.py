@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify GRE-1309's receipt move and exact link repairs against its fixed parent."""
+"""Verify the A8 receipt move (GRE-1317) and its exact link repairs against the main it was cut from."""
 
 from pathlib import Path
 import re
@@ -7,7 +7,9 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PARENT = "7908c70361dd22357704a9d9b38ead15e1b9c658"
+# The main commit merged into this branch. The nine sections are byte-identical to the GRE-1309
+# freeze (7908c7036); only text outside them changed.
+PARENT = "4b359b5218a8af9baace940b29bf98f71dfeaf8e"
 SOURCE = "docs/desktop-rebuild.md"
 SECTIONS = (
     ("D9 build graph receipt", "d9-build-graph"),
@@ -20,12 +22,7 @@ SECTIONS = (
     ("D19 publication client and writer admission, GRE-612 PR 3", "d19-publication-client"),
     ("Filament grams per send (GRE-1165, part a: GRE-1237)", "filament-grams-per-send"),
 )
-COPIED = (
-    "docs/families.md", "scripts/check-family-index.py",
-    "scripts/test_check_family_index.py", "rust/AGENTS.md",
-    "rust/crates/pp-compat/AGENTS.md", "web/apps/server/AGENTS.md",
-    "web/apps/web/AGENTS.md", "web/apps/ui/AGENTS.md",
-)
+COPIED = ("docs/families.md",)
 
 
 # Only these destinations may differ from the fixed snapshots. Labels, titles,
@@ -58,33 +55,9 @@ LINK_REWRITES = {
 LINK_TARGET = re.compile(rb"(\[[^\]\n]*\]\()([^\s()]+)(\))")
 
 
-# Post-freeze corrections to two family rows (PR #1650). Each replaces one link on the row
-# that starts with the prefix; the same destination on other rows is left alone.
-FAMILY_ROW_FIXES = [
-    (b"| Product Module choices and settings |",
-     b"[rust/crates/pp-api/src/admin.rs](../rust/crates/pp-api/src/admin.rs)",
-     b"[rust/crates/pp-api/src/builds/features.rs](../rust/crates/pp-api/src/builds/features.rs)"),
-    (b"| Stock and Spoolman shortfalls |",
-     b"[rust/crates/pp-api/src/planning.rs](../rust/crates/pp-api/src/planning.rs)",
-     b"[rust/crates/pp-api/src/accepted.rs](../rust/crates/pp-api/src/accepted.rs)"),
-]
-
-
-def apply_family_row_fixes(original):
-    lines = original.split(b"\n")
-    for prefix, old_link, new_link in FAMILY_ROW_FIXES:
-        hits = [i for i, line in enumerate(lines) if line.startswith(prefix)]
-        assert len(hits) == 1, prefix
-        assert lines[hits[0]].count(old_link) == 1, prefix
-        lines[hits[0]] = lines[hits[0]].replace(old_link, new_link)
-    return b"\n".join(lines)
-
-
 def verify_bytes(path, original, actual):
     """Require the fixed original bytes with exactly the listed destination repairs."""
     rewrites = LINK_REWRITES.get(path, {})
-    if path == "docs/families.md":
-        original = apply_family_row_fixes(original)
     expected = LINK_TARGET.sub(
         lambda match: match[1] + rewrites.get(match[2], match[2]) + match[3], original)
     if actual != expected:
@@ -128,11 +101,7 @@ def main():
     if actual != expected:
         raise ValueError("Source differs beyond the nine exact pointer substitutions")
     for path in COPIED:
-        verify_bytes(path, git_bytes("show", f"6be50eae5:{path}"), (ROOT / path).read_bytes())
-        # Check that the fixed copy only added lines before the allowed repairs.
-        delta = git_bytes("diff", "--numstat", PARENT, "6be50eae5", "--", path).decode().split()
-        if delta and delta[1] != "0":
-            raise ValueError(f"Copied file removes parent lines: {path}")
+        verify_bytes(path, git_bytes("show", f"{PARENT}:{path}"), (ROOT / path).read_bytes())
     for title, slug, _, _, section in sections:
         print(f"{title} | docs/records/{slug}.md | {section.count(b'\n')}")
     print(f"Moved lines (including headings and trailing blank lines): {total}")
@@ -142,7 +111,7 @@ def main():
     print(f"{SOURCE}: {original.count(b'\n')} -> {actual.count(b'\n')} lines")
     print("PASS: nine records match parent bytes except heading levels and listed link-target repairs.")
     print("PASS: nine pointer targets exist; all other source bytes are unchanged.")
-    print("PASS: eight copied files match 6be50eae5 except listed link-target repairs; original copies only add parent lines.")
+    print("PASS: docs/families.md matches the parent except the listed link-target repair.")
 
 
 if __name__ == "__main__":

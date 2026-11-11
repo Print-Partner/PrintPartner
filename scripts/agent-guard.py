@@ -118,6 +118,9 @@ ALLOWED_MUTATIONS = {"addComment", "addPullRequestReviewComment", "addPullReques
 GRAPHQL_TOKEN = re.compile(r'"""(?:\\"""|[^"]|"(?!""))*"""|"(?:\\.|[^"\\\n\r])*"|#[^\n\r]*|\.\.\.|[A-Za-z_]\w*|\S')
 STALE_INPUT = ("Run a gh api request that reads a file as a separate command; "
                "other commands could change the file or directory before gh reads it.")
+COMMENT_EDIT = ("Only the coordinator worktree edits or deletes PR comments: a score record must not change "
+                "after it is posted. Post a new comment instead.")
+ISSUE_COMMENT_ID = re.compile(REPO_PATH + r"issues/comments/\d+$")
 API_WRITE = ("Through gh api, agents may read and write PR or issue comments and review threads; "
              "other writes need the maintainer.")
 SAFE_PUSH_LONG = {"--atomic", "--dry-run", "--force-if-includes", "--ipv4", "--ipv6", "--no-atomic",
@@ -921,7 +924,11 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     if args[:2] in COMMENT_COMMANDS:
         if marker and not coordinator_worktree(cwd):
             return MARKER
-        return marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
+        reason = marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
+        if reason:
+            return reason
+        edits = any(arg.split("=", 1)[0] in ("--edit-last", "--delete-last") for arg in args[2:])
+        return COMMENT_EDIT if edits and not coordinator_worktree(cwd) else None
     if args[:1] != ["api"]:
         return None
     method, endpoint, fields, body, i = None, None, [], None, 1
@@ -998,9 +1005,13 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
             names = mutation_fields(document)
             if names is None or set(names) - ALLOWED_MUTATIONS:
                 return API_WRITE
+            if "updateIssueComment" in names and not coordinator_worktree(cwd):
+                return COMMENT_EDIT
         return None
     if method == "POST" and REVIEW_WRITES.search(path):
         return None if review_events(fields, body, cwd) <= {"", "COMMENT"} else API_WRITE
+    if method in ("PATCH", "PUT", "DELETE") and ISSUE_COMMENT_ID.search(path) and not coordinator_worktree(cwd):
+        return COMMENT_EDIT
     if method in ("POST", "PATCH") and COMMENT_WRITES.search(path):
         return None
     return API_WRITE
@@ -1048,18 +1059,34 @@ def changed_paths(pages, changed_files):
 
 
 def trusted_comment_bodies(pages, authors):
-    """Return the bodies of PR comments whose author is in authors; refuse malformed pages."""
+    """Return (bodies, edited) for PR comments whose author is in authors; refuse malformed pages.
+
+    edited says a trusted comment that holds a pp-score record was changed after it was posted
+    (updated_at differs from created_at). A deleted record cannot be seen here (GRE-1408)."""
     if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
         raise ValueError("missing PR comment pages")
-    bodies = []
+    bodies, edited = [], False
     for page in pages:
         for comment in page:
             login, body = comment["user"]["login"], comment["body"]
             if not isinstance(login, str) or not login or not isinstance(body, str):
                 raise ValueError("missing comment author or body")
-            if login in authors:
-                bodies.append(body)
-    return bodies
+            if login not in authors:
+                continue
+            if any(line.strip().startswith("pp-score ") for line in body.splitlines()):
+                created, updated = comment["created_at"], comment["updated_at"]
+                if not isinstance(created, str) or not created or not isinstance(updated, str) or not updated:
+                    raise ValueError("missing comment timestamps")
+                edited = edited or created != updated
+            bodies.append(body)
+    return bodies, edited
+
+
+def head_moved(gh_json, number, sha):
+    """Refuse when the PR head changed while the guard read its files and comments."""
+    if gh_json("pr", "view", number, "--json", "headRefOid")["headRefOid"] != sha:
+        return "Merge refused: the PR head changed while the guard checked it."
+    return None
 
 
 # Total time the coordinator merge check may spend in gh. It stays below the 60-second timeout of
@@ -1076,7 +1103,7 @@ def coordinator_merge_reason(args, cwd):
         merge_class = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(merge_class)
         config = json.loads(merge_class.CLASSES.read_text(encoding="utf-8"))
-        for key in ("owner", "sensitive", "scorer_authors"):
+        for key in ("owner", "sensitive", "scorer_authors", "vendors"):
             if not isinstance(config[key], list) or any(not isinstance(v, str) or not v for v in config[key]):
                 raise ValueError("invalid merge class configuration")
         sha = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--match-head-commit=")), None)
@@ -1109,26 +1136,29 @@ def coordinator_merge_reason(args, cwd):
         if kind == "owner":
             return "The owner merges this PR: it changes owner-class paths."
         if kind == "lane":
-            return None
+            return head_moved(gh_json, number, sha)
         # The coordinator posts from the owner's account. A dedicated bot
         # identity is the follow-up; the login alone cannot identify seats.
         authors = config["scorer_authors"]
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
         pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
-        bodies = trusted_comment_bodies(pages, authors)
+        bodies, edited = trusted_comment_bodies(pages, authors)
+        if edited:
+            return "Sensitive PR refused: a pp-score comment was edited after it was posted; edited records never count."
+        record_pattern = merge_class.score_pattern(config["vendors"])
         # author= records the head branch's author vendor, supplied by the
         # coordinator. Never infer a model vendor from the GitHub login.
         author_vendors = set()
         for body in bodies:
             for line in body.splitlines():
-                match = merge_class.SCORE.fullmatch(line.strip())
+                match = record_pattern.fullmatch(line.strip())
                 if match and match.group(1) == sha:
                     author_vendors.add(match.group(5))
         author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None
-        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"]):
+        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"], config["vendors"]):
             return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
-        return None
+        return head_moved(gh_json, number, sha)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
         return "Cannot verify merge class or scores; merge refused (missing or unreadable data)."
 

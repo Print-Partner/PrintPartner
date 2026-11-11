@@ -69,7 +69,8 @@ class CoverageTests(unittest.TestCase):
 
     def test_merge_classes_file_is_valid_json(self):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats"})
+        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors"})
+        self.assertEqual(data["vendors"], ["anthropic", "openai", "xai"])
         self.assertEqual(data["scorer_authors"], ["poitee"])
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai"})
 
@@ -77,7 +78,8 @@ class CoverageTests(unittest.TestCase):
 class ScoreTests(unittest.TestCase):
     # Chad's policy of 2026-11-11: two allowed seats from two different vendors, neither the author's.
     def setUp(self):
-        self.allowed = json.loads(mc.CLASSES.read_text())["scorer_seats"]
+        data = json.loads(mc.CLASSES.read_text())
+        self.allowed, self.vendors = data["scorer_seats"], data["vendors"]
 
     def line(self, seat="claude-opus-5-5", sha=SHA, score=9, vendor="anthropic", author="openai"):
         return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}"
@@ -85,8 +87,9 @@ class ScoreTests(unittest.TestCase):
     def grok(self, **kwargs):
         return self.line("grok-4.7", vendor="xai", **kwargs)
 
-    def check(self, comments, author="openai", head=SHA, allowed=None):
-        return mc.has_two_scores(comments, head, author, self.allowed if allowed is None else allowed)
+    def check(self, comments, author="openai", head=SHA, allowed=None, vendors=None):
+        return mc.has_two_scores(comments, head, author, self.allowed if allowed is None else allowed,
+                                 self.vendors if vendors is None else vendors)
 
     def test_opus_and_grok_pass_on_a_sol_pr(self):
         self.assertTrue(self.check([self.line(), self.grok()]))
@@ -109,6 +112,13 @@ class ScoreTests(unittest.TestCase):
         allowed = {"gpt-6.1-sol": "openai", "grok-4.7": "xai"}
         self.assertTrue(self.check([self.line("gpt-6.1-sol", vendor="openai", author="anthropic"),
                                     self.grok(author="anthropic")], author="anthropic", allowed=allowed))
+
+    def test_new_vendor_is_data_only(self):
+        allowed = {**self.allowed, "gemini-9-pro": "google"}
+        records = [self.line(), self.line("gemini-9-pro", vendor="google")]
+        self.assertTrue(self.check(records, allowed=allowed, vendors=self.vendors + ["google"]))
+        # Without the vendor in the data, the record does not parse and refuses.
+        self.assertFalse(self.check(records, allowed=allowed))
 
     def test_author_vendor_seat_refused(self):
         self.assertFalse(self.check([self.line(author="anthropic"), self.grok(author="anthropic")],

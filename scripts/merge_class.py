@@ -17,11 +17,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
 CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
-SCORE = re.compile(
-    r"pp-score head=([0-9a-f]{40}) seat=(\S+) vendor=(openai|anthropic|xai)"
-    r" score=([0-9]+) author=(openai|anthropic|xai)"
-)
-VENDORS = {"openai", "anthropic", "xai"}
+VENDOR = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def score_pattern(vendors):
+    """The pp-score record pattern for the vendors listed in merge-classes.json."""
+    if not isinstance(vendors, (list, tuple)) or not vendors or any(
+            not isinstance(v, str) or not VENDOR.fullmatch(v) for v in vendors):
+        raise ValueError("invalid vendor list")
+    names = "|".join(re.escape(v) for v in sorted(set(vendors)))
+    return re.compile(rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({names})"
+                      rf" score=([0-9]+) author=({names})")
+
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -85,21 +92,25 @@ def uncovered(entries, classes):
     return [e for e in entries if not any(rx.match(e) for rx in covered)]
 
 
-def has_two_scores(comments, head, author_vendor, allowed_seats):
+def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
     """Require two allowed seats at 9+ from two different vendors, neither the author's vendor.
 
-    allowed_seats maps each seat to its vendor (scorer_seats in merge-classes.json), so the policy
-    is data. Malformed records, unknown seats and same-vendor-as-author records refuse.
+    allowed_seats maps each seat to its vendor and vendors lists every vendor a record may name
+    (scorer_seats and vendors in merge-classes.json), so a seat or vendor change is data only. Malformed records, unknown seats and same-vendor-as-author records refuse.
 
     A score record is a line that starts with "pp-score "; every record must parse,
     including old ones. Other lines are ignored, including prose that mentions the
     token. Records for another head never count and are not checked against allowed_seats.
     """
+    try:
+        record_pattern = score_pattern(vendors)
+    except ValueError:
+        return False
     if (not isinstance(head, str) or not FULL_SHA.fullmatch(head)
-            or not isinstance(author_vendor, str) or author_vendor not in VENDORS
+            or not isinstance(author_vendor, str) or author_vendor not in vendors
             or not isinstance(allowed_seats, dict) or not allowed_seats
             or any(not isinstance(seat, str) or not seat
-                   or not isinstance(vendor, str) or vendor not in VENDORS
+                   or not isinstance(vendor, str) or vendor not in vendors
                    for seat, vendor in allowed_seats.items())
             or not isinstance(comments, (list, tuple))):
         return False
@@ -110,7 +121,7 @@ def has_two_scores(comments, head, author_vendor, allowed_seats):
         for line in body.splitlines():
             if not line.strip().startswith("pp-score "):
                 continue
-            match = SCORE.fullmatch(line.strip())
+            match = record_pattern.fullmatch(line.strip())
             if not match:
                 return False
             record_head, seat, vendor, score, author = match.groups()

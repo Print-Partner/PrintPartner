@@ -395,7 +395,6 @@ class GuardHookTests(unittest.TestCase):
         for command in ("gh api repos/o/r/releases", "gh api -X GET repos/o/r/pulls -f state=open",
                         "gh api -i repos/o/r/pulls", "gh api -iXGET repos/o/r/pulls",
                         "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
-                        "gh api -X PATCH repos/o/r/issues/comments/34 -f body=edited",
                         "gh api repos/o/r/pulls/12/reviews -f event=COMMENT -f body=Review",
                         "gh api repos/o/r/pulls/12/reviews -f body=Draft -f 'comments[][path]=a.py'",
                         "gh api repos/o/r/pulls/12/reviews/5/events -f event=comment",
@@ -748,6 +747,7 @@ class CoordinatorMergeTests(unittest.TestCase):
         bindir.mkdir()
         gh = bindir / "gh"
         replies = {"pr view 12 --json headRefOid,changedFiles": {"headRefOid": SHA, "changedFiles": 1},
+                   "pr view 12 --json headRefOid": {"headRefOid": SHA},
                    "api repos/{owner}/{repo}/pulls/12/files --paginate --slurp":
                        [[{"filename": "docs/example.md", "status": "modified"}]]}
         gh.write_text("#!/usr/bin/env python3\nimport json, sys\n"
@@ -807,7 +807,7 @@ class CoordinatorMergeTests(unittest.TestCase):
 
 
 class CoordinatorMergeClassTests(unittest.TestCase):
-    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=()):
+    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA):
         guard = load(CLI, "agent_guard_classes")
         config_path = ROOT / "scripts/merge-classes.json"
         config = json.loads(config_path.read_text())
@@ -834,6 +834,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                 data.update(override)
             elif command == ["gh", "api", "repos/{owner}/{repo}/pulls/12/files", "--paginate", "--slurp"]:
                 data = pages
+            elif command == ["gh", "pr", "view", "12", "--json", "headRefOid"]:
+                data = {"headRefOid": head_after}
             else:
                 self.assertEqual(command, ["gh", "api", "repos/{owner}/{repo}/issues/12/comments", "--paginate", "--slurp"])
                 data = comments
@@ -846,8 +848,25 @@ class CoordinatorMergeClassTests(unittest.TestCase):
     def scores(self, author="trusted", head=SHA, seats=(("claude-opus-5-5", "anthropic"), ("grok-4.7", "xai")),
                score=9, author_vendor="openai"):
         # Separate pages prove the guard includes all paginated results.
-        return [[{"user": {"login": author}, "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"}]
+        stamp = "2026-11-11T00:00:00Z"
+        return [[{"user": {"login": author}, "created_at": stamp, "updated_at": stamp,
+                  "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"}]
                 for seat, vendor in seats]
+
+    def test_edited_score_record_refused(self):
+        comments = self.scores()
+        comments[0][0]["updated_at"] = "2026-11-11T00:05:00Z"
+        self.assertIn("edited", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+        missing = self.scores()
+        del missing[1][0]["updated_at"]
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], missing))
+        # An edited comment without a score record does not matter.
+        prose = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b", "body": "Handoff."}]]
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores() + prose))
+
+    def test_head_moved_during_check_refused(self):
+        self.assertIn("head changed", self.check(["docs/example.md"], head_after="a" * 40))
+        self.assertIn("head changed", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(), head_after="a" * 40))
 
     def test_owner_refused(self):
         self.assertIn("owner merges", self.check(["scripts/agent-guard.py"]))
@@ -910,15 +929,17 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_gh_gets_only_the_remaining_budget(self):
         guard = load(CLI, "agent_guard_remaining")
-        replies = [{"headRefOid": SHA, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]]]
+        replies = [{"headRefOid": SHA, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]],
+                   {"headRefOid": SHA}]
         responses = [subprocess.CompletedProcess("gh", 0, json.dumps(reply)) for reply in replies]
-        clock = iter([0.0, 5.0, 20.0])
+        clock = iter([0.0, 5.0, 20.0, 30.0])
         with patch.object(guard, "coordinator_worktree", return_value=True), \
                 patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
                 patch.object(guard.subprocess, "run", side_effect=responses) as run:
             self.assertIsNone(guard.check_command(MERGE_FORM, "/coordinator"))
             budget = guard.GH_BUDGET_SECONDS
-            self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [budget - 5.0, budget - 20.0])
+            self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list],
+                             [budget - 5.0, budget - 20.0, budget - 30.0])
 
     def test_gh_error_refused(self):
         for error in (OSError("gh unavailable"), subprocess.CalledProcessError(1, "gh"),
@@ -942,7 +963,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
     def test_numeric_sha_before_number(self):
         guard = load(CLI, "agent_guard_numeric_sha")
         sha = "1" * 40
-        replies = [{"headRefOid": sha, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]]]
+        replies = [{"headRefOid": sha, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]],
+                   {"headRefOid": sha}]
         responses = [subprocess.CompletedProcess("gh", 0, json.dumps(reply)) for reply in replies]
         with patch.object(guard, "coordinator_worktree", return_value=True), \
                 patch.object(guard.subprocess, "run", side_effect=responses) as run:
@@ -988,6 +1010,41 @@ class ScoreRecordTests(unittest.TestCase):
     def test_coordinator_worktree_posts_score_records(self):
         for command in self.POSTS:
             for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class CommentEditTests(unittest.TestCase):
+    """Only the coordinator edits or deletes PR comments, so a posted score record cannot change."""
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+
+    def setUp(self):
+        self.make_worktrees()
+
+    EDITS = ("gh api -X PATCH repos/o/r/issues/comments/34 -f body=edited",
+             "gh api --method=PATCH repos/o/r/issues/comments/34 -f body=edited",
+             "gh api -X DELETE repos/o/r/issues/comments/34",
+             "gh pr comment 12 --edit-last -b edited", "gh pr comment 12 --delete-last --yes",
+             "gh issue comment 12 --edit-last -b edited",
+             "gh api graphql -f query='mutation { updateIssueComment(input: {id: \"X\", body: \"e\"}) "
+             "{ clientMutationId } }'")
+
+    def test_lane_worktrees_cannot_edit_or_delete_comments(self):
+        for command in self.EDITS:
+            for coordinator in (None, self.coordinator):
+                for result in self.results(command, self.lane, coordinator):
+                    with self.subTest(command=command, coordinator=coordinator):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("edits or deletes PR comments", result.stderr)
+
+    def test_coordinator_edits_comments_and_lanes_still_post(self):
+        for command in self.EDITS[:2] + self.EDITS[3:6]:
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("gh pr comment 12 -b ok", "gh api repos/o/r/issues/12/comments -f body=ok",
+                        "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok"):
+            for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
 

@@ -49,6 +49,7 @@
   "scorer_authors": [
     "poitee"
   ],
+  "vendors": ["anthropic", "openai", "xai"],
   "scorer_seats": {
     "claude-opus-5-5": "anthropic",
     "grok-4.7": "xai"

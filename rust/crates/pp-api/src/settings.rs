@@ -176,6 +176,13 @@ async fn put_spoolman_default(
 /// and leaves the body `undefined` without a content type. Rust refuses a
 /// `null` or absent body as malformed before admitting a write.
 fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Response>> {
+    match body_value(headers, body)? {
+        Value::Object(members) => Ok(members.get(name).cloned().unwrap_or(Value::Null)),
+        _ => Ok(Value::Null),
+    }
+}
+
+fn body_value(headers: &HeaderMap, body: &[u8]) -> Result<Value, Box<Response>> {
     let media = headers.get(header::CONTENT_TYPE).map(|value| {
         let essence = value.to_str().unwrap_or_default().split(';').next();
         essence.unwrap_or_default().trim().to_ascii_lowercase()
@@ -198,8 +205,7 @@ fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Resp
     };
     match parsed {
         Value::Null => Err(Box::new(unreadable())),
-        Value::Object(members) => Ok(members.get(name).cloned().unwrap_or(Value::Null)),
-        _ => Ok(Value::Null),
+        value => Ok(value),
     }
 }
 

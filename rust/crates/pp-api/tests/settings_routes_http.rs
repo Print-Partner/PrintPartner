@@ -353,6 +353,19 @@ async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
         assert!(!String::from_utf8_lossy(&reply.body).contains("obviously-fake"));
         assert_eq!(server.stored(), node["stored"], "step {index}");
     }
+    for (path, body) in [
+        (
+            "github-pat",
+            json!({"token":"obviously-fake-persistent-pat"}),
+        ),
+        (
+            "discord-notify",
+            json!({"webhook_url":"https://discord.com/api/webhooks/123/obviously-fake-persistent-webhook"}),
+        ),
+    ] {
+        let step = json!({"method":"PUT","path":format!("/settings/{path}"),"content_type":"application/json","body":body.to_string()});
+        assert_eq!(server.send(&step, &[COOKIE]).await.status, 200);
+    }
     let before = server.stored();
     for prefix in ["", "/api/v1"] {
         for path in ["github-pat", "discord-notify"] {
@@ -371,7 +384,12 @@ async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
     let step = json!({"method":"GET","path":"/api/v1/settings/discord-notify"});
     assert_eq!(
         server.send(&step, &[COOKIE]).await.json(),
-        json!({"webhook_url":null,"notify_on_update":false,"notify_on_sync":true,"auto_sync_updates":true})
+        json!({"webhook_url":"https://discord.com/[REDACTED]","notify_on_update":false,"notify_on_sync":true,"auto_sync_updates":true})
+    );
+    let pat = json!({"method":"GET","path":"/settings/github-pat"});
+    assert_eq!(
+        server.send(&pat, &[COOKIE]).await.json(),
+        json!({"configured":true,"masked":null})
     );
     server.stop().await;
     let server = Server::start(directory.path(), None).await;

@@ -165,7 +165,7 @@ Differences by design:
   A masked response is not a valid replacement URL; omit `webhook_url` to keep
   the stored value. These settings routes never return the stored secret.
 - Errors use the Rust problem envelope, with Node validation detail where applicable.
-- Invalid/non-string webhook bodies answer 400 rather than Node's TypeError.
+- Null JSON bodies and non-string webhook values answer 400 rather than Node's TypeError.
   Backslashes and control characters in webhook tokens are rejected.
 
 Explicit test delivery moves to GRE-1403; external-access settings and their
@@ -174,7 +174,7 @@ They start from main after this settings change merges. Neither operation is
 mounted by this change. Sharing, listener binding and MCP authentication stay
 unchanged.
 
-`fixtures/admin/secret-settings-cases.json` contains 30 requests using obviously
+`fixtures/admin/secret-settings-cases.json` contains 32 requests using obviously
 fake values. The Node oracle records exact stored bytes; Rust checks them,
 asserts the stricter response redaction, refuses unauthorized/cross-site writes,
 and reopens the database to check restart persistence.

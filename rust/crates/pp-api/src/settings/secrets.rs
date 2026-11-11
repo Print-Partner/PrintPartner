@@ -98,10 +98,10 @@ async fn put_discord(
     body: Bytes,
 ) -> Response {
     // Parse once and retain absent fields (Node's partial update semantics).
-    if let Err(error) = field(&headers, &body, "webhook_url") {
-        return *error;
-    }
-    let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let parsed = match body_value(&headers, &body) {
+        Ok(value) => value,
+        Err(error) => return *error,
+    };
     let mut values: [Option<String>; 4] = [None, None, None, None];
     if let Some(value) = parsed.get("webhook_url") {
         let text = match value {

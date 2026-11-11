@@ -29,6 +29,17 @@ class TextGateTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(len(CHECKER.text_gates(text.encode())), expected)
 
+    def test_nested_cfg_attributes_and_doc_literals(self):
+        for text, expected in (
+            ('#[cfg_attr(all(), cfg(feature="desktop_rebuild"))]', 1),
+            ('#[cfg_attr(not(any()), cfg_attr(feature="desktop_rebuild", cfg(all())))]', 1),
+            ('#![cfg_attr(not(test), cfg(feature="desktop_rebuild"))]', 1),
+            ('#[cfg_attr(all(), cfg_attr(test, doc="desktop_rebuild"))]', 0),
+            ('#[cfg_attr(feature="desktop_rebuild", cfg(feature="desktop_rebuild"))]', 1),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(len(CHECKER.text_gates(text.encode())), expected)
+
     def test_escaped_feature_values_are_decoded(self):
         for literal in (rb'"desktop\x5frebuild"', rb'"desktop\u{5f}rebuild"',
                         rb'"desktop_rebui\u{6c}d"'):
@@ -163,15 +174,52 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("pp-other: statement baseline raised", result.stdout)
 
-    def test_item_macro_and_extern_crate_do_not_raise_statement_count(self):
+    def test_ambiguous_item_forms_remain_frozen_as_statements(self):
         self.source("pp-source/src/lib.rs",
                     '#[cfg(feature="desktop_rebuild")] extern crate foo;'
                     '#[cfg(feature="desktop_rebuild")] node_case!(x);'
-                    'impl S { #![cfg(feature="desktop_rebuild")] fn f() {} }')
-        self.placements = {"pp-source": {"module": 0, "item": 3, "statement": 0}}
+                    'impl S { #![cfg(feature="desktop_rebuild")] fn f() {} }'
+                    'trait T { #![cfg(feature="desktop_rebuild")] fn f(); }'
+                    'extern "C" { #![cfg(feature="desktop_rebuild")] fn f(); }')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement=5", result.stdout)
+
+    def test_nested_conditional_statement_gates_cannot_bypass_freeze(self):
+        for attr in (
+            '#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]',
+            '#[cfg_attr(not(any()), cfg_attr(feature = "desktop_rebuild", cfg(all())))]',
+            '#![cfg_attr(not(test), cfg(feature = "desktop_rebuild"))]',
+        ):
+            with self.subTest(attr=attr):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ {attr} let x=1; }}")
+                self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+                self.baseline()
+                result = self.check(allow_raise=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("statement=1", result.stdout)
+                self.assertIn("statement baseline raised", result.stdout)
+
+    def test_inner_conditional_crate_gate_is_counted_once(self):
+        self.source("pp-source/src/lib.rs",
+                    '#![cfg_attr(not(test), cfg(feature = "desktop_rebuild"))] fn f() {}')
+        self.placements = {"pp-source": {"module": 1, "item": 0, "statement": 0}}
         self.baseline()
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 classified = 1 text gates", result.stdout)
+
+    def test_ast_hit_without_text_gate_fails_coverage(self):
+        self.source("pp-source/src/lib.rs", '#[cfg(feature="other_feature")] struct S;')
+        self.baseline()
+        rule = self.root / "rules/desktop-rebuild-item.yml"
+        # Deliberately broaden one AST rule to a non-desktop feature.
+        text = rule.read_text().replace("  gate:\n", "  gate:\n    kind: attribute_item\n  unused-gate:\n", 1)
+        rule.write_text(text)
+        result = self.check()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("AST placement hits have no text gate", result.stderr)
 
     def test_macro_token_gates_count_as_statements(self):
         for code in (
@@ -208,12 +256,16 @@ class RatchetTests(unittest.TestCase):
         rule.write_text(original)
 
     def test_cfg_attr_body_is_not_a_feature_predicate(self):
-        self.source("pp-source/src/lib.rs",
-                    '#[cfg_attr(test, doc="desktop_rebuild")] struct S;')
-        self.baseline()
-        result = self.check()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("0 classified = 0 text gates", result.stdout)
+        for attr in (
+            '#[cfg_attr(test, doc="desktop_rebuild")]',
+            '#[cfg_attr(all(), cfg_attr(test, doc="desktop_rebuild"))]',
+        ):
+            with self.subTest(attr=attr):
+                self.source("pp-source/src/lib.rs", f"{attr} struct S;")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("0 classified = 0 text gates", result.stdout)
 
     def test_placement_first_landing_is_reported(self):
         (self.root / "desktop-rebuild-baseline.json").unlink()

@@ -77,32 +77,54 @@ def feature_string(token):
     return RUST_ESCAPE.sub(unescape, token[1:-1])
 
 
+def attribute_gate(tokens, start, end, pairs):
+    """Inspect a cfg predicate and recursively applied cfg/cfg_attr attributes."""
+    name = tokens[start][0].removeprefix(b"r#")
+    if (name not in (b"cfg", b"cfg_attr") or start + 1 >= end
+            or tokens[start + 1][0] != b"("):
+        return False
+    close = pairs.get(start + 1)
+    if close is None or close >= end:
+        return False
+    arguments = []
+    first = cursor = start + 2
+    while cursor < close:
+        if tokens[cursor][0] == b",":
+            arguments.append((first, cursor))
+            first = cursor + 1
+        cursor = pairs.get(cursor, cursor) + 1
+    arguments.append((first, close))
+    predicate_end = close if name == b"cfg" else arguments[0][1]
+    if any(feature_string(tokens[i][0]) == b"desktop_rebuild"
+           for i in range(start + 2, predicate_end)):
+        return True
+    return name == b"cfg_attr" and any(
+        first < last and attribute_gate(tokens, first, last, pairs)
+        for first, last in arguments[1:]
+    )
+
+
 def text_gates(data):
-    """Find cfg/cfg_attr predicates mentioning the feature, ignoring non-code."""
+    """Count each outer attachment once, including nested conditional gates."""
     tokens = rust_tokens(data)
+    pairs = {}
+    stack = []
+    for i, (token, _) in enumerate(tokens):
+        if token in (b"(", b"[", b"{"):
+            stack.append(i)
+        elif token in (b")", b"]", b"}") and stack:
+            pairs[stack.pop()] = i
     gates = set()
     for i, (value, offset) in enumerate(tokens):
         if value != b"#":
             continue
-        tail = i + 1
-        if tail < len(tokens) and tokens[tail][0] == b"!":
-            tail += 1
-        if tail + 2 >= len(tokens) or tokens[tail][0] != b"[":
+        bracket = i + 1
+        if bracket < len(tokens) and tokens[bracket][0] == b"!":
+            bracket += 1
+        if bracket not in pairs or tokens[bracket][0] != b"[":
             continue
-        name = tokens[tail + 1][0].removeprefix(b"r#")
-        if name not in (b"cfg", b"cfg_attr") or tokens[tail + 2][0] != b"(":
-            continue
-        depth = 0
-        for index in range(tail + 3, len(tokens)):
-            token = tokens[index][0]
-            if depth == 0 and (token == b")" or (name == b"cfg_attr" and token == b",")):
-                break
-            if token in (b"(", b"[", b"{"):
-                depth += 1
-            elif token in (b")", b"]", b"}"):
-                depth -= 1
-            elif feature_string(token) == b"desktop_rebuild":
-                gates.add(offset)
+        if attribute_gate(tokens, bracket + 1, pairs[bracket], pairs):
+            gates.add(offset)
     return gates
 
 
@@ -131,15 +153,22 @@ def complete_placement_hits(root, hits):
                 hit["range"]["byteOffset"]["start"], []).append(hit)
     result = [hit for hit in hits if hit["ruleId"] not in PLACEMENT_RULES]
     total = 0
+    ast_total = 0
+    macro_total = 0
     for path in sorted((root / "crates").rglob("*.rs")):
         file = path.relative_to(root).as_posix()
         data = path.read_bytes()
         gates = text_gates(data)
         total += len(gates)
+        unexpected = candidates.get(file, {}).keys() - gates
+        if unexpected:
+            raise ValueError(f"{file}: AST placement hits have no text gate: {sorted(unexpected)}")
+        ast_total += sum(len(group) for group in candidates.get(file, {}).values())
         for offset in sorted(gates):
             classified = candidates.get(file, {}).get(offset, [])
             if not classified and any(span["start"] <= offset < span["end"]
                                       for span in macros.get(file, [])):
+                macro_total += 1
                 classified = [{
                     "file": file, "ruleId": "desktop-rebuild-statement",
                     "range": {"byteOffset": {"start": offset},
@@ -148,9 +177,7 @@ def complete_placement_hits(root, hits):
             if len(classified) != 1:
                 raise ValueError(f"{file}: byte {offset}: placement coverage expected one class, got {len(classified)}")
             result.extend(classified)
-    classified_total = sum(hit["ruleId"] in PLACEMENT_RULES for hit in result)
-    if classified_total != total:
-        raise ValueError(f"placement coverage: {classified_total} classified != {total} text gates")
+    classified_total = ast_total + macro_total
     print(f"desktop-rebuild coverage: {classified_total} classified = {total} text gates")
     return result
 

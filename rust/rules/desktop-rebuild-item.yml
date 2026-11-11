@@ -18,10 +18,36 @@ utils:
       - has:
           any:
             - kind: string_literal
-              # Escaped literals are candidates; the checker decodes the value.
-              regex: '(?s)^"(desktop_rebuild|.*\\.*)"$'
+              regex: >-
+                (?x) ^ "
+                (?:\\\r?\n[\x20\t\r\n]*)*
+                (?:d|\\x64|\\u\{_*(?:0_*)*6_*4_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:e|\\x65|\\u\{_*(?:0_*)*6_*5_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:s|\\x73|\\u\{_*(?:0_*)*7_*3_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:k|\\x6[bB]|\\u\{_*(?:0_*)*6_*[bB]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:t|\\x74|\\u\{_*(?:0_*)*7_*4_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:o|\\x6[fF]|\\u\{_*(?:0_*)*6_*[fF]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:p|\\x70|\\u\{_*(?:0_*)*7_*0_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:_|\\x5[fF]|\\u\{_*(?:0_*)*5_*[fF]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:r|\\x72|\\u\{_*(?:0_*)*7_*2_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:e|\\x65|\\u\{_*(?:0_*)*6_*5_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:b|\\x62|\\u\{_*(?:0_*)*6_*2_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:u|\\x75|\\u\{_*(?:0_*)*7_*5_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:i|\\x69|\\u\{_*(?:0_*)*6_*9_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:l|\\x6[cC]|\\u\{_*(?:0_*)*6_*[cC]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:d|\\x64|\\u\{_*(?:0_*)*6_*4_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                " $
             - kind: raw_string_literal
               regex: '^r#*"desktop_rebuild"#*$'
+          follows:
+            kind: identifier
+            regex: '^(r#)?feature$'
+            stopBy:
+              not:
+                any:
+                  - regex: '^=$'
+                  - kind: line_comment
+                  - kind: block_comment
           stopBy: end
   module:
     any:
@@ -47,64 +73,34 @@ utils:
                     - kind: line_comment
                     - kind: block_comment
   item:
-    any:
-      - all:
-          - kind: inner_attribute_item
+    all:
+      - kind: attribute_item
+      - any:
           - inside:
-              all:
-                - kind: declaration_list
-                - inside:
-                    any:
-                      - kind: impl_item
-                      - kind: trait_item
-                      - kind: foreign_mod_item
-      - all:
-          - kind: attribute_item
-          - any:
-              - inside:
-                  kind: ordered_field_declaration_list
-              - precedes:
+              kind: ordered_field_declaration_list
+          - precedes:
+              any:
+                - kind: function_item
+                - kind: function_signature_item
+                - kind: struct_item
+                - kind: enum_item
+                - kind: union_item
+                - kind: type_item
+                - kind: const_item
+                - kind: static_item
+                - kind: trait_item
+                - kind: impl_item
+                - kind: foreign_mod_item
+                - kind: macro_definition
+                - kind: enum_variant
+                - kind: field_declaration
+                - kind: associated_type
+              stopBy:
+                not:
                   any:
-                    - kind: function_item
-                    - kind: function_signature_item
-                    - kind: struct_item
-                    - kind: enum_item
-                    - kind: union_item
-                    - kind: type_item
-                    - kind: const_item
-                    - kind: static_item
-                    - kind: trait_item
-                    - kind: impl_item
-                    - kind: foreign_mod_item
-                    - kind: macro_definition
-                    - kind: enum_variant
-                    - kind: field_declaration
-                    - kind: associated_type
-                    - kind: extern_crate_declaration
-                  stopBy:
-                    not:
-                      any:
-                        - kind: attribute_item
-                        - kind: line_comment
-                        - kind: block_comment
-              - all:
-                  - inside:
-                      any:
-                        - kind: source_file
-                        - kind: declaration_list
-                  - precedes:
-                      any:
-                        - kind: macro_invocation
-                        - all:
-                            - kind: expression_statement
-                            - has:
-                                kind: macro_invocation
-                      stopBy:
-                        not:
-                          any:
-                            - kind: attribute_item
-                            - kind: line_comment
-                            - kind: block_comment
+                    - kind: attribute_item
+                    - kind: line_comment
+                    - kind: block_comment
 rule:
   all:
       - matches: gate

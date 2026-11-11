@@ -8,38 +8,17 @@ match. The file stem is the test binary name for top-level tests, so `--test <na
 gets the new module name, so the full test path gains the new prefix. Linear acceptance items
 quote old commands; they are not edited.
 
-| Old file | New file | Ticket |
-| --- | --- | --- |
-| `rust/crates/pp-api-types/tests/ticket_t_63_contracts.rs` | `rust/crates/pp-api-types/tests/node_boundary_contracts.rs` | T-63 |
-| `rust/crates/pp-api-types/tests/ticket_t_9_semantics.rs` | `rust/crates/pp-api-types/tests/schema_semantics.rs` | T-9 |
-| `rust/crates/pp-desktop/tests/ticket_t_29_tray.rs` | `rust/crates/pp-desktop/tests/tray_status_badge.rs` | T-29 |
-| `rust/crates/pp-desktop/tests/ticket_t_31_autostart.rs` | `rust/crates/pp-desktop/tests/launch_agent.rs` | GRE-369 (T-31) |
-| `rust/crates/pp-net/tests/ticket_t_22_stream.rs` | `rust/crates/pp-net/tests/streamed_replies.rs` | GRE-1044 (T-22) |
-| `rust/crates/pp-perf/tests/ticket_t_53.rs` | `rust/crates/pp-perf/tests/perf_record_gate.rs` | GRE-388 (T-53) |
-| `rust/crates/pp-perf/tests/ticket_t_53_capture.rs` | `rust/crates/pp-perf/tests/perf_capture.rs` | GRE-388 (T-53) |
-| `rust/crates/pp-server/tests/slice0_mount.rs` | `rust/crates/pp-server/tests/server_binary_routes.rs` | none in file |
-| `rust/crates/pp-services/tests/ticket_t_44_discovery.rs` | `rust/crates/pp-services/tests/native_discovery.rs` | GRE-456 (T-44) |
-| `rust/crates/pp-services/tests/ticket_t_58_kit.rs` | `rust/crates/pp-services/tests/kit_bundle_golden.rs` | GRE-425 (T-58) |
-| `rust/crates/pp-services/tests/ticket_t_59_sync.rs` | `rust/crates/pp-services/tests/github_sync_golden.rs` | GRE-429 (T-59) |
-| `rust/crates/pp-services/tests/ticket_t_60_profile_sync.rs` | `rust/crates/pp-services/tests/profile_sync_golden.rs` | T-60 |
-| `rust/crates/pp-services/tests/ticket_t_62_mcp_domain.rs` | `rust/crates/pp-services/tests/mcp_dispatch_parity.rs` | GRE-441 (T-62) |
-| `rust/crates/pp-core/tests/slice0_mount.rs` | `rust/crates/pp-core/tests/gateway_mount.rs` | none in name (slice0) |
-| `rust/crates/pp-core/tests/ticket_t_30_single_instance.rs` | `rust/crates/pp-core/tests/single_owner.rs` | T-30 |
-| `rust/crates/pp-core/tests/ticket_t_3_drain.rs` | `rust/crates/pp-core/tests/process_group_drain.rs` | T-3 |
-| `rust/crates/pp-core/tests/ticket_t_53_capture.rs` | `rust/crates/pp-core/tests/app_launch_capture.rs` | T-53 (GRE-388) |
-| `rust/crates/pp-core/tests/runtime_m0/slice0_mount.rs` | `rust/crates/pp-core/tests/runtime_m0/launcher_start.rs` | none in name (slice0) |
-| `rust/crates/pp-core/tests/runtime_m0/ticket_t_3_drain_compression.rs` | `rust/crates/pp-core/tests/runtime_m0/response_compression.rs` | T-3 |
-| `rust/crates/pp-core/tests/runtime_m0/ticket_t_3_drain_repeated_upload.rs` | `rust/crates/pp-core/tests/runtime_m0/repeated_upload.rs` | T-3 (GRE-448) |
-| `rust/crates/pp-core/tests/runtime_m0/ticket_t_4_watcher_proof.rs` | `rust/crates/pp-core/tests/runtime_m0/watcher_proof.rs` | T-4 (GRE-449, GRE-335) |
-| `rust/crates/pp-core/tests/runtime_m0/ticket_t_68_desktop_account_mapping.rs` | `rust/crates/pp-core/tests/runtime_m0/desktop_account_mapping.rs` | T-68 |
-| `rust/crates/pp-storage/tests/gre_636_advisory_lock.rs` | `rust/crates/pp-storage/tests/advisory_lock.rs` | GRE-636 |
-| `rust/crates/pp-storage/tests/ticket_t_12_directory.rs` | `rust/crates/pp-storage/tests/directory_permissions.rs` | T-12 |
-| `rust/crates/pp-storage/tests/ticket_t_28_streams.rs` | `rust/crates/pp-storage/tests/job_status_streams.rs` | GRE-410 (T-28-streams) |
-| `rust/crates/pp-storage/tests/ticket_t_61_checkoff.rs` | `rust/crates/pp-storage/tests/checkoff_verification.rs` | T-61-checkoff |
-| `rust/crates/pp-storage/tests/ticket_t_61_plates.rs` | `rust/crates/pp-storage/tests/plate_revisions.rs` | GRE-1189, GRE-1184 (T-61-plates) |
-| `rust/crates/pp-storage/tests/ticket_t_61_read_model.rs` | `rust/crates/pp-storage/tests/read_model_batches.rs` | T-61 |
-| `rust/crates/pp-storage/tests/ticket_t_61_required_units.rs` | `rust/crates/pp-storage/tests/required_unit_histories.rs` | T-61 (required units) |
-| `rust/crates/pp-storage/tests/ticket_t_7_writer.rs` | `rust/crates/pp-storage/tests/writer_owner.rs` | T-7 |
-| `rust/crates/pp-storage/tests/ticket_t_8_archive.rs` | `rust/crates/pp-storage/tests/archive_backups.rs` | GRE-403 (T-8-archive) |
-| `rust/crates/pp-storage/tests/ticket_t_8_archive_retention.rs` | `rust/crates/pp-storage/tests/archive_retention.rs` | GRE-403 (T-8-archive) |
-| `rust/crates/pp-storage/src/working_drafts/tests/ticket_t_10_draftreads.rs` | `rust/crates/pp-storage/src/working_drafts/tests/draft_reads.rs` | GRE-1052 (T-10-draftreads) |
+Rename PRs add rows only to their crate's file. Leave other crate pages unchanged;
+update this index only when a crate gets its first rename record. Keep each existing
+row verbatim when moving records.
+
+| Crate | Rename records |
+| --- | --- |
+| `pp-api-types` | [pp-api-types](test-renames/pp-api-types.md) |
+| `pp-core` | [pp-core](test-renames/pp-core.md) |
+| `pp-desktop` | [pp-desktop](test-renames/pp-desktop.md) |
+| `pp-net` | [pp-net](test-renames/pp-net.md) |
+| `pp-perf` | [pp-perf](test-renames/pp-perf.md) |
+| `pp-server` | [pp-server](test-renames/pp-server.md) |
+| `pp-services` | [pp-services](test-renames/pp-services.md) |
+| `pp-storage` | [pp-storage](test-renames/pp-storage.md) |

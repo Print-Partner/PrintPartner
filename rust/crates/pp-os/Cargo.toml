@@ -9,7 +9,7 @@ publish = false
 [target.'cfg(unix)'.dependencies]
 fs4.workspace = true
 libc.workspace = true
-rustix = { version = "=1.1.5", features = ["fs"] }
+rustix = { version = "=1.1.6", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [

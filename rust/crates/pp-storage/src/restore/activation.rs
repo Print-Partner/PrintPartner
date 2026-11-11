@@ -94,7 +94,7 @@ fn activate(
             return Err(Refusal::Busy.into());
         }
     };
-    let forward = (|| -> Result<(Connection, schema::SchemaReady)> {
+    let forward = (|| -> Result<(Connection, schema::SchemaReady, Vec<Connection>)> {
         connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         std::mem::replace(connection, Connection::open_in_memory()?)
             .close()
@@ -107,18 +107,23 @@ fn activate(
         hooks::step(data_dir)?;
         refresh(&mut restored)?;
         hooks::step(data_dir)?;
+        let prepared = prepare_readers(&database, reader_count)?;
+        hooks::step(data_dir)?;
         journal.commit(data_dir)?;
         hooks::step(data_dir)?;
         journal.finish(data_dir);
-        Ok((restored, ready))
+        Ok((restored, ready, prepared))
     })();
-    let activated = match forward {
-        Ok((restored, ready)) => {
+    let (activated, prepared) = match forward {
+        Ok((restored, ready, prepared)) => {
             *connection = restored;
-            Activated {
-                previous_schema_version: ready.previous_version,
-                schema_version: ready.version,
-            }
+            (
+                Activated {
+                    previous_schema_version: ready.previous_version,
+                    schema_version: ready.version,
+                },
+                prepared,
+            )
         }
         Err(error) => {
             if hooks::crashed(&error) {
@@ -136,7 +141,7 @@ fn activate(
             return Err(error.context("Restore failed; the previous installation is kept"));
         }
     };
-    open_readers(shared, readers, &database, reader_count)?;
+    install_readers(shared, readers, prepared)?;
     resume_admission(shared);
     Ok(activated)
 }
@@ -213,6 +218,14 @@ fn open_readers(
         .lock()
         .map_err(|_| anyhow!("Reader pool poisoned"))?;
     let count = count.saturating_sub(state.active);
+    let idle = prepare_readers(database, count)?;
+    state.idle = idle;
+    state.closed = false;
+    readers.changed.notify_all();
+    Ok(())
+}
+
+fn prepare_readers(database: &Path, count: usize) -> Result<Vec<Connection>> {
     let mut idle = Vec::with_capacity(count);
     for _ in 0..count {
         let reader = Connection::open_with_flags(
@@ -222,6 +235,21 @@ fn open_readers(
         schema::configure(&reader, true)?;
         idle.push(reader);
     }
+    Ok(idle)
+}
+
+fn install_readers(shared: &Shared, readers: &ReaderPool, idle: Vec<Connection>) -> Result<()> {
+    let queue = shared
+        .queue
+        .lock()
+        .map_err(|_| anyhow!("Writer admission poisoned"))?;
+    if queue.closed {
+        return Ok(());
+    }
+    let mut state = readers
+        .state
+        .lock()
+        .map_err(|_| anyhow!("Reader pool poisoned"))?;
     state.idle = idle;
     state.closed = false;
     readers.changed.notify_all();

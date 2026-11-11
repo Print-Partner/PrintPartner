@@ -117,17 +117,22 @@ impl Server {
     }
 }
 
-/// A copy of the Node fixture database with the cases' `integrations` row,
-/// served with the rebuild flag on.
-async fn seeded() -> (tempfile::TempDir, Server) {
-    let cases: Value = serde_json::from_str(CASES).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let database = directory.path().join("print-partner.db");
+fn fixture_database(directory: &Path) -> std::path::PathBuf {
+    let database = directory.join("print-partner.db");
     std::fs::write(
         &database,
         include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
     )
     .unwrap();
+    database
+}
+
+/// A copy of the Node fixture database with the cases' `integrations` row,
+/// served with the rebuild flag on.
+async fn seeded() -> (tempfile::TempDir, Server) {
+    let cases: Value = serde_json::from_str(CASES).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let database = fixture_database(directory.path());
     rusqlite::Connection::open(&database)
         .unwrap()
         .execute(
@@ -484,12 +489,7 @@ async fn settings_support_runtime_flag_off_registers_no_public_or_private_routes
 #[tokio::test]
 async fn settings_support_corrupt_bindings_are_redacted_and_not_overwritten() {
     let directory = tempfile::tempdir().unwrap();
-    let database = directory.path().join("print-partner.db");
-    std::fs::write(
-        &database,
-        include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
-    )
-    .unwrap();
+    let database = fixture_database(directory.path());
     let raw = "untrusted-private-state";
     rusqlite::Connection::open(&database)
         .unwrap()

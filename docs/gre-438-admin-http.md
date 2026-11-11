@@ -54,8 +54,8 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
 `/` and `/api/v1` under the same flag and credential check, and
 `read_router` mounts them beside the admin reads. Each request reads or writes
 one `app_settings` row on the writer thread, in the tenant its credential
-resolves to in the same transaction. The `pp_storage::app_settings` client
-names only these three keys.
+resolves to in the same transaction. The `pp_storage::app_settings` client names fixed supported keys; this group
+uses the three rows below.
 
 | Route | Row | `GET` body | `PUT` |
 | --- | --- | --- | --- |
@@ -165,7 +165,9 @@ Differences by design:
   A masked response is not a valid replacement URL; omit `webhook_url` to keep
   the stored value. These settings routes never return the stored secret.
 - Errors use the Rust problem envelope, with Node validation detail where applicable.
-- Null JSON bodies and non-string webhook values answer 400 rather than Node's TypeError.
+- Null Discord JSON bodies and non-string webhook values answer 400 rather than
+  Node's TypeError. PAT null or absent bodies use the Rust malformed-request
+  detail instead of Node's `Token must be a string`.
   Backslashes and control characters in webhook tokens are rejected.
 
 Explicit test delivery moves to GRE-1403; external-access settings and their

@@ -1,9 +1,28 @@
 //! An older writer must refuse before it removes the last recovery copy.
 
+fn save_recovery_archive(
+    owner: &pp_storage::WriterOwner,
+    root: &std::path::Path,
+) -> std::path::PathBuf {
+    let scratch = tempfile::tempdir().unwrap();
+    let exported = scratch.path().join("full.tar.gz");
+    owner
+        .create_archive(
+            &exported,
+            pp_storage::archive::Request::new("test", pp_storage::archive::Scope::Full),
+        )
+        .unwrap();
+    let backups = root.join("backups");
+    std::fs::create_dir_all(&backups).unwrap();
+    let saved = backups.join("last-recovery.tar.gz");
+    std::fs::copy(exported, &saved).unwrap();
+    saved
+}
+
 #[cfg(feature = "desktop_rebuild")]
 mod recovery {
     use pp_storage::{
-        Limits, WriterOwner, archive,
+        Limits, WriterOwner,
         ownership_marker::WriterGate,
         versions::{IncompatibleSchema, RUST_SCHEMA},
     };
@@ -32,18 +51,7 @@ mod recovery {
             .unwrap();
             let root = installation.path();
             let owner = open(root).unwrap();
-            let backups = root.join("backups");
-            std::fs::create_dir_all(&backups).unwrap();
-            let archive = backups.join("last-recovery.tar.gz");
-            let scratch = tempfile::tempdir().unwrap();
-            let exported = scratch.path().join("full.tar.gz");
-            owner
-                .create_archive(
-                    &exported,
-                    archive::Request::new("test", archive::Scope::Full),
-                )
-                .unwrap();
-            std::fs::copy(&exported, &archive).unwrap();
+            let archive = super::save_recovery_archive(&owner, root);
             let client = owner.installation().unwrap();
             let bytes = std::fs::read(&archive).unwrap();
             let mut upload = client.begin_upload(bytes.len() as u64).unwrap();
@@ -172,24 +180,13 @@ mod recovery {
 
 #[test]
 fn both_runtimes_preserve_saved_recovery_archive_when_the_schema_is_newer() {
-    use pp_storage::{Limits, WriterOwner, archive, ownership_marker, versions};
+    use pp_storage::{Limits, WriterOwner, ownership_marker, versions};
     use pp_testkit::{Fixture, Installation, node_schema::database_files};
 
     let installation = Installation::create(Fixture::NodeSchema34).unwrap();
     let (owner, _) = WriterOwner::open(installation.path(), Limits::default()).unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let exported = scratch.path().join("full.tar.gz");
-    owner
-        .create_archive(
-            &exported,
-            archive::Request::new("test", archive::Scope::Full),
-        )
-        .unwrap();
+    let saved = save_recovery_archive(&owner, installation.path());
     owner.shutdown().unwrap();
-    let backups = installation.path().join("backups");
-    std::fs::create_dir_all(&backups).unwrap();
-    let saved = backups.join("last-recovery.tar.gz");
-    std::fs::copy(&exported, &saved).unwrap();
     let found = versions::RUST_SCHEMA + 1;
     pp_testkit::node_schema::restamp_schema_version(&installation.database_path(), found).unwrap();
     let database = database_files(installation.path());

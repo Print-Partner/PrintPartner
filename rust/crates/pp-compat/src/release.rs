@@ -2,8 +2,11 @@ use crate::Bundle;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+use std::{collections::BTreeMap, fs::File, io::Read, path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
+
+/// Immutable file bytes retained by release verification.
+pub type AssetSnapshot = Arc<BTreeMap<String, Arc<[u8]>>>;
 
 #[derive(Deserialize)]
 struct DependencyInventory {
@@ -118,8 +121,34 @@ fn verify_files(
     exact: bool,
     stop: &CancellationToken,
 ) -> Result<()> {
+    let root = file_inventory_root(root, expected, exact, stop)?;
+
+    let entries: Vec<_> = expected.iter().collect();
+    let workers = std::thread::available_parallelism().map_or(1, |count| count.get().min(8));
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = entries
+            .chunks(entries.len().div_ceil(workers))
+            .map(|chunk| scope.spawn(|| verify_chunk(&root, chunk, stop)))
+            .collect();
+        handles.into_iter().try_for_each(|handle| {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("Release verification worker panicked"))?
+        })
+    })
+}
+
+fn file_inventory_root(
+    root: &Path,
+    expected: &BTreeMap<String, String>,
+    exact: bool,
+    stop: &CancellationToken,
+) -> Result<std::path::PathBuf> {
     let root = root.canonicalize().context("Release root missing")?;
-    ensure!(!expected.is_empty(), "Release inventory empty");
+    ensure!(
+        !expected.is_empty(),
+        "Release inventory empty; rebuild the desktop manifest with just ci --only web-assets"
+    );
     if exact {
         let mut actual = std::collections::BTreeSet::new();
         let mut pending = vec![root.clone()];
@@ -144,19 +173,7 @@ fn verify_files(
         );
     }
 
-    let entries: Vec<_> = expected.iter().collect();
-    let workers = std::thread::available_parallelism().map_or(1, |count| count.get().min(8));
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = entries
-            .chunks(entries.len().div_ceil(workers))
-            .map(|chunk| scope.spawn(|| verify_chunk(&root, chunk, stop)))
-            .collect();
-        handles.into_iter().try_for_each(|handle| {
-            handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("Release verification worker panicked"))?
-        })
-    })
+    Ok(root)
 }
 
 fn verify_chunk(
@@ -240,6 +257,53 @@ pub fn verify_rust_only_release(bundle: &Bundle, assets: &Path) -> Result<()> {
     verify_rust_only_with(&manifest()?, bundle, assets, &CancellationToken::new())
 }
 
+/// Read and verify the replacement inventory once; serving must use these bytes.
+pub fn snapshot_rust_only_release(bundle: &Bundle, assets: &Path) -> Result<AssetSnapshot> {
+    snapshot_rust_only_with(&manifest()?, bundle, assets, &CancellationToken::new())
+}
+
+fn snapshot_rust_only_with(
+    release: &ReleaseManifest,
+    bundle: &Bundle,
+    assets: &Path,
+    stop: &CancellationToken,
+) -> Result<AssetSnapshot> {
+    verify_rust_identity(release, bundle)?;
+    ensure!(
+        !std::fs::symlink_metadata(assets)
+            .context("Release root missing")?
+            .is_symlink(),
+        "Release inventory contains a symlink"
+    );
+    for key in release.replacement_frontend.keys() {
+        ensure!(
+            !key.is_empty()
+                && Path::new(key)
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+            "Release artifact escaped root"
+        );
+    }
+    let root = file_inventory_root(assets, &release.replacement_frontend, true, stop)?;
+    let mut files = BTreeMap::new();
+    for (key, digest) in &release.replacement_frontend {
+        ensure!(!stop.is_cancelled(), "Release verification cancelled");
+        let path = root
+            .join(key)
+            .canonicalize()
+            .context("Release artifact missing")?;
+        ensure!(path.starts_with(&root), "Release artifact escaped root");
+        let bytes = std::fs::read(path)?;
+        ensure!(
+            hex::encode(Sha256::digest(&bytes)) == *digest,
+            "Release artifact content mismatch"
+        );
+        files.insert(key.clone(), Arc::<[u8]>::from(bytes));
+    }
+    verify_community_files(release, bundle, stop)?;
+    Ok(Arc::new(files))
+}
+
 /// Verify the legacy frontend when no replacement bundle is installed.
 pub fn verify_rust_only_legacy_release(bundle: &Bundle, assets: &Path) -> Result<()> {
     let release = manifest()?;
@@ -258,7 +322,7 @@ fn verify_rust_only_with(
     assets: &Path,
     stop: &CancellationToken,
 ) -> Result<()> {
-    verify_rust_only_frontend_with(release, bundle, assets, &release.replacement_frontend, stop)
+    snapshot_rust_only_with(release, bundle, assets, stop).map(|_| ())
 }
 
 fn verify_rust_only_frontend_with(
@@ -268,11 +332,24 @@ fn verify_rust_only_frontend_with(
     frontend: &BTreeMap<String, String>,
     stop: &CancellationToken,
 ) -> Result<()> {
+    verify_rust_identity(release, bundle)?;
+    verify_files(assets, frontend, true, stop)?;
+    verify_community_files(release, bundle, stop)
+}
+
+fn verify_rust_identity(release: &ReleaseManifest, bundle: &Bundle) -> Result<()> {
     ensure!(
         release.runtime_version == bundle.runtime_version && release.commit == bundle.commit,
         "Requested release differs from embedded identity"
     );
-    verify_files(assets, frontend, true, stop)?;
+    Ok(())
+}
+
+fn verify_community_files(
+    release: &ReleaseManifest,
+    bundle: &Bundle,
+    stop: &CancellationToken,
+) -> Result<()> {
     let (directory, prefix) = community_manifests_prefix(bundle)?;
     let manifests: BTreeMap<String, String> = release
         .backend
@@ -543,7 +620,62 @@ mod tests {
         assert!(verify_rust_only_with(&release, &bundle, &assets, &stop).is_err());
         release.replacement_frontend.clear();
         let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Release inventory empty");
+        assert_eq!(
+            error.to_string(),
+            "Release inventory empty; rebuild the desktop manifest with just ci --only web-assets"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_inventory_refuses_a_missing_file() {
+        let (root, bundle, release) = rust_only_fixture();
+        let assets = root.join("web/apps/ui/dist");
+        std::fs::remove_file(assets.join("assets/app.js")).unwrap();
+        let error = verify_rust_only_with(&release, &bundle, &assets, &CancellationToken::new())
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Release file inventory mismatch");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_inventory_refuses_a_symlink_to_measured_bytes() {
+        let (root, bundle, release) = rust_only_fixture();
+        let assets = root.join("web/apps/ui/dist");
+        let target = root.join("measured.js");
+        std::fs::rename(assets.join("assets/app.js"), &target).unwrap();
+        symlink_file(&target, &assets.join("assets/app.js"));
+        let error = verify_rust_only_with(&release, &bundle, &assets, &CancellationToken::new())
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Release inventory contains a symlink");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_inventory_refuses_an_escaping_path() {
+        let (root, bundle, mut release) = rust_only_fixture();
+        let assets = root.join("web/apps/ui/dist");
+        release
+            .replacement_frontend
+            .insert("../outside.js".into(), "0".repeat(64));
+        let error = verify_rust_only_with(&release, &bundle, &assets, &CancellationToken::new())
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Release artifact escaped root");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_inventory_refuses_a_symlinked_root() {
+        let (root, bundle, release) = rust_only_fixture();
+        let assets = root.join("web/apps/ui/dist");
+        let alias = root.join("linked-dist");
+        for target in [&assets, &root.join("missing-dist")] {
+            symlink_dir(target, &alias);
+            let error = verify_rust_only_with(&release, &bundle, &alias, &CancellationToken::new())
+                .unwrap_err();
+            assert_eq!(error.to_string(), "Release inventory contains a symlink");
+            std::fs::remove_dir_all(&alias).unwrap();
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

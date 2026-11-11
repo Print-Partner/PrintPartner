@@ -210,7 +210,7 @@ async fn assert_served_ui(origin: &str, desktop: &str, rust: bool) {
     }
 }
 
-fn launcher_input(data: std::path::PathBuf, absent: bool) -> pp_core::DesktopLaunch {
+pub(super) fn launcher_input(data: std::path::PathBuf, absent: bool) -> pp_core::DesktopLaunch {
     let mut input = launch(data.clone());
     if absent {
         let web = data.join("image-web");

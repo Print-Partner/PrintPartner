@@ -100,8 +100,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   gateway's route-miss path: each request that no gateway, asset or Rust
   product route answered and that entered the compatibility branch. It stays
   at 0 in this mode.
-- `Gateway::start_rust_only` takes a `ServedUi`. With `ServedUi::Replacement`
-  (the `apps/ui` build), documents and assets carry the replacement UI's
+- `Gateway::start_rust_only_with_assets` serves a verified in-memory inventory
+  of the `apps/ui` build. Documents and assets carry the replacement UI's
   Content-Security-Policy, with a fresh style nonce on each document.
   `pp-core` selects verified `apps/ui/dist` when installed, otherwise verified legacy UI; the default
   runtime keeps `apps/web/dist` and its legacy policy. See

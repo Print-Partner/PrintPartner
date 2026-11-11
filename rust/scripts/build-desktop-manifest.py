@@ -106,6 +106,15 @@ def dependencies():
 
 metadata = ['package.json', 'package-lock.json', 'apps/server/package.json',
             'packages/contracts/package.json', 'packages/domain/package.json']
+# Full source installs link rust-client; the Docker partial install does not.
+# Build the replacement only where its workspace dependencies are available.
+replacement = web / 'apps/ui'
+if ((web / 'node_modules/@print-partner/rust-client/package.json').is_file()
+        and (replacement / 'package.json').is_file()):
+    npm = 'npm.cmd' if os.name == 'nt' else 'npm'
+    subprocess.run([npm, '--prefix', str(web), 'run', 'build', '--workspace', '@print-partner/ui'],
+                   check=True, env={**os.environ, 'PATH': str(args.node.resolve().parent)
+                                    + os.pathsep + os.environ.get('PATH', '')})
 frontend = web / ARTIFACTS['frontend']
 desktop = json.loads((frontend / 'desktop-build.json').read_text())
 if desktop['mode'] != 'desktop' or desktop['service_worker'] is not False:
@@ -125,7 +134,7 @@ manifest = {
     'node_version': subprocess.check_output([str(args.node), '--version'], text=True).strip(),
     'node_sha256': digest(args.node),
     'frontend': inventory(frontend),
-    'replacement_frontend': inventory(web / 'apps/ui/dist') if (web / 'apps/ui/dist').exists() else {},
+    'replacement_frontend': inventory(replacement / 'dist') if (replacement / 'dist').exists() else {},
     'backend': backend,
     'contracts': inventory(web / ARTIFACTS['contracts']),
     'domain': inventory(web / ARTIFACTS['domain']),

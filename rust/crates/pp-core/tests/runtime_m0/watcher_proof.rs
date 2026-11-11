@@ -342,3 +342,29 @@ async fn absent_replacement_bundle_preserves_legacy_navigation() {
     );
     std::fs::remove_dir_all(data).unwrap();
 }
+
+#[tokio::test]
+async fn present_tampered_replacement_bundle_refuses_startup() {
+    let data = temporary("tampered-ui-launcher");
+    run_in_child("watcher_proof::tampered_replacement_in_child", &data).await;
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn tampered_replacement_in_child() {
+    let data = proof_data();
+    let source = launch(data.clone()).bundle.web_root.join("apps/ui/dist");
+    let input = super::launcher_start::launcher_input(data, true);
+    let assets = input.bundle.web_root.join("apps/ui/dist");
+    super::copy_directory(&source, &assets);
+    std::fs::write(assets.join("index.html"), "tampered document").unwrap();
+    let error = match CoreRuntime::start_for_launcher(input).await {
+        Ok(runtime) => {
+            runtime.shutdown().await;
+            panic!("A tampered replacement bundle started");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.to_string(), "Release artifact content mismatch");
+}

@@ -98,3 +98,43 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
   --no-tests=fail -E 'binary(settings_routes_http) | binary(rebuild_read_http) | test(spoolman_lookup) | test(/^settings::/)'
 (cd web && UPDATE_ADMIN_ORACLE=1 npm run test -w @print-partner/server -- src/routes/admin-routes.oracle.test.ts)
 ```
+
+## Core diagnostics
+
+The feature and runtime switches also mount authenticated logging config
+(`GET`, `POST`), log tail (`GET`, `DELETE`), stats (`GET`) and `/metrics`
+(`GET`) at `/` and `/api/v1`. Both aliases share one view. Cookie writes
+require the listener Origin. Admission and credential checks use the admin gate.
+
+These routes describe Rust's `core.log`, including its six rotated archives,
+not Node's in-memory workflow logger. Reads use the desktop reader's limits:
+64 KiB per file, complete rows of at most 8 KiB, and the newest 1,000 records.
+Invalid rows are omitted. Every returned record passes the unchanged Scrubber
+again. Rows keep core fields: epoch-second `time`, pino-number `level`,
+`target`, `message` and any tracing fields. Severity maps trace/debug to
+`debug`, info to `info`, warn to `warn`, and error/fatal to `error`.
+
+Config starts with `minSeverity: "info"`, `maxLogs: 1000` and
+`enableWorkflowTracking: true`. POST accepts only `minSeverity` and
+`enableWorkflowTracking`, with the same enum and boolean validation as Node.
+These settings filter the diagnostics view; the crash writer continues to
+record independently. Config is process-local and resets on restart.
+`severity` and `method` tail filters match exactly; `limit` defaults to 100,
+is capped at 1,000, and accepts nonnegative integers (zero returns no rows).
+Invalid query values return 400.
+
+DELETE clears the current view, not the retained crash files. Later appended
+records remain visible. Restart creates a fresh view over the retained files,
+as opposed to Node's empty in-memory buffer. It never unlinks an active writer
+or removes compat/supervisor records. Stats summarize the same bounded view:
+`totalLogs`, `bySeverity`, `byMethod`, `avgDuration` and `errorCount`.
+Rows without method do not contribute to `byMethod`; absent durations count
+as zero. Timestamps, methods and HTTP durations are not invented.
+
+`/metrics` returns Prometheus text version 0.0.4 with `core_log_records`
+gauges by severity and `app_info` with version and Rust runtime. Counts can
+fall after clear or rotation. Node HTTP counters, print-job totals, Plan
+progress and live printer gauges are not inferred from log messages or
+reported as fabricated zeroes; this endpoint makes no printer network calls.
+Read failures return 500 without exposing paths or raw records. All responses
+use `private, no-store`.

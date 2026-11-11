@@ -257,7 +257,7 @@ pub fn read_router(
     let admin = admin_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
-        admin_files,
+        admin_files.clone(),
     );
     let settings_routes = settings_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
@@ -298,6 +298,13 @@ pub fn read_router(
             .merge(history)
             .merge(planning)
             .merge(workflow)
+            .merge(crate::diagnostics::router(
+                origin,
+                api_key_tenant,
+                &owner,
+                policy,
+                &admin_files,
+            )?)
             .merge(admin)
             .merge(settings_routes)
             .merge(events)

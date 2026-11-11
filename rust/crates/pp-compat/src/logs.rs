@@ -1,3 +1,5 @@
+#[cfg(feature = "desktop_rebuild")]
+pub mod diagnostics;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,

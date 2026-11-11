@@ -224,9 +224,8 @@ async fn guard(State(app): State<App>, request: axum::extract::Request, next: Ne
         Ok(peer) => peer,
         Err((status, detail)) => return Failure(status, detail).into_response(),
     };
-    let network = request.extensions().get::<crate::NetworkAdmission>();
-    let expected_origin = network.map_or(app.config.origin.as_str(), |value| value.origin.as_str());
-    let expected_host = network.map_or(app.config.host.as_str(), |value| value.host.as_str());
+    let (expected_origin, expected_host) =
+        crate::NetworkAdmission::authority(&request, &app.config.origin, &app.config.host);
     let peer_ip = peer.ip();
     let headers = request.headers();
     if headers.get_all("host").iter().count() != 1

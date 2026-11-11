@@ -155,9 +155,8 @@ fn admit(
     request: &axum::extract::Request,
 ) -> std::result::Result<(), (StatusCode, &'static str)> {
     crate::NetworkAdmission::peer(request)?;
-    let network = request.extensions().get::<crate::NetworkAdmission>();
-    let expected_origin = network.map_or(config.origin.as_str(), |value| value.origin.as_str());
-    let expected_host = network.map_or(config.host.as_str(), |value| value.host.as_str());
+    let (expected_origin, expected_host) =
+        crate::NetworkAdmission::authority(request, &config.origin, &config.host);
     let headers = request.headers();
     let host = headers.get("host").and_then(|value| value.to_str().ok());
     if headers.get_all("host").iter().count() != 1

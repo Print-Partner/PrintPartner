@@ -9,6 +9,17 @@ pub struct NetworkAdmission {
 }
 
 impl NetworkAdmission {
+    pub(crate) fn authority<'a, B>(
+        request: &'a axum::http::Request<B>,
+        origin: &'a str,
+        host: &'a str,
+    ) -> (&'a str, &'a str) {
+        match request.extensions().get::<Self>() {
+            Some(admission) => (&admission.origin, &admission.host),
+            None => (origin, host),
+        }
+    }
+
     /// Keep the socket identity for rate limits, including in explicit listener mode.
     pub(crate) fn peer<B>(
         request: &axum::http::Request<B>,

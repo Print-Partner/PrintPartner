@@ -119,9 +119,7 @@ pub fn admit(
     request: &axum::extract::Request,
 ) -> std::result::Result<(), (StatusCode, &'static str)> {
     crate::NetworkAdmission::peer(request)?;
-    let network = request.extensions().get::<crate::NetworkAdmission>();
-    let origin = network.map_or(origin, |value| value.origin.as_str());
-    let host = network.map_or(host, |value| value.host.as_str());
+    let (origin, host) = crate::NetworkAdmission::authority(request, origin, host);
     let headers = request.headers();
     let authority = request.uri().authority().map(|value| value.as_str());
     let request_host = headers.get("host").and_then(|value| value.to_str().ok());

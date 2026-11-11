@@ -17,7 +17,7 @@ source:
 
 caps:
   tickets_per_pr: 1
-  max_pr_lines: 1500             # about 1,500; Mission PRs about 600
+  max_pr_lines: 1500             # about 1,500; cross-cutting PRs about 600
   one_writer_per_crate: true
 
 never: [merging from a lane worktree, force-push, --admin, --auto, ruleset changes, branch-protection changes,

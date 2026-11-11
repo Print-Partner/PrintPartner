@@ -34,6 +34,8 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `rust/ast-grep-baseline.json`, `rust/clippy-limits-baseline.json`,
   `scripts/workaround-baseline.json`, and Rust snapshot directories under `rust/crates/`.
 
+Who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus three things CODEOWNERS does not list: the safety guard and its hook adapters (`scripts/agent-guard.py`, `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. The coordinator merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) as sensitive PRs after two scorer seats score the exact head 9 or more, except a PR that weakens a security boundary: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py` stays with Chad. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
+
 The workflow `.github/workflows/actionlint.yml` starts on every `pull_request`, on pushes to `main` and `master`, on merge groups and on manual dispatch.
 Its `changes` job selects the `actionlint` and `zizmor` jobs.
 On PRs, both jobs run when `.github/workflows/**`, `.github/actions/**`, either linter's configuration, or the CI filter script and its tests change.
@@ -123,13 +125,14 @@ The ruleset has these protections:
   and `review-gate`. `rust (windows)` is advisory and not required.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
 - `review-gate` runs on `pull_request_target` from the default branch and only reads the API; see [Code review](definition-of-done.md#code-review) for what it checks and its remaining risk.
-  Dependabot's weekly `github-actions` PRs change `.github/workflows/`, and their author is not the owner, so they need both a passing Droid or Claude review and the owner's marker for the head. The Claude jobs run for Dependabot PRs once the owner stores `CLAUDE_CODE_OAUTH_TOKEN` in the Dependabot secrets too, because Dependabot runs receive only those.
-- `claude-review.yml` and `droid-review.yml` stay on `pull_request`, not `pull_request_target`. On `pull_request`, fork PRs receive no secrets, so a fork's Droid job fails on the missing key, and the Claude jobs also require a same-repository head and the owner or Dependabot as author. Anyone who can push a same-repository branch already has write access, which lets them run any workflow with secrets through a push or a manual dispatch, so these workflows grant nothing beyond write access. `pull_request_target` would hand secrets to a run that checks out PR code, the classic pwn-request pattern. After reviewing such a PR's head, the owner or the coordinator posts the `pp-review-gate` marker for that head, which passes it.
+  Dependabot's weekly `github-actions` PRs change `.github/workflows/`, and their author is not the owner, so they need both a passing Claude review and the owner's marker for the head. The Claude jobs run for Dependabot PRs once the owner stores `CLAUDE_CODE_OAUTH_TOKEN` in the Dependabot secrets too, because Dependabot runs receive only those.
+- `claude-review.yml` stays on `pull_request`, not `pull_request_target`. On `pull_request`, fork PRs receive no secrets, and the Claude jobs also require a same-repository head and the owner or Dependabot as author. Anyone who can push a same-repository branch already has write access, which lets them run any workflow with secrets through a push or a manual dispatch, so these workflows grant nothing beyond write access. `pull_request_target` would hand secrets to a run that checks out PR code, the classic pwn-request pattern. After reviewing such a PR's head, the owner or the coordinator posts the `pp-review-gate` marker for that head, which passes it.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 
 `rust (macos)` and `rust (windows)` are absent, consistent with their advisory status in [Continuous integration](ci.md).
-`droid-review` replaced the `pp/score-verified` model-score check on 2026-10-31.
+
+Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10; `review-gate`, which passes on a Claude review or the owner's marker, now covers that role.
 
 No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
 self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.
@@ -155,9 +158,9 @@ No diff means the normalized live response matches the snapshot. A diff needs re
 
 ## Turn on the merge queue
 
-The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All five required checks report on `merge_group` events; [Merge queue](ci.md#merge-queue) describes what each one does there. The queue stays off until Chad adds the rule below. Agents never change the ruleset.
+The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All five required checks report on `merge_group` events; [Merge queue](ci.md#merge-queue) describes what each one does there. The queue is on: the rule below was added to ruleset `25285698` on 2026-11-09 (ruleset version `56963310`), and `main-ci-controls.ruleset.json` records it. Agents never change the ruleset.
 
-Chad adds one `merge_queue` rule to ruleset `25285698` and changes nothing else in it:
+The rule, as added (it changed nothing else in the ruleset):
 
 | Setting | Value | Why |
 | --- | --- | --- |
@@ -169,19 +172,7 @@ Chad adds one `merge_queue` rule to ruleset `25285698` and changes nothing else 
 
 The required status checks and `strict_required_status_checks_policy: false` stay as they are; the queue replaces "branch must be up to date".
 
-In the web UI: **Settings > Rules > main CI controls > Require merge queue**, with the values above. Or, as an admin, from the repository root:
-
-```sh
-jq 'del(.id, .source, .source_type)
-    | .rules += [{"type": "merge_queue", "parameters": {
-        "check_response_timeout_minutes": 150, "grouping_strategy": "ALLGREEN",
-        "max_entries_to_build": 2, "max_entries_to_merge": 5, "merge_method": "SQUASH",
-        "min_entries_to_merge": 1, "min_entries_to_merge_wait_minutes": 5}}]' \
-  docs/development/main-ci-controls.ruleset.json \
-  | gh api -X PUT repos/Print-Partner/PrintPartner/rulesets/25285698 --input -
-```
-
-Afterwards, save the live ruleset into `docs/development/main-ci-controls.ruleset.json` with the read-only command above in a docs PR, then queue two small PRs back to back to test it.
+To test the queue, queue two small PRs back to back and check that both land.
 
 With the queue on, `gh pr merge <n> --squash --match-head-commit <sha>` adds the PR to the queue instead of merging it, so queueing a PR is merging it. Queue only a PR whose required checks already passed on its head. Removing a PR from the queue needs the web UI.
 
@@ -205,12 +196,12 @@ Phase 2 remains Chad's work and keeps GRE-635 open:
 
 An edit to a pull request body, title or base can start workflows. This matrix comes from the `on:` blocks and job conditions, and from the run history of PR #1547 (heads 91478f2 and 8ac5680), where `pr-evidence.yml` ran on every body edit.
 
-| Event | `review-gate` | `Lint Evidence block` | `droid.yml`, `linear-pr-sync.yml` |
+| Event | `review-gate` | `Lint Evidence block` | `linear-pr-sync.yml` |
 | --- | --- | --- | --- |
 | Push (`synchronize`) | runs and waits for the Claude review; cancels the older run | runs, except on a draft PR, where the job skips | do not start |
-| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips on a draft PR or unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
+| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
 | Base change (`edited`) | edit run: judges the head against the new base and cancels an older run that read the old one | runs, except on a draft PR | same as above |
-| Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | `droid.yml` starts only when the comment is created, and skips unless it contains `@droid` |
+| Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | do not start |
 | Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |
 
 Neither required check can safely skip an edit on a ready PR. A draft PR is the one exception for `Lint Evidence block`, by existing design: its job skips while the PR is a draft, and that skip does replace an earlier failure, including on `converted_to_draft`. GitHub does not merge a draft, and marking the PR ready runs the lint again on the current body, so the failure cannot reach `main`. `review-gate` has no draft skip.
@@ -218,7 +209,7 @@ Neither required check can safely skip an edit on a ready PR. A draft PR is the 
 - `Lint Evidence block` lints the whole body: Evidence lines and `Exemption:` lines both decide the verdict, and fixing a failing Evidence section by editing the body is the normal path. A job-level `if` that skips an edit would leave a skipped required check, which GitHub counts as a pass, and the newer run replaces an earlier failure, so an unrelated edit would clear a failing lint. Not listening to `edited` would keep an old success after a body edit that breaks Evidence. A short job that repeats the previous verdict avoids neither the runner slot nor the queue.
 - `review-gate` has to run on a base change, because a review of a head against one base does not cover the same head against `main`. GitHub does not filter `edited` events by field, and a job-level `if` has the same skipped-required-check problem, so every edit starts an edit run. It reads the API and takes seconds unless a Claude job is running or has not appeared yet, and it cancels the older run for the same PR, so the newest run decides.
 
-`scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `droid.yml` and `linear-pr-sync.yml` cells. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
+`scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `linear-pr-sync.yml` cell. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
 
 ## Emergency path
 

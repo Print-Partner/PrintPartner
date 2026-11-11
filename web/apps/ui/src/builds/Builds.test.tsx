@@ -464,8 +464,8 @@ describe("UI2-03 Builds list states", () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Show Builds" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Turn it on in Settings" }).getAttribute("href")).toBe(
-      "/settings",
+    expect(screen.getByRole("link", { name: "See Modules in Settings" }).getAttribute("href")).toBe(
+      "/settings#modules",
     );
     expect(within(table()).queryByRole("columnheader", { name: "Order" })).toBeNull();
     expect(screen.queryByText("SO-1001")).toBeNull();
@@ -649,14 +649,14 @@ describe("UI2-02 Build Overview", () => {
   });
 
   it("other tabs say what they will hold in a later slice and keep the tab bar", async () => {
-    renderAt("/builds/2/sources", core(plans));
-    expect(screen.getByRole("heading", { level: 1, name: "Sources" })).toBeTruthy();
+    renderAt("/builds/2/production", core(plans));
+    expect(screen.getByRole("heading", { level: 1, name: "Production" })).toBeTruthy();
     expect(screen.getByText(/This tab arrives in a later slice/)).toBeTruthy();
     const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole(
       "link",
     );
     expect(tabs.find((t) => t.getAttribute("aria-current") === "page")?.textContent).toBe(
-      "Sources",
+      "Production",
     );
   });
 });

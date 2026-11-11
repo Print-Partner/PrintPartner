@@ -6,10 +6,13 @@ import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/Bu
 import { BuildsList } from "./builds/BuildsList";
 import { FarmLog } from "./farm/FarmLog";
 import { FarmScreen } from "./farm/FarmScreen";
+import { BuildSources } from "./library/BuildSources";
+import { LibraryScreen } from "./library/LibraryScreen";
 import { MatchReview } from "./farm/MatchReview";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
+import { SettingsScreen } from "./settings/SettingsScreen";
 import { PRINTER_DISPLAY_STATES, PrinterStatus } from "./status/PrinterStatus";
 import { TodayScreen } from "./today/TodayScreen";
 import { TypeSpecimen } from "./type/TypeSpecimen";
@@ -44,6 +47,10 @@ export const routes: RouteObject[] = [
             <TodayScreen />
           ) : d.path === "/farm" ? (
             <FarmScreen />
+          ) : d.path === "/library" ? (
+            <LibraryScreen />
+          ) : d.path === "/settings" ? (
+            <SettingsScreen />
           ) : (
             <DestinationScreen destination={d} />
           ),
@@ -56,7 +63,9 @@ export const routes: RouteObject[] = [
           ...BUILD_TABS.filter((t) => t.path).map((t) => ({
             path: t.path,
             element:
-              t.path === "checkoff" ? (
+              t.path === "sources" ? (
+                <BuildSources />
+              ) : t.path === "checkoff" ? (
                 <BuildCheckoff />
               ) : t.path === "history" ? (
                 <BuildHistory />

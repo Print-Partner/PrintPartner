@@ -1,5 +1,7 @@
 pub mod auth;
 #[cfg(feature = "desktop_rebuild")]
+pub mod diagnostics;
+#[cfg(feature = "desktop_rebuild")]
 pub mod problem;
 pub mod serving;
 /// With `desktop_rebuild` off, pp-api errors keep their legacy JSON bodies.
@@ -42,6 +44,10 @@ mod loopback;
 #[cfg(feature = "desktop_rebuild")]
 pub mod mcp;
 #[cfg(feature = "desktop_rebuild")]
+pub mod modules;
+#[cfg(feature = "desktop_rebuild")]
+mod multipart_form;
+#[cfg(feature = "desktop_rebuild")]
 pub mod planning;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plates;
@@ -53,6 +59,8 @@ pub mod printer_status;
 pub mod printer_stream;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
+#[cfg(feature = "desktop_rebuild")]
+pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 

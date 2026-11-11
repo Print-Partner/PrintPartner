@@ -22,6 +22,40 @@ pub(super) const PROPOSE: &str = "propose_apply_plan_draft";
 const SUMMARY: &str = "Apply the confirmed Build planning change.";
 const NOT_FOUND: &str = "Selected Working Plan not found";
 
+/// Test hook: a confirm signals `entered` once it has taken its proposal,
+/// then waits for a `release` permit before Accept applies. `cancelled` fires
+/// when rmcp cancels the confirm's request token.
+#[cfg(test)]
+pub(crate) struct ConfirmGate {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Semaphore,
+    pub cancelled: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+impl ConfirmGate {
+    pub fn closed() -> Arc<Self> {
+        Arc::new(Self {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            cancelled: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Fires `cancelled` once `token_cancelled` (the request token's
+    /// `cancelled_owned()`) resolves.
+    pub fn watch(
+        self: &Arc<Self>,
+        token_cancelled: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let gate = Arc::clone(self);
+        tokio::spawn(async move {
+            token_cancelled.await;
+            gate.cancelled.notify_one();
+        });
+    }
+}
+
 /// What the Accept preview allows.
 enum Previewed {
     /// Accept would run: the preview's revision without `draft_id`, and the
@@ -122,6 +156,11 @@ impl ProductMcp {
         let Ok(request) = serde_json::from_value::<ApplyRequest>(revision) else {
             return refuse(action, NOT_FOUND, Value::Null);
         };
+        #[cfg(test)]
+        if let Some(gate) = &self.reads.confirm_gate {
+            gate.entered.notify_one();
+            drop(gate.release.acquire().await);
+        }
         let Reads { drafts, wait, .. } = self.reads.clone();
         let key = action.id.clone();
         let credential = presented.clone();

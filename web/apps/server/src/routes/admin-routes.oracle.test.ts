@@ -1,7 +1,8 @@
 // Replays fixtures/admin through the Node app and checks the replies against
-// node-oracle.json, which the Rust routes test
-// (rust/crates/pp-api/tests/ticket_t_62_admin_http.rs) also replays.
-// UPDATE_ADMIN_ORACLE=1 rewrites the oracle file instead of checking it.
+// node-oracle.json and settings-oracle.json, which the Rust routes tests
+// (rust/crates/pp-api/tests/ticket_t_62_admin_http.rs and
+// settings_routes_http.rs) also replay.
+// UPDATE_ADMIN_ORACLE=1 rewrites the oracle files instead of checking them.
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,17 @@ const LEGAL = ["summary", "license", "attribution", "third-party"];
 const PREFIXES = ["", "/api/v1"];
 
 type Case = { absent?: true; directory?: true; text?: string; base64?: string };
+type Step = { method: "GET" | "PUT"; path: string; body?: string; content_type?: string };
+type SettingsCases = { integrations: string; keys: string[]; steps: Step[] };
+
+function matchOracle(file: string, text: string) {
+  const oracle = new URL(file, here);
+  if (process.env.UPDATE_ADMIN_ORACLE) {
+    writeFileSync(oracle, text);
+    return;
+  }
+  expect(JSON.parse(text)).toEqual(JSON.parse(readFileSync(oracle, "utf8")));
+}
 
 function reply(response: Awaited<ReturnType<Awaited<ReturnType<typeof makeApp>>["app"]["inject"]>>) {
   return {
@@ -70,12 +82,43 @@ describe("admin routes oracle", () => {
     } finally {
       await app.close();
     }
-    const text = `${JSON.stringify(out, null, 2)}\n`;
-    const oracle = new URL("node-oracle.json", here);
-    if (process.env.UPDATE_ADMIN_ORACLE) {
-      writeFileSync(oracle, text);
-      return;
+    matchOracle("node-oracle.json", `${JSON.stringify(out, null, 2)}\n`);
+  });
+
+  it("date-format, build-tracking and spoolman-default replies match settings-oracle.json", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pp-settings-oracle-"));
+    const { app, ports } = await makeApp(dir);
+    const cases = JSON.parse(readFileSync(new URL("settings-cases.json", here), "utf8")) as SettingsCases;
+    const repo = ports.repository;
+    repo.setSetting("integrations", cases.integrations);
+    const replies: unknown[] = [];
+    try {
+      for (const step of cases.steps) {
+        const response = await app.inject({
+          method: step.method,
+          url: step.path,
+          ...(step.body === undefined
+            ? {}
+            : { payload: step.body, headers: { "content-type": step.content_type ?? "application/json" } }),
+        });
+        const stored: Record<string, string | null> = {};
+        for (const key of cases.keys) {
+          const snapshot = repo.getSettingSnapshot(key);
+          stored[key] = snapshot.kind === "stored" ? snapshot.value : null;
+        }
+        replies.push({
+          status: response.statusCode,
+          content_type: response.headers["content-type"] ?? null,
+          cache_control: response.headers["cache-control"] ?? null,
+          body: response.statusCode < 500 ? JSON.parse(response.payload) : null,
+          stored,
+        });
+      }
+    } finally {
+      await app.close();
     }
-    expect(JSON.parse(text)).toEqual(JSON.parse(readFileSync(oracle, "utf8")));
+    // One reply per line keeps the recorded file reviewable.
+    const lines = replies.map((entry) => `  ${JSON.stringify(entry)}`).join(",\n");
+    matchOracle("settings-oracle.json", `{"replies": [\n${lines}\n]}\n`);
   });
 });

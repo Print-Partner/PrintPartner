@@ -3,6 +3,8 @@ pub mod production;
 
 #[cfg(feature = "desktop_rebuild")]
 pub mod admin;
+#[cfg(feature = "desktop_rebuild")]
+pub mod app_settings;
 
 pub mod archive;
 #[cfg(feature = "desktop_rebuild")]
@@ -48,6 +50,8 @@ pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
 pub mod required_units;
+#[cfg(feature = "desktop_rebuild")]
+pub mod restore;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
@@ -60,6 +64,7 @@ pub mod sqlite_uri;
 pub mod tls_pins;
 #[cfg(feature = "desktop_rebuild")]
 pub mod uploads;
+pub mod versions;
 #[cfg(feature = "desktop_rebuild")]
 pub mod working_drafts;
 mod writer_admission;
@@ -147,7 +152,12 @@ enum Envelope {
     #[cfg(feature = "desktop_rebuild")]
     Features {
         command: features::Command,
-        reply: mpsc::Sender<Result<features::View>>,
+        reply: mpsc::Sender<Result<features::Reply>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    AppSettings {
+        command: app_settings::Command,
+        reply: app_settings::Reply,
     },
     #[cfg(feature = "desktop_rebuild")]
     Publication {
@@ -183,6 +193,11 @@ enum Envelope {
     SendQueue {
         command: send_queue::writes::Command,
         reply: mpsc::Sender<Result<send_queue::writes::Reply>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    PrintGrams {
+        command: print_grams::Command,
+        reply: mpsc::Sender<Result<Option<print_grams::Measurement>>>,
     },
     #[cfg(feature = "desktop_rebuild")]
     Farm {
@@ -297,6 +312,11 @@ pub struct WriterOwner {
     client: SettingsClient,
     join: Option<JoinHandle<()>>,
     lease: Option<lease::StorageLease>,
+    #[cfg(feature = "desktop_rebuild")]
+    restore: Arc<restore::Activity>,
+    /// How long shutdown waits, in total, for reader checkouts and restore
+    /// work after it closes admission.
+    drain: Duration,
 }
 
 fn snapshot(connection: &Connection, tenant: &str, key: &str) -> Result<SettingSnapshot> {
@@ -395,6 +415,34 @@ fn execute(
     tx.commit()?;
     Ok(true)
 }
+impl Shared {
+    /// Waits up to `wait` for room in the writer queue, then queues `envelope`.
+    fn admit(&self, envelope: Envelope, cancelled: &AtomicBool, wait: Duration) -> Result<()> {
+        let deadline = Instant::now() + wait;
+        let mut queue = self
+            .queue
+            .lock()
+            .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        loop {
+            ensure!(!queue.closed, "Storage stopped");
+            ensure!(
+                !cancelled.load(Ordering::Acquire),
+                "Cancelled before admission"
+            );
+            if queue.pending.len() < self.capacity {
+                queue.pending.push_back(envelope);
+                self.changed.notify_all();
+                return Ok(());
+            }
+            ensure!(Instant::now() < deadline, "Writer queue full");
+            queue = self
+                .changed
+                .wait_timeout(queue, Duration::from_millis(5))
+                .map_err(|_| anyhow!("Writer admission poisoned"))?
+                .0;
+        }
+    }
+}
 impl SettingsClient {
     #[cfg(feature = "desktop_rebuild")]
     pub(crate) fn enqueue_auth(&self, work: auth::rebuild::WriterWork) {
@@ -410,32 +458,10 @@ impl SettingsClient {
     }
 
     fn enqueue(&self, work: Work, cancelled: &AtomicBool, wait: Duration) -> Result<WriteReply> {
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
-            if queue.pending.len() < self.shared.capacity {
-                let (reply, receiver) = mpsc::channel();
-                queue.pending.push_back(Envelope::Setting { work, reply });
-                self.shared.changed.notify_all();
-                return Ok(receiver);
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
+        let (reply, receiver) = mpsc::channel();
+        self.shared
+            .admit(Envelope::Setting { work, reply }, cancelled, wait)?;
+        Ok(receiver)
     }
     pub fn submit(
         &self,
@@ -621,10 +647,24 @@ impl WriterOwner {
             locked.abandon();
             return Err(error);
         }
-        locked.preflight()?;
+        #[cfg(feature = "desktop_rebuild")]
+        if let Err(error) = restore::recover(locked.path()) {
+            locked.abandon();
+            return Err(error);
+        }
+        if let Err(error) = locked.preflight() {
+            locked.abandon();
+            return Err(error);
+        }
         let lease = lease::StorageLease::acquire_locked(locked)?;
         let path = lease.data_dir().join("print-partner.db");
-        let version = lease.preflight()?;
+        let version = match lease.preflight() {
+            Ok(version) => version,
+            Err(error) => {
+                lease.abandon();
+                return Err(error);
+            }
+        };
         // Preserve one literal per line so the covers suppression applies only to that literal.
         #[rustfmt::skip]
         let directories = [
@@ -790,6 +830,10 @@ impl WriterOwner {
                         let _ = reply.send(features::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
+                    Envelope::AppSettings { command, reply } => {
+                        reply.send(app_settings::execute(&mut connection, command, admission));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
                     Envelope::BuildGraph { command, reply } => {
                         reply.send(build_graph::execute(&mut connection, command, admission));
                     }
@@ -868,6 +912,11 @@ impl WriterOwner {
                             admission,
                             &worker.job_subscriptions,
                         ));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::PrintGrams { command, reply } => {
+                        let _ =
+                            reply.send(print_grams::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::History { command, reply } => {
@@ -971,6 +1020,9 @@ impl WriterOwner {
                 client: SettingsClient { shared, readers },
                 join: Some(join),
                 lease: Some(lease),
+                #[cfg(feature = "desktop_rebuild")]
+                restore: Arc::default(),
+                drain: READER_DRAIN,
             },
             ready,
         ))
@@ -1087,6 +1139,11 @@ impl WriterOwner {
         }
         #[cfg(feature = "desktop_rebuild")]
         self.client.shared.job_subscriptions.stop_owner();
+        // Close restore, writer and reader admission before waiting on any
+        // of them, then wait for all of them against one deadline. Restore
+        // work runs in `.pp-restore`, which the next owner clears.
+        #[cfg(feature = "desktop_rebuild")]
+        self.restore.refuse_new();
         {
             let mut queue = self
                 .client
@@ -1097,7 +1154,7 @@ impl WriterOwner {
             queue.closed = true;
             self.client.shared.changed.notify_all();
         }
-        let remaining_readers = {
+        {
             let mut readers = self
                 .client
                 .readers
@@ -1107,7 +1164,19 @@ impl WriterOwner {
             readers.closed = true;
             readers.idle.clear();
             self.client.readers.changed.notify_all();
-            let deadline = Instant::now() + READER_DRAIN;
+        }
+        let deadline = Instant::now() + self.drain;
+        #[cfg(all(test, unix, feature = "desktop_rebuild"))]
+        if let Some(lease) = &self.lease {
+            restore::admission_closed(lease.data_dir(), deadline);
+        }
+        let remaining_readers = {
+            let mut readers = self
+                .client
+                .readers
+                .state
+                .lock()
+                .map_err(|_| anyhow!("Reader pool poisoned"))?;
             while readers.active > 0 && Instant::now() < deadline {
                 readers = self
                     .client
@@ -1119,13 +1188,21 @@ impl WriterOwner {
             }
             readers.active
         };
+        #[cfg(feature = "desktop_rebuild")]
+        let restore_active = self.restore.wait_until(deadline);
         if let Some(join) = self.join.take() {
             join.join().map_err(|_| anyhow!("Writer join failed"))?;
         }
         ensure!(
             remaining_readers == 0,
             "Reader checkouts still active after {}s: {remaining_readers}; ownership retained until process exit",
-            READER_DRAIN.as_secs()
+            self.drain.as_secs()
+        );
+        #[cfg(feature = "desktop_rebuild")]
+        ensure!(
+            restore_active == 0,
+            "Restore work still active after {}s: {restore_active}; ownership retained until process exit",
+            self.drain.as_secs()
         );
         if let Some(lease) = self.lease.take() {
             let released = lease.release();
@@ -1141,6 +1218,11 @@ impl WriterOwner {
     #[cfg(feature = "desktop_rebuild")]
     pub fn lease(&self) -> Option<&lease::StorageLease> {
         self.lease.as_ref()
+    }
+    /// Shortens the shutdown drain so tests need no real 5 s waits.
+    #[cfg(all(test, unix, feature = "desktop_rebuild"))]
+    pub(crate) fn set_drain(&mut self, drain: Duration) {
+        self.drain = drain;
     }
     pub fn shutdown(mut self) -> Result<()> {
         let result = self.close();

@@ -28,7 +28,7 @@ const DECISIONS: [&str; 3] = [
 ];
 
 /// An initialized session: the headers each later request sends.
-async fn session(server: &McpServer, bearer: &str) -> Vec<(String, String)> {
+pub(super) async fn session(server: &McpServer, bearer: &str) -> Vec<(String, String)> {
     let auth = [("authorization", bearer)];
     let (status, body, session) = server.post("/api/v1/mcp", &auth, &initialize()).await;
     assert_eq!(status, 200, "{body}");
@@ -53,7 +53,7 @@ fn pairs(headers: &[(String, String)]) -> Vec<(&str, &str)> {
 }
 
 /// `tools/call`: the tool's text and its `isError` flag.
-async fn call(
+pub(super) async fn call(
     server: &McpServer,
     headers: &[(String, String)],
     name: &str,

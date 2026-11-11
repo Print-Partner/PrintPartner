@@ -62,7 +62,6 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 | [Rust and React development container](development/devcontainer.md) | You want the pinned toolchains in a container. |
 | [Change a CI workflow](development/ci-controls.md) | You are editing a workflow or required check. |
 | [Run the stress-runner self-tests](development/stress-runner-self-tests.md) | You changed the stress runner. |
-| [Factory Missions setup](development/factory-missions.md) | You are running a Factory Mission. |
 | [Golden kit export](examples/golden-ldo-voron-2.4-export.md) | You need the regression and release smoke-test kit bundle. |
 | [Gate evidence](contributing/gate-evidence.md) | You are filling in a PR's Evidence section. |
 

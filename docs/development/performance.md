@@ -100,3 +100,25 @@ What the numbers say:
 - Plan change: the three steps both serve (open draft, edit, Accept) take 134 ms on Rust and 242 ms on Node. Rust's autosave adds 33 ms and Accept preview 12 ms. Node's one-request Save takes 239 ms.
 - Checkoff: Build 22's 15 bursts take 3.5 s on Rust and 6.9 s on Node. Node sends one request per unit, so this compares the two workflows, not the same request.
 - Rust cannot do thumbnails, the STL pack or the HTML checklist yet. Node's cold thumbnails take 2.5 s for the 20 Parts of the 100-unit Build (server work only), the first STL pack 1.5 s and the HTML checklist 0.4 s.
+
+## Task feed read, 2026-11-10
+
+GRE-1290 cut the Rust read path behind `GET /api/v2/tasks`. Both runs below are 10 rounds of `baseline.py` with the default settings on the same host as the baseline, 1-minute load under 9 at every start. "Before" is a release `pp-server` built from `d194ae2a1`; "after" is the GRE-1290 branch at `70da4df64`. Both were built against the same `rust/bundle-manifest.json`, so they serve identical web assets. Only Rust rows changed; Node medians moved by 10% or less between the runs.
+
+| Rust measure | Before median | Before p95 | After median | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Today read `GET /api/v2/tasks`, within the refresh | 996 ms | 1692 ms | 220 ms | 259 ms |
+| Today refresh reads | 998 ms | 1693 ms | 222 ms | 262 ms |
+| Builds list, warm | 478 ms | 934 ms | 102 ms | 139 ms |
+| First Builds list | 868 ms | 936 ms (max) | 141 ms | 154 ms (max) |
+| Checkoff burst, write + screen refresh | 168 ms | 293 ms | 40.3 ms | 55.1 ms |
+| Plan change: open + edit + Accept | 158 ms | 204 ms | 101 ms | 150 ms |
+
+What changed:
+
+- `read_model::graph::rows` ran `PRAGMA table_info`, an aggregate scan for the text and row budget, and a second scan for the rows, all freshly prepared. It now caches column names per read, keeps prepared statements (256 per connection), and checks each row's text size and budget in one scan. Every read model that uses `rows` gains, which is why the Builds list and checkoff rows also dropped.
+- `graph::read` looked up each Required unit and its creation revision one query at a time. It reads the mapped units in one query and reuses each creation revision, charging the budget as before.
+- `context::capture` scanned `plan_revision_required_units` once per unit, because `required_unit_token` has no index of its own. It scans once per Build.
+- Farm match suggestions interpreted every Part file name again for every unmatched print, and allocated per Levenshtein row and per collation comparison. `pp_domain::gcode_objects::FilenameIndex` keeps those keys once per read.
+
+On a fresh copy of the seed-388 dataset with no workload before it, the task feed answers in about 120 ms. After the harness workload it takes about 220 ms. The workload adds plan revisions, and the remaining time is mostly scans of `plan_revision_required_units`, `required_units`, `plan_revision_parts` and `parts` by columns that no index leads with, plus the per-Build digest and projection work. Going further needs indexes, which are a schema change.

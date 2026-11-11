@@ -15,12 +15,18 @@
 //!   never sends.
 //! - [`Request::Missing`] marks an item whose staged file is gone, as Node's
 //!   dispatch does before it refuses.
+//! - [`Request::Add`] writes a new `queued` item for a staged file
+//!   (GRE-1227).
 //! - [`Request::Get`] and [`Request::Ready`] read what a route checks before
 //!   it dispatches.
 //!
 //! A tenant whose queue stayed in Node's `printer.send_queue` setting (see
 //! [`super::recover`]) cannot change it here: every request is refused
 //! with 409.
+
+mod enqueue;
+
+pub use enqueue::NewItem;
 
 use super::{legacy, rows};
 use crate::{
@@ -35,6 +41,17 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::{Duration, SystemTime},
 };
+
+const REPLY_LOST: &str = "Send queue reply lost after admission; reread the queue";
+
+/// True when `error` from [`SendQueueClient::apply`] leaves the request's
+/// outcome unknown: its transaction may have committed. Any other error
+/// rolled the transaction back or never reached the writer.
+pub fn may_have_written(error: &anyhow::Error) -> bool {
+    matches!(error.downcast_ref(), Some(JobFailure::CommitUnknown))
+        || matches!(error.downcast_ref(), Some(auth::AuthFailure::CommitUnknown))
+        || error.to_string() == REPLY_LOST
+}
 
 /// Node's `DRAIN_ITEM_CAP`: queued items one Send ready examines.
 pub const DRAIN_ITEM_CAP: usize = 8;
@@ -53,6 +70,14 @@ pub(crate) const OUTCOME_UNKNOWN: Reply = Reply::Refused {
 };
 
 pub enum Request {
+    /// Authenticates only, before a route reads an upload.
+    Admit,
+    /// Writes a new `queued` item for the file staged at `artifact_path`.
+    Add {
+        item: NewItem,
+        artifact_path: String,
+        host_name: String,
+    },
     /// The item `id`.
     Get {
         id: String,
@@ -158,12 +183,8 @@ impl SendQueueClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Reply> {
-        crate::read_model::submit(
-            &self.shared,
-            cancelled,
-            wait,
-            "Send queue reply lost after admission; reread the queue",
-            |reply| Envelope::SendQueue {
+        crate::read_model::submit(&self.shared, cancelled, wait, REPLY_LOST, |reply| {
+            Envelope::SendQueue {
                 command: Command {
                     credential,
                     policy: self.policy,
@@ -171,8 +192,8 @@ impl SendQueueClient {
                     request,
                 },
                 reply,
-            },
-        )
+            }
+        })
     }
 }
 
@@ -214,12 +235,18 @@ fn transact(
         auth::authority::admit(&tx, credential, command.policy, &command.storage)?;
     let writes = !matches!(
         command.request,
-        Request::Get { .. } | Request::Check { .. } | Request::Ready { .. }
+        Request::Admit | Request::Get { .. } | Request::Check { .. } | Request::Ready { .. }
     );
     let reply = if legacy(&tx, &tenant)? {
         LEGACY
     } else {
         match command.request {
+            Request::Admit => Reply::Items(Vec::new()),
+            Request::Add {
+                item,
+                artifact_path,
+                host_name,
+            } => enqueue::add(&tx, &tenant, &item, &artifact_path, &host_name)?,
             Request::Get { id } => item(&tx, &tenant, &id)?.map_or(NOT_FOUND, Reply::Item),
             Request::Check { id } => check(&tx, &tenant, &id)?,
             Request::Ready { printer_id } => ready(&tx, &tenant, printer_id.as_deref())?,
@@ -437,7 +464,7 @@ fn ready(tx: &Transaction<'_>, tenant: &str, printer_id: Option<&str>) -> Result
         .collect();
     for item in &items {
         if let Some(id) = item["id"].as_str()
-            && let Some(refusal) = farm_refusal(tx, tenant, id)?
+            && let Some(refusal) = item_farm_refusal(tx, tenant, id)?
         {
             return Ok(refusal);
         }
@@ -445,14 +472,19 @@ fn ready(tx: &Transaction<'_>, tenant: &str, printer_id: Option<&str>) -> Result
     Ok(Reply::Items(items))
 }
 
-/// Node's `storedQueueAdmissionProblem`: a send needs the Farm feature on
-/// for the item's Plan, or for the user when it has none.
-fn farm_refusal(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Option<Reply>> {
+/// The item's Farm refusal, as [`farm_refusal`] answers for its Plan.
+fn item_farm_refusal(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Option<Reply>> {
     let profile: Option<i64> = tx.query_row(
         "SELECT profile_id FROM printer_send_queue WHERE tenant_id=?1 AND id=?2",
         params![tenant, id],
         |row| row.get(0),
     )?;
+    farm_refusal(tx, tenant, profile)
+}
+
+/// Node's `storedQueueAdmissionProblem` and its add route's Farm check: a
+/// send needs the Farm feature on for the Plan, or for the user without one.
+fn farm_refusal(tx: &Transaction<'_>, tenant: &str, profile: Option<i64>) -> Result<Option<Reply>> {
     let plan = profile.and_then(|id| pp_domain::PositiveId::new(id.unsigned_abs()).ok());
     Ok(match crate::features::resolve_for_send(tx, tenant, plan) {
         Ok(view) if view.effective().enabled(pp_domain::features::Feature::Farm) => None,
@@ -486,7 +518,7 @@ fn sendable(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Result<Store
     if outcome_unknown(tx, tenant, &stored)? {
         return Ok(Err(OUTCOME_UNKNOWN));
     }
-    if let Some(refusal) = farm_refusal(tx, tenant, id)? {
+    if let Some(refusal) = item_farm_refusal(tx, tenant, id)? {
         return Ok(Err(refusal));
     }
     Ok(Ok(stored))

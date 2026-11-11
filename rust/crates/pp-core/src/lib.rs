@@ -1,4 +1,6 @@
 #[cfg(feature = "desktop_rebuild")]
+mod diagnostics;
+#[cfg(feature = "desktop_rebuild")]
 pub mod production;
 
 use anyhow::{Context, Result, bail};
@@ -36,6 +38,8 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 #[cfg(feature = "desktop_rebuild")]
 pub mod layout;
 
+#[cfg(feature = "desktop_rebuild")]
+mod measured_grams;
 #[cfg(feature = "desktop_rebuild")]
 mod printer_host;
 #[cfg(feature = "desktop_rebuild")]
@@ -91,6 +95,8 @@ pub use pp_compat::{CoreLog, redact};
 pub use pp_compat::{log_folder, recent_diagnostics, recent_logs};
 pub use pp_gateway::LaunchTarget as DesktopLaunchTarget;
 pub use pp_gateway::RustStatus;
+/// The terminal refusal for a stored schema this runtime does not open.
+pub use pp_storage::versions::IncompatibleSchema;
 
 /// What [`CoreHandle::subscribe`] reports: the supervised Node child's status,
 /// or, for a Rust-only runtime, the Rust backend's own status.
@@ -371,6 +377,14 @@ async fn start_resources(
     let (assets, bundle, data_dir) = admit_release(input).await?;
     // A Rust-marked directory never reaches the Node child.
     let mut owner = pp_storage::ownership_marker::lease_unmarked(&data_dir)?;
+    // A schema Node cannot open stops here, before any write or the Node
+    // child, so the supervisor never restarts a child that would refuse it.
+    match pp_storage::versions::node_refusal(&owner) {
+        Ok(None) => {}
+        Ok(Some(refusal)) => return Err(refusal.into()),
+        // Node runs its own integrity and version checks on this database.
+        Err(_) => tracing::warn!("node_schema_preflight_unchecked"),
+    }
     let account_pin =
         pp_compat::DesktopAccountPin::capture(owner.data_dir(), desktop_rebuild.enabled())?;
     let (owners, boot) = cutover::recover(owner.data_dir(), ownership)

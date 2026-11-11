@@ -36,8 +36,8 @@ The `_at` variants read a procfs-shaped directory, so tests can use a fake `/pro
 
 ## Tests
 
-- `tests/ticket_t_53.rs`: record round trip, `compare` verdicts and mismatches, and PSS sums over a fake procfs in a `tempfile` directory.
-- `tests/ticket_t_53_capture.rs`: CPU ticks over a fake procfs, `package_bytes` (symlinks not followed) and `utc_timestamp`.
+- `tests/perf_record_gate.rs`: record round trip, `compare` verdicts and mismatches, and PSS sums over a fake procfs in a `tempfile` directory.
+- `tests/perf_capture.rs`: CPU ticks over a fake procfs, `package_bytes` (symlinks not followed) and `utc_timestamp`.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-perf

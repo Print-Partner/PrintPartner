@@ -326,7 +326,8 @@ body {
   }
 
   .pp-builds-table :is(th, td),
-  .pp-farm-table :is(th, td) {
+  .pp-farm-table :is(th, td),
+  .pp-sources-table :is(th, td) {
     padding: 4px;
     overflow-wrap: anywhere;
   }
@@ -364,12 +365,14 @@ body {
 }
 
 .pp-builds-table,
-.pp-farm-table {
+.pp-farm-table,
+.pp-sources-table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.pp-farm-table :is(th, td) {
+.pp-farm-table :is(th, td),
+.pp-sources-table :is(th, td) {
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   text-align: left;
@@ -377,13 +380,15 @@ body {
   font-weight: var(--font-weight-regular);
 }
 
-.pp-farm-table thead th {
+.pp-farm-table thead th,
+.pp-sources-table thead th {
   color: var(--text-muted);
   font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
 }
 
-.pp-farm-table tbody th {
+.pp-farm-table tbody th,
+.pp-sources-table tbody th {
   font-weight: var(--font-weight-medium);
 }
 
@@ -451,6 +456,12 @@ body {
 .pp-fact-detail {
   display: block;
   color: var(--text-muted);
+}
+
+.pp-settings-section {
+  margin: 0 0 32px;
+  /* Room above the heading when an in-page link scrolls to it. */
+  scroll-margin-top: 16px;
 }
 
 .pp-reasons {
@@ -681,14 +692,24 @@ body {
   width: min(48rem, 100%);
 }
 
-.pp-gate-section h3 {
+.pp-gate-section h3,
+.pp-help-section h3 {
   margin: 16px 0 4px;
   font-size: var(--text-md);
 }
 
-.pp-gate-section ul {
+.pp-gate-section ul,
+.pp-help-section ul {
   margin: 0;
   padding-left: 1.25rem;
+}
+
+.pp-help-section ul {
+  margin-bottom: 8px;
+}
+
+.pp-help-section li + li {
+  margin-top: 4px;
 }
 
 .pp-gate-snapshot,

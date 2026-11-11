@@ -4,10 +4,14 @@
 //! rmcp. Every request needs a valid API key for the routed tenant: a session
 //! cookie alone is refused, and so is a key the auth worker does not resolve
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
-//! the listener exactly. Write tools only propose; `confirm_apply` applies.
+//! the listener exactly; then the request counts against MCP's budget of
+//! 1000 a minute, Node's limit, before its key is checked
+//! (`mcp/rate_limit.rs`). Write tools only propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
 //! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
-//! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`).
+//! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
+//! and so do `get_remaining` and `get_printer_checkoff`
+//! (`mcp/progress_reads.rs`).
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -28,6 +32,7 @@ use pp_storage::checkoff_progress::ProgressClient;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
     read_model::{
+        ReadClient,
         build_workflow::{Outcome, Request, WorkflowClient},
         planning::PlanningClient,
     },
@@ -61,6 +66,12 @@ pub struct McpHttpConfig {
     api_key_tenant: String,
     enabled: bool,
     wait: Duration,
+    limit: u32,
+    window: Duration,
+    #[cfg(test)]
+    confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
+    #[cfg(test)]
+    clock: Option<Arc<rate_limit::ManualClock>>,
 }
 
 impl McpHttpConfig {
@@ -73,7 +84,35 @@ impl McpHttpConfig {
             api_key_tenant: api_key_tenant.into(),
             enabled: rebuild_flag_enabled(flag),
             wait: Duration::from_millis(100),
+            limit: rate_limit::LIMIT,
+            window: rate_limit::WINDOW,
+            #[cfg(test)]
+            confirm_gate: None,
+            #[cfg(test)]
+            clock: None,
         })
+    }
+
+    /// A smaller budget on a clock the test advances, so a test can exhaust
+    /// and reset it without waiting.
+    #[cfg(test)]
+    pub(crate) fn with_budget(
+        mut self,
+        limit: u32,
+        window: Duration,
+        clock: Arc<rate_limit::ManualClock>,
+    ) -> Self {
+        self.limit = limit;
+        self.window = window;
+        self.clock = Some(clock);
+        self
+    }
+
+    /// Holds each Plan Accept confirm just before it applies.
+    #[cfg(test)]
+    pub(crate) fn with_confirm_gate(mut self, gate: Arc<plan_accept::ConfirmGate>) -> Self {
+        self.confirm_gate = Some(gate);
+        self
     }
 }
 
@@ -82,13 +121,15 @@ struct Guard {
     config: McpHttpConfig,
     auth: RebuildAuthClient,
     admission: Arc<Semaphore>,
+    budget: Arc<rate_limit::Budget>,
 }
 
 /// The clients ported tools use: `get_build_workflow` reads the same client as
 /// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client
 /// and checks the Build planning brief with the planning routes' client.
-/// `progress` applies confirmed Checkoff proposals. `builds` lists Builds and
-/// `planning` also reads decisions and snapshots for the read tools.
+/// `progress` applies confirmed Checkoff proposals and reads printer Checkoff.
+/// `builds` lists Builds, `planning` also reads decisions and snapshots, and
+/// `accepted` reads Accepted Plan progress for the read tools.
 #[derive(Clone)]
 struct Reads {
     builds: BuildGraphClient,
@@ -96,23 +137,29 @@ struct Reads {
     drafts: WorkingDraftClient,
     planning: PlanningClient,
     progress: ProgressClient,
+    accepted: ReadClient,
     wait: Duration,
+    #[cfg(test)]
+    confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
+}
+
+/// The storage clients MCP tools read and write, each used with the
+/// request's API key.
+pub struct McpClients {
+    pub builds: BuildGraphClient,
+    pub workflow: WorkflowClient,
+    pub drafts: WorkingDraftClient,
+    pub planning: PlanningClient,
+    pub progress: ProgressClient,
+    pub accepted: ReadClient,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
 /// `workflow` and Plan Accept uses `drafts` and `planning`, each with the
 /// request's API key. Checkoff proposals apply through `progress`; `builds`
-/// serves `list_plans`.
-pub fn mcp_router(
-    config: McpHttpConfig,
-    auth: RebuildAuthClient,
-    builds: BuildGraphClient,
-    workflow: WorkflowClient,
-    drafts: WorkingDraftClient,
-    planning: PlanningClient,
-    progress: ProgressClient,
-) -> Router {
+/// serves `list_plans` and `accepted` serves `get_remaining`.
+pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpClients) -> Router {
     if !config.enabled {
         return Router::new();
     }
@@ -121,14 +168,28 @@ pub fn mcp_router(
     let transport = StreamableHttpServerConfig::default()
         .with_allowed_hosts([config.host.clone()])
         .with_allowed_origins([config.origin.clone()]);
+    let McpClients {
+        builds,
+        workflow,
+        drafts,
+        planning,
+        progress,
+        accepted,
+    } = clients;
     let reads = Reads {
         builds,
         workflow,
         drafts,
         planning,
         progress,
+        accepted,
         wait: config.wait,
+        #[cfg(test)]
+        confirm_gate: config.confirm_gate.clone(),
     };
+    let budget = rate_limit::Budget::new(config.limit, config.window);
+    #[cfg(test)]
+    let budget = budget.with_clock(config.clock.clone());
     let service = StreamableHttpService::new(
         move || Ok(ProductMcp::new(reads.clone())),
         Arc::new(LocalSessionManager::default()),
@@ -139,6 +200,7 @@ pub fn mcp_router(
         .route_service("/api/v1/mcp", service)
         .layer(middleware::from_fn_with_state(
             Guard {
+                budget: Arc::new(budget),
                 config,
                 auth,
                 admission: Arc::new(Semaphore::new(ADMISSION_PERMITS)),
@@ -179,14 +241,18 @@ pub(crate) fn test_router(
             Default::default(),
         )
         .unwrap();
+    let accepted = owner.accepted_reads_with_policy(policy).unwrap();
     let router = mcp_router(
         config,
         auth.clone(),
-        builds,
-        workflow,
-        drafts,
-        planning,
-        progress,
+        McpClients {
+            builds,
+            workflow,
+            drafts,
+            planning,
+            progress,
+            accepted,
+        },
     );
     (router, auth)
 }
@@ -196,8 +262,9 @@ async fn guard(
         config,
         auth,
         admission,
+        budget,
     }): axum::extract::State<Guard>,
-    mut request: axum::extract::Request,
+    request: axum::extract::Request,
     next: Next,
 ) -> Response {
     if let Err((status, detail)) = admit(
@@ -208,6 +275,24 @@ async fn guard(
     ) {
         return failure(status, detail);
     }
+    let quota = budget.consume();
+    if let Some(refused) = quota.rejection() {
+        return refused;
+    }
+    let mut response = authenticated(config, auth, admission, request, next).await;
+    quota.apply(&mut response);
+    response
+}
+
+/// Resolves the request's API key for the routed tenant and runs the request
+/// with it, or refuses.
+async fn authenticated(
+    config: McpHttpConfig,
+    auth: RebuildAuthClient,
+    admission: Arc<Semaphore>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
     let Some(PresentedCredential::ApiKey { tenant, secret }) =
         principal(request.headers(), &config.api_key_tenant)
     else {
@@ -420,10 +505,18 @@ impl ServerHandler for ProductMcp {
             Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
                 self.read_tool(&request.name, &arguments, presented).await
             }
+            Some(presented) if progress_reads::TOOLS.contains(&request.name.as_ref()) => {
+                self.progress_tool(&request.name, &arguments, presented)
+                    .await
+            }
             Some(presented) if request.name == plan_accept::PROPOSE => {
                 self.propose_accept(&arguments, presented).await
             }
             Some(presented) if confirming.is_some() => {
+                #[cfg(test)]
+                if let Some(gate) = &self.reads.confirm_gate {
+                    gate.watch(context.ct.clone().cancelled_owned());
+                }
                 // Taken before Accept so a concurrent confirm cannot apply it twice.
                 match confirming.and_then(|action| self.session.take_pending(&action.id)) {
                     Some(action) => self.confirm_accept(action, presented).await,
@@ -446,7 +539,11 @@ impl ServerHandler for ProductMcp {
 #[path = "mcp/checkoff.rs"]
 mod checkoff;
 #[path = "mcp/plan_accept.rs"]
-mod plan_accept;
+pub(crate) mod plan_accept;
+#[path = "mcp/progress_reads.rs"]
+mod progress_reads;
+#[path = "mcp/rate_limit.rs"]
+mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
 

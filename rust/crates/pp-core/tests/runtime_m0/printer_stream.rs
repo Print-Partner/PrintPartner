@@ -4,7 +4,7 @@
 //! increasing sequence (error then idle both seen), offline with a last-heard
 //! time once the printer stops answering, resume by sequence, and heartbeats.
 use super::temporary;
-use super::ticket_t_4_watcher_proof::{
+use super::watcher_proof::{
     SUCCESS, production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in,
     start_rust_only,
 };

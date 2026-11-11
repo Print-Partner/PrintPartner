@@ -104,6 +104,8 @@ write commits.
 
 | Request | Effect |
 | --- | --- |
+| `Add` (Add to queue, GRE-1227) | Writes a `queued` item last in stored order for a file the route staged, with a new UUID, Node's defaults (`match` `pinned`, `wait_for_idle` true, `start` false) and the normalized `checkoff_units`. Refused with 404 `Profile not found` when the Plan is not the user's, and with the Farm refusal below when Farm is off for that Plan. It creates no job and wakes no worker. |
+| `Admit` | Authenticates only, so the route refuses a bad credential before it reads an upload. |
 | `Dispatch` (Send now, and each item Send ready picks) | A `queued` or `error` item becomes `sending` and gets a new durable `printer-upload` job, with its file, printer, start choice, Build and Checkoff units, in the same transaction. Refused with 409 `Item is not dispatchable` for another state, 409 `Item changed concurrently` while another item is `sending` to the printer, and 409 `Another send to this printer is still unresolved` while any other job holds the printer. |
 | `Reconcile` | The user's answer for an item whose last send has an unknown outcome; see below. Otherwise 409 `This item has no send with an unknown printer outcome`. |
 | `Remove` | A `queued` or `error` item becomes `cancelled`; otherwise 409 `Item not cancellable`. |
@@ -170,11 +172,11 @@ the reconciliation record, which keeps it as evidence.
 `pp_api::send_queue` serves the user actions in the Rust-only runtime, under
 `/api/v2`, behind `PP_DESKTOP_REBUILD` and the accepted gate (loopback, exact
 Host and Origin, and a session or API key). `pp-core` mounts them with the
-status routes. Node's add-to-queue route (`POST /printer-send-queue`, a
-multipart upload) is not ported yet.
+status routes.
 
 | Route | Answer |
 | --- | --- |
+| `POST /printer-send-queue` (Add to queue) | 200 `{item}` with `state: "queued"`. A `multipart/form-data` upload; see [Add to queue](#add-to-queue-gre-1227). |
 | `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `{item, job_id}`. Body `{"force": true}` skips the idle check. |
 | `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`, or one 403 `FEATURE_DISABLED` / 500 `FEATURE_TOGGLES_INVALID` when Farm refuses a ready item. Optional `printer_id` must be a non-empty string. |
 | `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a missing or non-boolean `printed`, or a non-string `job_id`, is 400. |
@@ -205,6 +207,53 @@ Send ready does the same for each queued item it reads (up to 8), sends at
 most one per printer, and skips an item refused with 409. That item stays as
 it is, except an item whose staged file is gone, which becomes `error` as in
 Send now. Any other refusal is listed as `{item_id, error}`.
+
+## Add to queue (GRE-1227)
+
+`POST /api/v2/printer-send-queue` is Node's `POST /printer-send-queue`. It only
+stages a file and writes a `queued` row; it never sends. Send now and Send
+ready stay separate user actions. The form is read under Node's limits: one
+file part named `file` or `gcode` of up to 64 MiB (413 `Print file exceeds the
+64 MiB upload limit`), up to eight fields cut at 64 KiB, and 10 requests a
+minute. The fields are Node's: `printer_id`, `profile_id` or `plan_id`,
+`start` (`1`, `true` or `yes`), `wait_for_idle` (off for `0`, `false` or `no`),
+`match` (`pinned` or `compatible`) and `checkoff_units` (a JSON array; invalid
+or repeated units are dropped). The route answers in this order:
+
+1. 401 before it reads the body when the credential is not valid;
+2. 415 for a body that is not `multipart/form-data`; 400 `Only one G-code
+   file is allowed` for a second file part;
+3. 400 `printer_id is required`, then `G-code file required`, then `Only
+   .gcode / .bgcode / .gco files can be sent to a printer`, then `Pick a plan
+   to bind this send (profile_id required)`;
+4. the printer: 404 `Fleet printer not found`; 400 `Printer is not linked to
+   a host. Link a Moonraker or PrusaLink host in Settings.`; 400 `Linked
+   printer host was not found` for a missing or disabled host; and 400 `Queue
+   is not supported for <type>` for any host the upload worker cannot send to
+   (anything but Moonraker and PrusaLink);
+5. the file is written to `exports/printer-uploads/<random>/<name>`, where
+   `<name>` is Node's sanitized base name with `:` replaced by `_`, so a
+   Windows drive prefix cannot move the file out of that directory;
+6. storage's `Add`: 404 `Profile not found`, or the Farm refusal. The staged
+   directory is deleted again unless the item was written or storage's
+   outcome is unknown (commit unknown, or the reply lost after admission),
+   since the item may then exist.
+
+Known differences from Node, provisional (GRE-1227): Node checks the Plan
+before the printer, so with both wrong Rust answers the printer refusal
+first. Node answers a Bambu host with 403 `FEATURE_DISABLED` while the Bambu
+Module is off and 400 when it is on; Rust always answers 400, since no Bambu
+send exists. Node reads `profile_id` and unit numbers with `Number()`, so it
+also takes forms such as `"0x10"`; Rust reads decimal numbers, and units only
+as JSON numbers, so a unit written as `4.0` is dropped. A disabled linked host
+is refused with `Linked printer host was not found`; Node queues for it. A
+file name that is only spaces answers 400 `Could not enqueue item` before the
+printer, Plan and Farm checks; Node answers it after them. Node's add route
+leaves `@fastify/multipart` limit errors to Fastify's default handler, so a
+second file part or a ninth field is 413 `reach files limit` or `reach fields
+limit`, and an oversized file is probably 413 `request file too large`; Rust
+answers the texts above, and 400 `That upload could not be read` for a ninth
+field or a field named after an `Object.prototype` member.
 
 ## Upload worker (GRE-365, GRE-1215)
 
@@ -266,13 +315,15 @@ all filaments. A file with grams but no positive length records the
 estimate with no factor, so the estimate stays after the print.
 
 A file with no such value, a compressed metadata block, a value that is not a
-positive number, or Cura's metres-only comment gives no estimate, and the link
-then has no grams until the print's measured value arrives. A send without
+positive number, or Cura's metres-only comment gives no estimate. The link then
+has no grams row, and the printer's measured length at finish is not recorded
+either, because there is no grams per millimetre to convert it with. A send without
 Checkoff units creates no link and records nothing.
 
 ## Tests
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(ticket_t_26) | test(remapped_queue_rows_match_literal_node_results)'
-cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core --features pp-api/desktop_rebuild,pp-core/desktop_rebuild -E 'test(ticket_t_26)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core --features pp-api/desktop_rebuild,pp-core/desktop_rebuild -E 'test(ticket_t_26) | test(add_to_queue)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(the_form)'
 ```

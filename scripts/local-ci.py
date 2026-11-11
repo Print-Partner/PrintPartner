@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run the required Rust CI checks locally, in CI order, and report every step.
+"""Run the required Rust CI checks locally, in CI order, and report step outcomes.
 
+A stale release-artifact check stops the run before nextest; later steps are not run.
 Each step copies its command lines from the workflow step named in `ci`;
 scripts/test_local_ci.py fails when a copied line no longer matches the workflow.
 A step whose tool, pinned version or host is missing is reported as SKIP with the
@@ -80,6 +81,10 @@ STEPS = [
          requires=(("python3", None),)),
     Step("actionlint", "actionlint (required check)", setup=("actionlint -color",),
          requires=(("actionlint", "1.7.12"),)),
+    Step("agent-guidance", "links and anchors in every tracked Markdown page, and agent guidance rules",
+         ("python3 -B -m unittest discover -s scripts -p test_agent_guidance.py -v",
+          "python3 -B scripts/check-agent-guidance.py"),
+         ("actionlint.yml#Validate shared agent guidance",), requires=(("python3", None), ("git", None))),
     Step("large-files", "tracked file size limit",
          ("python3 -B -m unittest discover -s scripts -p test_check_large_files.py -v",
           "python3 -B scripts/check-large-files.py"),
@@ -87,7 +92,7 @@ STEPS = [
     Step("python-lint", "Ruff unused-import and complexity lint",
          ("python3 -B -m unittest discover -s scripts -p test_ruff_lint.py -v",
           "python3 -B -m unittest discover -s scripts -p test_operation_inventory.py -v",
-          "ruff check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks .claude/hooks"),
+          "ruff check scripts rust/scripts web/scripts slicer-sidecar .claude/hooks"),
          ("actionlint.yml#Lint Python with Ruff",),
          requires=(("python3", None), ("ruff", RUFF_VERSION))),
     Step("zizmor", "zizmor (required check)",
@@ -377,6 +382,9 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
         print(f"RUSTC_WRAPPER={env['RUSTC_WRAPPER']} CARGO_INCREMENTAL={env.get('CARGO_INCREMENTAL', '')}",
               flush=True)
     Path(env["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
+    nextest = [step for step in plan if step.id.startswith("nextest-") and not unmet(step, env)]
+    if nextest and "web-assets" not in skip and not any(step.id == "web-assets" for step in plan):
+        plan.insert(0, next(step for step in STEPS if step.id == "web-assets"))
     results = []
     for step in plan:
         reason = unmet(step, env)
@@ -384,6 +392,13 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
             print(f"\n== SKIP {step.id}: {reason}", flush=True)
             results.append(("SKIP", step, reason))
             continue
+        if step.id.startswith("nextest-"):
+            print(f"\n== CHECK release artifacts before {step.id}", flush=True)
+            code = run("release-artifacts", "python3 scripts/check-local-release-artifacts.py", ROOT, env)
+            if code:
+                results.append(("FAIL", Step("release-artifacts", "release artifact freshness"),
+                                "nextest was not started"))
+                break
         if step.id == FAST_NEXTEST:
             # The cargo steps' own NEXTEST_FILTER=all() would override the caller's.
             step = replace(step, env={**step.env, "NEXTEST_FILTER": affected(env)})

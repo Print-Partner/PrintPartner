@@ -82,8 +82,60 @@ class AgentGuidanceTests(unittest.TestCase):
         self.write("AGENTS.md", "# Guide\n[local](docs/local%20guide.md)\n")
         self.assertEqual(GUIDANCE.check_document(self.root, "AGENTS.md"), [])
 
+    def test_explicit_html_anchor_counts(self):
+        self.assertEqual(GUIDANCE.anchors('<a id="settings-for-chad"></a>\n\n## Ruleset\n<a name="old"></a>\n'),
+                         {"settings-for-chad", "ruleset", "old"})
+        self.assertEqual(GUIDANCE.anchors('```html\n<a id="example"></a>\n```\n'), set())
+
+    def test_links_in_fenced_code_are_examples(self):
+        self.write("docs/page.md", "Text\n\n```md\n[example](missing.md#nowhere)\n```\n")
+        self.assertEqual(GUIDANCE.check_links(self.root, "docs/page.md"), [])
+
+    def test_any_page_gets_link_checks_but_not_the_title_rule(self):
+        self.write("docs/target.md", "# Target\n\n## Real\n")
+        self.write("README.md", "No title here\n[ok](docs/target.md#real)\n[bad](docs/target.md#gone)\n")
+        errors = GUIDANCE.check_links(self.root, "README.md")
+        self.assertEqual(errors, ["README.md: missing heading for link docs/target.md#gone"])
+        self.assertFalse(any("missing title" in error for error in errors))
+
+    def test_link_forms(self):
+        self.write("docs/a b.md", "# A\n\n## Part\n")
+        self.write("docs/x_(y).md", "# X\n")
+        self.write("docs/page.md", '[titled](a%20b.md#part "Title")\n[angled](<a b.md#part>)\n'
+                   "![image](x_(y).md)\n[ref]: a%20b.md#gone\n[bad title](missing.md 'T')\n")
+        self.assertEqual(GUIDANCE.check_links(self.root, "docs/page.md"),
+                         ["docs/page.md: missing or outside-checkout link missing.md",
+                          "docs/page.md: missing heading for link a%20b.md#gone"])
+
+    def test_links_and_anchors_in_inline_code_are_examples(self):
+        self.write("docs/page.md", "Write `[x](missing.md)` and `<a id=\"fake\"></a>`.\n")
+        self.assertEqual(GUIDANCE.check_links(self.root, "docs/page.md"), [])
+        self.assertEqual(GUIDANCE.anchors("Write `<a id=\"fake\"></a>`.\n## Run `x`\n"), {"run-x"})
+
+    def test_only_a_real_id_or_name_attribute_is_an_anchor(self):
+        self.assertEqual(GUIDANCE.anchors('<a data-id="no"></a>\n<a title="name=\'z\'" id="yes"></a>\n'),
+                         {"yes"})
+
+    def test_a_page_that_is_not_utf8_is_reported_not_raised(self):
+        (self.root / "docs").mkdir()
+        (self.root / "docs/bad.md").write_bytes(b"# Bad \xff\n")
+        self.assertEqual(GUIDANCE.check_links(self.root, "docs/bad.md"), ["docs/bad.md: not UTF-8"])
+
+    def test_policy_alone_skips_links(self):
+        self.write("AGENTS.md", "Instructions without a heading\n[missing](docs/missing.md)\n")
+        self.assertEqual(GUIDANCE.check_policy(self.root, "AGENTS.md"), ["AGENTS.md: missing title"])
+
+    def test_tracked_markdown_lists_only_tracked_existing_pages(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.write("docs/a b.md", "# A\n")
+        self.write("notes.md", "# Untracked\n")
+        self.write("gone.md", "# Gone\n")
+        subprocess.run(["git", "-C", str(self.root), "add", "docs/a b.md", "gone.md"], check=True)
+        (self.root / "gone.md").unlink()
+        self.assertEqual(GUIDANCE.tracked_markdown(self.root), ["docs/a b.md"])
+
     def test_skill_metadata(self):
-        name = ".factory/skills/pp-readiness/SKILL.md"
+        name = ".claude/skills/pp-readiness/SKILL.md"
         for metadata, expected in (
             ("---\nname: pp-readiness\ndescription: Run bounded QA.\n---\n", []),
             ("# No frontmatter\n", ["missing YAML frontmatter"]),
@@ -115,12 +167,31 @@ class AgentGuidanceTests(unittest.TestCase):
                                 capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"{len(GUIDANCE.DOCUMENTS)} documents", result.stdout)
+        self.assertIn("tracked Markdown pages passed", result.stdout)
+
+    def test_qa_skills_defer_to_the_shared_workflow(self):
+        root = SCRIPT.resolve().parents[1]
+        workflow = (root / "docs/development/agent-workflow.md").read_text(encoding="utf-8")
+        self.assertIn("control-print-partner.mjs launch", workflow)
+        self.assertIn("verify.py launch", workflow)
+        shared = "../../../docs/development/agent-workflow.md#"
+        for name, sections in (("pp-mission-qa", ("choose-the-runtime", "web-ui", "rust-gateway", "report-and-clean-up")),
+                               ("pp-verify", ("web-ui", "dialogs-and-other-client-only-state", "rust-gateway",
+                                              "desktop-app", "check-and-attach-evidence"))):
+            skill = (root / f".claude/skills/{name}/SKILL.md").read_text(encoding="utf-8")
+            for section in sections:
+                self.assertIn(shared + section, skill)
+            # A second copy of the launch recipe would drift from the shared one.
+            self.assertNotIn("control-print-partner.mjs", skill)
+            self.assertNotIn("verify.py launch", skill)
+            self.assertNotIn("$QA_ROOT", skill)
 
     def test_real_ignore_rules_allow_templates_but_not_secrets(self):
         cases = {
             "AGENTS.md": False,
-            ".factory/skills/pp-readiness/SKILL.md": False,
-            ".factory/skills/pp-verify/SKILL.md": False,
+            ".claude/skills/pp-readiness/SKILL.md": False,
+            ".claude/skills/pp-verify/SKILL.md": False,
+            ".claude/skills/pp-lane/SKILL.md": False,
             ".env.example": False,
             ".env.development.example": False,
             "web/apps/web/.env.example": False,

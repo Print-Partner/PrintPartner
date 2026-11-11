@@ -2,9 +2,8 @@
 """Refuse agent actions that Print Partner reserves for the maintainer.
 
 Any agent runner, or a person, can call this before running a shell command,
-editing a file, or applying a patch. Factory Droid calls it through the
-adapter in .factory/hooks/guard.py and Claude Code through .claude/hooks/guard.py;
-other runners must call it themselves. It
+editing a file, or applying a patch. Claude Code calls it through
+.claude/hooks/guard.py; other runners must call it themselves. It
 is a guard rail, not a security boundary: it reads the operation it is given
 and refuses known-dangerous shapes. When it cannot classify a git or gh
 invocation, it refuses rather than guessing.

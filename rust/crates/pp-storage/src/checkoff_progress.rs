@@ -34,6 +34,8 @@ pub(crate) mod history_undo;
 pub(crate) mod links;
 #[cfg(feature = "desktop_rebuild")]
 mod lookup;
+#[cfg(feature = "desktop_rebuild")]
+pub use lookup::Filter as PrinterCheckoffFilter;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_file;
@@ -226,6 +228,10 @@ pub enum Request {
     /// One printer Checkoff link by id, for MCP proposals. Reads only.
     #[cfg(feature = "desktop_rebuild")]
     CheckoffLink { id: String },
+    /// MCP `get_printer_checkoff`: links and open unattributed prints, with
+    /// fleet printer names. Reads only.
+    #[cfg(feature = "desktop_rebuild")]
+    PrinterCheckoff(lookup::Filter),
     /// `POST /printer-checkoff/file-assignments`, parsed and with its file
     /// already read by the route.
     #[cfg(feature = "desktop_rebuild")]
@@ -301,6 +307,9 @@ pub enum Body {
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip_serializing)]
     Suggestion(Box<Value>),
+    /// MCP `get_printer_checkoff`'s answer.
+    #[cfg(feature = "desktop_rebuild")]
+    PrinterCheckoff(Value),
     /// A dismissed unattributed print.
     Dismissed {
         ok: bool,
@@ -442,6 +451,8 @@ enum Op {
     CheckoffLink {
         id: String,
     },
+    #[cfg(feature = "desktop_rebuild")]
+    PrinterCheckoff(lookup::Filter),
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -622,6 +633,8 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
             return lookup::link_id(&id).map(|id| Op::CheckoffLink { id });
         }
         #[cfg(feature = "desktop_rebuild")]
+        Request::PrinterCheckoff(filter) => return Ok(Op::PrinterCheckoff(filter)),
+        #[cfg(feature = "desktop_rebuild")]
         Request::AssignFile(assignment) => return Ok(Op::File(print_file::Op::Assign(assignment))),
         #[cfg(feature = "desktop_rebuild")]
         Request::FileRequest { body, route } => {
@@ -669,12 +682,61 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
             )
         }
     };
+    unit_op(target, change)
+}
+
+/// A Required-unit change, refused when its token target is malformed.
+fn unit_op(target: Target, change: Change) -> std::result::Result<Op, Response> {
     if let Target::Token { expected, token } = &target
         && !(expected.valid() && is_token(token))
     {
         return Err(Refusal::InvalidRequest.response(false));
     }
     Ok(Op::Unit { target, change })
+}
+
+/// Every link of host `integration_id` that is `watching`, `awaiting_verify`
+/// or `verified`, created at or before `created_by`, whose filename or remote
+/// path names `filename`, matched like Node's `printerFilenamesMatch`: the
+/// trimmed base name, case-insensitively. Each comes as `(created_at, id)`, in
+/// no particular order: list position is not creation order, because a save
+/// moves a patched link to the end and writes terminal links after active
+/// ones. The later two states count because Node's checkoff reconcile, and
+/// then a fast verify, can move a link on between the finish and the
+/// measured write. Nothing here changes a link.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn finished_links(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    integration_id: &str,
+    filename: &str,
+    created_by: &str,
+) -> Result<Vec<(String, String)>> {
+    let base = |name: &str| {
+        let name = name.trim().replace('\\', "/");
+        name.rsplit('/').next().unwrap_or_default().to_lowercase()
+    };
+    let wanted = base(filename);
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let links = links::load(tx, tenant, &links::now())?;
+    Ok(links
+        .iter()
+        .filter(|link| {
+            matches!(
+                link["state"].as_str(),
+                Some("watching" | "awaiting_verify" | "verified")
+            ) && link["integration_id"] == integration_id
+                && [&link["filename"], &link["remote_path"]]
+                    .into_iter()
+                    .any(|name| name.as_str().is_some_and(|name| base(name) == wanted))
+        })
+        .filter_map(|link| {
+            let at = link["created_at"].as_str().filter(|at| *at <= created_by)?;
+            Some((at.to_owned(), link["id"].as_str()?.to_owned()))
+        })
+        .collect())
 }
 
 /// Node's `createPrinterCheckoffLink` for a successful printer upload: a
@@ -831,6 +893,8 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::BurstStatus { key } => return lookup::burst_status(tx, tenant, &key),
         #[cfg(feature = "desktop_rebuild")]
         Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::PrinterCheckoff(filter) => return lookup::printer_checkoff(tx, tenant, &filter),
         #[cfg(feature = "desktop_rebuild")]
         Op::File(op) => return print_file::run(tx, tenant, op, repos),
         Op::Import(import) => return import_current(tx, tenant, import, repos),

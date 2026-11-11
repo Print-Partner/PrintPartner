@@ -3,6 +3,7 @@ import { onlineManager } from "@tanstack/react-query";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "./App";
+import { PLAN_HELP } from "./builds/planCopy";
 import { HEALTH_TIMEOUT_MS } from "./frame/connection";
 import { SEQUENCE_MS } from "./frame/useShortcuts";
 import { routes } from "./routes";
@@ -159,12 +160,13 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
   it("? lists every shortcut and blocks shortcuts behind it", () => {
     const { path } = renderAt("/today");
     press("?");
-    const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const dialog = screen.getByRole("dialog", { name: "Help" });
     const keys = within(dialog)
       .getAllByRole("row")
       .slice(1)
       .map((r) => r.querySelector("kbd")?.textContent);
     expect(keys).toEqual(["G T", "G B", "G F", "G L", "G ,", "Cmd/Ctrl K", "?", "Esc"]);
+    expect(within(dialog).getByRole("heading", { name: "Keyboard shortcuts" })).toBeTruthy();
     expect(dialog.contains(document.activeElement)).toBe(true);
     press("g", {}, document.activeElement!);
     press("b", {}, document.activeElement!);
@@ -173,10 +175,24 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("? explains that drafts save on their own, Accept applies them, and Accept snapshots first", () => {
+    renderAt("/today");
+    press("?");
+    const dialog = screen.getByRole("dialog", { name: "Help" });
+    const plan = within(dialog).getByRole("region", { name: "Plan changes" });
+    const items = within(plan)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+    expect(items).toEqual([...PLAN_HELP]);
+    expect(items.join(" ")).toMatch(/save to a draft as you make them/);
+    expect(items.join(" ")).toMatch(/does not change until you accept/);
+    expect(items.join(" ")).toMatch(/Accept first saves a snapshot of the accepted Plan it replaces/);
+  });
+
   it("pulls focus back when it leaves the dialog, as Shift+Tab from the panel does", () => {
     renderAt("/today");
     press("?");
-    const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const dialog = screen.getByRole("dialog", { name: "Help" });
     act(() => dialog.focus());
     press("Tab", { shiftKey: true }, dialog);
     // jsdom does not move focus on Tab; move it outside the way the browser would.

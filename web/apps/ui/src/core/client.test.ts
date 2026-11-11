@@ -35,6 +35,27 @@ describe("fetchCore", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, null, {}, [null, {}, { name: 42 }, { name: "" }, { name: "Other kit" }]])(
+    "keeps only holding Build names from a refusal: %j",
+    async (builds) => {
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(
+            new Response(JSON.stringify({ code: "duplicate_order", builds }), { status: 409 }),
+          ),
+      );
+      const error = await fetchCore("/api/v2/plans/2/drafts/9/accept-preview").catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(CoreError);
+      expect((error as CoreError).conflictingBuilds).toEqual(
+        Array.isArray(builds) ? ["Other kit"] : [],
+      );
+    },
+  );
+
   it("turns a non-2xx answer into a CoreError naming the status", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 })));
 
@@ -64,14 +85,12 @@ describe("checkCoreHealth", () => {
   it("rejects an index.html fallback that answers 200", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response("<!doctype html>", {
-            status: 200,
-            headers: { "content-type": "text/html" },
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        new Response("<!doctype html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+      ),
     );
 
     await expect(checkCoreHealth()).rejects.toBeInstanceOf(CoreError);

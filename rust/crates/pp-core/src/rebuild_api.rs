@@ -14,6 +14,7 @@ use pp_api::{
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpClients, McpHttpConfig, mcp_router},
+    modules::modules_router,
     planning::planning_router,
     plates::plates_router,
     settings::settings_router,
@@ -217,7 +218,7 @@ pub fn read_router(
         history_client,
         planning_client,
         workflow_client,
-        (admin_files, app_settings, filament_client),
+        (admin_files, app_settings, features, filament_client),
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -237,6 +238,7 @@ pub fn read_router(
             (
                 guard.admin_files()?,
                 guard.app_settings_with_policy(policy)?,
+                guard.features_with_policy(policy)?,
                 guard.filaments_with_policy(policy)?,
             ),
             guard.domain_events_with_policy(policy)?,
@@ -255,17 +257,11 @@ pub fn read_router(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
         Arc::clone(&owner),
     );
-    let admin = admin_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        accepted_client.clone(),
-        admin_files,
-    );
-    let filaments = filaments(origin, api_key_tenant, &accepted_client, filament_client)?;
-    let settings_routes = settings_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        accepted_client.clone(),
-        app_settings,
-    );
+    let admin_config = AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
+    let admin = admin_router(admin_config.clone(), accepted_client.clone(), admin_files);
+    let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
+    let modules = modules_router(config.clone(), features);
+    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     let accepted = accepted_router(
         config
@@ -301,6 +297,7 @@ pub fn read_router(
             .merge(planning)
             .merge(workflow)
             .merge(admin)
+            .merge(modules)
             .merge(filaments)
             .merge(settings_routes)
             .merge(events)
@@ -440,13 +437,12 @@ pub fn product_router(
 pub(crate) const DESKTOP_TENANT: &str = "default";
 
 fn filaments(
-    origin: &str,
-    key: &str,
+    config: AdminHttpConfig,
     reads: &pp_storage::read_model::ReadClient,
     client: pp_storage::filaments::FilamentClient,
 ) -> Result<Router> {
     Ok(pp_api::filaments::filament_router(
-        AdminHttpConfig::from_startup(origin, key, Some("1"))?,
+        config,
         reads.clone(),
         client,
         Arc::new(crate::spoolman::SpoolmanInventory::new()?),
@@ -697,6 +693,7 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "SetModuleRequest" => json!({"on": true}),
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,
@@ -852,7 +849,8 @@ mod tests {
                 .path
                 .replace("{id}", &build)
                 .replace("{draft_id}", "1")
-                .replace("{snapshot_id}", "1");
+                .replace("{snapshot_id}", "1")
+                .replace("{module}", "orders");
             let body = route.request.map(sample_body);
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await

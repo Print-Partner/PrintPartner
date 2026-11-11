@@ -1282,12 +1282,12 @@ class HiddenMergeTests(unittest.TestCase):
                "gh extensions ls",
                # Sol at 19ad103f: attached wrapper operands, runner data, redirects kept inside a subshell or a
                # pipeline stage, and every group's ls alias.
-               "env -uGH_TOKEN gh pr view 12", "env -C/tmp gh pr view 12", "timeout -k0.5s 5 gh pr view 12",
+               "env -C/tmp gh pr view 12", "timeout -k0.5s 5 gh pr view 12",
                "/usr/bin/time -f%E gh pr view 12", "env -uGH_TOKEN npm test", "HOME=/tmp xargs echo gh",
-               "HOME=/tmp find docs -name gh -print", "(export HOME=/tmp); gh pr view 12",
-               "export HOME=/tmp | cat; gh pr view 12", "gh variable ls", "gh release ls", "gh pr ls", "gh secret ls",
+               "HOME=/tmp find docs -name gh -print",
+               "gh variable ls", "gh release ls", "gh pr ls", "gh secret ls",
                "gh repo ls", "gh alias ls", "find docs -exec grep -e gh -e pr -e merge {} +",
-               "(export HOME=/tmp); (gh pr view 12)", "export HOME=/tmp | gh pr view 12",
+
                "env -uSSH_AUTH_SOCK gh pr view 12", "env -uSSH_AUTH_SOCK npm test", "xargs grep -e gh -e pr -e merge",
                "printf 'x\\n' | xargs -rI {} echo {}", "xargs -0 -r -n 1 -P 4 echo",
                "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
@@ -1335,7 +1335,7 @@ class HiddenMergeTests(unittest.TestCase):
                         "export HOME=/tmp & gh pr view 12"):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
-                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_stderr_pipe_keeps_cd_and_exports_in_pipeline_scope(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1351,7 +1351,7 @@ class HiddenMergeTests(unittest.TestCase):
                     command = f"true {operator} {declaration}; gh pr view 12"
                     for result in self.results(command, str(main), None):
                         with self.subTest(command=command):
-                            self.assertEqual(result.returncode, 0, result.stderr)
+                            self.assertEqual(result.returncode, 2, result.stderr)
         guard = in_process(CLI)
         self.assertTrue(all(scope for _, scope, _ in guard.shell_commands("a |& b")))
 
@@ -1423,13 +1423,9 @@ class HiddenMergeTests(unittest.TestCase):
         guard = in_process(CLI)
         parsed = guard.shell_commands("a; b && c & d")
         self.assertFalse(parsed[0][1])
-        self.assertTrue(parsed[1][1])
+        self.assertFalse(parsed[1][1])
         self.assertTrue(parsed[2][1])
         self.assertFalse(parsed[3][1])
-        grouped = guard.shell_commands("(a && b & c)")
-        self.assertEqual(grouped[0][1], grouped[1][1])
-        self.assertNotEqual(grouped[1][1], grouped[2][1])
-        self.assertIsNone(grouped[2][1][1])
 
     def test_routine_wrapped_builds_and_background_jobs_stay_allowed(self):
         for command in ("xvfb-run -a cargo test", "direnv exec . cargo build", "pp-netns npx vite --port 5173",
@@ -1445,11 +1441,8 @@ class HiddenMergeTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("gh config redirected", result.stderr)
-        for command in ("export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12",
-                        "cargo build & npm run dev; wait"):
-            for result in self.results(command, self.lane, None):
-                with self.subTest(command=command):
-                    self.assertEqual(result.returncode, 0, result.stderr)
+        for result in self.results("export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12", self.lane, None):
+            self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_direnv_file_targets_are_programs(self):
         for command in ("direnv exec /usr/bin/gh pr merge 12",
@@ -1464,12 +1457,75 @@ class HiddenMergeTests(unittest.TestCase):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+        readings = guard.program_readings(["direnv", "exec", "environment", "git", "status"])
+        self.assertEqual({(name, tuple(rest)) for name, rest, *_ in readings},
+                         {("git", ("status",)), ("environment", ("git", "status"))})
+
+    def test_direnv_checks_both_readings_without_stat(self):
+        commands = ('direnv exec "$PWD" gh pr merge 12', "direnv exec $PWD gh pr merge 12",
+                    "direnv exec ~ git push -f origin topic", "mkdir -p d && direnv exec d gh pr merge 12",
+                    "env -C / direnv exec usr/bin gh pr merge 12", "cd / && direnv exec usr/bin gh pr merge 12",
+                    "git worktree add ../w2 && direnv exec ../w2 git push origin HEAD:main")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        with patch.object(guard.os.path, "isdir", side_effect=AssertionError("direnv must not stat PATH")):
+            self.assertIsNone(guard.check_command("direnv exec . cargo build", self.lane))
+
+    def test_background_and_directory_changes_make_the_whole_line_unknown(self):
         with tempfile.TemporaryDirectory() as folder:
-            Path(folder, "environment").mkdir()
-            self.assertEqual(guard.program(["direnv", "exec", "environment", "git", "status"], folder)[:2],
-                             ("git", ["status"]))
-            Path(folder, "tool").touch()
-            self.assertEqual(guard.program(["direnv", "exec", "tool", "arg"], folder)[:2], ("tool", ["arg"]))
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            commands = ("cd ../main-wt && git push origin HEAD | cat &",
+                        "cd ../main-wt && git push origin HEAD 2>&1 | tee /tmp/guard-test.log &",
+                        "cd ../main-wt && git push origin HEAD |& cat &",
+                        "cd ../main-wt && true | git push origin HEAD &",
+                        "(cd ../main-wt && (git push origin HEAD | cat)) &",
+                        "env -C / git push origin topic &", "git -C / push origin topic &",
+                        "pushd /; git push origin topic &", "cd / & gh pr comment 12 -b x")
+            for command in commands:
+                for result in self.results(command, str(lane), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+            command = "{ cd ../lane-wt; } & git push origin HEAD"
+            for result in self.results(command, str(main), None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_redirects_taint_gh_across_all_scopes(self):
+        commands = ("(export GH_CONFIG_DIR=/tmp/evil; gh pr view 12 &)",
+                    "(export GH_CONFIG_DIR=/tmp/evil; (gh pr view 12) &)",
+                    "export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12",
+                    "env -uGH_TOKEN gh pr view 12", "(export HOME=/tmp); gh pr view 12",
+                    "export HOME=/tmp | cat; gh pr view 12", "(export HOME=/tmp); (gh pr view 12)",
+                    "export HOME=/tmp | gh pr view 12", "(declare GH_TOKEN=x); gh pr view 12",
+                    "env GH_TOKEN=x echo hi; gh pr view 12")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        for command in ("HOME=/tmp npm test; gh pr view 12", "GH_TOKEN=x echo hi; gh pr view 12"):
+            for result in self.results(command, self.lane, None):
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_coproc_with_git_or_gh_is_unclear(self):
+        for command in ("coproc { export GH_CONFIG_DIR=/tmp/evil; gh pr view 12; }", "coproc git status"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("Cannot classify", result.stderr)
+
+    def test_required_routine_commands_stay_allowed(self):
+        commands = ("xvfb-run -a cargo test", "direnv exec . cargo build", "pp-netns npx vite --port 5173",
+                    "cargo build & npm run dev; wait", "direnv allow", "direnv status",
+                    "xvfb-run -a gh pr view 12 --json mergeable", "gh pr view 12 2>&1",
+                    "git push origin topic", "direnv exec . git push origin topic")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_hidden_merges_are_refused_everywhere(self):
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
@@ -1572,7 +1628,8 @@ class HiddenMergeTests(unittest.TestCase):
         self.assertIsNone(guard.LINE_GIT)
         # Lookups the cache cannot share still stop at the line's deadline. git is stubbed to take 10 ms and the
         # deadline set to 0.2 s, so the timeout path runs on any machine; each git call gets at most the time left.
-        distinct = "; ".join(f"git -c pp.k{k}=1 push origin HEAD:review-topic" for k in range(1000))
+        # Keep parsing below the synthetic deadline so this case exercises Git lookup timeouts.
+        distinct = "; ".join(f"git -c pp.k{k}=1 push origin HEAD:review-topic" for k in range(100))
         timeouts = []
 
         def slow_git(args, **kwargs):

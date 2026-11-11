@@ -127,8 +127,8 @@ GH_HELP = "Use gh <command> --help instead of gh help; a gh alias named help cou
 UNKNOWN_GH = ("`gh {}` is not a built-in gh command, so it would run an alias or an extension; lanes may not run "
               "those. Run the built-in command it stands for.")
 # Variables that move gh's config, and with it its aliases and extensions.
-GH_CONFIG_VARIABLES = ("GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME")
-GH_REDIRECT = ("gh config redirected: this line sets or clears GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME for gh; "
+GH_CONFIG_VARIABLES = ("GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME", "GH_TOKEN", "GITHUB_TOKEN")
+GH_REDIRECT = ("gh config redirected: this line redirects gh configuration or authentication; "
                "run gh with its normal config.")
 # gh options that may come before or between command words; none takes the next word as its value.
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
@@ -437,7 +437,7 @@ def substitutions(text):
     return found
 
 
-def shell_commands(source):  # noqa: C901
+def shell_commands(source, facts=None):  # noqa: C901
     """Split shell source into (arguments, scope, after_and_or) for simple commands.
 
     Handles quotes, escapes, continuations, separators, comments, redirections,
@@ -451,7 +451,7 @@ def shell_commands(source):  # noqa: C901
     drop_next = piped = after_logic = False
     depth = 0
     groups, counter = [], itertools.count(1)
-    and_or_starts = {(): 0}
+    facts = {} if facts is None else facts
 
     def scope(group_path, in_pipe):
         stage = next(counter) if in_pipe else None
@@ -574,13 +574,12 @@ def shell_commands(source):  # noqa: C901
                     if source[end:end + 1] == char or (char == "|" and source[end:end + 1] == "&"):
                         separator += source[end]
                         i = end
-                pipe = separator in ("|", "|&")
+                pipe = separator in ("|", "|&", "&")
                 logic = separator in ("&&", "||")
                 inside = tuple(groups)
                 depth += {"(": 1, ")": -1}.get(char, 0)
                 if char == "(":
                     groups.append(next(counter))
-                    and_or_starts[tuple(groups)] = len(commands)
                 elif char == ")" and groups:
                     groups.pop()
                 had_args = bool(args)
@@ -588,19 +587,10 @@ def shell_commands(source):  # noqa: C901
                     commands.append((args, scope(inside, pipe or piped), after_logic))
                     args = []
                 if separator == "&":
-                    # Bash backgrounds the whole preceding and-or list, not just its last command.
-                    background = -next(counter)
-                    for index in range(and_or_starts.get(inside, len(commands)), len(commands)):
-                        words, scoped, conditional = commands[index]
-                        path, stage = scoped if scoped else (inside, None)
-                        # One subshell owns the list; nested groups and actual pipeline stages stay distinct.
-                        path = (*path[:len(inside)], background, *path[len(inside):])
-                        commands[index] = (words, (path, stage), conditional)
+                    facts["background"] = True
                 pending = not had_args and (piped or after_logic)
-                if separator not in ("&&", "||", "|", "|&", "(", ")") and not (separator == "\n" and pending):
-                    and_or_starts[inside] = len(commands)
                 # Only a pipe token carries pipeline scope forward. Newlines awaiting its next stage
-                # keep it pending; a background & token scopes only the preceding and-or list.
+                # keep it pending; a background & token scopes only the preceding command conservatively.
                 piped = separator in ("|", "|&") or (separator == "\n" and pending and piped)
                 after_logic = logic or (separator == "\n" and pending and after_logic)
             i += 1
@@ -617,7 +607,7 @@ def shell_commands(source):  # noqa: C901
     if args:
         commands.append((args, scope(tuple(groups), piped), after_logic))
     for inner in nested:
-        commands.extend((inner_args, True, conditional) for inner_args, _, conditional in shell_commands(inner))
+        commands.extend((inner_args, True, conditional) for inner_args, _, conditional in shell_commands(inner, facts))
     return commands
 
 
@@ -657,10 +647,11 @@ def wrapper_bundle(name, option):
     return 1, None
 
 
-def program(args, cwd=None):
+def program(args, cwd=None, direnv_target=False):
     """Return the executed program name, its arguments, whether a wrapper changed directory,
     and the environment assignments the command makes."""
     i, moved, assigned = 0, False, []
+    seen_direnv = False
     while i < len(args):
         word = args[i]
         if ASSIGNMENT.match(word) or word in SHELL_PREFIXES:
@@ -685,17 +676,23 @@ def program(args, cwd=None):
             moved = moved or flag in WRAPPER_CHDIR
             i += wrapper_option_words(name, option)
         if name == "direnv":
-            if i + 1 >= len(args):
+            if seen_direnv or i + 1 >= len(args):
                 raise Unclear
+            seen_direnv = True
             target = args[i + 1]
-            if os.path.isdir(os.path.join(cwd or os.getcwd(), target)):
-                # Only a directory is an operand; a file in this position is itself the program.
-                moved = moved or target not in (".", "./")
-                i += 2
-            else:
-                i += 1
+            moved = moved or target not in (".", "./")
+            i += 1 if direnv_target else 2
+            direnv_target = False
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
+
+
+def program_readings(args, cwd=None):
+    """Check both direnv exec readings without consulting the filesystem."""
+    first = program(args, cwd)
+    second = program(args, cwd, direnv_target=True)
+    # Literal . and ./ cannot be executable files; do not reinterpret them as shell source builtins.
+    return [first, second] if second != first and second[0] not in (None, "") else [first]
 
 
 def options(args, value_flags="", stop_flags="", value_long=()):
@@ -1533,7 +1530,12 @@ def hidden_merge(words, state, depth=0, strict=False, scan=True, start=0):
 
 def merge_in(args, depth, strict, state, scan):
     """The body of hidden_merge for one (words, depth, strict, scan); hidden_merge adds the memo and the limits."""
-    name, rest, *_ = program(args, state.get("cwd"))
+    readings = program_readings(args, state.get("cwd"))
+    if len(readings) > 1:
+        other, other_rest, *_ = readings[1]
+        if hidden_merge([other, *other_rest], state, depth + 1, strict, scan):
+            return True
+    name, rest, *_ = readings[0]
     if name is None:
         return False
     if EXPANDED in name:
@@ -1628,26 +1630,12 @@ def redirects_gh_config(args, cwd=None):
                for i, word in enumerate(prefix))
 
 
-def redirect_scope(args, name, persistent, scoped, cwd=None):
-    """Return (redirect in effect for this command, the line's redirect state for the commands after it).
-
-    persistent is (line, groups): whether the line's own shell moved gh's config, and the ( ) subshells inside which
-    it was moved. A prefix assignment or env option moves it for its own command only. An export, declare, typeset,
-    readonly, or unset, or a bare assignment, moves it for the later commands of the same shell: the line's own
-    shell, or the same subshell and the subshells inside it. A pipeline stage is its own process, so nothing carries
-    out of one: (export HOME=/tmp); (gh pr view 12) and export HOME=/tmp | gh pr view 12 stay allowed, while
-    (export HOME=/tmp; gh pr view 12) is refused.
-    """
-    line, moved_in = persistent
-    path, stage = scoped if isinstance(scoped, tuple) else ((), None)
-    local = redirects_gh_config(args, cwd)
-    if local and (name is None or name in DECLARATIONS or name == "unset") and stage is None and scoped is not True:
-        if path:
-            moved_in = moved_in | {path}
-        else:
-            line = True
-    inherited = any(path[:len(group)] == group for group in moved_in)
-    return line or local or inherited, (line, moved_in)
+def persistent_redirect(args, cwd=None):
+    """A redirect taints the whole line, except a leading assignment limited to another command."""
+    name, *_ = program(args, cwd)
+    limited = bool(args and ASSIGNMENT.match(args[0]) and name is not None
+                   and name not in DECLARATIONS | {"unset", "eval", "source", ""})
+    return redirects_gh_config(args, cwd) and not limited
 
 
 def runs_gh(name, rest):
@@ -1768,6 +1756,10 @@ def check_command(command, cwd, outer=None, state=None):
     global LINE_DEADLINE, LINE_GIT
     if len(command.encode("utf-8", "surrogatepass")) > MAX_COMMAND_BYTES:
         return TOO_LONG
+    # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
+    # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
+    if cwd and ".." in PurePosixPath(cwd).parts:
+        cwd = os.path.realpath(cwd)
     if state is not None:
         return check_line(command, cwd, outer, state)
     state = merge_state()
@@ -1799,43 +1791,83 @@ def hidden_reason(parsed, assigned, state):
     return None
 
 
+def line_commands(parsed, facts):
+    """Flatten recognized shell strings for conservative line-wide checks, without modeling scope."""
+    pending = [(args, 0) for args, *_ in parsed]
+    words, seen = [], set()
+    while pending:
+        args, depth = pending.pop()
+        check_deadline()
+        words.append(args)
+        for name, rest, *_ in program_readings(args):
+            strings = command_strings(name, rest)
+            if name in SHELLS:
+                script, _ = shell_script(rest)
+                strings += [] if script is None else [script]
+            for text in strings:
+                if text in seen:
+                    continue
+                if depth >= NESTING_LIMIT:
+                    raise TooComplex(TOO_COMPLEX)
+                seen.add(text)
+                pending.extend((inner, depth + 1) for inner, *_ in shell_commands(text, facts))
+    return words
+
+
+def conservative_line(command, parsed, facts, cwd):
+    """Refuse ambiguous cwd/auth changes across the whole line; do not reconstruct bash scope."""
+    if re.search(r"\bcoproc\b", command) and re.search(r"\b(?:gh|git)\b", command):
+        return UNCLEAR, False
+    flat = line_commands(parsed, facts)
+    readings = [reading for args in flat for reading in program_readings(args, cwd)]
+    changes_directory = any(name in ("cd", "pushd", "popd") or moved or (name == "git" and any(
+        arg.startswith("-C") for arg in rest)) for name, rest, moved, *_ in readings)
+    if facts.get("background", False) and changes_directory:
+        if re.search(r"\b(?:git|gh)\b", command) or any(name in ("git", "gh") for name, *_ in readings):
+            return UNCLEAR, False
+    return None, any(persistent_redirect(args, cwd) for args in flat)
+
+
+def resolved_commands(parsed, cwd):
+    return [(args, *reading, scoped, conditional) for args, scoped, conditional in parsed
+            for reading in program_readings(args, cwd)]
+
+
 def check_line(command, cwd, outer, state):
     """The body of check_command for one line or nested script, sharing the top-level line's state."""
-    # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
-    # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
-    if cwd and ".." in PurePosixPath(cwd).parts:
-        cwd = os.path.realpath(cwd)
     try:
         # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
         # written now and posted later, so any mention of the word is refused outside the coordinator.
         # coordinator_worktree runs git, which can run out the line's time, so this sits inside the handler.
         if names_marker(command) and not coordinator_worktree(cwd):
             return MARKER
-        parsed = shell_commands(command)
+        facts = {}
+        parsed = shell_commands(command, facts)
+        refusal, redirected_line = conservative_line(command, parsed, facts, cwd)
+        if refusal:
+            return refusal
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
             return None
-        commands = [(*program(args, cwd), scoped, conditional) for args, scoped, conditional in parsed]
-        assigned = [word for _, _, _, words, *_ in commands for word in words]
+        commands = resolved_commands(parsed, cwd)
+        assigned = [word for _, _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.
         # An exported GIT_DIR or similar can also point a later push at another repository.
-        head_moves = (any(moves_head(name, rest) for name, rest, *_ in commands)
+        head_moves = (any(moves_head(name, rest) for _, name, rest, *_ in commands)
                       or any(GIT_LOCATION.match(word) for word in assigned))
         env_config = any(GIT_CONFIG_ENV.match(word) for word in assigned)
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
-        config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
-        persistent = (False, frozenset())
+        config_unknown = head_moves or any(writes_config(name, rest) for _, name, rest, *_ in commands)
         if outer is not None:
-            head_moves, config_unknown, env_config, persistent = (
-                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], (outer[3], frozenset()))
+            head_moves, config_unknown, env_config, redirected_line = (
+                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], redirected_line or outer[3])
         control = 0
-        scoped_cwds = {}
-        for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
+        for args, name, rest, moved, _, scoped, conditional in commands:
             check_deadline()
             # A command that moves gh's config could point a gh it runs at aliases or extensions written anywhere.
-            redirected, persistent = redirect_scope(args, name, persistent, scoped, cwd)
+            redirected = redirected_line or redirects_gh_config(args, cwd)
             if redirected and runs_gh(name, rest):
                 return GH_REDIRECT
             # Prefixes such as "{" or "!" can come before a control keyword.
@@ -1850,14 +1882,9 @@ def check_line(command, cwd, outer, state):
                          and not (scoped or moved or conditional or control)
                          and not re.search(r"[$~`\x00]", targets[0]))
                 # A directory change inside a subshell has no single directory after it.
-                if isinstance(scoped, tuple) and any(group < 0 for group in scoped[0]):
-                    # Preserve the parent cwd only for a modeled background subshell. Other unknown
-                    # directory changes keep the guard's existing conservative behavior.
-                    scoped_cwds[scoped] = None
-                else:
-                    cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
+                cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
                 continue
-            here = None if moved else scoped_cwds.get(scoped, cwd)
+            here = None if moved else cwd
             if name in SHELLS:
                 script, unclear = shell_script(rest)
                 if unclear and re.search(r"\b(?:gh|git)\b", " ".join(rest)) and not coordinator_worktree(here):

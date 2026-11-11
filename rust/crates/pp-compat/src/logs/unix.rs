@@ -142,6 +142,12 @@ pub(super) fn rename(directory: &Directory, from: &str, to: &str) -> std::io::Re
     Ok(())
 }
 
+#[cfg(feature = "desktop_rebuild")]
+pub(super) fn file_id(file: &File) -> std::io::Result<String> {
+    let metadata = file.metadata()?;
+    Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{os::unix::fs::PermissionsExt, path::Path};

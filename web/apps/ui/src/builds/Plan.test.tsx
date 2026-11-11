@@ -101,7 +101,10 @@ const unitRef = (filename: string, index: number) => ({
   assembled: false,
 });
 
-const preview = (version: number, blocked = false): DraftAcceptPreview => ({
+const preview = (
+  version: number,
+  blocked = false,
+): Extract<DraftAcceptPreview, { kind: "changed" }> => ({
   kind: "changed",
   revision: {
     draft_id: 9,
@@ -308,7 +311,7 @@ describe("Order fields in the Accept gate", () => {
       const gate = await screen.findByRole("dialog");
       if (stage === "accept") {
         await within(gate).findByText(/Print Partner saves a snapshot/);
-        fireEvent.click(within(gate).getByRole("button", { name: "Accept", exact: true }));
+        fireEvent.click(within(gate).getByRole("button", { name: /^Accept$/ }));
       }
       const alert = await within(gate).findByRole("alert");
       expect(alert.textContent).toContain("Order already held by: Other kit, Spare kit");
@@ -316,7 +319,7 @@ describe("Order fields in the Accept gate", () => {
       if (stage === "preview")
         expect(
           within(gate)
-            .getByRole("button", { name: "Accept", exact: true })
+            .getByRole("button", { name: /^Accept$/ })
             .getAttribute("aria-disabled"),
         ).toBe("true");
     },

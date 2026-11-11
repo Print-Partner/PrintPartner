@@ -5,6 +5,8 @@ use pp_core::{
 use std::io::Write;
 
 mod args;
+#[cfg(unix)]
+mod bootstrap;
 mod health;
 #[cfg(unix)]
 mod unix;
@@ -20,6 +22,10 @@ fn main() -> Result<()> {
     if args.peek().map(String::as_str) == Some("healthcheck") {
         args.next();
         return healthcheck(args);
+    }
+    if args.peek().map(String::as_str) == Some("bootstrap-url") {
+        args.next();
+        return bootstrap_url(args);
     }
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -67,6 +73,33 @@ fn healthcheck(args: impl Iterator<Item = String>) -> Result<()> {
     }
 }
 
+/// `pp-server bootstrap-url`: prints a fresh sign-in URL from the running server.
+#[cfg(unix)]
+fn bootstrap_url(args: impl Iterator<Item = String>) -> Result<()> {
+    let data = match bootstrap::parse(args)? {
+        bootstrap::Command::Help => {
+            println!("{}", bootstrap::USAGE);
+            return Ok(());
+        }
+        bootstrap::Command::Request { data } => data,
+    };
+    match bootstrap::request(&data) {
+        Ok(url) => {
+            println!("{url}");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("bootstrap-url: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn bootstrap_url(_: impl Iterator<Item = String>) -> Result<()> {
+    bail!("pp-server bootstrap-url needs a Unix socket and is not available on Windows")
+}
+
 async fn serve(args: Vec<String>) -> Result<()> {
     let args::Arguments {
         data,
@@ -97,8 +130,9 @@ async fn serve(args: Vec<String>) -> Result<()> {
         runtime_version: format!("{version}-web"),
         commit: commit.context("--commit is required")?,
     };
+    let data = data.context("--data is required")?;
     let mut runtime = CoreRuntime::start_for_server(DesktopLaunch {
-        data_dir: data.context("--data is required")?,
+        data_dir: data.clone(),
         assets: web.join("apps/web/dist"),
         bundle,
     })
@@ -128,6 +162,9 @@ async fn serve(args: Vec<String>) -> Result<()> {
             return Err(error);
         }
     }
+    // `pp-server bootstrap-url` reaches a Rust-only runtime through this socket.
+    #[cfg(unix)]
+    let bootstrap = bootstrap::start(&runtime, &data);
     // Register signal streams before announcing the origin: a signal sent right after
     // the origin line is queued here instead of taking the default action.
     let stop_signal = platform::stop_signal()?;
@@ -135,6 +172,8 @@ async fn serve(args: Vec<String>) -> Result<()> {
         .as_ref()
         .map(|status| status.publish(health::State::Ready, Some(runtime.origin())))
     {
+        #[cfg(unix)]
+        drop(bootstrap);
         let receipt = runtime.shutdown().await;
         anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
         return Err(error);
@@ -145,6 +184,8 @@ async fn serve(args: Vec<String>) -> Result<()> {
         _ = stop_signal => {}
         _ = shutdown_requested => {}
     }
+    #[cfg(unix)]
+    drop(bootstrap);
     // Readiness fails from here on. A failed write still finishes the shutdown.
     if let Some(Err(error)) = status
         .as_ref()

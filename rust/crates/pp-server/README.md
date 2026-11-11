@@ -8,6 +8,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 - The headless launcher for Docker and CI: argument parsing, Unix signals, and the process lifecycle around `CoreRuntime`.
 - `pp-server healthcheck`: the liveness and readiness probe the Rust-only Docker image runs ([Docker image](../../../docs/docker.md#health)).
+- `pp-server bootstrap-url`: headless first sign-in. Asks the running server for a fresh single-use sign-in URL over an owner-only Unix socket in the data directory ([Docker image](../../../docs/docker.md#sign-in)).
 - Prints the loopback origin as its first stdout line when ready, then the `ShutdownReceipt` as JSON on exit.
 
 ## Not responsible for
@@ -18,7 +19,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Interface
 
-Binary only (`src/main.rs`, `src/args.rs`); no library. Every flag takes a value; a repeated flag keeps the last one. Bad input exits non-zero before startup with `Unknown argument`, `Argument value missing`, or `--<flag> is required`.
+Binary only (`src/main.rs`, `src/args.rs`, `src/health.rs`, `src/bootstrap.rs`); no library. Every flag takes a value; a repeated flag keeps the last one. Bad input exits non-zero before startup with `Unknown argument`, `Argument value missing`, or `--<flag> is required`.
 
 | Argument | What it does |
 | --- | --- |
@@ -30,6 +31,8 @@ Binary only (`src/main.rs`, `src/args.rs`); no library. Every flag takes a value
 | `--test-credential-file PATH` | Test only. Creates a new file, mode `0600` on Unix (on Windows it inherits its directory's ACL), with `bootstrap_url`, `child_pid`, and `runtime_dir`. `pp_core::perf_seed` uses it. The URL is a sign-in secret. |
 
 `pp-server healthcheck <liveness|readiness> --status-file PATH [--timeout-ms N]` reads the status file, checks the recorded process is alive, and once ready sends one cookie-less `GET /health` to the loopback origin, which must answer below 500 within the timeout (default 2000 ms). Readiness fails while starting or stopping. Exits 0 or 1. `--help` prints usage.
+
+`pp-server bootstrap-url --data DIR` (Unix only) prints a fresh sign-in URL from the `pp-server` running on `DIR`: single use, valid 60 seconds, minted by the gateway as the desktop's Open in browser does. A Rust-only server listens on `DIR/.pp-server-bootstrap.sock`, mode 0600, from startup until shutdown, and answers only a peer whose UID equals its own; a Node-backed start creates no socket. The command refuses a `DIR` another account owns or other accounts can write, a socket that is not owner-only, and a socket whose server runs as another account. With no server running it exits 1 and writes nothing. The server never prints or logs the URL. `--help` prints usage. On Windows the command exits non-zero.
 
 ```sh
 pp-server --data /tmp/pp-data --web ./web --node "$(command -v node)" --commit "$(git rev-parse HEAD)"
@@ -49,6 +52,8 @@ pp-server --data /tmp/pp-data --web ./web --node "$(command -v node)" --commit "
 - Unit tests for argument parsing in `src/args.rs`.
 - `tests/cli.rs` runs the built binary with bad arguments and checks it fails without printing an origin. It borrows `pp-storage/tests/common/process.rs`.
 - `tests/rust_only_health.rs` (Unix, `desktop_rebuild`) starts a Rust-only `pp-server` without `--node`, checks both probes pass while it serves, then sends SIGTERM and checks the status file is gone.
+- `src/bootstrap.rs` unit tests cover a fresh URL per request, only the exact request (`bootstrap-url\n` followed by the end of the client's writes) getting one, a silent client cut off at 5 s while another is answered, a failed mint, a panic unwinding past the listener, a symlink at the socket name, the 0600 socket, a peer with another UID, a malformed request, a stopping runtime, a stale socket and a foreign entry at the socket name, no server running, a directory another account owns or others can write, a socket open to other users, and a socket peer of another account.
+- `tests/bootstrap_url.rs` (Unix, `desktop_rebuild`) starts a Rust-only `pp-server`, signs in once through `pp-server bootstrap-url`, checks the reused URL and a 61-second-old URL get 401, checks another directory and a stopped server fail without writing, and checks no URL or token reached the server's stdout, stderr or status file. It also checks `/` is refused for a non-root user. The expiry wait makes it take about 75 seconds.
 - `src/health.rs` unit tests cover the probe states, a 503, a silent gateway, a non-loopback origin, malformed and stale status files, and the timeout bound.
 - `tests/stop_signal.rs` starts the built binary, sends SIGTERM on Unix or Ctrl+Break on Windows (the binary runs in its own process group so the event does not reach the test), and checks that it exits 0 with a complete shutdown receipt. Console close, logoff and system shutdown cannot be raised from a test without ending the test's own console session.
 

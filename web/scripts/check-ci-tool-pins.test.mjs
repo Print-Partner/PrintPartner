@@ -420,7 +420,7 @@ for (const name of ['web', 'web-build']) {
 
 for (const name of ['web', 'web-build']) {
   test(`accept Web CI ${name} with exact changes dependency and selection`, t => {
-    const source = structuredClone(webCI);
+    const source = JSON.parse(JSON.stringify(webCI));
     source.jobs[name].needs = ['changes'];
     source.jobs[name].if = "(github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))";
     const result = run(t, JSON.stringify(source), [], 'web-ci.yml');
@@ -432,7 +432,7 @@ for (const name of ['web', 'web-build']) {
     ['wrong output', ['changes'], "ui"],
   ]) {
     test(`reject Web CI ${name} selection with ${label}`, t => {
-      const source = structuredClone(webCI);
+      const source = JSON.parse(JSON.stringify(webCI));
       if (needs) source.jobs[name].needs = needs;
       source.jobs[name].if = `(github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.${condition} != 'false'))`;
       const result = run(t, JSON.stringify(source), [], 'web-ci.yml');

@@ -21,12 +21,14 @@ class ClassifyTests(unittest.TestCase):
             "rust/deny.toml",
             "rust/scripts/check-macos-bundle.py",
             "scripts/linear/pr_status_sync.py",
+            # The merge gate keeps edits to this rule with the owner.
+            "rust/rules/runtime-process-command.yml",
         ]:
             self.assertEqual(mc.path_class(path, self.classes), "owner", path)
 
     def test_sensitive_paths(self):
         for path in [
-            "rust/rules/runtime-process-command.yml",
+            "rust/rules/no-unwrap-expect.yml",
             "rust/scripts/check-ast-grep.py",
             "rust/ast-grep-baseline.json",
             "rust/crates/pp-api/snapshots/route.snap",
@@ -115,7 +117,7 @@ class ScoreTests(unittest.TestCase):
             self.line().replace("score=9", "score=nine"),
             self.line().replace("score=9", "score=" + "9" * 5000),
             self.line().replace("head=" + SHA, "head=abc"),
-            "prose " + self.line(), self.line() + " extra",
+            self.line() + " extra", "pp-score head=" + SHA,
             self.line("claude-opus-5-5", vendor="anthropic", author="openai"),
             None,
         ):
@@ -132,6 +134,11 @@ class ScoreTests(unittest.TestCase):
     def test_prose_and_valid_stale_scores_are_ignored(self):
         self.assertTrue(self.check(["Review complete.", self.line(sha=OTHER),
                                    self.line(), self.line("gpt-6-astra")]))
+        # A record quoted in prose, a list bullet or backticks is not a record.
+        for prose in ("prose " + self.line(), "- " + self.line(), "`" + self.line() + "`",
+                      "Post the pp-score line after the run."):
+            with self.subTest(prose=prose):
+                self.assertTrue(self.check([prose, self.line(), self.line("gpt-6-astra")]))
 
 
 if __name__ == "__main__":

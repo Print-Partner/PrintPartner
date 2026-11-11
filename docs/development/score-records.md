@@ -23,6 +23,6 @@ OpenCode, Cursor, Grok, and Pi seats do not qualify.
 
 Missing fields, malformed score lines, unknown seats or vendors, mismatched
 seat vendors, same-vendor scoring, conflicting author metadata, and scores
-below 9 on the current head refuse the merge. Ordinary prose is ignored;
+below 9 on the current head refuse the merge. A score record is a line that starts with `pp-score `; other lines, including prose that mentions the token, are ignored;
 valid scores for older heads do not count. GitHub errors or unreadable data
 also refuse the merge. Owner and lane classifications are unchanged.

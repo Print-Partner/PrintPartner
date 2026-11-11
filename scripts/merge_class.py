@@ -87,8 +87,9 @@ def uncovered(entries, classes):
 def has_two_scores(comments, head, author_vendor, allowed_seats):
     """Require two allowed, independent seats at 9+; malformed records refuse.
 
-    Ordinary prose is ignored. Every pp-score line must parse, including old
-    records; valid records for another head never count toward this head.
+    A score record is a line that starts with "pp-score "; every record must parse,
+    including old ones. Other lines are ignored, including prose that mentions the
+    token. Valid records for another head never count toward this head.
     """
     if (not isinstance(head, str) or not FULL_SHA.fullmatch(head)
             or not isinstance(author_vendor, str) or author_vendor not in VENDORS
@@ -103,7 +104,7 @@ def has_two_scores(comments, head, author_vendor, allowed_seats):
         if not isinstance(body, str):
             return False
         for line in body.splitlines():
-            if "pp-score" not in line:
+            if not line.strip().startswith("pp-score "):
                 continue
             match = SCORE.fullmatch(line.strip())
             if not match:

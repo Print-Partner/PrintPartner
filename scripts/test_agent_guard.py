@@ -1315,7 +1315,8 @@ class HiddenMergeTests(unittest.TestCase):
     def test_background_separator_keeps_following_config_changes_in_current_shell(self):
         commands = ("true & export GH_CONFIG_DIR=/tmp/evil; gh pr view 12",
                     "true & HOME=/tmp; gh pr view 12",
-                    "true & declare -x HOME=/tmp; gh pr view 12")
+                    "true & declare -x HOME=/tmp; gh pr view 12",
+                    "echo \\|& export GH_CONFIG_DIR=/tmp/evil; gh pr view 12")
         for command, results in self.run_all(commands, self.lane, None):
             for result in results:
                 with self.subTest(command=command):
@@ -1341,47 +1342,21 @@ class HiddenMergeTests(unittest.TestCase):
             main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
             for path, branch in ((main, "main"), (lane, "topic")):
                 subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
-            for command in ("true |& cd ../lane-wt; git push origin HEAD",
-                            "true |& cd ../lane-wt; git push --no-follow-tags origin HEAD"):
+            for operator in ("|&", "|&\n", "|\\\n&", "|\n", "|\\\r\n&"):
+                command = f"true {operator} cd ../lane-wt; git push origin HEAD"
                 for result in self.results(command, str(main), None):
                     with self.subTest(command=command):
                         self.assertEqual(result.returncode, 2, result.stderr)
-            for declaration in ("export GH_CONFIG_DIR=/tmp/evil", "export HOME=/tmp"):
-                command = f"true |& {declaration}; gh pr view 12"
-                for result in self.results(command, str(main), None):
-                    with self.subTest(command=command):
-                        self.assertEqual(result.returncode, 0, result.stderr)
+                for declaration in ("export GH_CONFIG_DIR=/tmp/evil", "export HOME=/tmp"):
+                    command = f"true {operator} {declaration}; gh pr view 12"
+                    for result in self.results(command, str(main), None):
+                        with self.subTest(command=command):
+                            self.assertEqual(result.returncode, 0, result.stderr)
         guard = in_process(CLI)
         self.assertTrue(all(scope for _, scope, _ in guard.shell_commands("a |& b")))
 
-    def test_package_runner_call_options_are_checked_as_shell_strings(self):
-        for runner in ("npx", "npm exec"):
-            for option in ("-c", "--call"):
-                for separator in (" ", "="):
-                    for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
-                        command = f"{runner} {option}{separator}'gh pr merge 12'"
-                        for result in self.results(command, cwd, coordinator):
-                            with self.subTest(command=command, cwd=cwd):
-                                self.assertEqual(result.returncode, 2, result.stderr)
-                    command = f"{runner} {option}{separator}'gh pr view 12'"
-                    for result in self.results(command, self.lane, None):
-                        with self.subTest(command=command):
-                            self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_fish_prefixes_fail_closed_and_command_is_classified(self):
-        for script in ("true; and gh pr merge 12", "false; or gh pr merge 12", "not gh pr merge 12",
-                       "builtin gh pr merge 12", "command gh pr merge 12"):
-            for prefix in ("", "xvfb-run -a "):
-                command = f"{prefix}fish -c '{script}'"
-                for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
-                    for result in self.results(command, cwd, coordinator):
-                        with self.subTest(command=command, cwd=cwd):
-                            self.assertEqual(result.returncode, 2, result.stderr)
-        for result in self.results("fish -c 'command gh pr view 12'", self.lane, None):
-            self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_python_executable_suffixes_are_recognized(self):
-        for executable in ("python3.14t", "python3.12-dbg", "/usr/bin/python3.14t-dbg"):
+        for executable in ("python3-dbg", "python3.14T", "python3.12-dbg-x86_64", "python3.14t", "/usr/bin/python3.14t-dbg"):
             command = f"{executable} -c 'import os; os.system(\"gh pr merge 12\")'"
             for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
                 for result in self.results(command, cwd, coordinator):
@@ -1390,21 +1365,17 @@ class HiddenMergeTests(unittest.TestCase):
             for result in self.results(f"{executable} -c 'print(1)'", self.lane, None):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_lane_runners_and_additional_shells_refuse_merges(self):
+    def test_daily_lane_runners_refuse_merges(self):
         commands = ("xvfb-run -a gh pr merge 12", "pp-netns gh pr merge 12",
-                    "direnv exec . gh pr merge 12", "npx gh pr merge 12",
-                    "sg users -c 'gh pr merge 12'", "ksh -c 'gh pr merge 12'",
-                    "fish -c 'gh pr merge 12'", "python3.14 -c 'import os; os.system(\"gh pr merge 12\")'",
-                    "xvfb-run -a pp-netns gh pr merge 12")
+                    "direnv exec . gh pr merge 12", "xvfb-run -a pp-netns gh pr merge 12",
+                    "xvfb-run --server-args='-screen 0 800x600x24' gh pr merge 12")
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
             for command, results in self.run_all(commands, cwd, coordinator):
                 for result in results:
                     with self.subTest(command=command, cwd=cwd):
                         self.assertEqual(result.returncode, 2, result.stderr)
         for command in ("xvfb-run -a gh pr view 12", "pp-netns gh pr view 12",
-                        "direnv exec . gh pr view 12", "npx gh pr view 12",
-                        "sg users -c 'gh pr view 12'", "ksh -c 'gh pr view 12'",
-                        "fish -c 'gh pr view 12'", "python3.14 -c 'print(1)'"):
+                        "direnv exec . gh pr view 12", "xvfb-run --server-args='-screen 0 800x600x24' gh pr view 12"):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)

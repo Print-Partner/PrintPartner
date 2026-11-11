@@ -25,6 +25,12 @@ class CiPathFilterTests(unittest.TestCase):
                     "web/DEPLOY.md", "web/apps/server/src/data/legal/ATTRIBUTION.md",
                     "fixtures/parity/README.md", "LICENSE", "LICENSE-SUMMARY.md",
                     "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md",
+                    "README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",
+                    "docs/scripts/capture-screenshots.mjs", "docs/scripts/nested/README.md",
+                    "docs/design-system.md", "docs/product/ui-tokens.md",
+                    "web/apps/ui/src/content.md", "web/apps/web/src/content.md",
+                    "web/apps/future/src/nested/content.md",
+                    "docs/records/navigation/count.py", "root-helper.py",
                     "web/apps/server/src/test-fixtures/kit-workspace/assistant-domain/sources/Example-Probe/workflow.md",
                     "web/apps/server/src/test-fixtures/kit-workspace/assistant-domain/sources/Example-Probe/pitfalls.md"],
         }.items():
@@ -35,8 +41,16 @@ class CiPathFilterTests(unittest.TestCase):
                                  "manifests/server.json", "fixtures/input.json"]:
                 with self.subTest(kind=kind, path=path):
                     self.assertTrue(ci_filter.relevant(path, kind))
-            for path in ("docs/development/ci.md", "README.md", "web/apps/ui/README.md"):
+            for path in ("docs/development/ci.md", "web/apps/ui/README.md",
+                         "docs/design-system-extra.md", "docs/product/other-tokens.md",
+                         "web/apps/ui/src-extra/content.md"):
                 self.assertFalse(ci_filter.relevant(path, kind), (kind, path))
+
+    def test_web_test_inputs_do_not_select_ui(self):
+        for path in ("README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",
+                     "docs/scripts/capture-screenshots.mjs", "docs/design-system.md",
+                     "docs/product/ui-tokens.md", "docs/records/navigation/count.py"):
+            self.assertFalse(ci_filter.relevant(path, "ui"), path)
 
     def test_merge_groups_select_queue_validation_only(self):
         for kind in ("rust", "actions", "native", "windows", "ui", "web"):

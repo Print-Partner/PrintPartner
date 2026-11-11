@@ -41,9 +41,18 @@ selected; Docker still requires successful `web` and `web-build` jobs.
 The `web` kind covers non-Markdown files under `web/`, `scripts/`, `fixtures/`,
 `manifests/`, `slicer-sidecar/`, `rust/`, workflows and local actions, plus shared
 package/configuration files, Docker and Compose inputs, Caddyfile and the Rust
-toolchain and root `LICENSE`. Markdown selects it under
-`web/apps/server/src/data/`, `web/apps/server/src/test-fixtures/` and
-`fixtures/`, or for `web/DEPLOY.md` and the root legal/notices files.
+toolchain and root `LICENSE`. Markdown selects it anywhere under
+`web/apps/*/src/` and `fixtures/`, or for `web/DEPLOY.md` and the root
+legal/notices files. Every `.py` path also selects `web`, including Python
+outside those directories, because its workaround ratchet reads all tracked
+Python files.
+
+The other documentation inputs read by tests in `web` select that job:
+`README.md`, `docs/README.md`, `docs/INSTALL.md`, `docs/index.html` and
+`docs/scripts/**` cover `scripts/site-map-docs.test.mjs` in `test:release`.
+`docs/design-system.md` and `docs/product/ui-tokens.md` cover the design-token
+test's `design-system-contrast.mjs --check`. Other documentation does not select
+`web` unless it matches an input listed above.
 The `ui` kind covers `web/apps/ui/`, shared packages including `rust-client`,
 web scripts and configuration, fixtures, manifests, scripts and CI inputs.
 The `ui` kind is computed but unused until a dedicated UI job exists.
@@ -57,8 +66,13 @@ runtime and browser checks; `sidecar` keeps its build and request tests;
 `docker` keeps Compose validation, image build, persistence and workflow smoke.
 The independent `release-audit` job runs `node scripts/audit-public-release.mjs`
 on every non-draft PR, with no path selection or dependency on `changes`.
-It also runs on non-PR events. It checks every tracked Markdown file, root
-`LICENSE`, `.gitignore` and screenshot dimensions even when heavy web jobs skip.
+It also runs on non-PR events. It restores the public-release audit's required
+public-file checks, repository-wide forbidden text and broken local link checks,
+root `LICENSE` and `.gitignore` checks, and 1440×900 screenshot checks even when
+heavy web jobs skip. It does not run `site-map-docs.test.mjs`, the other
+`test:release` tests, the design-token contrast test or the workaround ratchet;
+their inputs select `web` as described above. Release-script and Docker-startup
+tests in `test:release` retain their existing script/image input selection.
 It needs only checkout and pinned Node, with read-only contents permission and
 no npm install. The audit still runs through `npm test` when `web` is selected;
 this cheap duplicate is intentional to keep the existing npm command intact.

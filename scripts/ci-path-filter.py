@@ -23,11 +23,17 @@ def relevant(path, kind):
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
+    if kind == "web" and (
+            path.endswith(".py")  # The workaround ratchet scans every tracked Python file.
+            or path.startswith("docs/scripts/")
+            or path in {"README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",
+                        "docs/design-system.md", "docs/product/ui-tokens.md"}):
+        return True
     if kind in {"ui", "web"}:
         # Keep embedded legal text, hashed fixtures and the Docker deployment input.
         if (path.endswith(".md")
                 and not path.startswith(("web/apps/server/src/data/", "fixtures/"))
-                and not (kind == "web" and path.startswith("web/apps/server/src/test-fixtures/"))
+                and not (kind == "web" and re.match(r"web/apps/[^/]+/src/", path))
                 and path not in {"web/DEPLOY.md", "LICENSE-SUMMARY.md", "ATTRIBUTION.md",
                                  "THIRD_PARTY_NOTICES.md"}):
             return False

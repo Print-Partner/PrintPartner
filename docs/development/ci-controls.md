@@ -63,8 +63,11 @@ select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
 and commands retained. This adds no required check and does not edit the
 ruleset snapshot. The independent `release-audit` job runs without path selection
 on every non-draft PR and on non-PR events, so documentation, license and
-screenshot audits remain covered when the heavy web jobs skip. Its pinned Node
-setup, version assertion, read-only permissions and unconditional audit command
+screenshot audits remain covered when the heavy web jobs skip. The sitemap tests,
+design-token contrast check and workaround ratchet stay in `web`; their exact
+documentation inputs, all app-source Markdown and every Python path select
+`web`, as listed in the CI guide. The audit job's pinned Node setup, version
+assertion, read-only permissions and unconditional audit command
 are checked by `test_merge_group_workflows.py`.
 
 This selection deliberately changes four CI guards, with regression tests:

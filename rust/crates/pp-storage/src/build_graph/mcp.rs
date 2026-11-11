@@ -431,68 +431,53 @@ mod confirmation_tests {
         (root, db)
     }
     #[test]
-    fn mcp_planning_rejects_a_source_changed_during_preparation_without_writes() {
-        let (root, mut db) = fixture();
-        let path = root.path().join("print-partner.db");
-        let before = pp_testkit::mcp_planning::state(&path);
-        let tx = db.transaction().unwrap();
-        let mut request = Request::new(
-            1,
-            "add_addon".into(),
-            json!({"source_name":"Addon","suggested_excludes":["x.stl"]}),
-            Some(json!({})),
-        );
-        request.source_stamp = sources(&tx, "default")
-            .unwrap()
-            .into_iter()
-            .find(|s| s.0 == 2);
-        request.source_allowed = true;
-        tx.execute(
-            "UPDATE projects SET last_synced_at='changed' WHERE id=2",
-            [],
-        )
-        .unwrap();
-        let result = execute(
-            &tx,
-            "default",
-            &request,
-            &root.path().join("repos"),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({"ok":false,"detail":"Source changed since the proposal; propose again"})
-        );
-        tx.commit().unwrap();
-        assert_eq!(before, pp_testkit::mcp_planning::state(&path));
-    }
-    #[test]
-    fn mcp_planning_missing_source_is_not_reported_as_a_duplicate() {
-        let (root, mut db) = fixture();
-        let path = root.path().join("print-partner.db");
-        let before = pp_testkit::mcp_planning::state(&path);
-        let tx = db.transaction().unwrap();
-        let request = Request::new(
-            1,
-            "add_addon".into(),
-            json!({"source_name":"Gone","suggested_excludes":["x.stl"]}),
-            Some(json!({})),
-        );
-        let result = confirm_addon(
-            &tx,
-            "default",
-            &request,
-            &(999, "Gone".into(), None, None),
-            &root.path().join("repos"),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({"ok":false,"detail":"Source not found: Gone"})
-        );
-        tx.commit().unwrap();
-        assert_eq!(before, pp_testkit::mcp_planning::state(&path));
+    fn mcp_planning_confirmation_refusals_preserve_state() {
+        for (changed, detail) in [
+            (true, "Source changed since the proposal; propose again"),
+            (false, "Source not found: Gone"),
+        ] {
+            let (root, mut db) = fixture();
+            let path = root.path().join("print-partner.db");
+            let before = pp_testkit::mcp_planning::state(&path).unwrap();
+            let tx = db.transaction().unwrap();
+            let mut request = Request::new(
+                1,
+                "add_addon".into(),
+                json!({"source_name":"Addon","suggested_excludes":["x.stl"]}),
+                Some(json!({})),
+            );
+            let result = if changed {
+                request.source_stamp = sources(&tx, "default")
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.0 == 2);
+                request.source_allowed = true;
+                tx.execute(
+                    "UPDATE projects SET last_synced_at='changed' WHERE id=2",
+                    [],
+                )
+                .unwrap();
+                execute(
+                    &tx,
+                    "default",
+                    &request,
+                    &root.path().join("repos"),
+                    &AtomicBool::new(false),
+                )
+            } else {
+                confirm_addon(
+                    &tx,
+                    "default",
+                    &request,
+                    &(999, "Gone".into(), None, None),
+                    &root.path().join("repos"),
+                    &AtomicBool::new(false),
+                )
+            }
+            .unwrap();
+            assert_eq!(result, json!({"ok":false,"detail":detail}));
+            tx.commit().unwrap();
+            assert_eq!(before, pp_testkit::mcp_planning::state(&path).unwrap());
+        }
     }
 }

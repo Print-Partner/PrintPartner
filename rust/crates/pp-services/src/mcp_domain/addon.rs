@@ -97,29 +97,24 @@ struct Source {
     not_for: Vec<String>,
     parts: Vec<(String, Option<String>)>,
 }
+fn source_name(row: &Value) -> Option<&str> {
+    row["source_name"]
+        .as_str()
+        .or_else(|| row["name"].as_str())
+        .map(trim)
+}
 fn explain(name: &str, docs: &Value) -> Option<Source> {
     let rows = docs["sources"].as_array();
     let row = rows
         .into_iter()
         .flatten()
-        .find(|r| {
-            r["source_name"]
-                .as_str()
-                .or_else(|| r["name"].as_str())
-                .is_some_and(|s| trim(s) == name)
-        })
+        .find(|r| source_name(r) == Some(name))
         .or_else(|| {
-            rows.into_iter().flatten().find(|r| {
-                r["source_name"]
-                    .as_str()
-                    .or_else(|| r["name"].as_str())
-                    .is_some_and(|s| trim(s).to_lowercase() == name.to_lowercase())
-            })
+            rows.into_iter()
+                .flatten()
+                .find(|r| source_name(r).is_some_and(|s| s.to_lowercase() == name.to_lowercase()))
         });
-    let resolved = row
-        .and_then(|r| r["source_name"].as_str().or_else(|| r["name"].as_str()))
-        .map(trim)
-        .unwrap_or(name);
+    let resolved = row.and_then(source_name).unwrap_or(name);
     let mut conflicts = Vec::new();
     let mut slots = Vec::new();
     let category = docs["catalog"]["addon_categories"]
@@ -127,14 +122,13 @@ fn explain(name: &str, docs: &Value) -> Option<Source> {
         .and_then(|cats| {
             cats.iter()
                 .filter(|(_, c)| c["rule"] == "pick_one")
-                .filter(|(_, c)| {
+                .rfind(|(_, c)| {
                     c["sources"]
                         .as_array()
                         .into_iter()
                         .flatten()
                         .any(|s| s["name"] == resolved)
                 })
-                .next_back()
         });
     if row.is_none() && category.is_none() {
         return None;

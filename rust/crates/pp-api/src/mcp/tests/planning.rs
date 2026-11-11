@@ -137,12 +137,13 @@ async fn propose(
     tool: &str,
     args: Value,
 ) -> String {
-    let before = pp_testkit::mcp_planning::state(&server._directory.join("print-partner.db"));
+    let before =
+        pp_testkit::mcp_planning::state(&server._directory.join("print-partner.db")).unwrap();
     let (text, error) = call(server, headers, tool, args).await;
     assert!(!error, "{text}");
     assert_eq!(
         before,
-        pp_testkit::mcp_planning::state(&server._directory.join("print-partner.db"))
+        pp_testkit::mcp_planning::state(&server._directory.join("print-partner.db")).unwrap()
     );
     serde_json::from_str::<Value>(&text).unwrap()["action"]["id"]
         .as_str()
@@ -151,11 +152,11 @@ async fn propose(
 }
 async fn assert_refused(server: &McpServer, headers: &[(String, String)], id: &str) {
     let database = server._directory.join("print-partner.db");
-    let before = pp_testkit::mcp_planning::state(&database);
+    let before = pp_testkit::mcp_planning::state(&database).unwrap();
     let (text, error) = call(server, headers, "confirm_apply", json!({"action_id":id})).await;
     assert!(error, "{text}");
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["ok"], false);
-    assert_eq!(before, pp_testkit::mcp_planning::state(&database));
+    assert_eq!(before, pp_testkit::mcp_planning::state(&database).unwrap());
     let (pending, _) = call(server, headers, "list_pending_actions", json!({})).await;
     assert!(
         serde_json::from_str::<Value>(&pending).unwrap()["actions"]
@@ -182,7 +183,8 @@ async fn mcp_planning_addon_revalidates_source_at_confirmation() {
             &database,
             "kit_manifest_1",
             &json!({"exclude":["keep.stl"]}),
-        );
+        )
+        .unwrap();
         let id = propose(
             &server,
             &headers,
@@ -190,7 +192,7 @@ async fn mcp_planning_addon_revalidates_source_at_confirmation() {
             json!({"plan_id":1,"source_name":"Addon","suggested_excludes":["new.stl"]}),
         )
         .await;
-        pp_testkit::mcp_planning::edit(&database, &sql);
+        pp_testkit::mcp_planning::edit(&database, &sql).unwrap();
         assert_refused(&server, &headers, &id).await;
     }
 }
@@ -199,10 +201,11 @@ async fn mcp_planning_brief_confirmation_validates_current_evidence_and_enums() 
     for case in ["valid", "removed", "slot", "enum", "finding"] {
         let (server, headers) = keyed(SEED).await;
         let database = server._directory.join("print-partner.db");
-        let mut brief = pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1");
+        let mut brief =
+            pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1").unwrap();
         brief["draft_id"] = json!(42);
         brief["evidence"] = json!([{"id":"e1","url":"https://example.test/source","normalized_url":"https://example.test/source","kind":"mod"}]);
-        pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief);
+        pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief).unwrap();
         let mut args = json!({"plan_id":1,"contributions":[{"id":"c1","evidence_id":"e1","slot":"toolhead","responsibility":"printable_parts","confidence":"high","evidence_text":"Confirmed source","path_scopes":["parts/"]}],"compatibility_findings":[{"id":"f1","subject":"Toolhead","detail":"Confirmed fit","status":"satisfied","evidence_ids":["e1"]}]});
         if case == "slot" {
             args["contributions"][0]["slot"] = json!("bad-slot");
@@ -216,7 +219,7 @@ async fn mcp_planning_brief_confirmation_validates_current_evidence_and_enums() 
         let id = propose(&server, &headers, "propose_update_build_brief", args).await;
         if case == "removed" {
             brief["evidence"] = json!([]);
-            pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief);
+            pp_testkit::mcp_planning::save(&database, "build_planning.v1.1", &brief).unwrap();
         }
         if case != "valid" {
             assert_refused(&server, &headers, &id).await;
@@ -224,7 +227,7 @@ async fn mcp_planning_brief_confirmation_validates_current_evidence_and_enums() 
         }
         let (text, error) = call(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
         assert!(!error, "{text}");
-        let saved = pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1");
+        let saved = pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1").unwrap();
         assert!(saved.get("draft_id").is_none());
         assert_eq!(saved["contributions"][0]["evidence_id"], "e1");
         assert_eq!(saved["compatibility_findings"][0]["status"], "satisfied");
@@ -235,35 +238,25 @@ async fn mcp_planning_addon_uses_the_data_directory_catalog_slot() {
     let (server, headers) = keyed(SEED).await;
     let path = server._directory.join("kit-catalog.yaml");
     std::fs::write(&path, json!({"addon_categories":{"toolhead":{"rule":"pick_one","replaces_slot":"custom_head","sources":[{"name":"Addon"},{"name":"Base"}]}}}).to_string()).unwrap();
-    let (text, error) = call(
-        &server,
-        &headers,
-        "add_addon",
-        json!({"plan_id":1,"source_name":"Addon"}),
-    )
-    .await;
-    assert!(!error, "{text}");
-    assert!(
-        serde_json::from_str::<Value>(&text).unwrap()["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w["slot"] == "custom_head")
-    );
-    std::fs::remove_file(path).unwrap();
-    let (text, error) = call(
-        &server,
-        &headers,
-        "add_addon",
-        json!({"plan_id":1,"source_name":"Addon"}),
-    )
-    .await;
-    assert!(!error, "{text}");
-    assert!(
-        serde_json::from_str::<Value>(&text).unwrap()["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|w| w["slot"] != "custom_head")
-    );
+    for present in [true, false] {
+        if !present {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let (text, error) = call(
+            &server,
+            &headers,
+            "add_addon",
+            json!({"plan_id":1,"source_name":"Addon"}),
+        )
+        .await;
+        assert!(!error, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["slot"] == "custom_head"),
+            present
+        );
+    }
 }

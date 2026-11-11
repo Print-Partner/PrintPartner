@@ -1,3 +1,4 @@
+//! T-3.
 //! The group tests drive a Unix child that handles SIGTERM. On Windows the
 //! group is a Job Object that only pp-compat can create, and stdin EOF is the
 //! only stop request, so pp-compat's tests are their Windows counterparts:

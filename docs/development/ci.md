@@ -22,7 +22,7 @@ The selection is made at job level by `scripts/ci-path-filter.py`, not with work
 - **Label.** `ci:windows` selects the Windows job. `ci:full` selects it and `rust (macos)`; the existing `macos` label still selects macOS alone. The labels are read from the PR event, and the job re-evaluates when one is added or removed.
 - **Path.** The PR changes `.gitattributes` (its `eol=lf` rules only affect Windows checkouts), `rust/crates/pp-os/`, `rust/Cargo.lock`, `rust-toolchain.toml`, `web/package.json`, `web/package-lock.json`, each workspace's `web/apps/*/package.json` and `web/packages/*/package.json` (the Windows job builds every workspace), `web/scripts/atomic-package-build.mjs`, `rust/scripts/build-desktop-manifest.py`, `rust/scripts/desktop_workspaces.py`, `rust/scripts/fetch-historical-schema-commits.sh`, `rust/crates/pp-desktop/tauri.conf.json`, `rust/crates/pp-desktop/icons/` (the Windows build embeds `icon.ico` as a resource), `.github/workflows/`, `.github/actions/`, `.github/actionlint.yaml`, the selector or its test, or any Rust or Cargo file under `rust/`, or TypeScript file under `web/apps/server/src/` or `web/packages/` (the Node child the Windows runtime tests launch, and the shared packages it imports), whose head or base content mentions `windows`, `win32`, `named pipe`, a `\\.\pipe` path, the text `unix` anywhere (as in `os::unix`, `cfg(unix)`, `cfg(any(unix, …))` or `UnixStream`, and also `UNIX_EPOCH`, which selects more than needed), `os::fd`, `target_family`, `target_os` or `libc` (a Windows module or dependency, or Unix-only code that must have a Windows counterpart), `linux`, `process.platform` or `/proc/` (Linux-only code whose fallback runs on Windows), or `sep` (as `path.sep` or destructured from `node:path`), `path.win32`, a backslash string literal (`"\\"` or `'\\'`) or a backslash regex (`/\\/`) (path-separator handling). A deleted file is judged on its base content, and a file neither side can read selects it. These path and label rules apply even when the Rust inputs for Linux did not change, so a workflow-only PR runs Windows. A Windows-port PR therefore selects it without a label.
 
-A PR that changes only other Rust, web or docs files skips the Windows job and keeps Linux. The skipped job still reports `rust (windows)`. The owner removed `rust (windows)` from the required checks on 2026-11-08, so it is advisory and a failure does not block a merge; `rust (linux)` uses the same selector and is still required, and GitHub counts a skipped required job as passing, which is the reason the decision must not be loosened casually. The selector and its test are in CODEOWNERS, so changing what skips a check requests Chad's review (CODEOWNERS does not make it a merge requirement), and the full set (Windows, macOS, packaged smoke, native macOS) runs on `main` pushes and nightly regardless of PR labels. A skipped PR is first tested on Windows on `main` after it merges, or on its merge group once the [merge queue](#merge-queue) is on; because `rust (windows)` is advisory, a Windows failure on a merge group does not eject the PR, and a Windows-only break on `main` raises no alert. A PR whose Windows job did not run has not been tested on Windows: add `ci:windows` when in doubt.
+A PR that changes only other Rust, web or docs files skips the Windows job and keeps Linux. The skipped job still reports `rust (windows)`. The owner removed `rust (windows)` from the required checks on 2026-11-08, so it is advisory and a failure does not block a merge; `rust (linux)` uses the same selector and is still required, and GitHub counts a skipped required job as passing, which is the reason the decision must not be loosened casually. The selector and its test are in CODEOWNERS, so changing what skips a check requests Chad's review (CODEOWNERS does not make it a merge requirement), and the full set (Windows, macOS, packaged smoke, native macOS) runs on `main` pushes and nightly regardless of PR labels. A skipped PR is first tested on Windows on `main` after it merges, or on its merge group when it goes through the [merge queue](#merge-queue); because `rust (windows)` is advisory, a Windows failure on a merge group does not eject the PR, and a Windows-only break on `main` raises no alert. A PR whose Windows job did not run has not been tested on Windows: add `ci:windows` when in doubt.
 
 Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
@@ -33,9 +33,9 @@ This page covers what the Rust jobs run and how to reproduce them. [Change a CI 
 The `agent-guidance` job in `actionlint.yml` runs `scripts/check-agent-guidance.py`. It makes no network requests.
 
 - **Links in every page:** for every tracked Markdown page (`git ls-files '*.md'`), each local link (inline, image or reference definition) must point to a file or directory inside the checkout, and each `#anchor` into a Markdown page must match a heading anchor as GitHub generates it or an explicit HTML `id` or `name` anchor. Links in fenced code blocks and inline code are examples and are skipped. External links are not fetched.
-- **Guidance rules:** only for the shared guidance (the root `AGENTS.md`, `docs/development/agent-workflow.md`, `docs/development/factory-missions.md` and the repo skills in `.factory/skills/`): a `# ` title (skills excepted), each skill's `name` and `description`, and that Git does not ignore these files.
+- **Guidance rules:** only for the shared guidance (the root `AGENTS.md`, `docs/development/agent-workflow.md` and the repo skills in `.claude/skills/`): a `# ` title (skills excepted), each skill's `name` and `description`, and that Git does not ignore these files.
 
-The job also tests the agent safety guard, the staged-Rust snapshot in the opt-in pre-commit hook (including sparse worktrees) and the Factory environment. Run it locally with `just guidance`; the `agent-guidance` step of `just ci` runs the link check and its tests. Renaming a heading or moving a page fails this check until every link to it is updated.
+The job also tests the agent safety guard and the staged-Rust snapshot in the opt-in pre-commit hook (including sparse worktrees). Run it locally with `just guidance`; the `agent-guidance` step of `just ci` runs the link check and its tests. Renaming a heading or moving a page fails this check until every link to it is updated.
 
 ## Large-file and pre-commit checks
 
@@ -61,7 +61,7 @@ system Python:
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 npm --prefix web run format:check
-.venv/bin/ruff format --check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks
+.venv/bin/ruff format --check scripts rust/scripts web/scripts slicer-sidecar
 ```
 
 These are check-only commands. They return nonzero for unformatted source and
@@ -325,6 +325,41 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `clippy-limits` | Clippy complexity negative controls and baseline check, with both feature modes on Linux | `rust (linux)` (required) |
 | `node-fixtures` | The `--check` mode of each Node parity fixture generator, and the HTTP route inventory diff, on Node 22.23.3 | `desktop-contracts.yml` and `auth-admission-freshness.yml` |
 
+The `ast-grep` step counts `cfg(..desktop_rebuild..)` and `cfg_attr`
+attributes across every crate, including tests. It recursively inspects
+conditional attributes applied by `cfg_attr`, so
+`#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]` counts too. Each outer
+attachment counts once, even if it contains several matching predicates.
+`rust/desktop-rebuild-baseline.json` records three classes: `module` (mod/use),
+`item` (including variants and fields), and `statement` (statements,
+expressions, match arms and ambiguous attachments). Stacked attributes,
+comments, raw attribute names such as `r#cfg`, and escaped feature strings do
+not change attachment.
+
+A `use` or nested ordinary item inside a function body still counts as module
+or item. Item-level macro invocations, extern crate declarations and inner
+impl/trait/extern attributes stay in the frozen statement class. These forms
+were included in the original statement cap; an ambiguous attachment defaults
+to statement. Gates inside macro token trees (`json!`, `vec!`, `select!` and
+`macro_rules!`, for example) also count as statements.
+
+An independent text scan and the AST rules check each other: a text gate must
+have exactly one AST class (or the macro statement fallback), and an AST hit
+without a text gate fails coverage. The text scan ignores comments and literal
+contents. It inspects `cfg_attr` predicates and recursively applied `cfg` or
+`cfg_attr` attributes; `doc = "desktop_rebuild"` does not count. Inner
+crate/module gates count as module gates; inner block gates count as statements.
+
+Counts must match the baseline; update it when gates move or disappear. Only
+module and item counts may grow. Statement counts may not rise per crate over
+`origin/main`, even with `PP_AST_GREP_ALLOW_BASELINE_RAISE=1`. The first landing
+establishes the placement baseline and reports the skipped raise check. This
+step runs in both `just ci --fast` and the full `just ci`.
+
+`cfg!(feature = "desktop_rebuild")` expressions are excluded from these counts
+(17 uses at the review baseline). Child [GRE-1397](https://linear.app/greetz/issue/GRE-1397/count-desktop-rebuild-cfg-expressions-in-the-placement-ratchet)
+tracks counting them later.
+
 Except where noted below, each step runs the command lines of its workflow step without changes. The script sets the same environment that CI sets: `NEXTEST_FILTER`, `PP_TEST_NODE`, `VITE_PRINT_PARTNER_DESKTOP`, and `RUNNER_TEMP`. The cargo steps also get `INSTA_UPDATE=no`, so a snapshot mismatch fails the step instead of writing a `.snap.new` file. `RUNNER_TEMP` is under `$CARGO_TARGET_DIR/local-ci`, or under `rust/target/local-ci` if `CARGO_TARGET_DIR` is not set. The local command differs from CI in these ways:
 
 - It does not install tools. If a tool is not on `PATH`, or if its version is not the version that CI pins, the step is reported as `SKIP` with the reason. The pinned versions are Node 24.21.0, ast-grep 0.50.0, actionlint 1.7.12 and zizmor 1.31.1. The `workaround-ratchet` and `node-fixtures` steps are also skipped when `PP_SCHEMA_PARITY_NODE` does not point to Node 22.23.3.
@@ -474,7 +509,7 @@ These failures are common:
 
 `rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
 
-Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binary in `pp-core`, the `server_binary_routes` binary in `pp-server` (formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `gateway_mount` binary in `pp-core` and the `server_binary_routes` binary in `pp-server` (both formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 
@@ -582,7 +617,7 @@ Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, do
 Pages, schedules, merge groups and `main` pushes stay on GitHub-hosted runners (`main` pushes may use pp-local), and the
 workflows use no Blacksmith Docker layer cache, sticky disk or cross-PR cache. Each hosted or Blacksmith job
 gets a fresh VM. The workflows that a push to a pull request re-triggers cancel a superseded run (`cancel-in-progress` on
-`pull_request`), so a new push stops the jobs still paying for the old head (`droid.yml`, which only answers mentions, and `linear-pr-sync.yml`, which must not be cancelled, run on free runners and have no cancelling group); `main` pushes keep
+`pull_request`), so a new push stops the jobs still paying for the old head (`linear-pr-sync.yml`, which must not be cancelled, runs on a free runner and has no cancelling group); `main` pushes keep
 the one-running, one-pending rule instead.
 
 Three jobs were tried on Blacksmith and are not kept there. `release-signing-check.yml` failed because
@@ -702,8 +737,7 @@ Pull requests restore only. Each install logs
 
 Only pull request runs cancel superseded runs. Every CI workflow
 groups a pull request by workflow and ref (or PR number) with
-`cancel-in-progress: true`, so a new push replaces the older run, except `droid.yml`, which only
-answers mentions and has no group, and `linear-pr-sync.yml`, which must not be cancelled. A run that is already running on `main` is never
+`cancel-in-progress: true`, so a new push replaces the older run, except `linear-pr-sync.yml`, which must not be cancelled. A run that is already running on `main` is never
 cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
 cancelled, 23 succeeded and 12 in progress, because a newer merge cancelled each
 older run and left that merge with no result.
@@ -729,7 +763,7 @@ never replaces the pending run and, because the original has finished, does not 
 
 | Event | Group | `cancel-in-progress` |
 | --- | --- | --- |
-| `pull_request` (except `droid.yml` and `linear-pr-sync.yml`) | workflow and ref (or PR number) | `true` |
+| `pull_request` (except `linear-pr-sync.yml`) | workflow and ref (or PR number) | `true` |
 | first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
 | `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
 | `push` of a tag or another branch, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
@@ -747,20 +781,19 @@ PRs and non-PR runs keep 20 minutes.
 | Hosted check | Workflow | Local command |
 | --- | --- | --- |
 | `review-gate` (required) | `review-gate.yml` on `pull_request_target` and `merge_group`, rerun by `review-gate-rerun.yml` | `python3 -B -m unittest discover -s scripts -p test_review_gate.py -v` |
-| `droid-review` (suspended) | `droid-review.yml` | none; the job runs only when the repository variable `PP_DROID_REVIEW` is `on`, so it reports `skipped` until a provider-neutral gate replaces it or the Factory quota returns |
 | `claude-code-review`, `claude-security-review` | `claude-review.yml` | none; needs the `CLAUDE_CODE_OAUTH_TOKEN` secret, or `ANTHROPIC_API_KEY` as a fallback |
 
-`scripts/test_review_gate.py` runs the gate's Python step unchanged against a fake `gh` and checks each pass and fail case: a Droid success, a Claude code review with its security review, an owner marker for the head, markers for another head or from another account, same-named checks from another workflow, event, or app, a review from a workflow file the PR changes, and a non-owner PR that changes workflows, `.github/zizmor.yml`, or the safety guard. It also checks that the gate runs on `pull_request_target` with no checkout or secrets, that its expected origins match the review workflows, and that the Claude jobs keep their author filter, permissions, and tool lists. The `changes` job in `actionlint.yml` runs it on every PR.
+`scripts/test_review_gate.py` runs the gate's Python step unchanged against a fake `gh` and checks each pass and fail case: a Claude code review with its security review, an owner marker for the head, markers for another head or from another account, same-named checks from another workflow, event, or app, a review from a workflow file the PR changes, and a non-owner PR that changes workflows, `.github/zizmor.yml`, or the safety guard. It also checks that the gate runs on `pull_request_target` with no checkout or secrets, that its expected origins match the review workflows, and that the Claude jobs keep their author filter, permissions, and tool lists. The `changes` job in `actionlint.yml` runs it on every PR.
 
-The gate waits up to 30 minutes for the head's `claude-code-review` and `claude-security-review` jobs to finish before it judges the head, so a new push no longer shows a red gate while the review is still running. It reads the final state, so waiting cannot create a pass. A job that never appears within two minutes counts as not running, and a run that is still waiting stops if the PR head or base moves. The run also re-reads the head and base right before it can pass and fails if either moved, which closes the gap between the last cancellation point and the pass. The `pull_request_target` trigger carries `branches: [main]`. A PR into another base, such as a stacked PR, runs that base's copy of `review-gate.yml`, which could always pass, and gets no run of `main`'s copy. `main`'s copy fails a PR whose base is not `main` (a rerun after a retarget), and fails when any `review-gate` check run on the head lists a PR into another base. GitHub lists the PRs open from a run's head branch now, so that check sees a PR into another base only while it is open; see the remaining risk under [Code review](definition-of-done.md#code-review). Only a PR into `main` can pass on a Droid or Claude run, because a review of a head against another base does not cover the same head against `main`. The gate also runs on `edited` events. Retargeting a PR to `main` runs the gate against `main`. Retargeting it away from `main` starts no run of `main`'s copy, so an earlier green `review-gate` check stays on that head. That is harmless: the PR no longer targets `main` and cannot merge into it, and retargeting it back to `main` runs the gate again. While waiting it follows only the latest run of each Claude job, so an older run from another PR that shares the head does not delay it. An edit run is a full run in the same group as a push run, so a newer edit or push run cancels an older one and the newest run decides. The gate has no job-level `if`, so an edit can never replace a failing gate with a skipped one, because GitHub counts a skipped required job as a pass. After a review workflow finishes, `review-gate-rerun.yml` waits up to about 40 minutes, longer than the gate's 30-minute wait, for the gate run to end and reruns it. It reruns only the newest gate run that lists this PR and lists only PRs into the default branch, never a run that also lists a PR into another base on the same head. It reads the default branch from the event, not a hardcoded name. A fork PR's runs list no PR, so for a fork PR it reruns nothing; rerun `review-gate` from the PR's Checks tab after the marker or review.
+The gate waits up to 30 minutes for the head's `claude-code-review` and `claude-security-review` jobs to finish before it judges the head, so a new push no longer shows a red gate while the review is still running. It reads the final state, so waiting cannot create a pass. A job that never appears within two minutes counts as not running, and a run that is still waiting stops if the PR head or base moves. The run also re-reads the head and base right before it can pass and fails if either moved, which closes the gap between the last cancellation point and the pass. The `pull_request_target` trigger carries `branches: [main]`. A PR into another base, such as a stacked PR, runs that base's copy of `review-gate.yml`, which could always pass, and gets no run of `main`'s copy. `main`'s copy fails a PR whose base is not `main` (a rerun after a retarget), and fails when any `review-gate` check run on the head lists a PR into another base. GitHub lists the PRs open from a run's head branch now, so that check sees a PR into another base only while it is open; see the remaining risk under [Code review](definition-of-done.md#code-review). Only a PR into `main` can pass on a Claude run, because a review of a head against another base does not cover the same head against `main`. The gate also runs on `edited` events. Retargeting a PR to `main` runs the gate against `main`. Retargeting it away from `main` starts no run of `main`'s copy, so an earlier green `review-gate` check stays on that head. That is harmless: the PR no longer targets `main` and cannot merge into it, and retargeting it back to `main` runs the gate again. While waiting it follows only the latest run of each Claude job, so an older run from another PR that shares the head does not delay it. An edit run is a full run in the same group as a push run, so a newer edit or push run cancels an older one and the newest run decides. The gate has no job-level `if`, so an edit can never replace a failing gate with a skipped one, because GitHub counts a skipped required job as a pass. After a review workflow finishes, `review-gate-rerun.yml` waits up to about 40 minutes, longer than the gate's 30-minute wait, for the gate run to end and reruns it. It reruns only the newest gate run that lists this PR and lists only PRs into the default branch, never a run that also lists a PR into another base on the same head. It reads the default branch from the event, not a hardcoded name. A fork PR's runs list no PR, so for a fork PR it reruns nothing; rerun `review-gate` from the PR's Checks tab after the marker or review.
 
-`review-gate.yml` has one `concurrency` group per PR number with `cancel-in-progress: true` for every PR run, reruns included, so a push cancels the previous head's gate run and at most one run per PR is queued behind it. Reruns used to get a group per run id, which nothing ever superseded, so they piled up in the queue (GRE-1242). `review-gate-rerun.yml` therefore puts its concurrency group on the job, after the job `if`, so an ordinary PR comment that the `if` rejects never joins the group or cancels a useful rerun. The group is the PR number for owner comments and the head SHA for review runs, with `cancel-in-progress: true`, so a newer event for the same target replaces an older one that would do the same work. A review run for a head that is no longer the PR's head exits at once without rerunning anything; a review run that ended `cancelled` on the current head still refreshes the gate, while one that ended `skipped` (the suspended Droid job on every push) produces no evidence and is filtered out by the job `if`, which needs no runner. The rerun job re-reads the PR's head on every poll and right before it reruns, and exits if the head moved, so it does not rerun an old head's gate run into the PR-wide group; a push in the few seconds between that last read and the rerun request can still lose the new head's gate run to a cancel, and the next event or a manual rerun recovers it. A manual rerun of an old head's gate run shares the group and cancels the current run; rerun the current head afterwards. Every other `pull_request` workflow except `linear-pr-sync.yml` and `droid.yml` already cancels superseded PR runs. This change adds no cancellation for `main` pushes, merge groups or tags; see [Superseded runs](#superseded-runs) for how existing workflows treat `main`. `linear-pr-sync.yml` keeps `cancel-in-progress: false` so a state sync always finishes, and `droid.yml` has no group because its comment and review events share the workflow with PR events and a PR-keyed group would cancel a live `@droid` run.
+`review-gate.yml` has one `concurrency` group per PR number with `cancel-in-progress: true` for every PR run, reruns included, so a push cancels the previous head's gate run and at most one run per PR is queued behind it. Reruns used to get a group per run id, which nothing ever superseded, so they piled up in the queue (GRE-1242). `review-gate-rerun.yml` therefore puts its concurrency group on the job, after the job `if`, so an ordinary PR comment that the `if` rejects never joins the group or cancels a useful rerun. The group is the PR number for owner comments and the head SHA for review runs, with `cancel-in-progress: true`, so a newer event for the same target replaces an older one that would do the same work. A review run for a head that is no longer the PR's head exits at once without rerunning anything; a review run that ended `cancelled` on the current head still refreshes the gate, while one that ended `skipped` produces no evidence and is filtered out by the job `if`, which needs no runner. The rerun job re-reads the PR's head on every poll and right before it reruns, and exits if the head moved, so it does not rerun an old head's gate run into the PR-wide group; a push in the few seconds between that last read and the rerun request can still lose the new head's gate run to a cancel, and the next event or a manual rerun recovers it. A manual rerun of an old head's gate run shares the group and cancels the current run; rerun the current head afterwards. Every other `pull_request` workflow except `linear-pr-sync.yml` already cancels superseded PR runs. This change adds no cancellation for `main` pushes, merge groups or tags; see [Superseded runs](#superseded-runs) for how existing workflows treat `main`. `linear-pr-sync.yml` keeps `cancel-in-progress: false` so a state sync always finishes.
 
-[Code review](definition-of-done.md#code-review) describes the three ways to pass the gate, the coordinator's marker, and how the Claude jobs use the owner's subscription.
+[Code review](definition-of-done.md#code-review) describes the two ways to pass the gate, a Claude review or the coordinator's marker, and how the Claude jobs use the owner's subscription.
 
 ## Merge queue
 
-GitHub's merge queue is available because the repository belongs to the Print-Partner organization. Chad turns it on; until then nothing in this section runs. A queued PR merges only after the required checks pass on its merge group: a temporary `gh-readonly-queue/main/pr-<n>-<sha>` commit that holds `main` plus every PR ahead of it in the queue.
+GitHub's merge queue is available because the repository belongs to the Print-Partner organization. The queue was turned on 2026-11-09 ([CI controls](ci-controls.md#turn-on-the-merge-queue)). A queued PR merges only after the required checks pass on its merge group: a temporary `gh-readonly-queue/main/pr-<n>-<sha>` commit that holds `main` plus every PR ahead of it in the queue.
 
 | Required check | Workflow | On `merge_group` |
 | --- | --- | --- |
@@ -779,4 +812,4 @@ The job has no job-level `if`. GitHub counts a skipped required job as a pass, s
 
 `scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on all four required workflows and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
 
-[CI controls](ci-controls.md#turn-on-the-merge-queue) lists the exact ruleset change that turns the queue on.
+[CI controls](ci-controls.md#turn-on-the-merge-queue) records the merge_queue rule that turned the queue on.

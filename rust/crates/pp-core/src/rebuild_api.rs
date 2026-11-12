@@ -757,9 +757,16 @@ mod tests {
     }
 
     /// The single owner already exists, so a second register is refused by its
-    /// handler (403), which still shows the route runs.
-    fn owner_exists(route: &pp_api::client_contract::ClientRoute, status: u16) -> bool {
-        route.path == "/auth/register" && status == 403
+    /// handler, which still shows the route runs. The auth guard's own 403s (origin,
+    /// host, loopback) carry other details and do not count.
+    fn owner_exists(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+        body: &Value,
+    ) -> bool {
+        route.path == "/auth/register"
+            && status == 403
+            && body["detail"] == pp_storage::auth::AuthFailure::SingleAccountExists.to_string()
     }
 
     /// A body each client route's request DTO accepts.
@@ -851,17 +858,16 @@ mod tests {
         }
     }
 
-    /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
-    /// print, so those handlers answer their own 404 with a code or detail.
     /// Whether an anonymous request got the answer the route's stated auth predicts.
     fn answers_without_credential(
         route: &pp_api::client_contract::ClientRoute,
         status: u16,
+        body: &Value,
     ) -> bool {
         match route.auth {
             pp_api::client_contract::ClientAuth::Credential => status == 401,
             pp_api::client_contract::ClientAuth::None => {
-                status == 200 || owner_exists(route, status)
+                status == 200 || owner_exists(route, status, body)
             }
         }
     }
@@ -881,9 +887,11 @@ mod tests {
             || handler_not_found(status, body)
             || stale
             || no_layers
-            || owner_exists(route, status)
+            || owner_exists(route, status, body)
     }
 
+    /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
+    /// print, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
         const CODES: [&str; 4] = [
             "integration_not_found",
@@ -980,7 +988,7 @@ mod tests {
             let anonymous_status = anonymous.status().as_u16();
             let anonymous_body: Value = anonymous.json().await.unwrap_or(Value::Null);
             assert!(
-                answers_without_credential(route, anonymous_status),
+                answers_without_credential(route, anonymous_status, &anonymous_body),
                 "{} {path} without credentials: {anonymous_status} {anonymous_body}",
                 route.method
             );
@@ -1032,6 +1040,29 @@ mod tests {
         assert_eq!(status().await, json!({"setup_required": true}));
         let cookie = session(&client, &origin, "rebuild@example.com").await;
         assert_eq!(status().await, json!({"setup_required": false}));
+        // A register the auth guard refuses (foreign Origin) is never read as the
+        // handler's owner-exists answer; one that reaches the handler is.
+        let register = pp_api::client_contract::CLIENT_ROUTES
+            .iter()
+            .find(|route| route.name == "registerOwner")
+            .unwrap();
+        for (sent_origin, handled) in [("http://other.invalid", false), (origin.as_str(), true)] {
+            let refused = client
+                .post(format!("{origin}/auth/register"))
+                .header("Origin", sent_origin)
+                .json(&sample_body("RegisterRequest"))
+                .send()
+                .await
+                .unwrap();
+            let refused_status = refused.status().as_u16();
+            let body: Value = refused.json().await.unwrap_or(Value::Null);
+            assert_eq!(refused_status, 403, "{sent_origin}: {body}");
+            assert_eq!(
+                owner_exists(register, refused_status, &body),
+                handled,
+                "{sent_origin}: {body}"
+            );
+        }
         let me: Value = client
             .get(format!("{origin}/auth/me"))
             .header("Origin", &origin)

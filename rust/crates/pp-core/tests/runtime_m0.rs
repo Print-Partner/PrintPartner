@@ -45,6 +45,14 @@ mod bambu_pin;
 #[path = "runtime_m0/integration_setup.rs"]
 mod integration_setup;
 
+#[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/mcp_gateway.rs"]
+mod mcp_gateway;
+
+#[cfg(feature = "desktop_rebuild")]
+#[path = "support/mcp_gateway.rs"]
+mod mcp_gateway_support;
+
 #[path = "support/process.rs"]
 mod process;
 

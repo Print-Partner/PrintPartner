@@ -4,14 +4,19 @@ use pp_core::{DesktopLaunch, VerifiedBundle};
 use std::path::{Path, PathBuf};
 
 pub fn launch(data: PathBuf) -> DesktopLaunch {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .unwrap();
-    let manifest = std::env::var_os("PP_DESKTOP_RELEASE_MANIFEST")
+    launch_from_manifest(data, &manifest_path())
+}
+
+/// The release manifest this build embeds, as the build script chose it.
+pub fn manifest_path() -> PathBuf {
+    std::env::var_os("PP_DESKTOP_RELEASE_MANIFEST")
         .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("rust/bundle-manifest.json"));
-    launch_from_manifest(data, &manifest)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../rust/bundle-manifest.json")
+                .canonicalize()
+                .unwrap()
+        })
 }
 
 pub fn launch_from_manifest(data: PathBuf, manifest: &Path) -> DesktopLaunch {

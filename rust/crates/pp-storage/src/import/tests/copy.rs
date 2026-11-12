@@ -182,6 +182,18 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
         "{error:?}"
     );
 
+    // A value in a table other than Builds and Sources counts too.
+    let setting = node_folder();
+    execute(
+        &setting,
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES ('solo', 'synthetic_scalar', '1')",
+    );
+    let error = refused(&setting);
+    assert!(
+        matches!(&error, ImportError::Installation { value, rows: 1 } if value == "solo"),
+        "{error:?}"
+    );
+
     let other = node_folder();
     execute(
         &other,
@@ -194,9 +206,7 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
         "{error:?}"
     );
     assert!(
-        refusal.starts_with(
-            "3 Builds and 2 Sources are stored under the installation value \"solo\"."
-        ),
+        refusal.starts_with("Rows stored under the installation value \"solo\": 5."),
         "{refusal}"
     );
     assert!(

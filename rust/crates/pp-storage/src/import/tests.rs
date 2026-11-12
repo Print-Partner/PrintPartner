@@ -180,6 +180,25 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 }
 
 #[test]
+fn a_value_other_than_default_in_any_table_is_reported() {
+    // No Build and no Source: the value comes from another table.
+    let folder = Installation::create(Fixture::NodeSchema34).unwrap();
+    let report = run(folder.path()).unwrap();
+    assert_eq!((report.builds, report.installation.as_deref()), (0, None));
+    execute(
+        &folder,
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES ('solo', 'synthetic_scalar', '1')",
+    );
+    let report = run(folder.path()).unwrap();
+    assert_eq!(report.installation.as_deref(), Some("solo"));
+    let text = report.to_string();
+    assert!(
+        text.contains("reads only data under \"default\", so the import would refuse"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_full_archive_gives_the_same_counts() {
     let folder = node_folder();
     let from_folder = run(folder.path()).unwrap();

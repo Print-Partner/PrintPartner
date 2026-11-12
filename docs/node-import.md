@@ -54,7 +54,7 @@ Schema 34, upgraded to 48 on a temporary copy.
 
 Then it lists:
 
-- **Installation value and accounts:** one line with the `tenant_id` value that holds the Builds and Sources and the number of accounts, and a line each when the value is not `default` or more than one account is stored.
+- **Installation value and accounts:** one line with the `tenant_id` value the data is stored under and the number of accounts, and a line each when the value is not `default` or more than one account is stored.
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
@@ -96,7 +96,7 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | --- | --- |
 | Destination that holds data, a `.desktop-lease` entry or a Rust installation | The import writes only into a new folder. |
 | Stored JSON the inventory does not name | Every shape must be named as converted, copied unchanged, kept unused or dropped. The message lists the shapes as the dry run does. |
-| Builds and Sources under an installation value other than `default` | The Rust runtime reads only `default`. The message names the value and its Build and Source counts. Send the dry-run report back so the case can be added; nothing re-assigns the data today. |
+| Rows in any table under an installation value other than `default` | The Rust runtime reads only `default`. The message names the value and the number of rows under it. Send the dry-run report back so the case can be added; nothing re-assigns the data today. |
 | More than one account | The Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added. There is no option to pick an account. |
 | A copied file that reads back differently from its source | The disk or the copy failed. |
 
@@ -158,4 +158,4 @@ No Rust code reads these. The import keeps them byte for byte, also for features
 
 Node stores every row under a `tenant_id` value. It writes `default` when it runs without accounts or with single-user sign-in, and for the first account otherwise. A later account's id, `basic-<login>` or `anonymous` appear in other setups. The Rust-only runtime maps every session to `default` (`ps/auth/policy.rs`), so it cannot see data under another value, and it refuses to sign in when `users` holds more than one row.
 
-The dry run prints the value that holds the Builds and Sources and the number of accounts, as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.
+The dry run prints a value other than `default` when any table holds rows under one, else the value that holds the Builds and Sources, and the number of accounts, as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.

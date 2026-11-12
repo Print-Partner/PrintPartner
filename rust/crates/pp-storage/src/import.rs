@@ -61,12 +61,11 @@ pub enum ImportError {
     Destination(Destination),
     /// Stored JSON that the inventory does not name, as the dry run lists it.
     Unnamed(Vec<String>),
-    /// The Builds and Sources are under an installation value other than
-    /// `default`, which is the only one the Rust runtime reads.
+    /// Rows are stored under an installation value other than `default`,
+    /// which is the only one the Rust runtime reads.
     Installation {
         value: String,
-        builds: u64,
-        sources: u64,
+        rows: u64,
     },
     /// More than one account is stored; the Rust runtime signs in with one.
     Accounts(u64),
@@ -158,13 +157,9 @@ impl fmt::Display for ImportError {
                 "The inventory does not name this stored JSON: {}. Report it; the import runs once the inventory names it",
                 shapes.join(", ")
             ),
-            Self::Installation {
-                value,
-                builds,
-                sources,
-            } => write!(
+            Self::Installation { value, rows } => write!(
                 f,
-                "{builds} Builds and {sources} Sources are stored under the installation value {value:?}. The import handles only data stored under \"default\" today. Send the dry-run report back so this case can be added"
+                "Rows stored under the installation value {value:?}: {rows}. The import handles only data stored under \"default\" today. Send the dry-run report back so this case can be added"
             ),
             Self::Accounts(accounts) => write!(
                 f,
@@ -304,8 +299,9 @@ pub struct DryRunReport {
     pub printers: u64,
     /// Unmatched prints that are neither claimed nor dismissed.
     pub unmatched_prints: u64,
-    /// The `tenant_id` value that holds the Builds and Sources, when there
-    /// are any. The Rust-only runtime reads only `default`.
+    /// A `tenant_id` value other than `default` when any table holds rows
+    /// under one, else the value that holds the Builds and Sources, when
+    /// there are any. The Rust-only runtime reads only `default`.
     pub installation: Option<String>,
     /// Rows in `users`. The Rust-only runtime signs in only with one or none.
     pub users: u64,
@@ -821,7 +817,11 @@ fn measure(
             tenants.into_iter().cloned().collect(),
         ));
     }
-    let installation = tenants.into_iter().next().cloned();
+    // The Rust runtime cannot see a row under another value in any table,
+    // so one counts also when no Build or Source is stored under it.
+    let mut values = tables.iter().flat_map(|table| table.by_tenant.keys());
+    let other = values.find(|value| *value != "default");
+    let installation = other.or(tenants.into_iter().next()).cloned();
 
     let settings: Vec<(String, String)> = {
         let mut statement = connection.prepare("SELECT key, value FROM app_settings")?;

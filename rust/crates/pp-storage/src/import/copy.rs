@@ -164,10 +164,10 @@ pub(super) fn import_with(
         .as_deref()
         .filter(|value| *value != "default")
     {
+        let stored = |table: &super::TableCount| table.by_tenant.get(value).copied();
         return Err(ImportError::Installation {
             value: value.to_owned(),
-            builds: counts.builds,
-            sources: counts.sources,
+            rows: counts.tables.iter().filter_map(stored).sum(),
         });
     }
     if counts.users > 1 {

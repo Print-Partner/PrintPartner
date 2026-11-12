@@ -475,6 +475,21 @@ pub(crate) fn product_router_with_updates(
         .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
 }
 
+/// `POST /sources/{id}/upload-files` for the Rust-only runtime, over its one
+/// Source upload service (GRE-428). Mounted beside [`product_router`], with
+/// the catalog's guard and no fixed body limit.
+pub(crate) fn upload_router(
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    uploads: Arc<dyn pp_api::catalog::SourceUploads>,
+) -> Result<Router> {
+    Ok(pp_api::catalog::admit_upload_routes(
+        CatalogHttpConfig::from_startup(origin, DESKTOP_TENANT, desktop_policy(), Some("1"))?,
+        owner,
+        uploads,
+    ))
+}
+
 /// API keys route to the default tenant under the single-account policy.
 pub(crate) const DESKTOP_TENANT: &str = "default";
 

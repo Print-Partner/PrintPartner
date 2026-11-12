@@ -377,6 +377,10 @@ fn file(path: &str, kind: &str, byte: char) -> File {
     }
 }
 
+fn fail() -> Phase {
+    Phase::Fail("Import failed".into())
+}
+
 fn owned(op: &Operation) -> Phase {
     Phase::Owned(OwnedInput {
         locator: format!(".pp-imports/{}", op.job_id),
@@ -449,10 +453,10 @@ fn exact_fail_retry_adopts_the_recorded_result_without_writes() {
     let fixture = Fixture::open();
     let op = fixture.admit(fixture.physical(), "fail-retry");
     let claim = fixture.claim(&op);
-    let failed = fixture.phase(&claim, Phase::Fail).unwrap();
+    let failed = fixture.phase(&claim, fail()).unwrap();
     assert_eq!(failed.state, State::Failed);
     assert_eq!(failed.observation_cursor, Some(1));
-    fixture.assert_retry(&claim, Phase::Fail, &failed);
+    fixture.assert_retry(&claim, fail(), &failed);
 }
 
 #[test]
@@ -472,7 +476,7 @@ fn exact_cleanup_retry_adopts_the_recorded_result_without_writes() {
         owned(&op),
         published(&op),
         Phase::Activate,
-        Phase::Fail,
+        fail(),
     ] {
         fixture.rejected_phase(
             &claim,
@@ -488,7 +492,7 @@ fn failed_cleanup_retries_preserve_the_released_quota() {
     let fixture = Fixture::open();
     let op = fixture.admit(fixture.physical(), "failed-cleanup");
     let claim = fixture.claim(&op);
-    fixture.phase(&claim, Phase::Fail).unwrap();
+    fixture.phase(&claim, fail()).unwrap();
     let settled = fixture.phase(&claim, Phase::Cleanup).unwrap();
     assert_eq!(fixture.quota(&op), (0, 0, true));
     assert_eq!(fixture.job(&op).0, "failed");
@@ -497,7 +501,7 @@ fn failed_cleanup_retries_preserve_the_released_quota() {
     fixture.rejected_phase(
         &claim,
         claim.source_work.as_ref().unwrap(),
-        Phase::Fail,
+        fail(),
         "Stale attempt fence",
     );
     fixture.reopen();
@@ -508,17 +512,17 @@ fn a_recovered_fail_records_the_new_attempt_and_rejects_the_old_one() {
     let fixture = Fixture::open();
     let op = fixture.admit(fixture.physical(), "recovered-fail");
     let old = fixture.claim(&op);
-    fixture.phase(&old, Phase::Fail).unwrap();
+    fixture.phase(&old, fail()).unwrap();
     let fixture = fixture.reopen();
     let claim = fixture.claim(&op);
-    let failed = fixture.phase(&claim, Phase::Fail).unwrap();
+    let failed = fixture.phase(&claim, fail()).unwrap();
     assert_eq!(failed.observation_cursor, Some(2));
     let observations = fixture.observations(&op);
     assert_ne!(observations[0].2, observations[1].2);
     assert_ne!(observations[0].3, observations[1].3);
-    fixture.assert_retry(&claim, Phase::Fail, &failed);
+    fixture.assert_retry(&claim, fail(), &failed);
     let settled = fixture.phase(&claim, Phase::Cleanup).unwrap();
-    for phase in [Phase::Fail, Phase::Cleanup] {
+    for phase in [fail(), Phase::Cleanup] {
         fixture.rejected_phase(
             &old,
             claim.source_work.as_ref().unwrap(),
@@ -539,14 +543,14 @@ fn a_previous_generation_cannot_adopt_the_current_attempts_cleanup() {
         "old-generation",
     );
     let mut old = fixture.claim(&op);
-    fixture.phase(&old, Phase::Fail).unwrap();
+    fixture.phase(&old, fail()).unwrap();
     fixture.cancel(&token, &op);
     old.source_work.as_mut().unwrap().release().unwrap();
     let claim = fixture.claim(&op);
-    let failed = fixture.phase(&claim, Phase::Fail).unwrap();
+    let failed = fixture.phase(&claim, fail()).unwrap();
     assert_eq!(failed.state, State::Cancelled);
     let settled = fixture.phase(&claim, Phase::Cleanup).unwrap();
-    for phase in [Phase::Fail, Phase::Cleanup] {
+    for phase in [fail(), Phase::Cleanup] {
         fixture.rejected_phase(
             &old,
             claim.source_work.as_ref().unwrap(),
@@ -562,7 +566,7 @@ fn cleanup_retry_requires_a_live_source_proof() {
     let fixture = Fixture::open();
     let op = fixture.admit(fixture.physical(), "cleanup-proof");
     let mut claim = fixture.claim(&op);
-    fixture.phase(&claim, Phase::Fail).unwrap();
+    fixture.phase(&claim, fail()).unwrap();
     fixture.phase(&claim, Phase::Cleanup).unwrap();
     claim.source_work.as_mut().unwrap().release().unwrap();
     let replacement = fixture
@@ -592,7 +596,7 @@ fn cleanup_retry_revalidates_authority_without_mutating_the_terminal_job() {
         "cleanup-authority",
     );
     let claim = fixture.claim(&op);
-    fixture.phase(&claim, Phase::Fail).unwrap();
+    fixture.phase(&claim, fail()).unwrap();
     fixture.phase(&claim, Phase::Cleanup).unwrap();
     fixture.logout(&token);
     let before = fixture.snapshot();
@@ -614,7 +618,7 @@ fn terminal_settlement_without_cleanup_cannot_be_adopted_as_a_cleanup_retry() {
         "refused-cleanup",
     );
     let claim = fixture.claim(&op);
-    fixture.phase(&claim, Phase::Fail).unwrap();
+    fixture.phase(&claim, fail()).unwrap();
     fixture.logout(&token);
     assert!(fixture.phase(&claim, Phase::Cleanup).is_err());
     fixture.rejected_phase(
@@ -1052,7 +1056,7 @@ fn a_changed_source_conflicts_and_a_cancelled_import_settles_as_cancelled() {
         (&State::Conflict, false, Postprocessing::NotActivated)
     );
     assert_eq!(
-        fixture.phase(&lease, Phase::Fail).unwrap_err().to_string(),
+        fixture.phase(&lease, fail()).unwrap_err().to_string(),
         "Import already completed"
     );
     let settled = fixture.phase(&lease, Phase::Cleanup).unwrap();
@@ -1098,9 +1102,9 @@ fn a_changed_source_conflicts_and_a_cancelled_import_settles_as_cancelled() {
         fixture.phase(&lease, owned(&op)).unwrap_err().to_string(),
         "Import cancelled"
     );
-    let failed = fixture.phase(&lease, Phase::Fail).unwrap();
+    let failed = fixture.phase(&lease, fail()).unwrap();
     assert_eq!(failed.state, State::Cancelled);
-    fixture.assert_retry(&lease, Phase::Fail, &failed);
+    fixture.assert_retry(&lease, fail(), &failed);
     let settled = fixture.phase(&lease, Phase::Cleanup).unwrap();
     fixture.assert_retry(&lease, Phase::Cleanup, &settled);
     assert_eq!(fixture.job(&op).0, "cancelled");
@@ -1551,7 +1555,7 @@ fn a_released_import_source_lease_cannot_advance_under_a_replacement() {
         owned(&op),
         published(&op),
         Phase::Activate,
-        Phase::Fail,
+        fail(),
         Phase::Cleanup,
     ] {
         fixture.rejected_phase(
@@ -1593,7 +1597,7 @@ fn phases_reject_another_source_or_tenant_without_writes() {
                 Duration::from_secs(5),
             )
             .unwrap();
-        fixture.rejected_phase(&claim, &wrong, Phase::Fail, "Wrong Source reservation");
+        fixture.rejected_phase(&claim, &wrong, fail(), "Wrong Source reservation");
         for phase in [
             Phase::Read,
             owned(&op),
@@ -1636,7 +1640,7 @@ fn a_wrong_source_cannot_commit_an_authority_refusal() {
         owned(&op),
         published(&op),
         Phase::Activate,
-        Phase::Fail,
+        fail(),
         Phase::Cleanup,
     ] {
         fixture.rejected_phase(&claim, &wrong, phase, "Wrong Source reservation");
@@ -1660,7 +1664,7 @@ fn a_previous_writer_source_proof_cannot_advance_a_fresh_attempt() {
     fixture.rejected_phase(
         &claim,
         old_source,
-        Phase::Fail,
+        fail(),
         "Wrong Source writer incarnation",
     );
     for phase in [

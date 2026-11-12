@@ -27,8 +27,7 @@ use pp_storage::{
     auth::{AuthFailure, AuthPolicy, AuthorityFailure},
     jobs::{
         AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobFailure,
-        JobKind, Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission,
-        WorkerOperation,
+        Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerOperation,
     },
     printer_hosts::{self, PrinterLink},
     read_model::farm::{HostState, Observation},
@@ -71,7 +70,7 @@ fn sliced(filename: &str) -> bool {
         })
 }
 /// Longer than one upload and start (120 s and 15 s in the drivers).
-const LEASE_SECONDS: u32 = 300;
+pub(crate) const LEASE_SECONDS: u32 = 300;
 /// How long an idle worker waits without a dispatch's wake.
 const IDLE_RECHECK: Duration = Duration::from_secs(30);
 
@@ -105,15 +104,7 @@ impl SendWorker {
             .data_dir()
             .join("exports");
         Ok(Self {
-            worker: owner.job_worker_with_policy(
-                policy,
-                WorkerAdmission {
-                    kinds: vec![(JobKind::PrinterUpload, 4)],
-                    total: 4,
-                    per_resource: 1,
-                    lease_seconds: LEASE_SECONDS,
-                },
-            )?,
+            worker: owner.job_worker_with_policy(policy, crate::uploads::worker_admission())?,
             settings: owner.client(),
             sends,
             exports,

@@ -707,7 +707,7 @@ pub struct JobSnapshot {
     pub result: Option<ResultArtifact>,
     #[cfg(feature = "desktop_rebuild")]
     pub result: Option<super::CompletedResult>,
-    pub error: Option<&'static str>,
+    pub error: Option<String>,
     #[cfg(feature = "desktop_rebuild")]
     pub created_at: String,
     pub finished_at: Option<String>,
@@ -803,10 +803,6 @@ impl JobRecord {
         }
         (self.result.as_ref() == Some(receipt)).then_some(UploadedProof { printer_id, upload })
     }
-    #[cfg(feature = "desktop_rebuild")]
-    pub(crate) fn internal_only(&self) -> bool {
-        self.kind == JobKind::SuppliedSourceImport
-    }
     /// A cancelled import waits for its owner's cleanup claim, which the
     /// execution attempt limit does not bound.
     #[cfg(feature = "desktop_rebuild")]
@@ -816,6 +812,17 @@ impl JobRecord {
     #[cfg(not(feature = "desktop_rebuild"))]
     pub(crate) fn awaits_owner_cleanup(&self) -> bool {
         false
+    }
+    /// A failed import names its reason (GRE-428).
+    #[cfg(feature = "desktop_rebuild")]
+    fn stated_reason(&self) -> Option<&str> {
+        (self.kind == JobKind::SuppliedSourceImport && self.state == PersistentState::Failed)
+            .then_some(self.recovery.as_deref())
+            .flatten()
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    fn stated_reason(&self) -> Option<&str> {
+        None
     }
     pub fn snapshot(&self) -> JobSnapshot {
         let (status, message) = match self.state {
@@ -858,7 +865,7 @@ impl JobRecord {
             result: self.result.clone(),
             #[cfg(feature = "desktop_rebuild")]
             result: self.public_result.clone(),
-            error: (status == "error").then_some(message),
+            error: (status == "error").then(|| self.stated_reason().unwrap_or(message).to_owned()),
             #[cfg(feature = "desktop_rebuild")]
             created_at: timestamp(self.created_at),
             finished_at: self.finished_at.map(timestamp),

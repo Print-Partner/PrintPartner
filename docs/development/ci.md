@@ -23,8 +23,9 @@ Windows, Rust macOS and native arm64 jobs run on a ready PR only with
 `ci:cross-os` starts a new run. Without it, jobs report skipped checks rather
 than leaving missing contexts. Draft PRs skip every PR CI job as before.
 
-`rust (linux)` keeps its existing path selection. Merge groups, main pushes,
-schedules and manual runs still run all cross-OS jobs. Windows and macOS remain
+`rust (linux)` keeps its existing path selection. Main pushes, schedules and
+manual runs still run all cross-OS jobs. A merge group runs the short Linux set
+and no Windows or macOS Rust job ([Merge queue](#merge-queue)). Windows and macOS remain
 advisory; the required-check set stays `actionlint`, `zizmor`, `rust (linux)`,
 `Lint Evidence block` and `review-gate`. The ruleset snapshot is unchanged.
 
@@ -32,7 +33,7 @@ advisory; the required-check set stays `actionlint`, `zizmor`, `rust (linux)`,
 | --- | --- | --- |
 | PR without `ci:cross-os` | Windows path or old label tier / `macos` or `ci:full` plus Rust inputs / `macos` plus native inputs | skip / skip / skip |
 | PR with `ci:cross-os` only | Windows path tier / skip / skip | run / run / run |
-| `merge_group` | run / run / run (+ Intel) | run / run / run (+ Intel) |
+| `merge_group` | run / run / run (+ Intel) | skip / skip / run (+ Intel) |
 | `push` to main | run / run / run (+ Intel) | run / run / run (+ Intel) |
 
 Native jobs still require a successful Linux precheck; fork PRs still skip the
@@ -45,7 +46,7 @@ Editable PR YAML and selectors cannot enforce that boundary. Chad configures
 that restriction; enabling the Mac runner belongs in a follow-up. This change
 adds no Mac runner selection, mount cleanup or cache policy.
 
-Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
+Pushes to `main`, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A merge group runs only the short Linux set ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). The three jobs show code that compiles or passes on one OS only. Windows and macOS are advisory and do not run in the merge queue, so such a failure is first seen on the push to `main`.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
@@ -351,7 +352,7 @@ Each job runs these steps in order:
 
 Linux and Windows PRs run steps 6, 8 and 10; macOS PRs skip them.
 
-On `push` to `main`, `merge_group`, and `workflow_dispatch`, Linux replaces the in-job step 8 with a nextest archive built once (`--zstd-level 11`), then three `rust (linux) rebuild m/3` jobs that run `cargo nextest run --archive-file … --workspace-remap "$GITHUB_WORKSPACE/rust" --partition slice:m/3` on the build job's runner (pp-local for `main` pushes and manual runs unless `PP_RUST_RUNNER=hosted` or the fleet fallback applies, otherwise `ubuntu-latest`; merge groups always use `ubuntu-latest`). The build job also uploads a zstd-compressed pack of the measured desktop trees (`rust/bundle-manifest.json` and the web `dist` outputs). Artifact uploads set `compression-level: 0` so GitHub does not re-gzip already-compressed archives. Atomic package builds publish `dist/current` as a symlink to `dist/releases/<id>`; the dependency inventory records that link and the files under the release path. The pack step therefore archives each package's full `dist/` tree **without** `tar -h`, asserts the `current` symlink and a release-path file (for example `desktop-resolution.js`) are in the archive, and each partition restores those trees so the symlink topology still matches. Packing only `dist/current` with `-h` flattens the link and fails dependency inventory checks. Each partition runs `npm ci` only — it must not rebuild web assets or regenerate the manifest, because the archived binaries embed those digests at compile time. The required check `rust (linux)` is an aggregate that needs the Linux build and those partitions: on push / merge_group / workflow_dispatch it requires rebuild `success`; on PRs and schedule rebuild may be `skipped`. The schedule keeps the monolithic in-job step 8.
+On `push` to `main` and `workflow_dispatch`, Linux replaces the in-job step 8 with a nextest archive built once (`--zstd-level 11`), then three `rust (linux) rebuild m/3` jobs that run `cargo nextest run --archive-file … --workspace-remap "$GITHUB_WORKSPACE/rust" --partition slice:m/3` on the build job's runner (pp-local for `main` pushes and manual runs unless `PP_RUST_RUNNER=hosted` or the fleet fallback applies, otherwise `ubuntu-latest`). A merge group runs no nextest, so it has no archive and no partitions. The build job also uploads a zstd-compressed pack of the measured desktop trees (`rust/bundle-manifest.json` and the web `dist` outputs). Artifact uploads set `compression-level: 0` so GitHub does not re-gzip already-compressed archives. Atomic package builds publish `dist/current` as a symlink to `dist/releases/<id>`; the dependency inventory records that link and the files under the release path. The pack step therefore archives each package's full `dist/` tree **without** `tar -h`, asserts the `current` symlink and a release-path file (for example `desktop-resolution.js`) are in the archive, and each partition restores those trees so the symlink topology still matches. Packing only `dist/current` with `-h` flattens the link and fails dependency inventory checks. Each partition runs `npm ci` only — it must not rebuild web assets or regenerate the manifest, because the archived binaries embed those digests at compile time. The required check `rust (linux)` is an aggregate that needs the Linux build and those partitions: on push / merge_group / workflow_dispatch it requires rebuild `success`; on PRs and schedule rebuild may be `skipped`. The schedule keeps the monolithic in-job step 8.
 
 The macOS volume exists because the default macOS `TMPDIR` breaks three kinds of test. Its paths are too long for Unix socket names, it is under the `/var` symbolic link that no-follow opens refuse, and it treats `Straße.stl` and `STRASSE.stl` as one name.
 
@@ -740,7 +741,7 @@ upload failed with `ECONNREFUSED`. `rust (windows)` ran on `blacksmith-4vcpu-win
 
 `rust (linux) build`, `rust (linux) rebuild m/3` and the `rust (linux)` aggregate
 run on `[self-hosted, linux, x64, pp-local]` for pushes to `main` and
-manual runs. Merge groups run them on `ubuntu-latest`: a merge group holds PR code that has not landed, and the shared pp-local cache only sees code from `main`. A pull request runs the build and the aggregate (there are no rebuild partitions on pull requests) on `blacksmith-4vcpu-ubuntu-2404` unless `PP_PR_RUNNER` says otherwise ([the switch](#pull-request-runner-switch) below). pp-local
+manual runs. A merge group runs the build job and the aggregate on `ubuntu-latest` and has no rebuild partitions: a merge group holds PR code that has not landed, and the shared pp-local cache only sees code from `main`. A pull request runs the build and the aggregate (there are no rebuild partitions on pull requests) on `blacksmith-4vcpu-ubuntu-2404` unless `PP_PR_RUNNER` says otherwise ([the switch](#pull-request-runner-switch) below). pp-local
 is six ephemeral JIT slots, two on each of three VMs, and each job runs in a fresh
 `pp-slot-N` container. Job names do not change with the runner, so the required
 checks stay the same.
@@ -933,11 +934,13 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 | Required check | Workflow | On `merge_group` |
 | --- | --- | --- |
 | `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` selects the `actions` kind on merge groups, because the group's diff against `main` is not the PR's diff. |
-| `rust (linux)` | `rust-cross-os.yml` | The archive build plus three rebuild partitions, as on `main`, on `ubuntu-latest`. Merge groups never use pp-local or Blacksmith. |
+| `rust (linux)` | `rust-cross-os.yml` | The short set on `ubuntu-latest`: `cargo fmt`, clippy with `desktop_rebuild` off and on, and the Clippy limits. No nextest, no doctests and no rebuild partitions. Merge groups never use pp-local or Blacksmith. |
 | `Lint Evidence block` | `pr-evidence.yml` | Passes without a PR body; the body was linted on the PR. |
 | `review-gate` | `review-gate.yml` | Passes only when every PR in the group passed `review-gate` on its current head. |
 
-`rust (windows)` is advisory, not required. It also runs on merge groups.
+`rust (windows)` and `rust (macos)` are advisory, not required. Neither runs on merge groups.
+
+The short Rust set is an owner decision (2026-11-12, GRE-1466). Each queued PR already passed the full Linux suite on its own head, and the merge group repeated it: on 2026-11-12 `rust (linux)` took 47 and 49 minutes in the two merge groups measured. The merge group now checks only that the queued PRs still format, compile and lint together. A test that fails only when two PRs meet is no longer caught in the queue. It is first seen on the push to `main`, where the full suite runs on all three systems and `main-red.yml` reports the failure.
 
 On a merge group, `review-gate` does not judge a review again. Its second step reads the queue through GraphQL (`repository.mergeQueue(branch: "main").entries`), finds the one entry whose `headCommit` is the group's head SHA, and checks that the entry's PR number matches the `pr-<n>` in the group ref. Every entry at or ahead of that position is in the group. For each of those PRs it requires base `main` and checks the `review-gate` check runs on the PR's current head. Every one of them must come from `.github/workflows/review-gate.yml` on `pull_request_target`; a same-named check from any other workflow or event fails the group. Of those, only runs whose Actions run lists this PR, with every listed PR into `main`, count, and the latest of them must have concluded `success`. A `pull_request_target` run executes the base branch's copy of the file, so a run for another PR with the same head into another branch, whose copy of the gate might always pass, does not count. A fork PR's run lists no PR, so a fork PR fails the merge group; queue fork changes from a same-repository branch. These also fail the group: no matching entry within two minutes, a group ref or base other than `main`, more than 100 queue entries, or a failed API call. An owner marker alone does not pass a merge group, because the PR's own `review-gate` already decides when a marker is enough. The step checks out nothing, reads the API only, and gets no secrets.
 

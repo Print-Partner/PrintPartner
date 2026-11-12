@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     Limits, SettingSnapshot, WriterOwner,
-    auth::{FirstUserTenant, Outcome, RegistrationPolicy, Request, Secret, SessionTenantPolicy},
+    auth::Secret,
+    write::test_support::{ACCOUNT_POLICY, WAIT, account_with_key, opened},
 };
 use rusqlite::params;
 use std::{
@@ -10,14 +11,7 @@ use std::{
     thread,
 };
 
-const WAIT: Duration = Duration::from_secs(5);
 static IDLE: AtomicBool = AtomicBool::new(false);
-
-fn opened(limits: Limits) -> (tempfile::TempDir, WriterOwner) {
-    let directory = tempfile::tempdir().unwrap();
-    let (owner, _) = WriterOwner::open(directory.path(), limits).unwrap();
-    (directory, owner)
-}
 
 fn put(tx: &Transaction<'_>, value: &str) -> rusqlite::Result<usize> {
     tx.execute(
@@ -133,32 +127,11 @@ fn a_deadline_that_passed_before_the_start_is_busy_and_does_not_run_the_operatio
 fn authorize_names_the_installation_and_types_a_refusal() {
     let (_directory, owner) = opened(Limits::default());
     let shared = owner.client.shared.clone();
-    let policy = AuthPolicy {
-        registration: RegistrationPolicy::Open,
-        session_tenant: SessionTenantPolicy::AccountTenant,
-        first_user: FirstUserTenant::NewUser,
-    };
-    let auth = |request| {
-        let reply = owner.auth(FirstUserTenant::NewUser).submit(
-            request,
-            Arc::new(AtomicBool::new(false)),
-            WAIT,
-        );
-        reply.unwrap().recv().unwrap().unwrap()
-    };
-    let Outcome::Session { user, token } = auth(Request::Register {
-        email: "seam@example.com".into(),
-        display_name: "Seam".into(),
-        password: Secret::new("correct-horse".into()),
-    }) else {
-        panic!("registration returns a session")
-    };
-    let session = || Secret::new(token.expose().to_owned());
-    let Outcome::KeyCreated { key, .. } = auth(Request::CreateKey { session: session() }) else {
-        panic!("key creation returns the key")
-    };
+    let policy = ACCOUNT_POLICY;
+    let (installation, token, key) = account_with_key(&owner);
+    let session = || Secret::new(token.clone());
     let api_key = |secret: Secret| Credential::ApiKey {
-        routed_tenant: user.tenant_id.clone(),
+        routed_tenant: installation.clone(),
         secret,
     };
     let proven = |credential: Credential| {
@@ -169,7 +142,7 @@ fn authorize_names_the_installation_and_types_a_refusal() {
     };
 
     for credential in [Credential::Session(session()), api_key(key)] {
-        assert_eq!(proven(credential).unwrap().id(), user.tenant_id);
+        assert_eq!(proven(credential).unwrap().id(), installation);
     }
     for credential in [
         Credential::Session(Secret::new("not-a-session".into())),

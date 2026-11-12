@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Limits,
+    Limits, SettingSnapshot,
     app_settings::{Key, Outcome as SettingOutcome, Write},
     auth::{FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
     printer_hosts,
@@ -60,6 +60,12 @@ impl Fixture {
         }
     }
 
+    /// The text stored under another key; `None` when there is none.
+    fn stored_at(&self, key: &str) -> Option<String> {
+        let reader = self.owner.client().reader(WAIT).unwrap();
+        reader.get_setting("default", key, None).unwrap()
+    }
+
     fn seed(&self, text: &str) {
         seed_setting(&self.owner, INTEGRATIONS_KEY, text);
     }
@@ -75,6 +81,14 @@ fn new(kind: ServiceKind, base_url: &str) -> NewIntegration {
         api_key: None,
         password: None,
     }
+}
+
+/// The fields an `Invalid` refusal names, in order.
+fn invalid_fields<T>(refused: Result<T, PrinterSetupError>, case: usize) -> Vec<(Field, Reason)> {
+    let Err(PrinterSetupError::Invalid(invalid)) = refused else {
+        panic!("case {case} was not refused as invalid")
+    };
+    invalid.iter().map(|one| (one.field, one.reason)).collect()
 }
 
 fn secret(value: &str) -> Option<Secret> {
@@ -187,11 +201,8 @@ fn an_invalid_value_names_its_field_and_stores_nothing() {
         ),
     ];
     for (index, (request, expected)) in cases.into_iter().enumerate() {
-        let Err(PrinterSetupError::Invalid(invalid)) = fixture.create(request) else {
-            panic!("case {index} was not refused as invalid")
-        };
-        let invalid: Vec<_> = invalid.iter().map(|one| (one.field, one.reason)).collect();
-        assert_eq!(invalid, expected, "case {index}");
+        let named = invalid_fields(fixture.create(request), index);
+        assert_eq!(named, expected, "case {index}");
     }
     assert_eq!(fixture.stored(), None);
 }
@@ -221,7 +232,11 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
     for (document, entry, reason) in cases {
         let text = document.to_string();
         fixture.seed(&text);
-        let fault = InvalidDocument { entry, reason };
+        let fault = InvalidDocument {
+            document: SetupDocument::Integrations,
+            entry,
+            reason,
+        };
         for refused in [
             fixture.create(new(ServiceKind::Moonraker, "http://moon.test")),
             fixture.delete("moon-1"),
@@ -310,3 +325,5 @@ fn the_limit_and_a_refused_credential_store_nothing() {
     fixture.delete("ai-0").unwrap();
     fixture.create(moon()).unwrap();
 }
+
+mod printers;

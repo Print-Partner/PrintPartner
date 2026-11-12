@@ -1,5 +1,6 @@
 # Print Partner Rust-only image: pp-server with desktop_rebuild compiled in and
-# PP_DESKTOP_REBUILD=1, serving the measured web build. The runtime stage has no
+# PP_DESKTOP_REBUILD=1, serving the measured replacement UI (web/apps/ui). The
+# old UI (web/apps/web) still ships beside it. The runtime stage has no
 # Node, npm, Python, GUI or slicer. See docs/docker.md.
 #
 #   docker build -f Dockerfile.rust --build-arg PP_COMMIT="$(git rev-parse HEAD)" -t pp-server:test .
@@ -18,12 +19,18 @@ COPY web/ web/
 RUN npm --prefix web ci
 COPY rust/scripts/ rust/scripts/
 ENV VITE_PRINT_PARTNER_DESKTOP=1
+# build-desktop-manifest.py builds the replacement UI (@print-partner/ui) in this
+# full install and measures web/apps/ui/dist as replacement_frontend. pp-server
+# serves it only when the copy below matches that inventory. Without it the
+# image would fall back to the old UI, so a missing build fails here.
 RUN npm --prefix web run build && \
     python3 rust/scripts/build-desktop-manifest.py --web web --node "$(node -p process.execPath)" \
       --output /out/bundle-manifest.json --commit "$PP_COMMIT" && \
-    mkdir -p /out/web/apps/web /out/web/apps/server/dist/current/data && \
+    { test -f web/apps/ui/dist/index.html || { echo "replacement UI build missing: web/apps/ui/dist" >&2; exit 1; }; } && \
+    mkdir -p /out/web/apps/web /out/web/apps/ui /out/web/apps/server/dist/current/data && \
     cp web/package.json /out/web/package.json && \
     cp -R web/apps/web/dist /out/web/apps/web/dist && \
+    cp -R web/apps/ui/dist /out/web/apps/ui/dist && \
     cp -RL web/apps/server/dist/current/data/manifests /out/web/apps/server/dist/current/data/manifests && \
     chmod -R u=rwX,go=rX /out/web
 
@@ -73,8 +80,10 @@ RUN echo "$PP_COMMIT" | grep -Eqx '[0-9a-f]{40}' && \
 
 # Rust-only mode is on in this image only. Every other build keeps it off.
 ENV PP_DESKTOP_REBUILD=1 \
+    PP_LISTEN_ADDR=0.0.0.0:8080 \
     HOME=/data \
     TMPDIR=/tmp
+EXPOSE 8080
 USER 1000:1000
 WORKDIR /data
 VOLUME ["/data"]

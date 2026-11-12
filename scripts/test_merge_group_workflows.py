@@ -42,16 +42,22 @@ def job_runs(condition, contexts):
     if condition in ("", draft):
         return True
     prefix = f"({draft}) && ("
+    docker_guard = " && needs.web.result == 'success' && needs.web-build.result == 'success'"
+    if condition.endswith(docker_guard):
+        return (job_runs(condition[:-len(docker_guard)], contexts)
+                and all(contexts["needs"][job]["result"] == "success"
+                        for job in ("web", "web-build")))
     if not condition.startswith(prefix) or not condition.endswith(")"):
         raise ValueError(f"unsupported job condition: {condition!r}")
     rest = condition[len(prefix):-1]
     known = {
-        "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false')":
-            contexts["needs"]["changes"]["result"] != "success"
-            or contexts["needs"]["changes"]["outputs"]["relevant"] != "false",
         "!cancelled() && needs.rust-linux-build.result != 'skipped'":
             contexts["needs"]["rust-linux-build"]["result"] != "skipped",
     }
+    for kind in ("relevant", "windows", "web", "ui"):
+        known[f"!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.{kind} != 'false')"] = (
+            contexts["needs"]["changes"]["result"] != "success"
+            or contexts["needs"]["changes"]["outputs"][kind] != "false")
     if rest not in known:
         raise ValueError(f"unsupported job condition: {condition!r}")
     return known[rest]
@@ -93,7 +99,8 @@ class MergeGroupWorkflowTests(unittest.TestCase):
     def test_required_workflows_still_emit_job_checks_for_drafts(self):
         for filename, names in (("actionlint.yml", {"actionlint", "zizmor"}),
                                 ("rust-cross-os.yml", {"rust (linux)", "rust (windows)"}),
-                                ("pr-evidence.yml", {"Lint Evidence block"})):
+                                ("pr-evidence.yml", {"Lint Evidence block"}),
+                                ("web-ci.yml", {"web", "web-build", "sidecar", "docker"})):
             workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
                                  Loader=yaml.BaseLoader)
             self.assertNotIn("paths", workflow["on"]["pull_request"])
@@ -103,7 +110,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
 
     def test_required_workflows_accept_merge_group_fixture(self):
         for filename in ("actionlint.yml", "rust-cross-os.yml", "desktop-native-macos.yml",
-                         "pr-evidence.yml", "review-gate.yml"):
+                         "pr-evidence.yml", "review-gate.yml", "web-ci.yml"):
             with self.subTest(workflow=filename):
                 workflow = yaml.load(
                     (ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader
@@ -111,6 +118,64 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                 # No branches filter: the merge-group step checks base_ref itself, and a filter that
                 # skipped a group would leave the required check pending.
                 self.assertEqual(workflow["on"].get("merge_group"), {"types": [EVENT["action"]]})
+
+    def test_release_audit_runs_without_path_selection_or_dependencies(self):
+        workflow = yaml.load((ROOT / ".github/workflows/web-ci.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        job = workflow["jobs"]["release-audit"]
+        self.assertEqual(job["if"],
+                         "github.event_name != 'pull_request' || !github.event.pull_request.draft")
+        self.assertNotIn("needs", job)
+        self.assertNotIn("continue-on-error", job)
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertNotIn("permissions", job)
+        checkout, setup, verify, audit = job["steps"]
+        self.assertEqual(checkout, {
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {"persist-credentials": "false"}})
+        self.assertEqual(setup, {
+            "uses": "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
+            "with": {"node-version": "22.23.3"}})
+        self.assertEqual(verify, {"name": "Verify pinned Node version",
+                                  "run": 'test "$(node --version)" = "v22.23.3"'})
+        self.assertEqual(audit, {"name": "Audit public release inputs",
+                                "run": "node scripts/audit-public-release.mjs"})
+        for event in ("pull_request", "push", "merge_group"):
+            self.assertNotIn("paths", workflow["on"][event])
+            self.assertNotIn("paths-ignore", workflow["on"][event])
+
+    def test_web_jobs_use_per_kind_selection_and_fail_closed(self):
+        workflow = yaml.load((ROOT / ".github/workflows/web-ci.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        jobs = workflow["jobs"]
+        for event in ("push", "pull_request", "merge_group"):
+            self.assertNotIn("paths", workflow["on"][event])
+            self.assertNotIn("paths-ignore", workflow["on"][event])
+        for kind in ("web", "ui"):
+            step = next(step for step in jobs["changes"]["steps"] if step.get("id") == kind)
+            self.assertEqual(step["run"], f"python3 scripts/ci-path-filter.py {kind}")
+            self.assertEqual(jobs["changes"]["outputs"][kind],
+                             "${{ steps." + kind + ".outputs.relevant }}")
+            self.assertEqual(step["env"], {
+                "EVENT_NAME": "${{ github.event_name }}",
+                "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha }}"})
+        checkout = jobs["changes"]["steps"][0]
+        self.assertEqual(checkout["with"]["fetch-depth"], "0")
+        self.assertEqual(checkout["with"]["persist-credentials"], "false")
+        for selected, result, runs in (("false", "success", False), ("true", "success", True),
+                                       ("", "failure", True)):
+            contexts = {"github": {"event_name": "merge_group"}, "needs": {
+                "changes": {"result": result, "outputs": {
+                    "web": selected, "ui": "true", "relevant": "true", "windows": "true"}},
+                "rust-linux-build": {"result": "success"},
+                "web": {"result": "success"}, "web-build": {"result": "success"}}}
+            for job_id in ("web", "web-build", "sidecar", "docker"):
+                job = jobs[job_id]
+                self.assertIn("changes", job["needs"])
+                self.assertEqual(job_runs(job["if"], contexts), runs, job_id)
+            contexts["needs"]["web"]["result"] = "failure"
+            self.assertFalse(job_runs(jobs["docker"]["if"], contexts))
 
     def test_review_gate_starts_only_for_prs_into_main(self):
         """A PR into another base runs that base's copy of the gate; main's copy never judges it."""
@@ -130,7 +195,8 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                      if rule["type"] == "required_status_checks"]
         self.assertEqual({check["context"] for check in checks}, set(required))
         contexts = {"github": {"event_name": EVENT_NAME}, "needs": {
-            "changes": {"result": "success", "outputs": {"relevant": "true"}},
+            "changes": {"result": "success", "outputs": {"relevant": "true", "windows": "true",
+                                                        "ui": "true", "web": "false"}},
             "rust-linux-build": {"result": "success"}}}
         for context, filename in required.items():
             with self.subTest(context=context):
@@ -251,7 +317,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         selected = "needs.changes.outputs.windows != 'false'"
                     label_guard = ""
                     if job_id == "rust-windows":
-                        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
+                        label_guard = "github.event_name != 'merge_group' && github.event_name != 'push' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
                                      f"{label_guard}(needs.changes.result != 'success' || {selected}))")
@@ -301,9 +367,55 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         if step.get("name") == "Require linux build and rebuild partitions"
                     )
                     self.assertEqual(require["env"]["EVENT_NAME"], "${{ github.event_name }}")
-                    self.assertIn("push|merge_group|workflow_dispatch)", require["run"])
+                    self.assertIn("push|workflow_dispatch)", require["run"])
+                    self.assertNotIn("merge_group", require["run"])
                     self.assertIn('test "$REBUILD_RESULT" = success', require["run"])
                     self.assertIn("success|skipped)", require["run"])
+
+    def test_merge_groups_run_the_short_rust_set(self):
+        """A merge group runs fmt and clippy on Linux: no tests, no partitions, no other OS."""
+        jobs = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
+                         Loader=yaml.BaseLoader)["jobs"]
+        not_queued = "github.event_name != 'merge_group'"
+        full_events = "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+        for job_id in ("rust-windows", "rust-macos"):
+            self.assertIn(f"!cancelled() && {not_queued} && ", jobs[job_id]["if"], job_id)
+        self.assertIn(f"needs.rust-linux-build.result == 'success' && {full_events})",
+                      jobs["rust-linux-rebuild"]["if"])
+        self.assertNotIn("merge_group", jobs["rust-linux-rebuild"]["if"])
+        tests, checks = [], []
+        for step in jobs["rust-linux-build"]["steps"]:
+            run = step.get("run", "")
+            if "cargo nextest" in run or "cargo test" in run:
+                tests.append(step)
+            elif "cargo fmt" in run or "cargo clippy" in run or "check-clippy-limits.py" in run:
+                checks.append(step)
+        self.assertEqual(len(tests), 5, [step["name"] for step in tests])
+        for step in tests:
+            self.assertTrue(f"&& {not_queued}" in step["if"] or step["if"].endswith(f"&& {full_events} }}}}"),
+                            step["name"])
+        self.assertEqual([step["name"] for step in checks],
+                         ["cargo fmt", "clippy (desktop_rebuild off)", "clippy (desktop_rebuild on)",
+                          "Check Rust Clippy limits"])
+        for step in checks:
+            self.assertNotIn("merge_group", step["if"], step["name"])
+
+    def test_pushes_to_main_run_linux_rust_only(self):
+        """A push to main must not wait on Windows or macOS runners: both move to the nightly run."""
+        workflow = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        self.assertEqual(workflow["on"]["push"], {"branches": ["main"]})
+        self.assertIn("schedule", workflow["on"])
+        jobs = workflow["jobs"]
+        skipped = "!cancelled() && github.event_name != 'merge_group' && github.event_name != 'push' && "
+        for job_id in ("rust-windows", "rust-macos"):
+            self.assertIn(skipped, jobs[job_id]["if"], job_id)
+        for job_id in ("rust-linux-build", "rust-linux"):
+            self.assertNotIn("github.event_name != 'push'", jobs[job_id]["if"], job_id)
+        self.assertIn("github.event_name == 'push'", jobs["rust-linux-rebuild"]["if"])
+        alert = jobs["alert-macos-main"]
+        self.assertEqual(alert["needs"], ["rust-linux", "rust-macos", "rust-windows"])
+        self.assertTrue(alert["if"].endswith("(failure() && github.event_name == 'schedule')"), alert["if"])
 
     def test_native_macos_plan_respects_paths_and_event(self):
         workflow = yaml.load((ROOT / ".github/workflows/desktop-native-macos.yml").read_text(),

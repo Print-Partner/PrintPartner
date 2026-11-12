@@ -34,7 +34,7 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `rust/ast-grep-baseline.json`, `rust/clippy-limits-baseline.json`,
   `scripts/workaround-baseline.json`, and Rust snapshot directories under `rust/crates/`.
 
-Who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus things CODEOWNERS does not list: the release signing key `cosign.pub` and the Git hooks under `.githooks/` (owner decision, 2026-11-11), the safety guard, its classifier and its hook adapters (`scripts/agent-guard.py`, `scripts/merge_class.py` and `scripts/merge-classes.json` (owner decision, 2026-11-11), `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. The coordinator merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) and the rules documents (`AGENTS.md`, `docs/development/definition-of-done.md` and this page; owner decision, 2026-11-11) as sensitive PRs after two scorer seats score the exact head 9 or more, except a PR that weakens a security boundary: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py` stays with Chad. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
+Who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus things CODEOWNERS does not list: the Rust-only image `Dockerfile.rust` (GRE-1458), the release signing key `cosign.pub` and the Git hooks under `.githooks/` (owner decision, 2026-11-11), the safety guard, its classifier and its hook adapters (`scripts/agent-guard.py`, `scripts/merge_class.py` and `scripts/merge-classes.json` (owner decision, 2026-11-11), `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. The coordinator merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) and the rules documents (`AGENTS.md`, `docs/development/definition-of-done.md` and this page; owner decision, 2026-11-11) as sensitive PRs after two scorer seats score the exact head 9 or more, except a PR that weakens a security boundary: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py` stays with Chad. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
 
 The workflow `.github/workflows/actionlint.yml` starts on every `pull_request`, on pushes to `main` and `master`, on merge groups and on manual dispatch.
 Its `changes` job selects the `actionlint` and `zizmor` jobs.
@@ -55,11 +55,41 @@ This keeps low-severity notices visible without adding the pedantic persona's st
 The pinned `zizmor-action` runs online audits and emits job annotations without a SARIF upload or write permission.
 Its default pin policy requires every external action, including `actions/*`, to use a full commit SHA.
 
+Web CI also uses job selection rather than workflow path filters. Its `changes`
+job publishes separate `web` and `ui` outputs. `web`, `web-build`, `sidecar` and
+`docker` use `web`; all four skip on merge groups, while the Rust, action,
+Windows, macOS and UI kinds stay selected. Rust cross-OS skips its Windows and
+macOS jobs on merge groups in their job conditions, whatever the selector says
+([Merge queue](ci.md#merge-queue)). Pushes and manual/call events
+select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
+and commands retained. This adds no required check and does not edit the
+ruleset snapshot. The independent `release-audit` job runs without path selection
+on every non-draft PR and on non-PR events, so documentation, license and
+screenshot audits remain covered when the heavy web jobs skip. The sitemap tests,
+design-token contrast check and workaround ratchet stay in `web`; their exact
+documentation inputs and all app-source Markdown select `web`. Every path with
+a ratchet-scanned extension (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`,
+`.cjs`, `.rs`, `.py`, `.sh`, `.yml`, `.yaml`, `.css`, `.html`) also selects `web`.
+A test loads the ratchet's declarations and requires the filter's list to match.
+The audit job's pinned Node setup, version assertion, read-only permissions and
+unconditional audit command
+are checked by `test_merge_group_workflows.py`.
+
+This selection deliberately changes four CI guards, with regression tests:
+`checkNodeLanes` permits only the exact `needs: [changes]` and web-output
+condition for `web` and `web-build`; `job_runs()` understands per-kind outputs
+and Docker's success dependencies; the Markdown filter keeps embedded legal
+text, fixture trees and `web/DEPLOY.md` as web inputs; and merge groups are an
+exception to the rule that non-PR events select every kind. Chad approves these
+CI-control changes and merges after two scorer seats score the head 9 or more.
+
 ## Cross-OS capacity
 
 Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
-labels do not select them. Job-level skips preserve check reports. Main pushes,
-merge groups, schedules and manual runs keep full coverage; Linux PR selection
+labels do not select them. Job-level skips preserve check reports. Schedules
+and manual runs keep full coverage; a push to `main` runs the Linux Rust jobs
+only and a merge group runs the short Linux Rust set
+([Merge queue](ci.md#merge-queue)); Linux PR selection
 and the required contexts remain unchanged. See the
 [event table](ci.md#cross-os-pr-label).
 

@@ -6,17 +6,21 @@
 Checks, in order: no Node, npm, npx or Python in the runtime; the image user is
 1000:1000; `pp-server healthcheck --help`; a hardened start (read-only root,
 bounded /tmp, all capabilities dropped, no-new-privileges) on a fresh named
-volume; liveness and readiness; sign-in through `pp-server bootstrap-url`, whose
-URL works once and never appears in the container logs; an account written to
-SQLite and read back after a restart; SIGTERM drains with a complete shutdown
-receipt and leaves no process behind. The container uses host networking so
-this script can reach pp-server's loopback origin; pp-server still binds
-127.0.0.1 only. Sign-in URLs and cookies stay in memory and are never printed. Every container and
+volume; sign-in through the production bootstrap-url command, whose URL works
+once and never appears in the container logs; liveness and readiness; `GET /`
+serves the image's replacement UI index.html, not the old UI, and its CSP names
+the WebSocket origin of the published host port; an account written to SQLite
+and read back after a restart; SIGTERM drains with a complete shutdown receipt
+and leaves no process behind. The container publishes port 8080 on a free host
+loopback port, so requests reach it from a non-loopback Docker bridge peer.
+Sign-in URLs and cookies stay in memory and are never printed. Every container and
 volume it creates is removed on exit.
 """
 
 import http.client
+import ipaddress
 import json
+import re
 import subprocess
 import sys
 import time
@@ -25,6 +29,9 @@ import uuid
 
 STATUS = "/tmp/pp-server.status.json"
 CREDENTIAL = "/tmp/pp-smoke-credential.json"
+REPLACEMENT_INDEX = "/app/web/apps/ui/dist/index.html"
+# The gateway adds this element to the replacement UI's documents (GRE-1117 CSP).
+NONCE_ELEMENT = re.compile(r'<meta name="pp-style-nonce" nonce="[0-9a-f]{32}">')
 
 
 def docker(*args, check=True):
@@ -38,21 +45,40 @@ def log(message):
     print(f"[docker-smoke] {message}", flush=True)
 
 
-def request(origin, method, path, cookie="", body=None):
+def request(origin, method, path, cookie="", body=None, peer_container=None, accept=None):
     url = urllib.parse.urlsplit(origin)
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
     headers = {"Host": url.netloc, "Origin": origin}
+    if path == "/login":
+        headers["Accept"] = "text/html"
     if cookie:
         headers["Cookie"] = cookie
+    if accept:
+        headers["Accept"] = accept
     if body is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(body)
     connection.request(method, path, body=body, headers=headers)
     response = connection.getresponse()
     payload = response.read()
+    if peer_container is not None:
+        require_non_loopback_peer(peer_container)
     cookies = [value.split(";", 1)[0] for key, value in response.getheaders() if key.lower() == "set-cookie"]
     connection.close()
     return response.status, payload, cookies
+
+
+def require_non_loopback_peer(name):
+    # The HTTP connection stays open while we inspect its container-side peer.
+    table = docker("exec", name, "cat", "/proc/net/tcp").stdout
+    for row in table.splitlines()[1:]:
+        fields = row.split()
+        if fields[1].endswith(":1F90") and fields[3] == "01":  # port 8080, ESTABLISHED
+            peer = ipaddress.IPv4Address(bytes.fromhex(fields[2].split(":")[0])[::-1])
+            if not peer.is_loopback and not peer.is_unspecified:
+                log("container TCP table confirms a non-loopback peer on port 8080")
+                return
+    raise SystemExit("published-port request did not arrive from a non-loopback peer")
 
 
 def inspect_image(image):
@@ -61,6 +87,8 @@ def inspect_image(image):
         raise SystemExit(f"image user is {config['User']!r}, expected 1000:1000")
     if "PP_DESKTOP_REBUILD=1" not in config["Env"]:
         raise SystemExit("image does not set PP_DESKTOP_REBUILD=1")
+    if "PP_LISTEN_ADDR=0.0.0.0:8080" not in config["Env"]:
+        raise SystemExit("image does not set PP_LISTEN_ADDR=0.0.0.0:8080")
     log(f"image user {config['User']}, PP_DESKTOP_REBUILD=1, healthcheck {config['Healthcheck']['Test']}")
     found = docker(
         "run", "--rm", "--entrypoint", "/bin/sh", image, "-c",
@@ -79,7 +107,7 @@ def inspect_image(image):
 
 def start(image, name, volume):
     docker(
-        "run", "-d", "--name", name, "--network", "host",
+        "run", "-d", "--name", name, "-p", "127.0.0.1::8080",
         "--read-only", "--tmpfs", "/tmp:size=64m,mode=1777",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--health-interval", "2s", "--health-start-period", "60s",
@@ -103,14 +131,22 @@ def start(image, name, volume):
     credential = json.loads(docker("exec", name, "cat", CREDENTIAL).stdout)
     if credential["child_pid"] is not None:
         raise SystemExit("a Node child started")
-    origin = docker("logs", name).stdout.splitlines()[0].strip()
+    binding = json.loads(docker("inspect", name).stdout)[0]["NetworkSettings"]["Ports"]["8080/tcp"][0]
+    origin = f"http://127.0.0.1:{binding['HostPort']}"
+    if "Listening on 0.0.0.0:8080" not in docker("logs", name).stderr:
+        raise SystemExit("container did not report binding PP_LISTEN_ADDR")
+    log("docker run: bound 0.0.0.0:8080, reached through published loopback port")
+    status, _, _ = request(origin, "GET", "/api/v1/plans", peer_container=name)
+    if status != 401:
+        raise SystemExit(f"anonymous plans answered {status}, expected 401")
     if not origin.startswith("http://127.0.0.1:"):
         raise SystemExit(f"unexpected origin {origin!r}")
     # Sign in as a headless operator would: the URL comes from docker exec, not
     # from the test-only credential file.
     url = docker("exec", name, "pp-server", "bootstrap-url", "--data", "/data").stdout.strip()
     bootstrap = urllib.parse.urlsplit(url)
-    if f"{bootstrap.scheme}://{bootstrap.netloc}" != origin or bootstrap.path != "/__desktop/bootstrap":
+    # bootstrap-url knows the container port, not Docker's published host port.
+    if f"{bootstrap.scheme}://{bootstrap.netloc}" != "http://127.0.0.1:8080" or bootstrap.path != "/__desktop/bootstrap":
         raise SystemExit("bootstrap-url printed an unexpected URL")
     status, _, cookies = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
     if status != 303 or not cookies:
@@ -126,7 +162,54 @@ def start(image, name, volume):
     if refused.returncode == 0 or refused.stdout:
         raise SystemExit("root, which does not own /data, got a bootstrap URL")
     log("bootstrap-url: signed in once, a reused URL is refused, no URL in the logs, root is refused")
-    return origin, cookies[0]
+    desktop = cookies[0]
+    for path in ["/api/v1/plans", "/api/v1/integrations/missing/status"]:
+        status, _, _ = request(origin, "GET", path, desktop)
+        if status != 401:
+            raise SystemExit(f"{path} without account login answered {status}, expected 401")
+    for path in ["/mcp", "/api/v1/mcp"]:
+        status, _, _ = request(origin, "POST", path, desktop, {})
+        if status != 403:
+            raise SystemExit(f"MCP without a key answered {status}, expected 403")
+    status, page, _ = request(origin, "GET", "/login", desktop)
+    if status != 200 or b"<html" not in page.lower():
+        raise SystemExit(f"sign-in page through published port answered {status}")
+    log("non-loopback peer: login required, MCP without key refused, sign-in page 200")
+    return origin, desktop
+
+
+def check_replacement_ui(name, origin, desktop):
+    """GET / must be the image's replacement UI index.html, plus the gateway's style nonce."""
+    built = docker("exec", name, "cat", REPLACEMENT_INDEX, check=False)
+    if built.returncode != 0:
+        raise SystemExit(f"the image has no {REPLACEMENT_INDEX}")
+    status, body, _ = request(origin, "GET", "/", desktop, accept="text/html")
+    served, nonces = NONCE_ELEMENT.subn("", body.decode(errors="replace"), count=1)
+    if status != 200 or nonces != 1 or served != built.stdout:
+        raise SystemExit(f"GET / did not serve the replacement UI (status {status}): {body[:200]!r}")
+    logs = docker("logs", name)
+    if "Replacement UI bundle absent" in logs.stdout + logs.stderr:
+        raise SystemExit("pp-server fell back to the old UI")
+    log(f"GET / serves {REPLACEMENT_INDEX} with one style nonce; no fallback line in the logs")
+    # The browser's authority is the published host port, not the container's 8080.
+    netloc = urllib.parse.urlsplit(origin).netloc
+    policy = served_policy(origin, desktop)
+    if f"connect-src 'self' ws://{netloc}/ws/printers;" not in policy:
+        raise SystemExit(f"replacement CSP does not name ws://{netloc}/ws/printers: {policy!r}")
+    log(f"replacement CSP connect-src names ws://{netloc}/ws/printers, the published host port")
+
+
+def served_policy(origin, cookie):
+    """The Content-Security-Policy on the document that GET / returns through `origin`."""
+    url = urllib.parse.urlsplit(origin)
+    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    headers = {"Host": url.netloc, "Origin": origin, "Cookie": cookie, "Accept": "text/html"}
+    connection.request("GET", "/", headers=headers)
+    response = connection.getresponse()
+    response.read()
+    policy = response.getheader("Content-Security-Policy", "")
+    connection.close()
+    return policy
 
 
 def wait_health(name):
@@ -171,6 +254,7 @@ def main():
         account = {"email": "smoke@example.test", "password": "smoke-password-1234"}
 
         origin, desktop = start(image, names[0], volume)
+        check_replacement_ui(names[0], origin, desktop)
         status, body, _ = request(origin, "GET", "/health", desktop)
         if status != 200 or b'"modules"' not in body:
             raise SystemExit(f"/health answered {status}")
@@ -180,7 +264,10 @@ def main():
         status, body, _ = request(origin, "GET", "/api/v1/plans", f"{desktop}; {cookies[0]}")
         if status != 200:
             raise SystemExit(f"plans answered {status}")
-        log("first start: /health 200, account registered, /api/v1/plans 200")
+        status, _, _ = request(origin, "GET", "/api/v1/integrations/missing/status", f"{desktop}; {cookies[0]}")
+        if status != 404:
+            raise SystemExit(f"missing-printer status answered {status}, expected 404 after login")
+        log("first start: /health 200, account registered, /api/v1/plans 200, missing-printer status 404")
         listing = docker("exec", names[0], "ls", "/data").stdout.split()
         log(f"/data holds: {' '.join(sorted(listing))}")
         second = docker("exec", names[0], "/usr/local/bin/pp-server-start", check=False)

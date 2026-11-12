@@ -105,6 +105,13 @@ pub(crate) fn record_preflight_version(version: Option<u64>) {
     PREFLIGHT_VERSION.set(version);
 }
 
+/// The stored version the last preflight on this thread read, also when it
+/// failed a later check.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn preflight_version() -> Option<u64> {
+    PREFLIGHT_VERSION.get()
+}
+
 /// The Node-backed runtime's schema check, run on its lease before the Node
 /// child starts. `Ok(Some(_))` refuses the start. The integrity check and the
 /// Rust validations run after the version is read, so their failures still

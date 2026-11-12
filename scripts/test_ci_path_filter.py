@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,72 @@ spec.loader.exec_module(ci_filter)
 
 
 class CiPathFilterTests(unittest.TestCase):
+    def test_ui_and_web_inputs(self):
+        for kind, paths in {
+            "ui": ["web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts"],
+            "web": ["web/apps/web/src/App.tsx", "web/apps/server/src/app.ts",
+                    "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
+                    "slicer-sidecar/main.py", "Dockerfile", ".dockerignore", "Caddyfile",
+                    "docker-compose.hosted.yml", "pp-compose.yml", "rust/Cargo.lock",
+                    "web/DEPLOY.md", "web/apps/server/src/data/legal/ATTRIBUTION.md",
+                    "fixtures/parity/README.md", "LICENSE", "LICENSE-SUMMARY.md",
+                    "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md",
+                    "README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",
+                    "docs/scripts/capture-screenshots.mjs", "docs/scripts/nested/README.md",
+                    "docs/design-system.md", "docs/product/ui-tokens.md",
+                    "web/apps/ui/src/content.md", "web/apps/web/src/content.md",
+                    "web/apps/future/src/nested/content.md",
+                    "docs/records/navigation/count.py", "root-helper.py",
+                    "web/apps/server/src/test-fixtures/kit-workspace/assistant-domain/sources/Example-Probe/workflow.md",
+                    "web/apps/server/src/test-fixtures/kit-workspace/assistant-domain/sources/Example-Probe/pitfalls.md"],
+        }.items():
+            for path in paths + ["web/packages/contracts/src/index.ts", "web/scripts/tool.mjs",
+                                 "web/package-lock.json", "web/tsconfig.base.json",
+                                 "web/eslint.config.mjs", "scripts/check-github-actions-pinned.sh",
+                                 ".github/workflows/web-ci.yml", ".github/actions/example/action.yml",
+                                 "manifests/server.json", "fixtures/input.json"]:
+                with self.subTest(kind=kind, path=path):
+                    self.assertTrue(ci_filter.relevant(path, kind))
+            for path in ("docs/development/ci.md", "web/apps/ui/README.md",
+                         "docs/design-system-extra.md", "docs/product/other-tokens.md",
+                         "web/apps/ui/src-extra/content.md"):
+                self.assertFalse(ci_filter.relevant(path, kind), (kind, path))
+
+    def test_workaround_extensions_match_ratchet(self):
+        source = SCRIPT.with_name("workaround-ratchet.mjs").read_text()
+
+        def declaration(name):
+            match = re.search(rf"const {name} = new Set\(\[(.*?)\]\);", source, re.S)
+            self.assertIsNotNone(match, f"cannot read ratchet extension declaration: {name}")
+            return match.group(1)
+
+        javascript = json.loads("[" + declaration("JAVASCRIPT_EXTENSIONS") + "]")
+        other = declaration("SOURCE_EXTENSIONS").replace("...JAVASCRIPT_EXTENSIONS,", "")
+        extensions = set(javascript + json.loads("[" + other.rstrip().removesuffix(",") + "]"))
+        self.assertEqual(set(ci_filter.WORKAROUND_EXTENSIONS), extensions)
+        for extension in extensions:
+            self.assertTrue(ci_filter.relevant(f"outside-inputs/file{extension}", "web"), extension)
+        for path in ("desktop/e2e/x.ts", ".devcontainer/x.sh", "docs/examples/x.yaml",
+                     "docs/kit-catalog.yaml", ".github/FUNDING.yml",
+                     ".github/ISSUE_TEMPLATE/bug.yml"):
+            self.assertTrue(ci_filter.relevant(path, "web"), path)
+        for extension in (".json", ".md", ".txt", ".tsx-extra"):
+            self.assertFalse(ci_filter.relevant(f"outside-inputs/file{extension}", "web"), extension)
+
+    def test_web_test_inputs_do_not_select_ui(self):
+        for path in ("README.md", "docs/README.md", "docs/INSTALL.md", "docs/index.html",
+                     "docs/scripts/capture-screenshots.mjs", "docs/design-system.md",
+                     "docs/product/ui-tokens.md", "docs/records/navigation/count.py"):
+            self.assertFalse(ci_filter.relevant(path, "ui"), path)
+
+    def test_merge_groups_select_queue_validation_only(self):
+        for kind in ("rust", "actions", "windows", "macos", "ui", "web"):
+            self.assertEqual(ci_filter.select("merge_group", "", "", kind), kind != "web")
+            for event in ("push", "schedule", "workflow_call", "workflow_dispatch"):
+                self.assertTrue(ci_filter.select(event, "", "", kind))
+            self.assertEqual(ci_filter.select("pull_request", "", "", kind),
+                             kind not in {"windows", "macos"})
+
     def test_rust_inputs(self):
         for path in ["rust/Cargo.lock", "rust/crates/pp-storage/src/lib.rs",
                      "rust-toolchain.toml", "web/package.json", "web/package-lock.json",
@@ -51,7 +118,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "actions"]:
+        for kind in ["rust", "actions", "ui", "web"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))
@@ -85,8 +152,19 @@ class CiPathFilterTests(unittest.TestCase):
             git("config", "user.name", "Proof")
             base = commit("README.md")
             docs = commit("docs/space and\nnewline.md")
-            for kind in ["rust", "actions"]:
+            for kind in ["rust", "actions", "ui", "web"]:
                 self.assertEqual(select(base, docs, kind)[0], "relevant=false\n")
+            for path, kind in (("web/apps/ui/src/App.tsx", "ui"),
+                               ("web/packages/rust-client/src/client.ts", "ui"),
+                               ("web/apps/server/src/app.ts", "web"),
+                               ("web/DEPLOY.md", "web")):
+                git("checkout", "-q", "--detach", base)
+                changed = commit(path)
+                self.assertEqual(select(base, changed, kind)[0], "relevant=true\n")
+                git("rm", path)
+                git("commit", "-qm", "delete input")
+                self.assertEqual(select(changed, git("rev-parse", "HEAD"), kind)[0],
+                                 "relevant=true\n")
             git("checkout", "-q", "--detach", base)
             helper = commit("scripts/verify-rust-gateway/verify.py")
             self.assertEqual(select(base, helper, "rust")[0], "relevant=false\n")

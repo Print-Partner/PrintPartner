@@ -595,9 +595,9 @@ pub fn validate(archive: &Path, limits: Limits) -> Result<Metadata> {
         .len();
     let scratch = std::env::temp_dir().join(random_name("pp-backup-validate-"));
     pp_os::create_private_dir(&scratch)?;
-    let result = validate_into(archive, compressed, limits, &scratch, false);
+    let result = validate_into(archive, compressed, limits, &scratch, |_| false);
     let _ = std::fs::remove_dir_all(&scratch);
-    result
+    Ok(result?.0)
 }
 
 /// Validates like [`validate`] and writes every entry under `destination`,
@@ -611,7 +611,26 @@ pub(crate) fn extract(archive: &Path, limits: Limits, destination: &Path) -> Res
         .metadata()
         .with_context(|| format!("Open backup archive {}", archive.display()))?
         .len();
-    validate_into(archive, compressed, limits, destination, true)
+    Ok(validate_into(archive, compressed, limits, destination, |_| true)?.0)
+}
+
+/// Validates like [`validate`] and writes the database, its WAL and the
+/// single-file roots under `destination`, a new empty directory. Returns the
+/// path of every entry, so an import dry run can count the files under the
+/// directory roots without writing them.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn extract_documents(
+    archive: &Path,
+    limits: Limits,
+    destination: &Path,
+) -> Result<(Metadata, BTreeSet<String>)> {
+    let compressed = archive
+        .metadata()
+        .with_context(|| format!("Open backup archive {}", archive.display()))?
+        .len();
+    validate_into(archive, compressed, limits, destination, |path| {
+        root_for(path).is_some_and(|(_, kind)| kind == RootKind::File)
+    })
 }
 
 /// Checks what follows the tar end-of-archive block. Tar iteration stops at
@@ -654,8 +673,8 @@ fn validate_into(
     compressed: u64,
     limits: Limits,
     scratch: &Path,
-    extract_all: bool,
-) -> Result<Metadata> {
+    extract: fn(&str) -> bool,
+) -> Result<(Metadata, BTreeSet<String>)> {
     // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
     // and leaves anything after it there, so `check_stream_end` can see it.
     let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
@@ -702,9 +721,11 @@ fn validate_into(
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             metadata = Some(bytes);
-        } else if entry_type == EntryType::Directory && extract_all {
-            std::fs::create_dir_all(scratch.join(&path))?;
-        } else if path == DATABASE_FILE || path == WAL_FILE || extract_all {
+        } else if entry_type == EntryType::Directory {
+            if extract(&path) {
+                std::fs::create_dir_all(scratch.join(&path))?;
+            }
+        } else if path == DATABASE_FILE || path == WAL_FILE || extract(&path) {
             let target = scratch.join(&path);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -755,7 +776,7 @@ fn validate_into(
         integrity == "ok",
         "Backup SQLite integrity_check failed: SQLite integrity_check returned: {integrity}"
     );
-    Ok(metadata)
+    Ok((metadata, seen))
 }
 
 #[cfg(all(test, unix))]

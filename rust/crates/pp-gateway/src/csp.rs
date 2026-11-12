@@ -367,10 +367,9 @@ async fn replacement_assets_remain_pinned_after_startup() {
 #[tokio::test]
 async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
     let scratch = Scratch::new("pp-csp-");
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
+    let status = tokio::sync::watch::channel(RustStatus::Ready);
     let mut gateway = Gateway::start_rust_only_with_network(
-        listener,
+        TcpListener::bind("127.0.0.1:0").await.unwrap(),
         true,
         scratch.to_path_buf(),
         (
@@ -381,7 +380,7 @@ async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
             )]))),
         ),
         |_| axum::Router::new(),
-        receiver,
+        status.1,
         Arc::new(NoHosts),
     )
     .unwrap();

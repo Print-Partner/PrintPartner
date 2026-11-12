@@ -11,6 +11,15 @@ fn node_folder() -> Installation {
     installation
 }
 
+/// The same synthetic installation as Print Partner v3.3.0 stored it, at
+/// schema 33.
+fn node_folder_33() -> Installation {
+    let installation = Installation::create(Fixture::Empty).unwrap();
+    node_schema::write_schema_33_database(&installation.database_path()).unwrap();
+    synthetic::populate(installation.path()).unwrap();
+    installation
+}
+
 /// The source and every entry under it, each with its size, modification
 /// time and, for a file, its bytes.
 fn state(source: &Path) -> Vec<(PathBuf, u64, SystemTime, Option<Vec<u8>>)> {
@@ -149,7 +158,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     assert_eq!(items["setting build_planning.create.*"], 1);
     assert_eq!(
         (report.installation.as_deref(), report.users),
-        (Some("default"), 0)
+        (Some("default"), 1)
     );
     assert_eq!(report.destination, None);
     assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
@@ -159,7 +168,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
     holds("step 3 pending: setting printer.fleet = 2");
     holds("Stored JSON the inventory does not name:\n  none");
-    holds("Installation value \"default\", 0 accounts.");
+    holds("Installation value \"default\"; accounts stored: 1.");
     holds("Kept, not used by Rust:\n  setting filename_grouping:* = 1");
     // No stored value: not the integration's key, a printer name or a free-text key.
     let stored = [
@@ -194,8 +203,7 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
         &folder,
         "UPDATE build_profiles SET tenant_id = 'solo'; UPDATE projects SET tenant_id = 'solo';
          UPDATE app_settings SET value = '{}' WHERE key = 'printer.fleet';
-         INSERT INTO users (id, display_name, created_at) VALUES
-           ('synthetic-a', 'Synthetic A', '2026-10-02'), ('synthetic-b', 'Synthetic B', '2026-10-02');",
+         INSERT INTO users (id, display_name, created_at) VALUES ('synthetic-b', 'Synthetic B', '2026-10-02');",
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
@@ -207,7 +215,7 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     );
     let text = report.to_string();
     for line in [
-        "Installation value \"solo\", 2 accounts.",
+        "Installation value \"solo\"; accounts stored: 2.",
         "reads only data under \"default\", so the import would refuse this installation.",
         "signs in only when one account is stored, so the import would refuse this installation.",
     ] {
@@ -231,6 +239,11 @@ fn a_destination_is_inspected_and_never_created() {
         inspect_destination(marked.path()).unwrap(),
         Destination::Marked
     );
+    // A damaged marker is refused for what it is, not as a Rust installation.
+    let damaged = Installation::create(Fixture::MarkedCorrupt).unwrap();
+    let found = inspect_destination(damaged.path()).unwrap();
+    assert!(matches!(found, Destination::BadMarker(_)), "{found:?}");
+    assert!(found.to_string().contains("is no valid marker"), "{found}");
     // The writer refuses a folder with a Node lease directory, so the import does too.
     let leased = Installation::create(Fixture::EmptyWithLeaseLeftovers).unwrap();
     let lease = Destination::NotEmpty(LEASE.into());
@@ -366,6 +379,13 @@ fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
     assert!(matches!(
         refused("Rust installation"),
         ImportError::RustOwned
+    ));
+    folder
+        .write_corrupt_marker(pp_testkit::Corruption::Truncated)
+        .unwrap();
+    assert!(matches!(
+        refused("is no valid marker"),
+        ImportError::SourceMarker(_)
     ));
     folder.remove_marker().unwrap();
     run(folder.path()).expect("the folder imports again once each cause is undone");

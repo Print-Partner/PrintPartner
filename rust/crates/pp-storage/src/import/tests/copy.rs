@@ -22,11 +22,6 @@ fn entries(folder: &Path) -> Vec<String> {
 /// new folder. Checks on the way that the import left its source alone.
 fn imported() -> (Installation, tempfile::TempDir, ImportReport) {
     let source = node_folder();
-    execute(
-        &source,
-        "INSERT INTO users (id, display_name, created_at) VALUES ('synthetic-a', 'Synthetic A', '2026-10-02');
-         INSERT INTO sessions (id, user_id, expires_at) VALUES ('synthetic-session', 'synthetic-a', '2099-01-01');",
-    );
     let before = state(source.path());
     let parent = tempfile::tempdir().unwrap();
     let report = import(source.path(), &parent.path().join("rust")).unwrap();
@@ -207,8 +202,7 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
     let accounts = node_folder();
     execute(
         &accounts,
-        "INSERT INTO users (id, display_name, created_at) VALUES
-           ('synthetic-a', 'Synthetic A', '2026-10-02'), ('synthetic-b', 'Synthetic B', '2026-10-02');",
+        "INSERT INTO users (id, display_name, created_at) VALUES ('synthetic-b', 'Synthetic B', '2026-10-02');",
     );
     let error = refused(&accounts);
     assert!(matches!(error, ImportError::Accounts(2)), "{error:?}");
@@ -353,4 +347,63 @@ fn the_write_step_refuses_a_destination_without_room() {
         refusal.contains(&format!("{available} are available")),
         "{refusal}"
     );
+}
+
+/// Rows per table of the database in `folder`.
+fn rows(folder: &Path) -> BTreeMap<String, i64> {
+    let connection = Connection::open(folder.join("print-partner.db")).unwrap();
+    let tables = strings(
+        &connection,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        None,
+    )
+    .unwrap();
+    let count = |table: &String| {
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {}", quoted(table)),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    tables
+        .iter()
+        .map(|table| (table.clone(), count(table)))
+        .collect()
+}
+
+#[test]
+fn a_schema_33_folder_imports_with_every_table_it_holds() {
+    let source = node_folder_33();
+    let stored = rows(source.path());
+    for table in synthetic::LONG_LIVED_TABLES {
+        assert!(stored[table] >= 1, "the fixture has no row in {table}");
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let report = import(source.path(), &destination).unwrap();
+    assert_eq!(
+        (report.source_schema, report.schema),
+        (33, versions::RUST_SCHEMA)
+    );
+
+    // Every table of the source arrives with its rows. The import empties
+    // the sign-in state, and the upgrade may add starter rows, never drop any.
+    let imported = rows(&destination);
+    for (table, count) in &stored {
+        let arrived = imported.get(table).copied().unwrap_or(-1);
+        match table.as_str() {
+            "sessions" | "password_reset_tokens" => assert_eq!(arrived, 0, "{table}"),
+            _ => assert!(
+                arrived >= *count,
+                "{table}: {count} stored, {arrived} imported"
+            ),
+        }
+        assert_eq!(
+            report.tables[table],
+            arrived.unsigned_abs(),
+            "{table} in the report"
+        );
+    }
 }

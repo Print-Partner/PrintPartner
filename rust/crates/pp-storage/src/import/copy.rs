@@ -146,6 +146,9 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
         let source = rusqlite::Connection::open_with_flags(database, flags)?;
         Ok(verify::digests(&source, None)?)
     })?;
+    // Sign-in state is not carried: every Node session ends with the import.
+    // It goes before the count, so the report describes what was imported.
+    connection.execute_batch("DELETE FROM sessions; DELETE FROM password_reset_tokens;")?;
     let counts = measure(&connection, kind, &ready, &files)?;
     if !counts.unnamed.is_empty() {
         let shapes = counts.unnamed.iter().map(|unnamed| unnamed.shape.clone());
@@ -171,10 +174,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
     if !changed.is_empty() {
         return Err(ImportError::RowsChanged(changed));
     }
-    // Sign-in state is not carried: every Node session ends with the import.
-    connection.execute_batch(
-        "DELETE FROM sessions; DELETE FROM password_reset_tokens; PRAGMA wal_checkpoint(TRUNCATE);",
-    )?;
+    connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
     let report = ImportReport::new(&counts, rebased, copied);
     publish(&stage.0, destination, &report)?;

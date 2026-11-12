@@ -6,17 +6,21 @@
 Checks, in order: no Node, npm, npx or Python in the runtime; the image user is
 1000:1000; `pp-server healthcheck --help`; a hardened start (read-only root,
 bounded /tmp, all capabilities dropped, no-new-privileges) on a fresh named
-volume; sign-in through the production bootstrap-url command; liveness and readiness; an account written to SQLite and read back
-after a restart; SIGTERM drains with a complete shutdown receipt and leaves no
-process behind. The container publishes port 8080 on a free host loopback
-port, so requests reach it from a non-loopback Docker bridge peer. Sign-in
-URLs and cookies stay in memory and are never printed. Every container and
+volume; sign-in through the production bootstrap-url command, whose URL works
+once and never appears in the container logs; liveness and readiness; `GET /`
+serves the image's replacement UI index.html, not the old UI, and its CSP names
+the WebSocket origin of the published host port; an account written to SQLite
+and read back after a restart; SIGTERM drains with a complete shutdown receipt
+and leaves no process behind. The container publishes port 8080 on a free host
+loopback port, so requests reach it from a non-loopback Docker bridge peer.
+Sign-in URLs and cookies stay in memory and are never printed. Every container and
 volume it creates is removed on exit.
 """
 
 import http.client
 import ipaddress
 import json
+import re
 import subprocess
 import sys
 import time
@@ -25,6 +29,9 @@ import uuid
 
 STATUS = "/tmp/pp-server.status.json"
 CREDENTIAL = "/tmp/pp-smoke-credential.json"
+REPLACEMENT_INDEX = "/app/web/apps/ui/dist/index.html"
+# The gateway adds this element to the replacement UI's documents (GRE-1117 CSP).
+NONCE_ELEMENT = re.compile(r'<meta name="pp-style-nonce" nonce="[0-9a-f]{32}">')
 
 
 def docker(*args, check=True):
@@ -38,7 +45,7 @@ def log(message):
     print(f"[docker-smoke] {message}", flush=True)
 
 
-def request(origin, method, path, cookie="", body=None, peer_container=None):
+def request(origin, method, path, cookie="", body=None, peer_container=None, accept=None):
     url = urllib.parse.urlsplit(origin)
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
     headers = {"Host": url.netloc, "Origin": origin}
@@ -46,6 +53,8 @@ def request(origin, method, path, cookie="", body=None, peer_container=None):
         headers["Accept"] = "text/html"
     if cookie:
         headers["Cookie"] = cookie
+    if accept:
+        headers["Accept"] = accept
     if body is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(body)
@@ -241,6 +250,40 @@ def start(image, name, volume):
     return origin, desktop
 
 
+def check_replacement_ui(name, origin, desktop):
+    """GET / must be the image's replacement UI index.html, plus the gateway's style nonce."""
+    built = docker("exec", name, "cat", REPLACEMENT_INDEX, check=False)
+    if built.returncode != 0:
+        raise SystemExit(f"the image has no {REPLACEMENT_INDEX}")
+    status, body, _ = request(origin, "GET", "/", desktop, accept="text/html")
+    served, nonces = NONCE_ELEMENT.subn("", body.decode(errors="replace"), count=1)
+    if status != 200 or nonces != 1 or served != built.stdout:
+        raise SystemExit(f"GET / did not serve the replacement UI (status {status}): {body[:200]!r}")
+    logs = docker("logs", name)
+    if "Replacement UI bundle absent" in logs.stdout + logs.stderr:
+        raise SystemExit("pp-server fell back to the old UI")
+    log(f"GET / serves {REPLACEMENT_INDEX} with one style nonce; no fallback line in the logs")
+    # The browser's authority is the published host port, not the container's 8080.
+    netloc = urllib.parse.urlsplit(origin).netloc
+    policy = served_policy(origin, desktop)
+    if f"connect-src 'self' ws://{netloc}/ws/printers;" not in policy:
+        raise SystemExit(f"replacement CSP does not name ws://{netloc}/ws/printers: {policy!r}")
+    log(f"replacement CSP connect-src names ws://{netloc}/ws/printers, the published host port")
+
+
+def served_policy(origin, cookie):
+    """The Content-Security-Policy on the document that GET / returns through `origin`."""
+    url = urllib.parse.urlsplit(origin)
+    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    headers = {"Host": url.netloc, "Origin": origin, "Cookie": cookie, "Accept": "text/html"}
+    connection.request("GET", "/", headers=headers)
+    response = connection.getresponse()
+    response.read()
+    policy = response.getheader("Content-Security-Policy", "")
+    connection.close()
+    return policy
+
+
 def wait_health(name):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -283,6 +326,7 @@ def main():
         account = {"email": "smoke@example.test", "password": "smoke-password-1234"}
 
         origin, desktop = start(image, names[0], volume)
+        check_replacement_ui(names[0], origin, desktop)
         status, body, _ = request(origin, "GET", "/health", desktop)
         if status != 200 or b'"modules"' not in body:
             raise SystemExit(f"/health answered {status}")

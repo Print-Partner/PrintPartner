@@ -13,7 +13,7 @@
 //! stored row is read. A stored row may carry a credential field its kind does
 //! not use; the readers ignore it.
 
-use super::{DocumentFault, Field, InvalidDocument, InvalidField, Reason};
+use super::{DocumentFault, Field, InvalidDocument, InvalidField, Reason, SetupDocument};
 use crate::auth::Secret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
@@ -49,7 +49,7 @@ impl ServiceKind {
         match field {
             Field::Username | Field::Password => self == Self::Prusalink,
             Field::ApiKey => self != Self::Prusalink,
-            Field::Kind | Field::Name | Field::BaseUrl => true,
+            _ => true,
         }
     }
 }
@@ -219,7 +219,11 @@ impl Serialize for Entry {
 /// The stored document, or which entry is not the typed shape and why. The
 /// fault never holds a stored value.
 pub(crate) fn parse(text: &str) -> Result<Vec<Entry>, InvalidDocument> {
-    let fault = |entry, reason| InvalidDocument { entry, reason };
+    let fault = |entry, reason| InvalidDocument {
+        document: SetupDocument::Integrations,
+        entry,
+        reason,
+    };
     let rows: Vec<Box<RawValue>> =
         serde_json::from_str(text).map_err(|_| fault(None, DocumentFault::NotAList))?;
     let mut entries: Vec<Entry> = Vec::with_capacity(rows.len());

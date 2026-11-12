@@ -3,7 +3,7 @@
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
 //! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`],
-//! [`crate::integrations`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::integrations`], [`crate::printers`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -369,6 +369,43 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "IntegrationView",
         )
     },
+    route(
+        "createPrinter",
+        "POST",
+        "/api/v2/printers",
+        Some("CreatePrinterRequest"),
+        "PrinterConfig",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "readPrinter",
+            "GET",
+            "/api/v2/printers/{id}",
+            None,
+            "PrinterConfig",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "updatePrinter",
+            "PATCH",
+            "/api/v2/printers/{id}",
+            Some("UpdatePrinterRequest"),
+            "PrinterConfig",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "deletePrinter",
+            "DELETE",
+            "/api/v2/printers/{id}",
+            None,
+            "PrinterConfig",
+        )
+    },
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -379,13 +416,42 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         text_params: &[],
         headers: &[],
     },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route("readAuthStatus", "GET", "/auth/status", None, "AuthStatus")
+    },
+    route("readCurrentUser", "GET", "/auth/me", None, "CurrentUser"),
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "signIn",
+            "POST",
+            "/auth/login",
+            Some("SignInRequest"),
+            "SignedIn",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "registerOwner",
+            "POST",
+            "/auth/register",
+            Some("RegisterRequest"),
+            "SignedIn",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route("signOut", "POST", "/auth/logout", None, "SignedOut")
+    },
 ];
 
 #[cfg(feature = "codegen")]
 pub use codegen::{document, document_bytes};
 
 #[cfg(feature = "codegen")]
-mod codegen {
+pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
     use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
@@ -514,6 +580,21 @@ mod codegen {
         schema("BuildWorkflow", schemars::schema_for!(BuildWorkflow))?;
         schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema("AuthStatus", schemars::schema_for!(crate::auth::AuthStatus))?;
+        schema(
+            "CurrentUser",
+            schemars::schema_for!(crate::auth::CurrentUser),
+        )?;
+        schema("SignedIn", schemars::schema_for!(crate::auth::SignedIn))?;
+        schema("SignedOut", schemars::schema_for!(crate::auth::SignedOut))?;
+        schema(
+            "SignInRequest",
+            schemars::schema_for!(crate::auth::SignInRequest),
+        )?;
+        schema(
+            "RegisterRequest",
+            schemars::schema_for!(crate::auth::RegisterRequest),
+        )?;
         schema(
             "SetModuleRequest",
             schemars::schema_for!(crate::modules::SetModuleRequest),
@@ -534,6 +615,18 @@ mod codegen {
                 .extend(["base_url", "username"].map(String::from));
         }
         schema("IntegrationView", view)?;
+        use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
+        let create = schemars::schema_for!(CreatePrinterRequest);
+        schema("CreatePrinterRequest", create)?;
+        let update = schemars::schema_for!(UpdatePrinterRequest);
+        schema("UpdatePrinterRequest", update)?;
+        // The view always serializes these two, null included.
+        let mut config = schemars::schema_for!(crate::printers::PrinterConfig);
+        if let Some(object) = config.schema.object.as_mut() {
+            let nullable = ["bed_height_mm", "integration_id"];
+            object.required.extend(nullable.map(String::from));
+        }
+        schema("PrinterConfig", config)?;
         schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),
@@ -979,14 +1072,18 @@ mod codegen {
         Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
     }
 
-    fn served(dto: &str, name: &str, value: impl Serialize) -> Result<Value, serde_json::Error> {
+    pub(crate) fn served(
+        dto: &str,
+        name: &str,
+        value: impl Serialize,
+    ) -> Result<Value, serde_json::Error> {
         Ok(
             json!({"dto": dto, "name": name, "value": serde_json::to_value(value)?, "rust_accepts": true}),
         )
     }
 
     /// A request body and whether the Rust deserializer accepts it.
-    fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
+    pub(crate) fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
         let rust_accepts = serde_json::from_value::<T>(value.clone()).is_ok();
         json!({"dto": dto, "name": name, "value": value, "rust_accepts": rust_accepts})
     }
@@ -1773,6 +1870,62 @@ mod codegen {
         ])
     }
 
+    fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {
+        let config = |filled: bool| crate::printers::PrinterConfig {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            name: UNICODE.into(),
+            model: "voron-2.4-350".into(),
+            bed_width_mm: 350,
+            bed_depth_mm: 350,
+            bed_height_mm: filled.then_some(340),
+            margin_mm: 4,
+            max_filament_slots: 4,
+            integration_id: filled.then(|| "fedcba9876543210fedcba9876543210".into()),
+        };
+        use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
+        let mut cases = vec![
+            served("PrinterConfig", "linked", config(true))?,
+            served("PrinterConfig", "nulls", config(false))?,
+        ];
+        let voron = json!({"name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
+            "bed_depth_mm": 350, "bed_height_mm": 340});
+        let with = |key: &str, value: Value| {
+            let mut body = voron.clone();
+            body[key] = value;
+            body
+        };
+        let short =
+            json!({"name": "Voron", "model": "v", "bed_width_mm": 350, "bed_depth_mm": 350});
+        for (name, value) in [
+            ("minimal", voron.clone()),
+            ("linked", with("integration_id", json!("moon-1"))),
+            ("margin", with("margin_mm", json!(6))),
+            ("slots", with("max_filament_slots", json!(2))),
+            ("fractional-size", with("bed_width_mm", json!(350.5))),
+            ("negative-size", with("bed_height_mm", json!(-1))),
+            ("extra-key", with("nozzle", json!(1))),
+            ("missing-height", short),
+        ] {
+            let dto = "CreatePrinterRequest";
+            cases.push(request::<CreatePrinterRequest>(dto, name, value));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            ("rename", json!({"name": "Big Voron"})),
+            ("unlink", json!({"integration_id": null})),
+            ("sizes-and-slots", with("max_filament_slots", json!(2))),
+            ("margin", json!({"margin_mm": 6})),
+            ("link", json!({"integration_id": "moon-1"})),
+            ("fractional-margin", json!({"margin_mm": 2.5})),
+            ("slots-over-a-byte", json!({"max_filament_slots": 256})),
+            ("extra-key", json!({"id": "p-1"})),
+        ] {
+            let dto = "UpdatePrinterRequest";
+            cases.push(request::<UpdatePrinterRequest>(dto, name, value));
+        }
+        Ok(cases)
+    }
+
     fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {
         use crate::integrations::{CreateIntegrationRequest, IntegrationView};
         use pp_storage::printer_setup::ServiceKind;
@@ -1882,6 +2035,7 @@ mod codegen {
                 },
             )?,
         ];
+        cases.extend(crate::auth::contract::fixtures()?);
         for (name, value) in [
             ("on", json!({"on": true})),
             ("off", json!({"on": false})),
@@ -1896,6 +2050,7 @@ mod codegen {
             ));
         }
         cases.extend(integration_cases()?);
+        cases.extend(printer_cases()?);
         for (index, value) in shortfalls().into_iter().enumerate() {
             cases.push(served(
                 "FilamentShortfalls",

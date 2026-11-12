@@ -159,7 +159,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net`, `pp-os` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | `pp-os` (Windows log entries, Node path spelling) |
-| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api` gated |
+| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api`, `pp-services` gated |
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core`, `pp-os` (focus identity, Windows pipe security) |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
@@ -223,6 +223,9 @@ inside one `BEGIN IMMEDIATE` transaction, commits on `Ok` and rolls back on
 `Err`. A new family adds no `Envelope` variant and no arm in the writer loop,
 and returns its own typed result. Failures every write shares are one enum,
 `WriterFailure`, which `pp_api::problem::writer_failure` maps to a response.
+Reads have the sibling helper in `pp-storage/src/read.rs` (GRE-1452): a closure
+on a connection from the read-only pool, inside one read transaction, so a read
+does not wait in the writer queue. It reports the same `WriterFailure`.
 Bounded admission, one writer, cancellation, deadlines, and reply semantics stay
 as they are. The helper is never exported from `pp-storage`: exposing
 unrestricted connection or write closures to callers would undo this ownership.

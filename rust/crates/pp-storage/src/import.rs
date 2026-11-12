@@ -8,7 +8,10 @@
 //! in the source for writing, and SQLite never opens the source database, so
 //! no `-shm` or `-wal` file appears there.
 
+mod copy;
 pub mod inventory;
+
+pub use copy::{ImportReport, REPORT_FILE, import};
 
 use crate::{archive, ownership_marker, schema, versions};
 use inventory::{Row, Shape};
@@ -30,9 +33,9 @@ const DATABASE_FILES: [&str; 3] = [
 const LEASE: &str = ".desktop-lease";
 const UNMATCHED_PRINTS: &str = "printer.unattributed_prints";
 
-/// Why an import did not run. [`Self::Io`] and [`Self::Sqlite`] are
-/// failures; every other variant refuses the source as it is. No variant
-/// leaves a write in the source.
+/// Why an import did not run. [`Self::Io`], [`Self::Sqlite`] and
+/// [`Self::CopyMismatch`] are failures; every other variant refuses the
+/// source or the destination as it is. No variant leaves a write in the source.
 #[derive(Debug)]
 pub enum ImportError {
     /// The folder has a `.pp-rust-owned.json` entry.
@@ -52,12 +55,34 @@ pub enum ImportError {
     Database(String),
     /// Builds or Sources belong to more than one tenant.
     SplitTenants(Vec<String>),
+    /// The destination holds data or is a Rust installation already.
+    Destination(Destination),
+    /// Stored JSON that the inventory does not name, as the dry run lists it.
+    Unnamed(Vec<String>),
+    /// The Builds and Sources are under an installation value other than
+    /// `default`, which is the only one the Rust runtime reads.
+    Installation {
+        value: String,
+        builds: u64,
+        sources: u64,
+    },
+    /// More than one account is stored; the Rust runtime signs in with one.
+    Accounts(u64),
+    /// A copied file read back differently from its source.
+    CopyMismatch(PathBuf),
     /// The staging directory has too little free space.
     NoSpace {
         directory: PathBuf,
         needed: u64,
         free: u64,
     },
+    /// The destination's disk cannot hold the files the import writes.
+    DestinationSpace {
+        needed: u64,
+        available: u64,
+    },
+    /// A backup root is a link, has the wrong type or holds too many entries.
+    Roots(String),
     /// A read or write of `path` failed.
     Io {
         path: PathBuf,
@@ -109,15 +134,48 @@ impl fmt::Display for ImportError {
                 "Builds or Sources belong to more than one tenant ({}); the import does not merge tenants",
                 tenants.join(", ")
             ),
+            Self::Destination(found) => {
+                write!(
+                    f,
+                    "The destination {found}. Empty it or choose another folder"
+                )
+            }
+            Self::Unnamed(shapes) => write!(
+                f,
+                "The inventory does not name this stored JSON: {}. Report it; the import runs once the inventory names it",
+                shapes.join(", ")
+            ),
+            Self::Installation {
+                value,
+                builds,
+                sources,
+            } => write!(
+                f,
+                "{builds} Builds and {sources} Sources are stored under the installation value {value:?}. The import handles only data stored under \"default\" today. Send the dry-run report back so this case can be added"
+            ),
+            Self::Accounts(accounts) => write!(
+                f,
+                "{accounts} accounts are stored, and the Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added"
+            ),
+            Self::CopyMismatch(copy) => write!(
+                f,
+                "The copy {} does not match its source. Check the disk, empty the destination and retry",
+                copy.display()
+            ),
             Self::NoSpace {
                 directory,
                 needed,
                 free,
             } => write!(
                 f,
-                "Staging needs {needed} bytes free in {} and {free} are free. Set TMPDIR to a directory with more room",
+                "Staging needs {needed} bytes free in {} and {free} are free. Free space there, or for a dry run set TMPDIR to a directory with more room",
                 directory.display()
             ),
+            Self::DestinationSpace { needed, available } => write!(
+                f,
+                "The destination needs {needed} bytes free for the files the import writes and {available} are available"
+            ),
+            Self::Roots(detail) => write!(f, "The folder's files cannot be copied: {detail}"),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Sqlite(error) => write!(f, "SQLite: {error}"),
         }
@@ -249,13 +307,17 @@ impl fmt::Display for DryRunReport {
         )?;
         let value = self.installation.as_deref().unwrap_or("default");
         writeln!(f, "Installation value {value:?}, {} accounts.", self.users)?;
+        let refused = "so the import would refuse this installation";
         if value != "default" {
-            writeln!(f, "The Rust runtime reads only data under \"default\".")?;
+            writeln!(
+                f,
+                "The Rust runtime reads only data under \"default\", {refused}."
+            )?;
         }
         if self.users > 1 {
             writeln!(
                 f,
-                "The Rust runtime signs in only when one account is stored."
+                "The Rust runtime signs in only when one account is stored, {refused}."
             )?;
         }
         if let Some(destination) = &self.destination {
@@ -478,8 +540,16 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if stamps() != before {
         return Err(ImportError::Changed);
     }
+    Ok(Files {
+        documents: source.to_owned(),
+        repo_files: repo_files(source)?,
+    })
+}
+
+/// The name of every file under `root/repos`.
+fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
     let mut repo_files = Vec::new();
-    let repos = source.join("repos");
+    let repos = root.join("repos");
     // Neither check follows a link, so the walk stays in the folder.
     let mut pending = Vec::from_iter(
         repos
@@ -498,10 +568,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
             }
         }
     }
-    Ok(Files {
-        documents: source.to_owned(),
-        repo_files,
-    })
+    Ok(repo_files)
 }
 
 /// Validates a backup archive and extracts its database and single-file

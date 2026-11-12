@@ -3,6 +3,8 @@ use inventory::Status;
 use pp_testkit::{Fixture, Installation, node_installation as synthetic, node_schema};
 use std::time::SystemTime;
 
+mod copy;
+
 fn node_folder() -> Installation {
     let installation = Installation::create(Fixture::NodeSchema34).unwrap();
     synthetic::populate(installation.path()).unwrap();
@@ -206,8 +208,8 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     let text = report.to_string();
     for line in [
         "Installation value \"solo\", 2 accounts.",
-        "The Rust runtime reads only data under \"default\".",
-        "The Rust runtime signs in only when one account is stored.",
+        "reads only data under \"default\", so the import would refuse this installation.",
+        "signs in only when one account is stored, so the import would refuse this installation.",
     ] {
         assert!(text.contains(line), "{line} is not in:\n{text}");
     }
@@ -272,7 +274,7 @@ fn a_database_that_cannot_fit_is_refused_before_it_is_copied() {
     };
     assert!(needed > (1 << 44) && free < needed);
     assert!(
-        refusal.contains(&format!("needs {needed} bytes")) && refusal.contains("Set TMPDIR"),
+        refusal.contains(&format!("needs {needed} bytes")) && refusal.contains("set TMPDIR"),
         "{refusal}"
     );
 }

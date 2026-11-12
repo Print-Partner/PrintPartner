@@ -97,6 +97,9 @@ pub use pp_compat::{CoreLog, redact};
 pub use pp_compat::{log_folder, recent_diagnostics, recent_logs};
 pub use pp_gateway::LaunchTarget as DesktopLaunchTarget;
 pub use pp_gateway::RustStatus;
+/// The one-time import of a Node installation: its dry run and inventory.
+#[cfg(feature = "desktop_rebuild")]
+pub use pp_storage::import as node_import;
 /// The terminal refusal for a stored schema this runtime does not open.
 pub use pp_storage::versions::IncompatibleSchema;
 

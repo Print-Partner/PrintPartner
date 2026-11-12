@@ -156,7 +156,7 @@ The script needs Linux and Docker. It checks that the runtime has no Node, npm, 
 
 ## Importing Node data
 
-Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. No supported tool imports a Node volume into this image yet.
+Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. No tool imports a Node volume into this image yet. `pp-server import --from <folder or archive> --dry-run` reads a stopped Node data folder or a full backup archive, writes nothing, and reports what an import would convert; see [Node import](node-import.md).
 
 ## To be written
 

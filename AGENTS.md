@@ -1,6 +1,6 @@
 # Working on Print Partner
 
-Print Partner plans and tracks layered STL kit builds for one user. The backend is moving from Node to one Rust core, served to a Tauri 2 desktop window and a headless Docker image. The old React UI in `web/apps/web` is frozen to correctness and data-safety fixes. The replacement UI in `web/apps/ui` talks only to Rust ([ADR 0008](docs/adr/0008-replace-the-old-screens.md)). Read [Architecture](docs/architecture.md) for the target, the current state, the crate map, and the 2026-11-08 re-scope.
+Print Partner plans and tracks layered STL kit builds for one user. The backend is moving from Node to one Rust core, served to a Tauri 2 desktop window and a headless Docker image. The old React UI in `web/apps/web` is frozen to correctness and data-safety fixes. The replacement UI in `web/apps/ui` talks only to Rust ([ADR 0008](docs/adr/0008-replace-the-old-screens.md)). Read [Architecture](docs/architecture.md) for the target, the current state, the crate map, and the 2026-11-08 re-scope. The active plan is [the daily loop](docs/product/daily-loop.md): until the owner has walked it on Rust, lanes take only tickets labelled `daily-loop`.
 
 ## Repository map
 
@@ -35,7 +35,8 @@ just guidance      # checks links in every .md, this file, the repo skills, and 
 
 - Desktop rebuild work stays behind the default-off Cargo feature `desktop_rebuild` and the runtime switch `PP_DESKTOP_REBUILD=1` or `true`. See [Desktop rebuild flag](docs/desktop-rebuild.md). Never turn it on by default.
 - One runtime owns each whole operation: routes, workers, tables, and files. No dual writes, shadow printer sends, or fallback from Rust to Node for mutations.
-- Keep SQLite formats, history, immutable Plan/Plate/Required-unit IDs, autosave, and restart recovery intact.
+- Keep history, immutable Plan/Plate/Required-unit IDs, autosave, and restart recovery intact. Rust owns its stored formats, and the import is the only reader of Node's ([ADR 0016](docs/adr/0016-rust-owns-its-data-formats.md)).
+- Build to the product contract in `docs/`. Match Node on the data a real library holds; its error strings, coercions and ordering are not requirements ([Parity scope](docs/development/definition-of-done.md#parity-scope)).
 - Printer sends need an explicit user action. Never send a real print to test something. Reconcile uncertain results instead of retrying.
 - Sharing stays off by default, and MCP always requires authentication, even on loopback. See [Network sharing](docs/network-sharing.md).
 - No product analytics, default-on telemetry, multi-user, SaaS, or Postgres work. Sentry stays opt-in.

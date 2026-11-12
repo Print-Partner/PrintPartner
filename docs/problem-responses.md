@@ -47,7 +47,7 @@ Responses never carry SQL, filesystem paths, driver or provider URLs, or error c
 
 ## Code
 
-`ProblemType`, `Problem` and the bounds live in `rust/crates/pp-api/src/problem/wire.rs`. `rust/crates/pp-api/src/problem.rs` is the one builder, plus the `layer` backstop every pp-api router mounts with `route_layer` and `parse_body` for field errors. `web/packages/rust-client` exports the generated `problemSchema`, `Problem` and `ProblemType`. Route misses stay with the gateway.
+`ProblemType`, `Problem` and the bounds live in `rust/crates/pp-api/src/problem/wire.rs`. `rust/crates/pp-api/src/problem.rs` is the one builder, plus the `layer` backstop every pp-api router mounts with `route_layer` and `parse_body` for field errors. `writer_failure` maps `pp_storage::WriterFailure`, the failures every write through the write seam shares, so each storage family maps only its own error variants. `web/packages/rust-client` exports the generated `problemSchema`, `Problem` and `ProblemType`. Route misses stay with the gateway.
 
 Parity tests compare Rust problem bodies with Node bodies through `pp_api::problem::without_envelope`, which drops `type`, `title` and `status` only when they are consistent.
 

@@ -8,6 +8,8 @@ ownership; [ADR 0010](adr/0010-whole-runtime-cutover.md) records cutover.
 The owner-delegated research choice on 2026-11-03 keeps that design and adds
 [ADR 0015](adr/0015-shared-filesystem-portability.md) for narrow filesystem
 sharing. The amendment is chosen design, not implemented portability.
+[ADR 0016](adr/0016-rust-owns-its-data-formats.md), accepted 2026-11-12, makes
+the import the only reader of Node's stored formats.
 
 ## Product and system shape
 
@@ -45,8 +47,9 @@ authoritative Build. STEP conversion and the Machine tab stay parked and are not
 part of the current build order. Re-entry needs Chad's approval. There is no
 old-screen visual or route-shape parity requirement.
 
-Preserve single-user SQLite formats and history, immutable Plan/Plate/Required-unit
-IDs, draft autosave, and restart recovery. Printer sends require explicit user
+Preserve history, immutable Plan/Plate/Required-unit IDs, draft autosave, and
+restart recovery. Rust owns its stored formats; the import converts Node's
+once ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)). Printer sends require explicit user
 action and never auto-retry an uncertain outcome. Sharing defaults off; MCP always
 requires authentication, including loopback. No multi-user, SaaS, Postgres, product
 analytics, or default-on telemetry. Sentry remains opt-in.
@@ -98,6 +101,15 @@ Node-versus-Rust baseline of the four operations the owner named as slow:
 thumbnail load, a Plan change, a Checkoff session, and an STL pack or HTML
 checklist export. Exports keep the STL pack and the HTML checklist. MCP on
 Rust is scoped to the tools the usage log shows.
+
+Daily-loop plan, approved by the owner on 2026-11-12. It narrows the re-scope.
+A walk through the Rust-only runtime on that date broke at sign-in, at adding a
+printer, at importing a Source, and at moving existing data: routes were
+mounted, but the owner could not do the work. [The daily loop](product/daily-loop.md)
+lists the steps he must be able to walk and what done means for each. Until
+he has walked them, lanes take only tickets labelled `daily-loop`. Paused
+until then: Windows work, the maintainability plan under GRE-1306, CI and
+process changes that are not fixes for a red `main`, and hardware receipts.
 
 The baseline gateway inventory has 781 compatibility routes. The operation
 manifest has eight Node-owned operations and 82 reviewed resource sets. The
@@ -451,8 +463,11 @@ approves production cutover after a timed, versioned runbook rehearsal.
 3. Stop/drain Node and exclude writes. Take a consistent whole-installation
    backup using the supported SQLite/archive procedure, not a live `.db` copy.
    Verify digests and restore it into a separate disposable directory.
-4. Migrate a separate Rust-owned copy. Node and Rust never share a live data
-   directory. Retain the pre-cutover copy and matching old artifact.
+4. Migrate a separate Rust-owned copy with the import, which converts Node's
+   stored shapes to Rust's typed ones and is the only code that reads them
+   ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)). Node and Rust never
+   share a live data directory. Retain the pre-cutover copy and matching old
+   artifact.
 5. Validate readiness, authentication, persistence and restart before normal
    mutations or effects. Chad records the go/no-go and authority switch.
 6. Observe through an owner-set acceptance window, including an evening Checkoff
@@ -481,6 +496,38 @@ Retire Node, the old screens, proxy/ownership machinery and unused contract
 mirrors only after replacement acceptance and retention gates. Preserve useful
 reviewed resource sets/history before deleting execution code. Flag retirement
 needs its own approval/change; never solve it by enabling the default.
+
+## Simplification after cutover
+
+Measured on 2026-11-12, production Rust was about 139,000 lines against about
+77,000 lines of the Node code it replaces. Three things account for most of the
+difference: code that copies JavaScript behaviour, hardening beyond what a
+single-user local app needs, and operation logic that lives in `pp-storage`
+together with its HTTP status codes. [Rust core](../rust/AGENTS.md#new-code)
+stops new code from adding to them. This section orders the removal of what
+exists.
+
+None of it starts before the owner has walked [the daily loop](product/daily-loop.md),
+except where a `daily-loop` ticket already rewrites the code. Each step is its
+own ticket and PR series, and each must leave `main` shippable.
+
+1. **Delete what served Node.** `pp-compat`, the gateway's proxy and ownership
+   code, `fixtures/parity`, the Node 22 schema oracle and the scripts that
+   drive Node go with Node under GRE-1115. Removing the `desktop_rebuild`
+   gates is part of the same retirement and needs its own approval.
+2. **Remove the Node-shape readers.** Once the import (GRE-412) has converted
+   their inputs, delete the `js_*` coercion helpers and replace loosely typed
+   rows such as `checkoff_progress::links::Link` with structs.
+3. **Give each family typed errors.** Replace `anyhow` at family interfaces
+   with one error enum per family, and move the mapping from error to status
+   code and body out of `pp-storage` into `pp-api`.
+4. **Deepen the families.** Finish the `Envelope` rework family by family
+   (GRE-339, with the writer seam in GRE-1322, GRE-1326 and GRE-1330) and split
+   `jobs.rs` by behaviour (GRE-1327). The interface of a family is its typed
+   handle; its tests cross that handle.
+5. **Resize hardening for one user.** Reduce the data-directory lease and the
+   schema preflight to what a single-user local app needs, keeping
+   unsupported-schema refusal.
 
 ## Performance and platform evidence
 

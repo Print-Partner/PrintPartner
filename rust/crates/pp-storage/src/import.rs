@@ -30,8 +30,9 @@ const DATABASE_FILES: [&str; 3] = [
 const LEASE: &str = ".desktop-lease";
 const UNMATCHED_PRINTS: &str = "printer.unattributed_prints";
 
-/// Why an import did not run. Every variant but [`Self::Failed`] refuses the
-/// source as it is. No variant leaves a write in the source.
+/// Why an import did not run. [`Self::Io`] and [`Self::Sqlite`] are
+/// failures; every other variant refuses the source as it is. No variant
+/// leaves a write in the source.
 #[derive(Debug)]
 pub enum ImportError {
     /// The folder has a `.pp-rust-owned.json` entry.
@@ -63,8 +64,12 @@ pub enum ImportError {
         temporary: PathBuf,
         folder: PathBuf,
     },
-    /// An I/O or SQLite failure.
-    Failed(anyhow::Error),
+    /// A read or write of `path` failed.
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Sqlite(rusqlite::Error),
 }
 
 impl fmt::Display for ImportError {
@@ -127,28 +132,17 @@ impl fmt::Display for ImportError {
                 temporary.display(),
                 folder.display()
             ),
-            Self::Failed(error) => write!(f, "{error:#}"),
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Sqlite(error) => write!(f, "SQLite: {error}"),
         }
     }
 }
 
 impl std::error::Error for ImportError {}
 
-impl From<anyhow::Error> for ImportError {
-    fn from(error: anyhow::Error) -> Self {
-        Self::Failed(error)
-    }
-}
-
-impl From<std::io::Error> for ImportError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Failed(error.into())
-    }
-}
-
 impl From<rusqlite::Error> for ImportError {
     fn from(error: rusqlite::Error) -> Self {
-        Self::Failed(error.into())
+        Self::Sqlite(error)
     }
 }
 
@@ -419,7 +413,7 @@ fn stage_bytes(database: u64, staged: u64) -> u64 {
 /// bytes free.
 fn ensure_space(stage: &Path, needed: u64) -> Result<(), ImportError> {
     let directory = stage.parent().unwrap_or(stage);
-    let free = fs4::available_space(directory).map_err(|error| unreadable(directory, error))?;
+    let free = fs4::available_space(directory).map_err(|error| io_error(directory, error))?;
     if free >= needed {
         return Ok(());
     }
@@ -437,9 +431,7 @@ fn dry_run_in(
     destination: Option<&Path>,
     temporary: &Path,
 ) -> Result<DryRunReport, ImportError> {
-    let metadata = source
-        .metadata()
-        .map_err(|error| anyhow::anyhow!("Read import source {}: {error}", source.display()))?;
+    let metadata = source.metadata().map_err(|error| io_error(source, error))?;
     // Before any scratch exists: a dry run writes nothing into the source or
     // the destination.
     for folder in [Some(source), destination].into_iter().flatten() {
@@ -450,13 +442,14 @@ fn dry_run_in(
         "pp-import-dry-run-{}",
         hex::encode(rand::random::<[u8; 12]>())
     )));
-    pp_os::create_private_dir(&scratch.0)?;
+    pp_os::create_private_dir(&scratch.0).map_err(|error| io_error(&scratch.0, error))?;
     let (kind, files) = if metadata.is_dir() {
         (SourceKind::Directory, stage_directory(source, &scratch.0)?)
     } else if metadata.is_file() {
         (SourceKind::Archive, stage_archive(source, &scratch.0)?)
     } else {
-        return Err(anyhow::anyhow!("The import source is neither a folder nor a file").into());
+        let kind = std::io::Error::new(ErrorKind::InvalidInput, "neither a folder nor a file");
+        return Err(io_error(source, kind));
     };
     let (connection, ready) = upgrade(&scratch.0)?;
     let report = measure(&connection, kind, &ready, &files)?;
@@ -485,12 +478,16 @@ fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportErro
     let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
     let database = stage.join(archive::DATABASE_FILE);
     let now = crate::auth::catalog_timestamp();
-    Ok(schema::initialize_with(&database, version, &now, false)?)
+    schema::initialize_with(&database, version, &now, false)
+        .map_err(|error| ImportError::Database(format!("{error:#}")))
 }
 
-/// A read failure that names the source entry it happened on.
-fn unreadable(path: &Path, error: std::io::Error) -> ImportError {
-    ImportError::Failed(anyhow::anyhow!("Read {}: {error}", path.display()))
+/// An I/O failure that names the entry it happened on.
+fn io_error(path: &Path, source: std::io::Error) -> ImportError {
+    ImportError::Io {
+        path: path.to_owned(),
+        source,
+    }
 }
 
 /// Opens the regular file at `path` for reading; `None` when nothing is
@@ -500,13 +497,16 @@ fn open_regular(path: &Path) -> Result<Option<std::fs::File>, ImportError> {
     match path.symlink_metadata() {
         Ok(metadata) if metadata.is_file() => pp_os::open_read_nofollow(path)
             .map(Some)
-            .map_err(|error| unreadable(path, error)),
-        Ok(_) => Err(ImportError::Failed(anyhow::anyhow!(
-            "{} is not a regular file; the import does not follow links",
-            path.display()
-        ))),
+            .map_err(|error| io_error(path, error)),
+        Ok(_) => Err(io_error(
+            path,
+            std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "not a regular file; the import follows no link",
+            ),
+        )),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(unreadable(path, error)),
+        Err(error) => Err(io_error(path, error)),
     }
 }
 
@@ -516,7 +516,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     match ownership_marker::inspect(source) {
         MarkerState::Absent => {}
         MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
-            return Err(unreadable(source, kind.into()));
+            return Err(io_error(source, kind.into()));
         }
         _ => return Err(ImportError::RustOwned),
     }
@@ -538,8 +538,10 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     for name in DATABASE_FILES {
         let path = source.join(name);
         if let Some(mut file) = open_regular(&path)? {
-            let mut copy = std::fs::File::create_new(scratch.join(name))?;
-            std::io::copy(&mut file, &mut copy).map_err(|error| unreadable(&path, error))?;
+            let staged = scratch.join(name);
+            let mut copy =
+                std::fs::File::create_new(&staged).map_err(|error| io_error(&staged, error))?;
+            std::io::copy(&mut file, &mut copy).map_err(|error| io_error(&path, error))?;
         }
     }
     if stamps() != before {
@@ -555,7 +557,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
             .then_some(repos),
     );
     while let Some(directory) = pending.pop() {
-        let failed = |error| unreadable(&directory, error);
+        let failed = |error| io_error(&directory, error);
         for entry in std::fs::read_dir(&directory).map_err(failed)? {
             let entry = entry.map_err(failed)?;
             if entry.file_type().map_err(failed)?.is_dir() {
@@ -577,7 +579,7 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
     let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
         .map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
-            Some(io) if io.kind() == ErrorKind::StorageFull => ImportError::Failed(error),
+            Some(io) if io.kind() == ErrorKind::StorageFull => io_error(scratch, io.kind().into()),
             _ => ImportError::InvalidArchive(format!("{error:#}")),
         })?;
     if metadata.scope != archive::MetadataScope::Full {
@@ -739,7 +741,7 @@ fn count_shape(
             let path = files.documents.join(name);
             let mut stored = Vec::new();
             if let Some(mut file) = open_regular(&path)? {
-                (file.read_to_end(&mut stored)).map_err(|error| unreadable(&path, error))?;
+                (file.read_to_end(&mut stored)).map_err(|error| io_error(&path, error))?;
             }
             // A missing file reads as empty, which is no JSON and counts as none.
             items(&stored, u64::from(!stored.is_empty()))

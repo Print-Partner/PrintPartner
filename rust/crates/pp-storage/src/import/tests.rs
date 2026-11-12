@@ -229,6 +229,11 @@ fn a_destination_is_inspected_and_never_created() {
         inspect_destination(marked.path()).unwrap(),
         Destination::Marked
     );
+    // A damaged marker is refused for what it is, not as a Rust installation.
+    let damaged = Installation::create(Fixture::MarkedCorrupt).unwrap();
+    let found = inspect_destination(damaged.path()).unwrap();
+    assert!(matches!(found, Destination::BadMarker(_)), "{found:?}");
+    assert!(found.to_string().contains("is no valid marker"), "{found}");
     // The writer refuses a folder with a Node lease directory, so the import does too.
     let leased = Installation::create(Fixture::EmptyWithLeaseLeftovers).unwrap();
     let lease = Destination::NotEmpty(LEASE.into());

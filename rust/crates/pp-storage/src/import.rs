@@ -152,8 +152,10 @@ pub enum Destination {
     Free,
     /// It holds this entry and no marker: the import would refuse it.
     NotEmpty(String),
-    /// It has a marker entry: a Rust installation is there already.
+    /// It has a valid marker: a Rust installation is there already.
     Marked,
+    /// It has a marker entry that is not a valid marker.
+    BadMarker(ownership_marker::MarkerRefusal),
 }
 
 impl fmt::Display for Destination {
@@ -162,6 +164,11 @@ impl fmt::Display for Destination {
             Self::Free => f.write_str("is absent or empty, as the import needs"),
             Self::NotEmpty(entry) => write!(f, "holds {entry:?}, so the import refuses it"),
             Self::Marked => f.write_str("is a Rust installation, so the import refuses it"),
+            Self::BadMarker(refusal) => write!(
+                f,
+                "has a {} entry that is no valid marker ({refusal}), so the import refuses it",
+                ownership_marker::MARKER_FILE
+            ),
         }
     }
 }
@@ -174,7 +181,8 @@ pub fn inspect_destination(destination: &Path) -> Result<Destination, ImportErro
         MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
             return Err(unreadable(destination, kind.into()));
         }
-        _ => return Ok(Destination::Marked),
+        MarkerState::Refused(refusal) => return Ok(Destination::BadMarker(refusal)),
+        MarkerState::Valid(_) => return Ok(Destination::Marked),
     }
     // The writer refuses a Node lease directory that the marker rule alone
     // counts as empty, so any lease entry makes the folder unusable.

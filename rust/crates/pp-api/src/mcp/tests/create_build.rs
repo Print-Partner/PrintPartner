@@ -309,20 +309,10 @@ async fn mcp_create_build_confirm_refusals_write_nothing_and_keep_the_proposal()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_create_build_without_a_key_is_refused_and_proposes_nothing() {
     let (server, headers) = orders_on().await;
-    let session_id = headers
-        .iter()
-        .find(|(name, _)| name == "mcp-session-id")
-        .map(|(_, value)| value.as_str())
-        .unwrap();
-    let request = json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-        "params": { "name": "propose_create_build", "arguments": { "name": "A", "request": "r" } } });
-    let unkeyed = [
-        ("mcp-session-id", session_id),
-        ("mcp-protocol-version", "2025-06-18"),
-        // Same-origin, so only the key check can refuse.
-        ("origin", SELF),
-    ];
-    let (status, _, _) = server.post("/api/v1/mcp", &unkeyed, &request).await;
+    let arguments = json!({ "name": "A", "request": "r" });
+    let status = server
+        .unkeyed_call_status(&headers, "propose_create_build", arguments)
+        .await;
     assert_eq!(status, 401);
     assert!(pending(&server, &headers).await.is_empty());
 }

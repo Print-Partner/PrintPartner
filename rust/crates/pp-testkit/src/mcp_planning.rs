@@ -33,7 +33,6 @@ pub fn state(path: &Path) -> rusqlite::Result<Vec<Vec<Vec<String>>>> {
         "SELECT * FROM plan_draft_parts ORDER BY id",
         "SELECT * FROM plan_revisions ORDER BY id",
         "SELECT * FROM required_units ORDER BY id",
-        "SELECT * FROM domain_events ORDER BY seq",
     ]
     .into_iter()
     .map(|sql| {

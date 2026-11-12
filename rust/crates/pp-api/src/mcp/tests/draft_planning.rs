@@ -84,7 +84,27 @@ async fn mcp_draft_planning_replays_node_text() {
         "../../../../../../fixtures/parity/mcp-proposals/draft-planning/lifecycle.json"
     ))
     .unwrap();
+    let database = server._directory.join("print-partner.db");
+    let before = pp_testkit::mcp_planning::state(&database).unwrap();
     replay(&server, &headers, &golden).await;
+    let after = pp_testkit::mcp_planning::state(&database).unwrap();
+    for table in [7, 8] {
+        assert_eq!(before[table], after[table], "Accepted Plan history changed");
+    }
+    assert_eq!(before[3][0], after[3][0], "Accepted Build changed");
+    let roles = pp_testkit::mcp_planning::setting(&database, "role_filaments_1").unwrap();
+    assert_eq!(roles["accent"]["filament_custom_hex"], "#aA1122");
+    assert_eq!(
+        roles["primary"]["filament_color_id"],
+        "abs-matte::black-pantone-7c"
+    );
+    let brief = pp_testkit::mcp_planning::setting(&database, "build_planning.v1.1").unwrap();
+    assert!(brief.get("draft_id").is_none());
+    assert_eq!(brief["requirements"][0]["status"], "satisfied");
+    assert_eq!(
+        pp_testkit::mcp_planning::setting(&database, "build_planning.v1.3").unwrap()["draft_id"],
+        3
+    );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_draft_planning_revalidates_and_rolls_back_without_publication() {
@@ -128,6 +148,8 @@ async fn mcp_draft_planning_revalidates_and_rolls_back_without_publication() {
                 detail
             );
             assert_eq!(before, pp_testkit::mcp_planning::state(&database).unwrap());
+            let (pending, _) = call(&server, &headers, "list_pending_actions", json!({})).await;
+            assert!(pending.contains(&id));
         } else {
             assert_refused(&server, &headers, &id, detail).await;
         }

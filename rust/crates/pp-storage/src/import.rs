@@ -155,6 +155,16 @@ pub enum Destination {
     Marked,
 }
 
+impl fmt::Display for Destination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Free => f.write_str("is absent or empty, so the import would accept it"),
+            Self::NotEmpty(entry) => write!(f, "holds {entry:?}, so the import refuses it"),
+            Self::Marked => f.write_str("is a Rust installation, so the import refuses it"),
+        }
+    }
+}
+
 /// Inspects the folder an import would write to. Nothing is created.
 pub fn inspect_destination(destination: &Path) -> Result<Destination, ImportError> {
     use ownership_marker::{MarkerRefusal, MarkerState};
@@ -254,26 +264,8 @@ impl fmt::Display for DryRunReport {
                 "{users} accounts are stored. Rust signs in only when there is one."
             )?;
         }
-        match &self.destination {
-            None => {}
-            Some(Destination::Free) => {
-                writeln!(
-                    f,
-                    "Destination: absent or empty. The import would accept it."
-                )?;
-            }
-            Some(Destination::NotEmpty(entry)) => {
-                writeln!(
-                    f,
-                    "Destination: holds {entry:?}. The import would refuse it."
-                )?;
-            }
-            Some(Destination::Marked) => {
-                writeln!(
-                    f,
-                    "Destination: a Rust installation. The import would refuse it."
-                )?;
-            }
+        if let Some(destination) = &self.destination {
+            writeln!(f, "The destination {destination}.")?;
         }
         writeln!(f, "\nTables with rows (rows, then rows per tenant):")?;
         for table in self.tables.iter().filter(|table| table.rows > 0) {

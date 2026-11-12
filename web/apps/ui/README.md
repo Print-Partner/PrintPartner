@@ -100,13 +100,14 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
   in `next`. `next` is used only when it is a same-origin path to a screen this UI
   routes (`src/auth/next.ts`); `//host`, full URLs and unknown paths open Today.
   The email is never filled in from the core.
-- **Signed out.** A 401 from a read opens `/login?next=<this page>` (`App.tsx`).
-  A 401 from a write never navigates, so an unsaved edit stays on screen; the
-  Plan's save status says "You were signed out, and this change is not saved.
-  Copy it before you sign in.", with a sign-in link
-  (`src/auth/SignedOutNote.tsx`). While a write is pending or refused with 401,
-  read 401s (such as the refetch after the failed save) do not navigate either.
-  Provisional. If `/auth/status` itself answers
+- **Signed out.** A 401 opens `/login?next=<this page>` (`App.tsx`), from a read
+  or a write. Writes that hold an edit only on screen opt out with
+  `meta: KEEP_EDITS` (the Plan's header save and autosave): their 401 never
+  navigates, the save status says "You were signed out, and this change is not
+  saved. Copy it before you sign in.", with a sign-in link
+  (`src/auth/SignedOutNote.tsx`), and while one is pending or refused, read 401s
+  (such as the refetch after the failed save) do not navigate either. Provisional.
+  If `/auth/status` itself answers
   401, the browser's link to the core has ended, and the screen asks for a new
   sign-in link.
 - **Messages.** A wrong email or password, 20 attempts in a minute (429), and an

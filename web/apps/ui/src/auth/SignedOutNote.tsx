@@ -2,6 +2,16 @@ import { Link, useLocation } from "react-router";
 import { CoreError } from "../core/client";
 import { signInFor } from "./next";
 
+/**
+ * Mutation `meta` for a write whose edit lives only on screen. When it answers 401 the app
+ * stays on the page instead of opening sign-in, and the screen shows `SignedOutNote`.
+ */
+export const KEEP_EDITS = { keepEditsOnSignOut: true };
+
+/** Whether a mutation opted in with `KEEP_EDITS`. */
+export const keepsEdits = (meta: Record<string, unknown> | undefined) =>
+  meta?.keepEditsOnSignOut === true;
+
 /** A write the core refused because the session has ended. */
 export const signedOut = (error: unknown) => error instanceof CoreError && error.status === 401;
 

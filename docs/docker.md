@@ -44,20 +44,36 @@ It does not measure the Node executable, the Node backend, the workspace package
 ```sh
 docker volume create pp-data
 docker run -d --name print-partner \
-  --network host \
+  -p 127.0.0.1:8080:8080 \
   --restart unless-stopped \
   --read-only --tmpfs /tmp:size=1g,mode=1777 \
   --cap-drop ALL --security-opt no-new-privileges \
   -v pp-data:/data \
   pp-server:test
-docker logs print-partner    # includes the origin, http://127.0.0.1:<port>
+docker logs print-partner    # bound address and local probe origin
 ```
 
 - **User.** The image runs as UID 1000, GID 1000 (`ppuser`) from the first instruction. It never starts as root and has no `gosu` or entrypoint `chown`.
 - **Writes.** Installation data goes to `/data` only. `pp-server` also writes its storage runtime directory and its status file to `/tmp`. Each start's storage preflight copies the database and its WAL into `/tmp` twice, one after the other, and deletes each copy. Backup validation also extracts there. Mount `/tmp` as a bounded tmpfs at least twice the size of `print-partner.db` plus its WAL, with 64 MB to spare. The example's 1 GB fits a database up to about 450 MB. A tmpfs uses memory only for what it holds. With that tmpfs mounted, the root filesystem can be read-only (`--read-only`).
 - **Capabilities.** `pp-server` needs no Linux capabilities. Drop all of them with `--cap-drop ALL`, and use `--security-opt no-new-privileges`. The image has no setuid helper that needs either.
 - **Process tree.** `tini` is PID 1 and forwards signals. `pp-server` is its only child. In Rust-only mode `pp-server` starts no child process.
-- **Port.** `pp-server` binds `127.0.0.1` on a free port and saves it in `/data/desktop.toml`. Later starts reuse that port while it is free.
+- **Port.** This image sets `PP_LISTEN_ADDR=0.0.0.0:8080`. Docker publishes it on the host's loopback interface in this example. Open `http://127.0.0.1:8080` after obtaining a bootstrap URL (see [Sign in](#sign-in)). For a different published port, LAN address or specific-IP bind, replace the URL's host and port with that reachable address, keeping its path and query private.
+- **Admission.** `PP_LISTEN_ADDR` takes an IP address and port; malformed values fail startup. It requires the Rust-only runtime. Without it, the server keeps the saved loopback port. Desktop startup never reads this setting. Requests in explicit listener mode require a literal-IP Host; DNS names, forwarded headers and cross-site requests are refused. Browser mutations require an Origin matching that Host, including the published port.
+- **LAN exposure.** Publishing with `-p 8080:8080` exposes the listener on host network interfaces. Bootstrap admission and account login still apply; MCP stays disabled. Plain HTTP does not encrypt credentials or sessions. Use the loopback-only mapping above for local use. This setting does not enable desktop network sharing.
+- **Upgrading from host networking.** This image keeps `PP_LISTEN_ADDR=0.0.0.0:8080` so port publishing works without an extra environment variable. The old `--network host` command now listens on every host interface over plain HTTP. Replace that command with the `-p 127.0.0.1:8080:8080` command above for local-only host access. To keep host networking on loopback only, add `-e PP_LISTEN_ADDR=127.0.0.1:8080`:
+
+  ```sh
+  docker run -d --name print-partner --network host \
+    -e PP_LISTEN_ADDR=127.0.0.1:8080 \
+    --restart unless-stopped \
+    --read-only --tmpfs /tmp:size=1g,mode=1777 \
+    --cap-drop ALL --security-opt no-new-privileges \
+    -v pp-data:/data \
+    pp-server:test
+  ```
+
+- **Container networks.** Other containers on the same Docker bridge or Compose network can reach port 8080 without any `-p` mapping. A loopback host mapping does not isolate those containers. `-P` publishes exposed ports on all host interfaces; use the explicit loopback mapping above instead.
+- **Rate limits.** When docker-proxy forwards connections, every client appears as the proxy's IP address and shares one rate-limit bucket. Forwarded headers do not restore client identities; this listener refuses them.
 
 ## Sign in
 
@@ -67,7 +83,7 @@ A browser gets in through a single-use sign-in URL. Ask the running server for o
 docker exec print-partner pp-server bootstrap-url --data /data
 ```
 
-The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. Open it in a browser on the same host within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest.
+The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. For a different published port, LAN address or specific-IP bind, replace its host and port with the reachable IP address; keep the path and query private. Open it within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest. The replacement UI then opens its setup screen to create the owner account on first run, and its sign-in screen later whenever the browser has no valid session ([GRE-1429](https://linear.app/greetz/issue/GRE-1429)).
 
 - **Where the URL goes.** Only to the terminal that ran the command. `pp-server` does not print or log it, and it is not in `docker logs` or the status file.
 - **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. The command also refuses a directory the caller does not own or that other accounts can write, and a socket whose server runs as another account. With a host bind mount for `/data` and no user-namespace remapping, a host process running as the data directory's UID can also reach the socket and get a URL. That is by design: that account already owns the data.
@@ -76,7 +92,7 @@ The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex di
 
 ## Volumes and the data directory
 
-`/data` holds the SQLite database (`print-partner.db` with its WAL), the ownership marker `.pp-rust-owned.json`, `desktop.toml`, the lock `printpartner.lock`, the sign-in socket `.pp-server-bootstrap.sock` while the server runs, and the `sources`, `repos`, `covers`, `thumbs` and `exports` folders. Use a named volume or a local directory. Do not use a network filesystem.
+`/data` holds the SQLite database (`print-partner.db` with its WAL), the ownership marker `.pp-rust-owned.json`, the lock `printpartner.lock`, the sign-in socket `.pp-server-bootstrap.sock` while the server runs, and the `sources`, `repos`, `covers`, `thumbs` and `exports` folders. `desktop.toml` appears only on a volume created by an image without `PP_LISTEN_ADDR`. This image ignores its saved port, and a fresh volume started from this image has no `desktop.toml`. Use a named volume or a local directory. Do not use a network filesystem.
 
 The storage writer opens only an empty directory or one that already carries the ownership marker. It refuses a non-empty directory without the marker and leaves it unchanged. So a Node image volume cannot be mounted directly; see [Importing Node data](#importing-node-data).
 
@@ -102,7 +118,7 @@ This is the only step that runs as root, and it is an explicit, one-time command
 
 ## Health
 
-`pp-server --status-file PATH` keeps a small JSON file. It holds the process ID, a state (`starting`, `ready` or `stopping`) and, once ready, the loopback origin. The file is written atomically and removed on exit. The image passes `--status-file /tmp/pp-server.status.json`.
+`pp-server --status-file PATH` keeps a small JSON file. It holds the process ID, a state (`starting`, `ready` or `stopping`) and, once ready, a local probe origin. The file is written atomically and removed on exit. The image passes `--status-file /tmp/pp-server.status.json`.
 
 `pp-server healthcheck <liveness|readiness> --status-file PATH [--timeout-ms N]` reads that file:
 
@@ -111,7 +127,7 @@ This is the only step that runs as root, and it is an explicit, one-time command
 | `liveness` | The recorded process is alive. Once the state is `ready`, the gateway must also answer. Passes while `starting` and `stopping`. |
 | `readiness` | The state is `ready` and the gateway answers. Fails while `starting`, which covers the storage lease, the ownership marker decision and schema migrations. Also fails while `stopping`. |
 
-"The gateway answers" means one `GET /health` with no cookie to the recorded loopback origin, which must return an HTTP status below 500 within the timeout (default 2000 ms, at most 10000 ms). The gateway refuses a request without a session with 401 before admitting it, so the probe creates no session, job or printer contact. The probe reads no secret. A missing, malformed or oversized (over 4 KiB) status file fails both probes. The command exits 0 on pass and 1 on fail.
+"The gateway answers" means one `GET /health` with no cookie to the recorded local origin, which must return an HTTP status below 500 within the timeout (default 2000 ms, at most 10000 ms). The gateway refuses a request without a session with 401 before admitting it, so the probe creates no session, job or printer contact. The probe reads no secret. A missing, malformed or oversized (over 4 KiB) status file fails both probes. The command exits 0 on pass and 1 on fail.
 
 The image's `HEALTHCHECK` runs `readiness` every 30 s, with a 5 s timeout, a 120 s start period for migrations, and 3 retries.
 
@@ -125,9 +141,9 @@ Signing out (`POST /auth/logout`) revokes the account session and clears its coo
 
 ## What the Rust-only image cannot do yet
 
-- **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
-- **MCP only on loopback.** `/mcp` and `/api/v1/mcp` answer an MCP client that sends a valid API key, and, like the other Rust routes, refuse a non-loopback peer. See [Assistant MCP](assistant-mcp.md).
-- **No sign-in screen.** The image serves the replacement UI with the GRE-1117 CSP, and the replacement UI has no sign-in or setup screen yet ([GRE-1429](https://linear.app/greetz/issue/GRE-1429)). The bootstrap URL admits the browser and the UI loads, but product routes answer 401 until an account session exists: `POST /auth/register` once, then `POST /auth/login`.
+- **No DNS names or reverse proxy.** The explicit listener accepts literal IP addresses only. Desktop [Network sharing](network-sharing.md) remains unimplemented and off by default.
+- **MCP is off.** This image sets `PP_LISTEN_ADDR`, and on that listener the gateway answers 403 to `/mcp` and `/api/v1/mcp`, whatever key a client sends. LAN peers stay out until MCP trust classes exist. Only a loopback start without `PP_LISTEN_ADDR` routes MCP to its API-key guard; see [Assistant MCP](assistant-mcp.md).
+- **No GitHub or Discord sign-in.** These providers are unavailable on the explicit listener: their callback URL is built from the loopback origin, and the listener refuses the provider's cross-site redirect back to `/auth/callback`. This image configures neither provider ([GRE-974](https://linear.app/greetz/issue/GRE-974)); sign in with the owner account's email and password.
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test
@@ -136,7 +152,7 @@ Signing out (`POST /auth/logout`) revokes the account session and clears its coo
 python3 scripts/docker-rust-smoke.py pp-server:test
 ```
 
-The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. With that sign-in, `GET /` must return the image's `apps/ui/dist/index.html` with one style nonce element added, and `docker logs` must not contain `Replacement UI bundle absent`. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches the loopback origin through host networking. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
+The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. With that sign-in, `GET /` must return the image's `apps/ui/dist/index.html` with one style nonce element added, and `docker logs` must not contain `Replacement UI bundle absent`. Its CSP `connect-src` must name `ws://127.0.0.1:<published port>/ws/printers`, the authority the browser used. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches /health and sign-in through the published host loopback port over the Docker bridge. It verifies non-loopback login requirements and MCP refusal, and records the bound address 0.0.0.0:8080. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
 
 ## Importing Node data
 

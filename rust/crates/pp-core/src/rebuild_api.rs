@@ -227,7 +227,7 @@ pub fn read_router(
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
-/// the integration writes and the printer read, from the same owner.
+/// the integration writes and the printer routes, from the same owner.
 fn setup_routes(
     owner: &Mutex<WriterOwner>,
     policy: AuthPolicy,
@@ -751,6 +751,29 @@ mod tests {
         cookie.split(';').next().unwrap().to_owned()
     }
 
+    /// A second session for the account `session` registered.
+    async fn sign_in(client: &reqwest::Client, origin: &str) -> String {
+        let body = Some(sample_body("SignInRequest"));
+        let request = contract_request(client, origin, ("POST", "/auth/login"), &[], None, body);
+        let signed_in = request.send().await.unwrap();
+        assert_eq!(signed_in.status(), 200);
+        let cookie = signed_in.headers()["set-cookie"].to_str().unwrap();
+        cookie.split(';').next().unwrap().to_owned()
+    }
+
+    /// The single owner already exists, so a second register is refused by its
+    /// handler, which still shows the route runs. The auth guard's own 403s (origin,
+    /// host, loopback) carry other details and do not count.
+    fn owner_exists(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+        body: &Value,
+    ) -> bool {
+        route.path == "/auth/register"
+            && status == 403
+            && body["detail"] == pp_storage::auth::AuthFailure::SingleAccountExists.to_string()
+    }
+
     /// A body each client route's request DTO accepts.
     fn sample_body(dto: &str) -> Value {
         match dto {
@@ -764,6 +787,9 @@ mod tests {
             "CreateIntegrationRequest" => {
                 json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
             }
+            "CreatePrinterRequest" => json!({"name": "Client contract", "model": "fixture",
+                "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220}),
+            "UpdatePrinterRequest" => json!({"name": "Client contract"}),
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,
@@ -793,6 +819,10 @@ mod tests {
                 "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
             "ClaimUnattributedRequest" => json!({"profile_id": 1}),
             "DismissUnattributedRequest" => json!({}),
+            "SignInRequest" => json!({"email": "client@example.com", "password": "password-1234"}),
+            "RegisterRequest" => {
+                json!({"email": "second@example.com", "password": "password-1234"})
+            }
             other => panic!("no sample body for {other}"),
         }
     }
@@ -836,6 +866,38 @@ mod tests {
         }
     }
 
+    /// Whether an anonymous request got the answer the route's stated auth predicts.
+    fn answers_without_credential(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+        body: &Value,
+    ) -> bool {
+        match route.auth {
+            pp_api::client_contract::ClientAuth::Credential => status == 401,
+            pp_api::client_contract::ClientAuth::None => {
+                status == 200 || owner_exists(route, status, body)
+            }
+        }
+    }
+
+    /// A 200, or a refusal only the route's own handler gives for the sample
+    /// request.
+    fn reached_handler(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+        body: &Value,
+    ) -> bool {
+        // A manual burst names an Accepted Plan basis no stored Build has.
+        let stale = status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
+        // A draft header save on a Build with no layers can prepare no draft.
+        let no_layers = status == 422 && body["code"] == "no_layers";
+        status == 200
+            || handler_not_found(status, body)
+            || stale
+            || no_layers
+            || owner_exists(route, status, body)
+    }
+
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
     /// print, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
@@ -859,7 +921,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_routes_match_registrations() {
-        use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
+        use pp_api::client_contract::CLIENT_ROUTES;
         let (owner, directory, listener, origin) = bound().await;
         let rebuild = DesktopRebuild::from_value(Some("1"));
         let (policy, lifetimes) = (desktop_policy(), lifetimes());
@@ -916,6 +978,8 @@ mod tests {
         let unregistered = unregistered.await.unwrap();
         assert_eq!(unregistered.status(), 404);
         assert_eq!(unregistered.text().await.unwrap(), "");
+        // Sign-out revokes the session it is sent with, so it gets its own.
+        let spare = sign_in(&client, &origin).await;
         for route in CLIENT_ROUTES
             .iter()
             .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
@@ -930,29 +994,25 @@ mod tests {
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await
                 .unwrap();
-            let expected = match route.auth {
-                ClientAuth::Credential => 401,
-                ClientAuth::None => 200,
-            };
-            assert_eq!(
-                anonymous.status(),
-                expected,
-                "{} {path} without credentials",
+            let anonymous_status = anonymous.status().as_u16();
+            let anonymous_body: Value = anonymous.json().await.unwrap_or(Value::Null);
+            assert!(
+                answers_without_credential(route, anonymous_status, &anonymous_body),
+                "{} {path} without credentials: {anonymous_status} {anonymous_body}",
                 route.method
             );
-            let response = send(route.method, &path, route.headers, Some(&cookie), body)
+            let credential = if route.path == "/auth/logout" {
+                &spare
+            } else {
+                &cookie
+            };
+            let response = send(route.method, &path, route.headers, Some(credential), body)
                 .await
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            let handler_not_found = handler_not_found(status, &body);
-            // A manual burst names an Accepted Plan basis no stored Build has.
-            let handler_stale =
-                status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
-            // A draft header save on a Build with no layers can prepare no draft.
-            let handler_no_layers = status == 422 && body["code"] == "no_layers";
             assert!(
-                status == 200 || handler_not_found || handler_stale || handler_no_layers,
+                reached_handler(route, status, &body),
                 "{} {path}: {status} {body}",
                 route.method
             );
@@ -975,7 +1035,43 @@ mod tests {
         .unwrap();
         let mut server = serve(listener, router);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        // `/auth/status` says only whether the owner account is still missing.
+        let status = || async {
+            let response = client
+                .get(format!("{origin}/auth/status"))
+                .header("Origin", &origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        };
+        assert_eq!(status().await, json!({"setup_required": true}));
         let cookie = session(&client, &origin, "rebuild@example.com").await;
+        assert_eq!(status().await, json!({"setup_required": false}));
+        // A register the auth guard refuses (foreign Origin) is never read as the
+        // handler's owner-exists answer; one that reaches the handler is.
+        let register = pp_api::client_contract::CLIENT_ROUTES
+            .iter()
+            .find(|route| route.name == "registerOwner")
+            .unwrap();
+        for (sent_origin, handled) in [("http://other.invalid", false), (origin.as_str(), true)] {
+            let refused = client
+                .post(format!("{origin}/auth/register"))
+                .header("Origin", sent_origin)
+                .json(&sample_body("RegisterRequest"))
+                .send()
+                .await
+                .unwrap();
+            let refused_status = refused.status().as_u16();
+            let body: Value = refused.json().await.unwrap_or(Value::Null);
+            assert_eq!(refused_status, 403, "{sent_origin}: {body}");
+            assert_eq!(
+                owner_exists(register, refused_status, &body),
+                handled,
+                "{sent_origin}: {body}"
+            );
+        }
         let me: Value = client
             .get(format!("{origin}/auth/me"))
             .header("Origin", &origin)
@@ -999,6 +1095,16 @@ mod tests {
         let key: Value = key.json().await.unwrap();
         // Only the rebuild client's lifetimes give API keys an expiry.
         assert!(key["expiresAt"].is_string(), "{key}");
+        // Signing out leaves the account, so setup stays done.
+        let out = client
+            .post(format!("{origin}/auth/logout"))
+            .header("Origin", &origin)
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(out.status(), 200);
+        assert_eq!(status().await, json!({"setup_required": false}));
         server.stop().await.unwrap();
         owner.shutdown().unwrap();
         std::fs::remove_dir_all(directory).unwrap();

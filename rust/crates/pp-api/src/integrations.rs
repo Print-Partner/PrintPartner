@@ -45,6 +45,7 @@ pub mod code {
     pub const PRINTER_NOT_FOUND: &str = "printer_not_found";
     pub const PRINTER_LIMIT: &str = "printer_limit";
     pub const PRINTERS_UNREADABLE: &str = "printers_unreadable";
+    pub const FILAMENT_SLOT_IN_USE: &str = "filament_slot_in_use";
 }
 
 /// The text and codes that differ between integrations and printers. The
@@ -160,8 +161,9 @@ async fn create(
         api_key: request.api_key.map(Secret::new),
         password: request.password.map(Secret::new),
     };
-    answer(&app, move |setup, cancelled, wait| {
-        setup.create_integration(presented.into_credential(), new, &cancelled, wait)
+    answer(&app, &WORDING, move |setup, cancelled, wait| {
+        let created = setup.create_integration(presented.into_credential(), new, &cancelled, wait);
+        created.map(IntegrationView::from)
     })
     .await
 }
@@ -171,30 +173,33 @@ async fn remove(
     Extension(presented): Extension<PresentedCredential>,
     Path(id): Path<String>,
 ) -> Response {
-    answer(&app, move |setup, cancelled, wait| {
-        setup.delete_integration(presented.into_credential(), id, &cancelled, wait)
+    answer(&app, &WORDING, move |setup, cancelled, wait| {
+        let removed = setup.delete_integration(presented.into_credential(), id, &cancelled, wait);
+        removed.map(IntegrationView::from)
     })
     .await
 }
 
-/// Runs `write` off the async threads and answers its view or its problem.
-async fn answer(
+/// Runs `operation` off the async threads and answers its view or its
+/// problem, for the integration and the printer routes alike.
+pub(crate) async fn answer<V: Serialize + Send + 'static>(
     app: &App,
-    write: impl FnOnce(
+    wording: &Wording,
+    operation: impl FnOnce(
         PrinterSetupClient,
         Arc<AtomicBool>,
         Duration,
-    ) -> Result<IntegrationSummary, PrinterSetupError>
+    ) -> Result<V, PrinterSetupError>
     + Send
     + 'static,
 ) -> Response {
     let setup = app.setup.clone();
-    let written = app
+    let done = app
         .gate
-        .blocking(move |cancelled, wait| write(setup, cancelled, wait));
-    match written.await {
-        Ok(Ok(summary)) => ok_json(&IntegrationView::from(summary)),
-        Ok(Err(error)) => refused(&error, &WORDING),
+        .blocking(move |cancelled, wait| operation(setup, cancelled, wait));
+    match done.await {
+        Ok(Ok(view)) => ok_json(&view),
+        Ok(Err(error)) => refused(&error, wording),
         Err(_) => internal(),
     }
 }
@@ -208,6 +213,13 @@ pub(crate) fn refused(error: &PrinterSetupError, wording: &Wording) -> Response 
         }
         PrinterSetupError::NotFound => coded(StatusCode::NOT_FOUND, wording.not_found),
         PrinterSetupError::LimitReached => coded(StatusCode::CONFLICT, wording.limit),
+        PrinterSetupError::SlotHoldsFilament => coded(
+            StatusCode::CONFLICT,
+            (
+                "A filament slot this removes still holds filament. Unload it first.",
+                code::FILAMENT_SLOT_IN_USE,
+            ),
+        ),
         PrinterSetupError::StoredDocumentInvalid(fault) => coded(
             StatusCode::INTERNAL_SERVER_ERROR,
             match fault.document {
@@ -253,17 +265,30 @@ fn field_error(invalid: &InvalidField) -> FieldError {
         Field::Username => "/username",
         Field::ApiKey => "/api_key",
         Field::Password => "/password",
+        Field::Model => "/model",
+        Field::BedWidth => "/bed_width_mm",
+        Field::BedDepth => "/bed_depth_mm",
+        Field::BedHeight => "/bed_height_mm",
+        Field::Margin => "/margin_mm",
+        Field::FilamentSlots => "/max_filament_slots",
+        Field::IntegrationId => "/integration_id",
     };
-    let detail = match invalid.reason {
-        Reason::Empty => "must not be empty",
-        Reason::TooLong => "is too long",
-        Reason::NotHttpUrl => "must be an http or https URL",
-        Reason::HasCredentials => "must not contain a username or password",
-        Reason::NotCreatable => "cannot be created here",
-        Reason::NotUsedByKind => "is not used by this kind",
+    let detail = match (invalid.reason, invalid.field) {
+        (Reason::Empty, _) => "must not be empty",
+        (Reason::TooLong, _) => "is too long",
+        (Reason::NotHttpUrl, _) => "must be an http or https URL",
+        (Reason::HasCredentials, _) => "must not contain a username or password",
+        (Reason::NotCreatable, _) => "cannot be created here",
+        (Reason::NotUsedByKind, _) => "is not used by this kind",
+        (Reason::NotAPrinterHost, _) => {
+            "must name a stored Moonraker, PrusaLink or Bambu integration"
+        }
+        (Reason::OutOfRange, Field::Margin) => "must be less than half the bed width and depth",
+        (Reason::OutOfRange, Field::FilamentSlots) => "must be between 1 and 4",
+        (Reason::OutOfRange, _) => "must be between 1 and 10000 mm",
     };
     FieldError::new(pointer, detail)
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

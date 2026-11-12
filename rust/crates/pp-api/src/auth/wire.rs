@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use pp_storage::auth::{AuthFailure, Secret, User};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// Full admission, writer queue, or a stopping writer: retry later.
 const BUSY: &str = "Authentication temporarily unavailable";
@@ -32,6 +32,7 @@ impl IntoResponse for Failure {
     /// Feature off keeps the Node-compatible bodies unchanged.
     #[cfg(not(feature = "desktop_rebuild"))]
     fn into_response(self) -> Response {
+        use serde_json::json;
         let mut body = json!({"detail": self.1});
         if self.0 == StatusCode::NOT_FOUND && self.1 == "API key not found" {
             body["title"] = json!("Not Found");
@@ -75,8 +76,88 @@ impl From<anyhow::Error> for Failure {
         Self(status, detail)
     }
 }
-pub(super) fn public_user(user: User) -> Value {
-    json!({"user_id":user.user_id,"login":user.login,"display_name":user.display_name,"email":user.email,"provider":user.provider,"is_admin":user.is_admin,"hasPassword":user.has_password})
+/// The account as `/auth/me`, `/auth/login` and `/auth/register` send it.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct PublicUser {
+    pub user_id: String,
+    pub login: String,
+    pub display_name: String,
+    /// Always sent; `null` for an account that signed up without one.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
+    )]
+    pub email: Option<String>,
+    pub provider: pp_storage::auth::Provider,
+    pub is_admin: bool,
+    #[serde(rename = "hasPassword")]
+    pub has_password: bool,
+}
+pub(super) fn public_user(user: User) -> PublicUser {
+    PublicUser {
+        user_id: user.user_id,
+        login: user.login,
+        display_name: user.display_name,
+        email: user.email,
+        provider: user.provider,
+        is_admin: user.is_admin,
+        has_password: user.has_password,
+    }
+}
+
+/// `POST /auth/login` and `POST /auth/register` 200 body; the session is the
+/// `pp_session` cookie.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct SignedIn {
+    pub user: PublicUser,
+}
+
+/// `GET /auth/me` 200 body.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct CurrentUser {
+    pub user: PublicUser,
+    pub multi_user: bool,
+}
+
+/// `POST /auth/logout` 200 body.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct SignedOut {
+    pub ok: bool,
+}
+
+/// `GET /auth/status` body: whether the owner account still has to be created.
+/// It names nothing about the account.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct AuthStatus {
+    pub setup_required: bool,
+}
+
+/// `POST /auth/login` body, as the handler reads it. Only the client contract
+/// uses this type; the handler keeps its own field checks.
+#[cfg(feature = "codegen")]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SignInRequest {
+    pub email: String,
+    pub password: String,
+}
+
+/// `POST /auth/register` body, as the handler reads it. Without a display
+/// name the account uses the part of the email before `@`. Only the client
+/// contract uses this type.
+#[cfg(feature = "codegen")]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RegisterRequest {
+    pub email: String,
+    pub password: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 pub(super) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let mut result = None;
@@ -196,6 +277,7 @@ pub(super) fn redirect(target: &str) -> Response {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use serde_json::json;
 
     /// Status, media type and parsed body of a rendered failure.
     async fn render(failure: Failure) -> (StatusCode, String, Value) {

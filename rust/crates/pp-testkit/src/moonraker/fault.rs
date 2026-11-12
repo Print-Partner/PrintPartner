@@ -97,17 +97,19 @@ impl FaultPrinter {
         format!("http://{}", self.address)
     }
 
-    pub fn request(&self) -> Request {
+    pub fn request(&self) -> std::io::Result<Request> {
         self.requests
             .recv_timeout(Duration::from_secs(5))
-            .expect("complete fake request")
+            .map_err(std::io::Error::other)
     }
 
-    pub fn accept(&self, reply: Reply) {
-        self.replies.send(Some(reply)).expect("fake still running");
+    pub fn accept(&self, reply: Reply) -> std::io::Result<()> {
+        self.replies
+            .send(Some(reply))
+            .map_err(|_| std::io::Error::other("fake stopped"))?;
         self.acknowledgements
             .recv_timeout(Duration::from_secs(5))
-            .expect("fake effect accepted");
+            .map_err(std::io::Error::other)
     }
 
     pub fn accepted(&self) -> usize {
@@ -125,7 +127,7 @@ impl Drop for FaultPrinter {
         // Wake accept; EOF ends read_request without recording another effect.
         let _ = TcpStream::connect(self.address);
         if let Some(thread) = self.thread.take() {
-            thread.join().expect("fake thread completed");
+            let _ = thread.join();
         }
     }
 }

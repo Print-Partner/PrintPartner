@@ -59,7 +59,7 @@ docker logs print-partner    # bound address and local probe origin
 - **Process tree.** `tini` is PID 1 and forwards signals. `pp-server` is its only child. In Rust-only mode `pp-server` starts no child process.
 - **Port.** This image sets `PP_LISTEN_ADDR=0.0.0.0:8080`. Docker publishes it on the host's loopback interface in this example. Open `http://127.0.0.1:8080` after obtaining a bootstrap URL (see [Sign in](#sign-in)). For a different published port, LAN address or specific-IP bind, replace the URL's host and port with that reachable address, keeping its path and query private.
 - **Admission.** `PP_LISTEN_ADDR` takes an IP address and port; malformed values fail startup. It requires the Rust-only runtime. Without it, the server keeps the saved loopback port. Desktop startup never reads this setting. Requests in explicit listener mode require a literal-IP Host; DNS names, forwarded headers and cross-site requests are refused. Browser mutations require an Origin matching that Host, including the published port.
-- **LAN exposure.** Publishing with `-p 8080:8080` exposes the listener on host network interfaces. Bootstrap admission and account login still apply; MCP stays disabled. Plain HTTP does not encrypt credentials or sessions. Use the loopback-only mapping above for local use. This setting does not enable desktop network sharing.
+- **LAN exposure.** Publishing with `-p 8080:8080` exposes the listener on host network interfaces. Bootstrap admission and account login still apply, and MCP needs an API key ([Connect an MCP client](#connect-an-mcp-client)). Plain HTTP does not encrypt credentials, sessions or API keys. Use the loopback-only mapping above for local use. This setting does not enable desktop network sharing.
 - **Upgrading from host networking.** This image keeps `PP_LISTEN_ADDR=0.0.0.0:8080` so port publishing works without an extra environment variable. The old `--network host` command now listens on every host interface over plain HTTP. Replace that command with the `-p 127.0.0.1:8080:8080` command above for local-only host access. To keep host networking on loopback only, add `-e PP_LISTEN_ADDR=127.0.0.1:8080`:
 
   ```sh
@@ -89,6 +89,35 @@ The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex di
 - **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. The command also refuses a directory the caller does not own or that other accounts can write, and a socket whose server runs as another account. With a host bind mount for `/data` and no user-namespace remapping, a host process running as the data directory's UID can also reach the socket and get a URL. That is by design: that account already owns the data.
 - **No server running.** The command exits 1, prints `bootstrap-url: No pp-server is running on /data` to stderr, and changes nothing. If minting fails for another reason, the command says `pp-server could not create a sign-in URL; its stderr says why`, and `pp-server` writes the reason, never a URL, to its stderr.
 - **The socket.** Only a Rust-only start (`PP_DESKTOP_REBUILD=1`, as in this image) creates it, after startup, and removes it on shutdown. A socket left by a crashed server is replaced at the next start. If something else exists at that name, `pp-server` leaves it, prints `pp-server bootstrap-url is unavailable` to stderr, and serves without headless sign-in. The same happens when the socket path is too long for a Unix socket name: 107 bytes on Linux, 103 on macOS. `/data` is far below either.
+
+## Connect an MCP client
+
+MCP answers at `/mcp` and `/api/v1/mcp` on the published port, for example `http://127.0.0.1:8080/api/v1/mcp`. Every MCP request needs an API key; the sign-in cookie is not one. A valid key is admitted from any address the listener admits, a LAN peer included, through the same key guard as a desktop loopback start. No address is trusted without a key.
+
+Make a key while signed in. The replacement UI has no key screen yet, so use `curl` and `jq` with a sign-in URL and your account:
+
+```sh
+url=$(docker exec print-partner pp-server bootstrap-url --data /data)
+curl -s -c pp.jar -o /dev/null "$url"
+read -r -p 'Email: ' email; read -r -s -p 'Password: ' password; echo
+email="$email" password="$password" jq -n '{email: $ENV.email, password: $ENV.password}' |
+  curl -s -b pp.jar -c pp.jar -H 'Origin: http://127.0.0.1:8080' -H 'Content-Type: application/json' \
+    --data @- http://127.0.0.1:8080/auth/login
+unset password
+curl -s -b pp.jar -H 'Origin: http://127.0.0.1:8080' -H 'Content-Type: application/json' \
+  -d '{}' http://127.0.0.1:8080/settings/api-keys
+rm pp.jar
+```
+
+The password stays out of shell history and every process's argument list. The last command prints the key once, as `"key":"ppk_..."`; keep it secret and clear the terminal if others can see it. `GET /settings/api-keys` lists keys and `DELETE /settings/api-keys/{id}` revokes one, with the same sign-in cookies.
+
+Configure the MCP client with the URL and the header `Authorization: Bearer ppk_...` (or `X-Print-Partner-API-Key: ppk_...`). The client sends no Origin and no cookie. Answers:
+
+- A valid key opens an MCP session; `tools/list` and the read tools work.
+- No key, or a key that is unknown, revoked or expired: `401` with `{"detail":"Valid API key required"}`, and no session. A POST or DELETE with neither a key nor an Origin is refused earlier with `403`, and so is any request whose Origin does not match the listener, even with a valid key.
+- Host, Origin, forwarded headers and DNS names follow the [Admission](#run) rules above. MCP also has its own budget of 1000 requests a minute ([Assistant MCP](assistant-mcp.md)).
+
+Over a LAN, plain HTTP sends the key unencrypted. Prefer the loopback-only mapping, or reach the host through an encrypted tunnel.
 
 ## Volumes and the data directory
 
@@ -142,7 +171,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 ## What the Rust-only image cannot do yet
 
 - **No DNS names or reverse proxy.** The explicit listener accepts literal IP addresses only. Desktop [Network sharing](network-sharing.md) remains unimplemented and off by default.
-- **MCP is off.** This image sets `PP_LISTEN_ADDR`, and on that listener the gateway answers 403 to `/mcp` and `/api/v1/mcp`, whatever key a client sends. LAN peers stay out until MCP trust classes exist. Only a loopback start without `PP_LISTEN_ADDR` routes MCP to its API-key guard; see [Assistant MCP](assistant-mcp.md).
+- **MCP has keys only.** MCP needs an API key ([Connect an MCP client](#connect-an-mcp-client)). There is no OAuth, no per-tool permission, no TLS and no key screen in the replacement UI yet.
 - **UI packaging.** Today's image includes only the measured `apps/web` build. The Rust-only runtime serves it with its existing SPA routes and policy and, when `apps/ui/dist` is absent, writes `Replacement UI bundle absent` to stderr once the data directory is admitted. A refused start writes only its refusal. An installed replacement bundle must pass its separate inventory check before it is served with the GRE-1117 CSP. Docker replacement UI packaging follows in [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
@@ -152,7 +181,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 python3 scripts/docker-rust-smoke.py pp-server:test
 ```
 
-The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches /health and sign-in through the published host loopback port over the Docker bridge. It verifies non-loopback login requirements and MCP refusal, and records the bound address 0.0.0.0:8080. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
+The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches /health and sign-in through the published host loopback port over the Docker bridge. It verifies non-loopback login requirements. Over the published port, from a non-loopback peer, it makes an API key with the signed-in session, connects to `/mcp` and `/api/v1/mcp` with it, lists tools and runs `list_plans`, and checks that no key or a wrong key gets `401` (`403` without an Origin either) and no session. It records the bound address 0.0.0.0:8080. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
 
 ## Importing Node data
 

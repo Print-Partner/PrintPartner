@@ -3,7 +3,7 @@
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
 //! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`] or
-//! [`crate::auth`]. `pp-core`'s
+//! [`crate::printer_host`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!

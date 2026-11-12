@@ -643,6 +643,20 @@ def claude_call(tool, cwd="/", **data):
     return {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd, "tool_input": data}
 
 
+def grok_call(command, cwd):
+    """The fields of a Grok PreToolUse payload captured on omarch-3, Grok's snake_case aliases included."""
+    data = {"command": command, "description": "d"}
+    return {"hookEventName": "pre_tool_use", "hook_event_name": "PreToolUse", "cwd": cwd, "workspaceRoot": cwd,
+            "toolName": "run_terminal_command", "toolInput": data, "toolInputTruncated": False,
+            "tool_name": "run_terminal_command", "tool_input": data}
+
+
+def cursor_call(command, cwd="", own=""):
+    """The fields of a Cursor CLI preToolUse payload captured on omarch-3; Cursor sent empty cwd values there."""
+    return {"hook_event_name": "preToolUse", "tool_name": "Shell", "cwd": cwd,
+            "tool_input": {"command": command, "cwd": own, "timeout": 30000}}
+
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -670,6 +684,8 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         adapter = load(CLAUDE, "claude_guard")
         self.assertEqual(set(adapter.PATH_FIELDS) | {"Bash"}, CLAUDE_TOOLS)
+        # Grok and Cursor match the Bash entry to these, so the matcher keeps Claude's names.
+        self.assertEqual(adapter.OTHER_SHELLS, {"run_terminal_command", "Shell"})
         for config in blocks:
             (group,) = config["hooks"]["PreToolUse"]
             self.assertEqual(set(group["matcher"].split("|")), CLAUDE_TOOLS)
@@ -684,6 +700,33 @@ class ClaudeAdapterTests(unittest.TestCase):
                     result = hook(CLAUDE, claude_call("Bash", folder, command=command, description="d"))
                     cli = request({"operation": "command", "cwd": folder, "command": command})
                     self.assertEqual((result.returncode, result.stderr), (cli.returncode, cli.stderr))
+
+    def test_grok_and_cursor_shells_map_to_the_command_policy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
+            for command in filter(None, COMMANDS):
+                bash = hook(CLAUDE, claude_call("Bash", folder, command=command, description="d"))
+                for payload in (grok_call(command, folder), cursor_call(command, folder),
+                                cursor_call(command, own=folder), cursor_call(command, "/", os.path.relpath(folder, "/"))):
+                    with self.subTest(command=command, payload=payload):
+                        result = hook(CLAUDE, payload)
+                        self.assertEqual((result.returncode, result.stderr), (bash.returncode, bash.stderr))
+            for command in ("git status", "cargo test"):
+                for payload in (grok_call(command, folder), cursor_call(command, folder), cursor_call(command)):
+                    with self.subTest(command=command, payload=payload):
+                        self.assertAllowed(hook(CLAUDE, payload))
+            for command in (MERGE_FORM, "gh pr merge 12 --squash"):
+                for payload in (grok_call(command, folder), cursor_call(command, folder), cursor_call(command)):
+                    with self.subTest(command=command, payload=payload):
+                        self.assertRefused(hook(CLAUDE, payload), "Only the coordinator worktree merges")
+
+    def test_cursor_shell_without_a_directory_uses_the_unknown_directory_rules(self):
+        guard = load(CLI, "agent_guard_unknown_cwd")
+        for command in ("git status", "cargo test", "git push origin HEAD", "git push -u origin HEAD:topic",
+                        "cd /tmp && git push origin HEAD:topic", MERGE_FORM):
+            with self.subTest(command=command):
+                result, reason = hook(CLAUDE, cursor_call(command)), guard.check_command(command, None)
+                self.assertEqual((result.returncode, result.stderr), (2, f"pp guard: {reason}\n") if reason else (0, ""))
 
     def test_file_tools_refuse_protected_paths(self):
         protected = {"/repo/.env": "environment files", "/repo/.git/config": "Git metadata",
@@ -722,7 +765,21 @@ class ClaudeAdapterTests(unittest.TestCase):
                         json.dumps(claude_call("NotebookEdit", file_path="/repo/a.ipynb")),
                         json.dumps(claude_call("Read", file_path="/repo/a.py")),
                         json.dumps(claude_call("Execute", folder, command="git status")),
-                        json.dumps(claude_call("Task", prompt="merge it"))]
+                        json.dumps(claude_call("Task", prompt="merge it")),
+                        json.dumps({**grok_call("git status", folder), "toolInputTruncated": True}),
+                        json.dumps({**grok_call("git status", folder), "toolInputTruncated": "yes"}),
+                        json.dumps({**grok_call("git status", folder), "tool_input": {"description": "d"}}),
+                        json.dumps(grok_call("git status", "relative")),
+                        json.dumps(grok_call("git status", folder + "/missing")),
+                        json.dumps({**grok_call("git status", folder), "cwd": 7}),
+                        json.dumps(cursor_call("", folder)), json.dumps(cursor_call(["git", "status"], folder)),
+                        json.dumps(cursor_call("git status", folder, own=7)),
+                        json.dumps(cursor_call("git status", folder, own="missing")),
+                        json.dumps(cursor_call("git status", own=folder + "/missing")),
+                        json.dumps({**cursor_call("git status", folder), "tool_input": "git status"}),
+                        json.dumps({**cursor_call("git status", folder), "tool_name": "shell"}),
+                        json.dumps({**cursor_call("git status", folder), "tool_name": "bash"}),
+                        json.dumps({**grok_call("git status", folder), "tool_name": "run_terminal_command_v2"})]
             for payload in payloads:
                 with self.subTest(payload=payload):
                     self.assertRefused(hook(CLAUDE, payload), "refused unreadable or unsupported")
@@ -760,7 +817,9 @@ class CoordinatorMergeTests(unittest.TestCase):
 
     def results(self, command, cwd, coordinator):
         return (guard_call(execute_call(command, cwd), coordinator),
-                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator))
+                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator),
+                hook(CLAUDE, grok_call(command, cwd), coordinator),
+                hook(CLAUDE, cursor_call(command, own=cwd), coordinator))
 
     def test_lane_worktree_merges_are_refused(self):
         # OLD_MERGE_GATE is exactly what a lane following the retired merge_gate would run.

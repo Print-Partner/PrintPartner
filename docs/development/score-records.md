@@ -5,10 +5,11 @@ The coordinator guard reads score comments only from `scorer_authors` in
 seat's score, so the login does not identify the model. A dedicated bot
 identity is the follow-up.
 
-Each score occupies a line in this format, with a full lowercase head SHA:
+Each score occupies a line in this format, with a full lowercase head SHA. `vendor=` and
+`author=` take a name from `vendors` (the `vendors` list in `scripts/merge-classes.json`):
 
 ```text
-pp-score head=<40 hex> seat=<seat-id> vendor=<openai|anthropic|xai> score=<integer> author=<openai|anthropic|xai>
+pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|deepseek|openai|xai|zhipu> score=<integer> author=<anthropic|deepseek|openai|xai|zhipu>
 ```
 
 The coordinator records the head branch's author vendor in `author=`.

@@ -317,7 +317,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         selected = "needs.changes.outputs.windows != 'false'"
                     label_guard = ""
                     if job_id == "rust-windows":
-                        label_guard = "github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
+                        label_guard = "github.event_name != 'merge_group' && github.event_name != 'push' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
                                      f"{label_guard}(needs.changes.result != 'success' || {selected}))")
@@ -399,6 +399,23 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                           "Check Rust Clippy limits"])
         for step in checks:
             self.assertNotIn("merge_group", step["if"], step["name"])
+
+    def test_pushes_to_main_run_linux_rust_only(self):
+        """A push to main must not wait on Windows or macOS runners: both move to the nightly run."""
+        workflow = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        self.assertEqual(workflow["on"]["push"], {"branches": ["main"]})
+        self.assertIn("schedule", workflow["on"])
+        jobs = workflow["jobs"]
+        skipped = "!cancelled() && github.event_name != 'merge_group' && github.event_name != 'push' && "
+        for job_id in ("rust-windows", "rust-macos"):
+            self.assertIn(skipped, jobs[job_id]["if"], job_id)
+        for job_id in ("rust-linux-build", "rust-linux"):
+            self.assertNotIn("github.event_name != 'push'", jobs[job_id]["if"], job_id)
+        self.assertIn("github.event_name == 'push'", jobs["rust-linux-rebuild"]["if"])
+        alert = jobs["alert-macos-main"]
+        self.assertEqual(alert["needs"], ["rust-linux", "rust-macos", "rust-windows"])
+        self.assertTrue(alert["if"].endswith("(failure() && github.event_name == 'schedule')"), alert["if"])
 
     def test_native_macos_plan_respects_paths_and_event(self):
         workflow = yaml.load((ROOT / ".github/workflows/desktop-native-macos.yml").read_text(),

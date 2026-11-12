@@ -343,6 +343,51 @@ async fn absent_replacement_bundle_preserves_legacy_navigation() {
     std::fs::remove_dir_all(data).unwrap();
 }
 
+// A refused directory prints only its refusal, even without a replacement UI:
+// the packaged smoke requires stderr to be exactly the desktop's category.
+#[tokio::test]
+async fn refused_start_without_replacement_bundle_prints_no_fallback_line() {
+    let data = temporary("legacy-ui-refused");
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "watcher_proof::refused_start_without_replacement_in_child",
+            "--nocapture",
+        ])
+        .env("PP_PROOF_DATA", &data)
+        .env("PP_DESKTOP_REBUILD", "1")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    assert!(!stderr.contains("Replacement UI bundle absent"), "{stderr}");
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn refused_start_without_replacement_in_child() {
+    let input = super::launcher_start::launcher_input(proof_data(), true);
+    // A non-empty directory without the ownership marker, like the packaged
+    // smoke's unmarked schema 31 folder, is refused before any write.
+    std::fs::create_dir_all(&input.data_dir).unwrap();
+    let stray = input.data_dir.join("print-partner.db");
+    std::fs::write(&stray, "unmarked").unwrap();
+    if let Ok(runtime) = CoreRuntime::start_for_launcher(input).await {
+        runtime.shutdown().await;
+        panic!("An unmarked data directory started");
+    }
+    assert_eq!(std::fs::read(&stray).unwrap(), b"unmarked");
+}
+
 #[tokio::test]
 async fn present_tampered_replacement_bundle_refuses_startup() {
     let data = temporary("tampered-ui-launcher");

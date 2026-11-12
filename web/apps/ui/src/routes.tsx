@@ -1,4 +1,5 @@
 import { Navigate, type RouteObject } from "react-router";
+import { LoginScreen, SetupScreen } from "./auth/AuthScreens";
 import { BuildCheckoff } from "./builds/BuildCheckoff";
 import { BuildHistory } from "./builds/BuildHistory";
 import { BuildPlan } from "./builds/BuildPlan";
@@ -33,6 +34,9 @@ function PrinterStates() {
 }
 
 export const routes: RouteObject[] = [
+  // Outside the frame: nothing on these screens needs a session.
+  { path: "/login", element: <LoginScreen /> },
+  { path: "/setup", element: <SetupScreen /> },
   {
     path: "/",
     element: <Frame />,

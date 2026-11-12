@@ -54,6 +54,9 @@ pub struct ImportReport {
     pub unmatched_prints: u64,
     /// Sources whose path now leads into the destination's `repos/`.
     pub rebased_sources: u64,
+    /// Source tables, and their rows, that arrived as the source stored them.
+    pub verified_tables: u64,
+    pub verified_rows: u64,
     /// Files copied or extracted under the roots, and their bytes.
     pub files: u64,
     pub bytes: u64,
@@ -63,7 +66,12 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    fn new(counts: &DryRunReport, rebased_sources: u64, (files, bytes): (u64, u64)) -> Self {
+    fn new(
+        counts: &DryRunReport,
+        rebased_sources: u64,
+        stored: &verify::Digests,
+        (files, bytes): (u64, u64),
+    ) -> Self {
         let rows = counts.rows.iter().map(|(row, shapes)| RowReport {
             step: row.step,
             status: row.status.to_string(),
@@ -83,6 +91,8 @@ impl ImportReport {
             printers: counts.printers,
             unmatched_prints: counts.unmatched_prints,
             rebased_sources,
+            verified_tables: stored.len() as u64,
+            verified_rows: stored.values().map(|(_, rows)| rows.len() as u64).sum(),
             files,
             bytes,
             rows: rows.collect(),
@@ -113,6 +123,11 @@ impl fmt::Display for ImportReport {
             f,
             "complete: {}. {pending} inventory rows are not converted yet. {} Source paths now lead into the destination.",
             self.complete, self.rebased_sources
+        )?;
+        writeln!(
+            f,
+            "{} rows in {} tables arrived as the source stored them.",
+            self.verified_rows, self.verified_tables
         )?;
         writeln!(
             f,
@@ -176,7 +191,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
     }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
-    let report = ImportReport::new(&counts, rebased, copied);
+    let report = ImportReport::new(&counts, rebased, &stored, copied);
     publish(&stage.0, destination, &report)?;
     drop(stage);
     ownership_marker::mark_imported(destination).map_err(|error| io_error(destination, error))?;

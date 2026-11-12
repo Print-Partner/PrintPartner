@@ -271,41 +271,87 @@ fn a_source_whose_files_cannot_be_placed_stops_the_import() {
 }
 
 #[test]
-fn a_changed_accepted_row_is_named() {
-    let folder = node_folder();
-    execute(
-        &folder,
-        "PRAGMA foreign_keys = OFF;
-         INSERT INTO print_progress (part_id, unit_index, completed) VALUES ('synthetic-part', 0, 1)",
-    );
+fn a_changed_row_in_any_table_is_named() {
+    let folder = node_folder_33();
     let connection = Connection::open(folder.database_path()).unwrap();
     let stored = verify::digests(&connection, None).unwrap();
-    assert!(
-        verify::changed(
-            &stored,
-            &verify::digests(&connection, Some(&stored)).unwrap()
-        )
-        .is_empty()
-    );
-    // A column the upgrade adds does not count; a changed value does.
+    let changed = || {
+        let found = verify::digests(&connection, Some(&stored)).unwrap();
+        verify::changed(&stored, &found)
+    };
+    assert!(changed().is_empty());
+    // Every table of the source is compared, less the two the import empties.
+    let tables = rows(folder.path());
+    assert_eq!(stored.len(), tables.len() - 2);
+    assert!(!stored.contains_key("sessions") && !stored.contains_key("password_reset_tokens"));
+    let compared: usize = stored.values().map(|(_, rows)| rows.len()).sum();
+    let held: i64 = (tables.iter())
+        .filter(|(table, _)| stored.contains_key(*table))
+        .map(|(_, count)| count)
+        .sum();
+    // All rows but the schema number, which the upgrade writes.
+    assert_eq!(compared as i64, held - 1);
+
+    // What the upgrade does on purpose changes nothing: a new column, a new
+    // table, the schema number and a rebased Source path.
     connection
-        .execute_batch("ALTER TABLE print_progress ADD COLUMN synthetic_added TEXT DEFAULT 'x'")
-        .unwrap();
-    assert!(
-        verify::changed(
-            &stored,
-            &verify::digests(&connection, Some(&stored)).unwrap()
+        .execute_batch(
+            "ALTER TABLE source_notes ADD COLUMN synthetic_added TEXT DEFAULT 'x';
+             CREATE TABLE synthetic_added (id INTEGER);
+             INSERT INTO synthetic_added VALUES (1);
+             UPDATE app_settings SET value = '48' WHERE key = 'schema_version';
+             UPDATE projects SET local_path = '/synthetic/elsewhere';",
         )
-        .is_empty()
-    );
-    connection
-        .execute_batch("UPDATE print_progress SET completed = 0")
         .unwrap();
-    let changed = verify::changed(
-        &stored,
-        &verify::digests(&connection, Some(&stored)).unwrap(),
+    assert!(changed().is_empty());
+
+    // A changed value, a missing row, an added row and a dropped column are
+    // each named, in tables no list holds.
+    connection
+        .execute_batch(
+            "UPDATE source_notes SET updated_at = '2026-10-03';
+             DELETE FROM app_events;
+             INSERT INTO source_docs (project_id, path, kind, updated_at) VALUES (1, 'ADDED.md', 'markdown', '2026-10-02');
+             UPDATE app_settings SET value = 'synthetic' WHERE key = 'filename_grouping:1';
+             ALTER TABLE plan_snapshots DROP COLUMN name;",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        changed(),
+        [
+            "app_events",
+            "app_settings",
+            "plan_snapshots",
+            "source_docs",
+            "source_notes"
+        ]
     );
-    assert_eq!(changed, ["print_progress"]);
+}
+
+#[test]
+fn starter_rows_may_be_added_and_stored_profiles_may_not_change() {
+    let row = |byte: u8| [byte; 32];
+    let table = |name: &str, rows: &[u8]| {
+        let rows = rows.iter().copied().map(row).collect();
+        (name.to_owned(), (vec!["name".to_owned()], rows))
+    };
+    let stored = verify::Digests::from([table("filament_profiles", &[2, 2, 5])]);
+    let found = |rows: &[u8]| verify::Digests::from([table("filament_profiles", rows)]);
+    assert!(verify::changed(&stored, &found(&[1, 2, 2, 3, 5, 9])).is_empty());
+    for lost in [&[1, 2, 3, 5][..], &[2, 2], &[]] {
+        assert_eq!(
+            verify::changed(&stored, &found(lost)),
+            ["filament_profiles"]
+        );
+    }
+    // Any other table must hold exactly its stored rows.
+    let stored = verify::Digests::from([table("plan_revisions", &[2, 5])]);
+    let added = verify::Digests::from([table("plan_revisions", &[1, 2, 5])]);
+    assert_eq!(verify::changed(&stored, &added), ["plan_revisions"]);
+    assert_eq!(
+        verify::changed(&stored, &verify::Digests::new()),
+        ["plan_revisions"]
+    );
 }
 
 #[test]
@@ -406,4 +452,10 @@ fn a_schema_33_folder_imports_with_every_table_it_holds() {
             "{table} in the report"
         );
     }
+    // Verification covered every source table but the two emptied ones.
+    assert_eq!(report.verified_tables as usize, stored.len() - 2);
+    assert!(report.to_string().contains(&format!(
+        "{} rows in {} tables arrived as the source stored them.",
+        report.verified_rows, report.verified_tables
+    )));
 }

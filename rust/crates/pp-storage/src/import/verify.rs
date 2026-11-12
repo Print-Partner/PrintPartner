@@ -2,7 +2,11 @@
 //! the source stored them, and Source paths that must lead into the new
 //! folder.
 
-use super::{ImportError, quoted, strings};
+use super::{
+    ImportError,
+    inventory::{self, Shape},
+    quoted, strings,
+};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,74 +14,145 @@ use std::{
     path::{Component, Path},
 };
 
-/// Accepted Plans, Required units, Plates, Checkoff and print outcomes. The
-/// import copies their rows; no upgrade step or converter may change one.
-const VERIFIED: [&str; 15] = [
-    "plan_revisions",
-    "plan_revision_parts",
-    "plan_revision_inputs",
-    "plan_revision_input_sets",
-    "plan_accepted_input_sets",
-    "required_units",
-    "plan_revision_required_units",
-    "plan_revision_required_unit_sets",
-    "accepted_plates",
-    "accepted_plate_units",
-    "accepted_plate_revisions",
-    "accepted_plate_heads",
-    "print_progress",
-    "print_jobs",
-    "print_job_parts",
+/// What the import, or the upgrade to Rust's schema, does to stored rows on
+/// purpose, beside the shapes the inventory marks converted. Every other row
+/// of the source must arrive as the source stored it.
+enum Change {
+    /// The import empties the table: sign-in state is not carried.
+    Emptied(&'static str),
+    /// The upgrade writes this setting.
+    Stamped(&'static str),
+    /// The upgrade adds the starter rows the table lacks. Its stored rows stay.
+    Seeded(&'static str),
+}
+
+const CHANGES: [Change; 6] = [
+    Change::Emptied("sessions"),
+    Change::Emptied("password_reset_tokens"),
+    Change::Stamped("schema_version"),
+    Change::Seeded("printer_profiles"),
+    Change::Seeded("process_profiles"),
+    Change::Seeded("filament_profiles"),
 ];
 
-/// The columns of one verified table and the SHA-256 of its rows.
-pub(super) type Digests = BTreeMap<&'static str, (Vec<String>, String)>;
+const SETTINGS: &str = "app_settings";
 
-/// Digests every verified table that exists. With `like`, it digests the
-/// tables and columns `like` holds, so an upgrade that adds a column or a
-/// table does not change the result.
+/// The compared columns of one source table and the SHA-256 of each of its
+/// rows, sorted.
+pub(super) type Digests = BTreeMap<String, (Vec<String>, Vec<[u8; 32]>)>;
+
+fn converted() -> impl Iterator<Item = &'static Shape> {
+    let rows = inventory::ROWS.iter();
+    rows.filter(|row| row.status == inventory::Status::Converted)
+        .flat_map(|row| row.shapes)
+}
+
+/// The condition that leaves out the settings a converter or the upgrade
+/// rewrites.
+fn compared_settings() -> String {
+    let literal = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let stamped = CHANGES.iter().filter_map(|change| match change {
+        Change::Stamped(key) => Some(format!("key <> {}", literal(key))),
+        _ => None,
+    });
+    let rewritten = converted().filter_map(|shape| match shape {
+        Shape::Setting(key) => Some(format!("key <> {}", literal(key))),
+        Shape::SettingPrefix(prefix) => Some(format!(
+            "substr(key, 1, {}) <> {}",
+            prefix.chars().count(),
+            literal(prefix)
+        )),
+        _ => None,
+    });
+    stamped.chain(rewritten).collect::<Vec<_>>().join(" AND ")
+}
+
+/// Digests every row of every table in the database, less what [`CHANGES`]
+/// and the converted inventory rows name. With `like`, it digests the tables
+/// and columns `like` holds, so a table or column the upgrade adds does not
+/// change the result. A table that lost one of those columns is left out,
+/// which [`changed`] reports.
 pub(super) fn digests(
     connection: &Connection,
     like: Option<&Digests>,
 ) -> rusqlite::Result<Digests> {
+    let tables = match like {
+        Some(like) => like.keys().cloned().collect(),
+        None => strings(
+            connection,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            None,
+        )?,
+    };
+    let rewritten = |table: &str| {
+        let emptied = |change: &Change| matches!(change, Change::Emptied(name) if *name == table);
+        let whole = |shape: &Shape| matches!(shape, Shape::Table(name) if *name == table);
+        CHANGES.iter().any(emptied) || converted().any(whole)
+    };
     let mut found = Digests::new();
-    for table in VERIFIED {
-        let columns = match like {
-            Some(like) => like.get(table).map(|(columns, _)| columns.clone()),
-            None => Some(strings(
-                connection,
-                "SELECT name FROM pragma_table_info(?1)",
-                Some(table),
-            )?),
-        };
-        let Some(columns) = columns.filter(|columns| !columns.is_empty()) else {
+    for table in tables {
+        if rewritten(&table) {
             continue;
+        }
+        let stored = strings(
+            connection,
+            "SELECT name FROM pragma_table_info(?1)",
+            Some(&table),
+        )?;
+        let columns = match like.and_then(|like| like.get(&table)) {
+            Some((columns, _)) if columns.iter().all(|column| stored.contains(column)) => {
+                columns.clone()
+            }
+            Some(_) => continue,
+            None => (stored.into_iter())
+                .filter(|column| !converted().any(|shape| shape.names_column(&table, column)))
+                .collect(),
         };
+        if columns.is_empty() {
+            continue;
+        }
         // `quote` writes each value with its type, so 1 and '1' differ.
-        let names: Vec<String> = columns.iter().map(|column| quoted(column)).collect();
-        let row: Vec<String> = names.iter().map(|name| format!("quote({name})")).collect();
-        let sql = format!(
-            "SELECT {} FROM {} ORDER BY {}",
-            row.join(" || ',' || "),
-            quoted(table),
-            names.join(", ")
-        );
-        let mut digest = Sha256::new();
+        let row: Vec<String> = (columns.iter())
+            .map(|column| format!("quote({})", quoted(column)))
+            .collect();
+        let mut sql = format!("SELECT {} FROM {}", row.join(" || ',' || "), quoted(&table));
+        if table == SETTINGS {
+            sql = format!("{sql} WHERE {}", compared_settings());
+        }
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query([])?;
+        let mut hashes = Vec::new();
         while let Some(row) = rows.next()? {
-            digest.update(row.get_ref(0)?.as_bytes()?);
-            digest.update(b"\n");
+            hashes.push(<[u8; 32]>::from(Sha256::digest(
+                row.get_ref(0)?.as_bytes()?,
+            )));
         }
-        found.insert(table, (columns, hex::encode(digest.finalize())));
+        hashes.sort_unstable();
+        found.insert(table, (columns, hashes));
     }
     Ok(found)
 }
 
-/// The verified tables whose rows differ between `before` and `after`.
+/// The source tables that lost or changed a row between `before` and
+/// `after`, or gained one the upgrade does not seed.
 pub(super) fn changed(before: &Digests, after: &Digests) -> Vec<String> {
-    let differs = |(table, digest): (&&'static str, &(Vec<String>, String))| {
-        (after.get(table) != Some(digest)).then(|| (*table).to_owned())
+    let seeded = |table: &str| {
+        let named = |change: &Change| matches!(change, Change::Seeded(name) if *name == table);
+        CHANGES.iter().any(named)
+    };
+    let arrived = |table: &str, stored: &[[u8; 32]]| {
+        let Some((_, found)) = after.get(table) else {
+            return false;
+        };
+        if !seeded(table) {
+            return found == stored;
+        }
+        // Both are sorted, so one pass finds each stored row among the found.
+        let mut found = found.iter();
+        stored.iter().all(|row| found.any(|other| other == row))
+    };
+    let differs = |(table, (_, stored)): (&String, &(Vec<String>, Vec<[u8; 32]>))| {
+        (!arrived(table, stored)).then(|| table.clone())
     };
     before.iter().filter_map(differs).collect()
 }

@@ -96,14 +96,29 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | More than one account | The Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added. There is no option to pick an account. |
 | A copied file that reads back differently from its source | The disk or the copy failed. |
 | A Source whose current revision has no files under `repos/`, or a Source without a revision whose stored path does not lead below a `repos` folder | The Source's files could not be found in the new folder. The message names the Source id. |
-| A row of an accepted Plan, Required-unit, Plate, Checkoff or print outcome table that differs after the upgrade | These rows must arrive as the source stored them. The message names the table. |
+| A source row that is missing or different after the upgrade and the rebase | Every row of every table must arrive as the source stored it, except what [Verification](#verification) lists. The message names the table. |
 
 What it does:
 
 1. Creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
 2. From a folder, copies the database files and every backup root: regular files and directories, no links. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. From an archive, validates and extracts it as a restore does.
-3. Checks and upgrades the staged database as the dry run does. It then points every Source at its files in the new folder: a Source with a current revision gets `<destination>/repos/<snapshot_locator>`, and one without keeps the part of its stored path below Node's `repos`. It compares the rows of the accepted Plan, Required-unit, Plate, Checkoff and print outcome tables with the digests it took before the upgrade, and stops if a row differs. Last, it deletes the rows of `sessions` and `password_reset_tokens`. Lease files and `backups/` are not copied. Users and password hashes are.
+3. Checks and upgrades the staged database as the dry run does. It then points every Source at its files in the new folder: a Source with a current revision gets `<destination>/repos/<snapshot_locator>`, and one without keeps the part of its stored path below Node's `repos`. It deletes the rows of `sessions` and `password_reset_tokens`. Last, it compares every table with the row digests it took before the upgrade and stops if a row is missing or different; see [Verification](#verification). Lease files and `backups/` are not copied. Users and password hashes are.
 4. Moves the database and the roots into the destination, saves the report as `import-report.json`, removes the stage, and writes `.pp-rust-owned.json` last.
+
+### Verification
+
+Before the upgrade, the import takes a SHA-256 of every row of every table in the staged database. After the upgrade and the rebase it takes them again, over the columns the source had, and refuses the import unless every table holds exactly the rows it held. The tables come from the database, not from a list, so a table this page does not know is compared too. The report gives the number of tables and rows compared.
+
+It leaves out only what the import or the upgrade changes on purpose:
+
+| Left out | Why |
+| --- | --- |
+| Tables `sessions` and `password_reset_tokens` | The import empties them. |
+| Setting `schema_version` | The upgrade writes Rust's schema number. |
+| Every shape an inventory row marks `converted`, today `projects.local_path` | A converter rewrites it, and that converter's own check covers it. |
+| Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
+
+A column or a table the upgrade adds is not compared, because the source has no row for it.
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 

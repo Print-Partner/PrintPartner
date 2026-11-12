@@ -33,9 +33,13 @@ fn state(source: &Path) -> Vec<(PathBuf, u64, SystemTime, Option<Vec<u8>>)> {
 /// Runs the dry run with its own temporary directory, and checks that the
 /// run changed nothing in the source and removed its temporary copy.
 fn run(source: &Path) -> Result<DryRunReport, ImportError> {
+    run_with(source, archive::Limits::default())
+}
+
+fn run_with(source: &Path, limits: archive::Limits) -> Result<DryRunReport, ImportError> {
     let temporary = tempfile::tempdir().unwrap();
     let before = state(source);
-    let result = dry_run_in(source, temporary.path());
+    let result = dry_run_in(source, temporary.path(), limits);
     assert!(before == state(source), "the dry run changed its source");
     assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
     result
@@ -173,6 +177,32 @@ fn a_full_archive_gives_the_same_counts() {
         },
         from_folder
     );
+}
+
+/// The supported way to dry-run an installation larger than the archive's
+/// expanded-size cap is a folder copy or snapshot: the cap applies only to a
+/// packed archive (docs/node-import.md).
+#[test]
+fn a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused() {
+    let folder = node_folder();
+    let database = std::fs::metadata(folder.database_path()).unwrap().len();
+    let limits = archive::Limits {
+        max_total_bytes: database / 2,
+        ..archive::Limits::default()
+    };
+    let archive = archive_of(folder.path(), 2, "full");
+    let error = run_with(archive.path(), limits).unwrap_err();
+    assert!(matches!(error, ImportError::InvalidArchive(_)), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Invalid backup archive: Backup archive decompressed byte limit exceeded ({})",
+            database / 2
+        )
+    );
+    let report = run_with(folder.path(), limits).unwrap();
+    assert_eq!(report.source, SourceKind::Directory);
+    assert_eq!(report, run(folder.path()).unwrap());
 }
 
 #[test]

@@ -246,10 +246,16 @@ struct Files {
 /// into a private directory under the system temporary directory, upgraded
 /// there, and removed before this returns.
 pub fn dry_run(source: &Path) -> Result<DryRunReport, ImportError> {
-    dry_run_in(source, &std::env::temp_dir())
+    dry_run_in(source, &std::env::temp_dir(), archive::Limits::default())
 }
 
-fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportError> {
+/// `limits` applies to an archive only: a folder is read in place, so no
+/// expanded-size cap applies to it.
+fn dry_run_in(
+    source: &Path,
+    temporary: &Path,
+    limits: archive::Limits,
+) -> Result<DryRunReport, ImportError> {
     let metadata = source
         .metadata()
         .map_err(|error| anyhow::anyhow!("Read import source {}: {error}", source.display()))?;
@@ -261,7 +267,10 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
     let (kind, files) = if metadata.is_dir() {
         (SourceKind::Directory, stage_directory(source, &scratch.0)?)
     } else if metadata.is_file() {
-        (SourceKind::Archive, stage_archive(source, &scratch.0)?)
+        (
+            SourceKind::Archive,
+            stage_archive(source, &scratch.0, limits)?,
+        )
     } else {
         return Err(anyhow::anyhow!("The import source is neither a folder nor a file").into());
     };
@@ -374,9 +383,14 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
 
 /// Validates a backup archive and extracts its database and single-file
 /// roots into `scratch`.
-fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
-    let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
-        .map_err(|error| match error.downcast_ref::<std::io::Error>() {
+fn stage_archive(
+    source: &Path,
+    scratch: &Path,
+    limits: archive::Limits,
+) -> Result<Files, ImportError> {
+    let extracted = archive::extract_documents(source, limits, scratch);
+    let (metadata, paths) =
+        extracted.map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
             Some(io) if io.kind() == ErrorKind::StorageFull => ImportError::Failed(error),
             _ => ImportError::InvalidArchive(format!("{error:#}")),

@@ -37,6 +37,19 @@ The counts describe the upgraded copy, not the source file. The upgrade adds aga
 
 It exits 0 with the report on stdout. It exits 1 with `import refused: <reason>` on stderr when the source is refused, or `import failed: <reason>` when a read fails.
 
+### Dry-running a large installation from a snapshot
+
+A backup archive is refused when its entries expand to more than 20 GiB (`Invalid backup archive: Backup archive decompressed byte limit exceeded (21474836480)`). A larger installation is dry-run from a folder instead: a filesystem snapshot of the data folder, or a copy of it. The folder path reads the database files and lists `repos/` in place, and no size cap applies to it.
+
+```sh
+PP_DESKTOP_REBUILD=1 pp-server import --from <copy> --dry-run
+```
+
+- Point `--from` at the snapshot or copy, never at the live `/data` while Node runs. The dry run writes nothing to its source, but it refuses a folder whose database files change during the read, and a copy taken while Node runs keeps any `.desktop-lease`, which is refused under [Refusals](#refusals).
+- `TMPDIR` needs about 14 times the database size free (step 3 above). The size of `repos/` does not count: it is listed, not copied.
+
+The test `a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused` in `rust/crates/pp-storage/src/import/tests.rs` checks both paths with a lowered cap.
+
 ### Report
 
 The report holds keys, names and counts, never a stored value. On the synthetic installation (`npm run fixture:synthetic -- --seed 1138`, [Storage](storage.md#synthetic-installations)) it starts:

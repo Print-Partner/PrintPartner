@@ -26,7 +26,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `snapshot(root)`, `Snapshot` | Recursive listing of a directory with every file's bytes, for byte-for-byte unchanged checks. |
 | `allowed_in_empty`, `allowed_in_node_lease` | Entry names that still count as an empty data directory. |
 | `MARKER_FILE`, `MARKER_VERSION`, `MARKER_OWNER`, `FIXTURE_CREATED_AT`, `DATABASE_FILE` | Format constants. |
-| `moonraker` | Loopback Moonraker simulators on their own thread: `RecordedPrinter` replays replies in request order; `RoutedPrinter` answers by request target (unlisted targets get 404, `{ORIGIN}` becomes its origin). Both record request lines and never initiate a connection. |
+| `moonraker` | Loopback Moonraker simulators on their own thread: `RecordedPrinter` replays replies in request order; `RoutedPrinter` answers by request target (unlisted targets get 404, `{ORIGIN}` becomes its origin). Both record request lines and never initiate a connection. `RoutedPrinter::request_heads` also exposes request headers (never upload bodies) for no-start assertions. |
 | `node_schema` | `write_schema_34_database`, `schema_34_statements`, `parse_schema_migrations`, `execute`, `stamp_schema_version`, `SCHEMA_34_COMMIT`, `SCHEMA_34_SHA256`. |
 
 No binaries.

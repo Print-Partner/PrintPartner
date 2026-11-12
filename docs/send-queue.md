@@ -255,6 +255,37 @@ limit`, and an oversized file is probably 413 `request file too large`; Rust
 answers the texts above, and 400 `That upload could not be read` for a ninth
 field or a field named after an `Object.prototype` member.
 
+## Upload-only preference (GRE-366)
+
+The Rust-only send queue stores a tenant's opt-in upload-only preference as a
+JSON boolean in `app_settings` under `printer.upload_only`. A missing setting
+means disabled. It has no schema migration, timer or dispatcher of its own.
+
+- `GET /api/v2/printer-send-queue/upload-only` returns
+  `{"item":{"enabled":false}}` when the preference is absent.
+- `PUT` on that same route requires `{"enabled":true}` or
+  `{"enabled":false}`. Strings and numbers are refused. Both routes use the
+  existing session/API-key admission and default-off rebuild gates.
+- With the preference enabled, Add stores `start=false` regardless of the form,
+  and Send now / Send ready force the queue row and its immutable job payload to
+  `start=false`, including rows queued before enabling it. The worker can admit
+  only an upload effect for that payload; combined-start and separate-start
+  effects are refused. Moonraker receives no print-start request; PrusaLink
+  receives `print-after-upload: ?0`.
+- A mode change sends nothing, creates no job and wakes no worker. Dispatch is
+  still an explicit user action. Disabling the preference never upgrades an
+  already confirmed upload-only job to upload-and-start. Changing the preference
+  does not rewrite a send already dispatched or running.
+- Interrupted uploads keep the existing uncertain-outcome/reconciliation rules.
+  Neither an idle worker tick, restart nor mode change resends them. A damaged
+  stored preference refuses a dispatch instead of guessing a send mode.
+
+Tests named `ticket_t_27` cover persistent defaults and tenant isolation,
+HTTP admission, explicit drain/dispatch, forbidden start effects, idle timers,
+and interruption/restart. Driver traffic uses only pp-testkit loopback printers;
+request receipts assert no start command and PrusaLink's upload-only header.
+The preference has no replacement-UI control in this backend slice.
+
 ## Upload worker (GRE-365, GRE-1215)
 
 `pp_core::send_worker::SendWorker` is the only code that uploads to a

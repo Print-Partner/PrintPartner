@@ -873,3 +873,5 @@ async fn add_to_queue_takes_only_a_read_host_and_stages_inside_printer_uploads()
         "Remove deletes the staged directory"
     );
 }
+
+mod upload_only;

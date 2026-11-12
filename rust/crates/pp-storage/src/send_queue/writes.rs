@@ -72,6 +72,12 @@ pub(crate) const OUTCOME_UNKNOWN: Reply = Reply::Refused {
 pub enum Request {
     /// Authenticates only, before a route reads an upload.
     Admit,
+    /// Read the tenant's upload-only preference; missing means disabled.
+    UploadOnly,
+    /// Set the preference without dispatching or changing an in-flight job.
+    SetUploadOnly {
+        enabled: bool,
+    },
     /// Writes a new `queued` item for the file staged at `artifact_path`.
     Add {
         item: NewItem,
@@ -233,15 +239,30 @@ fn transact(
     };
     let (tenant, subject, authority) =
         auth::authority::admit(&tx, credential, command.policy, &command.storage)?;
-    let writes = !matches!(
+    let changes_queue = !matches!(
         command.request,
-        Request::Admit | Request::Get { .. } | Request::Check { .. } | Request::Ready { .. }
+        Request::Admit
+            | Request::UploadOnly
+            | Request::SetUploadOnly { .. }
+            | Request::Get { .. }
+            | Request::Check { .. }
+            | Request::Ready { .. }
     );
     let reply = if legacy(&tx, &tenant)? {
         LEGACY
     } else {
         match command.request {
             Request::Admit => Reply::Items(Vec::new()),
+            Request::UploadOnly => Reply::Item(serde_json::json!({
+                "enabled": super::upload_only(&tx, &tenant)?
+            })),
+            Request::SetUploadOnly { enabled } => {
+                tx.execute(
+                    "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
+                    params![tenant, super::UPLOAD_ONLY_KEY, enabled.to_string()],
+                )?;
+                Reply::Item(serde_json::json!({ "enabled": enabled }))
+            }
             Request::Add {
                 item,
                 artifact_path,
@@ -263,7 +284,7 @@ fn transact(
         }
     };
     if !matches!(reply, Reply::Refused { .. }) {
-        if writes {
+        if changes_queue {
             super::trim(&tx, &tenant)?;
         }
         tx.commit()
@@ -401,6 +422,8 @@ fn dispatch(
         Some(Ok(units)) => units,
         Some(Err(_)) => return Ok(UNSENDABLE),
     };
+    let upload_only = super::upload_only(tx, tenant)?;
+    let start = start && !upload_only;
     let payload = Payload::PrinterUpload {
         printer_id: stored.printer_id,
         artifact_path,
@@ -433,13 +456,14 @@ fn dispatch(
         return Err(anyhow!("Printer upload enqueue returned no job"));
     };
     tx.execute(
-        "UPDATE printer_send_queue SET state='sending',error=NULL,host_name=COALESCE(?1,host_name),upload_job_id=?2,updated_at=?3 WHERE tenant_id=?4 AND id=?5",
+        "UPDATE printer_send_queue SET state='sending',start=?6,error=NULL,host_name=COALESCE(?1,host_name),upload_job_id=?2,updated_at=?3 WHERE tenant_id=?4 AND id=?5",
         params![
             Some(host_name.trim()).filter(|name| !name.is_empty()),
             job.job_id,
             iso_time(SystemTime::now()),
             tenant,
-            id
+            id,
+            start
         ],
     )?;
     let item = item(tx, tenant, id)?.ok_or_else(|| anyhow!("Dispatched item vanished"))?;

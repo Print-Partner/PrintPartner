@@ -697,3 +697,98 @@ async fn add_to_queue_needs_a_valid_session_before_it_reads_the_upload() {
     let (status, _) = queue.send("POST", path, "{}").await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+#[tokio::test]
+async fn ticket_t_27_upload_only_routes_are_guarded_and_require_a_boolean() {
+    let path = "/api/v2/printer-send-queue/upload-only";
+    let off = Queue::open("false", Targets::default(), &[]);
+    assert_eq!(off.send("GET", path, "").await.0, StatusCode::NOT_FOUND);
+    let queue = Queue::open("1", Targets::default(), &[]);
+    for method in ["GET", "PUT"] {
+        assert_eq!(
+            loopback::send(
+                &queue.router,
+                method,
+                path,
+                Some(r#"{"enabled":true}"#),
+                None
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        queue.send("GET", path, "").await.1["item"]["enabled"],
+        false
+    );
+    for body in [r#"{}"#, r#"{"enabled":"true"}"#, r#"{"enabled":1}"#, "[]"] {
+        assert_eq!(
+            queue.send("PUT", path, body).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        queue.send("PUT", path, r#"{"enabled":true}"#).await.1["item"]["enabled"],
+        true
+    );
+    assert_eq!(queue.send("GET", path, "").await.1["item"]["enabled"], true);
+    let before = queue.counts();
+    let (status, added) = queue
+        .add(&[PRINTER, PLAN, FILE, ("start", None, b"true")])
+        .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    assert_eq!(added["item"]["start"], false);
+    assert_eq!(added["item"]["state"], "queued");
+    assert_eq!(
+        queue.counts(),
+        (before.0 + 1, before.1),
+        "Add never enqueues an upload"
+    );
+    assert_eq!(
+        *queue.targets.dispatches.lock().unwrap(),
+        0,
+        "mode changes never dispatch"
+    );
+}
+
+#[tokio::test]
+async fn ticket_t_27_explicit_dispatch_and_drain_override_stale_start_flags() {
+    let queue = Queue::open(
+        "true",
+        Targets::default(),
+        &[("q1", "p-a", "queued", None), ("q2", "p-b", "queued", None)],
+    );
+    rusqlite::Connection::open(queue.root.join("print-partner.db"))
+        .unwrap()
+        .execute("UPDATE printer_send_queue SET start=1", [])
+        .unwrap();
+    queue
+        .send(
+            "PUT",
+            "/api/v2/printer-send-queue/upload-only",
+            r#"{"enabled":true}"#,
+        )
+        .await;
+    assert_eq!(queue.item("q1").0, "queued");
+    assert_eq!(queue.item("q2").0, "queued");
+    assert_eq!(*queue.targets.dispatches.lock().unwrap(), 0);
+    let (status, result) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "{}")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["item"]["start"], false);
+    assert_eq!(
+        queue
+            .send("POST", "/api/v2/printer-send-queue/drain", "{}")
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let sql = rusqlite::Connection::open(queue.root.join("print-partner.db")).unwrap();
+    let starts: i64 = sql.query_row(
+        "SELECT COUNT(*) FROM durable_jobs WHERE json_extract(document,'$.payload.payload.start')=1",
+        [], |row| row.get(0)).unwrap();
+    assert_eq!(starts, 0);
+    assert_eq!(*queue.targets.dispatches.lock().unwrap(), 2);
+}

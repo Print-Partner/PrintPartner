@@ -5,6 +5,8 @@
 //!   upload of one sliced file for a Moonraker or PrusaLink printer. The file
 //!   is staged under `exports/printer-uploads/` and the item is `queued`;
 //!   nothing is sent until Send now or Send ready.
+//! - `GET`/`PUT /api/v2/printer-send-queue/upload-only`: the persisted,
+//!   default-off preference, `{"enabled":true|false}`. Changes never dispatch.
 //! - `POST /api/v2/printer-send-queue/{id}/dispatch` (Send now): sends one
 //!   `queued` or `error` item. With `wait_for_idle` the printer must be
 //!   idle unless the body says `{"force": true}`.
@@ -33,7 +35,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::Response,
-    routing::{delete, post},
+    routing::{delete, get, post},
 };
 use pp_storage::{
     checkoff_progress::print_file::MAX_UPLOAD_BYTES,
@@ -113,6 +115,10 @@ pub fn send_queue_router(
         .route(
             "/printer-send-queue",
             post(add).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024)),
+        )
+        .route(
+            "/printer-send-queue/upload-only",
+            get(upload_only).put(set_upload_only),
         )
         .route("/printer-send-queue/drain", post(drain))
         .route("/printer-send-queue/{id}/dispatch", post(dispatch))
@@ -302,6 +308,37 @@ async fn add(
     })
     .await;
     present(added)
+}
+
+async fn upload_only(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+) -> Response {
+    present(
+        writes(&app, presented, |writes, _| {
+            writes.apply(Request::UploadOnly)
+        })
+        .await,
+    )
+}
+
+async fn set_upload_only(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    body: Bytes,
+) -> Response {
+    let Some(body) = object(&body) else {
+        return not_object();
+    };
+    let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
+        return failure(StatusCode::BAD_REQUEST, "enabled must be true or false");
+    };
+    present(
+        writes(&app, presented, move |writes, _| {
+            writes.apply(Request::SetUploadOnly { enabled })
+        })
+        .await,
+    )
 }
 
 async fn dispatch(

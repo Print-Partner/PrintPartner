@@ -54,6 +54,16 @@ pub const UNKNOWN_OUTCOME_ERROR: &str = "Printer outcome is unknown, so this sen
 const STATES: [&str; 5] = ["queued", "sending", "done", "error", "cancelled"];
 const COLUMNS: &str = "id,filename,artifact_path,printer_id,profile_id,match,wait_for_idle,start,state,checkoff_units,upload_job_id,error,host_name,created_at,updated_at";
 
+/// Upload-only preference for newly added items and confirmed dispatches.
+pub const UPLOAD_ONLY_KEY: &str = "printer.upload_only";
+
+pub(crate) fn upload_only(connection: &Connection, tenant: &str) -> Result<bool> {
+    match crate::snapshot(connection, tenant, UPLOAD_ONLY_KEY)? {
+        crate::SettingSnapshot::Missing => Ok(false),
+        crate::SettingSnapshot::Stored { value } => Ok(serde_json::from_str::<bool>(&value)?),
+    }
+}
+
 /// The tenant's queue items from the table in stored order, or `None` while
 /// the tenant's legacy setting row exists.
 pub(crate) fn rows(connection: &Connection, tenant: &str) -> Result<Option<Vec<Value>>> {

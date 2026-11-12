@@ -148,7 +148,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         commit: commit.context("--commit is required")?,
     };
     let data = data.context("--data is required")?;
-    let mut runtime = CoreRuntime::start_for_launcher(DesktopLaunch {
+    let mut runtime = CoreRuntime::start_for_server(DesktopLaunch {
         data_dir: data.clone(),
         assets: web.join("apps/web/dist"),
         bundle,

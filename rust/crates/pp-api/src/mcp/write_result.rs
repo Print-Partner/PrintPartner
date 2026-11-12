@@ -36,8 +36,6 @@ pub(super) enum Code {
     InvalidPlanId,
     PlanNotFound,
     NoPlanningBrief,
-    /// A read failed; the stored data may be invalid. Nothing was written.
-    ReadFailed,
 }
 
 impl Code {
@@ -59,7 +57,6 @@ impl Code {
             Self::InvalidPlanId => "invalid_plan_id",
             Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",
-            Self::ReadFailed => "read_failed",
         }
     }
 }

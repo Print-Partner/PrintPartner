@@ -6,16 +6,19 @@
 //! use: `PlanningClient::read` (`GET /plans/{id}/build-planning`) and
 //! `WorkingDraftClient::execute` (`GET /plans/{id}/drafts[/{draft_id}]`).
 //! Like those routes, they run on the storage writer queue today. Neither
-//! writes. Results are the typed storage views, serialized here; a refusal
-//! carries a stable code from `write_result.rs`.
+//! writes. The brief and the draft are read in two transactions, so a write
+//! between them can pair a phase with a newer draft. Results are the typed
+//! storage views, serialized here; a refusal carries a stable code from
+//! `write_result.rs`.
 
 use super::{
     ProductMcp, positive_id,
-    write_result::{Code, Refusal},
+    write_result::{Code, Refusal, writer_failure},
 };
 use crate::loopback::PresentedCredential;
 use pp_services::mcp_domain::ToolResult;
 use pp_storage::{
+    WriterFailure,
     build_graph::PositiveId,
     read_model::planning::{
         self, BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, ContributionStatus,
@@ -44,10 +47,14 @@ const NO_BRIEF: Refusal = Refusal::new(
     Code::NoPlanningBrief,
     "This Build has no planning brief. Builds created with propose_create_build have one.",
 );
-const READ_FAILED: Refusal = Refusal::new(
-    Code::ReadFailed,
-    "The Build's planning data could not be read.",
-);
+/// A read result this module does not expect. Its cause is never sent.
+const INTERNAL: Refusal = Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
+
+/// A failed read: busy or stopped storage, a refused key, or stored data
+/// that does not read, mapped as every MCP tool maps storage failures.
+fn storage_failure(error: anyhow::Error) -> Refusal {
+    writer_failure(&WriterFailure::from(error))
+}
 
 /// `get_build_planning_state`: the hydrated brief and what is derived from it.
 #[derive(Serialize)]
@@ -139,7 +146,7 @@ fn required_decisions(brief: &BuildPlanningBrief) -> Vec<RequiredDecision<'_>> {
 fn json(value: &impl Serialize) -> ToolResult {
     match serde_json::to_string(value) {
         Ok(text) => ToolResult::ok(text),
-        Err(_) => refused(READ_FAILED),
+        Err(_) => refused(INTERNAL),
     }
 }
 
@@ -229,10 +236,10 @@ impl ProductMcp {
             )
         })
         .await;
-        match read {
-            Ok(Ok(planning::Outcome::BuildPlanning(response))) => Ok(response.planning),
-            Ok(Ok(planning::Outcome::MissingBuild)) => Err(PLAN_NOT_FOUND),
-            _ => Err(READ_FAILED),
+        match read.map_err(|_| INTERNAL)?.map_err(storage_failure)? {
+            planning::Outcome::BuildPlanning(response) => Ok(response.planning),
+            planning::Outcome::MissingBuild => Err(PLAN_NOT_FOUND),
+            _ => Err(INTERNAL),
         }
     }
 
@@ -255,14 +262,14 @@ impl ProductMcp {
             )
         })
         .await;
-        match read {
-            Ok(Ok(working_drafts::Outcome::ProfileNotFound)) => Err(PLAN_NOT_FOUND),
-            Ok(Ok(outcome)) => Ok(outcome),
-            _ => Err(READ_FAILED),
+        match read.map_err(|_| INTERNAL)?.map_err(storage_failure)? {
+            working_drafts::Outcome::ProfileNotFound => Err(PLAN_NOT_FOUND),
+            outcome => Ok(outcome),
         }
     }
 
-    /// The Build's open draft, the newest when there are several.
+    /// The Build's open draft, the last in storage's list order (by creation)
+    /// when there are several.
     async fn open_draft(
         &self,
         build: PositiveId,
@@ -276,8 +283,8 @@ impl ProductMcp {
                 .iter()
                 .filter(|draft| draft.state() == DraftState::Open)
                 .map(|draft| draft.draft_id())
-                .max_by_key(|id| id.get())),
-            _ => Err(READ_FAILED),
+                .last()),
+            _ => Err(INTERNAL),
         }
     }
 
@@ -292,7 +299,7 @@ impl ProductMcp {
         match self.drafts(build, request, presented).await? {
             working_drafts::Outcome::Workspace { workspace } => Ok(Some(workspace)),
             working_drafts::Outcome::DraftNotFound => Ok(None),
-            _ => Err(READ_FAILED),
+            _ => Err(INTERNAL),
         }
     }
 }

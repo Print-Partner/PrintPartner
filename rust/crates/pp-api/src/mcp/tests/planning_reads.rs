@@ -12,6 +12,11 @@ use pp_storage::{
 const BUILD: u64 = 1;
 const EMPTY: u64 = 3;
 
+fn difference(id: &str, group: &str) -> Value {
+    json!({ "id": id, "group_id": group, "family": "f", "kind": "changed", "source_a": "A",
+        "source_b": "B", "path_a": "a.stl", "path_b": "b.stl", "detail": "d" })
+}
+
 fn seed() -> String {
     let brief = json!({
         "version": 1, "build_id": 1, "special_request": "Voron for Sam", "requirements": [],
@@ -22,16 +27,20 @@ fn seed() -> String {
             { "id": "e2", "url": "https://www.printables.com/model/1",
               "normalized_url": "https://www.printables.com/model/1", "kind": "mod",
               "input_kind": "model_page", "upload_required": true },
+            // A model page whose upload arrived: no decision left.
+            { "id": "e3", "url": "https://www.printables.com/model/3",
+              "normalized_url": "https://www.printables.com/model/3", "kind": "mod",
+              "input_kind": "model_page", "upload_required": true },
+            { "id": "e4", "url": "upload://e3", "normalized_url": "upload://e3", "kind": "mod",
+              "input_kind": "upload", "derived_from_evidence_id": "e3" },
         ],
         "contributions": [
             { "id": "c1", "evidence_id": "e1", "slot": "frame", "responsibility": "printable_parts",
               "path_scopes": ["stl"], "confidence": "high", "evidence_text": "README", "status": "proposed" },
         ],
-        "differences": [
-            { "id": "d1", "group_id": "g1", "family": "f", "kind": "changed", "source_a": "A",
-              "source_b": "B", "path_a": "a.stl", "path_b": "b.stl", "detail": "d" },
-        ],
-        "resolutions": {}, "role_filaments": [], "draft_id": 2,
+        "differences": [difference("d1", "g1"), difference("d2", "g2"), difference("d3", "g1")],
+        "resolutions": { "g2": { "resolution": "choose_source_a", "rationale": "r",
+            "custom_resolution": null, "resolved_at": "2026-11-07T12:00:00.000Z" } }, "role_filaments": [], "draft_id": 2,
         "draft_review_blockers": ["legacy"], "created_at": "2026-11-07T12:00:00.000Z",
         "updated_at": "2026-11-07T12:00:00.000Z",
     });
@@ -158,7 +167,7 @@ async fn mcp_planning_state_returns_the_brief_and_open_decisions() {
             &state["grouped_difference_count"],
             &state["difference_count"]
         ),
-        (&json!(1), &json!(1))
+        (&json!(2), &json!(3))
     );
     assert_eq!(
         state["next_required_decisions"],
@@ -311,4 +320,60 @@ async fn mcp_planning_reads_need_a_key() {
         let (status, _, _) = server.post("/api/v1/mcp", &unkeyed, &request).await;
         assert_eq!(status, 401, "{tool}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_plan_draft_follows_the_brief_selection_when_it_moves() {
+    let (server, headers) = server().await;
+    let connection =
+        rusqlite::Connection::open(server._directory.join("print-partner.db")).unwrap();
+    connection.busy_timeout(Duration::from_secs(5)).unwrap();
+    let update = |sql: &str| {
+        connection
+            .execute(
+                &format!("UPDATE app_settings SET value={sql} WHERE key='build_planning.v1.1'"),
+                [],
+            )
+            .unwrap();
+    };
+
+    // The selected draft is gone: no draft, and the phase says so.
+    update("json_set(value,'$.draft_id',99)");
+    let missing = read(
+        &server,
+        &headers,
+        "get_plan_draft",
+        json!({ "plan_id": BUILD }),
+    )
+    .await;
+    assert_eq!(
+        missing,
+        json!({ "draft": null, "planning_phase": { "kind": "missing_draft", "draft_id": 99 } })
+    );
+
+    // The consumed draft 1 is selected: it is returned as it is.
+    update("json_set(value,'$.draft_id',1)");
+    let consumed = read(
+        &server,
+        &headers,
+        "get_plan_draft",
+        json!({ "plan_id": BUILD }),
+    )
+    .await;
+    assert_eq!(consumed["draft"]["draft_id"], 1);
+    assert_eq!(consumed["draft"]["state"], "consumed");
+
+    // Hydration clears a selection whose Sources moved: the open draft, phase preparing.
+    update(
+        "json_set(json_set(value,'$.draft_id',2),'$.draft_source_revisions',json('{\"1\":\"moved\"}'))",
+    );
+    let cleared = read(
+        &server,
+        &headers,
+        "get_plan_draft",
+        json!({ "plan_id": BUILD }),
+    )
+    .await;
+    assert_eq!(cleared["draft"]["draft_id"], 2);
+    assert_eq!(cleared["planning_phase"], json!({ "kind": "preparing" }));
 }

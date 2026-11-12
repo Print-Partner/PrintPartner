@@ -143,7 +143,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 
 - **No DNS names or reverse proxy.** The explicit listener accepts literal IP addresses only. Desktop [Network sharing](network-sharing.md) remains unimplemented and off by default.
 - **MCP is off.** This image sets `PP_LISTEN_ADDR`, and on that listener the gateway answers 403 to `/mcp` and `/api/v1/mcp`, whatever key a client sends. LAN peers stay out until MCP trust classes exist. Only a loopback start without `PP_LISTEN_ADDR` routes MCP to its API-key guard; see [Assistant MCP](assistant-mcp.md).
-- **GitHub and Discord sign-in.** On the explicit listener these need `public_origin`, because their callback URL is built from the loopback origin; this image configures neither provider ([GRE-974](https://linear.app/greetz/issue/GRE-974)).
+- **No GitHub or Discord sign-in.** These providers are unavailable on the explicit listener: their callback URL is built from the loopback origin, and the listener refuses the provider's cross-site redirect back to `/auth/callback`. This image configures neither provider ([GRE-974](https://linear.app/greetz/issue/GRE-974)).
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test

@@ -41,7 +41,7 @@ Admission resolves the stored job tenant and `PrinterUpload.profile_id` through 
 
 `CoreRuntime::start` reads `PP_DESKTOP_REBUILD` once at startup and stores the effective setting. `CoreRuntime::desktop_rebuild().enabled()` returns that setting. Only the exact values `1` and `true` enable it, and only when `pp-core` was compiled with `desktop_rebuild`. Missing, non-Unicode, empty, false, and unrecognized values produce false. The setting is process-local and does not change `desktop.toml` or persisted data.
 
-D1 adds no routes, storage migrations, UI, or rebuild execution. `CoreRuntime::start` keeps the gateway and Node compatibility runtime even when both gates are enabled; the launchers use `start_for_launcher`, described under [Rust-only product entry point](#rust-only-product-entry-point). Future rebuild behavior must check the stored runtime setting and compile behind the Cargo feature.
+D1 adds no routes, storage migrations, UI, or rebuild execution. `CoreRuntime::start` keeps the gateway and Node compatibility runtime even when both gates are enabled; desktop launchers use `start_for_launcher` and the server uses `start_for_server`, described under [Rust-only product entry point](#rust-only-product-entry-point). Future rebuild behavior must check the stored runtime setting and compile behind the Cargo feature.
 
 Build the native shell with the core gate enabled using its existing staging prerequisites:
 
@@ -62,9 +62,9 @@ Core tests isolate environment changes in child processes. They cover absent, di
 
 ## Rust-only product entry point
 
-`pp-server` and `pp-desktop` start through `CoreRuntime::start_for_launcher`.
-With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
-`true`, that start runs Rust only:
+`pp-desktop` starts through `CoreRuntime::start_for_launcher`; `pp-server`/Docker uses `CoreRuntime::start_for_server`.
+Both run Rust only with the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or `true`. Desktop update checks are fixed off, with repository, version and cache environment overrides ignored.
+Only the server entry point allows environment-driven update checks. By coordinator decision these checks reject redirects, unlike Node's default fetch; renamed or transferred repositories need their canonical `GITHUB_REPO` name (see [update checks](gre-438-admin-http.md#update-checks-printer-bindings-help-and-openapi)). Rust-only startup proceeds as follows:
 
 - No Node child starts. First `prepare_data_dir` creates the data directory
   if it is missing and finishes a lease release this process failed earlier;
@@ -75,10 +75,10 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
      then opens the schema. A refused directory stops startup here, before
      release verification, recovery or admission, and stays byte-for-byte
      unchanged.
-  2. `pp_compat::verify_rust_only_release` checks the release identity, the
-     frontend and the community manifests. It does not measure Node, the Node
-     backend or `node_modules`, so `pp-server` needs no `--node` in this mode
-     ([Docker image](docker.md#release-check-without-node)).
+  2. With `apps/ui/dist` installed, `pp_compat::snapshot_rust_only_release` checks
+     the release identity, `replacement_frontend` and the community manifests;
+     without it, `verify_rust_only_legacy_release` checks `frontend` instead. Neither
+     measures Node or `node_modules` ([Docker image](docker.md#release-check-without-node)).
   3. `cutover::recover` runs without an ownership index: it removes stray
      cutover temporaries, and a cutover record refuses startup.
   4. Source-sync admission writes or reuses `source-sync-admission.json`.
@@ -100,11 +100,11 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   gateway's route-miss path: each request that no gateway, asset or Rust
   product route answered and that entered the compatibility branch. It stays
   at 0 in this mode.
-- `Gateway::start_rust_only` takes a `ServedUi`. With `ServedUi::Replacement`
-  (the `apps/ui` build), documents and assets carry the replacement UI's
+- `Gateway::start_rust_only_with_assets` serves a verified in-memory inventory
+  of the `apps/ui` build. Documents and assets carry the replacement UI's
   Content-Security-Policy, with a fresh style nonce on each document.
-  `pp-core` passes `ServedUi::Legacy` until GRE-1294 serves `apps/ui`, so the
-  old `apps/web` build keeps its headers. See
+  `pp-core` selects verified `apps/ui/dist` when installed, otherwise verified legacy UI; the default
+  runtime keeps `apps/web/dist` and its legacy policy. See
   [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as

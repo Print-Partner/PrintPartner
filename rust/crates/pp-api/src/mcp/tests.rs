@@ -2,8 +2,12 @@ use super::*;
 use reqwest::{Client, Method, RequestBuilder};
 use std::net::SocketAddr;
 
+#[path = "tests/create_build.rs"]
+mod create_build;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
+#[path = "tests/planning.rs"]
+mod planning;
 #[path = "tests/progress_reads.rs"]
 mod progress_reads;
 #[path = "tests/reads.rs"]
@@ -73,7 +77,10 @@ impl McpServer {
         .unwrap();
         rusqlite::Connection::open(&database)
             .unwrap()
-            .execute_batch(seed)
+            .execute_batch(&seed.replace(
+                "<data-dir>",
+                &directory.to_string_lossy().replace('\'', "''"),
+            ))
             .unwrap();
         let owner = pp_storage::WriterOwner::open(&directory, pp_storage::Limits::default())
             .unwrap()

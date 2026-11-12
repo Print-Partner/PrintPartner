@@ -68,7 +68,8 @@ def decide(payload):
     if tool in OTHER_SHELLS:
         return policy.check_command(field(data, "command", "tool_input"), shell_directory(policy, payload, data))
     if tool in PATH_FIELDS:
-        return policy.check_paths([field(data, PATH_FIELDS[tool], "tool_input")])
+        cwd = policy.directory(field(payload, "cwd", "payload"))
+        return policy.check_paths([field(data, PATH_FIELDS[tool], "tool_input")], cwd)
     raise ValueError(f"unsupported tool {tool!r}")
 
 

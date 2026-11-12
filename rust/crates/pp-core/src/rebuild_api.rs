@@ -12,6 +12,7 @@ use pp_api::{
     events::{StreamLimits, events_router},
     file_assignments::file_assignments_router,
     history::history_router,
+    integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpClients, McpHttpConfig, mcp_router},
     modules::modules_router,
@@ -32,6 +33,7 @@ use pp_storage::{
     },
     build_graph::BuildGraphClient,
     checkoff_progress::ProgressClient,
+    features::FeatureClient,
     read_model::{ReadClient, build_workflow::PendingInputs},
     working_drafts::{
         WorkingDraftClient,
@@ -212,6 +214,41 @@ pub fn read_router(
     api_key_tenant: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
+    read_router_with_updates(
+        rebuild,
+        owner,
+        auth,
+        origin,
+        api_key_tenant,
+        community_manifests,
+        false,
+    )
+}
+
+/// The Settings screen's write routes outside `/settings`: the Module
+/// switches and the integration writes, from the same owner.
+fn setup_routes(
+    owner: &Mutex<WriterOwner>,
+    policy: AuthPolicy,
+    config: AcceptedHttpConfig,
+    features: FeatureClient,
+) -> Result<Router> {
+    let guard = owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
+    let integrations = integrations_router(config.clone(), guard.printer_setup(policy)?);
+    Ok(modules_router(config, features).merge(integrations))
+}
+
+fn read_router_with_updates(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    auth: AuthRoutes,
+    origin: &str,
+    api_key_tenant: &str,
+    community_manifests: Option<&Path>,
+    server_updates: bool,
+) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
@@ -274,7 +311,8 @@ pub fn read_router(
     );
     let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
-    let modules = modules_router(config.clone(), features);
+    let modules = setup_routes(&owner, policy, config.clone(), features)?;
+    let admin_config = admin_config.with_server_update_checks(server_updates);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
@@ -394,6 +432,16 @@ pub fn product_router(
     origin: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
+    product_router_with_updates(rebuild, owner, origin, community_manifests, false)
+}
+
+pub(crate) fn product_router_with_updates(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    community_manifests: Option<&Path>,
+    server_updates: bool,
+) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
@@ -429,13 +477,14 @@ pub fn product_router(
             job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
         )
     };
-    let reads = read_router(
+    let reads = read_router_with_updates(
         rebuild,
         owner,
         auth,
         origin,
         DESKTOP_TENANT,
         community_manifests,
+        server_updates,
     )?;
     Ok(reads
         .zip(drafts)
@@ -707,6 +756,9 @@ mod tests {
                 json!({"kind":"unsupported", "address":"http://fixture.invalid"})
             }
             "SetModuleRequest" => json!({"on": true}),
+            "CreateIntegrationRequest" => {
+                json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
+            }
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,
@@ -782,7 +834,8 @@ mod tests {
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
     /// print, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 3] = [
+        const CODES: [&str; 4] = [
+            "integration_not_found",
             "draft_not_found",
             "snapshot_not_found",
             "farm_log_entry_not_found",

@@ -40,6 +40,8 @@ pub mod fixtures;
 #[cfg(feature = "desktop_rebuild")]
 pub mod history;
 #[cfg(feature = "desktop_rebuild")]
+pub mod integrations;
+#[cfg(feature = "desktop_rebuild")]
 pub mod jobs;
 #[cfg(feature = "desktop_rebuild")]
 mod loopback;
@@ -63,6 +65,10 @@ pub mod printer_stream;
 pub mod send_queue;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings;
+#[cfg(feature = "desktop_rebuild")]
+pub mod settings_support;
+#[cfg(feature = "desktop_rebuild")]
+mod update_check;
 #[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 

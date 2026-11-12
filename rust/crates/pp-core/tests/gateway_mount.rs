@@ -5,6 +5,9 @@
 #[path = "support/jobs.rs"]
 mod support_jobs;
 
+#[path = "support/mcp_gateway.rs"]
+mod mcp_gateway;
+
 mod with_feature {
     use pp_core::{
         DesktopRebuild, VerifiedBundle,
@@ -398,6 +401,20 @@ mod with_feature {
             );
         }
         close(owner);
+    }
+
+    #[tokio::test]
+    async fn desktop_update_check_is_disabled_in_default_composition() {
+        let fixture = Fixture::start("1").await;
+        let session = fixture.register().await;
+        let (status, body) = fixture
+            .get("/settings/update-check?refresh=1", Some(&session))
+            .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["enabled"], false);
+        assert!(body["checked_at"].is_null());
+        assert!(body["latest_version"].is_null());
+        fixture.stop().await;
     }
 
     #[tokio::test]
@@ -875,6 +892,24 @@ mod with_feature {
         drop(held);
         let (_, modules) = health_modules(&fixture, None).await;
         assert_eq!(modules[0], on("farm"));
+        fixture.stop().await;
+    }
+
+    /// GRE-1353 on the Node-backed start with the product routes mounted.
+    #[tokio::test]
+    async fn mcp_answers_through_the_gateway_on_its_api_key_and_never_a_cookie() {
+        let fixture = Fixture::start("1").await;
+        let session = fixture.register().await;
+        let cookies = format!("{}; {session}", fixture.desktop);
+        let bearer = super::mcp_gateway::bearer(&fixture.client, &fixture.origin, &cookies).await;
+        super::mcp_gateway::assert_key_only(
+            &fixture.client,
+            &fixture.origin,
+            &fixture.desktop,
+            &cookies,
+            &bearer,
+        )
+        .await;
         fixture.stop().await;
     }
 }

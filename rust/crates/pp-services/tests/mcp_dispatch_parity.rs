@@ -489,6 +489,19 @@ fn ticket_t_62_mcp_domain_failed_apply_restores_the_original_action_at_the_end()
 }
 
 #[test]
+fn mcp_confirm_with_an_unknown_outcome_does_not_restore_the_proposal() {
+    let mut port = FakePort::new();
+    port.apply_result = Ok(json!({ "ok": false, "outcome_unknown": true }));
+    let session = McpSession::new(port, None);
+    let (proposed, _) = call(&session, "archive_plan", json!({}));
+    let id = proposed["action"]["id"].as_str().unwrap();
+    let (body, is_error) = call(&session, "confirm_apply", json!({ "action_id": id }));
+    assert!(is_error);
+    assert_eq!(body["outcome_unknown"], true);
+    assert!(session.pending_ids().is_empty());
+}
+
+#[test]
 fn ticket_t_62_mcp_domain_thrown_apply_restores_and_reports_error() {
     let mut port = FakePort::new();
     port.apply_result = Err("disk full".into());

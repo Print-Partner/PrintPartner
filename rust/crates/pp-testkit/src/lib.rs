@@ -19,7 +19,9 @@
 
 pub mod bambu;
 pub mod build_experiments;
+pub mod mcp_planning;
 pub mod moonraker;
+pub mod node_installation;
 pub mod node_path;
 pub mod node_schema;
 

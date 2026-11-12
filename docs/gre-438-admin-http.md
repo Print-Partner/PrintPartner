@@ -200,6 +200,58 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
 
+## Integration create and delete routes (GRE-1439)
+
+`POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman integration
+and `DELETE /api/v2/integrations/{id}` removes one of any kind, for the
+replacement Settings screen. They are `createIntegration` and
+`deleteIntegration` in the generated `@print-partner/rust-client`. Both answer
+`200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`, `base_url`,
+`username`, `has_api_key` and `has_password`. Delete answers the view it
+removed. No response or problem carries an API key or a password.
+
+- They mount only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
+  `true`, so only the Rust-only runtime serves them. The accepted gate admits
+  loopback requests with an exact Host and Origin and a credential; storage
+  proves the credential inside the write's transaction (`401`, or `403` when the
+  account needs an owner mapping).
+- The create body is `kind`, `name` and `base_url`, plus optional `enabled`
+  (default `true`), `api_key` (Moonraker and Spoolman) and `username` and
+  `password` (PrusaLink). Unknown keys are refused.
+- A new host needs no restart: the status watchers re-read the stored hosts
+  about once a second, and `POST /api/v1/integrations/{id}/test` reads the
+  stored row.
+- Delete also removes the integration's TLS pin and clears a Spoolman default
+  that names it, in the same transaction. A printer that linked it keeps the id
+  and shows `integration: null` in `GET /api/v2/printers`. The status route
+  answers `404` once the watchers have dropped the host.
+- `pp-storage::printer_setup` owns the rules and answers a typed
+  `PrinterSetupError`; `pp-api/src/integrations.rs` is the one place that maps
+  it. Failures every write shares go through `pp_api::problem::writer_failure`.
+
+| Case | Status | `code` |
+| --- | --- | --- |
+| A value is invalid, or the body is not the request shape. `errors` names each field by JSON Pointer, never its value. Nothing is stored. | `400` | `invalid_integration` |
+| No stored integration has that id | `404` | `integration_not_found` |
+| The installation already has 64 integrations | `409` | `integration_limit` |
+| The stored `integrations` document is not the typed shape. Every write is refused and the stored text is left as it is. | `500` | `integrations_unreadable` |
+| The write could not start before its deadline | `503` | `transaction_unavailable` |
+
+Invalid values:
+
+- `name`: empty after trimming, or longer than 200 bytes.
+- `base_url`: not an `http` or `https` URL, holds a username or password, is
+  longer than 2,048 bytes, or has whitespace or a control character in it.
+- `api_key`, `username`, `password`: an empty string (omit the field or send
+  `null` for none), longer than 4,096 bytes, or a field the kind does not use.
+- `kind`: anything but `moonraker`, `prusalink` or `spoolman`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
+  --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+  --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
+```
+
 ## GitHub PAT and Discord notification settings (GRE-1360)
 
 The settings router mounts `/settings/github-pat`, `/settings/discord-notify`
@@ -284,3 +336,57 @@ Path-hints remains read-only here. Missing custom hints use the shipped rules;
 partial or corrupt documents refuse preparation instead of publishing changed
 Plan state. A valid replacement can be read again after recovery. GRE-1394 tracks
 the Rust publisher and its separate live-format ownership decision.
+
+## Update checks, printer bindings, help and OpenAPI
+
+`pp_api::settings_support` mounts under the same compile-time and runtime
+rebuild gates. Settings and help use the existing credential and Origin gate
+at `/` and `/api/v1`.
+
+- Desktop and launcher startup fix update checks off and ignore the repository,
+  version override and cache environment variables, matching Node desktop.
+  Only `pp-server`/Docker opts into Node server environment settings. Disabled
+  desktop checks have no HTTP client and make no outbound request.
+- `GET /settings/update-check` on the server follows Node's enabled flag, version override,
+  release response cap (1 MiB), version comparison, cache interval and
+  `refresh=1`. Upstream failures return no latest release and expose no
+  upstream error text. The client uses no proxy, matching Node undici defaults.
+  Redirects are deliberately disabled by coordinator decision, unlike Node's
+  default fetch behavior. A renamed or transferred `GITHUB_REPO` can therefore
+  yield no latest release; configure its current canonical name. Fetches run
+  outside the cache lock and auth admission permit. Tests use a loopback fake,
+  never GitHub.
+- `GET`/`PUT /settings/printer-plan-bindings` and
+  `DELETE /settings/printer-plan-bindings/{integration_id}` read or update
+  `printer.plan_bindings`. Credential proof and each read-modify-write run
+  in one writer transaction. Replacement preserves position; deletion removes
+  all matching entries. Timestamps use UTC milliseconds, as Node does.
+- `GET /help/workflow` returns Node's text. The API tip follows the stored
+  `external_access_mode`, including Node's default for an unknown value.
+- `/openapi.json` redirects with `302` to `/api/v1/openapi.json`.
+  That document and `/api/v2/openapi.json` are public, as in Node: Node exempts
+  `.json` paths from the session hook and explicitly exempts OpenAPI from
+  API-key authentication. Help and settings remain authenticated. Sharing
+  defaults and MCP authentication stay unchanged.
+
+The OpenAPI document contains route and schema shapes only: no credentials,
+user data, data-directory paths or hostnames. A test checks string values for
+`token`, `secret`, `password`, absolute filesystem paths and URLs. The sole
+structural exception is a path parameter whose `name` is `token`; it contains
+no token value. The document is generated from Node, with repeated route
+shapes grouped in `fixtures/admin/settings-support.json`. The Node oracle
+checks its freshness; Rust expands the groups without consulting stored data.
+
+The binding fixtures compare replies and persisted values after each request
+and after reopening storage. As on the other settings routes, malformed JSON
+and null request bodies use Rust's redacted problem responses. Numeric ids and
+numeric strings written by the UI preserve Node's coercion. Exotic JavaScript
+coercions and unpaired UTF-16 surrogates remain outside the supported parity
+scope. Source update-check is deferred to GRE-1400 after GRE-1360 because it
+shares Discord auto-sync state.
+
+```sh
+npm --prefix web run test -w @print-partner/server -- src/routes/settings-support.oracle.test.ts src/routes/admin-routes.oracle.test.ts
+# Regenerate the Node snapshot only when its contract changes:
+UPDATE_ADMIN_ORACLE=1 npm --prefix web run test -w @print-partner/server -- src/routes/settings-support.oracle.test.ts
+```

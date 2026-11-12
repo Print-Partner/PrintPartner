@@ -48,10 +48,11 @@ async fn download_as(
     path: &str,
     credential: Option<(&str, &str)>,
 ) -> (StatusCode, header::HeaderMap, String) {
-    let headers: Vec<(&str, &str)> = credential.into_iter().collect();
-    let response =
-        checkoff_http::loopback::respond(router, "GET", path, None, Vec::new(), None, &headers)
-            .await;
+    let mut request = axum::http::Request::get(path);
+    if let Some((name, value)) = credential {
+        request = request.header(name, value);
+    }
+    let response = checkoff_http::loopback::respond(router, request, Vec::new()).await;
     let (parts, body) = response.into_parts();
     let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
     (

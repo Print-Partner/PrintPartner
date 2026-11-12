@@ -5,7 +5,7 @@ use axum::{
     Router,
     body::Body,
     extract::ConnectInfo,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, request::Builder as RequestBuilder},
     response::Response,
 };
 use serde_json::Value;
@@ -47,7 +47,17 @@ pub async fn send_with_headers(
     cookie: Option<&str>,
     headers: &[(&str, &str)],
 ) -> (StatusCode, Value) {
-    let response = respond(router, method, path, content_type, body, cookie, headers).await;
+    let mut request = Request::builder().method(method).uri(path);
+    if let Some(content_type) = content_type {
+        request = request.header("content-type", content_type);
+    }
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    if let Some(cookie) = cookie {
+        request = request.header("cookie", cookie);
+    }
+    let response = respond(router, request, body).await;
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
         .await
@@ -58,31 +68,14 @@ pub async fn send_with_headers(
     )
 }
 
-/// [`send_with_headers`]'s whole answer, for a body that is not JSON.
-pub async fn respond(
-    router: &Router,
-    method: &str,
-    path: &str,
-    content_type: Option<&str>,
-    body: Vec<u8>,
-    cookie: Option<&str>,
-    headers: &[(&str, &str)],
-) -> Response {
-    let mut request = Request::builder()
-        .method(method)
-        .uri(path)
+/// Sends `request` with `body` from the admitted Host, Origin and peer, and
+/// returns the whole answer, for a body that is not JSON.
+pub async fn respond(router: &Router, request: RequestBuilder, body: Vec<u8>) -> Response {
+    let mut request = request
         .header("host", "127.0.0.1:4100")
-        .header("origin", ORIGIN);
-    if let Some(content_type) = content_type {
-        request = request.header("content-type", content_type);
-    }
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    if let Some(cookie) = cookie {
-        request = request.header("cookie", cookie);
-    }
-    let mut request = request.body(Body::from(body)).unwrap();
+        .header("origin", ORIGIN)
+        .body(Body::from(body))
+        .unwrap();
     request
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));

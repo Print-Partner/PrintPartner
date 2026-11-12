@@ -356,11 +356,22 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(writes(fetchMock).some((w) => w.path.endsWith("/apply"))).toBe(false);
   });
 
-  it("keeps a typed header value on the page when its save answers 401", async () => {
-    const fetchMock = core({
-      write: (path) =>
-        path === "/api/v2/plans/2/drafts/header" ? json({ detail: "refused" }, 401) : undefined,
+  it("keeps a typed header value on the page when its save and the refetch answer 401", async () => {
+    // As with a real ended session: the write answers 401, then so does every read,
+    // including the Plan refetch that follows the failed save.
+    let signedOut = false;
+    const plan = core({
+      write: (path) => {
+        if (path !== "/api/v2/plans/2/drafts/header") return undefined;
+        signedOut = true;
+        return json({ detail: "refused" }, 401);
+      },
     });
+    const fetchMock = vi.fn((path: string, init?: RequestInit) =>
+      signedOut && path !== "/health"
+        ? Promise.resolve(json({ detail: "refused" }, 401))
+        : plan(path, init),
+    ) as unknown as ReturnType<typeof core>;
     renderAt(fetchMock);
     const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
     fireEvent.change(name, { target: { value: "Bracket kit v3" } });
@@ -368,7 +379,13 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     const link = await screen.findByRole("link", { name: "Sign in to save." });
     expect(link.closest("p")?.textContent).toBe("You were signed out. Sign in to save.");
     expect(link.getAttribute("href")).toBe("/login?next=%2Fbuilds%2F2%2Fplan");
-    // A write's 401 never navigates: the Plan and the typed value stay.
+    // The refetch's 401s arrived too; the Plan and the typed value stay.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path, init]) => !init?.method && path !== "/health").length,
+      ).toBeGreaterThan(4),
+    );
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
     expect(field("Name").value).toBe("Bracket kit v3");
     expect(writes(fetchMock)).toHaveLength(1);
   });

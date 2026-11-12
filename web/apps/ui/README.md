@@ -103,7 +103,9 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
 - **Signed out.** A 401 from a read opens `/login?next=<this page>` (`App.tsx`).
   A 401 from a write never navigates, so an unsaved edit stays on screen; the
   Plan's save status says "You were signed out." with a "Sign in to save." link
-  (`src/auth/SignedOutNote.tsx`). Provisional. If `/auth/status` itself answers
+  (`src/auth/SignedOutNote.tsx`). While a write is pending or refused with 401,
+  read 401s (such as the refetch after the failed save) do not navigate either.
+  Provisional. If `/auth/status` itself answers
   401, the browser's link to the core has ended, and the screen asks for a new
   sign-in link.
 - **Messages.** A wrong email or password, 20 attempts in a minute (429), and an

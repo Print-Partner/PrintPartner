@@ -48,8 +48,8 @@ fn execute(folder: &Installation, sql: &str) {
         .unwrap();
 }
 
-/// A backup archive of `folder` as Node writes it: the database, the
-/// metadata and, for a full backup, the roots.
+/// A backup archive of `folder` as Node writes it: the metadata, the
+/// database and, for a full backup, the two roots the synthetic folder holds.
 fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFile {
     let roots: Vec<&str> = match scope {
         "full" => archive::FULL_ROOTS.iter().map(|(root, _)| *root).collect(),
@@ -62,28 +62,38 @@ fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFil
     if format == 2 {
         metadata["scope"] = serde_json::json!({"kind": scope, "includedRoots": roots});
     }
-    let file = tempfile::NamedTempFile::new().unwrap();
-    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
-        file.reopen().unwrap(),
-        flate2::Compression::default(),
-    ));
     let metadata = serde_json::to_vec(&metadata).unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let gzip =
+        flate2::write::GzEncoder::new(file.reopen().unwrap(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(gzip);
     let mut header = tar::Header::new_gnu();
     header.set_size(metadata.len() as u64);
     header.set_mode(0o644);
     builder
         .append_data(&mut header, archive::METADATA_FILE, &metadata[..])
         .unwrap();
-    for root in [archive::DATABASE_FILE].into_iter().chain(roots) {
-        let path = folder.join(root);
-        if path.is_dir() {
-            builder.append_dir_all(root, path).unwrap();
-        } else if path.is_file() {
-            builder.append_path_with_name(path, root).unwrap();
-        }
+    let database = archive::DATABASE_FILE;
+    builder
+        .append_path_with_name(folder.join(database), database)
+        .unwrap();
+    if scope == "full" {
+        builder
+            .append_dir_all("repos", folder.join("repos"))
+            .unwrap();
+        let filaments = "custom_filaments.json";
+        builder
+            .append_path_with_name(folder.join(filaments), filaments)
+            .unwrap();
     }
     builder.into_inner().unwrap().finish().unwrap();
     file
+}
+
+/// The rows per tenant of `table` in `report`.
+fn by_tenant(report: &DryRunReport, table: &str) -> Vec<(String, u64)> {
+    let table = report.tables.iter().find(|count| count.table == table);
+    table.unwrap().by_tenant.clone().into_iter().collect()
 }
 
 #[test]
@@ -91,32 +101,18 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let folder = node_folder();
     let report = run(folder.path()).unwrap();
     assert_eq!(report.source, SourceKind::Directory);
+    assert_eq!(report.schema_version, 34);
+    assert_eq!(report.upgraded_schema, versions::RUST_SCHEMA);
     assert_eq!(
-        (report.schema_version, report.upgraded_schema),
-        (34, versions::RUST_SCHEMA)
+        (report.builds, report.sources),
+        (synthetic::BUILDS, synthetic::SOURCES)
     );
+    assert_eq!(report.printers, synthetic::PRINTERS);
+    assert_eq!(report.unmatched_prints, synthetic::UNMATCHED_PRINTS);
+    let default = |rows| vec![("default".to_owned(), rows)];
     assert_eq!(
-        (
-            report.builds,
-            report.sources,
-            report.printers,
-            report.unmatched_prints
-        ),
-        (
-            synthetic::BUILDS,
-            synthetic::SOURCES,
-            synthetic::PRINTERS,
-            synthetic::UNMATCHED_PRINTS
-        )
-    );
-    let builds = report
-        .tables
-        .iter()
-        .find(|table| table.table == "build_profiles")
-        .unwrap();
-    assert_eq!(
-        builds.by_tenant,
-        BTreeMap::from([("default".to_owned(), synthetic::BUILDS)])
+        by_tenant(&report, "build_profiles"),
+        default(synthetic::BUILDS)
     );
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
@@ -142,37 +138,24 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     ] {
         assert_eq!(items[shape], expected, "{shape}");
     }
-    assert_eq!(
-        report.scalar_settings,
-        BTreeSet::from(["date_format".to_owned()])
-    );
+    let scalars: Vec<&String> = report.scalar_settings.iter().collect();
+    assert_eq!(scalars, ["date_format"]);
     let created = Shape::SettingPrefix("build_planning.create.");
     assert!(report.copied.contains(&(created, 1)), "{:?}", report.copied);
     assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
 
     let text = report.to_string();
-    assert!(
-        text.contains("3 Builds, 2 Sources, 2 printers, 2 unmatched prints."),
-        "{text}"
-    );
-    assert!(
-        text.contains("step 3 pending: setting printer.fleet = 2"),
-        "{text}"
-    );
-    assert!(
-        text.contains("Stored JSON the inventory does not name:\n  none"),
-        "{text}"
-    );
-    for stored in [
+    let holds = |line: &str| assert!(text.contains(line), "{line} is not in:\n{text}");
+    holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
+    holds("step 3 pending: setting printer.fleet = 2");
+    holds("Stored JSON the inventory does not name:\n  none");
+    // No stored value: not the integration's key, a printer name or a free-text key.
+    let stored = [
         synthetic::INTEGRATION_SECRET,
         "Synthetic Printer",
         "synthetic-key",
-    ] {
-        assert!(
-            !text.contains(stored),
-            "the report holds the stored value {stored}"
-        );
-    }
+    ];
+    assert_eq!(stored.map(|value| text.contains(value)), [false; 3]);
 }
 
 #[test]
@@ -182,9 +165,10 @@ fn a_full_archive_gives_the_same_counts() {
     let archive = archive_of(folder.path(), 2, "full");
     let from_archive = run(archive.path()).unwrap();
     assert_eq!(from_archive.source, SourceKind::Archive);
+    let source = SourceKind::Directory;
     assert_eq!(
         DryRunReport {
-            source: SourceKind::Directory,
+            source,
             ..from_archive
         },
         from_folder
@@ -201,15 +185,8 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
-    let sources = report
-        .tables
-        .iter()
-        .find(|table| table.table == "projects")
-        .unwrap();
-    assert_eq!(
-        sources.by_tenant,
-        BTreeMap::from([("solo".to_owned(), synthetic::SOURCES)])
-    );
+    let solo = vec![("solo".to_owned(), synthetic::SOURCES)];
+    assert_eq!(by_tenant(&report, "projects"), solo);
 }
 
 #[test]

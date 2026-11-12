@@ -53,8 +53,8 @@ Schema 34, upgraded to 48 on a temporary copy.
 
 Then it lists:
 
-- **Installation value and accounts:** one line with the `tenant_id` value that holds the Builds and Sources and the number of accounts, and a line each when the value is not `default` or more than one account is stored.
-- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column.
+- **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
+- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
 - **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.
@@ -81,7 +81,7 @@ Each refusal exits 1 and writes nothing to the source.
 | Too little free space in the temporary directory | The message gives the bytes needed and the bytes free. For an archive this check runs after extraction; a database that does not fit while it is extracted ends the run with `import failed:` instead. |
 | `TMPDIR` that is the source folder or the destination, or lies inside one | A dry run writes nothing into either. Set `TMPDIR` to a directory outside both. |
 
-A single value other than `default`, and more than one account, are reported by the dry run and do not fail it. The import will refuse both. See [Installation value and accounts](#installation-value-and-accounts).
+A value other than `default` in any table, and more than one account, are reported by the dry run and do not fail it. The import will refuse both. See [Installation value and accounts](#installation-value-and-accounts).
 
 ## Conversion inventory
 
@@ -127,4 +127,4 @@ No Rust code reads these. The import keeps them byte for byte, also for features
 
 Node stores every row under a `tenant_id` value. It writes `default` when it runs without accounts or with single-user sign-in, and for the first account otherwise. A later account's id, `basic-<login>` or `anonymous` appear in other setups. The Rust-only runtime maps every session to `default` (`ps/auth/policy.rs`), so it cannot see data under another value, and it refuses to sign in when `users` holds more than one row.
 
-The dry run prints the value that holds the Builds and Sources and the number of accounts, as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.
+The dry run reads the values from every table that has the column, not only from Builds and Sources: an account with no Build and no Source still stores its settings and events under its own value. It prints them masked (see [Report](#report)), and the number of accounts as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.

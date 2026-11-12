@@ -145,10 +145,8 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let kept = (Shape::SettingPrefix("filename_grouping:"), 1);
     assert!(report.unused.contains(&kept), "{:?}", report.unused);
     assert_eq!(items["setting build_planning.create.*"], 1);
-    assert_eq!(
-        (report.installation.as_deref(), report.users),
-        (Some("default"), 0)
-    );
+    assert_eq!(report.installations, BTreeSet::from(["default".to_owned()]));
+    assert_eq!(report.users, 0);
     assert_eq!(report.destination, None);
     assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
 
@@ -186,26 +184,57 @@ fn a_full_archive_gives_the_same_counts() {
 }
 
 #[test]
+fn an_account_without_builds_or_sources_is_reported_under_its_own_value() {
+    // No Build and no Source: the values come from the other tables.
+    let folder = Installation::create(Fixture::NodeSchema34).unwrap();
+    let report = run(folder.path()).unwrap();
+    assert_eq!((report.builds, report.sources), (0, 0));
+    assert_eq!(report.installations, BTreeSet::from(["default".to_owned()]));
+    assert!(!report.to_string().contains("reads only data under"));
+    execute(
+        &folder,
+        "INSERT INTO users (id, display_name, created_at) VALUES ('synthetic-alice', 'Synthetic Alice', '2026-10-02');
+         INSERT INTO app_settings (tenant_id, key, value) VALUES
+           ('basic-alice', 'date_format', 'iso'), ('synthetic-account-7', 'date_format', 'iso');",
+    );
+    let report = run(folder.path()).unwrap();
+    let values = ["***", "basic-***", "default"].map(str::to_owned);
+    assert_eq!(report.installations, values.into());
+    let text = report.to_string();
+    for line in [
+        "Installation values \"***\", \"basic-***\", \"default\", 1 accounts.",
+        "The Rust runtime reads only data under \"default\".",
+        "  app_settings ",
+    ] {
+        assert!(text.contains(line), "{line} is not in:\n{text}");
+    }
+    assert!(
+        !text.contains("alice") && !text.contains("account-7"),
+        "{text}"
+    );
+}
+
+#[test]
 fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_printers() {
     let folder = node_folder();
     execute(
         &folder,
-        "UPDATE build_profiles SET tenant_id = 'solo'; UPDATE projects SET tenant_id = 'solo';
+        "UPDATE build_profiles SET tenant_id = 'basic-solo'; UPDATE projects SET tenant_id = 'basic-solo';
          UPDATE app_settings SET value = '{}' WHERE key = 'printer.fleet';
          INSERT INTO users (id, display_name, created_at) VALUES
            ('synthetic-a', 'Synthetic A', '2026-10-02'), ('synthetic-b', 'Synthetic B', '2026-10-02');",
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
-    let solo = vec![("solo".to_owned(), synthetic::SOURCES)];
+    // The value can hold a sign-in name, so only its masked form is kept.
+    let solo = vec![("basic-***".to_owned(), synthetic::SOURCES)];
     assert_eq!(by_tenant(&report, "projects"), solo);
-    assert_eq!(
-        (report.installation.as_deref(), report.users),
-        (Some("solo"), 2)
-    );
+    let values = ["basic-***", "default"].map(str::to_owned);
+    assert_eq!((&report.installations, report.users), (&values.into(), 2));
     let text = report.to_string();
+    assert!(!text.contains("solo"), "{text}");
     for line in [
-        "Installation value \"solo\", 2 accounts.",
+        "Installation values \"basic-***\", \"default\", 2 accounts.",
         "The Rust runtime reads only data under \"default\".",
         "The Rust runtime signs in only when one account is stored.",
     ] {
@@ -402,7 +431,7 @@ fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
         &folder,
         "INSERT INTO build_profiles (tenant_id, name) VALUES ('other', 'Synthetic Build 04')",
     );
-    let error = refused("more than one tenant (default, other)");
+    let error = refused("more than one tenant (***, default)");
     assert!(matches!(error, ImportError::SplitTenants(_)));
     execute(
         &folder,

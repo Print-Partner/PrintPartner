@@ -220,7 +220,8 @@ pub fn inspect_destination(destination: &Path) -> Destination {
 pub struct TableCount {
     pub table: String,
     pub rows: u64,
-    /// Rows per `tenant_id`. Empty for a table without that column.
+    /// Rows per `tenant_id` value, each as [`masked`] writes it. Empty for a
+    /// table without that column.
     pub by_tenant: BTreeMap<String, u64>,
 }
 
@@ -245,9 +246,9 @@ pub struct DryRunReport {
     pub printers: u64,
     /// Unmatched prints that are neither claimed nor dismissed.
     pub unmatched_prints: u64,
-    /// The `tenant_id` value that holds the Builds and Sources, when there
-    /// are any. The Rust-only runtime reads only `default`.
-    pub installation: Option<String>,
+    /// Every `tenant_id` value that any table holds rows under, each as
+    /// [`masked`] writes it. The Rust-only runtime reads only `default`.
+    pub installations: BTreeSet<String>,
     /// Rows in `users`. The Rust-only runtime signs in only with one or none.
     pub users: u64,
     /// The destination, when the dry run was given one.
@@ -281,9 +282,19 @@ impl fmt::Display for DryRunReport {
             "{} Builds, {} Sources, {} printers, {} unmatched prints.",
             self.builds, self.sources, self.printers, self.unmatched_prints
         )?;
-        let value = self.installation.as_deref().unwrap_or("default");
-        writeln!(f, "Installation value {value:?}, {} accounts.", self.users)?;
-        if value != "default" {
+        let values: Vec<String> = (self.installations.iter())
+            .map(|value| format!("{value:?}"))
+            .collect();
+        let label = match values.len() {
+            1 => "Installation value",
+            _ => "Installation values",
+        };
+        let values = match values.len() {
+            0 => "none".to_owned(),
+            _ => values.join(", "),
+        };
+        writeln!(f, "{label} {values}, {} accounts.", self.users)?;
+        if self.installations.iter().any(|value| value != "default") {
             writeln!(f, "The Rust runtime reads only data under \"default\".")?;
         }
         if self.users > 1 {
@@ -604,6 +615,17 @@ fn key_pattern(key: &str) -> String {
     pattern
 }
 
+/// A `tenant_id` value as a report or a message may show it. `default` and
+/// `anonymous` are Node's own words. Any other value is an account id or
+/// `basic-<login>`, so only the `basic-` prefix is kept.
+fn masked(value: &str) -> String {
+    match value {
+        "default" | "anonymous" => value.to_owned(),
+        _ if value.starts_with("basic-") => "basic-***".to_owned(),
+        _ => "***".to_owned(),
+    }
+}
+
 fn quoted(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -659,7 +681,7 @@ fn count_tables(
             let count = group.get::<_, i64>(1)?.unsigned_abs();
             rows += count;
             if let Some(tenant) = group.get::<_, Option<String>>(0)? {
-                by_tenant.insert(tenant, count);
+                *by_tenant.entry(masked(&tenant)).or_insert(0) += count;
             }
             for (index, total) in found.iter_mut().enumerate() {
                 *total += group.get::<_, i64>(index + 2)?.unsigned_abs();
@@ -740,7 +762,11 @@ fn measure(
             tenants.into_iter().cloned().collect(),
         ));
     }
-    let installation = tenants.into_iter().next().cloned();
+    // Every table with the column counts: an account without Builds or
+    // Sources still stores its settings and events under its own value.
+    let installations = (tables.iter())
+        .flat_map(|table| table.by_tenant.keys().cloned())
+        .collect();
 
     let settings: Vec<(String, String)> = {
         let mut statement = connection.prepare("SELECT key, value FROM app_settings")?;
@@ -794,7 +820,7 @@ fn measure(
             .map(|(_, value)| items(value.as_bytes(), 0))
             .sum(),
         unmatched_prints,
-        installation,
+        installations,
         users: table("users").map_or(0, |table| table.rows),
         destination: None,
         rows,

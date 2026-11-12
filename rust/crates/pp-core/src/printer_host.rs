@@ -5,6 +5,8 @@
 //! print-file download and camera view stream the printer's reply through. The only
 //! resend is PrusaLink's single Digest resend after a 401 (see
 //! `pp_gateway::printer_host`).
+pub(crate) mod probe;
+
 use pp_api::printer_host::{
     Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort,
 };

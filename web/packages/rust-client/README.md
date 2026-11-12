@@ -68,7 +68,10 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `POST /api/v2/integrations` | `CreateIntegrationRequest` | `IntegrationView` |
 | `DELETE /api/v2/integrations/{id}` | | `IntegrationView` |
+| `POST /api/v2/printers` | `CreatePrinterRequest` | `PrinterConfig` |
 | `GET /api/v2/printers/{id}` | | `PrinterConfig` |
+| `PATCH /api/v2/printers/{id}` | `UpdatePrinterRequest` | `PrinterConfig` |
+| `DELETE /api/v2/printers/{id}` | | `PrinterConfig` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 | `GET /auth/status` | | `AuthStatus` (`setup_required` only) |
 | `GET /auth/me` | | `CurrentUser` |

@@ -75,10 +75,10 @@ Only the server entry point allows environment-driven update checks. By coordina
      then opens the schema. A refused directory stops startup here, before
      release verification, recovery or admission, and stays byte-for-byte
      unchanged.
-  2. `pp_compat::verify_rust_only_release` checks the release identity, the
-     frontend and the community manifests. It does not measure Node, the Node
-     backend or `node_modules`, so `pp-server` needs no `--node` in this mode
-     ([Docker image](docker.md#release-check-without-node)).
+  2. With `apps/ui/dist` installed, `pp_compat::snapshot_rust_only_release` checks
+     the release identity, `replacement_frontend` and the community manifests;
+     without it, `verify_rust_only_legacy_release` checks `frontend` instead. Neither
+     measures Node or `node_modules` ([Docker image](docker.md#release-check-without-node)).
   3. `cutover::recover` runs without an ownership index: it removes stray
      cutover temporaries, and a cutover record refuses startup.
   4. Source-sync admission writes or reuses `source-sync-admission.json`.

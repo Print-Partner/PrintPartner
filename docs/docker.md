@@ -31,10 +31,10 @@ The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-
 
 ### Release check without Node
 
-A Rust-only start checks the release with `pp_compat::verify_rust_only_release`. It checks:
+A Rust-only start checks the release without Node. When `web/apps/ui/dist` is installed, `pp-core` calls `pp_compat::snapshot_rust_only_release`, which checks the `replacement_frontend` inventory and keeps the verified bytes for serving. When it is absent, as in the Docker image today, `pp-core` calls `pp_compat::verify_rust_only_legacy_release`, which checks the `frontend` inventory instead. Both check:
 
 - The runtime version and commit match the manifest embedded in the binary.
-- The frontend's file list and digests match exactly.
+- The selected frontend's file list and digests match exactly.
 - The community manifests' file list and digests match exactly.
 
 It does not measure the Node executable, the Node backend, the workspace packages or `node_modules`, so `pp-server` needs no `--node` in this mode. The Node-backed start still runs the full `verify_bundle` and still requires `--node`.

@@ -1,5 +1,5 @@
 //! Writer controls and the feature-gated whole-installation restore command.
-use crate::{Shared, WriterControl, WriterState};
+use crate::{Envelope, Shared, WriterControl, WriterState};
 use anyhow::Result;
 use rusqlite::Connection;
 use std::sync::mpsc;
@@ -11,6 +11,10 @@ pub(crate) enum Command {
     },
     #[cfg(feature = "desktop_rebuild")]
     Restore(crate::restore::activation::Command),
+}
+
+pub(crate) fn queued(control: WriterControl, reply: mpsc::Sender<Result<u32>>) -> Envelope {
+    Envelope::Control(Command::Query { control, reply })
 }
 
 fn query(connection: &Connection, control: WriterControl, reply: mpsc::Sender<Result<u32>>) {

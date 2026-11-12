@@ -84,16 +84,19 @@ fn activate(
     staged: &Path,
     mut refresh: impl FnMut(&mut Connection) -> Result<()>,
 ) -> Result<Activated> {
-    stop_admission(shared)?;
+    pause_admission(shared)?;
     let database = data_dir.join(archive::DATABASE_FILE);
     let reader_count = match drain_readers(readers) {
         Ok(count) => count,
         Err(count) => {
+            // Nothing changed yet: queued work and job streams carry on.
             open_readers(shared, readers, &database, count)?;
-            resume_admission(shared);
+            resume_admission(shared, false);
             return Err(Refusal::Busy.into());
         }
     };
+    shared.job_subscriptions.stop();
+    reject_queued(&mut queue(shared));
     let forward = (|| -> Result<(Connection, schema::SchemaReady, Vec<Connection>)> {
         connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         std::mem::replace(connection, Connection::open_in_memory()?)
@@ -126,49 +129,69 @@ fn activate(
             )
         }
         Err(error) => {
-            if hooks::crashed(&error) {
-                return Err(error);
-            }
-            if let Some(mut journal) = Journal::read(data_dir)? {
-                journal.rollback(data_dir)?;
-            } else {
-                hooks::after_rollback(data_dir);
-            }
-            *connection = open_database(data_dir, seed)?.0;
-            refresh(connection)?;
-            open_readers(shared, readers, &database, reader_count)?;
-            resume_admission(shared);
-            return Err(error.context("Restore failed; the previous installation is kept"));
+            let rollback = (|| -> Result<()> {
+                ensure!(!hooks::crashed(&error), "simulated crash");
+                if let Some(mut journal) = Journal::read(data_dir)? {
+                    journal.rollback(data_dir)?;
+                } else {
+                    hooks::after_rollback(data_dir);
+                }
+                *connection = open_database(data_dir, seed)?.0;
+                refresh(connection)?;
+                open_readers(shared, readers, &database, reader_count)
+            })();
+            let Err(rollback) = rollback else {
+                resume_admission(shared, true);
+                return Err(error.context("Restore failed; the previous installation is kept"));
+            };
+            // Stay stopped: the next start replays the journal.
+            let mut queue = queue(shared);
+            queue.closed = true;
+            reject_queued(&mut queue);
+            shared.changed.notify_all();
+            return Err(error.context(format!(
+                "Restore rollback failed ({rollback:#}); restart to recover"
+            )));
         }
     };
     install_readers(shared, readers, prepared)?;
-    resume_admission(shared);
+    resume_admission(shared, true);
     Ok(activated)
 }
 
-/// Closes writer admission and fails work queued behind the restore.
-fn stop_admission(shared: &Shared) -> Result<()> {
-    shared.job_subscriptions.stop();
-    let mut queue = shared
+fn queue(shared: &Shared) -> MutexGuard<'_, crate::Queue> {
+    shared
         .queue
         .lock()
-        .unwrap_or_else(crate::stop_poisoned_queue);
+        .unwrap_or_else(crate::stop_poisoned_queue)
+}
+
+/// Refuses new writer, authentication and restore work until
+/// [`resume_admission`]. Families that queue work themselves check only
+/// `closed`; [`reject_queued`] fails what they add meanwhile.
+fn pause_admission(shared: &Shared) -> Result<()> {
+    let mut queue = queue(shared);
     ensure!(!queue.closed, "Storage stopped");
     queue.restoring = true;
     shared.restoration.activity.lock().paused = true;
+    Ok(())
+}
+
+/// Fails queued work unrun: dropping an envelope drops its reply sender.
+fn reject_queued(queue: &mut crate::Queue) {
     queue.pending.clear();
     for work in queue.auth_ready.drain(..) {
         crate::auth::rebuild::finish_stopped(work);
     }
-    shared.changed.notify_all();
-    Ok(())
 }
 
-fn resume_admission(shared: &Shared) {
-    let mut queue = shared
-        .queue
-        .lock()
-        .unwrap_or_else(crate::stop_poisoned_queue);
+/// Reopens admission. After the database was replaced or rolled back,
+/// `changed` fails the work queued while that ran, under the same lock.
+fn resume_admission(shared: &Shared, changed: bool) {
+    let mut queue = queue(shared);
+    if changed {
+        reject_queued(&mut queue);
+    }
     queue.restoring = false;
     shared.restoration.activity.lock().paused = false;
     shared.changed.notify_all();

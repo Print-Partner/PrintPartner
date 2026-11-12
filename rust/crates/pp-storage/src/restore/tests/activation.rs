@@ -30,9 +30,19 @@ fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_fi
     let settings = owner.client();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let seen = observed.clone();
+    let (reply, queued_during) = mpsc::channel();
     DURING.lock().unwrap().push((
         root.clone(),
         Box::new(move || {
+            // Most families queue work themselves and check only `closed`.
+            let control = crate::storage_control::queued(crate::WriterControl::PageCount, reply);
+            settings
+                .shared
+                .queue
+                .lock()
+                .unwrap()
+                .pending
+                .push_back(control);
             let setting = Setting {
                 tenant: "default".into(),
                 key: "restore.test".into(),
@@ -70,9 +80,12 @@ fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_fi
     let staged = stage(&client, &backup.path).unwrap();
     assert_eq!(staged.schema_version, schema::CURRENT_VERSION);
     let archive = std::fs::read(&backup.path).unwrap();
-    let database = pp_testkit::node_schema::database_files(&root);
     let activated = client.activate(&staged.restore_id, CONFIRMATION).unwrap();
     assert_eq!(activated.schema_version, schema::CURRENT_VERSION);
+    assert!(
+        queued_during.recv().is_err(),
+        "work queued during the restore ran"
+    );
     assert_eq!(
         *observed.lock().unwrap(),
         [
@@ -83,10 +96,6 @@ fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_fi
         ]
     );
     assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
-    println!(
-        "supported activation changed SQLite bytes: {}",
-        pp_testkit::node_schema::database_files(&root) != database
-    );
     let restored = state(&root);
     assert_eq!(restored, backed_up);
     assert_marked(&root);
@@ -113,10 +122,31 @@ fn an_open_reader_refuses_activation_and_keeps_the_installation() {
     let held = owner.client().reader(Duration::from_secs(1)).unwrap();
     let database = pp_testkit::node_schema::database_files(&root);
     let archive = std::fs::read(&backup.path).unwrap();
+    let settings = owner.client();
+    let queued = thread::spawn(move || {
+        let (reply, result) = mpsc::channel();
+        let control = crate::storage_control::queued(crate::WriterControl::PageCount, reply);
+        let waiting = Instant::now();
+        loop {
+            let mut queue = settings.shared.queue.lock().unwrap();
+            if queue.restoring {
+                break queue.pending.push_back(control);
+            }
+            assert!(waiting.elapsed() < Duration::from_secs(30));
+            drop(queue);
+            thread::yield_now();
+        }
+        result.recv()
+    });
     let error = client
         .activate(&staged.restore_id, CONFIRMATION)
         .unwrap_err();
     assert_eq!(refusal(&error), Some(&Refusal::Busy));
+    let pages = queued.join().unwrap();
+    assert!(
+        pages.is_ok_and(|pages| pages.is_ok()),
+        "refusal failed queued work"
+    );
     assert!(pp_testkit::node_schema::database_files(&root) == database);
     assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
     drop(held);
@@ -185,6 +215,7 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
                 continue;
             }
             assert!(error.is::<Crash>());
+            assert!(owner.client().shared.queue.lock().unwrap().closed);
             let committed = Journal::read(&root)
                 .unwrap()
                 .is_some_and(|journal| journal.state == JournalState::Committed);

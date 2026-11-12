@@ -1087,34 +1087,33 @@ impl WriterOwner {
 
     fn writer_control(&self, control: WriterControl) -> Result<u32> {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let receiver =
-            {
-                let mut queue = self
+        let receiver = {
+            let mut queue = self
+                .client
+                .shared
+                .queue
+                .lock()
+                .map_err(|_| anyhow!("Writer admission poisoned"))?;
+            loop {
+                ensure!(!queue.closed && !queue.restoring, "Storage stopped");
+                if queue.pending.len() < self.client.shared.capacity {
+                    let (reply, receiver) = mpsc::channel();
+                    queue
+                        .pending
+                        .push_back(storage_control::queued(control, reply));
+                    self.client.shared.changed.notify_all();
+                    break receiver;
+                }
+                ensure!(Instant::now() < deadline, "Writer queue full");
+                queue = self
                     .client
                     .shared
-                    .queue
-                    .lock()
-                    .map_err(|_| anyhow!("Writer admission poisoned"))?;
-                loop {
-                    ensure!(!queue.closed && !queue.restoring, "Storage stopped");
-                    if queue.pending.len() < self.client.shared.capacity {
-                        let (reply, receiver) = mpsc::channel();
-                        queue.pending.push_back(Envelope::Control(
-                            storage_control::Command::Query { control, reply },
-                        ));
-                        self.client.shared.changed.notify_all();
-                        break receiver;
-                    }
-                    ensure!(Instant::now() < deadline, "Writer queue full");
-                    queue = self
-                        .client
-                        .shared
-                        .changed
-                        .wait_timeout(queue, Duration::from_millis(5))
-                        .map_err(|_| anyhow!("Writer admission poisoned"))?
-                        .0;
-                }
-            };
+                    .changed
+                    .wait_timeout(queue, Duration::from_millis(5))
+                    .map_err(|_| anyhow!("Writer admission poisoned"))?
+                    .0;
+            }
+        };
         receiver
             .recv()
             .map_err(|_| anyhow!("Writer stopped without disk quota result"))?

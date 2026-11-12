@@ -53,6 +53,52 @@ class ClassifyTests(unittest.TestCase):
         ]:
             self.assertEqual(mc.path_class(path, self.classes), "sensitive", path)
 
+    def test_pp_storage_data_loss_areas_are_sensitive(self):
+        for path in [
+            # Schema and migrations.
+            "rust/crates/pp-storage/src/schema.rs",
+            "rust/crates/pp-storage/src/versions.rs",
+            "rust/crates/pp-storage/data/schema.json",
+            "rust/crates/pp-storage/data/historical/schema-34.ts",
+            "rust/crates/pp-storage/src/jobs/schema.sql",
+            "rust/crates/pp-storage/src/remote_sources/columns38.sql",
+            # Backup and restore.
+            "rust/crates/pp-storage/src/archive.rs",
+            "rust/crates/pp-storage/src/archive/tests.rs",
+            "rust/crates/pp-storage/src/restore.rs",
+            "rust/crates/pp-storage/src/restore/tests.rs",
+            "rust/crates/pp-storage/src/backup_retention.rs",
+            # The GRE-412 Node import, a new module.
+            "rust/crates/pp-storage/src/import.rs",
+            "rust/crates/pp-storage/src/import/inventory.rs",
+            # Accept and publication.
+            "rust/crates/pp-storage/src/plan_publication.rs",
+            "rust/crates/pp-storage/src/plan_publication/snapshot.rs",
+            "rust/crates/pp-storage/src/plates/initialize.rs",
+            "rust/crates/pp-storage/src/working_drafts/save.rs",
+        ]:
+            self.assertEqual(mc.path_class(path, self.classes), "sensitive", path)
+
+    def test_pp_storage_neighbours_of_data_loss_areas_stay_lane(self):
+        # The globs stay narrow: same-named or adjacent modules elsewhere in the crate are lane PRs.
+        for path in ["rust/crates/pp-storage/src/working_drafts/restore.rs",
+                     "rust/crates/pp-storage/src/working_drafts/autosave.rs",
+                     "rust/crates/pp-storage/src/plates.rs", "rust/crates/pp-storage/src/plates/arrange.rs",
+                     "rust/crates/pp-storage/src/jobs.rs", "rust/crates/pp-storage/data/filament-catalog.json",
+                     "rust/crates/pp-storage/tests/archive_backups.rs", "rust/crates/pp-api/src/import.rs",
+                     "rust/crates/pp-core/src/schema.rs"]:
+            self.assertEqual(mc.path_class(path, self.classes), "lane", path)
+
+    def test_every_pp_storage_glob_but_the_new_import_matches_a_tracked_file(self):
+        files = (ROOT / "rust/crates/pp-storage")
+        tracked = ["rust/crates/pp-storage/" + p.relative_to(files).as_posix() for p in files.rglob("*") if p.is_file()]
+        data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
+        for pattern in data["sensitive"]:
+            if not pattern.startswith("rust/crates/pp-storage/") or pattern.startswith("rust/crates/pp-storage/src/import"):
+                continue
+            with self.subTest(pattern=pattern):
+                self.assertTrue(any(mc.glob_regex(pattern).match(path) for path in tracked))
+
     def test_lane_paths(self):
         for path in ["rust/crates/pp-storage/src/lib.rs", "web/apps/ui/src/App.tsx", "docs/families.md"]:
             self.assertEqual(mc.path_class(path, self.classes), "lane", path)

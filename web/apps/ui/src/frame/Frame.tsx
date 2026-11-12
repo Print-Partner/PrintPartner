@@ -1,5 +1,8 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
+import { SIGN_IN } from "../auth/next";
+import { writeCore } from "../core/rust";
 import { PrinterStreamProvider } from "../farm/printerStream";
 import { PulseLine } from "../farm/PulseLine";
 import { CommandPalette, type Command } from "./CommandPalette";
@@ -15,6 +18,37 @@ function ConnectionLine() {
     <p role="status" className="pp-connection" data-status={status}>
       {label}
     </p>
+  );
+}
+
+/**
+ * Ends the session and opens the sign-in screen in place of this page, so Back does not
+ * return to it. Cached reads are dropped, so no earlier page shows signed-in content.
+ */
+function SignOutButton() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const signOut = () => {
+    if (busy) return;
+    setBusy(true);
+    writeCore("signOut", {})
+      .then(
+        () => true,
+        () => false,
+      )
+      .then((signedOut) => navigate(SIGN_IN, { replace: true, state: { signedOut } }))
+      .finally(() => queryClient.clear());
+  };
+  return (
+    <button
+      type="button"
+      className="pp-header-button"
+      aria-disabled={busy || undefined}
+      onClick={signOut}
+    >
+      Sign out
+    </button>
   );
 }
 
@@ -79,6 +113,7 @@ function FrameBody() {
         >
           Help
         </button>
+        <SignOutButton />
       </header>
       <nav aria-label="Main" className="pp-rail">
         <ul>

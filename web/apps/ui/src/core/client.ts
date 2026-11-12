@@ -45,6 +45,9 @@ async function problem(
 // into "//host".
 const SAME_ORIGIN_PATH = /^\/(?![/\\])(?![\s\S]*[\t\r\n])/;
 
+/** True for a path on this page's own origin, such as `/builds/3`. */
+export const isSameOriginPath = (path: string) => SAME_ORIGIN_PATH.test(path);
+
 export async function fetchCore(path: string, init?: RequestInit): Promise<Response> {
   if (!SAME_ORIGIN_PATH.test(path)) {
     throw new TypeError(

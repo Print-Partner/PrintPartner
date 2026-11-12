@@ -362,6 +362,35 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         text_params: &[],
         headers: &[],
     },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route("readAuthStatus", "GET", "/auth/status", None, "AuthStatus")
+    },
+    route("readCurrentUser", "GET", "/auth/me", None, "CurrentUser"),
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "signIn",
+            "POST",
+            "/auth/login",
+            Some("SignInRequest"),
+            "SignedIn",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "registerOwner",
+            "POST",
+            "/auth/register",
+            Some("RegisterRequest"),
+            "SignedIn",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route("signOut", "POST", "/auth/logout", None, "SignedOut")
+    },
 ];
 
 #[cfg(feature = "codegen")]
@@ -497,6 +526,21 @@ mod codegen {
         schema("BuildWorkflow", schemars::schema_for!(BuildWorkflow))?;
         schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema("AuthStatus", schemars::schema_for!(crate::auth::AuthStatus))?;
+        schema(
+            "CurrentUser",
+            schemars::schema_for!(crate::auth::CurrentUser),
+        )?;
+        schema("SignedIn", schemars::schema_for!(crate::auth::SignedIn))?;
+        schema("SignedOut", schemars::schema_for!(crate::auth::SignedOut))?;
+        schema(
+            "SignInRequest",
+            schemars::schema_for!(crate::auth::SignInRequest),
+        )?;
+        schema(
+            "RegisterRequest",
+            schemars::schema_for!(crate::auth::RegisterRequest),
+        )?;
         schema(
             "SetModuleRequest",
             schemars::schema_for!(crate::modules::SetModuleRequest),
@@ -1804,6 +1848,7 @@ mod codegen {
                 },
             )?,
         ];
+        cases.extend(crate::auth::contract::fixtures()?);
         for (name, value) in [
             ("on", json!({"on": true})),
             ("off", json!({"on": false})),

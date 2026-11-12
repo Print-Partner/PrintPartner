@@ -794,3 +794,34 @@ body {
   margin: 0 0 8px;
   font-weight: var(--font-weight-semibold);
 }
+
+/* Sign-in and setup: one centered column, no frame. */
+.pp-auth {
+  box-sizing: border-box;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  width: 100%;
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 48px 16px;
+}
+
+.pp-auth h1 {
+  margin: 0;
+}
+
+.pp-auth-form {
+  display: grid;
+  gap: 16px;
+}
+
+.pp-auth > .pp-button,
+.pp-auth-form .pp-button {
+  justify-self: start;
+}
+
+.pp-auth-problem {
+  margin: 0;
+  color: var(--status-danger);
+}

@@ -768,6 +768,10 @@ mod tests {
                 "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
             "ClaimUnattributedRequest" => json!({"profile_id": 1}),
             "DismissUnattributedRequest" => json!({}),
+            "SignInRequest" => json!({"email": "client@example.com", "password": "password-1234"}),
+            "RegisterRequest" => {
+                json!({"email": "second@example.com", "password": "password-1234"})
+            }
             other => panic!("no sample body for {other}"),
         }
     }
@@ -889,6 +893,19 @@ mod tests {
         let unregistered = unregistered.await.unwrap();
         assert_eq!(unregistered.status(), 404);
         assert_eq!(unregistered.text().await.unwrap(), "");
+        // Sign-out revokes the session it is sent with, so it gets its own.
+        let spare = send(
+            "POST",
+            "/auth/login",
+            &[],
+            None,
+            Some(sample_body("SignInRequest")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(spare.status(), 200);
+        let spare = spare.headers()["set-cookie"].to_str().unwrap();
+        let spare = spare.split(';').next().unwrap().to_owned();
         for route in CLIENT_ROUTES
             .iter()
             .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
@@ -903,17 +920,27 @@ mod tests {
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await
                 .unwrap();
+            let anonymous_status = anonymous.status().as_u16();
+            let anonymous_body: Value = anonymous.json().await.unwrap_or(Value::Null);
+            // The single owner already exists, so a second register is refused by
+            // its handler (403), which shows the route needs no credential.
+            let owner_exists = |status: u16| route.path == "/auth/register" && status == 403;
             let expected = match route.auth {
                 ClientAuth::Credential => 401,
                 ClientAuth::None => 200,
             };
-            assert_eq!(
-                anonymous.status(),
-                expected,
-                "{} {path} without credentials",
+            assert!(
+                anonymous_status == expected
+                    || (route.auth == ClientAuth::None && owner_exists(anonymous_status)),
+                "{} {path} without credentials: {anonymous_status} {anonymous_body}",
                 route.method
             );
-            let response = send(route.method, &path, route.headers, Some(&cookie), body)
+            let credential = if route.path == "/auth/logout" {
+                &spare
+            } else {
+                &cookie
+            };
+            let response = send(route.method, &path, route.headers, Some(credential), body)
                 .await
                 .unwrap();
             let status = response.status().as_u16();
@@ -925,7 +952,11 @@ mod tests {
             // A draft header save on a Build with no layers can prepare no draft.
             let handler_no_layers = status == 422 && body["code"] == "no_layers";
             assert!(
-                status == 200 || handler_not_found || handler_stale || handler_no_layers,
+                status == 200
+                    || handler_not_found
+                    || handler_stale
+                    || handler_no_layers
+                    || owner_exists(status),
                 "{} {path}: {status} {body}",
                 route.method
             );
@@ -972,6 +1003,46 @@ mod tests {
         let key: Value = key.json().await.unwrap();
         // Only the rebuild client's lifetimes give API keys an expiry.
         assert!(key["expiresAt"].is_string(), "{key}");
+        server.stop().await.unwrap();
+        owner.shutdown().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn auth_status_names_only_whether_the_owner_account_is_missing() {
+        let (owner, directory, listener, origin) = bound().await;
+        let router = router(
+            DesktopRebuild::from_value(Some("1")),
+            &owner,
+            routes(&origin),
+        )
+        .unwrap()
+        .unwrap();
+        let mut server = serve(listener, router);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let status = || async {
+            let response = client
+                .get(format!("{origin}/auth/status"))
+                .header("Origin", &origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        };
+        assert_eq!(status().await, json!({"setup_required": true}));
+        let cookie = session(&client, &origin, "owner@example.com").await;
+        assert_eq!(status().await, json!({"setup_required": false}));
+        // Signing out leaves the account, so setup stays done.
+        let out = client
+            .post(format!("{origin}/auth/logout"))
+            .header("Origin", &origin)
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(out.status(), 200);
+        assert_eq!(status().await, json!({"setup_required": false}));
         server.stop().await.unwrap();
         owner.shutdown().unwrap();
         std::fs::remove_dir_all(directory).unwrap();

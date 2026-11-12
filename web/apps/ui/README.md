@@ -74,8 +74,8 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
 
 ## Talking to the Rust core
 
-- The dev server listens on `127.0.0.1:5174` and forwards `/api`, `/ws` and
-  `/health` to `PP_UI_CORE_URL`, for example
+- The dev server listens on `127.0.0.1:5174` and forwards `/api`, `/ws`,
+  `/health` and `/auth` to `PP_UI_CORE_URL`, for example
   `PP_UI_CORE_URL=http://127.0.0.1:8080`. The value must be an http(s) origin
   with no path. There is no default: without it the dev server forwards nothing,
   so it cannot reach the Node server by accident. `core-proxy.ts` holds this
@@ -87,6 +87,29 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
 - `readCore` and `writeCore` in `src/core/rust.ts` are the typed GET and write.
   `writeCore` checks the body against the generated request schema before it
   sends, and the answer against the response schema.
+
+## Sign-in and setup
+
+`/login` and `/setup` render outside the frame (`src/auth/`). Both read
+`GET /auth/status` first, which says only whether the owner account exists yet.
+
+- **First run.** The bootstrap link (`pp-server bootstrap-url`, or the desktop
+  app) opens the UI. With no account, the setup screen takes an email and the
+  password twice, calls `/auth/register` and opens Today.
+- **Sign-in.** Email and password go to `/auth/login`, then the app opens the page
+  in `next`. `next` is used only when it is a same-origin path to a screen this UI
+  routes (`src/auth/next.ts`); `//host`, full URLs and unknown paths open Today.
+  The email is never filled in from the core.
+- **Signed out.** A 401 from any read or write opens `/login?next=<this page>`
+  (`App.tsx`). If `/auth/status` itself answers 401, the browser's link to the
+  core has ended, and the screen asks for a new sign-in link.
+- **Messages.** A wrong email or password, 20 attempts in a minute (429), and an
+  unreachable core each have their own text, with no account detail. An
+  unreachable core offers Try again.
+- **Sign out** is in the header. It calls `/auth/logout`, drops cached reads and
+  replaces the page with `/login`, so Back shows no signed-in content. Signing out
+  also stops the core, as in the desktop app ([Docker](../../../docs/docker.md)),
+  so signing back in needs the core started again and a new bootstrap link.
 
 ## Builds
 

@@ -67,6 +67,11 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v2/farm-log` (query `cursor`, `limit`) | | `FarmLogPage` |
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
+| `GET /auth/status` | | `AuthStatus` (`setup_required` only) |
+| `GET /auth/me` | | `CurrentUser` |
+| `POST /auth/login` | `SignInRequest` | `SignedIn` |
+| `POST /auth/register` | `RegisterRequest` | `SignedIn` |
+| `POST /auth/logout` | | `SignedOut` |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).
 
@@ -74,7 +79,7 @@ The Checkoff burst types (`pp_storage::checkoff_progress::wire`) are the subset 
 
 `Problem` is the body of every error any covered route returns, served as `application/problem+json`. Its `type` is a `z.enum` of the stable problem URNs and `errors` holds at most 16 field errors. Route-specific extension members, such as a draft conflict's `workspace`, are stripped by `z.object`. See [Problem responses](../../../docs/problem-responses.md).
 
-Every route except `/health` needs a session cookie or API key. 200 bodies are typed per route; every error body is `Problem`. The `/api/v1` mounts answer with the legacy Plan summary and are not covered.
+Every route needs a session cookie or API key except `/health` and the account routes a signed-out owner uses: `/auth/status`, `/auth/login`, `/auth/register` and `/auth/logout`. The login and register handlers read their bodies field by field; `SignInRequest` and `RegisterRequest` describe the bodies the UI sends. 200 bodies are typed per route; every error body is `Problem`. The `/api/v1` mounts answer with the legacy Plan summary and are not covered.
 
 `pp-core`'s `client_routes_match_registrations` test sends each route to the composed routers. It checks that the route is registered, refuses anonymous requests when it needs a credential, and reaches its handler.
 
@@ -100,7 +105,7 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 ## Wire rules
 
 - **Unknown keys.** Request DTOs use `#[serde(deny_unknown_fields)]`, so their schemas are `z.strictObject` and reject unknown keys. Response DTOs use `z.object`, which strips unknown keys.
-- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors` (omitted when empty, as RFC 9457 allows) and `Health`'s `modules` and the six members Node's `/health` does not send (`degraded_detail`, `single_user_auth`, `single_user_setup_required`, `owner_mapping_required`, `github_oauth_configured`, `discord_oauth_configured`), so a client decodes both bodies. `Omittable<T>` marks such a member. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, using `schemars(with = "RequiredNullable<T>")` or an explicit required key in the exported nullable schema.
+- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors` (omitted when empty, as RFC 9457 allows) and `Health`'s `modules` and the six members Node's `/health` does not send (`degraded_detail`, `single_user_auth`, `single_user_setup_required`, `owner_mapping_required`, `github_oauth_configured`, `discord_oauth_configured`), so a client decodes both bodies. `RegisterRequest`'s `display_name` may be omitted. `Omittable<T>` marks such a member. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, using `schemars(with = "RequiredNullable<T>")` or an explicit required key in the exported nullable schema.
 - **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision.
 - **Maps and free JSON.** A Rust map (`BTreeMap<String, T>`) becomes `z.record(z.string(), T)`, and `serde_json::Value` inside a map becomes `z.json()`. Decision `params` and `result` are the only free JSON. The round-trip tests skip the unknown-key and omitted-field checks for record entries and every check under `z.json()`.
 - **Tagged unions.** Internally tagged enums become `z.discriminatedUnion` on their tag (`kind` or `status`).

@@ -5,10 +5,11 @@ The coordinator guard reads score comments only from `scorer_authors` in
 seat's score, so the login does not identify the model. A dedicated bot
 identity is the follow-up.
 
-Each score occupies a line in this format, with a full lowercase head SHA:
+Each score occupies a line in this format, with a full lowercase head SHA. `vendor=` and
+`author=` take a name from `vendors` (the `vendors` list in `scripts/merge-classes.json`):
 
 ```text
-pp-score head=<40 hex> seat=<seat-id> vendor=<openai|anthropic|xai> score=<integer> author=<openai|anthropic|xai>
+pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|deepseek|openai|xai|zhipu> score=<integer> author=<anthropic|deepseek|openai|xai|zhipu>
 ```
 
 The coordinator records the head branch's author vendor in `author=`.
@@ -16,10 +17,13 @@ This is trusted coordinator metadata, not a vendor inferred from the GitHub
 account. All score records for the current head must agree on it.
 
 The allowed seats are data: `scorer_seats` in `scripts/merge-classes.json` maps each seat to its
-vendor. Since 2026-11-11 (owner decision) they are `claude-opus-5-5` (Anthropic) and `grok-4.7`
-(xAI). A sensitive PR needs two allowed seats from two different vendors, neither of them the
-PR author's vendor (OpenAI for Sol lanes), each scoring at least 9 on the exact head. Repeated
-seats count once. Other seats do not qualify.
+vendor. Since 2026-11-12 (owner decision) they are `claude-opus-5-5` (Anthropic), `grok-4.7`
+(xAI), `glm-5.3-flash-free` (Zhipu) and `deepseek-v4.1-flash-free` (DeepSeek). OpenCode runs the
+last two as `opencode/glm-5.3-flash-free` and `opencode/deepseek-v4.1-flash-free`, variant max.
+`gpt-6.1-sol` is not a seat; `openai` stays a vendor because Sol-authored PRs name it in `author=`.
+A sensitive PR needs two allowed seats from two different vendors, neither of them the PR author's
+vendor (Anthropic for Claude lanes, OpenAI for Sol lanes), each scoring at least 9 on the exact
+head. Repeated seats count once. Other seats do not qualify.
 
 Missing fields, malformed score lines, unknown seats or vendors, mismatched
 seat vendors, same-vendor scoring, conflicting author metadata, and scores

@@ -2,7 +2,7 @@
   "version": 2,
   "crates": {
     "pp-api": {
-      "module": 59,
+      "module": 62,
       "item": 165,
       "statement": 23
     },
@@ -22,7 +22,7 @@
       "statement": 0
     },
     "pp-core": {
-      "module": 43,
+      "module": 47,
       "item": 40,
       "statement": 12
     },
@@ -62,8 +62,8 @@
       "statement": 0
     },
     "pp-server": {
-      "module": 2,
-      "item": 0,
+      "module": 3,
+      "item": 6,
       "statement": 0
     },
     "pp-services": {
@@ -77,8 +77,8 @@
       "statement": 3
     },
     "pp-storage": {
-      "module": 131,
-      "item": 405,
+      "module": 134,
+      "item": 407,
       "statement": 370
     },
     "pp-testkit": {

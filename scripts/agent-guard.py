@@ -24,8 +24,8 @@ from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import subprocess
-import time
 import sys
+import time
 from urllib.parse import unquote_plus, urlsplit
 
 MERGE = ("Only the coordinator worktree merges, with `gh pr merge <number> --squash --match-head-commit <sha>`; "
@@ -44,6 +44,7 @@ SHELL_PREFIXES = {"!", "{", "}", "if", "then", "elif", "else", "while", "until",
 # Wrapper programs and their options that take a separate value.
 WRAPPERS = {
     "command": set(),
+    "builtin": set(),
     "env": {"-u", "--unset", "-C", "--chdir"},
     "exec": {"-a"},
     "nohup": set(),
@@ -51,9 +52,41 @@ WRAPPERS = {
     "nice": {"-n", "--adjustment"},
     "time": {"-f", "--format", "-o", "--output"},
     "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "xvfb-run": {"-n", "-s", "-e", "-f", "-p", "-w"},
+    "pp-netns": set(),
+    "direnv": set(),
 }
 # Positional operands, such as a duration, that come before the wrapped program.
 WRAPPER_OPERANDS = {"timeout": 1}
+# Each wrapper's single-letter flags that take no value. In a bundle such as env -vu, letters before the first one
+# that takes a value must come from here; anything else leaves the bundle unreadable.
+WRAPPER_BOOLEANS = {"command": "pvV", "builtin": "pvV", "env": "0iv", "exec": "cl", "nohup": "", "nice": "0123456789",
+                    "sudo": "AbEeHiKklnPSsVv", "time": "apqv", "timeout": "v", "xvfb-run": "adhl", "pp-netns": "", "direnv": ""}
+# Each wrapper's long options, and whether one takes the next word as its value. A long option the guard does not
+# know, including an abbreviation such as env --un, leaves the command unreadable.
+WRAPPER_LONG = {
+    "xvfb-run": {"--auto-servernum": False, "--auto-display": False, "--listen-tcp": False,
+                 "--server-num": True, "--server-args": True, "--error-file": True, "--auth-file": True,
+                 "--xauth-protocol": True, "--wait": True},
+    "pp-netns": {},
+    "direnv": {},
+    "command": {},
+    "builtin": {},
+    "env": {"--ignore-environment": False, "--null": False, "--unset": True, "--chdir": True, "--debug": False},
+    "exec": {},
+    "nohup": {},
+    "nice": {"--adjustment": True},
+    "sudo": {"--user": True, "--group": True, "--host": True, "--prompt": True, "--close-from": True,
+             "--chdir": True, "--chroot": True, "--command-timeout": True, "--other-user": True, "--askpass": False,
+             "--background": False, "--preserve-env": False, "--edit": False, "--set-home": False,
+             "--login": False, "--reset-timestamp": False, "--list": False, "--non-interactive": False,
+             "--preserve-groups": False, "--stdin": False, "--shell": False, "--validate": False,
+             "--bell": False},
+    "time": {"--format": True, "--output": True, "--append": False, "--portability": False, "--quiet": False,
+             "--verbose": False},
+    "timeout": {"--signal": True, "--kill-after": True, "--foreground": False, "--preserve-status": False,
+                "--verbose": False},
+}
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
 HOOK_COMMANDS = {"am", "cherry-pick", "merge", "rebase", "revert"}
 MAIN_REF = re.compile(r"^(?:(?:refs/)?heads/)?main$")
@@ -62,7 +95,44 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
                      "--reuse-message", "--template", "--trailer"}
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
-GH_GROUPS = {"pr", "release", "variable"}
+GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext", "codespace", "cs", "skill",
+             "skills", "agent-task", "agent-tasks", "agent", "agents", "attestation", "at", "ruleset", "rs"}
+# gh's built-in commands and help topics (gh help, gh 2.103). Any other subcommand is an alias or an extension,
+# which runs a command the guard never sees, wherever its config lives. co is left out: it is a default alias.
+GH_COMMANDS = frozenset({
+    "accessibility", "actions", "agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace",
+    "completion", "config", "copilot", "discussion", "environment", "exit-codes", "ext", "extension", "extensions",
+    "formatting", "gist", "gpg-key", "help", "issue", "label", "licenses", "mintty", "org", "pr", "preview",
+    "project", "reference", "release", "repo", "ruleset", "run", "search", "secret", "skill", "ssh-key", "status",
+    "telemetry", "variable", "version", "workflow", "skills", "at", "rs", "agent", "agents", "agent-tasks", "cs",
+})
+# Built-in groups whose other subcommands run or change code the guard never sees: an extension (exec, browse,
+# create, remove, install, upgrade), an agent skill (install, update, publish), or a remote agent task (create,
+# which starts an agent acting on the repo with the user's GitHub identity). Only these subcommands are allowed.
+GH_READ_ONLY = {"extension": {"list", "search"}, "skill": {"list", "search", "preview"},
+                "agent-task": {"list", "view"}}
+# gh's own aliases (gh 2.103 help): each command alias and, per group, each subcommand alias names its canonical
+# form, so one canonical table decides every check.
+GH_ALIASES = {"at": "attestation", "rs": "ruleset", "cs": "codespace", "agent": "agent-task",
+              "agents": "agent-task", "agent-tasks": "agent-task", "ext": "extension", "extensions": "extension",
+              "skills": "skill"}
+GH_SUBCOMMAND_ALIASES = {"skill": {"show": "preview"}}
+# Groups whose list command answers to ls too (gh 2.103 help).
+GH_LS_GROUPS = {"alias", "cache", "codespace", "discussion", "extension", "gist", "gpg-key", "issue", "label", "org",
+                "pr", "project", "release", "repo", "ruleset", "run", "secret", "skill", "ssh-key", "variable",
+                "workflow"}
+# Built-in commands that run code: codespace ssh, cp, code, and jupyter run it in a codespace, and copilot downloads
+# and runs the Copilot CLI. Lanes have no use for either.
+GH_RUNS_CODE = {"codespace", "copilot"}
+GH_CODE = ("`gh {}` runs or changes code the guard cannot see (an extension, an agent skill, a codespace, a remote "
+           "agent task, or the Copilot CLI); lanes may not run it.")
+GH_HELP = "Use gh <command> --help instead of gh help; a gh alias named help could answer to it."
+UNKNOWN_GH = ("`gh {}` is not a built-in gh command, so it would run an alias or an extension; lanes may not run "
+              "those. Run the built-in command it stands for.")
+# Variables that move gh's config, and with it its aliases and extensions.
+GH_CONFIG_VARIABLES = ("GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME", "GH_TOKEN", "GITHUB_TOKEN")
+GH_REDIRECT = ("gh config redirected: this line redirects gh configuration or authentication; "
+               "run gh with its normal config.")
 # gh options that may come before or between command words; none takes the next word as its value.
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
@@ -96,6 +166,29 @@ UNREAD_BODY = ("The guard must read a comment body literally to check it for a p
                "Write the body as a literal argument, or to a file passed with --body-file in a command "
                "of its own; no variables, substitutions, or stdin.")
 VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
+ALIAS = "A gh alias hides the command from the guard; run the full gh command instead."
+GH_CONFIG = "The gh config can define aliases that hide a command from the guard; ask the maintainer to change it."
+SPLIT_GH = "Cannot classify a gh command built from variables; write gh and its arguments literally."
+# Interpreter code (python3 -c, node -e) cannot be parsed as shell, so its text is matched after quote
+# characters and backslashes are removed.
+NAMED_MERGE = re.compile(r"\bpr\s*merge\b")
+MERGE_WORD = re.compile(r"\bmerge\b|mergepullrequest|enablepullrequestautomerge", re.I)
+# Interpreter code splits into words at whitespace, quotes, and the punctuation around string literals and calls.
+CODE_WORD = re.compile(r"[^\s'\"`(),;\[\]{}+]+")
+INTERPRETERS = {"python", "python3", "node", "perl", "ruby", "php", "deno", "bun"}
+# gh options that take a value, before or between gh, pr, and the subcommand.
+GH_VALUE_FLAGS = {"-R", "--repo"}
+# Programs that run another command from their arguments in a way program() does not unwrap. A gh command
+# under one of them that names a merge, or that the guard cannot read literally, is refused.
+UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "parallel", "su", "runuser", "doas",
+                     "ssh", "unbuffer", "chronic", "ionice", "taskset", "chrt", "systemd-run", "busybox", "entr",
+                     "stdbuf", "strace", "ltrace", "fakeroot", "firejail", "bwrap", "unshare", "nsenter", "chroot",
+                     "expect", "tmux", "screen", "dtach", "at", "batch"}
+# Runners that hand an argument to a shell as a command line (script -c, su -c, flock -c, entr -s, ssh host,
+# watch, tmux).
+# The others run a program with arguments, so only their program positions are commands.
+STRING_RUNNERS = {"script", "su", "runuser", "flock", "expect", "ssh", "watch", "tmux", "screen", "dtach",
+                  "parallel", "at", "batch", "entr"}
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -160,7 +253,7 @@ class Unclear(Exception):
     pass
 
 
-def protected_path(raw):
+def protected_path(raw, cwd=None):
     # Collapse "dir/../" so an alias such as .claude/agents/../settings.json is checked as its target.
     path = PurePosixPath(posixpath.normpath(raw.replace("\\", "/")) if raw else raw)
     name = path.name
@@ -172,7 +265,37 @@ def protected_path(raw):
         return "This file is generated. Run its generator instead of editing it."
     if any(a == ".claude" and b in CLAUDE_HOOK_CONFIG for a, b in zip(path.parts, path.parts[1:])):
         return "Claude Code settings and hooks run the safety guard; ask the maintainer to change them."
+    if gh_config_path(path, cwd):
+        return GH_CONFIG
     return None
+
+
+def gh_config_path(path, cwd=None):
+    """Whether path lies in a gh config directory: $GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, or $HOME/.config/gh.
+
+    Relative paths, and a relative GH_CONFIG_DIR, resolve against cwd: the cwd in the hook payload, which
+    is the directory the agent's tool runs in. A caller that has no cwd falls back to the hook process's working
+    directory. A folder elsewhere that only looks like .config/gh is not the config.
+    """
+    here = cwd if cwd and os.path.isabs(cwd) else None
+    if here is None:
+        try:
+            here = os.getcwd()
+        except OSError:
+            here = "/"
+
+    def absolute(raw):
+        return posixpath.normpath(posixpath.join(here, os.path.expanduser(raw)))
+
+    home, xdg = os.environ.get("HOME", ""), os.environ.get("XDG_CONFIG_HOME", "")
+    roots = [os.environ.get("GH_CONFIG_DIR", ""), posixpath.join(xdg, "gh") if xdg else "",
+             posixpath.join(home, ".config/gh") if home else ""]
+    target = absolute(path.as_posix())
+    for root in filter(None, roots):
+        root = absolute(root)
+        if target == root or target.startswith(root.rstrip("/") + "/"):
+            return True
+    return False
 
 
 SEPARATORS = ";&|\n()"
@@ -185,6 +308,7 @@ ANSI_C_QUOTE = re.compile(r"\$'((?:\\.|[^'\\])*)'", re.S)
 
 def closing_double_quote(source, i):
     while i < len(source):
+        tick()
         char = source[i]
         if char == "\\":
             i += 2
@@ -203,6 +327,7 @@ def heredoc_body(source, i, delimiter, tabs, expands):
     """Return the body lines of a heredoc that starts at i and the index after its delimiter."""
     body = []
     while i < len(source):
+        tick()
         end = source.find("\n", i)
         end = len(source) if end < 0 else end
         line = source[i:end].rstrip("\r")
@@ -234,6 +359,7 @@ def closing_paren(source, i):
     # cases holds the paren depth at each open case; a ")" at that depth ends a pattern.
     depth, pending, start, cases = 1, [], i, []
     while i < len(source):
+        tick()
         char = source[i]
         if char in "ce":
             keyword = re.match(r"(case|esac)(?=[\s;&|)]|$)", source[i:i + 5])
@@ -294,6 +420,7 @@ def closing_paren(source, i):
 
 def closing_backtick(source, i):
     while i < len(source):
+        tick()
         if source[i] == "\\":
             i += 2
         elif source[i] == "`":
@@ -307,6 +434,7 @@ def substitutions(text):
     """Return command substitutions in text where quotes are literal, such as a heredoc body."""
     found, i = [], 0
     while i < len(text):
+        tick()
         if text[i] == "\\":
             i += 2
         elif text.startswith("$(", i):
@@ -322,15 +450,25 @@ def substitutions(text):
     return found
 
 
-def shell_commands(source):  # noqa: C901
-    """Split shell source into (arguments, in_subshell, after_and_or) for simple commands.
+def shell_commands(source, facts=None):  # noqa: C901
+    """Split shell source into (arguments, scope, after_and_or) for simple commands.
 
     Handles quotes, escapes, continuations, separators, comments, redirections,
     heredoc bodies, and command substitutions. It does not evaluate expansions.
+
+    scope is False for a command in the line's own shell. Otherwise it is truthy: (groups, stage), where groups is
+    the tuple of the ( ) subshells around the command, outermost first, and stage is a number unique to one pipeline
+    stage or background job, each its own process, or None. A command substitution's commands get True.
     """
     commands, args, word, heredocs, nested = [], [], None, [], []
     drop_next = piped = after_logic = False
     depth = 0
+    groups, counter = [], itertools.count(1)
+    facts = {} if facts is None else facts
+
+    def scope(group_path, in_pipe):
+        stage = next(counter) if in_pipe else None
+        return (group_path, stage) if group_path or stage else False
 
     def finish_word():
         nonlocal word, drop_next
@@ -343,6 +481,7 @@ def shell_commands(source):  # noqa: C901
 
     i = 0
     while i < len(source):
+        tick()
         char = source[i]
         if char == "\\" and i + 1 < len(source):
             if source[i + 1] == "\n":
@@ -361,6 +500,7 @@ def shell_commands(source):  # noqa: C901
         elif char == '"':
             j, text = i + 1, []
             while True:
+                tick()
                 if j >= len(source):
                     raise ValueError("unterminated quote")
                 c = source[j]
@@ -437,16 +577,38 @@ def shell_commands(source):  # noqa: C901
             finish_word()
             if char in SEPARATORS:
                 drop_next = False
-                # A pipeline stage or background job runs in its own subshell.
-                pipe = char in "|&" and source[i + 1:i + 2] != char and source[i - 1:i] != char
-                # A command after && or || may not run.
-                logic = char in "|&" and not pipe
-                inside = depth > 0
+                # Read an operator token, joining a backslash-newline before its second character.
+                # Quoted and escaped operators arrive as words and never enter this branch.
+                separator = char
+                if char in "|&":
+                    end = i + 1
+                    while source.startswith(("\\\n", "\\\r\n"), end):
+                        end += 3 if source.startswith("\\\r\n", end) else 2
+                    if source[end:end + 1] == char or (char == "|" and source[end:end + 1] == "&"):
+                        separator += source[end]
+                        i = end
+                pipe = separator in ("|", "|&", "&")
+                logic = separator in ("&&", "||")
+                if char == "(" and args and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args[-1]):
+                    if re.match(r"\s*\)\s*\{", source[i + 1:]):
+                        facts["function"] = True
+                inside = tuple(groups)
                 depth += {"(": 1, ")": -1}.get(char, 0)
+                if char == "(":
+                    groups.append(next(counter))
+                elif char == ")" and groups:
+                    groups.pop()
+                had_args = bool(args)
                 if args:
-                    commands.append((args, inside or pipe or piped, after_logic))
+                    commands.append((args, scope(inside, pipe or piped), after_logic))
                     args = []
-                piped, after_logic = pipe, logic
+                if separator == "&":
+                    facts["background"] = True
+                pending = not had_args and (piped or after_logic)
+                # Only a pipe token carries pipeline scope forward. Newlines awaiting its next stage
+                # keep it pending; a background & token scopes only the preceding command conservatively.
+                piped = separator in ("|", "|&") or (separator == "\n" and pending and piped)
+                after_logic = logic or (separator == "\n" and pending and after_logic)
             i += 1
             if char == "\n":
                 for delimiter, expands, tabs in heredocs:
@@ -459,16 +621,55 @@ def shell_commands(source):  # noqa: C901
             i += 1
     finish_word()
     if args:
-        commands.append((args, depth > 0 or piped, after_logic))
+        commands.append((args, scope(tuple(groups), piped), after_logic))
     for inner in nested:
-        commands.extend((inner_args, True, conditional) for inner_args, _, conditional in shell_commands(inner))
+        commands.extend((inner_args, True, conditional) for inner_args, _, conditional in shell_commands(inner, facts))
     return commands
 
 
-def program(args):
+def wrapper_option_words(name, option):
+    """Return how many words a wrapper option uses: 2 when it takes the next word as its value, else 1.
+
+    A bundle is read letter by letter, as the wrapper does: the first letter that takes a value uses the rest of
+    the bundle as that value (timeout -k1s, env -uFOO), or the next word when nothing follows (env -vu HOME).
+    Letters before it must be the wrapper's boolean flags. A long option must be one of the wrapper's long
+    options in full, in WRAPPER_LONG. Anything else means the guard cannot tell where the program starts, so it
+    raises Unclear.
+    """
+    if name == "env" and re.match(r"^-[^-]*S", option):
+        raise Unclear
+    if option.startswith("--"):
+        long, attached, _ = option.partition("=")
+        if long in ("--help", "--version"):
+            return 1
+        if long not in WRAPPER_LONG[name]:
+            raise Unclear
+        return 2 if WRAPPER_LONG[name][long] and not attached else 1
+    if name == "env" and option == "-":
+        return 1
+    return wrapper_bundle(name, option)[0]
+
+
+def wrapper_bundle(name, option):
+    """Return (words used, the value-taking flag or None) for a short-option bundle of a wrapper.
+
+    The first letter that takes a value uses the rest of the token as its value, whatever characters it holds
+    (env -uGH_TOKEN, env -C/tmp, timeout -k0.5s, time -f%E), or the next word when nothing follows. Letters before
+    it must be the wrapper's boolean flags, or the bundle is unclear.
+    """
+    for k, flag in enumerate(option[1:]):
+        if "-" + flag in WRAPPERS[name]:
+            return (1 if option[k + 2:] else 2), "-" + flag
+        if flag not in WRAPPER_BOOLEANS.get(name, ""):
+            raise Unclear
+    return 1, None
+
+
+def program(args, cwd=None, direnv_target=False):
     """Return the executed program name, its arguments, whether a wrapper changed directory,
     and the environment assignments the command makes."""
     i, moved, assigned = 0, False, []
+    seen_direnv = wrapped = False
     while i < len(args):
         word = args[i]
         if ASSIGNMENT.match(word) or word in SHELL_PREFIXES:
@@ -477,22 +678,40 @@ def program(args):
             i += 1
             continue
         name = PurePosixPath(word).name
-        if name not in WRAPPERS:
+        if name not in WRAPPERS or (name == "direnv" and args[i + 1:i + 2] != ["exec"]):
             if name in DECLARATIONS:
                 assigned += [arg for arg in args[i + 1:] if ASSIGNMENT.match(arg)]
-            return name, args[i + 1:], moved, assigned
+            return name, args[i + 1:], moved or (wrapped and name in ("cd", "pushd", "popd")), assigned
+        wrapped = True
         i += 1
         while i < len(args) and args[i].startswith("-"):
             option = args[i]
             if option == "--":
                 i += 1
                 break
-            if name == "env" and (option.startswith("--split-string") or re.match(r"^-[^-]*S", option)):
+            # Only the option that takes the value can change directory, so env -uGH_CONFIG_DIR does not.
+            flag = option.split("=", 1)[0] if option.startswith("--") else (
+                wrapper_bundle(name, option)[1] if option != "-" else None)
+            moved = moved or flag in WRAPPER_CHDIR
+            i += wrapper_option_words(name, option)
+        if name == "direnv":
+            if seen_direnv or i + 1 >= len(args):
                 raise Unclear
-            moved = moved or option.split("=", 1)[0] in WRAPPER_CHDIR or bool(re.match(r"^-[^-]*[CD]", option))
-            i += 2 if option in WRAPPERS[name] else 1
+            seen_direnv = True
+            target = args[i + 1]
+            moved = moved or target not in (".", "./")
+            i += 1 if direnv_target else 2
+            direnv_target = False
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
+
+
+def program_readings(args, cwd=None):
+    """Check both direnv exec readings without consulting the filesystem."""
+    first = program(args, cwd)
+    second = program(args, cwd, direnv_target=True)
+    # Literal . and ./ cannot be executable files; do not reinterpret them as shell source builtins.
+    return [first, second] if second != first and second[0] not in (None, "") else [first]
 
 
 def options(args, value_flags="", stop_flags="", value_long=()):
@@ -536,8 +755,7 @@ def current_branch(cwd, location):
     if cwd is None or any(EXPANDED in arg for arg in location):
         return None
     try:
-        result = subprocess.run(["git", *location, "symbolic-ref", "--quiet", "--short", "HEAD"],
-                                cwd=cwd, capture_output=True, text=True, timeout=5, check=False)
+        result = run_git([*location, "symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
@@ -555,8 +773,7 @@ def push_config(cwd, location):
     # git config exits 1 when the key is unset; --type=bool applies Git's own boolean rules.
     for query in (["--get-regexp", r"^remote\..*\.push$"], ["--type=bool", "--get", "push.followTags"]):
         try:
-            result = subprocess.run(["git", *location, "config", *query],
-                                    cwd=cwd, capture_output=True, text=True, timeout=5, check=False)
+            result = run_git([*location, "config", *query], cwd)
         except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode == 1 and not result.stdout:
@@ -636,6 +853,8 @@ def git_command(args):
             raise Unclear(EXPANSION)
         if option in ("-C", "--git-dir", "--work-tree", "-c", "--config-env"):
             location += [option, value]
+        elif option.startswith("-C"):
+            location += ["-C", option[2:]]
         elif option.startswith(("--git-dir=", "--work-tree=", "--config-env=")):
             location.append(option)
         i += 2 if option in GIT_VALUE_OPTIONS else 1
@@ -691,7 +910,14 @@ def moves_head(name, args):
 
 
 def git_reason(args, cwd, head_moves=False, config_unknown=False, env_config=False):
+    # Main ignored attached -C operands. Preserve any refusal from that reading as well as
+    # checking the correctly resolved location, so accepting the syntax cannot loosen main.
     i, location, reason = git_command(args)
+    legacy = [arg for index, arg in enumerate(args) if not (index < i and arg.startswith("-C") and arg != "-C")]
+    if legacy != args:
+        refusal = git_reason(legacy, cwd, head_moves, config_unknown, env_config)
+        if refusal:
+            return refusal
     if reason or i >= len(args):
         return reason
     command, rest = args[i], args[i + 1:]
@@ -906,19 +1132,45 @@ def gh_command(args):
     return path + without_repo_flags(args[i:])
 
 
+def canonical_gh(args):
+    """Return gh_command's words with gh's own aliases resolved: the command (at, rs, cs, agent, ext, skills...),
+    and within a group its subcommand (ls for list, skill show for preview)."""
+    if not args or args[0].startswith("-"):
+        return args
+    group = GH_ALIASES.get(args[0], args[0])
+    if args[1:2]:
+        action = GH_SUBCOMMAND_ALIASES.get(group, {}).get(args[1], args[1])
+        action = "list" if action == "ls" and group in GH_LS_GROUPS and group not in ("release", "variable") else action
+        return [group, action, *args[2:]]
+    return [group]
+
+
 def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     """Return why a gh command is refused. marker says the command text holds a review marker."""
-    args = gh_command(args)
+    args = canonical_gh(gh_command(args))
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
+    if args[:1] and not args[0].startswith("-") and args[0] not in GH_COMMANDS:
+        return UNKNOWN_GH.format(args[0])
     if args[:1] == ["help"]:
-        return None
+        return GH_HELP
     release_write = (args[:1] == ["release"] and args[1:2] and not args[1].startswith("-")
                      and args[1] not in RELEASE_READS)
     if args[:2] == ["pr", "merge"] or release_write:
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
+    group = args[0] if args else None
+    if group in GH_RUNS_CODE or (group in GH_READ_ONLY and args[1:2] and args[1] not in GH_READ_ONLY[group]):
+        # Help is allowed: the group alone (gh codespace prints its help), or only --help or -h after the action.
+        # gh copilot alone runs the Copilot CLI, so it is never help.
+        tail = args[2:] if group in GH_GROUPS else args[1:]
+        if (len(args) == 1 and group in GH_GROUPS) or (tail and all(arg in ("--help", "-h") for arg in tail)):
+            return None
+        return GH_CODE.format(" ".join(args[:2]) if group in GH_GROUPS and args[1:2] else group)
+    # An alias could expand to any command, including a merge the guard refuses.
+    if args[:1] == ["alias"] and args[1:2] and args[1] in ("set", "import"):
+        return None if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]) else ALIAS
     if args[:1] == ["variable"]:
         # Only reads and help are allowed; any other form, including options before the subcommand, may write.
         if not args[1:] or args[1] in VARIABLE_READS or all(arg in ("--help", "-h") for arg in args[1:]):
@@ -1032,7 +1284,7 @@ def coordinator_merge(args, cwd):
     The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other
     option, run from the coordinator worktree (see coordinator_worktree).
     """
-    if args[:3] != ["gh", "pr", "merge"] or cwd is None:
+    if args[:3] != ["gh", "pr", "merge"] or cwd is None or os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
         return False
     number, squash, sha, rest = None, False, None, args[3:]
     while rest:
@@ -1189,8 +1441,7 @@ def coordinator_worktree(cwd):
     if cwd is None or not os.path.isabs(root):
         return False
     try:
-        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
-                             text=True, timeout=5, check=True).stdout.strip()
+        top = run_git(["rev-parse", "--show-toplevel"], cwd, check=True).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return False
     root, lanes = os.path.realpath(root), os.path.realpath(LANE_WORKTREES)
@@ -1198,7 +1449,7 @@ def coordinator_worktree(cwd):
 
 
 def shell_script(args):
-    """Return (script, unclear) for a sh, bash, zsh, or dash invocation.
+    """Return (script, unclear) for a recognized shell invocation.
 
     script is what the shell runs with -c, or None. unclear is True when an option before the
     script is not one the guard knows, so it cannot tell which argument is the script.
@@ -1242,42 +1493,556 @@ def sourced_reason(name, rest, cwd):
     return EVAL if EXPANDED in text or re.search(r"\b(?:gh|git)\b", text) else None
 
 
-def check_command(command, cwd, outer=None):
+def unquoted(text):
+    """Return text without quote characters, backslashes, or the expansion marker, for word matching."""
+    return re.sub(r"['\"\\]", "", text.replace(EXPANDED, " "))
+
+
+def names_merge(text):
+    """Whether text names gh and a PR merge once quotes and backslashes are removed."""
+    text = unquoted(text)
+    return bool(re.search(r"\bgh\b", text) and NAMED_MERGE.search(text))
+
+
+def skip_gh_options(args, j):
+    """Return the index of the first word at or after j that is not a gh option or an option's value."""
+    while j < len(args) and args[j].startswith("-"):
+        j += 2 if args[j] in GH_VALUE_FLAGS else 1
+    return j
+
+
+def merge_tokens(args, api=False, first_only=False):
+    """Whether the words hold gh, then pr and merge, with only gh options between them.
+
+    With api, a gh api call that names a merge endpoint or mutation counts too. With first_only, gh must be the
+    first word. A word of data that only contains the text, such as a comment body or a commit message, is one
+    word and never matches.
+    """
+    for i, word in enumerate(args[:1] if first_only else args):
+        if PurePosixPath(word).name != "gh":
+            continue
+        j = skip_gh_options(args, i + 1)
+        if j < len(args) and args[j] == "pr":
+            k = skip_gh_options(args, j + 1)
+            if k < len(args) and args[k] == "merge":
+                return True
+        if api and j < len(args) and args[j] == "api" and any(MERGE_WORD.search(arg) for arg in args[j + 1:]):
+            return True
+    return False
+
+
+def command_strings(name, rest):
+    """Return the arguments of this command that another shell runs as a command line."""
+    if name == "alias":
+        return [arg.split("=", 1)[1] for arg in rest if "=" in arg]
+    if name == "git":
+        values = [arg.split("=", 1)[1] for arg in rest if re.match(r"^alias\.[^=\s]+=", arg)]
+        values += [rest[i + 1] for i, arg in enumerate(rest[:-1]) if re.fullmatch(r"alias\.\S+", arg)]
+        return [value[1:] if value.startswith("!") else value for value in values]
+    if name == "entr" and not any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", arg) for arg in rest):
+        return []
+    if name in STRING_RUNNERS:
+        return [arg for arg in rest if re.search(r"\s", arg)]
+    return []
+
+
+def pr_merge_after(args):
+    """Whether args, the words after an unknown program, read as gh's pr merge or a gh api merge."""
+    j = skip_gh_options(args, 0)
+    if j < len(args) and args[j] == "pr":
+        k = skip_gh_options(args, j + 1)
+        return k < len(args) and args[k] == "merge"
+    return j < len(args) and args[j] == "api" and any(MERGE_WORD.search(arg) for arg in args[j + 1:])
+
+
+def code_merge(code):
+    """Whether interpreter code holds gh, pr and merge as words in that order, with only gh options between."""
+    return merge_tokens(CODE_WORD.findall(code.replace(EXPANDED, " ")), api=True)
+
+
+# How deep hidden_merge follows nested shells, runners, and alias values before it stops reading.
+NESTING_LIMIT = 6
+# How many hidden_merge visits, and how many seconds, one command line may take. Past either the guard refuses
+# the line as too complex, so a long line cannot keep the hook running past its 10-second limit, where the hook
+# runner would let the command through.
+STEP_BUDGET = 5000
+CHECK_SECONDS = 2.0
+TOO_COMPLEX = ("This command line is too complex for the guard to check in time; split it into simpler "
+               "commands.")
+
+
+# Longer command lines are refused before any parsing; agents never need one this long.
+MAX_COMMAND_BYTES = 64 * 1024
+TOO_LONG = "This command line is too long for the guard to check; split it into shorter commands."
+# The deadline of the command line being checked, read by the parser's loops; None outside check_command.
+LINE_DEADLINE = None
+# git results for the command line being checked, keyed by (cwd, git arguments, environment override); None
+# outside check_command. A git config write or a branch change on the line already makes the guard treat config
+# and HEAD as unknown, so a cached answer is never used after the line could have changed it.
+LINE_GIT = None
+GIT_SECONDS = 5
+
+
+class TooComplex(Exception):
+    pass
+
+
+def merge_state():
+    """Return the per-line state every check of one command line shares: the memo, the visit count, and the
+    deadline. check_command makes it once for the top-level line and passes it to every nested script."""
+    return {"memo": {}, "lists": {}, "steps": 0, "deadline": time.monotonic() + CHECK_SECONDS}
+
+
+PARSER_TICKS = 0
+
+
+def tick():
+    """Count one parser loop step and check the line's deadline every 256 steps."""
+    global PARSER_TICKS
+    PARSER_TICKS += 1
+    if PARSER_TICKS % 256 == 0:
+        check_deadline()
+
+
+def run_git(args, cwd, env=None, check=False):
+    """Run git with args in cwd like subprocess.run, cached for the line and bounded by its deadline.
+
+    The timeout is GIT_SECONDS or the time left on the line, whichever is shorter. Past the deadline, or when git
+    runs out the line's time, it raises TooComplex.
+    """
+    key = (cwd, tuple(args), None if env is None else tuple(sorted(env.items())))
+    if LINE_GIT is not None and key in LINE_GIT:
+        result = LINE_GIT[key]
+    else:
+        timeout = GIT_SECONDS
+        if LINE_DEADLINE is not None:
+            timeout = min(timeout, LINE_DEADLINE - time.monotonic())
+            if timeout <= 0:
+                raise TooComplex(TOO_COMPLEX)
+        try:
+            result = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True,
+                                    timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            if LINE_DEADLINE is not None and time.monotonic() >= LINE_DEADLINE:
+                raise TooComplex(TOO_COMPLEX) from None
+            raise
+        if LINE_GIT is not None:
+            LINE_GIT[key] = result
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, ["git", *args], result.stdout, result.stderr)
+    return result
+
+
+def check_deadline():
+    """Raise TooComplex once the deadline of the command line being checked has passed."""
+    if LINE_DEADLINE is not None and time.monotonic() > LINE_DEADLINE:
+        raise TooComplex(TOO_COMPLEX)
+
+
+def nested_gh_refused(args, state):
+    """Whether gh_reason refuses gh args found below the top level. The reason is kept for hidden_reason. The
+    line's own directory stands in for cwd, so the coordinator worktree keeps its marker rules in nested gh."""
+    try:
+        reason = gh_reason(args, state.get("cwd"), alone=False)
+    except Unclear as error:
+        reason = str(error) or UNCLEAR
+    if reason:
+        state.setdefault("reason", reason)
+    return bool(reason)
+
+
+def code_gh_refused(code, state):
+    """Whether interpreter code names gh followed by words gh_reason refuses, such as an alias or extension name.
+    Like the rest of the interpreter rule this matches text, so it errs toward refusing."""
+    words = CODE_WORD.findall(code.replace(EXPANDED, " "))
+    return any(nested_gh_refused(words[i + 1:], state) for i, word in enumerate(words)
+               if PurePosixPath(word).name == "gh")
+
+
+def hidden_merge(words, state, depth=0, strict=False, scan=True, start=0):
+    """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
+    as a shell's -c script, or as the command line inside an alias value or a runner's command string.
+
+    An expansion or substitution in program position followed by pr merge, as in $(echo gh) pr merge, counts:
+    the guard cannot tell which program it names. strict is set inside a runner or an alias value, where the
+    guard's own gh checks never run, so a gh api merge counts there too.
+
+    The guard looks for gh pr merge only where a program runs: in program position after the wrappers
+    program() unwraps, in the arguments of a runner, in -c or -e code, and in alias values. The arguments of an
+    ordinary program, as in echo gh pr merge 12, are data. Help is decided for each simple command, as main's
+    gh_reason does: gh pr merge followed only by --help or -h is help.
+
+    scan is False when a runner's own suffix loop reached these words: the loop already tries every later
+    word as a program, so a runner found here does not scan its words again. Raises TooComplex past the step
+    budget or the deadline.
+
+    The words checked are words[start:]. state is the line's merge_state(); every caller passes the one its
+    command line started with, so no call starts a fresh budget.
+    """
+    # Every visit counts, memo hits and depth-limit visits included, before any other work.
+    state["steps"] += 1
+    if state["steps"] > STEP_BUDGET or time.monotonic() > state["deadline"]:
+        raise TooComplex(TOO_COMPLEX)
+    if depth >= NESTING_LIMIT:
+        # Past the limit the guard stops reading, so it fails closed: text that still names gh, after quotes and
+        # backslashes are removed, or holds an expansion counts as a merge.
+        raw = " ".join(words[start:])
+        return EXPANDED in raw or bool(re.search(r"\bgh\b", unquoted(raw)))
+    # One result per position (the word list, the start index, depth, strict, scan). The key holds no copy of the
+    # words, so the memo stays small however long the line is; "lists" keeps each list alive so its id stays
+    # unique while the line is checked.
+    key = (id(words), start, depth, strict, scan)
+    if key in state["memo"]:
+        return state["memo"][key]
+    state["lists"][id(words)] = words
+    state["memo"][key] = result = merge_in(words[start:], depth, strict, state, scan)
+    return result
+
+
+def merge_in(args, depth, strict, state, scan):
+    """The body of hidden_merge for one (words, depth, strict, scan); hidden_merge adds the memo and the limits."""
+    readings = program_readings(args, state.get("cwd"))
+    if len(readings) > 1:
+        other, other_rest, *_ = readings[1]
+        if hidden_merge([other, *other_rest], state, depth + 1, strict, scan):
+            return True
+    name, rest, *_ = readings[0]
+    if name is None:
+        return False
+    if EXPANDED in name:
+        return pr_merge_after(rest)
+    if name == "gh":
+        if merge_help(["gh", *rest]):
+            return False
+        if merge_tokens(["gh", *rest], api=strict, first_only=True):
+            return True
+        # check_line's own loop already classified a gh at the top level; anything nested gets the same rules here.
+        return depth > 0 and nested_gh_refused(rest, state)
+    if name in INTERPRETERS or re.fullmatch(r"python3(?:\.\d+)*[a-z]*(?:-\w+)*", name, re.I):
+        return any(names_merge(arg) or code_merge(arg) or code_gh_refused(arg, state) for arg in rest)
+    strings = command_strings(name, rest)
+    # Alias and git alias values and runner strings are commands no gh check sees.
+    inner_strict = strict or bool(strings)
+    if name in SHELLS:
+        if depth == 0:
+            # check_line runs this script through check_command, with the script's own cwd and alone.
+            return False
+        script, unclear = shell_script(rest)
+        if unclear:
+            return names_merge(" ".join(rest))
+        strings = [script] if script is not None else []
+    if name in UNWRAPPED_RUNNERS:
+        raw = " ".join(rest)
+        # The parser marks every expansion and substitution; a literal $ or backtick in single quotes is data.
+        if EXPANDED in raw and re.search(r"\bgh\b", unquoted(raw)):
+            return True
+        # Each word could be where the runner's program starts (after xargs -n 1, flock FILE, find -exec), so
+        # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
+        # after an ordinary program, such as a grep pattern, stay data. One pass covers every later word, so a
+        # runner met in it does not scan again (scan=False); its strings and expansions are still checked.
+        # find and xargs give one known place for their program, so a runner found there scans its own; any
+        # other runner tries every word, and a runner found that way does not scan again (scan=False).
+        if scan and any(hidden_merge(rest, state, depth + 1, True, scan=name in ("find", "xargs"), start=i)
+                        for i in runner_program_starts(name, rest)):
+            return True
+    for text in strings:
+        # The same command string often repeats, as in several identical sh -c scripts; its result is kept by
+        # its text, which the key refers to without copying.
+        key = ("text", text, depth, inner_strict)
+        if key not in state["memo"]:
+            try:
+                inner = shell_commands(text)
+            except (Unclear, ValueError):
+                state["memo"][key] = names_merge(text)
+            else:
+                state["memo"][key] = any(hidden_merge(words, state, depth + 1, inner_strict) for words, *_ in inner)
+        if state["memo"][key]:
+            return True
+    return False
+
+
+def expanded_program(args, cwd=None):
+    """Whether the program this command runs comes from an expansion, or a runner gets an expanded argument.
+
+    A runner such as flock FILE, watch -n 1, xargs -n 1, or ssh host takes options and operands before the
+    program it runs, so any expanded argument of a runner counts.
+    """
+    name, rest, *_ = program(args, cwd)
+    if name is None:
+        return False
+    if EXPANDED in name:
+        return True
+    return name in UNWRAPPED_RUNNERS and any(EXPANDED in arg for arg in rest)
+
+
+def merge_help(args):
+    """Whether args is gh pr merge asking only for help, after gh_command removes the options in its path."""
+    if args[:1] != ["gh"]:
+        return False
+    try:
+        words = gh_command(args[1:])
+    except Unclear:
+        return False
+    return words[:2] == ["pr", "merge"] and bool(words[2:]) and all(arg in ("--help", "-h") for arg in words[2:])
+
+
+def redirects_gh_config(args, cwd=None):
+    """Whether one simple command sets or clears a variable that moves gh's config: a prefix assignment, an
+    export, declare, typeset, or readonly argument, an env NAME=... operand, unset of one of them, env -u of one
+    of them, or env -i, which clears them all. Words that only look like an assignment, such as the data in
+    gh pr comment --body HOME=/tmp or echo HOME=/tmp, do not count."""
+    name, rest, _, assigned = program(args, cwd)
+    if any(word.split("=", 1)[0] in GH_CONFIG_VARIABLES for word in assigned):
+        return True
+    if name == "unset" and any(arg in GH_CONFIG_VARIABLES for arg in rest):
+        return True
+    prefix = args[:len(args) - len(rest) - (name is not None)]
+    return any(PurePosixPath(word).name == "env" and env_clears_gh_config(args[i + 1:])
+               for i, word in enumerate(prefix))
+
+
+def persistent_redirect(args, cwd=None):
+    """A redirect taints the whole line, except a leading assignment limited to another command."""
+    name, *_ = program(args, cwd)
+    limited = bool(args and ASSIGNMENT.match(args[0]) and name is not None
+                   and name not in DECLARATIONS | {"unset", "eval", "source", ""})
+    return redirects_gh_config(args, cwd) and not limited
+
+
+def runs_gh(name, rest):
+    """Whether this command runs gh: as its program, or as the program a runner runs. A runner's data, as in
+    xargs echo gh or find docs -name gh, does not count."""
+    return name == "gh" or (name in UNWRAPPED_RUNNERS
+                            and any(PurePosixPath(word).name == "gh" for word in runner_programs(name, rest)))
+
+
+# xargs options, read the way getopt reads them (GNU, with BSD's -J, -R, and -S). Short letters that take a value,
+# attached or as the next word; letters that take one only when attached; flags; long options and whether they take
+# the next word (None: only with =).
+XARGS_VALUE_LETTERS = "adEILnPsRJS"
+XARGS_ATTACHED_LETTERS = "eil"
+XARGS_FLAG_LETTERS = "0rtpxo"
+XARGS_LONG = {"--arg-file": True, "--delimiter": True, "--max-args": True, "--max-procs": True, "--max-chars": True,
+              "--process-slot-var": True, "--eof": None, "--replace": None, "--max-lines": None, "--null": False,
+              "--interactive": False, "--open-tty": False, "--no-run-if-empty": False, "--show-limits": False,
+              "--verbose": False, "--exit": False, "--help": False, "--version": False}
+
+
+def xargs_program_start(rest):
+    """Return the index of the program xargs runs, or None when an option the guard does not know hides it."""
+    i = 0
+    while i < len(rest) and rest[i].startswith("-") and rest[i] != "-":
+        option = rest[i]
+        if option == "--":
+            return i + 1
+        if option.startswith("--"):
+            long, attached, _ = option.partition("=")
+            if long not in XARGS_LONG:
+                return None
+            i += 2 if XARGS_LONG[long] and not attached else 1
+            continue
+        used = 1
+        for k, letter in enumerate(option[1:]):
+            if letter in XARGS_VALUE_LETTERS:
+                used = 1 if option[k + 2:] else 2
+                break
+            if letter in XARGS_ATTACHED_LETTERS:
+                break
+            if letter not in XARGS_FLAG_LETTERS:
+                return None
+        i += used
+    return i
+
+
+def runner_program_starts(name, rest):
+    """Return the indexes in rest where the runner's program can start. find and xargs have a known place for it:
+    every -exec, -execdir, -ok, or -okdir of find, even one that reads as another option's value, so none can hide;
+    and the word after xargs's options. Any other runner, or xargs with an option the guard does not know, may take
+    options and operands first, so every word that is not an option is tried."""
+    if name == "find":
+        return [i + 1 for i, word in enumerate(rest[:-1]) if word in ("-exec", "-execdir", "-ok", "-okdir")]
+    if name == "xargs":
+        start = xargs_program_start(rest)
+        if start is not None:
+            return [start] if start < len(rest) else []
+    return [i for i, word in enumerate(rest) if not word.startswith("-")]
+
+
+def runner_programs(name, rest):
+    """Return the words where a runner's program can stand: after find's -exec, -execdir, -ok, or -okdir; the first
+    word after xargs's options; for any other runner the first two words that are not options, which covers
+    flock FILE, taskset MASK, chrt PRIORITY, and ssh HOST before the program."""
+    if name in ("find", "xargs"):
+        return [rest[i] for i in runner_program_starts(name, rest)]
+    return [word for word in rest if not word.startswith("-")][:2]
+
+
+def env_clears_gh_config(options):
+    """Whether env's options clear the whole environment (-i) or unset a gh config variable (-u VAR). -C and
+    --chdir take an operand, as -u does; the options end at the first word that is not one."""
+    j = 0
+    while j < len(options) and options[j].startswith("-") and options[j] != "--":
+        option = options[j]
+        if option in ("-", "--ignore-environment"):
+            return True
+        if option.startswith("--"):
+            name, _, value = option.partition("=")
+            if name == "--unset" and (value or options[j + 1:j + 2]) and (value or options[j + 1]) in GH_CONFIG_VARIABLES:
+                return True
+            j += 2 if name in ("--unset", "--chdir") and not value else 1
+            continue
+        flags = option[1:]
+        for k, flag in enumerate(flags):
+            if flag == "i":
+                return True
+            if flag in "uC":
+                value = flags[k + 1:] or "".join(options[j + 1:j + 2])
+                if flag == "u" and value in GH_CONFIG_VARIABLES:
+                    return True
+                j += 1 if flags[k + 1:] else 2
+                break
+        else:
+            j += 1
+    return False
+
+
+def assigns_gh(words):
+    """Whether one of the assignment words gives a variable a value whose first word is gh."""
+    for word in words:
+        value = unquoted(word.split("=", 1)[1]).split() if "=" in word else []
+        if value and PurePosixPath(value[0]).name == "gh":
+            return True
+    return False
+
+
+def check_command(command, cwd, outer=None, state=None):
     """Return why a shell command run in cwd is refused, or None to allow it.
 
-    outer is (head_moves, config_unknown, env_config) from the line that runs this command as a
-    sh -c script. The script inherits them: an assignment, env option, or branch change on the
-    outer line applies to every git command inside it.
+    outer is (head_moves, config_unknown, env_config, gh_config_redirected) from the line that runs this
+    command as a sh -c script. The script inherits them: an assignment, env option, or branch change on the
+    outer line applies to every git command inside it, and a gh config redirect to every gh inside it. state is
+    the top-level line's merge_state(), so the step budget and the deadline cover the whole line, nested scripts
+    included. A line longer than MAX_COMMAND_BYTES is refused before any parsing.
     """
+    global LINE_DEADLINE, LINE_GIT
+    if len(command.encode("utf-8", "surrogatepass")) > MAX_COMMAND_BYTES:
+        return TOO_LONG
     # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
     # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
     if cwd and ".." in PurePosixPath(cwd).parts:
         cwd = os.path.realpath(cwd)
-    # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
-    # written now and posted later, so any mention of the word is refused outside the coordinator.
-    if names_marker(command) and not coordinator_worktree(cwd):
-        return MARKER
+    if state is not None:
+        return check_line(command, cwd, outer, state)
+    state = merge_state()
+    state["cwd"] = cwd if cwd and ".." not in PurePosixPath(cwd).parts else (os.path.realpath(cwd) if cwd else cwd)
+    LINE_DEADLINE, LINE_GIT = state["deadline"], {}
     try:
-        parsed = shell_commands(command)
+        return check_line(command, cwd, outer, state)
+    except (RecursionError, TooComplex):
+        # Thousands of nested substitutions exhaust the parser's recursion, and any check can run out the line's
+        # time; both refuse with the same reason, whichever path raised them.
+        return TOO_COMPLEX
+    finally:
+        LINE_DEADLINE = LINE_GIT = None
+
+
+def hidden_reason(parsed, assigned, state):
+    """Return why the line's commands hide a merge, or None: a gh command built from variables, or a PR merge
+    found by hidden_merge."""
+    # G=gh; P=pr; M=merge; $G $P $M builds a command the guard cannot read. A line that sets a variable to gh
+    # and runs a program named by an expansion is refused; an expansion used as data, as in echo $HOME, is not.
+    if assigns_gh(assigned) and any(expanded_program(args, state.get("cwd")) for args, *_ in parsed):
+        return SPLIT_GH
+    # A PR merge is matched on each command's words after shell unquoting, so me''rge and $'m\\x65rge' still
+    # count, while a quoted argument that only mentions the command (a comment body, a commit message, a grep
+    # pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help alone stays
+    # allowed.
+    if any(hidden_merge(args, state) for args, *_ in parsed):
+        return state.get("reason") or MERGE
+    return None
+
+
+def line_commands(parsed, facts):
+    """Flatten recognized shell strings for conservative line-wide checks, without modeling scope."""
+    pending = [(args, 0) for args, *_ in parsed]
+    words, seen = [], set()
+    while pending:
+        args, depth = pending.pop()
+        check_deadline()
+        words.append(args)
+        for name, rest, *_ in program_readings(args):
+            strings = command_strings(name, rest)
+            if name in SHELLS:
+                script, _ = shell_script(rest)
+                strings += [] if script is None else [script]
+            for text in strings:
+                if text in seen:
+                    continue
+                if depth >= NESTING_LIMIT:
+                    raise TooComplex(TOO_COMPLEX)
+                seen.add(text)
+                pending.extend((inner, depth + 1) for inner, *_ in shell_commands(text, facts))
+    return words
+
+
+def conservative_line(command, parsed, facts, cwd):
+    """Refuse ambiguous cwd/auth changes across the whole line; do not reconstruct bash scope."""
+    flat = line_commands(parsed, facts)
+    readings = [reading for args in flat for reading in program_readings(args, cwd)]
+    names = {name for name, *_ in readings}
+    words = {PurePosixPath(word).name for args in flat for word in args}
+    if ("coproc" in names or "function" in names or facts.get("function")) and words & {"git", "gh"}:
+        return UNCLEAR, False
+    changes_directory = any(name in ("cd", "pushd", "popd") or moved or (name == "git" and any(
+        arg.startswith("-C") for arg in rest)) for name, rest, moved, *_ in readings)
+    if facts.get("background", False) and changes_directory:
+        if re.search(r"\b(?:git|gh)\b", command) or any(name in ("git", "gh") for name, *_ in readings):
+            return UNCLEAR, False
+    return None, any(persistent_redirect(args, cwd) for args in flat)
+
+
+def resolved_commands(parsed, cwd):
+    return [(args, *reading, scoped, conditional) for args, scoped, conditional in parsed
+            for reading in program_readings(args, cwd)]
+
+
+def check_line(command, cwd, outer, state):
+    """The body of check_command for one line or nested script, sharing the top-level line's state."""
+    try:
+        # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
+        # written now and posted later, so any mention of the word is refused outside the coordinator.
+        # coordinator_worktree runs git, which can run out the line's time, so this sits inside the handler.
+        if names_marker(command) and not coordinator_worktree(cwd):
+            return MARKER
+        facts = {}
+        parsed = shell_commands(command, facts)
+        refusal, redirected_line = conservative_line(command, parsed, facts, cwd)
+        if refusal:
+            return refusal
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
             return coordinator_merge_reason(parsed[0][0], cwd)
-        commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
-        assigned = [word for _, _, _, words, *_ in commands for word in words]
+        commands = resolved_commands(parsed, cwd)
+        assigned = [word for _, _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.
         # An exported GIT_DIR or similar can also point a later push at another repository.
-        head_moves = (any(moves_head(name, rest) for name, rest, *_ in commands)
+        head_moves = (any(moves_head(name, rest) for _, name, rest, *_ in commands)
                       or any(GIT_LOCATION.match(word) for word in assigned))
         env_config = any(GIT_CONFIG_ENV.match(word) for word in assigned)
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
-        config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
+        config_unknown = head_moves or any(writes_config(name, rest) for _, name, rest, *_ in commands)
         if outer is not None:
-            head_moves, config_unknown, env_config = (head_moves or outer[0], config_unknown or outer[1],
-                                                      env_config or outer[2])
+            head_moves, config_unknown, env_config, redirected_line = (
+                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], redirected_line or outer[3])
         control = 0
-        for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
+        for args, name, rest, moved, _, scoped, conditional in commands:
+            check_deadline()
+            # A command that moves gh's config could point a gh it runs at aliases or extensions written anywhere.
+            redirected = redirected_line or redirects_gh_config(args, cwd)
+            if redirected and runs_gh(name, rest):
+                return GH_REDIRECT
             # Prefixes such as "{" or "!" can come before a control keyword.
             leading = list(itertools.takewhile(lambda word: word in SHELL_PREFIXES | {"for", "case", "select"}, args))
             control += sum(word in ("if", "while", "until", "for", "case", "select") for word in leading)
@@ -1299,8 +2064,12 @@ def check_command(command, cwd, outer=None):
                     return SHELL_OPTIONS
                 if script is not None:
                     # The script's own substitutions were already classified as nested commands.
-                    reason = check_command(script.replace(EXPANDED, ""), here,
-                                           (head_moves, config_unknown, env_config))
+                    # Identical scripts on one line, as in several sh -c '<same text>', are checked once.
+                    inherited = (head_moves, config_unknown, env_config, redirected)
+                    key = ("script", script, here, inherited)
+                    if key not in state["memo"]:
+                        state["memo"][key] = check_command(script.replace(EXPANDED, ""), here, inherited, state)
+                    reason = state["memo"][key]
                     if reason:
                         return reason
                     continue
@@ -1313,6 +2082,11 @@ def check_command(command, cwd, outer=None):
             reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker, "$'" in command) if name == "gh" else None
             if reason:
                 return reason
+        reason = hidden_reason(parsed, assigned, state)
+        if reason:
+            return reason
+    except TooComplex:
+        return TOO_COMPLEX
     except Unclear as error:
         return str(error) or UNCLEAR
     except ValueError:
@@ -1320,10 +2094,10 @@ def check_command(command, cwd, outer=None):
     return None
 
 
-def check_paths(paths):
-    """Return why editing one of paths is refused, or None to allow every edit."""
+def check_paths(paths, cwd=None):
+    """Return why editing one of paths is refused, or None to allow every edit. cwd is the hook payload's."""
     for path in paths:
-        reason = protected_path(path.strip())
+        reason = protected_path(path.strip(), cwd)
         if reason:
             return f"{path}: {reason}"
     return None

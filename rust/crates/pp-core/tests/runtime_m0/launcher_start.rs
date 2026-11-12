@@ -50,7 +50,13 @@ async fn slice0_mount_launcher_gates() {
 async fn slice0_mount_launcher_in_child() {
     let data = std::path::PathBuf::from(std::env::var_os("PP_SLICE0_DATA").unwrap());
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
-    let mut runtime = CoreRuntime::start_for_launcher(launch(data)).await.unwrap();
+    let absent = std::env::var_os("PP_UI_ABSENT").is_some();
+    let input = launcher_input(data, absent);
+    // The digests are compiled in, so no fixture can stand in for the built
+    // replacement UI. A runner without it (a CI test partition) checks the
+    // fallback to the legacy UI instead.
+    let replacement = input.bundle.web_root.join("apps/ui/dist").exists();
+    let mut runtime = CoreRuntime::start_for_launcher(input).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
     // The desktop tray holds a handle and its subscription for the process lifetime.
     let handle = runtime.handle();
@@ -78,6 +84,11 @@ async fn slice0_mount_launcher_in_child() {
     let origin = runtime.origin().to_owned();
     let desktop = desktop_cookie(&mut runtime).await;
     assert_runtime_json(&origin, &desktop, rust).await;
+    assert_served_ui(&origin, &desktop, rust && replacement).await;
+    if rust && !replacement {
+        assert_legacy_navigation(&origin, &desktop).await;
+    }
+
     if rust {
         let (status, _, body) = request(
             &origin,
@@ -158,4 +169,99 @@ async fn assert_runtime_json(origin: &str, desktop: &str, rust: bool) {
         assert_eq!(state["compat"]["state"], "ready", "{state}");
         assert!(state["compat"]["pid"].is_u64(), "{state}");
     }
+}
+
+/// Both gates select the replacement bundle and policy together. The legacy
+/// runtime still serves the old bundle, including when only one gate is on.
+async fn assert_served_ui(origin: &str, desktop: &str, rust: bool) {
+    let response = reqwest::Client::new()
+        .get(format!("{origin}/"))
+        .header("cookie", desktop)
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let html = response.text().await.unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../web/apps");
+    let expected = std::fs::read_to_string(root.join(if rust {
+        "ui/dist/index.html"
+    } else {
+        "web/dist/index.html"
+    }))
+    .unwrap();
+    if rust {
+        assert!(policy.starts_with("default-src 'none'; script-src 'self';"));
+        let nonce = policy
+            .split("'nonce-")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        let element = format!("<meta name=\"pp-style-nonce\" nonce=\"{nonce}\">");
+        assert_eq!(html.replace(&element, ""), expected);
+    } else {
+        assert_eq!(html, expected);
+        assert_eq!(
+            policy,
+            "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        );
+    }
+}
+
+pub(super) fn launcher_input(data: std::path::PathBuf, absent: bool) -> pp_core::DesktopLaunch {
+    let mut input = launch(data.clone());
+    if absent {
+        let web = data.join("image-web");
+        super::copy_directory(&input.assets, &web.join("apps/web/dist"));
+        super::copy_directory(
+            &input.bundle.community_manifests_dir().unwrap(),
+            &web.join("apps/server/dist/current/data/manifests"),
+        );
+        input.assets = web.join("apps/web/dist");
+        input.bundle.entry = web.join("apps/server/dist/current/desktop.js");
+        input.bundle.web_root = web;
+        // Keep the writer's data directory separate from the image's static files.
+        input.data_dir = data.join("data");
+    }
+    input
+}
+
+async fn assert_legacy_navigation(origin: &str, desktop: &str) {
+    for path in ["/settings", "/builds"] {
+        let response = reqwest::Client::new()
+            .get(format!("{origin}{path}"))
+            .header("cookie", desktop)
+            .header("accept", "text/html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        );
+        assert_eq!(
+            response.text().await.unwrap(),
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../web/apps/web/dist/index.html")
+            )
+            .unwrap()
+        );
+    }
+    let response = reqwest::Client::new()
+        .get(format!("{origin}/today"))
+        .header("cookie", desktop)
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    // This is not a legacy SPA path: the unchanged API admission rejects it.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

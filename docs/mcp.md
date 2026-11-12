@@ -24,16 +24,62 @@ Print Partner exposes product operations to AI assistants over the Model Context
 
 Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge_conflicts.yaml` falls back to the shipped copy. Confirmation writes its decision log in the same transaction as the change. Storage errors answer `Build planning is unavailable`. Rust also refuses confirmation when merging exclusions into a malformed or over-budget stored kit, and when the Source is already attached. Confirmation also refuses when the proposed canonical Source name no longer exists, instead of selecting a similar name. These are Rust-only refusals.
 
-These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway). The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
+### `propose_create_build`
 
-### Draft Part edits
+`propose_create_build` `{ name, request, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). `urls` must be absent, `null` or empty; URLs become brief evidence in a later change. The shared catalog's tool description still advertises `urls` and a verbatim request until that change.
+
+- **Propose** trims `name` and `idempotency_key` and removes surrounding whitespace from `request`, the way `PATCH /plans/{id}` stores a special request. It refuses a blank `name` or `request`, a key that is not a string of at most 200 characters, a name another Build has, and the cases confirm refuses below. It writes nothing.
+- **Confirm** runs one transaction: it creates the Build, sets its special request, stores a new brief and records the key. The brief holds the request and empty lists in phase `preparing`. Rust does not guess requirements from the request; record them with `propose_update_build_brief`. The Build has no layers, no Working Plan and no Accepted Plan. It answers `{ "ok": true, "result": { "plan_id", "name", "idempotent_replay" } }`.
+- **Idempotency.** `build_planning.create.<key>` stores the Build id. Confirming another proposal with the same key answers that Build with `idempotent_replay: true` and writes nothing, while the Build exists. If the Build was deleted, confirm creates a new one and moves the key.
+- **Orders Module.** Propose and confirm both refuse while the Orders Module is off, as `PATCH /plans/{id}` refuses a special request. This is a provisional default until the owner decides.
+
+A refused propose answers `{ "error": …, "code": … }` with `isError`. A refused confirm answers `{ "ok": false, "code": …, "detail": … }` and keeps the proposal pending. `detail` and `error` are plain messages; match on `code`.
+
+| Code | When |
+| --- | --- |
+| `blank_name` | `name` is missing, not a string, or blank. |
+| `name_too_long` | `name` is over 4,096 characters. |
+| `blank_request` | `request` is missing, not a string, or blank. |
+| `urls_not_supported` | `urls` is a non-empty list or not a list. |
+| `invalid_idempotency_key` | `idempotency_key` is not a string, or is over 200 characters after trimming. |
+| `name_taken` | Another Build has the name. |
+| `orders_module_off` | The Orders Module is off. |
+| `module_settings_invalid` | The stored Module settings don't parse, so the Orders state is unknown. |
+| `idempotency_record_invalid` | The stored record for the key isn't a Build id. Use another key. |
+| `unauthorized` | Storage refused the API key. |
+| `unavailable` | Storage is busy, stopping or its queue is full. Nothing was written; try again. |
+| `outcome_unknown` | The write may have committed. Confirm drops the proposal and adds `outcome_unknown: true`; check `list_plans` before proposing again. The write seam does not produce it for this tool today. |
+| `internal` | A storage failure. Nothing was written, and the cause is not returned. |
+
+The last four codes are shared by MCP write tools that use the storage write seam (`pp-api/src/mcp/write_result.rs`).
+
+These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
+
+### `propose_edit_plan_draft_parts`
 
 `propose_edit_plan_draft_parts` `{ plan_id, draft_id, parts: [{ part_id, included?, quantity_override? }], expected_snapshot_digest? }` changes which Parts an open Working Plan includes, and their quantities (GRE-1298).
 
-- Propose reads the draft with the request's API key and writes nothing. The pending action's `params` hold `plan_id`, `draft_id`, the edits, and `expected_snapshot_digest`: the given digest, or else the draft's current one. Propose needs no Build planning brief; Node refuses without one, but the edit never reads it.
-- `confirm_apply` runs the Plan tab's Part edit (`PATCH /plans/{id}/drafts/{draft_id}/parts`, `WorkingDraftClient::edit`) against that digest. It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "parts": [{ "part_id", "included", "quantity_override", "quantity_effective" }] } }` with the new digest and the edited Parts. It then adds an `applied_action` entry to the Build's decision log. The edit never accepts or publishes a Plan.
-- `quantity_override: null` clears an override.
-- A refusal is `isError` with a `code` and a message for people. Clients should read the `code`; the message may change. Propose answers `{ "error", "code" }` and stores nothing: `arguments_required`, `not_found` (no such Build or draft for the key), `not_open`, `parts_required`, `part_not_found`, `edit_empty` (an edit sets neither field), `invalid_edit` (wrong field types, a negative or fractional quantity, or a Part listed twice) and `invalid_digest`. Confirm answers `{ "ok": false, "code", "detail" }` and keeps the action pending: `draft_changed`, `base_changed`, `not_open`, `not_found`, `accepted_baseline_required`, `edit_refused` and `unavailable`. `outcome_unknown` means the edit may have committed; that action is dropped, so check the draft before proposing again.
+- **Propose** reads the draft as the Plan tab does, with the request's API key, and writes nothing. The pending action's `params` hold `plan_id`, `draft_id`, the edits and `expected_snapshot_digest`: the given digest, or else the draft's current one. Propose needs no Build planning brief. Node refuses without one, but the edit never reads it.
+- **Confirm** runs the Plan tab's Part edit (`PATCH /plans/{id}/drafts/{draft_id}/parts`, `WorkingDraftClient::edit`) against that digest. It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "parts": [{ "part_id", "included", "quantity_override", "quantity_effective" }] } }` with the new digest and the edited Parts, then adds an `applied_action` entry to the Build's decision log. `quantity_override: null` clears an override. The edit never accepts or publishes a Plan.
+
+Refusals have the shape described for `propose_create_build`, and confirm keeps the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `arguments_required` | `plan_id` or `draft_id` is not a positive whole number. |
+| `not_found` | The key's account has no such Build or draft. |
+| `not_open` | The draft is not open. |
+| `parts_required` | `parts` is missing or empty. |
+| `invalid_edit` | An edit has a wrong field type or a negative or fractional quantity, or lists a Part twice. |
+| `part_not_found` | A `part_id` is not in the draft. |
+| `edit_empty` | An edit sets neither `included` nor `quantity_override`. |
+| `invalid_digest` | `expected_snapshot_digest` is not 64 lowercase hex characters. |
+| `draft_changed` | Confirm: the draft changed after the proposal, for example in the Plan tab. |
+| `base_changed` | Confirm: the Accepted Plan changed after the proposal. |
+| `accepted_baseline_required` | Confirm: the Build has no Accepted Plan to edit against. |
+| `edit_refused` | Confirm: the edit refused for another reason. |
+
+`unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
 
 Every other product tool still answers that it has no Rust port. `get_farm_status` and `get_print_stats` have no Rust port yet.
 

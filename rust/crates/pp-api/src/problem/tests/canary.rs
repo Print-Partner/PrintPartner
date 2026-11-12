@@ -257,3 +257,62 @@ async fn problem_response_canary_covers_manifest_failures() {
     assert_eq!(problem.problem_type, ProblemType::Validation);
     assert!(problem.detail.unwrap().len() <= MAX_DETAIL_BYTES);
 }
+
+/// The shared mapping for writes through the write seam: every variant keeps
+/// its type, and an internal cause is never sent.
+#[tokio::test]
+async fn problem_response_writer_failure_types_each_variant_and_hides_the_cause() {
+    use AuthFailure as Auth;
+    use ProblemType::{Forbidden, OutcomeUnknown, Overloaded, Unauthenticated, Unavailable};
+    use pp_storage::WriterFailure as Writer;
+    let cases = [
+        (
+            Writer::Auth(Auth::SessionRequired),
+            401,
+            Unauthenticated,
+            None,
+        ),
+        (
+            Writer::Auth(Auth::OwnerMappingRequired),
+            403,
+            Forbidden,
+            None,
+        ),
+        (Writer::QueueFull, 503, Overloaded, None),
+        (Writer::Auth(Auth::QueueFull), 503, Overloaded, None),
+        (
+            Writer::Busy,
+            503,
+            Unavailable,
+            Some(TRANSACTION_UNAVAILABLE),
+        ),
+        (
+            Writer::Auth(Auth::CommitUnknown),
+            503,
+            OutcomeUnknown,
+            Some(OUTCOME_UNKNOWN),
+        ),
+        (Writer::Stopped, 503, Unavailable, None),
+        (Writer::Cancelled, 503, Unavailable, None),
+        (
+            Writer::Auth(Auth::DuplicateEmail),
+            500,
+            ProblemType::Internal,
+            None,
+        ),
+    ];
+    for (failure, status, kind, code) in cases {
+        let problem = problem_of(writer_failure(&failure)).await;
+        let found = (
+            problem.status,
+            problem.problem_type,
+            problem.code.as_deref(),
+        );
+        assert_eq!(found, (status, kind, code), "{failure:?}");
+    }
+    for (index, error) in underlying().await.into_iter().enumerate() {
+        let response = writer_failure(&Writer::Internal(error));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_clean(&format!("writer#{index}"), response).await;
+    }
+}

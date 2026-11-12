@@ -11,7 +11,9 @@
 //! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
 //! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
 //! and so do `get_remaining` and `get_printer_checkoff`
-//! (`mcp/progress_reads.rs`).
+//! (`mcp/progress_reads.rs`). `propose_create_build` creates a Build with
+//! its planning brief (`mcp/create_build.rs`); write refusals carry a code
+//! from `mcp/write_result.rs`.
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -365,7 +367,12 @@ impl ProductMcp {
     fn new(reads: Reads) -> Self {
         Self {
             session: Arc::new(McpSession::new(
-                CheckoffDomain::new(reads.progress.clone(), reads.builds.clone(), reads.wait),
+                CheckoffDomain::new(
+                    reads.progress.clone(),
+                    reads.builds.clone(),
+                    reads.drafts.clone(),
+                    reads.wait,
+                ),
                 None,
             )),
             turn: Arc::new(tokio::sync::Mutex::new(())),
@@ -497,10 +504,7 @@ impl ServerHandler for ProductMcp {
             .then(|| arguments.get("action_id").and_then(Value::as_str))
             .flatten()
             .and_then(|id| self.session.pending(id))
-            .filter(|action| {
-                action.action_type == plan_accept::PROPOSE
-                    || action.action_type == draft_parts::PROPOSE
-            });
+            .filter(|action| action.action_type == plan_accept::PROPOSE);
         let result = match presented {
             Some(presented) if request.name == "get_build_workflow" => {
                 self.build_workflow(&arguments, presented).await
@@ -512,9 +516,6 @@ impl ServerHandler for ProductMcp {
                 self.progress_tool(&request.name, &arguments, presented)
                     .await
             }
-            Some(presented) if request.name == draft_parts::PROPOSE => {
-                self.propose_draft_parts(&arguments, presented).await
-            }
             Some(presented) if request.name == plan_accept::PROPOSE => {
                 self.propose_accept(&arguments, presented).await
             }
@@ -525,9 +526,6 @@ impl ServerHandler for ProductMcp {
                 }
                 // Taken before Accept so a concurrent confirm cannot apply it twice.
                 match confirming.and_then(|action| self.session.take_pending(&action.id)) {
-                    Some(action) if action.action_type == draft_parts::PROPOSE => {
-                        self.confirm_draft_parts(action, presented).await
-                    }
                     Some(action) => self.confirm_accept(action, presented).await,
                     None => {
                         self.session_tool(request.name.to_string(), arguments, Some(presented))
@@ -547,6 +545,8 @@ impl ServerHandler for ProductMcp {
 
 #[path = "mcp/checkoff.rs"]
 mod checkoff;
+#[path = "mcp/create_build.rs"]
+mod create_build;
 #[path = "mcp/draft_parts.rs"]
 mod draft_parts;
 #[path = "mcp/plan_accept.rs"]
@@ -559,6 +559,8 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
+#[path = "mcp/write_result.rs"]
+mod write_result;
 
 #[cfg(test)]
 #[path = "mcp/tests.rs"]

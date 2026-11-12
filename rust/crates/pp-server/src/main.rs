@@ -8,6 +8,8 @@ mod args;
 #[cfg(unix)]
 mod bootstrap;
 mod health;
+#[cfg(feature = "desktop_rebuild")]
+mod import;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -26,6 +28,10 @@ fn main() -> Result<()> {
     if args.peek().map(String::as_str) == Some("bootstrap-url") {
         args.next();
         return bootstrap_url(args);
+    }
+    if args.peek().map(String::as_str) == Some("import") {
+        args.next();
+        return import(args);
     }
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -100,6 +106,17 @@ fn bootstrap_url(_: impl Iterator<Item = String>) -> Result<()> {
     bail!("pp-server bootstrap-url needs a Unix socket and is not available on Windows")
 }
 
+/// `pp-server import`: the one-time import of a Node installation.
+#[cfg(feature = "desktop_rebuild")]
+fn import(args: impl Iterator<Item = String>) -> Result<()> {
+    import::run(args)
+}
+
+#[cfg(not(feature = "desktop_rebuild"))]
+fn import(_: impl Iterator<Item = String>) -> Result<()> {
+    bail!("pp-server import needs a build with the desktop_rebuild feature")
+}
+
 async fn serve(args: Vec<String>) -> Result<()> {
     let args::Arguments {
         data,
@@ -131,7 +148,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         commit: commit.context("--commit is required")?,
     };
     let data = data.context("--data is required")?;
-    let mut runtime = CoreRuntime::start_for_launcher(DesktopLaunch {
+    let mut runtime = CoreRuntime::start_for_server(DesktopLaunch {
         data_dir: data.clone(),
         assets: web.join("apps/web/dist"),
         bundle,

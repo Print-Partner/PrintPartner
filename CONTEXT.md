@@ -90,6 +90,10 @@ _Avoid_: Inventory, spool count, filament db
 The single folder holding the database, files and secrets for one installation. Exactly one runtime owns it at a time.
 _Avoid_: Workspace, data root, volume
 
+**Tenant**:
+The one installation, as the legacy schema and the API-key configuration name it. Every `tenant_id` column (for example in `app_settings`) and the configured API-key tenant used for build and catalog admission hold the installation's single value; Print Partner has no second tenant, and tenant is not a product concept. Auth keeps its first-user and session tenant policies for that one value. New code does not add tenant branches or expose the word to users.
+_Avoid_: Tenant in UI copy, user docs or new API fields; account, organisation, workspace for this column
+
 **Module**:
 An optional product area that can be off: farm and printers, Spoolman, orders, Bambu, assembly tracking. An off module hides its controls and says why; it never erases history.
 _Avoid_: Feature flag, plugin, add-on

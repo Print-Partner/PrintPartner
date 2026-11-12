@@ -29,8 +29,10 @@ A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lane
 
 **After the first push, do not rerun either.** Hosted CI is the full check for these pushes:
 
-- **Merge of `main`, clean or resolved without editing logic:** `cargo fmt --check`, and clippy with `desktop_rebuild` on for the crates the PR changes. For a web or UI PR, the lint and typecheck of the packages it changes.
-- **Review fix, or a merge where you edited logic:** the same, plus the tests of the crates or packages the fix touched (`cargo nextest run -p <crate> --features desktop_rebuild`).
+- **Merge of `main`, clean or resolved without editing logic:** the format check, and clippy for the crates the PR changes. For a web or UI PR, the lint and typecheck of the packages it changes.
+- **Review fix, or a merge where you edited logic:** the same, plus the tests of the crates or packages the fix touched.
+
+[Set up and run checks](../../../docs/development/agent-workflow.md#set-up-and-run-checks) has the exact commands, which need `--manifest-path rust/Cargo.toml`, and says when to drop the feature flag and when to rebuild the web assets first.
 
 Then push. If hosted CI fails, fix it and push again; that push is not a fix round. When you start a check in the background, register a wait on it before you end your turn.
 

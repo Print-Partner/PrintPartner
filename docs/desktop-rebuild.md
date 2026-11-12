@@ -75,10 +75,10 @@ Only the server entry point allows environment-driven update checks. By coordina
      then opens the schema. A refused directory stops startup here, before
      release verification, recovery or admission, and stays byte-for-byte
      unchanged.
-  2. `pp_compat::verify_rust_only_release` checks the release identity, the
-     frontend and the community manifests. It does not measure Node, the Node
-     backend or `node_modules`, so `pp-server` needs no `--node` in this mode
-     ([Docker image](docker.md#release-check-without-node)).
+  2. With `apps/ui/dist` installed, `pp_compat::snapshot_rust_only_release` checks
+     the release identity, `replacement_frontend` and the community manifests;
+     without it, `verify_rust_only_legacy_release` checks `frontend` instead. Neither
+     measures Node or `node_modules` ([Docker image](docker.md#release-check-without-node)).
   3. `cutover::recover` runs without an ownership index: it removes stray
      cutover temporaries, and a cutover record refuses startup.
   4. Source-sync admission writes or reuses `source-sync-admission.json`.
@@ -100,11 +100,11 @@ Only the server entry point allows environment-driven update checks. By coordina
   gateway's route-miss path: each request that no gateway, asset or Rust
   product route answered and that entered the compatibility branch. It stays
   at 0 in this mode.
-- `Gateway::start_rust_only` takes a `ServedUi`. With `ServedUi::Replacement`
-  (the `apps/ui` build), documents and assets carry the replacement UI's
+- `Gateway::start_rust_only_with_assets` serves a verified in-memory inventory
+  of the `apps/ui` build. Documents and assets carry the replacement UI's
   Content-Security-Policy, with a fresh style nonce on each document.
-  `pp-core` passes `ServedUi::Legacy` until GRE-1294 serves `apps/ui`, so the
-  old `apps/web` build keeps its headers. See
+  `pp-core` selects verified `apps/ui/dist` when installed, otherwise verified legacy UI; the default
+  runtime keeps `apps/web/dist` and its legacy policy. See
   [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as

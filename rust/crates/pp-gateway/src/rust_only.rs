@@ -20,8 +20,8 @@ impl Gateway {
     /// requests, nothing is forwarded, and `/__runtime` reports `status`.
     /// Moonraker watchers poll the hosts `hosts` reads; `product` receives
     /// the status lookup so an authenticated route can answer from them.
-    /// `ui` names the build in `assets`; only [`ServedUi::Replacement`] gets
-    /// the replacement Content-Security-Policy.
+    /// Use [`Self::start_rust_only_with_assets`] for a verified replacement
+    /// bundle; this entry point serves the legacy build from disk.
     pub fn start_rust_only(
         listener: TcpListener,
         assets: PathBuf,
@@ -30,15 +30,25 @@ impl Gateway {
         status: tokio::sync::watch::Receiver<RustStatus>,
         hosts: Arc<dyn MoonrakerHosts>,
     ) -> Result<Self> {
-        Self::start_rust_only_with_network(listener, false, assets, ui, product, status, hosts)
+        Self::start_rust_only_with_network(
+            listener,
+            false,
+            assets,
+            (ui, None),
+            product,
+            status,
+            hosts,
+        )
     }
 
-    /// Explicit headless listener. Desktop callers use `start_rust_only`.
+    /// Explicit headless listener. Desktop callers use `start_rust_only` or
+    /// `start_rust_only_with_assets`. `served` pairs the UI with the replacement
+    /// bytes retained by release verification, when present.
     pub fn start_rust_only_with_network(
         listener: TcpListener,
         network: bool,
         assets: PathBuf,
-        ui: ServedUi,
+        served: (ServedUi, Option<pp_compat::AssetSnapshot>),
         product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
         hosts: Arc<dyn MoonrakerHosts>,
@@ -46,7 +56,7 @@ impl Gateway {
         Self::start_inner(
             listener,
             assets,
-            ui,
+            served,
             CompatHandle::unpublished(),
             &OperationOwners::node_only(),
             Some(Box::new(product)),

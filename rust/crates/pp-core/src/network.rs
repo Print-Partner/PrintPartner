@@ -65,7 +65,7 @@ mod tests {
             listener,
             listen.is_some(),
             root.path().to_path_buf(),
-            ServedUi::Legacy,
+            (ServedUi::Legacy, None),
             move |_| for_listener(routes, listen),
             status,
             hosts,

@@ -527,16 +527,13 @@ async fn start_rust_resources(
     listen: Option<std::net::SocketAddr>,
     server_updates: bool,
 ) -> Result<Resources> {
-    let assets = input
-        .assets
-        .canonicalize()
-        .context("React assets unavailable")?;
+    let (assets, replacement_present) = rust_startup::select_frontend(&input.bundle, input.assets)?;
     let data_dir = prepare_data_dir(&input.data_dir)?;
     let verified_assets = assets.clone();
     let bundle = input.bundle;
     let rust_startup::Admitted {
         writer,
-        verified: bundle,
+        verified: (bundle, snapshot),
         owners,
     } = rust_startup::admit(
         data_dir,
@@ -549,7 +546,18 @@ async fn start_rust_resources(
         },
         // Rust-only mode runs no Node child, so only what Rust serves or reads is
         // measured: the frontend and the community manifests.
-        move || pp_compat::verify_rust_only_release(&bundle, &verified_assets).map(|()| bundle),
+        move || {
+            let snapshot = if replacement_present {
+                Some(pp_compat::snapshot_rust_only_release(
+                    &bundle,
+                    &verified_assets,
+                )?)
+            } else {
+                pp_compat::verify_rust_only_legacy_release(&bundle, &verified_assets)?;
+                None
+            };
+            Ok((bundle, snapshot))
+        },
     )
     .await?;
     let community_manifests = bundle.community_manifests_dir();
@@ -588,14 +596,18 @@ async fn start_rust_resources(
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
+    let product =
+        move |status| network::for_listener(product.merge(status_routes.mount(status)), listen);
+    let served = match snapshot {
+        Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
+        None => (pp_gateway::ServedUi::Legacy, None),
+    };
     let gateway = Gateway::start_rust_only_with_network(
         listener,
         listen.is_some(),
         assets,
-        // `pp-server` and `pp-desktop` still ship the old `apps/web` build;
-        // GRE-1294 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
-        pp_gateway::ServedUi::Legacy,
-        move |status| network::for_listener(product.merge(status_routes.mount(status)), listen),
+        served,
+        product,
         receiver,
         hosts,
     )?;

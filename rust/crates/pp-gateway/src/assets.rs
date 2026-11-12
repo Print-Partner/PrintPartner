@@ -137,7 +137,10 @@ pub(super) enum Policy {
     /// The Rust-only runtime, which only a `desktop_rebuild` build started with
     /// `PP_DESKTOP_REBUILD` runs: `replacement-csp.txt`, with the gateway's own
     /// WebSocket origin for the printer event stream.
-    Replacement { ws_origin: String },
+    Replacement {
+        ws_origin: String,
+        files: pp_compat::AssetSnapshot,
+    },
 }
 
 const LEGACY_POLICY: &str =
@@ -153,10 +156,18 @@ const NONCE_META_NAME: &str = "pp-style-nonce";
 const MAX_DOCUMENT_BYTES: u64 = 1 << 20;
 
 impl Policy {
-    pub(super) fn replacement(origin: &str) -> Self {
+    pub(super) fn is_spa_client_path(&self, path: &str) -> bool {
+        match self {
+            Self::Legacy => super::is_spa_client_path(path),
+            Self::Replacement { .. } => is_replacement_client_path(path),
+        }
+    }
+
+    pub(super) fn replacement(origin: &str, files: pp_compat::AssetSnapshot) -> Self {
         let authority = origin.strip_prefix("http://").unwrap_or(origin);
         Self::Replacement {
             ws_origin: format!("ws://{authority}"),
+            files,
         }
     }
 
@@ -165,7 +176,7 @@ impl Policy {
     fn header(&self, nonce: Option<&str>) -> axum::http::HeaderValue {
         match self {
             Self::Legacy => axum::http::HeaderValue::from_static(LEGACY_POLICY),
-            Self::Replacement { ws_origin } => {
+            Self::Replacement { ws_origin, .. } => {
                 let template = REPLACEMENT_POLICY.trim_end();
                 let policy = match nonce {
                     Some(nonce) => template.replace("{nonce}", nonce),
@@ -181,19 +192,12 @@ impl Policy {
     }
 }
 
-/// Reads `index.html` and adds the nonce element right after the `<head>`
-/// start tag, so it exists before any module script runs.
-async fn nonce_document(asset: AssetFile, nonce: &str) -> Option<Vec<u8>> {
-    if asset.length > MAX_DOCUMENT_BYTES {
+/// Template only the immutable, measured document bytes.
+fn nonce_document(bytes: &[u8], nonce: &str) -> Option<Vec<u8>> {
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
         return None;
     }
-    let mut html = Vec::with_capacity(asset.length as usize + 64);
-    asset
-        .file
-        .take(asset.length)
-        .read_to_end(&mut html)
-        .await
-        .ok()?;
+    let mut html = bytes.to_vec();
     let element = format!("<meta name=\"{NONCE_META_NAME}\" nonce=\"{nonce}\">");
     let at = nonce_position(&html);
     html.splice(at..at, element.into_bytes());
@@ -252,16 +256,16 @@ pub(super) async fn serve(
             .insert("allow", axum::http::HeaderValue::from_static("GET, HEAD"));
         return response;
     }
+    if let Policy::Replacement { files, .. } = policy {
+        return serve_snapshot(files, relative, document, policy, method, request_headers);
+    }
     let identity = match open_contained(root, &root.join(relative)).await {
         Some(asset) => asset,
         _ => return super::error(StatusCode::NOT_FOUND, "Asset not found"),
     };
     let mime = content_type(&identity.path, relative);
     let preferences = Preferences::parse(request_headers);
-    // A replacement document gets a fresh nonce per response, so it is always
-    // read from the identity file, never from a precompressed sibling.
-    let nonced = document && matches!(policy, Policy::Replacement { .. });
-    let gzip = if !nonced && preferences.prefers_gzip() && !relative.ends_with(".gz") {
+    let gzip = if preferences.prefers_gzip() && !relative.ends_with(".gz") {
         let mut sibling = identity.path.as_os_str().to_owned();
         sibling.push(".gz");
         open_contained(root, Path::new(&sibling)).await
@@ -270,49 +274,31 @@ pub(super) async fn serve(
     };
     let (asset, content_encoding) = if let Some(gzip) = gzip {
         (gzip, Some("gzip"))
-    } else if nonced || preferences.accepts_identity() {
-        // A replacement document is rewritten per response, so it only
-        // exists uncoded. RFC 9110 section 12.5.3 lets the server send no
-        // content coding; that beats a 406 the browser would show as a page.
+    } else if preferences.accepts_identity() {
         (identity, None)
     } else {
-        let mut response = super::error(StatusCode::NOT_ACCEPTABLE, "No acceptable asset encoding");
-        response.headers_mut().insert(
-            "vary",
-            axum::http::HeaderValue::from_static("accept-encoding"),
-        );
-        if let Some(length) = response.body().size_hint().exact() {
-            response
-                .headers_mut()
-                .insert("content-length", length.into());
-        }
-        if *method == Method::HEAD {
-            *response.body_mut() = Body::empty();
-        }
-        return response;
+        return unacceptable_encoding(method);
     };
-    let (body, length, nonce) = if nonced {
-        let nonce = hex::encode(rand::random::<[u8; 16]>());
-        let Some(html) = nonce_document(asset, &nonce).await else {
-            return super::error(StatusCode::INTERNAL_SERVER_ERROR, "Document unreadable");
-        };
-        let length = html.len() as u64;
-        let body = if *method == Method::HEAD {
-            Body::empty()
-        } else {
-            Body::from(html)
-        };
-        (body, length, Some(nonce))
-    } else if *method == Method::HEAD {
-        (Body::empty(), asset.length, None)
+    let length = asset.length;
+    let body = if *method == Method::HEAD {
+        Body::empty()
     } else {
-        let length = asset.length;
-        let body = Body::from_stream(ReaderStream::with_capacity(
-            asset.file.take(asset.length),
+        Body::from_stream(ReaderStream::with_capacity(
+            asset.file.take(length),
             64 * 1024,
-        ));
-        (body, length, None)
+        ))
     };
+    asset_response(body, length, mime, policy, None, content_encoding)
+}
+
+fn asset_response(
+    body: Body,
+    length: u64,
+    mime: &'static str,
+    policy: &Policy,
+    nonce: Option<&str>,
+    content_encoding: Option<&'static str>,
+) -> Response<Body> {
     let mut response = Response::new(body);
     let headers = response.headers_mut();
     headers.insert("content-type", axum::http::HeaderValue::from_static(mime));
@@ -339,8 +325,86 @@ pub(super) async fn serve(
         "x-content-type-options",
         axum::http::HeaderValue::from_static("nosniff"),
     );
-    headers.insert("content-security-policy", policy.header(nonce.as_deref()));
+    headers.insert("content-security-policy", policy.header(nonce));
     response
+}
+
+fn unacceptable_encoding(method: &Method) -> Response<Body> {
+    let mut response = super::error(StatusCode::NOT_ACCEPTABLE, "No acceptable asset encoding");
+    response.headers_mut().insert(
+        "vary",
+        axum::http::HeaderValue::from_static("accept-encoding"),
+    );
+    if let Some(length) = response.body().size_hint().exact() {
+        response
+            .headers_mut()
+            .insert("content-length", length.into());
+    }
+    if *method == Method::HEAD {
+        *response.body_mut() = Body::empty();
+    }
+    response
+}
+
+fn serve_snapshot(
+    files: &pp_compat::AssetSnapshot,
+    relative: &str,
+    document: bool,
+    policy: &Policy,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Response<Body> {
+    let Some(bytes) = files.get(relative) else {
+        return super::error(StatusCode::NOT_FOUND, "Asset not found");
+    };
+    let nonce = document.then(|| hex::encode(rand::random::<[u8; 16]>()));
+    let bytes = if let Some(nonce) = &nonce {
+        let Some(html) = nonce_document(bytes, nonce) else {
+            return super::error(StatusCode::INTERNAL_SERVER_ERROR, "Document unreadable");
+        };
+        html
+    } else {
+        if !Preferences::parse(headers).accepts_identity() {
+            return unacceptable_encoding(method);
+        }
+        bytes.to_vec()
+    };
+    let length = bytes.len() as u64;
+    let body = if *method == Method::HEAD {
+        Body::empty()
+    } else {
+        Body::from(bytes)
+    };
+    asset_response(
+        body,
+        length,
+        content_type(Path::new(relative), relative),
+        policy,
+        nonce.as_deref(),
+        None,
+    )
+}
+
+impl super::Gateway {
+    /// Start with the replacement bytes retained by release verification.
+    pub fn start_rust_only_with_assets(
+        listener: tokio::net::TcpListener,
+        assets: PathBuf,
+        files: pp_compat::AssetSnapshot,
+        product: impl FnOnce(super::MoonrakerStatus) -> axum::Router + 'static,
+        status: tokio::sync::watch::Receiver<super::RustStatus>,
+        hosts: std::sync::Arc<dyn super::MoonrakerHosts>,
+    ) -> anyhow::Result<Self> {
+        Self::start_inner(
+            listener,
+            assets,
+            (super::ServedUi::Replacement, Some(files)),
+            pp_compat::CompatHandle::unpublished(),
+            &super::OperationOwners::node_only(),
+            Some(Box::new(product)),
+            Some((status, hosts, false)),
+        )
+    }
 }
 
 fn content_type(path: &Path, relative: &str) -> &'static str {
@@ -365,4 +429,20 @@ fn content_type(path: &Path, relative: &str) -> &'static str {
         Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
+}
+
+// Restrict fallback to UI roots so legacy root-level API aliases remain routes.
+pub(super) fn is_replacement_client_path(path: &str) -> bool {
+    !path.split('/').any(|segment| segment.contains('.'))
+        && (matches!(
+            path,
+            "/" | "/settings" | "/login" | "/setup" | "/forgot-password" | "/reset-password"
+        ) || ["/today", "/builds", "/farm", "/library", "/states", "/type"]
+            .iter()
+            .any(|prefix| {
+                path == *prefix
+                    || path
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            }))
 }

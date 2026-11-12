@@ -360,7 +360,7 @@ impl Gateway {
         Self::start_inner(
             listener,
             assets,
-            ServedUi::Legacy,
+            (ServedUi::Legacy, None),
             compat,
             owners,
             product,
@@ -371,7 +371,7 @@ impl Gateway {
     fn start_inner(
         listener: TcpListener,
         assets: PathBuf,
-        ui: ServedUi,
+        (ui, replacement_assets): (ServedUi, Option<pp_compat::AssetSnapshot>),
         compat: CompatHandle,
         owners: &OperationOwners,
         product: Option<ProductRoutes>,
@@ -444,7 +444,10 @@ impl Gateway {
         };
         let observations = watchers.observations();
         let asset_policy = if rust_status.is_some() && ui == ServedUi::Replacement {
-            assets::Policy::replacement(&origin)
+            assets::Policy::replacement(
+                &origin,
+                replacement_assets.context("Replacement UI requires verified bytes")?,
+            )
         } else {
             assets::Policy::Legacy
         };
@@ -1029,7 +1032,7 @@ async fn handle(
     let document = matches!(request.method().as_str(), "GET" | "HEAD")
         && (header(&request, "sec-fetch-mode") == Some("navigate")
             || header(&request, "accept").is_some_and(|v| v.contains("text/html")));
-    let spa = is_spa_client_path(&path);
+    let spa = state.asset_policy.is_spa_client_path(&path);
     if (document && spa)
         || path.starts_with("/assets/")
         || path.starts_with("/icons/")

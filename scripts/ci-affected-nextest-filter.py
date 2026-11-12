@@ -5,7 +5,8 @@ On pull requests, map changed rust/crates/<pkg>/ paths to
 `rdeps(=<pkg>)` unions so nextest runs the changed crates and their reverse
 dependents. Shared workspace inputs (Cargo.lock, web assets, fixtures, the
 workflow, this script, …) force `all()` because they can affect any crate.
-Push, merge_group, schedule and workflow_dispatch keep the full suite.
+Push, schedule and workflow_dispatch keep the full suite. A merge group also
+gets all() from here, but its Rust jobs run no nextest (docs/development/ci.md).
 """
 
 import os

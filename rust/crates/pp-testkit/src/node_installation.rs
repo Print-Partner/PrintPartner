@@ -40,6 +40,7 @@ pub fn populate(directory: &Path) -> io::Result<()> {
         ("feature_toggles:plan:1", r#"{"bambu":false}"#.to_owned()),
         ("production_setup:1", r#"{"printers":[]}"#.to_owned()),
         ("kit_manifest_2", r#"{"modules":[]}"#.to_owned()),
+        ("filename_grouping:1", r#"{"mode":"flat"}"#.to_owned()),
         ("date_format", "iso".to_owned()),
         ("build_planning.create.synthetic-key-7", "1".to_owned()),
     ];

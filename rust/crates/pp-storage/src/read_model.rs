@@ -29,7 +29,6 @@ use std::{
     collections::HashSet,
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },

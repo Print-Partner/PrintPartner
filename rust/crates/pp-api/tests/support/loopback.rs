@@ -6,6 +6,7 @@ use axum::{
     body::Body,
     extract::ConnectInfo,
     http::{Request, StatusCode},
+    response::Response,
 };
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -46,6 +47,27 @@ pub async fn send_with_headers(
     cookie: Option<&str>,
     headers: &[(&str, &str)],
 ) -> (StatusCode, Value) {
+    let response = respond(router, method, path, content_type, body, cookie, headers).await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// [`send_with_headers`]'s whole answer, for a body that is not JSON.
+pub async fn respond(
+    router: &Router,
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+    cookie: Option<&str>,
+    headers: &[(&str, &str)],
+) -> Response {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
@@ -64,13 +86,5 @@ pub async fn send_with_headers(
     request
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
-    let response = router.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    router.clone().oneshot(request).await.unwrap()
 }

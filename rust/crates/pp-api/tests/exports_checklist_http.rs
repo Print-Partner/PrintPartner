@@ -6,16 +6,13 @@
 //! no job behind.
 use axum::{
     Router,
-    body::Body,
-    extract::ConnectInfo,
-    http::{Request, StatusCode, header},
+    http::{StatusCode, header},
 };
 use checkoff_http::{Fixture, post, send};
 use pp_api::{accepted::accepted_router, checkoff::checkoff_router, exports::exports_router};
 use pp_storage::WriterOwner;
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, net::SocketAddr, path::Path};
-use tower::ServiceExt;
+use std::{collections::BTreeSet, path::Path};
 
 #[path = "support/checkoff_http.rs"]
 mod checkoff_http;
@@ -51,17 +48,10 @@ async fn download_as(
     path: &str,
     credential: Option<(&str, &str)>,
 ) -> (StatusCode, header::HeaderMap, String) {
-    let mut request = Request::get(path)
-        .header("host", "127.0.0.1:4100")
-        .header("origin", checkoff_http::loopback::ORIGIN);
-    if let Some((name, value)) = credential {
-        request = request.header(name, value);
-    }
-    let mut request = request.body(Body::empty()).unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
-    let response = router.clone().oneshot(request).await.unwrap();
+    let headers: Vec<(&str, &str)> = credential.into_iter().collect();
+    let response =
+        checkoff_http::loopback::respond(router, "GET", path, None, Vec::new(), None, &headers)
+            .await;
     let (parts, body) = response.into_parts();
     let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
     (
@@ -71,20 +61,25 @@ async fn download_as(
     )
 }
 
-/// Every file under `root`, so a download that writes one shows up.
-fn files(root: &Path) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-            } else {
-                found.insert(path.strip_prefix(root).unwrap().display().to_string());
-            }
+/// Every file under `dir`, relative to `root`, so a download that writes
+/// one shows up.
+fn files(root: &Path, dir: &Path, found: &mut BTreeSet<String>) {
+    for path in std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+    {
+        match path.is_dir() {
+            true => files(root, &path, found),
+            false => _ = found.insert(path.strip_prefix(root).unwrap().display().to_string()),
         }
     }
+}
+
+/// [`files`] for the whole data directory, without SQLite's own sidecars.
+fn data_files(root: &Path) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    files(root, root, &mut found);
+    found.retain(|file| !file.starts_with("print-partner.db-"));
     found
 }
 
@@ -134,7 +129,7 @@ async fn checklist_matches_checkoff_units_and_follows_a_burst() {
             .query_row("SELECT COUNT(*) FROM durable_jobs", [], |r| r.get(0))
             .unwrap()
     };
-    let (before_files, before_jobs) = (files(&fixture.0), jobs(&fixture));
+    let (before_files, before_jobs) = (data_files(&fixture.0), jobs(&fixture));
 
     let (status, units) = send(&router, "GET", "/api/v2/plans/1/checkoff/units", "", true).await;
     assert_eq!(status, StatusCode::OK, "{units}");
@@ -204,13 +199,9 @@ async fn checklist_matches_checkoff_units_and_follows_a_burst() {
     );
 
     // Compared while storage is open: shutdown removes its lease file.
-    let unchanged = |mut found: BTreeSet<String>| {
-        found.retain(|file| !file.starts_with("print-partner.db-"));
-        found
-    };
     assert_eq!(
-        unchanged(files(&fixture.0)),
-        unchanged(before_files),
+        data_files(&fixture.0),
+        before_files,
         "a download stores no file"
     );
     assert_eq!(jobs(&fixture), before_jobs, "a download starts no job");

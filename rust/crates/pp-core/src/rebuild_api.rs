@@ -189,12 +189,15 @@ fn checkoff_routes(
     Ok(checkoff_router(config, client).merge(files))
 }
 
+/// Accepted Plan reads and the exports built from them, on one `ReadClient`.
 fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
+    let exports = exports_router(config.clone(), client.clone());
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     Ok(accepted_router(
         config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         client,
-    ))
+    )
+    .merge(exports))
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
@@ -316,7 +319,6 @@ fn read_router_with_updates(
     let admin_config = admin_config.with_server_update_checks(server_updates);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
-    let exports = exports_router(config.clone(), accepted_client.clone());
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
@@ -341,7 +343,6 @@ fn read_router_with_updates(
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
-            .merge(exports)
             .merge(history)
             .merge(planning)
             .merge(workflow)

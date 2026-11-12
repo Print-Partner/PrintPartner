@@ -137,8 +137,8 @@ STEPS = [
     # exits nonzero when it finds no tests.
     Step("ui-package", "replacement UI package typecheck, lint, tests, build and font requests",
          # The package's build script runs its typecheck first, so there is no separate
-         # typecheck line. The desktop does not ship apps/ui, so the measured manifest
-         # does not follow it and its tests and build leave rust/bundle-manifest.json valid.
+         # typecheck line. web-assets already measures the UI build; this repeat build
+         # must stay deterministic so runtime tests still use the measured bytes.
          setup=("npm --prefix web run lint --workspace @print-partner/ui",
                 "npm --prefix web run test --workspace @print-partner/ui",
                 "npm --prefix web run build --workspace @print-partner/ui",

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import pathlib
@@ -177,6 +178,24 @@ class StageWorkspaceLinkTests(unittest.TestCase):
         links = json.loads((self.root / "manifest.json").read_text())["dependencies"]["links"]
         self.assertEqual(links, {"web/node_modules/@print-partner/contracts": "../../packages/contracts"})
 
+    def test_source_manifest_builds_replacement_with_its_client_installed(self):
+        stage_locked_dependencies(self.source, self.web, self.lock)
+        write(self.web / "apps/ui/package.json", "{}")
+        npm = self.node.with_name("npm")
+        write(npm, '#!/bin/sh\nmkdir -p "$2/apps/ui/dist"\nprintf built > "$2/apps/ui/dist/index.html"\n')
+        npm.chmod(0o755)
+        # The partial workspace install leaves the replacement unbuilt.
+        result = self.build_manifest()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        measured = json.loads((self.root / "manifest.json").read_text())
+        self.assertEqual(measured["replacement_frontend"], {})
+        write(self.web / "node_modules/@print-partner/rust-client/package.json", "{}")
+        result = self.build_manifest()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        measured = json.loads((self.root / "manifest.json").read_text())
+        self.assertEqual(measured["replacement_frontend"],
+                         {"index.html": hashlib.sha256(b"built").hexdigest()})
+
     def test_dangling_workspace_link_fails_the_manifest(self):
         stage_locked_dependencies(self.source, self.web, self.lock)
         (self.web / "node_modules/@print-partner/ui").symlink_to("../../apps/ui")
@@ -213,7 +232,10 @@ class StageWorkspaceLinkTests(unittest.TestCase):
         write(self.web / "apps/ui/dist/index.html", "<!doctype html>")
         result = self.build_manifest()
         self.assertEqual(result.returncode, 0, result.stderr)
-        after = json.loads((self.root / "manifest.json").read_text())["dependencies"]
+        measured = json.loads((self.root / "manifest.json").read_text())
+        self.assertIn("index.html", measured["replacement_frontend"])
+        self.assertIn("desktop-build.json", measured["frontend"])
+        after = measured["dependencies"]
         self.assertEqual(after, before)
 
 

@@ -1,5 +1,5 @@
 import type { Health } from "@print-partner/rust-client";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -33,8 +33,8 @@ const health = (modules: Health["modules"] = MODULES): Health => ({
 });
 
 /** A fake core that answers every request with `answer`, and records the paths. */
-function core(answer: () => Response | Promise<Response>) {
-  return vi.fn((_path: string) => Promise.resolve().then(answer));
+function core(answer: (path: string, init?: RequestInit) => Response | Promise<Response>) {
+  return vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => answer(path, init)));
 }
 
 function renderSettings(fetchImpl: ReturnType<typeof core>) {
@@ -45,7 +45,7 @@ function renderSettings(fetchImpl: ReturnType<typeof core>) {
     queries: { ...queryClient.getDefaultOptions().queries, retry: false },
   });
   render(<App router={router} queryClient={queryClient} />);
-  return { queryClient };
+  return { queryClient, router };
 }
 
 afterEach(() => {
@@ -75,9 +75,8 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
         "Off because its setting could not be read. The core tries again.",
       ),
     ).toBeTruthy();
-    // Read-only until the core has a Module write route: no switch and no button.
-    expect(within(modules).queryByRole("button")).toBeNull();
-    expect(within(modules).queryByRole("switch")).toBeNull();
+    expect(within(modules).getAllByRole("button")).toHaveLength(5);
+    expect(screen.getByRole("button", { name: "Turn Bambu on" }).getAttribute("aria-disabled")).toBe("true");
     // Only the core's /health is read; nothing else is called.
     expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(new Set(["/health"]));
   });
@@ -93,7 +92,10 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
       ["Sharing and devices", "#sharing"],
       ["Backups", "#backups"],
     ]);
-    for (const label of ["Integrations", "Sharing and devices", "Backups"]) {
+    const sharing = screen.getByRole("region", { name: "Sharing and devices" });
+    expect(within(sharing).getByText("This screen cannot show sharing status or paired devices yet.")).toBeTruthy();
+    expect(within(sharing).queryByRole("button")).toBeNull();
+    for (const label of ["Integrations", "Backups"]) {
       const region = screen.getByRole("region", { name: label });
       expect(within(region).getByText("Not available yet.")).toBeTruthy();
     }
@@ -158,5 +160,185 @@ describe("SET-05 Settings screen states", () => {
     expect(screen.queryByRole("region", { name: "Modules" })).toBeNull();
     // No section exists to link to, so no section links either.
     expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
+  });
+});
+
+
+describe("Module changes use the Rust route", () => {
+  function changingCore(effect?: (apply: () => Health["modules"]) => Response | Promise<Response>) {
+    let modules = MODULES.map((m) => ({ ...m }));
+    const writes: { path: string; body: unknown }[] = [];
+    const fetchMock = core((path, init) => {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { on: boolean };
+        writes.push({ path, body });
+        const apply = () => {
+          modules = modules.map((m) => m.module === path.split("/").at(-1)
+            ? body.on ? { module: m.module, state: "on" as const }
+              : { module: m.module, state: "off" as const, reason: "turned_off" as const }
+            : m);
+          return modules;
+        };
+        return effect ? effect(apply) : json({ modules: apply() });
+      }
+      return json(health(modules));
+    });
+    return { fetchMock, writes };
+  }
+
+  it("confirms an off change once, adopts Rust's state and invalidates dependent reads", async () => {
+    const { fetchMock, writes } = changingCore();
+    const { queryClient } = renderSettings(fetchMock);
+    await screen.findByRole("button", { name: "Turn Farm off" });
+    queryClient.setQueryData(["core", "builds"], { cached: true });
+    fireEvent.click(screen.getByRole("button", { name: "Turn Farm off" }));
+    const dialog = screen.getByRole("dialog", { name: "Turn Farm off?" });
+    expect(within(dialog).getByText(/does not stop a printer/)).toBeTruthy();
+    expect(writes).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm Module change" }));
+    await screen.findByText("Module settings saved.");
+    expect(writes).toEqual([{ path: "/api/v2/modules/farm", body: { on: false } }]);
+    expect(moduleRow("Farm").dataset.moduleState).toBe("off");
+    expect(queryClient.getQueryData<Health>(["core", "modules"])?.modules?.[0]?.state).toBe("off");
+    expect(queryClient.getQueryState(["core", "builds"])?.isInvalidated).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("turns on an off Module through the same absolute-state contract", async () => {
+    const { fetchMock, writes } = changingCore();
+    renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Orders on" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Module change" }));
+    await screen.findByText("Module settings saved.");
+    expect(writes).toEqual([{ path: "/api/v2/modules/orders", body: { on: true } }]);
+    expect(moduleRow("Orders").dataset.moduleState).toBe("on");
+  });
+
+  it("cancels without writing and returns keyboard focus to the opener", async () => {
+    const { fetchMock, writes } = changingCore();
+    renderSettings(fetchMock);
+    const opener = await screen.findByRole("button", { name: "Turn Farm off" });
+    opener.focus();
+    fireEvent.click(opener);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(writes).toHaveLength(0);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(opener);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(writes).toHaveLength(0);
+  });
+
+  it("does not change displayed state early or send a second pending request", async () => {
+    let finish: (() => void) | undefined;
+    const { fetchMock, writes } = changingCore((apply) => new Promise<Response>((resolve) => {
+      finish = () => resolve(json({ modules: apply() }));
+    }));
+    renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Farm off" }));
+    const confirm = screen.getByRole("button", { name: "Confirm Module change" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await screen.findByText("Saving Module state.");
+    expect(writes).toHaveLength(1);
+    expect(moduleRow("Farm").dataset.moduleState).toBe("on");
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("Saving Module state.")).toBeTruthy();
+    finish!();
+    await screen.findByText("Module settings saved.");
+    expect(moduleRow("Farm").dataset.moduleState).toBe("off");
+  });
+
+  it("keeps the shared pending lock when Settings is left and remounted", async () => {
+    let finish: (() => void) | undefined;
+    const { fetchMock, writes } = changingCore((apply) => new Promise<Response>((resolve) => {
+      finish = () => resolve(json({ modules: apply() }));
+    }));
+    const { router } = renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Farm off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Module change" }));
+    await screen.findByText("Saving Module state.");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await act(() => router.navigate("/type"));
+    await act(() => router.navigate("/settings"));
+    const orders = await screen.findByRole("button", { name: "Turn Orders on" });
+    expect(orders.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("Saving Module state.")).toBeTruthy();
+    fireEvent.click(orders);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(writes).toHaveLength(1);
+    finish!();
+    await screen.findByRole("button", { name: "Turn Farm on" });
+    await waitFor(() => expect(orders.getAttribute("aria-disabled")).toBeNull());
+    expect(moduleRow("Farm").dataset.moduleState).toBe("off");
+    expect(writes).toHaveLength(1);
+  });
+
+  it("keeps canonical state and does not automatically retry a refusal", async () => {
+    const { fetchMock, writes } = changingCore(() => json({ detail: "Busy" }, 503));
+    renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Farm off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Module change" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Busy");
+    expect(moduleRow("Farm").dataset.moduleState).toBe("on");
+    fireEvent.click(screen.getByRole("button", { name: "Reload Module state" }));
+    expect(writes).toHaveLength(1);
+  });
+
+  it("reconciles a lost reply through reads without repeating the write", async () => {
+    const { fetchMock, writes } = changingCore((apply) => {
+      apply();
+      throw new TypeError("Failed to fetch");
+    });
+    renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Farm off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Module change" }));
+    await screen.findByRole("alert");
+    await waitFor(() => expect(moduleRow("Farm").dataset.moduleState).toBe("off"));
+    expect(writes).toHaveLength(1);
+  });
+
+  it("keeps an unreadable Module unavailable without guessing its state", async () => {
+    const { fetchMock, writes } = changingCore();
+    renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Bambu on" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(writes).toHaveLength(0);
+  });
+
+  it("blocks an open confirmation when the core can no longer read the setting", async () => {
+    const { fetchMock, writes } = changingCore();
+    const { queryClient } = renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Farm off" }));
+    act(() => {
+      queryClient.setQueryData(["core", "modules"], health(MODULES.map((m) =>
+        m.module === "farm" ? { module: "farm", state: "off", reason: "setting_unreadable" } : m,
+      )));
+    });
+    const confirm = screen.getByRole("button", { name: "Confirm Module change" });
+    await waitFor(() => expect(confirm.getAttribute("aria-disabled")).toBe("true"));
+    expect(screen.getByRole("button", { name: "Confirm Module change", description: /cannot read/ })).toBe(confirm);
+    fireEvent.click(confirm);
+    expect(writes).toHaveLength(0);
+  });
+
+  it("blocks confirmation if connectivity is lost while the dialog is open", async () => {
+    const { fetchMock, writes } = changingCore();
+    const base = fetchMock.getMockImplementation()!;
+    let offline = false;
+    fetchMock.mockImplementation((path, init) => offline ? Promise.reject(new TypeError("offline")) : base(path, init));
+    const { queryClient } = renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Farm off" }));
+    offline = true;
+    await queryClient.refetchQueries({ queryKey: ["core", "health"] });
+    const confirm = screen.getByRole("button", { name: "Confirm Module change" });
+    await waitFor(() => expect(confirm.getAttribute("aria-disabled")).toBe("true"));
+    expect(screen.getByRole("button", { name: "Confirm Module change", description: /Offline:/ })).toBe(confirm);
+    fireEvent.click(confirm);
+    expect(writes).toHaveLength(0);
   });
 });

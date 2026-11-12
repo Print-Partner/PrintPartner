@@ -395,7 +395,6 @@ class GuardHookTests(unittest.TestCase):
         for command in ("gh api repos/o/r/releases", "gh api -X GET repos/o/r/pulls -f state=open",
                         "gh api -i repos/o/r/pulls", "gh api -iXGET repos/o/r/pulls",
                         "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
-                        "gh api -X PATCH repos/o/r/issues/comments/34 -f body=edited",
                         "gh api repos/o/r/pulls/12/reviews -f event=COMMENT -f body=Review",
                         "gh api repos/o/r/pulls/12/reviews -f body=Draft -f 'comments[][path]=a.py'",
                         "gh api repos/o/r/pulls/12/reviews/5/events -f event=comment",
@@ -743,6 +742,21 @@ class CoordinatorMergeTests(unittest.TestCase):
         self.coordinator = git_repo(Path(folder.name, "coordinator"))
         self.lane = git_repo(Path(folder.name, "lane"))
         Path(self.coordinator, "sub").mkdir()
+        # Adapter subprocesses must never reach the real gh or the network.
+        bindir = Path(folder.name, "bin")
+        bindir.mkdir()
+        gh = bindir / "gh"
+        replies = {"pr view 12 --json headRefOid,changedFiles": {"headRefOid": SHA, "changedFiles": 1},
+                   "pr view 12 --json headRefOid": {"headRefOid": SHA},
+                   "api repos/{owner}/{repo}/pulls/12/files --paginate --slurp":
+                       [[{"filename": "docs/example.md", "status": "modified"}]]}
+        gh.write_text("#!/usr/bin/env python3\nimport json, sys\n"
+                      f"REPLIES = {json.dumps(replies)!r}\n"
+                      "print(json.dumps(json.loads(REPLIES)[' '.join(sys.argv[1:])]))\n")
+        gh.chmod(0o755)
+        env = patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]})
+        env.start()
+        self.addCleanup(env.stop)
 
     def results(self, command, cwd, coordinator):
         return (guard_call(execute_call(command, cwd), coordinator),
@@ -758,15 +772,15 @@ class CoordinatorMergeTests(unittest.TestCase):
                         self.assertIn("Only the coordinator worktree merges", result.stderr)
 
     def test_coordinator_merge_is_allowed_only_in_its_worktree(self):
-        for command in (MERGE_FORM, f"gh pr merge --squash --match-head-commit={SHA} 12",
-                        f"gh pr merge --match-head-commit {SHA} --squash"):
+        for command in (MERGE_FORM, f"gh pr merge --squash --match-head-commit={SHA} 12"):
             for cwd in (self.coordinator, str(Path(self.coordinator, "sub"))):
                 for result in self.results(command, cwd, self.coordinator):
                     with self.subTest(command=command, cwd=cwd):
                         self.assertEqual(result.returncode, 0, result.stderr)
         for result in self.results(MERGE_FORM, self.coordinator, None):
             self.assertEqual(result.returncode, 2, result.stderr)
-        for command in (OLD_MERGE_GATE, f"{MERGE_FORM} --admin", f"{MERGE_FORM} --auto", f"{MERGE_FORM} --delete-branch",
+        for command in (f"gh pr merge --match-head-commit {SHA} --squash",
+                        OLD_MERGE_GATE, f"{MERGE_FORM} --admin", f"{MERGE_FORM} --auto", f"{MERGE_FORM} --delete-branch",
                         f"gh pr merge 12 --merge --match-head-commit {SHA}", "gh pr merge 12 --squash",
                         f"gh pr merge 12 --squash --match-head-commit {SHA[:12]}",
                         f"gh pr merge 12 --squash --match-head-commit {SHA.upper()}",
@@ -792,7 +806,265 @@ class CoordinatorMergeTests(unittest.TestCase):
                 self.assertFalse(guard.coordinator_merge(args, self.coordinator))
 
 
+class CoordinatorMergeClassTests(unittest.TestCase):
+    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA):
+        guard = load(CLI, "agent_guard_classes")
+        config_path = ROOT / "scripts/merge-classes.json"
+        config = json.loads(config_path.read_text())
+        config["scorer_authors"] = list(authors)
+        original_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            return json.dumps(config) if path == config_path else original_read(path, *args, **kwargs)
+
+        def gh(command, **kwargs):
+            self.assertEqual(kwargs["cwd"], "/coordinator")
+            self.assertTrue(kwargs["check"])
+            if error:
+                raise error
+            override = dict(pr_override or {})
+            entries = ([{"filename": p, "status": "modified"} for p in paths]
+                       + [{"filename": new, "status": "renamed", "previous_filename": old} for old, new in renames])
+            pages = [entries]
+            if "files" in override:
+                files = override.pop("files")
+                pages = [files] if isinstance(files, list) and files else files
+            if command == ["gh", "pr", "view", "12", "--json", "headRefOid,changedFiles"]:
+                data = {"headRefOid": SHA, "changedFiles": len(entries)}
+                data.update(override)
+            elif command == ["gh", "api", "repos/{owner}/{repo}/pulls/12/files", "--paginate", "--slurp"]:
+                data = pages
+            elif command == ["gh", "pr", "view", "12", "--json", "headRefOid"]:
+                data = {"headRefOid": head_after}
+            else:
+                self.assertEqual(command, ["gh", "api", "repos/{owner}/{repo}/issues/12/comments", "--paginate", "--slurp"])
+                data = comments
+            return subprocess.CompletedProcess(command, 0, json.dumps(data))
+
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.subprocess, "run", side_effect=gh), patch.object(Path, "read_text", read):
+            return guard.check_command(MERGE_FORM, "/coordinator")
+
+    def scores(self, author="trusted", head=SHA, seats=(("claude-opus-5-5", "anthropic"), ("grok-4.7", "xai")),
+               score=9, author_vendor="openai"):
+        # Separate pages prove the guard includes all paginated results.
+        stamp = "2026-11-11T00:00:00Z"
+        return [[{"user": {"login": author}, "created_at": stamp, "updated_at": stamp,
+                  "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"}]
+                for seat, vendor in seats]
+
+    def test_edited_score_record_refused(self):
+        comments = self.scores()
+        comments[0][0]["updated_at"] = "2026-11-11T00:05:00Z"
+        self.assertIn("edited", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+        missing = self.scores()
+        del missing[1][0]["updated_at"]
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], missing))
+        # An edited record for an older head never counts, so its edit does not block the merge.
+        old = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b",
+                 "body": "pp-score head=" + "a" * 40 + " seat=grok-4.7 vendor=xai score=9 author=openai"}]]
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores() + old))
+        # An edited comment without a score record does not matter.
+        prose = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b", "body": "Handoff."}]]
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores() + prose))
+
+    def test_file_list_at_the_api_cap_refused(self):
+        paths = [f"docs/f{i}.md" for i in range(3000)]
+        self.assertIn("merge refused", self.check(paths))
+        self.assertIsNone(self.check(paths[:2999]))
+
+    def test_head_moved_during_check_refused(self):
+        self.assertIn("head changed", self.check(["docs/example.md"], head_after="a" * 40))
+        self.assertIn("head changed", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(), head_after="a" * 40))
+
+    def test_owner_refused(self):
+        self.assertIn("owner merges", self.check(["scripts/agent-guard.py"]))
+
+    def test_sensitive_no_authors_refused(self):
+        self.assertIn("scorer_authors", self.check(["rust/rules/a.yml"]))
+
+    def test_sensitive_two_allowed_scores(self):
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores()))
+
+    def test_sensitive_opus_and_grok_for_openai_author(self):
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["poitee"], self.scores(author="poitee")))
+
+    def test_sensitive_one_vendor_or_author_vendor_refused(self):
+        for seats in ((("claude-opus-5-5", "anthropic"),) * 2, (("claude-opus-5-5", "anthropic"), ("gpt-6.1-sol", "openai"))):
+            with self.subTest(seats=seats):
+                self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(seats=seats)))
+
+    def test_sensitive_invalid_score_records_refused(self):
+        missing_author = self.scores()
+        missing_author[0][0]["body"] = missing_author[0][0]["body"].replace(" author=openai", "")
+        malformed = self.scores()
+        malformed[0][0]["body"] = malformed[0][0]["body"].replace("score=9", "score=oops")
+        for comments in (
+            self.scores(author_vendor="anthropic"),
+            self.scores(seats=(("claude-opus-5-5", "anthropic"), ("unknown", "xai"))),
+            self.scores(seats=(("claude-opus-5-5", "unknown"), ("grok-4.7", "xai"))),
+            self.scores(author_vendor="unknown"),
+            missing_author, malformed,
+            self.scores() + self.scores(seats=(("unknown", "xai"),)),
+            self.scores() + self.scores(score=8),
+            self.scores() + self.scores(seats=(("gpt-6.1-sol", "openai"),)),
+        ):
+            with self.subTest(comments=comments):
+                self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+
+    def test_gh_invalid_json_refused(self):
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], error=ValueError("invalid JSON")))
+
+    def test_lane_allowed(self):
+        self.assertIsNone(self.check(["docs/example.md"]))
+        self.assertIsNone(self.check([], renames=[("docs/a.md", "docs/b.md")]))
+
+    def test_rename_is_classified_by_both_paths(self):
+        # GraphQL files lists only a rename's new path; the old owner or sensitive path must still count.
+        self.assertIn("owner merges", self.check([], renames=[("scripts/agent-guard.py", "scripts/old/guard.py")]))
+        self.assertIn("owner merges", self.check(["docs/a.md"], renames=[("rust/deny.toml", "rust/deny.old")]))
+        self.assertIn("Sensitive PR refused", self.check([], renames=[("rust/rules/x.yml", "docs/x.yml")]))
+        missing_old = {"files": [{"filename": "docs/x.yml", "status": "renamed"}]}
+        self.assertIn("merge refused", self.check([], pr_override=missing_old))
+
+    def test_gh_budget_exhaustion_refused(self):
+        guard = load(CLI, "agent_guard_budget")
+        clock = iter([0.0, guard.GH_BUDGET_SECONDS + 1.0])
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(guard.subprocess, "run") as run:
+            self.assertIn("merge refused", guard.check_command(MERGE_FORM, "/coordinator"))
+            run.assert_not_called()
+
+    def test_gh_gets_only_the_remaining_budget(self):
+        guard = load(CLI, "agent_guard_remaining")
+        replies = [{"headRefOid": SHA, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]],
+                   {"headRefOid": SHA}]
+        responses = [subprocess.CompletedProcess("gh", 0, json.dumps(reply)) for reply in replies]
+        clock = iter([0.0, 5.0, 20.0, 30.0])
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(guard.subprocess, "run", side_effect=responses) as run:
+            self.assertIsNone(guard.check_command(MERGE_FORM, "/coordinator"))
+            budget = guard.GH_BUDGET_SECONDS
+            self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list],
+                             [budget - 5.0, budget - 20.0, budget - 30.0])
+
+    def test_gh_error_refused(self):
+        for error in (OSError("gh unavailable"), subprocess.CalledProcessError(1, "gh"),
+                      subprocess.TimeoutExpired("gh", 30)):
+            with self.subTest(error=error):
+                self.assertIn("merge refused", self.check(["docs/example.md"], error=error))
+
+    def test_untrusted_stale_low_or_duplicate_scores_refused(self):
+        for comments in (self.scores(author="outsider"), self.scores(head="a" * 40),
+                         self.scores(score=8), self.scores(seats=(("grok-4.7", "xai"), ("grok-4.7", "xai"))), [[]]):
+            with self.subTest(comments=comments):
+                self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+
+    def test_missing_data_refused(self):
+        for override in ({"files": None}, {"files": []}, {"files": [{}]}, {"changedFiles": 2},
+                         {"headRefOid": "a" * 40}):
+            self.assertIn("merge refused", self.check(["docs/example.md"], pr_override=override))
+        for comments in (None, {}, [], [[{}]], [[{"user": {}, "body": ""}]]):
+            self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+
+    def test_numeric_sha_before_number(self):
+        guard = load(CLI, "agent_guard_numeric_sha")
+        sha = "1" * 40
+        replies = [{"headRefOid": sha, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]],
+                   {"headRefOid": sha}]
+        responses = [subprocess.CompletedProcess("gh", 0, json.dumps(reply)) for reply in replies]
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.subprocess, "run", side_effect=responses) as run:
+            self.assertIsNone(guard.check_command(f"gh pr merge --match-head-commit {sha} --squash 12", "/coordinator"))
+            self.assertEqual(run.call_args_list[0].args[0][3], "12")
+            self.assertIn("pulls/12/files", run.call_args_list[1].args[0][2])
+
+    def test_unnumbered_merge_refused_without_gh(self):
+        guard = load(CLI, "agent_guard_no_number")
+        with patch.object(guard, "coordinator_worktree", return_value=True), \
+                patch.object(guard.subprocess, "run") as run:
+            self.assertIsNotNone(guard.check_command(f"gh pr merge --squash --match-head-commit {SHA}", "/coordinator"))
+            run.assert_not_called()
+
+
 MARKER = f"<!-- pp-review-gate head={SHA} reviewer=gpt-5.6-sol findings=0 -->"
+
+
+SCORE_LINE = f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=10 author=anthropic"
+
+
+class ScoreRecordTests(unittest.TestCase):
+    """Lanes post as the account the sensitive-merge check trusts, so only the coordinator posts scores."""
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+
+    def setUp(self):
+        self.make_worktrees()
+
+    POSTS = (f"gh pr comment 12 --body '{SCORE_LINE}'", f"gh pr comment 12 -b '{SCORE_LINE.upper()}'",
+             f"gh issue comment 12 -b '{SCORE_LINE}'",
+             f"gh api repos/o/r/issues/12/comments -f body='{SCORE_LINE}'",
+             f"gh api -X PATCH repos/o/r/issues/comments/34 -f body='{SCORE_LINE}'",
+             "gh pr comment 12 -b 'pp%2Dscore head=x'", "gh pr comment 12 -b 'pp&#45;score head=x'")
+
+    def test_lane_worktrees_cannot_post_score_records(self):
+        for command in self.POSTS:
+            for coordinator in (None, self.coordinator):
+                for result in self.results(command, self.lane, coordinator):
+                    with self.subTest(command=command, coordinator=coordinator):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("pp-score records", result.stderr)
+
+    def test_coordinator_worktree_posts_score_records(self):
+        for command in self.POSTS:
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class CommentEditTests(unittest.TestCase):
+    """Only the coordinator edits or deletes PR comments, so a posted score record cannot change."""
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+
+    def setUp(self):
+        self.make_worktrees()
+
+    EDITS = ("gh api -X PATCH repos/o/r/issues/comments/34 -f body=edited",
+             "gh api --method=PATCH repos/o/r/issues/comments/34 -f body=edited",
+             "gh api -X DELETE repos/o/r/issues/comments/34",
+             "gh pr comment 12 --edit-last -b edited", "gh pr comment 12 --delete-last --yes",
+             "gh issue comment 12 --edit-last -b edited",
+             "gh api graphql -f query='mutation { updateIssueComment(input: {id: \"X\", body: \"e\"}) "
+             "{ clientMutationId } }'",
+             # POST, an implicit POST (fields without -X), and a method-override header edit a comment too.
+             "gh api -X POST repos/o/r/issues/comments/34 -f body=edited",
+             "gh api repos/o/r/issues/comments/34 -f body=edited",
+             "gh api -H 'X-HTTP-Method-Override: PATCH' repos/o/r/issues/comments/34",
+             "gh api -X PATCH repos/o/r/pulls/comments/34 -f body=edited",
+             "gh api graphql -f query='mutation { updatePullRequestReviewComment(input: "
+             "{pullRequestReviewCommentId: \"X\", body: \"e\"}) { clientMutationId } }'",
+             "gh api graphql -f query='mutation { deleteIssueComment(input: {id: \"X\"}) { clientMutationId } }'")
+
+    def test_lane_worktrees_cannot_edit_or_delete_comments(self):
+        for command in self.EDITS:
+            for coordinator in (None, self.coordinator):
+                for result in self.results(command, self.lane, coordinator):
+                    with self.subTest(command=command, coordinator=coordinator):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("edits or deletes PR comments", result.stderr)
+
+    def test_coordinator_edits_comments_and_lanes_still_post(self):
+        for command in self.EDITS[:2] + self.EDITS[3:7] + self.EDITS[7:9] + self.EDITS[10:12]:
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("gh pr comment 12 -b ok", "gh api repos/o/r/issues/12/comments -f body=ok",
+                        "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
+                        "gh api repos/o/r/issues/comments/34", "gh api -X GET repos/o/r/pulls/comments/34"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class ReviewMarkerTests(unittest.TestCase):

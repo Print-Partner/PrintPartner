@@ -362,6 +362,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
     ClientRoute {
         text_params: &["id"],
         ..route(
+            "updateIntegration",
+            "PATCH",
+            "/api/v2/integrations/{id}",
+            Some("UpdateIntegrationRequest"),
+            "IntegrationView",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
             "deleteIntegration",
             "DELETE",
             "/api/v2/integrations/{id}",
@@ -603,10 +613,11 @@ pub(crate) mod codegen {
             "ModuleList",
             schemars::schema_for!(crate::modules::ModuleList),
         )?;
-        schema(
-            "CreateIntegrationRequest",
-            schemars::schema_for!(crate::integrations::CreateIntegrationRequest),
-        )?;
+        use crate::integrations::{CreateIntegrationRequest, UpdateIntegrationRequest};
+        let create = schemars::schema_for!(CreateIntegrationRequest);
+        schema("CreateIntegrationRequest", create)?;
+        let update = schemars::schema_for!(UpdateIntegrationRequest);
+        schema("UpdateIntegrationRequest", update)?;
         // The view always serializes these two, null included.
         let mut view = schemars::schema_for!(crate::integrations::IntegrationView);
         if let Some(object) = view.schema.object.as_mut() {
@@ -1927,7 +1938,9 @@ pub(crate) mod codegen {
     }
 
     fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {
-        use crate::integrations::{CreateIntegrationRequest, IntegrationView};
+        use crate::integrations::{
+            CreateIntegrationRequest, IntegrationView, UpdateIntegrationRequest,
+        };
         use pp_storage::printer_setup::ServiceKind;
         let view = |kind, filled: bool| IntegrationView {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -1971,6 +1984,28 @@ pub(crate) mod codegen {
         ] {
             let dto = "CreateIntegrationRequest";
             cases.push(request::<CreateIntegrationRequest>(dto, name, value));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            (
+                "address",
+                json!({"base_url": "http://fixture.invalid:7126"}),
+            ),
+            ("pause", json!({"name": "Voron", "enabled": false})),
+            (
+                "set-password",
+                json!({"username": "maker", "password": "fixture-password"}),
+            ),
+            (
+                "clear-credentials",
+                json!({"api_key": null, "password": null}),
+            ),
+            ("kind", json!({"kind": "prusalink"})),
+            ("enabled-not-boolean", json!({"enabled": "no"})),
+            ("password-not-text", json!({"password": 1})),
+        ] {
+            let dto = "UpdateIntegrationRequest";
+            cases.push(request::<UpdateIntegrationRequest>(dto, name, value));
         }
         Ok(cases)
     }

@@ -200,15 +200,16 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
 
-## Integration create and delete routes (GRE-1439)
+## Integration create, edit and delete routes (GRE-1439, GRE-1481)
 
-`POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman integration
-and `DELETE /api/v2/integrations/{id}` removes one of any kind, for the
-replacement Settings screen. They are `createIntegration` and
-`deleteIntegration` in the generated `@print-partner/rust-client`. Both answer
-`200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`, `base_url`,
-`username`, `has_api_key` and `has_password`. Delete answers the view it
-removed. No response or problem carries an API key or a password.
+`POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman
+integration, `PATCH /api/v2/integrations/{id}` edits one, and
+`DELETE /api/v2/integrations/{id}` removes one of any kind, for the
+replacement Settings screen. They are `createIntegration`, `updateIntegration`
+and `deleteIntegration` in the generated `@print-partner/rust-client`. All
+answer `200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`,
+`base_url`, `username`, `has_api_key` and `has_password`. Delete answers the
+view it removed. No response or problem carries an API key or a password.
 
 - They mount only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
   `true`, so only the Rust-only runtime serves them. The accepted gate admits
@@ -218,9 +219,18 @@ removed. No response or problem carries an API key or a password.
 - The create body is `kind`, `name` and `base_url`, plus optional `enabled`
   (default `true`), `api_key` (Moonraker and Spoolman) and `username` and
   `password` (PrusaLink). Unknown keys are refused.
-- A new host needs no restart: the status watchers re-read the stored hosts
-  about once a second, and `POST /api/v1/integrations/{id}/test` reads the
-  stored row.
+- The edit body takes `name`, `base_url`, `enabled`, `username`, `api_key` and
+  `password`, all optional, and applies what it is sent in one write, so an
+  address and its credentials change together. A field that is absent keeps
+  its stored value. For `username`, `api_key` and `password`, null clears the
+  stored value; for the other three, null keeps it. `kind` is not a field: an
+  integration's kind never changes. Only the fields a request sends are
+  checked, so a row that predates a check can still be edited.
+- Bambu, Home Assistant, AI assistant and slicer integrations cannot be edited
+  here. They are kept as stored and can only be deleted.
+- A new or edited host needs no restart: the status watchers re-read the
+  stored hosts about once a second, and `POST /api/v1/integrations/{id}/test`
+  reads the stored row.
 - Delete also removes the integration's TLS pin and clears a Spoolman default
   that names it, in the same transaction. A printer that linked it keeps the id
   and shows `integration: null` in `GET /api/v2/printers`. The status route
@@ -234,6 +244,7 @@ removed. No response or problem carries an API key or a password.
 | A value is invalid, or the body is not the request shape. `errors` names each field by JSON Pointer, never its value. Nothing is stored. | `400` | `invalid_integration` |
 | No stored integration has that id | `404` | `integration_not_found` |
 | The installation already has 64 integrations | `409` | `integration_limit` |
+| An edit names an integration of a kind that cannot be edited here | `409` | `integration_not_editable` |
 | The stored `integrations` document is not the typed shape. Every write is refused and the stored text is left as it is. | `500` | `integrations_unreadable` |
 | The write could not start before its deadline | `503` | `transaction_unavailable` |
 
@@ -244,7 +255,7 @@ Invalid values:
   longer than 2,048 bytes, or has whitespace or a control character in it.
 - `api_key`, `username`, `password`: an empty string (omit the field or send
   `null` for none), longer than 4,096 bytes, or a field the kind does not use.
-- `kind`: anything but `moonraker`, `prusalink` or `spoolman`.
+- `kind`, on create: anything but `moonraker`, `prusalink` or `spoolman`.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \

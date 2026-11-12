@@ -46,6 +46,15 @@ impl Fixture {
             .create_integration(self.session(), new, &IDLE, WAIT)
     }
 
+    fn change(
+        &self,
+        id: &str,
+        patch: IntegrationPatch,
+    ) -> Result<IntegrationSummary, PrinterSetupError> {
+        self.client
+            .update_integration(self.session(), id.into(), patch, &IDLE, WAIT)
+    }
+
     fn delete(&self, id: &str) -> Result<IntegrationSummary, PrinterSetupError> {
         self.client
             .delete_integration(self.session(), id.into(), &IDLE, WAIT)
@@ -239,6 +248,7 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
         };
         for refused in [
             fixture.create(new(ServiceKind::Moonraker, "http://moon.test")),
+            fixture.change("moon-1", IntegrationPatch::default()),
             fixture.delete("moon-1"),
         ] {
             // The refusal names the entry and holds none of its text.
@@ -326,4 +336,5 @@ fn the_limit_and_a_refused_credential_store_nothing() {
     fixture.create(moon()).unwrap();
 }
 
+mod edits;
 mod printers;

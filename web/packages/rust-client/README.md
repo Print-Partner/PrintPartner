@@ -67,6 +67,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v2/farm-log` (query `cursor`, `limit`) | | `FarmLogPage` |
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `POST /api/v2/integrations` | `CreateIntegrationRequest` | `IntegrationView` |
+| `PATCH /api/v2/integrations/{id}` | `UpdateIntegrationRequest` | `IntegrationView` |
 | `DELETE /api/v2/integrations/{id}` | | `IntegrationView` |
 | `POST /api/v2/printers` | `CreatePrinterRequest` | `PrinterConfig` |
 | `GET /api/v2/printers/{id}` | | `PrinterConfig` |

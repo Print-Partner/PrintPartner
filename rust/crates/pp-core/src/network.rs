@@ -6,6 +6,33 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+/// Bind the server's explicit listener, or the saved loopback port. The origin
+/// always names loopback, so local probes reach either listener.
+pub(super) async fn bind(
+    listen: Option<std::net::SocketAddr>,
+    lease: Option<&pp_storage::lease::StorageLease>,
+) -> anyhow::Result<(tokio::net::TcpListener, Option<crate::OriginChange>, String)> {
+    use anyhow::Context;
+    let (listener, origin_change) = match listen {
+        Some(address) => (
+            tokio::net::TcpListener::bind(address)
+                .await
+                .context("Bind PP_LISTEN_ADDR")?,
+            None,
+        ),
+        None => crate::origin::bind_origin(lease.context("Storage lease unavailable")?).await?,
+    };
+    let mut address = listener.local_addr()?;
+    if listen.is_some() {
+        address.set_ip(if address.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    Ok((listener, origin_change, format!("http://{address}")))
+}
+
 pub(super) fn for_listener(routes: Router, listen: Option<std::net::SocketAddr>) -> Router {
     if listen.is_some() {
         routes.layer(axum::middleware::from_fn(network_admission))

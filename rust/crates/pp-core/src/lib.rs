@@ -561,24 +561,7 @@ async fn start_rust_resources(
     )
     .await?;
     let community_manifests = bundle.community_manifests_dir();
-    let (listener, origin_change) = match listen {
-        Some(address) => (
-            tokio::net::TcpListener::bind(address)
-                .await
-                .context("Bind PP_LISTEN_ADDR")?,
-            None,
-        ),
-        None => bind_origin(writer.lease().context("Storage lease unavailable")?).await?,
-    };
-    let mut address = listener.local_addr()?;
-    if listen.is_some() {
-        address.set_ip(if address.is_ipv4() {
-            std::net::Ipv4Addr::LOCALHOST.into()
-        } else {
-            std::net::Ipv6Addr::LOCALHOST.into()
-        });
-    }
-    let origin = format!("http://{address}");
+    let (listener, origin_change, origin) = network::bind(listen, writer.lease()).await?;
     let hosts = Arc::new(printer_status::StoredMoonrakerHosts::new(writer.client()));
     let send_worker = send_worker::SendWorker::new(
         &writer,

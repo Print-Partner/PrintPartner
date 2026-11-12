@@ -10,6 +10,7 @@
 
 mod copy;
 pub mod inventory;
+mod verify;
 
 pub use copy::{ImportReport, REPORT_FILE, import};
 
@@ -68,6 +69,12 @@ pub enum ImportError {
     },
     /// More than one account is stored; the Rust runtime signs in with one.
     Accounts(u64),
+    /// The Source with this id has a current revision with no files under `repos/`.
+    MissingRevision(i64),
+    /// The Source with this id stores a path the import cannot place under `repos/`.
+    SourcePath(i64),
+    /// Rows of these tables differ from the source after the upgrade.
+    RowsChanged(Vec<String>),
     /// A copied file read back differently from its source.
     CopyMismatch(PathBuf),
     /// The staging directory has too little free space.
@@ -156,6 +163,19 @@ impl fmt::Display for ImportError {
             Self::Accounts(accounts) => write!(
                 f,
                 "{accounts} accounts are stored, and the Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added"
+            ),
+            Self::MissingRevision(source) => write!(
+                f,
+                "Source {source} has a current revision whose files are not under repos/"
+            ),
+            Self::SourcePath(source) => write!(
+                f,
+                "Source {source} stores a path that does not lead below a repos folder"
+            ),
+            Self::RowsChanged(tables) => write!(
+                f,
+                "Rows changed during the import in {}; they must arrive as the source stored them",
+                tables.join(", ")
             ),
             Self::CopyMismatch(copy) => write!(
                 f,
@@ -448,13 +468,17 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
         let kind = std::io::Error::new(ErrorKind::InvalidInput, "neither a folder nor a file");
         return Err(io_error(source, kind));
     };
-    let (connection, ready) = upgrade(&scratch.0)?;
+    let (connection, ready, ()) = upgrade(&scratch.0, |_| Ok(()))?;
     measure(&connection, kind, &ready, &files)
 }
 
 /// Checks the staged database as startup checks a live one and upgrades it
-/// in place to the current Rust schema, without rollback copies.
-fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportError> {
+/// in place to the current Rust schema, without rollback copies. `before`
+/// reads the checked database while it is still as the source stored it.
+fn upgrade<T>(
+    stage: &Path,
+    before: impl FnOnce(&Path) -> Result<T, ImportError>,
+) -> Result<(Connection, schema::SchemaReady, T), ImportError> {
     // A failed check can hide the version: a Rust database stamped 35 or
     // later fails the job-table check first. Refuse by version when one was read.
     let admitted = crate::restore::admit_schema(stage);
@@ -470,9 +494,11 @@ fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportErro
     }
     let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
     let database = stage.join(archive::DATABASE_FILE);
+    let read = before(&database)?;
     let now = crate::auth::catalog_timestamp();
-    schema::initialize_with(&database, version, &now, false)
-        .map_err(|error| ImportError::Database(format!("{error:#}")))
+    let (connection, ready) = schema::initialize_with(&database, version, &now, false)
+        .map_err(|error| ImportError::Database(format!("{error:#}")))?;
+    Ok((connection, ready, read))
 }
 
 /// An I/O failure that names the entry it happened on.

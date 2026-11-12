@@ -119,7 +119,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status, Status::Pending))
+        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 2))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
@@ -284,7 +284,7 @@ fn the_staged_upgrade_keeps_no_rollback_copies() {
     // The import's own upgrade of a staged folder writes no copy beside it.
     let (folder, stage) = (node_folder(), tempfile::tempdir().unwrap());
     stage_directory(folder.path(), stage.path()).unwrap();
-    let (connection, ready) = upgrade(stage.path()).unwrap();
+    let (connection, ready, ()) = upgrade(stage.path(), |_| Ok(())).unwrap();
     drop(connection);
     assert_eq!(
         (ready.previous_version, ready.version),

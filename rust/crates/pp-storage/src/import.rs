@@ -38,8 +38,10 @@ const UNMATCHED_PRINTS: &str = "printer.unattributed_prints";
 /// source or the destination as it is. No variant leaves a write in the source.
 #[derive(Debug)]
 pub enum ImportError {
-    /// The folder has a `.pp-rust-owned.json` entry.
+    /// The folder has a valid `.pp-rust-owned.json`: it is a Rust installation.
     RustOwned,
+    /// The folder has a `.pp-rust-owned.json` entry that is not a valid marker.
+    SourceMarker(ownership_marker::MarkerRefusal),
     /// The folder holds `.desktop-lease`: something runs or crashed there.
     Leased,
     /// The folder has no `print-partner.db`.
@@ -97,6 +99,11 @@ impl fmt::Display for ImportError {
             Self::RustOwned => write!(
                 f,
                 "The folder has a {} entry: it is a Rust installation, not a Node one",
+                ownership_marker::MARKER_FILE
+            ),
+            Self::SourceMarker(refusal) => write!(
+                f,
+                "The folder has a {} entry that is no valid marker ({refusal}). A Node installation has none",
                 ownership_marker::MARKER_FILE
             ),
             Self::Leased => write!(
@@ -204,8 +211,10 @@ pub enum Destination {
     Free,
     /// It holds this entry and no marker: the import would refuse it.
     NotEmpty(String),
-    /// It has a marker entry: a Rust installation is there already.
+    /// It has a valid marker: a Rust installation is there already.
     Marked,
+    /// It has a marker entry that is not a valid marker.
+    BadMarker(ownership_marker::MarkerRefusal),
 }
 
 impl fmt::Display for Destination {
@@ -214,6 +223,11 @@ impl fmt::Display for Destination {
             Self::Free => f.write_str("is absent or empty, as the import needs"),
             Self::NotEmpty(entry) => write!(f, "holds {entry:?}, so the import refuses it"),
             Self::Marked => f.write_str("is a Rust installation, so the import refuses it"),
+            Self::BadMarker(refusal) => write!(
+                f,
+                "has a {} entry that is no valid marker ({refusal}), so the import refuses it",
+                ownership_marker::MARKER_FILE
+            ),
         }
     }
 }
@@ -226,7 +240,8 @@ pub fn inspect_destination(destination: &Path) -> Result<Destination, ImportErro
         MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
             return Err(io_error(destination, kind.into()));
         }
-        _ => return Ok(Destination::Marked),
+        MarkerState::Refused(refusal) => return Ok(Destination::BadMarker(refusal)),
+        MarkerState::Valid(_) => return Ok(Destination::Marked),
     }
     // The writer refuses a Node lease directory that the marker rule alone
     // counts as empty, so any lease entry makes the folder unusable.
@@ -511,7 +526,8 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
         MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
             return Err(io_error(source, kind.into()));
         }
-        _ => return Err(ImportError::RustOwned),
+        MarkerState::Refused(refusal) => return Err(ImportError::SourceMarker(refusal)),
+        MarkerState::Valid(_) => return Err(ImportError::RustOwned),
     }
     if source.join(LEASE).symlink_metadata().is_ok() {
         return Err(ImportError::Leased);

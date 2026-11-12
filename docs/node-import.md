@@ -25,7 +25,7 @@ Two decisions shape the later steps:
 PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive> [--data <destination>] --dry-run
 ```
 
-The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`, which the Rust-only Docker image sets. `--from` is a stopped Node data folder, or a format 2 `full` backup archive that Node's `POST /backups` wrote. With `--data`, the dry run reads that folder and reports whether it is as the import needs (absent, or empty by the ownership-marker rule and without a `.desktop-lease` entry) or would be refused (it holds data, a lease entry, or a Rust installation). It reads the folder's entries only: it never creates the folder, and it does not check the folder's owner or permissions, which the import and the server check when they open it.
+The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`, which the Rust-only Docker image sets. `--from` is a stopped Node data folder, or a format 2 `full` backup archive that Node's `POST /backups` wrote. With `--data`, the dry run reads that folder and reports whether it is as the import needs (absent, or empty by the ownership-marker rule and without a `.desktop-lease` entry) or would be refused (it holds data, a lease entry, a Rust installation, or a `.pp-rust-owned.json` entry that is not a valid marker, in which case the report gives the reason). It reads the folder's entries only: it never creates the folder, and it does not check the folder's owner or permissions, which the import and the server check when they open it.
 
 What it does:
 
@@ -67,7 +67,7 @@ Each refusal exits 1 and writes nothing to the source.
 
 | Source | Reason |
 | --- | --- |
-| Folder with a `.pp-rust-owned.json` entry | It is a Rust installation. |
+| Folder with a `.pp-rust-owned.json` entry | It is a Rust installation. When the entry is not a valid marker, the message gives the reason instead. |
 | Folder with a `.desktop-lease` entry | Print Partner runs or crashed there. |
 | Folder without `print-partner.db` | Not a data folder. |
 | Database files that change during the copy | Node is still running. |

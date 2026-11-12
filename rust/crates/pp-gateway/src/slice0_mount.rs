@@ -291,6 +291,93 @@ async fn slice0_mount_product_routes_inherit_host_and_origin_checks() {
     gateway.stop().await.unwrap();
 }
 
+/// The product routes' MCP stand-in: it answers with the request's method.
+fn mcp_stub() -> axum::Router {
+    let answer =
+        axum::routing::any(|method: axum::http::Method| async move { format!("mcp {method}") });
+    stub()
+        .route("/mcp", answer.clone())
+        .route("/api/v1/mcp", answer)
+}
+
+#[tokio::test]
+async fn slice0_mount_mcp_reaches_the_product_routes_without_the_desktop_cookie() {
+    let (gateway, cookie, _root) = started(Some(mcp_stub())).await;
+    let state = || State(gateway.state.clone());
+    for path in ["/mcp", "/api/v1/mcp"] {
+        // MCP clients send no cookie and no Origin; the product routes'
+        // key-only guard decides, so the gateway passes them through.
+        for method in ["GET", "POST", "DELETE"] {
+            let request = with_header(
+                get(&gateway, path, None, Some("127.0.0.1:9")),
+                method,
+                "origin",
+                None,
+            );
+            let response = handle(state(), request).await;
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            let (status, body) = text(response).await;
+            assert_eq!((status, body), (StatusCode::OK, format!("mcp {method}")));
+        }
+        // Host and an Origin that is present stay exact, with or without the cookie.
+        let foreign = "http://evil.example";
+        for (request, expected) in [
+            (
+                with_header(
+                    get(&gateway, path, None, None),
+                    "POST",
+                    "host",
+                    Some("evil.example"),
+                ),
+                (StatusCode::BAD_REQUEST, "Invalid Host"),
+            ),
+            (
+                with_header(
+                    get(&gateway, path, None, None),
+                    "POST",
+                    "origin",
+                    Some(foreign),
+                ),
+                (StatusCode::FORBIDDEN, "Invalid Origin"),
+            ),
+            (
+                with_header(
+                    get(&gateway, path, Some(&cookie), None),
+                    "POST",
+                    "origin",
+                    Some(foreign),
+                ),
+                (StatusCode::FORBIDDEN, "Invalid Origin"),
+            ),
+            (
+                with_header(
+                    with_header(
+                        get(&gateway, path, None, None),
+                        "GET",
+                        "upgrade",
+                        Some("websocket"),
+                    ),
+                    "GET",
+                    "origin",
+                    None,
+                ),
+                (StatusCode::FORBIDDEN, "Invalid Origin"),
+            ),
+        ] {
+            let (status, body) = text(handle(state(), request).await).await;
+            assert_eq!(status, expected.0, "{path}: {body}");
+            assert!(body.contains(expected.1), "{path}: {body}");
+        }
+    }
+    // Look-alike paths are not MCP and keep the desktop cookie gate.
+    for path in ["/mcp/", "/api/v1/mcp/", "/api/v1/mcp/sessions", "/MCP"] {
+        let (status, body) = text(handle(state(), get(&gateway, path, None, None)).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {body}");
+    }
+    assert_eq!(gateway.compat_forwards(), 0);
+    gateway.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn slice0_mount_rust_only_runtime_reports_rust_status() {
     let root = Scratch::new("pp-slice0-mount-");
@@ -399,5 +486,43 @@ async fn slice0_mount_drain_ends_event_streams_but_not_other_responses() {
     let ended = tokio::time::timeout(Duration::from_secs(1), events.frame()).await;
     assert!(matches!(ended, Ok(Some(Err(_)))), "the event stream ends");
     drop(events);
+    gateway.stop().await.unwrap();
+}
+
+/// An MCP POST answers as an event stream while its tool runs, so the drain
+/// waits for it; the GET notification stream only reads and is released.
+#[tokio::test]
+async fn slice0_mount_drain_waits_for_mcp_posts_but_not_the_notification_stream() {
+    let stream = axum::routing::any(|| async {
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            Body::new(Open),
+        )
+    });
+    let product = axum::Router::new().route("/mcp", stream);
+    let (gateway, _cookie, _root) = started(Some(product)).await;
+    let mut bodies = Vec::new();
+    for method in ["GET", "POST"] {
+        let request = with_header(get(&gateway, "/mcp", None, None), method, "origin", None);
+        let response = handle(State(gateway.state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        bodies.push(response.into_body());
+    }
+    let mut post = bodies.pop().unwrap();
+    let mut notifications = bodies.pop().unwrap();
+    gateway.begin_drain();
+    let pending = tokio::time::timeout(Duration::from_millis(100), post.frame()).await;
+    assert!(pending.is_err(), "the POST stream keeps running");
+    assert!(!gateway.wait_idle(Duration::from_millis(100)).await);
+    let ended = tokio::time::timeout(Duration::from_secs(1), notifications.frame()).await;
+    assert!(matches!(ended, Ok(Some(Err(_)))), "the GET stream ends");
+    drop(notifications);
+    assert!(!gateway.wait_idle(Duration::from_millis(100)).await);
+    drop(post);
+    assert!(gateway.wait_idle(Duration::from_secs(1)).await);
+    // A new MCP request during the drain is refused, not counted.
+    let request = with_header(get(&gateway, "/mcp", None, None), "POST", "origin", None);
+    let (status, body) = text(handle(State(gateway.state.clone()), request).await).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     gateway.stop().await.unwrap();
 }

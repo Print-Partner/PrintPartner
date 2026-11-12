@@ -40,14 +40,41 @@ impl Fixture {
         let mut gateway = match runtime {
             Runtime::RustOnly(ui) => {
                 let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
-                Gateway::start_rust_only(
-                    listener,
-                    root,
-                    ui,
-                    |_| axum::Router::new(),
-                    receiver,
-                    Arc::new(NoHosts),
-                )
+                let product = |_| {
+                    axum::Router::new()
+                        .route(
+                            "/printers/{id}/files/content",
+                            axum::routing::get(|| async { "printer bytes" }),
+                        )
+                        .route(
+                            "/settings/api-keys",
+                            axum::routing::get(|| async { "settings response" }),
+                        )
+                };
+                match ui {
+                    ServedUi::Replacement => Gateway::start_rust_only_with_assets(
+                        listener,
+                        root,
+                        Arc::new(std::collections::BTreeMap::from([
+                            ("index.html".into(), Arc::<[u8]>::from(index.as_bytes())),
+                            (
+                                "assets/app.js".into(),
+                                Arc::<[u8]>::from(&b"export default 1;"[..]),
+                            ),
+                        ])),
+                        product,
+                        receiver,
+                        Arc::new(NoHosts),
+                    ),
+                    ServedUi::Legacy => Gateway::start_rust_only(
+                        listener,
+                        root,
+                        ui,
+                        product,
+                        receiver,
+                        Arc::new(NoHosts),
+                    ),
+                }
                 .unwrap()
             }
             Runtime::NodeBacked => Gateway::start(
@@ -239,4 +266,98 @@ fn csp_template_is_one_header_line_with_both_placeholders() {
     assert_eq!(template.matches("{nonce}").count(), 1);
     assert_eq!(template.matches("{ws_origin}").count(), 1);
     assert!(!template.contains("unsafe"));
+}
+
+#[tokio::test]
+async fn replacement_spa_documents_and_deep_links_keep_the_nonce_policy() {
+    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    for path in [
+        "/",
+        "/today",
+        "/farm",
+        "/farm/log",
+        "/builds/12/history",
+        "/states/printers",
+    ] {
+        let response = fixture.get("GET", path, None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/html; charset=utf-8"
+        );
+        let header = policy(&response);
+        let html = body(response).await;
+        assert_eq!(header, fixture.replacement(Some(nonce_of(&html))), "{path}");
+    }
+    for path in ["/assets/missing.js", "/icons/missing.svg", "/missing.css"] {
+        let response = fixture.get("GET", path, None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert!(!body(response).await.contains("<html>"));
+    }
+}
+
+#[test]
+fn replacement_fallback_excludes_service_namespaces_and_file_paths() {
+    for path in [
+        "/printers/1/files/content",
+        "/printers/1/cameras/view",
+        "/unknown-screen",
+        "/auth/register",
+        "/mcp",
+        "/__desktop/bootstrap",
+        "/__runtime",
+        "/api",
+        "/api/v2/builds",
+        "/ws",
+        "/ws/printers",
+        "/health",
+        "/health/ready",
+        "/assets",
+        "/icons",
+        "/builds/app.js",
+    ] {
+        assert!(!assets::is_replacement_client_path(path), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn replacement_navigation_preserves_root_api_routes() {
+    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    for (path, expected) in [
+        ("/printers/1/files/content", "printer bytes"),
+        ("/settings/api-keys", "settings response"),
+    ] {
+        let response = fixture.get("GET", path, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body(response).await, expected);
+    }
+}
+
+/// The measured copy remains authoritative after files on disk change.
+#[tokio::test]
+async fn replacement_assets_remain_pinned_after_startup() {
+    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let root = fixture._scratch.join("site");
+    std::fs::write(root.join("index.html"), b"changed document").unwrap();
+    std::fs::write(root.join("assets/app.js"), b"changed script").unwrap();
+    std::fs::write(root.join("assets/app.js.gz"), b"unmeasured gzip").unwrap();
+    std::fs::write(root.join("assets/extra.js"), b"unmeasured script").unwrap();
+
+    let script = fixture.get("GET", "/assets/app.js", Some("gzip")).await;
+    assert_eq!(script.status(), StatusCode::OK);
+    assert!(script.headers().get("content-encoding").is_none());
+    assert_eq!(body(script).await, "export default 1;");
+    let document = fixture.get("GET", "/builds/deep-link", None).await;
+    assert_eq!(document.status(), StatusCode::OK);
+    nonce_of(&body(document).await);
+    for path in ["/assets/app.js.gz", "/assets/extra.js"] {
+        assert_eq!(
+            fixture.get("GET", path, None).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    // Serving no longer needs even the directory that held the verified files.
+    std::fs::remove_dir_all(root).unwrap();
+    let script = fixture.get("GET", "/assets/app.js", None).await;
+    assert_eq!(body(script).await, "export default 1;");
 }

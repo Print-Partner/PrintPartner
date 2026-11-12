@@ -131,7 +131,7 @@ pub(crate) fn observe_reconciliation_actor(
             routed_tenant,
             secret,
         } => {
-            let tenant = keys::read_tenant(tx, routed_tenant, secret)?;
+            let tenant = read_key_tenant(tx, routed_tenant, secret)?;
             Ok((tenant.clone(), format!("tenant:{tenant}")))
         }
     }

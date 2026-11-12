@@ -200,6 +200,58 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
 
+## Integration create and delete routes (GRE-1439)
+
+`POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman integration
+and `DELETE /api/v2/integrations/{id}` removes one of any kind, for the
+replacement Settings screen. They are `createIntegration` and
+`deleteIntegration` in the generated `@print-partner/rust-client`. Both answer
+`200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`, `base_url`,
+`username`, `has_api_key` and `has_password`. Delete answers the view it
+removed. No response or problem carries an API key or a password.
+
+- They mount only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
+  `true`, so only the Rust-only runtime serves them. The accepted gate admits
+  loopback requests with an exact Host and Origin and a credential; storage
+  proves the credential inside the write's transaction (`401`, or `403` when the
+  account needs an owner mapping).
+- The create body is `kind`, `name` and `base_url`, plus optional `enabled`
+  (default `true`), `api_key` (Moonraker and Spoolman) and `username` and
+  `password` (PrusaLink). Unknown keys are refused.
+- A new host needs no restart: the status watchers re-read the stored hosts
+  about once a second, and `POST /api/v1/integrations/{id}/test` reads the
+  stored row.
+- Delete also removes the integration's TLS pin and clears a Spoolman default
+  that names it, in the same transaction. A printer that linked it keeps the id
+  and shows `integration: null` in `GET /api/v2/printers`. The status route
+  answers `404` once the watchers have dropped the host.
+- `pp-storage::printer_setup` owns the rules and answers a typed
+  `PrinterSetupError`; `pp-api/src/integrations.rs` is the one place that maps
+  it. Failures every write shares go through `pp_api::problem::writer_failure`.
+
+| Case | Status | `code` |
+| --- | --- | --- |
+| A value is invalid, or the body is not the request shape. `errors` names each field by JSON Pointer, never its value. Nothing is stored. | `400` | `invalid_integration` |
+| No stored integration has that id | `404` | `integration_not_found` |
+| The installation already has 64 integrations | `409` | `integration_limit` |
+| The stored `integrations` document is not the typed shape. Every write is refused and the stored text is left as it is. | `500` | `integrations_unreadable` |
+| The write could not start before its deadline | `503` | `transaction_unavailable` |
+
+Invalid values:
+
+- `name`: empty after trimming, or longer than 200 bytes.
+- `base_url`: not an `http` or `https` URL, holds a username or password, is
+  longer than 2,048 bytes, or has whitespace or a control character in it.
+- `api_key`, `username`, `password`: an empty string (omit the field or send
+  `null` for none), longer than 4,096 bytes, or a field the kind does not use.
+- `kind`: anything but `moonraker`, `prusalink` or `spoolman`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
+  --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+  --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
+```
+
 ## GitHub PAT and Discord notification settings (GRE-1360)
 
 The settings router mounts `/settings/github-pat`, `/settings/discord-notify`

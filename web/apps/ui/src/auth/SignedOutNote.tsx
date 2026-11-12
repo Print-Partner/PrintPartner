@@ -13,7 +13,8 @@ export function SignedOutNote() {
   const location = useLocation();
   return (
     <>
-      You were signed out. <Link to={signInFor(location)}>Sign in to save.</Link>
+      You were signed out, and this change is not saved. Copy it before you{" "}
+      <Link to={signInFor(location)}>sign in</Link>.
     </>
   );
 }

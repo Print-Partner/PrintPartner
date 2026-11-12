@@ -102,7 +102,8 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
   The email is never filled in from the core.
 - **Signed out.** A 401 from a read opens `/login?next=<this page>` (`App.tsx`).
   A 401 from a write never navigates, so an unsaved edit stays on screen; the
-  Plan's save status says "You were signed out." with a "Sign in to save." link
+  Plan's save status says "You were signed out, and this change is not saved.
+  Copy it before you sign in.", with a sign-in link
   (`src/auth/SignedOutNote.tsx`). While a write is pending or refused with 401,
   read 401s (such as the refetch after the failed save) do not navigate either.
   Provisional. If `/auth/status` itself answers

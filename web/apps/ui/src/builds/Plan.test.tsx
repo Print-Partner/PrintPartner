@@ -376,8 +376,10 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
     fireEvent.change(name, { target: { value: "Bracket kit v3" } });
     fireEvent.keyDown(name, { key: "Enter" });
-    const link = await screen.findByRole("link", { name: "Sign in to save." });
-    expect(link.closest("p")?.textContent).toBe("You were signed out. Sign in to save.");
+    const link = await screen.findByRole("link", { name: "sign in" });
+    expect(link.closest("p")?.textContent).toBe(
+      "You were signed out, and this change is not saved. Copy it before you sign in.",
+    );
     expect(link.getAttribute("href")).toBe("/login?next=%2Fbuilds%2F2%2Fplan");
     // The refetch's 401s arrived too; the Plan and the typed value stay.
     await waitFor(() =>

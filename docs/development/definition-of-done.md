@@ -8,6 +8,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
 3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. A sensitive PR, or a head whose `review-gate` passed only through the coordinator record, also passes the coordinator's scorer run under the [merge gate](#merge-gate).
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
+5. **Rust test renames.** Record every renamed file in its crate's page under [Test file renames](../records/test-renames.md). Rename PRs add rows only to their crate's file; preserve existing rows verbatim. The shared index is navigation.
 
 ## Review and merge policy
 

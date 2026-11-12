@@ -570,3 +570,88 @@ async fn settings_support_corrupt_bindings_are_redacted_and_not_overwritten() {
     );
     server.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/admin/secret-settings-cases.json"
+    ))
+    .unwrap();
+    let oracle: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/admin/secret-settings-oracle.json"
+    ))
+    .unwrap();
+    let (directory, mut server) = seeded().await;
+    server.keys = cases["keys"].clone();
+    for (index, (step, node)) in cases["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(oracle["replies"].as_array().unwrap())
+        .enumerate()
+    {
+        let reply = server.send(step, &[COOKIE]).await;
+        assert_eq!(
+            reply.status,
+            node["status"].as_u64().unwrap() as u16,
+            "step {index}"
+        );
+        let mut expected = node["body"].clone();
+        if expected["webhook_url"].is_string() {
+            expected["webhook_url"] = json!("https://discord.com/[REDACTED]");
+        }
+        let actual = if reply.status >= 400 {
+            pp_api::problem::without_envelope(reply.json())
+        } else {
+            reply.json()
+        };
+        assert_eq!(actual, expected, "step {index}");
+        assert!(!String::from_utf8_lossy(&reply.body).contains("obviously-fake"));
+        assert_eq!(server.stored(), node["stored"], "step {index}");
+    }
+    for (path, body) in [
+        (
+            "github-pat",
+            json!({"token":"obviously-fake-persistent-pat"}),
+        ),
+        (
+            "discord-notify",
+            json!({"webhook_url":"https://discord.com/api/webhooks/123/obviously-fake-persistent-webhook"}),
+        ),
+    ] {
+        let step = json!({"method":"PUT","path":format!("/settings/{path}"),"content_type":"application/json","body":body.to_string()});
+        assert_eq!(server.send(&step, &[COOKIE]).await.status, 200);
+    }
+    let before = server.stored();
+    for prefix in ["", "/api/v1"] {
+        for path in ["github-pat", "discord-notify"] {
+            let step = json!({"method":"PUT","path":format!("{prefix}/settings/{path}"),"content_type":"application/json","body":"{}"});
+            assert_eq!(server.send(&step, &[]).await.status, 401);
+            let mut cross = step.clone();
+            cross["cross_site"] = json!(true);
+            assert_eq!(server.send(&cross, &[COOKIE]).await.status, 403);
+        }
+    }
+    assert_eq!(server.stored(), before);
+    server.stop().await;
+    let mut server = Server::start(directory.path(), Some("true")).await;
+    server.keys = cases["keys"].clone();
+    assert_eq!(server.stored(), before);
+    let step = json!({"method":"GET","path":"/api/v1/settings/discord-notify"});
+    assert_eq!(
+        server.send(&step, &[COOKIE]).await.json(),
+        json!({"webhook_url":"https://discord.com/[REDACTED]","notify_on_update":false,"notify_on_sync":true,"auto_sync_updates":true})
+    );
+    let pat = json!({"method":"GET","path":"/settings/github-pat"});
+    assert_eq!(
+        server.send(&pat, &[COOKIE]).await.json(),
+        json!({"configured":true,"masked":null})
+    );
+    server.stop().await;
+    let server = Server::start(directory.path(), None).await;
+    for path in ["github-pat", "discord-notify"] {
+        let step = json!({"method":"GET","path":format!("/settings/{path}")});
+        assert_eq!(server.send(&step, &[COOKIE]).await.status, 404);
+    }
+    server.stop().await;
+}

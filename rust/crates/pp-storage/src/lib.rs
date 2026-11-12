@@ -71,6 +71,14 @@ pub mod versions;
 pub mod working_drafts;
 mod writer_admission;
 
+#[cfg(feature = "desktop_rebuild")]
+use restore::recover as recover_restore;
+
+#[cfg(not(feature = "desktop_rebuild"))]
+fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
 use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 pub use schema::SchemaReady;
@@ -652,11 +660,6 @@ impl WriterOwner {
             locked.abandon();
             return Err(error);
         }
-        #[cfg(feature = "desktop_rebuild")]
-        if let Err(error) = restore::recover(locked.path()) {
-            locked.abandon();
-            return Err(error);
-        }
         if let Err(error) = locked.preflight() {
             locked.abandon();
             return Err(error);
@@ -670,6 +673,12 @@ impl WriterOwner {
                 return Err(error);
             }
         };
+        // Recovery removes uploads and stages. Admit the live schema first so
+        // an older runtime cannot discard a newer installation's recovery copy.
+        if let Err(error) = recover_restore(lease.data_dir()) {
+            lease.abandon();
+            return Err(error);
+        }
         // Preserve one literal per line so the covers suppression applies only to that literal.
         #[rustfmt::skip]
         let directories = [

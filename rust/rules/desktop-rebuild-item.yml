@@ -48,7 +48,53 @@ utils:
                   - regex: '^=$'
                   - kind: line_comment
                   - kind: block_comment
+          all:
+            - not:
+                inside:
+                  matches: applied-metadata
+                  stopBy: end
+          not:
+            inside:
+              kind: token_tree
+              follows:
+                kind: identifier
+                not:
+                  regex: '^(r#)?(cfg|cfg_attr|all|any|not)$'
+                stopBy:
+                  not:
+                    any:
+                      - kind: line_comment
+                      - kind: block_comment
+              stopBy: end
           stopBy: end
+  applied-metadata:
+    kind: token_tree
+    follows:
+      kind: identifier
+      not:
+        regex: '^(r#)?cfg(_attr)?$'
+      follows:
+        regex: '^,$'
+        stopBy:
+          not:
+            any:
+              - kind: line_comment
+              - kind: block_comment
+      stopBy:
+        not:
+          any:
+            - kind: line_comment
+            - kind: block_comment
+    inside:
+      kind: token_tree
+      follows:
+        kind: identifier
+        regex: '^(r#)?cfg_attr$'
+        stopBy:
+          not:
+            any:
+              - kind: line_comment
+              - kind: block_comment
   module:
     any:
       - all:

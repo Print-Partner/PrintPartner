@@ -2,6 +2,8 @@
 //! `/settings/spoolman-default`, as Node's `routes/settings.ts` serves them
 //! (GRE-1357). `fixtures/admin/settings-oracle.json` records Node's replies.
 
+mod secrets;
+
 use crate::accepted::{failure, read_error};
 use crate::admin::{AdminHttpConfig, Gate, response};
 use crate::loopback::PresentedCredential;
@@ -41,7 +43,7 @@ struct App {
     wait: Duration,
 }
 
-/// Mounts the three settings at `/` and `/api/v1` when `PP_DESKTOP_REBUILD`
+/// Mounts the supported settings at `/` and `/api/v1` when `PP_DESKTOP_REBUILD`
 /// was exactly `1` or `true`; otherwise nothing. The admin gate proves the
 /// credential first, as Node's auth hook runs before each handler.
 pub fn settings_router(
@@ -56,6 +58,7 @@ pub fn settings_router(
         return Router::new();
     };
     let routes = Router::new()
+        .merge(secrets::routes())
         .route(
             "/settings/date-format",
             get(get_date_format).put(put_date_format),
@@ -176,6 +179,13 @@ async fn put_spoolman_default(
 /// and leaves the body `undefined` without a content type. Rust refuses a
 /// `null` or absent body as malformed before admitting a write.
 pub(crate) fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Response>> {
+    match body_value(headers, body)? {
+        Value::Object(members) => Ok(members.get(name).cloned().unwrap_or(Value::Null)),
+        _ => Ok(Value::Null),
+    }
+}
+
+fn body_value(headers: &HeaderMap, body: &[u8]) -> Result<Value, Box<Response>> {
     let media = headers.get(header::CONTENT_TYPE).map(|value| {
         let essence = value.to_str().unwrap_or_default().split(';').next();
         essence.unwrap_or_default().trim().to_ascii_lowercase()
@@ -198,8 +208,7 @@ pub(crate) fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Valu
     };
     match parsed {
         Value::Null => Err(Box::new(unreadable())),
-        Value::Object(members) => Ok(members.get(name).cloned().unwrap_or(Value::Null)),
-        _ => Ok(Value::Null),
+        value => Ok(value),
     }
 }
 
@@ -231,6 +240,17 @@ async fn read(
     presented: PresentedCredential,
     key: Key,
 ) -> Result<Option<String>, Box<Response>> {
+    match read_outcome(app, presented, key).await? {
+        Outcome::Value(value) => Ok(value),
+        _ => Err(Box::new(unreadable())),
+    }
+}
+
+async fn read_outcome(
+    app: &App,
+    presented: PresentedCredential,
+    key: Key,
+) -> Result<Outcome, Box<Response>> {
     let client = app.settings.clone();
     let wait = app.wait;
     let outcome = tokio::task::spawn_blocking(move || {
@@ -242,13 +262,7 @@ async fn read(
         )
     })
     .await;
-    match settled(outcome)? {
-        Outcome::Value(value) => Ok(value),
-        _ => Err(Box::new(failure(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal Server Error",
-        ))),
-    }
+    settled(outcome)
 }
 
 async fn write(

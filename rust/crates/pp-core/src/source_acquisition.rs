@@ -7,7 +7,7 @@ use pp_source::{
     },
 };
 use pp_storage::{
-    WriterOwner,
+    WriterFailure, WriterOwner,
     auth::AuthPolicy,
     jobs::Credential,
     uploads::{
@@ -73,15 +73,18 @@ pub enum AcquisitionError {
     /// A file was refused: an unsafe or repeated path, or a broken stream.
     /// The text says which, in words.
     Input(String),
-    /// Storage refused the admission: the Source or the credential.
-    Refused(anyhow::Error),
+    /// Storage refused the admission: the Source, the credential, or a
+    /// storage fault, sorted by [`WriterFailure`].
+    Refused(WriterFailure),
+    /// The acquisition gate's lock was poisoned by a panicking thread.
+    GateUnavailable,
+    /// Any other failure, such as the capture vault or freezing the files.
     Failed(anyhow::Error),
 }
 
 impl AcquisitionError {
     fn context(self, context: impl fmt::Display + Send + Sync + 'static) -> Self {
         match self {
-            Self::Refused(error) => Self::Refused(error.context(context)),
             Self::Failed(error) => Self::Failed(error.context(context)),
             // A refusal of the request stays as worded; cleanup is the
             // service's concern.
@@ -103,7 +106,7 @@ impl AcquisitionError {
             pp_source::Error::StoredPathTooLong { .. } => {
                 Self::Input(format!("File path {path:?} is too long"))
             }
-            error => Self::Failed(error.into()),
+            error => Self::Failed(anyhow::Error::from(error)),
         }
     }
 }
@@ -111,10 +114,14 @@ impl AcquisitionError {
 impl fmt::Display for AcquisitionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Refused(error) | Self::Failed(error) if formatter.alternate() => {
+            Self::Failed(error) if formatter.alternate() => {
                 return write!(formatter, "{error:#}");
             }
-            Self::Refused(error) | Self::Failed(error) => return write!(formatter, "{error}"),
+            Self::Failed(error) => return write!(formatter, "{error}"),
+            Self::Refused(error) => {
+                return write!(formatter, "Source acquisition refused: {error}");
+            }
+            Self::GateUnavailable => "Source acquisition gate poisoned",
             Self::Closed(text) => text,
             Self::Input(text) => text,
             Self::Busy => "Source acquisition capacity exhausted",
@@ -128,15 +135,10 @@ impl fmt::Display for AcquisitionError {
 impl std::error::Error for AcquisitionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Refused(error) | Self::Failed(error) => error.source(),
+            Self::Failed(error) => error.source(),
+            Self::Refused(error) => Some(error),
             _ => None,
         }
-    }
-}
-
-impl From<anyhow::Error> for AcquisitionError {
-    fn from(error: anyhow::Error) -> Self {
-        Self::Failed(error)
     }
 }
 
@@ -216,10 +218,10 @@ struct Shared {
 }
 
 impl Shared {
-    fn gate(&self) -> Result<MutexGuard<'_, Gate>> {
+    fn gate(&self) -> Result<MutexGuard<'_, Gate>, AcquisitionError> {
         self.gate
             .lock()
-            .map_err(|_| anyhow!("Source acquisition gate poisoned"))
+            .map_err(|_| AcquisitionError::GateUnavailable)
     }
 
     /// Refuses unless ingress is open.
@@ -527,7 +529,9 @@ impl SourceAcquisitions {
                 limits,
             )
             .map_err(|error| {
-                AcquisitionError::Refused(error.context("Source acquisition preflight failed"))
+                AcquisitionError::Refused(WriterFailure::from(
+                    error.context("Source acquisition preflight failed"),
+                ))
             })?;
         if let Some(operation) = authority.replay() {
             return Ok(AcquisitionReply::ready(operation.clone()));
@@ -641,7 +645,8 @@ impl SourceAcquisitions {
             Ok(authority) => authority,
             Err(error) => {
                 let error = error.context("Source acquisition preflight failed");
-                return Err(self.abort(candidate, AcquisitionError::Refused(error)));
+                let refused = AcquisitionError::Refused(WriterFailure::from(error));
+                return Err(self.abort(candidate, refused));
             }
         };
         let bound = Bound {
@@ -656,7 +661,8 @@ impl SourceAcquisitions {
     /// Allocates a candidate; one that cannot be cleaned up closes ingress
     /// until recovery repairs it.
     fn allocate(&self) -> Result<CaptureCandidate, AcquisitionError> {
-        let vault = RetainedCaptureVault::open(&self.data_dir).map_err(anyhow::Error::from)?;
+        let vault = RetainedCaptureVault::open(&self.data_dir)
+            .map_err(|error| AcquisitionError::Failed(error.into()))?;
         vault.allocate_owned().map_err(|error| {
             if error.retained().is_some() {
                 let _ = self.set_ingress(false);
@@ -712,7 +718,7 @@ impl SourceAcquisitions {
         })();
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => return Err(self.abort(candidate, error.into())),
+            Err(error) => return Err(self.abort(candidate, AcquisitionError::Failed(error))),
         };
         match candidate.freeze_owned(prepared.manifest()) {
             FreezeResult::Frozen(frozen) => Ok(Accepted {
@@ -833,12 +839,12 @@ impl SourceAcquisitions {
         })
     }
 
-    fn set_ingress(&self, open: bool) -> Result<()> {
+    fn set_ingress(&self, open: bool) -> Result<(), AcquisitionError> {
         self.gate()?.open = open;
         Ok(())
     }
 
-    fn gate(&self) -> Result<MutexGuard<'_, Gate>> {
+    fn gate(&self) -> Result<MutexGuard<'_, Gate>, AcquisitionError> {
         self.shared.gate()
     }
 }
@@ -852,7 +858,9 @@ fn write(
     cancelled: &AtomicBool,
 ) -> Result<(), AcquisitionError> {
     if cancelled.load(Ordering::Acquire) {
-        return Err(anyhow!("Source acquisition cancelled").into());
+        return Err(AcquisitionError::Failed(anyhow!(
+            "Source acquisition cancelled"
+        )));
     }
     let shown = path.as_str().to_owned();
     candidate
@@ -860,7 +868,7 @@ fn write(
         .map(drop)
         .map_err(|error| {
             if cancelled.load(Ordering::Acquire) {
-                anyhow!("Source acquisition cancelled").into()
+                AcquisitionError::Failed(anyhow!("Source acquisition cancelled"))
             } else {
                 AcquisitionError::writing(error, &shown)
             }

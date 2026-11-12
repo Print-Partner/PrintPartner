@@ -473,18 +473,24 @@ async fn shutdown_discards_a_streaming_upload() {
     let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
     let body = multipart(&[("a.stl", &stl("a"))]);
-    let (head, tail) = body.split_at(body.len() / 2);
-    let mut held = server.held_upload(source, body.len(), head).await;
-    // Shutdown does not wait on the slow client: the upload is discarded and
-    // its key and slot are released within the drain budget.
+    // The client stalls mid-body and sends nothing more.
+    let mut held = server
+        .held_upload(source, body.len(), &body[..body.len() / 2])
+        .await;
+    // Shutdown does not wait on the stalled client: the upload is discarded
+    // and its key and slot are released within the drain budget.
     let imports = Arc::clone(&server.imports);
     let drain = tokio::task::spawn_blocking(move || imports.shutdown(Duration::from_secs(5)));
     let drain = drain.await.unwrap().unwrap();
     assert!(drain.idle && drain.pending.is_empty(), "{drain:?}");
-    // The client finishing after the stop gets the closed-imports answer.
-    let _ = held.write_all(tail).await;
+    // The request is answered with the closed-imports status while the client
+    // is still stalled, so it holds no gateway drain either.
     let mut response = String::new();
-    let _ = held.read_to_string(&mut response).await;
+    let read = held.read_to_string(&mut response);
+    tokio::time::timeout(Duration::from_secs(5), read)
+        .await
+        .expect("the stalled upload was answered")
+        .unwrap();
     assert!(response.starts_with("HTTP/1.1 503"), "{response}");
     assert_eq!(server.staged(), 0);
     assert_eq!(server.job_count().await, 0);

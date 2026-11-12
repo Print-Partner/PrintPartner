@@ -107,6 +107,10 @@ fn failure(error: AcquisitionError) -> UploadFailure {
         AcquisitionError::NoFiles => UploadFailure::NoFiles,
         AcquisitionError::TooLarge => UploadFailure::TooLarge,
         AcquisitionError::Input(text) => UploadFailure::InvalidFile(text),
+        AcquisitionError::GateUnavailable => {
+            tracing::warn!("Source upload gate poisoned");
+            UploadFailure::Failed
+        }
         AcquisitionError::Refused(error) => {
             tracing::warn!(error = %format!("{error:#}"), "Source upload refused");
             UploadFailure::Refused

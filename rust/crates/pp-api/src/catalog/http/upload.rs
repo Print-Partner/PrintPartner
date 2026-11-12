@@ -137,8 +137,20 @@ async fn upload_files(
         let parts = Parts(received, Arc::clone(&service));
         service.upload(credential, id, Box::new(parts))
     });
-    let streamed = pump(multipart, parts, &uploads).await;
-    match (streamed, stored.await) {
+    // Answer as soon as the blocking side refuses, even while a stalled
+    // client is still mid-body, so a slow client cannot hold the drain.
+    let pumping = pump(multipart, parts, &uploads);
+    tokio::pin!(pumping);
+    let mut stored = stored;
+    let answered = tokio::select! {
+        streamed = &mut pumping => (streamed, stored.await),
+        first = &mut stored => match first {
+            // Success needs the whole body, so the pump has finished too.
+            Ok(Ok(_)) => (pumping.await, first),
+            refused => (Ok(()), refused),
+        },
+    };
+    match answered {
         (Err(()), _) => reject(StatusCode::BAD_REQUEST, "The upload body could not be read"),
         (Ok(()), Ok(Ok(job_id))) => (
             StatusCode::ACCEPTED,

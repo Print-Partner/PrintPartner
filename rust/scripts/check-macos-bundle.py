@@ -128,11 +128,13 @@ def hash_map(value):
 
 def verify_locked_closure(root, web, lock):
     require(isinstance(lock.get('packages'), dict), 'Missing locked production closure')
+    shipped = shipped_workspaces(web)
     for name, package in lock['packages'].items():
         if 'node_modules/' in name and not package.get('dev') and not package.get('devOptional'):
             relative_path(name)
-            if package.get('link') and not (web / relative_path(package.get('resolved', ''))).is_dir():
-                # stage_dependencies.py skips a workspace link whose target the bundle does not ship.
+            if package.get('link') and web / relative_path(package.get('resolved', '')) not in shipped:
+                # stage_dependencies.py skips a workspace link whose target the bundle does not ship
+                # as a Node workspace. A static build such as apps/ui/dist ships without its alias.
                 require(not (web / name).exists() and not (web / name).is_symlink(),
                         'Workspace link to an unshipped target: '+name)
                 continue
@@ -552,12 +554,15 @@ def verify(app, manifest_path, arch, receipt):
 
 
 class ParserTests(unittest.TestCase):
-    def locked_closure(self, link_ui):
+    def locked_closure(self, link_ui, ui_dist=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = pathlib.Path(temporary.name).resolve()
         web = root / WEB
         (web / 'packages/contracts').mkdir(parents=True)
+        if ui_dist:
+            (web / 'apps/ui/dist').mkdir(parents=True)
+            (web / 'apps/ui/dist/index.html').write_text('<!doctype html>')
         scope = web / 'node_modules/@print-partner'
         scope.mkdir(parents=True)
         (scope / 'contracts').symlink_to('../../packages/contracts')
@@ -574,6 +579,13 @@ class ParserTests(unittest.TestCase):
     def test_locked_closure_rejects_link_to_unshipped_workspace(self):
         with self.assertRaisesRegex(ValueError, 'Workspace link to an unshipped target: node_modules/@print-partner/ui'):
             verify_locked_closure(*self.locked_closure(link_ui=True))
+
+    def test_locked_closure_accepts_static_ui_build_without_alias(self):
+        verify_locked_closure(*self.locked_closure(link_ui=False, ui_dist=True))
+
+    def test_locked_closure_rejects_alias_to_static_ui_build(self):
+        with self.assertRaisesRegex(ValueError, 'Workspace link to an unshipped target: node_modules/@print-partner/ui'):
+            verify_locked_closure(*self.locked_closure(link_ui=True, ui_dist=True))
 
     def test_locked_closure_requires_shipped_workspace_link(self):
         root, web, lock = self.locked_closure(link_ui=False)

@@ -26,6 +26,15 @@ Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge
 
 These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway). The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
+### Draft Part edits
+
+`propose_edit_plan_draft_parts` `{ plan_id, draft_id, parts: [{ part_id, included?, quantity_override? }], expected_snapshot_digest? }` changes which Parts an open Working Plan includes, and their quantities (GRE-1298).
+
+- Propose reads the draft with the request's API key and writes nothing. The pending action's `params` hold `plan_id`, `draft_id`, the edits, and `expected_snapshot_digest`: the given digest, or else the draft's current one. Propose needs no Build planning brief; Node refuses without one, but the edit never reads it.
+- `confirm_apply` runs the Plan tab's Part edit (`PATCH /plans/{id}/drafts/{draft_id}/parts`, `WorkingDraftClient::edit`) against that digest. It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "parts": [{ "part_id", "included", "quantity_override", "quantity_effective" }] } }` with the new digest and the edited Parts. It then adds an `applied_action` entry to the Build's decision log. The edit never accepts or publishes a Plan.
+- `quantity_override: null` clears an override.
+- A refusal is `isError` with a `code` and a message for people. Clients should read the `code`; the message may change. Propose answers `{ "error", "code" }` and stores nothing: `arguments_required`, `not_found` (no such Build or draft for the key), `not_open`, `parts_required`, `part_not_found`, `edit_empty` (an edit sets neither field), `invalid_edit` (wrong field types, a negative or fractional quantity, or a Part listed twice) and `invalid_digest`. Confirm answers `{ "ok": false, "code", "detail" }` and keeps the action pending: `draft_changed`, `base_changed`, `not_open`, `not_found`, `accepted_baseline_required`, `edit_refused` and `unavailable`. `outcome_unknown` means the edit may have committed; that action is dropped, so check the draft before proposing again.
+
 Every other product tool still answers that it has no Rust port. `get_farm_status` and `get_print_stats` have no Rust port yet.
 
 ## To be written

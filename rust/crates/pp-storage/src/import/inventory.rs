@@ -94,6 +94,8 @@ pub const ROWS: [Row; 16] = [
     pending(6, &[
         Setting("stl_naming_defaults"),
         SettingPrefix("build_planning.v1."),
+        // The key ends in free text; the report counts these keys and never prints them.
+        SettingPrefix("build_planning.create."),
         Column("plan_decisions", "params_json"),
         Column("plan_decisions", "result_json"),
         Column("plan_draft_required_unit_reconciliations", "selection_basis_json"),
@@ -102,22 +104,31 @@ pub const ROWS: [Row; 16] = [
     ], "checked with today's typed reader, not rewritten"),
 ];
 
-/// Stored JSON the import copies byte for byte: Rust keeps it as opaque text
-/// or does not read its table.
-pub const COPIED: [Shape; 11] = [
+/// Slicer profile text. The import copies it byte for byte: Rust reads it and
+/// keeps it opaque (`profiles.rs`).
+pub const COPIED: [Shape; 6] = [
     Column("printer_profiles", "raw_json"),
     Column("printer_profiles", "resolved_flat_config"),
     Column("process_profiles", "resolved_flat_config"),
     Column("filament_profiles", "raw_json"),
     Column("filament_profiles", "resolved_flat_config"),
     Column("filament_profiles", "retraction"),
+];
+
+/// Stored data no Rust code reads. The import keeps it byte for byte, also
+/// for features the product has cut.
+pub const UNUSED: [Shape; 11] = [
     Table("board_posts"),
     Table("plan_shares"),
     Table("printer_telemetry"),
     Table("slicer_instances"),
-    // The value is a Build id as text. The key ends in free text, so the
-    // report counts these keys and never prints them.
-    SettingPrefix("build_planning.create."),
+    SettingPrefix("filename_grouping:"),
+    SettingPrefix("manifest_v2_"),
+    Setting("integration_webhooks_v1"),
+    Setting("printer.print_outcomes"),
+    Setting("assistant_feedback"),
+    Setting("assistant_chat_history"),
+    Setting("assistant_daily_usage"),
 ];
 
 impl Shape {
@@ -140,7 +151,8 @@ impl Shape {
     }
 }
 
-/// Every shape the inventory names, converted or copied.
+/// Every shape the inventory names: converted, copied or kept unused.
 pub fn named() -> impl Iterator<Item = &'static Shape> {
-    ROWS.iter().flat_map(|row| row.shapes).chain(&COPIED)
+    let rows = ROWS.iter().flat_map(|row| row.shapes);
+    rows.chain(&COPIED).chain(&UNUSED)
 }

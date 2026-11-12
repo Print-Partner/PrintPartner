@@ -13,7 +13,13 @@ mod rust_only;
 mod scratch;
 
 use rust_only::{Server, server_binary};
-use std::{path::Path, process::Output};
+use std::{
+    io::{Read, Write},
+    net::TcpStream,
+    path::Path,
+    process::Output,
+    time::Duration,
+};
 
 fn healthcheck(probe: &str, status: &Path) -> Output {
     child_process::command(server_binary())
@@ -26,11 +32,82 @@ fn healthcheck(probe: &str, status: &Path) -> Output {
 
 #[test]
 fn rust_only_server_needs_no_node_and_reports_health() {
+    server_reports_health(None);
+}
+
+#[test]
+fn explicit_wildcard_listener_reports_health() {
+    server_reports_health(Some("0.0.0.0:0"));
+}
+
+#[test]
+fn explicit_loopback_listener_reports_health() {
+    server_reports_health(Some("127.0.0.1:0"));
+}
+
+// Linux routes the entire 127/8 range to loopback without interface aliases.
+#[cfg(target_os = "linux")]
+#[test]
+fn explicit_specific_listener_reports_health() {
+    server_reports_health(Some("127.0.0.2:0"));
+}
+
+fn redeem_bootstrap(origin: &str, credential: &Path) {
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(credential).unwrap()).unwrap();
+    let url = receipt["bootstrap_url"].as_str().unwrap();
+    let path = url
+        .strip_prefix(origin)
+        .expect("bootstrap uses reachable origin");
+    let host = origin.trim_start_matches("http://");
+    for expected in ["HTTP/1.1 303", "HTTP/1.1 401"] {
+        let mut stream =
+            TcpStream::connect_timeout(&host.parse().unwrap(), Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with(expected), "bootstrap admission status");
+    }
+}
+
+fn assert_ready_probes(status: &Path) {
+    for (probe, line) in [
+        ("liveness", "liveness ok (ready)\n"),
+        ("readiness", "readiness ok (ready)\n"),
+    ] {
+        let output = healthcheck(probe, status);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), line);
+    }
+}
+
+fn server_reports_health(listen: Option<&str>) {
     let root = scratch::Scratch::new("pp-rust-only-health-");
-    let server = Server::start(&root);
+    let credential = root.join("credentials.json");
+    let server = match listen {
+        None => Server::start(&root),
+        Some(address) => Server::start_with_listener(&root, Some(address), Some(&credential)),
+    };
     let (data, status) = (server.data.clone(), server.status.clone());
     let origin = server.origin().to_owned();
-    assert!(origin.starts_with("http://127.0.0.1:"), "{origin}");
+    let probe_address: std::net::SocketAddr = origin.trim_start_matches("http://").parse().unwrap();
+    let expected_ip = if listen == Some("127.0.0.2:0") {
+        "127.0.0.2"
+    } else {
+        "127.0.0.1"
+    };
+    assert_eq!(probe_address.ip().to_string(), expected_ip);
+    assert_eq!(data.join("desktop.toml").exists(), listen.is_none());
     // The marker itself is pp-storage's to test: a workspace build unifies its
     // test-only test-unmarked-writer feature, which skips writing it.
     assert!(
@@ -38,18 +115,18 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         "Rust opened SQLite storage"
     );
     assert_eq!(server.ready["pid"], server.child.id());
-    for (probe, line) in [
-        ("liveness", "liveness ok (ready)\n"),
-        ("readiness", "readiness ok (ready)\n"),
-    ] {
-        let output = healthcheck(probe, &status);
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(String::from_utf8_lossy(&output.stdout), line);
+    if listen.is_some() {
+        redeem_bootstrap(&origin, &credential);
     }
+    assert_ready_probes(&status);
 
     let (exit, printed, _) = server.stop();
     let mut lines = printed.lines();
-    assert_eq!(lines.next(), Some(origin.as_str()), "origin first");
+    assert_eq!(
+        lines.next(),
+        Some(origin.as_str()),
+        "reachable origin first"
+    );
     let receipt: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert!(
         exit.success()

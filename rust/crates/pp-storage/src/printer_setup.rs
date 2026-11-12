@@ -1,4 +1,5 @@
-//! Printer setup: adding and removing integrations, and reading printers.
+//! Printer setup: adding and removing integrations, and adding, reading,
+//! editing and removing printers.
 //!
 //! Each kind lives in one `app_settings` document with one typed shape
 //! ([`integrations`], [`printers`]). A write runs through the write seam: it
@@ -14,7 +15,7 @@ pub(crate) mod integrations;
 pub(crate) mod printers;
 
 pub use integrations::{IntegrationSummary, NewIntegration, ServiceKind};
-pub use printers::{LoadedFilament, Printer};
+pub use printers::{LoadedFilament, NewPrinter, Printer, PrinterPatch};
 
 use crate::{
     SettingsClient, Shared, WriterFailure, WriterOwner,
@@ -34,6 +35,7 @@ const INTEGRATIONS_KEY: &str = "integrations";
 const SPOOLMAN_DEFAULT_KEY: &str = "default_spoolman_integration_id";
 /// Rows of every kind count. One person's farm stays far below this.
 pub const MAX_INTEGRATIONS: usize = 64;
+pub const MAX_PRINTERS: usize = 64;
 
 /// A request field with a value this module refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +46,13 @@ pub enum Field {
     Username,
     ApiKey,
     Password,
+    Model,
+    BedWidth,
+    BedDepth,
+    BedHeight,
+    Margin,
+    FilamentSlots,
+    IntegrationId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +67,10 @@ pub enum Reason {
     NotCreatable,
     /// The kind does not sign in with this field.
     NotUsedByKind,
+    /// A number outside what its field takes; `printers` has the ranges.
+    OutOfRange,
+    /// No stored Moonraker, PrusaLink or Bambu integration has that id.
+    NotAPrinterHost,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,8 +114,11 @@ pub enum PrinterSetupError {
     Invalid(Vec<InvalidField>),
     #[error("no stored integration or printer has that id")]
     NotFound,
-    #[error("the installation already has {MAX_INTEGRATIONS} integrations")]
+    #[error("the installation already has as many of these as it may hold")]
     LimitReached,
+    /// A filament slot the edit would remove still holds filament.
+    #[error("a filament slot the edit removes holds filament")]
+    SlotHoldsFilament,
     /// Every operation is refused and the stored text is untouched.
     #[error("a stored printer setup document is not the typed shape")]
     StoredDocumentInvalid(InvalidDocument),
@@ -112,12 +128,6 @@ pub enum PrinterSetupError {
 
 impl From<rusqlite::Error> for PrinterSetupError {
     fn from(error: rusqlite::Error) -> Self {
-        Self::Writer(error.into())
-    }
-}
-
-impl From<anyhow::Error> for PrinterSetupError {
-    fn from(error: anyhow::Error) -> Self {
         Self::Writer(error.into())
     }
 }
@@ -207,7 +217,9 @@ impl PrinterSetupClient {
                 .ok_or(PrinterSetupError::NotFound)?;
             let removed = entries.remove(index).summary();
             save(tx, &installation, &entries)?;
-            tls_pins::execute(tx, tls_pins::Command::Reset { integration: id })?;
+            // An older helper that answers `anyhow`: converted here, by name.
+            tls_pins::execute(tx, tls_pins::Command::Reset { integration: id })
+                .map_err(WriterFailure::from)?;
             tx.execute(
                 "UPDATE app_settings SET value='' WHERE tenant_id=?1 AND key=?2 AND value=?3",
                 params![installation.id(), SPOOLMAN_DEFAULT_KEY, removed.id],
@@ -256,7 +268,8 @@ fn store(
     key: &str,
     document: &(impl serde::Serialize + ?Sized),
 ) -> Result<(), PrinterSetupError> {
-    let text = serde_json::to_string(document).map_err(anyhow::Error::from)?;
+    let text =
+        serde_json::to_string(document).map_err(|error| WriterFailure::Internal(error.into()))?;
     tx.execute(
         "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
         params![installation.id(), key, text],

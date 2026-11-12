@@ -60,8 +60,10 @@ test("routes cover Builds, layers, v2 drafts and health, all generated from pp-a
   assert.deepEqual(Object.keys(routes), document.routes.map((route) => route.name));
   const covered = Object.values(routes).map((route) => `${route.method} ${route.path}`);
   for (const required of ["GET /api/v2/plans", "GET /api/v2/plans/{id}", "GET /api/v2/plans/{id}/layers", "GET /api/v2/plans/{id}/drafts", "GET /api/v2/plans/{id}/drafts/{draft_id}", "PATCH /api/v2/plans/{id}/drafts/{draft_id}/parts", "POST /api/v2/plans/{id}/drafts/{draft_id}/abandon", "GET /health"]) assert(covered.includes(required), required);
-  assert.equal(routes.readHealth.auth, "none");
-  assert(Object.values(routes).filter((route) => route.path !== "/health").every((route) => route.auth === "credential"));
+  // Health and the account routes a signed-out owner needs answer without a credential.
+  const anonymous = ["readHealth", "readAuthStatus", "signIn", "registerOwner", "signOut"];
+  for (const name of anonymous) assert.equal(routes[name].auth, "none", name);
+  assert(Object.entries(routes).filter(([name]) => !anonymous.includes(name)).every(([, route]) => route.auth === "credential"));
   assert.equal(routePath("editDraftParts", { id: 7, draft_id: Number.MAX_SAFE_INTEGER }), "/api/v2/plans/7/drafts/9007199254740991/parts");
   assert.throws(() => routePath("readBuild", { id: UNSAFE }), RangeError);
   assert.throws(() => routePath("readBuild", { id: 0 }), RangeError);
@@ -114,6 +116,7 @@ const optionalMembers = {
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
+  RegisterRequest: new Set(["display_name"]),
   BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.undo.detail", "entries.*.undo.scope", "entries.*.restorable"]),
   // Sent only while the desktop rebuild runtime flag is on (skip_serializing_if).
   SourceList: new Set(["sources.*.catalog_metadata_version"]),
@@ -122,6 +125,9 @@ const optionalMembers = {
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
   // Create takes `enabled` (default true) and only the credential fields its kind uses.
   CreateIntegrationRequest: new Set(["enabled", "username", "api_key", "password"]),
+  // Create defaults the margin and slot count; an edit sends only the fields it changes.
+  CreatePrinterRequest: new Set(["margin_mm", "max_filament_slots", "integration_id"]),
+  UpdatePrinterRequest: new Set(["name", "model", "bed_width_mm", "bed_depth_mm", "bed_height_mm", "margin_mm", "max_filament_slots", "integration_id"]),
 };
 
 for (const fixture of document.fixtures) {

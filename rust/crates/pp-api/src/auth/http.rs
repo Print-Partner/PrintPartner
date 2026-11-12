@@ -5,7 +5,7 @@ use super::{
 use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, DefaultBodyLimit, Path, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
     http::{HeaderMap, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -17,7 +17,7 @@ use pp_storage::auth::{AuthClient, AuthReply, Outcome, Provider, Request, Secret
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    net::{IpAddr, SocketAddr},
+    net::IpAddr,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -183,6 +183,7 @@ pub fn auth_router(
     };
     let mut router = Router::new()
         .route("/auth/me", get(me))
+        .route("/auth/status", get(status))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -220,20 +221,16 @@ async fn guard(State(app): State<App>, request: axum::extract::Request, next: Ne
     if request.uri().to_string().len() > 16384 {
         return Failure(StatusCode::URI_TOO_LONG, "Request target too long").into_response();
     }
-    let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
-        return Failure(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Transport identity unavailable",
-        )
-        .into_response();
+    let peer = match crate::NetworkAdmission::peer(&request) {
+        Ok(peer) => peer,
+        Err((status, detail)) => return Failure(status, detail).into_response(),
     };
-    if !peer.ip().is_loopback() {
-        return Failure(StatusCode::FORBIDDEN, "Loopback transport required").into_response();
-    }
+    let (expected_origin, expected_host) =
+        crate::NetworkAdmission::authority(&request, &app.config.origin, &app.config.host);
     let peer_ip = peer.ip();
     let headers = request.headers();
     if headers.get_all("host").iter().count() != 1
-        || headers.get("host").and_then(|v| v.to_str().ok()) != Some(&app.config.host)
+        || headers.get("host").and_then(|v| v.to_str().ok()) != Some(expected_host)
         || headers
             .keys()
             .any(|k| k.as_str() == "forwarded" || k.as_str().starts_with("x-forwarded-"))
@@ -250,8 +247,8 @@ async fn guard(State(app): State<App>, request: axum::extract::Request, next: Ne
         Method::GET | Method::HEAD | Method::OPTIONS
     );
     if headers.get_all("origin").iter().count() > 1
-        || (headers.contains_key("origin") && origin != Some(&app.config.origin))
-        || (unsafe_method && origin != Some(&app.config.origin))
+        || (headers.contains_key("origin") && origin != Some(expected_origin))
+        || (unsafe_method && origin != Some(expected_origin))
         || (!callback
             && headers
                 .get("sec-fetch-site")
@@ -363,7 +360,9 @@ pub(super) fn session_response(
     let mut value = if only_ok {
         json!({})
     } else {
-        json!({"user":wire::public_user(user)})
+        json!(wire::SignedIn {
+            user: wire::public_user(user)
+        })
     };
     if include_ok {
         value["ok"] = json!(true);
@@ -382,11 +381,22 @@ async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Fail
     let session = wire::session(&headers)
         .map_err(|_| Failure(StatusCode::UNAUTHORIZED, "Not authenticated"))?;
     match invoke(&app.auth, Request::ResolveSession { token: session }).await? {
-        Outcome::User(Some(user)) => Ok(wire::json_response(
-            json!({"user":wire::public_user(user),"multi_user":app.config.multi_user}),
-        )),
+        Outcome::User(Some(user)) => Ok(wire::json_response(json!(wire::CurrentUser {
+            user: wire::public_user(user),
+            multi_user: app.config.multi_user,
+        }))),
         _ => Err(Failure(StatusCode::UNAUTHORIZED, "Not authenticated")),
     }
+}
+/// Whether the owner account still has to be created, so the UI can tell
+/// first run from signed out. It needs no session and names no account.
+async fn status(State(app): State<App>) -> Result<Response, Failure> {
+    let Outcome::Status(status) = invoke(&app.auth, Request::Status).await? else {
+        unreachable!()
+    };
+    Ok(wire::json_response(json!(wire::AuthStatus {
+        setup_required: status.single_user_setup_required,
+    })))
 }
 async fn register(
     State(app): State<App>,
@@ -445,7 +455,7 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
         )
         .await?;
     }
-    let mut response = wire::json_response(json!({"ok":true}));
+    let mut response = wire::json_response(json!(wire::SignedOut { ok: true }));
     wire::set_cookie(&mut response, "pp_session", "", 0, app.config.transport);
     Ok(response)
 }

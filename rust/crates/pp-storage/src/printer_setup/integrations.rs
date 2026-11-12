@@ -49,7 +49,7 @@ impl ServiceKind {
         match field {
             Field::Username | Field::Password => self == Self::Prusalink,
             Field::ApiKey => self != Self::Prusalink,
-            Field::Kind | Field::Name | Field::BaseUrl => true,
+            _ => true,
         }
     }
 }

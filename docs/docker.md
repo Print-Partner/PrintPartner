@@ -121,7 +121,7 @@ The image's `HEALTHCHECK` runs `readiness` every 30 s, with a 5 s timeout, a 120
 
 `pp-server` registers its signal handlers after startup finishes. A SIGTERM during startup (lease, preflight, migrations) ends the process at once with exit 143 and no drain; SQLite transactions keep the database consistent, and the next start recovers.
 
-Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the desktop runtime. The container then exits 0. `--restart unless-stopped` starts it again.
+Signing out (`POST /auth/logout`) revokes the account session and clears its cookie. `pp-server` keeps serving: the browser returns to the sign-in screen, and signing in again needs no restart or new sign-in URL. The signed-out session cookie authorizes nothing. Only the desktop app stops its runtime on sign-out. Use `docker stop` to stop the container.
 
 ## What the Rust-only image cannot do yet
 

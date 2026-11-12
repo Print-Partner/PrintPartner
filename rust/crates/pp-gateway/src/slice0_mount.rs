@@ -390,6 +390,7 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
         |_| stub(),
         receiver,
         Arc::new(NoHosts),
+        crate::SignOut::EndsRuntime,
     )
     .unwrap();
     let cookie = gateway.test_session().await;

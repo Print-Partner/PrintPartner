@@ -19,6 +19,18 @@ use std::{
 
 /// One HTTP/1.1 exchange; returns the raw response.
 fn exchange(origin: &str, method: &str, path: &str, cookie: &str, body: &str) -> String {
+    exchange_with(origin, method, path, cookie, body, "")
+}
+
+/// [`exchange`] with `headers`, each line ending in CRLF, added to the request.
+fn exchange_with(
+    origin: &str,
+    method: &str,
+    path: &str,
+    cookie: &str,
+    body: &str,
+    headers: &str,
+) -> String {
     let host = origin.trim_start_matches("http://");
     let mut stream = TcpStream::connect(host).unwrap();
     stream
@@ -26,7 +38,7 @@ fn exchange(origin: &str, method: &str, path: &str, cookie: &str, body: &str) ->
         .unwrap();
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nCookie: {cookie}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nCookie: {cookie}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();
@@ -93,12 +105,13 @@ fn run(value: &str, root: &Path, rust: bool) {
     let cookies = if rust {
         rust_routes(&origin, &desktop)
     } else {
-        desktop
+        desktop.clone()
     };
     check_children(child.id(), &receipt["child_pid"]);
 
-    // The gateway's logout stops the binary, which prints its shutdown receipt.
-    // With Rust routes, Rust revokes its session first.
+    // With Rust routes, Rust revokes its session and the headless server keeps
+    // serving. The Node-backed runtime's logout stops the binary, which prints
+    // its shutdown receipt.
     let response = exchange(&origin, "POST", "/auth/logout", &cookies, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert_eq!(
@@ -106,6 +119,12 @@ fn run(value: &str, root: &Path, rust: bool) {
         rust,
         "{response}"
     );
+    if rust {
+        signed_out_server_keeps_serving(&origin, &desktop, &cookies, &mut child);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        return;
+    }
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -159,6 +178,44 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
         );
     }
     both
+}
+
+/// After sign-out the process still runs, the sign-in status and page
+/// answer, the signed-out cookie authorizes nothing, and signing in again
+/// works without a restart.
+fn signed_out_server_keeps_serving(
+    origin: &str,
+    desktop: &str,
+    signed_out: &str,
+    child: &mut std::process::Child,
+) {
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "pp-server stopped on sign-out"
+    );
+    let response = exchange(origin, "GET", "/health", desktop, "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains(r#""authenticated":false"#), "{response}");
+    let navigate = "Accept: text/html\r\nSec-Fetch-Mode: navigate\r\n";
+    let response = exchange_with(origin, "GET", "/", desktop, "", navigate);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("text/html"), "{response}");
+    for path in ["/api/v1/plans", "/auth/me"] {
+        let response = exchange(origin, "GET", path, signed_out, "");
+        assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+    }
+    let response = exchange(
+        origin,
+        "POST",
+        "/auth/login",
+        desktop,
+        r#"{"email":"server@example.test","password":"password-1234"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let signed_in = format!("{desktop}; {}", cookie(&response));
+    let response = exchange(origin, "GET", "/api/v1/plans", &signed_in, "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 }
 
 #[test]

@@ -48,6 +48,17 @@ pub enum ServedUi {
     Replacement,
 }
 
+/// What `POST /auth/logout` does to a runtime with no Node child, after Rust
+/// revokes the account session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignOut {
+    /// The desktop app: clear every desktop session and stop the runtime.
+    EndsRuntime,
+    /// The headless server (`pp-server`): keep serving, so the browser returns
+    /// to the sign-in screen without a restart or a new bootstrap URL.
+    KeepsServing,
+}
+
 /// The status of a runtime with no Node child, where the Rust writer owns the
 /// data directory. `pp-core` owns the sender; the gateway reads it for
 /// `/__runtime`. It has no child `generation` or `pid` because there is no child.
@@ -299,6 +310,7 @@ struct GatewayState {
     relays: TaskTracker,
     cancelled: CancellationToken,
     shutdown_requested: CancellationToken,
+    sign_out: SignOut,
     /// Routes `pp-core` composed for a Rust-only runtime. When present, every
     /// admitted request that is not a gateway or asset path goes here, and
     /// none reaches the compatibility proxy. Logout goes here first too.
@@ -372,6 +384,7 @@ impl Gateway {
     /// the status lookup so an authenticated route can answer from them.
     /// Use [`Self::start_rust_only_with_assets`] for a verified replacement
     /// bundle; this entry point serves the legacy build from disk.
+    /// `sign_out` says whether a sign-out ends the runtime.
     pub fn start_rust_only(
         listener: TcpListener,
         assets: PathBuf,
@@ -379,6 +392,7 @@ impl Gateway {
         product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
         hosts: Arc<dyn MoonrakerHosts>,
+        sign_out: SignOut,
     ) -> Result<Self> {
         Self::start_inner(
             listener,
@@ -387,7 +401,7 @@ impl Gateway {
             CompatHandle::unpublished(),
             &OperationOwners::node_only(),
             Some(Box::new(product)),
-            Some((status, hosts)),
+            Some((status, hosts, sign_out)),
         )
     }
 
@@ -401,9 +415,13 @@ impl Gateway {
         rust_only: Option<(
             tokio::sync::watch::Receiver<RustStatus>,
             Arc<dyn MoonrakerHosts>,
+            SignOut,
         )>,
     ) -> Result<Self> {
-        let (rust_status, hosts) = rust_only.unzip();
+        let (rust_status, hosts, sign_out) = match rust_only {
+            Some((status, hosts, sign_out)) => (Some(status), Some(hosts), sign_out),
+            None => (None, None, SignOut::EndsRuntime),
+        };
         let address = listener.local_addr()?;
         anyhow::ensure!(
             address.ip().is_loopback(),
@@ -486,6 +504,7 @@ impl Gateway {
             relays: TaskTracker::new(),
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
+            sign_out,
             product: Mutex::new(None),
             rust_status,
             compat_forwards: AtomicU64::new(0),
@@ -1060,15 +1079,17 @@ async fn handle(
             ),
             None => None,
         };
-        state
-            .access
-            .lock()
-            .expect("Session mutex poisoned")
-            .sessions
-            .clear();
-        state.watcher_cancelled.cancel();
-        state.cancelled.cancel();
-        state.shutdown_requested.cancel();
+        if state.sign_out == SignOut::EndsRuntime {
+            state
+                .access
+                .lock()
+                .expect("Session mutex poisoned")
+                .sessions
+                .clear();
+            state.watcher_cancelled.cancel();
+            state.cancelled.cancel();
+            state.shutdown_requested.cancel();
+        }
         return revoked
             .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }

@@ -88,6 +88,7 @@ async fn started(hosts: &Hosts) -> (Gateway, String, Scratch) {
         product,
         receiver,
         Arc::new(hosts.clone()),
+        crate::SignOut::EndsRuntime,
     )
     .unwrap();
     let cookie = gateway.test_session().await;

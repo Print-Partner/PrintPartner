@@ -387,6 +387,7 @@ fn serve_snapshot(
 
 impl super::Gateway {
     /// Start with the replacement bytes retained by release verification.
+    /// `sign_out` says whether a sign-out ends the runtime.
     pub fn start_rust_only_with_assets(
         listener: tokio::net::TcpListener,
         assets: PathBuf,
@@ -394,6 +395,7 @@ impl super::Gateway {
         product: impl FnOnce(super::MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<super::RustStatus>,
         hosts: std::sync::Arc<dyn super::MoonrakerHosts>,
+        sign_out: super::SignOut,
     ) -> anyhow::Result<Self> {
         Self::start_inner(
             listener,
@@ -402,7 +404,7 @@ impl super::Gateway {
             pp_compat::CompatHandle::unpublished(),
             &super::OperationOwners::node_only(),
             Some(Box::new(product)),
-            Some((status, hosts)),
+            Some((status, hosts, sign_out)),
         )
     }
 }

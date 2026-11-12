@@ -317,10 +317,11 @@ fn an_error_item_reads_outcome_unknown_only_when_send_now_refuses_it() {
             ),
             false,
         ),
-        // An untrusted job document is never shown as safe to send.
+        // Send now and Reconcile cannot resolve a quarantined job, so the
+        // read does not offer its item for reconciliation.
         (
             item("error", Some("job-quarantined"), Some("Upload failed")),
-            true,
+            false,
         ),
         // A send Node started has no Rust job: Node's restart text decides.
         (

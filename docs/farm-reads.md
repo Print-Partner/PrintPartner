@@ -125,9 +125,11 @@ read as cleared. Otherwise it is
   500): ...`) or a fixed text, never an API key or password; the one user owns
   the printer and needs the reason. `upload_job_id` is the last send's durable
   job, which Reconcile names. `outcome_unknown` is computed on each read, not
-  stored: true for an `error` item whose upload job awaits reconciliation (or
-  is quarantined), or, with no Rust job, whose error is Node's restart text. Send now refuses
-  exactly those items with 409 `send_outcome_unknown`. The artifact path and
+  stored: true for an `error` item whose upload job awaits reconciliation,
+  or, with no Rust job, whose error is Node's restart text. Send now refuses
+  exactly those items with 409 `send_outcome_unknown`. A quarantined upload
+  job reads as `false`: Send now and Reconcile cannot resolve it, and no route
+  does yet. The artifact path and
   host name stay server-side. Every stored item, in stored order. The send
   routes answer the same type ([Send queue storage](send-queue.md#routes-gre-365)).
 

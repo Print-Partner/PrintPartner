@@ -109,11 +109,10 @@ pub(crate) fn rows(connection: &Connection, tenant: &str) -> Result<Option<Vec<V
 /// its last send's printer outcome is unknown, the case Send now refuses
 /// with `send_outcome_unknown`. With a Rust upload job that job awaits
 /// reconciliation; with none (a send Node started) Node's restart marked
-/// it [`INTERRUPTED_ERROR`]. A quarantined upload job also reads as unknown:
-/// its document cannot be trusted, so the item is never shown as safe to
-/// send (the writes refuse it with an error). Nothing stores the key.
-/// `jobs` is `None` for items still in Node's setting, which no Rust job
-/// sent.
+/// it [`INTERRUPTED_ERROR`]. A quarantined upload job is not unknown here,
+/// since the writes cannot reconcile it; resolving one is a separate path.
+/// Nothing stores the key. `jobs` is `None` for items still in Node's
+/// setting, which no Rust job sent.
 pub(crate) fn mark_outcomes(
     jobs: Option<&Connection>,
     tenant: &str,
@@ -125,7 +124,7 @@ pub(crate) fn mark_outcomes(
             && match (jobs, item["upload_job_id"].as_str()) {
                 (Some(connection), Some(job)) => connection
                     .query_row(
-                        "SELECT state IN ('reconciliation_required','quarantined') FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3",
+                        "SELECT state='reconciliation_required' FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3",
                         params![job, tenant, crate::jobs::JobKind::PrinterUpload.name()],
                         |row| row.get(0),
                     )

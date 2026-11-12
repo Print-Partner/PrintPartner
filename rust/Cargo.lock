@@ -3560,6 +3560,7 @@ dependencies = [
  "pp-net",
  "pp-os",
  "pp-perf",
+ "pp-services",
  "pp-source",
  "pp-storage",
  "pp-testkit",

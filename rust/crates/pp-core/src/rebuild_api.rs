@@ -20,6 +20,7 @@ use pp_api::{
     plates::plates_router,
     printers::printers_router,
     settings::settings_router,
+    sources_github::github_router,
     workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
@@ -200,6 +201,7 @@ fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Rou
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
+/// GitHub branch and tag listings,
 /// the domain event stream and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
@@ -318,6 +320,12 @@ fn read_router_with_updates(
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
     let admin_config = admin_config.with_server_update_checks(server_updates);
+    let github = github_router(
+        admin_config.clone(),
+        accepted_client.clone(),
+        app_settings.clone(),
+        crate::github::GithubTransport::new()?,
+    );
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
@@ -352,6 +360,7 @@ fn read_router_with_updates(
             .merge(modules)
             .merge(filaments)
             .merge(settings_routes)
+            .merge(github)
             .merge(probe)
             .merge(events)
             .merge(checkoff)

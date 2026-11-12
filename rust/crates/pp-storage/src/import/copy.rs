@@ -125,7 +125,7 @@ impl fmt::Display for ImportReport {
 /// ownership-marker rule. The source is never opened for writing.
 pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportError> {
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
-    match inspect_destination(destination)? {
+    match inspect_destination(destination) {
         Destination::Free => {}
         found => return Err(ImportError::Destination(found)),
     }

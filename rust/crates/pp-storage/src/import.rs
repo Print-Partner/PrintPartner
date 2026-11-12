@@ -91,6 +91,12 @@ pub enum ImportError {
         source: std::io::Error,
     },
     Sqlite(rusqlite::Error),
+    /// The temporary directory is the source folder or the destination, or
+    /// lies inside one. The scratch copy would be written there.
+    TemporaryInside {
+        temporary: PathBuf,
+        folder: PathBuf,
+    },
 }
 
 impl fmt::Display for ImportError {
@@ -185,6 +191,12 @@ impl fmt::Display for ImportError {
             Self::Roots(detail) => write!(f, "The folder's files cannot be copied: {detail}"),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Sqlite(error) => write!(f, "SQLite: {error}"),
+            Self::TemporaryInside { temporary, folder } => write!(
+                f,
+                "The temporary directory {} is inside {}, where a dry run must write nothing. Set TMPDIR to a directory outside the source and the destination",
+                temporary.display(),
+                folder.display()
+            ),
         }
     }
 }
@@ -215,6 +227,9 @@ pub enum Destination {
     Marked,
     /// It has a marker entry that is not a valid marker.
     BadMarker(ownership_marker::MarkerRefusal),
+    /// It, or its marker, could not be read. A destination that is a file
+    /// is one case.
+    Unreadable(std::io::ErrorKind),
 }
 
 impl fmt::Display for Destination {
@@ -228,30 +243,35 @@ impl fmt::Display for Destination {
                 "has a {} entry that is no valid marker ({refusal}), so the import refuses it",
                 ownership_marker::MARKER_FILE
             ),
+            Self::Unreadable(kind) => {
+                write!(f, "cannot be read ({kind}), so the import refuses it")
+            }
         }
     }
 }
 
 /// Inspects the folder an import would write to. Nothing is created.
-pub fn inspect_destination(destination: &Path) -> Result<Destination, ImportError> {
+pub fn inspect_destination(destination: &Path) -> Destination {
     use ownership_marker::{MarkerRefusal, MarkerState};
     match ownership_marker::inspect(destination) {
         MarkerState::Absent => {}
+        // The folder cannot be opened, for example because it is a file, or
+        // its marker cannot be read.
         MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
-            return Err(io_error(destination, kind.into()));
+            return Destination::Unreadable(kind);
         }
-        MarkerState::Refused(refusal) => return Ok(Destination::BadMarker(refusal)),
-        MarkerState::Valid(_) => return Ok(Destination::Marked),
+        MarkerState::Refused(refusal) => return Destination::BadMarker(refusal),
+        MarkerState::Valid(_) => return Destination::Marked,
     }
     // The writer refuses a Node lease directory that the marker rule alone
     // counts as empty, so any lease entry makes the folder unusable.
     if destination.join(LEASE).symlink_metadata().is_ok() {
-        return Ok(Destination::NotEmpty(LEASE.into()));
+        return Destination::NotEmpty(LEASE.into());
     }
     match ownership_marker::first_non_empty_entry(destination) {
-        Ok(None) => Ok(Destination::Free),
-        Ok(Some(entry)) => Ok(Destination::NotEmpty(entry)),
-        Err(error) => Err(io_error(destination, error)),
+        Ok(None) => Destination::Free,
+        Ok(Some(entry)) => Destination::NotEmpty(entry),
+        Err(error) => Destination::Unreadable(error.kind()),
     }
 }
 
@@ -418,12 +438,21 @@ struct Files {
 /// With a `destination`, the report also says whether the import would
 /// accept that folder. The folder is read, never created.
 pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport, ImportError> {
-    let destination = destination.map(inspect_destination).transpose()?;
-    let report = dry_run_in(source, &std::env::temp_dir())?;
-    Ok(DryRunReport {
-        destination,
-        ..report
-    })
+    dry_run_in(source, destination, &std::env::temp_dir())
+}
+
+/// Refuses when `temporary` is `folder` or lies inside it. Both are resolved
+/// through links first. A path that does not resolve holds no directory.
+fn ensure_outside(temporary: &Path, folder: &Path) -> Result<(), ImportError> {
+    match (temporary.canonicalize(), folder.canonicalize()) {
+        (Ok(inside), Ok(resolved)) if inside.starts_with(&resolved) => {
+            Err(ImportError::TemporaryInside {
+                temporary: temporary.to_owned(),
+                folder: folder.to_owned(),
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Free space kept beyond the copies, for the tables the upgrade adds.
@@ -452,8 +481,20 @@ fn ensure_space(stage: &Path, needed: u64) -> Result<(), ImportError> {
     })
 }
 
-fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportError> {
+/// [`dry_run`] with its scratch copy under `temporary`, which is also where
+/// the startup check copies the database when it is the system's directory.
+fn dry_run_in(
+    source: &Path,
+    destination: Option<&Path>,
+    temporary: &Path,
+) -> Result<DryRunReport, ImportError> {
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
+    // Before any scratch exists: a dry run writes nothing into the source or
+    // the destination.
+    for folder in [Some(source), destination].into_iter().flatten() {
+        ensure_outside(temporary, folder)?;
+    }
+    let destination = destination.map(inspect_destination);
     let scratch = Scratch(temporary.join(format!(
         "pp-import-dry-run-{}",
         hex::encode(rand::random::<[u8; 12]>())
@@ -468,7 +509,11 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
         return Err(io_error(source, kind));
     };
     let (connection, ready) = upgrade(&scratch.0)?;
-    measure(&connection, kind, &ready, &files)
+    let report = measure(&connection, kind, &ready, &files)?;
+    Ok(DryRunReport {
+        destination,
+        ..report
+    })
 }
 
 /// Checks the staged database as startup checks a live one and upgrades it

@@ -558,6 +558,9 @@ async fn start_rust_resources(
         },
     )
     .await?;
+    if !replacement_present {
+        eprintln!("Replacement UI bundle absent");
+    }
     let community_manifests = bundle.community_manifests_dir();
     let (listener, origin_change) =
         bind_origin(writer.lease().context("Storage lease unavailable")?).await?;

@@ -41,6 +41,9 @@ pub struct Checklist {
     pub html: String,
 }
 
+/// The only thing a checklist may load: its own inline style sheet.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
+
 /// Renders `plan` as one self-contained HTML page. Its Content Security
 /// Policy allows only the inline style sheet, and it has no script, image or
 /// link, so opening it from disk makes no request. All Plan text is escaped.
@@ -57,7 +60,7 @@ pub fn checklist(plan: &ChecklistPlan, generated_at: &str) -> Checklist {
     let name = escape(&plan.build_name);
     let mut html = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"{CONTENT_SECURITY_POLICY}\">\n\
          <title>{name} checklist, Plan version {version}</title>\n<style>{STYLE}</style>\n</head>\n<body>\n\
          <h1>{name}</h1>\n<dl>\n",
         version = plan.plan_version,

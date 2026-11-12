@@ -518,18 +518,27 @@ impl SettingsClient {
         Arc::clone(&self.shared.print_file_snapshots)
     }
     pub fn reader(&self, wait: Duration) -> Result<ReaderCheckout> {
+        self.checkout(wait).map_err(|failure| match failure {
+            WriterFailure::Stopped => anyhow!("Storage stopped"),
+            WriterFailure::QueueFull => anyhow!("Reader pool full"),
+            WriterFailure::Internal(error) => error,
+            other => anyhow!(other),
+        })
+    }
+    /// [`SettingsClient::reader`] with typed refusals: a closed pool is
+    /// `Stopped` and a pool still full at `wait` is `QueueFull`.
+    pub(crate) fn checkout(&self, wait: Duration) -> Result<ReaderCheckout, WriterFailure> {
+        let poisoned = || WriterFailure::Internal(anyhow!("Reader pool poisoned"));
         let deadline = Instant::now() + wait;
-        let mut state = self
-            .readers
-            .state
-            .lock()
-            .map_err(|_| anyhow!("Reader pool poisoned"))?;
+        let mut state = self.readers.state.lock().map_err(|_| poisoned())?;
         loop {
-            ensure!(!state.closed, "Storage stopped");
+            if state.closed {
+                return Err(WriterFailure::Stopped);
+            }
             if let Some(connection) = state.idle.pop() {
                 if let Err(error) = schema::configure(&connection, true) {
                     state.idle.push(connection);
-                    return Err(error);
+                    return Err(WriterFailure::Internal(error));
                 }
                 state.active += 1;
                 return Ok(ReaderCheckout {
@@ -537,12 +546,14 @@ impl SettingsClient {
                     pool: self.readers.clone(),
                 });
             }
-            ensure!(Instant::now() < deadline, "Reader pool full");
+            if Instant::now() >= deadline {
+                return Err(WriterFailure::QueueFull);
+            }
             state = self
                 .readers
                 .changed
                 .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
-                .map_err(|_| anyhow!("Reader pool poisoned"))?
+                .map_err(|_| poisoned())?
                 .0;
         }
     }

@@ -238,15 +238,7 @@ impl ReadClient {
             Some(id) => vec![plan_id(id).map_err(WriterFailure::Internal)?],
             None => Vec::new(),
         };
-        // `reader` fails with these two messages; anything else is internal.
-        let mut reader =
-            self.readers
-                .reader(wait)
-                .map_err(|error| match error.to_string().as_str() {
-                    "Storage stopped" => WriterFailure::Stopped,
-                    "Reader pool full" => WriterFailure::QueueFull,
-                    _ => WriterFailure::Internal(error),
-                })?;
+        let mut reader = self.readers.checkout(wait)?;
         let command = Command {
             credential,
             target: Target::Profiles(ids),
@@ -254,9 +246,15 @@ impl ReadClient {
             policy: self.policy,
         };
         let batch = execute(reader.connection_mut(), command).map_err(|error| {
+            let busy = error
+                .downcast_ref::<rusqlite::Error>()
+                .and_then(rusqlite::Error::sqlite_error_code)
+                == Some(rusqlite::ErrorCode::DatabaseBusy);
             match error.downcast::<auth::AuthFailure>() {
                 Ok(failure) => WriterFailure::Auth(failure),
-                // An API key that proves no tenant fails with this message.
+                Err(_) if busy => WriterFailure::Busy,
+                // A refused API key or oversized session token fails with this
+                // plain message; the HTTP tests pin it to 401.
                 Err(error) if error.to_string() == "Authentication required" => {
                     WriterFailure::Auth(auth::AuthFailure::InvalidCredentials)
                 }

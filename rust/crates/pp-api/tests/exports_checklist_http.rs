@@ -41,11 +41,21 @@ async fn download(
     path: &str,
     cookie: bool,
 ) -> (StatusCode, header::HeaderMap, String) {
+    let credential = cookie.then_some(("cookie", "pp_session=required-unit-fixture-secret"));
+    download_as(router, path, credential).await
+}
+
+/// [`download`] presenting `credential`, a header name and value.
+async fn download_as(
+    router: &Router,
+    path: &str,
+    credential: Option<(&str, &str)>,
+) -> (StatusCode, header::HeaderMap, String) {
     let mut request = Request::get(path)
         .header("host", "127.0.0.1:4100")
         .header("origin", checkoff_http::loopback::ORIGIN);
-    if cookie {
-        request = request.header("cookie", "pp_session=required-unit-fixture-secret");
+    if let Some((name, value)) = credential {
+        request = request.header(name, value);
     }
     let mut request = request.body(Body::empty()).unwrap();
     request
@@ -137,6 +147,10 @@ async fn checklist_matches_checkoff_units_and_follows_a_burst() {
         format!("attachment; filename=\"fixture-build-v{version}-checklist.html\"").as_str()
     );
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        headers[header::CONTENT_SECURITY_POLICY],
+        "default-src 'none'; style-src 'unsafe-inline'"
+    );
     assert!(html.contains(&format!("<dt>Plan version</dt><dd>{version}</dd>")));
     assert!(html.contains("default-src 'none'"));
     assert!(
@@ -164,6 +178,14 @@ async fn checklist_matches_checkoff_units_and_follows_a_burst() {
 
     let (status, _, body) = download(&router, CHECKLIST, false).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    for refused in [
+        ("cookie", "pp_session=not-a-session"),
+        ("authorization", "Bearer ppk_not_a_key"),
+        ("x-print-partner-api-key", "ppk_not_a_key"),
+    ] {
+        let (status, _, body) = download_as(&router, CHECKLIST, Some(refused)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused:?}: {body}");
+    }
     let (status, _, body) = download(&router, "/api/v2/plans/999/exports/checklist", true).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     let (status, _, body) = download(&router, "/api/v2/plans/2/exports/checklist", true).await;

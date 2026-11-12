@@ -191,6 +191,10 @@ fn attachment(content_type: &str, filename: &str, body: Vec<u8>) -> Response {
             format!("attachment; filename=\"{filename}\""),
         )
         .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            exports::CONTENT_SECURITY_POLICY,
+        )
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CONTENT_LENGTH, body.len())
         .body(axum::body::Body::from(body))

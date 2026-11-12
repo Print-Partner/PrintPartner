@@ -51,6 +51,18 @@ pub enum ImportError {
     Database(String),
     /// Builds or Sources belong to more than one tenant.
     SplitTenants(Vec<String>),
+    /// The staging directory has too little free space.
+    NoSpace {
+        directory: PathBuf,
+        needed: u64,
+        free: u64,
+    },
+    /// The temporary directory is the source folder or the destination, or
+    /// lies inside one. The scratch copy would be written there.
+    TemporaryInside {
+        temporary: PathBuf,
+        folder: PathBuf,
+    },
     /// An I/O or SQLite failure.
     Failed(anyhow::Error),
 }
@@ -96,7 +108,24 @@ impl fmt::Display for ImportError {
             Self::SplitTenants(tenants) => write!(
                 f,
                 "Builds or Sources belong to more than one tenant ({}); the import does not merge tenants",
-                tenants.join(", ")
+                (tenants.iter().map(|tenant| masked(tenant)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::NoSpace {
+                directory,
+                needed,
+                free,
+            } => write!(
+                f,
+                "Staging needs {needed} bytes free in {} and {free} are free. Set TMPDIR to a directory with more room",
+                directory.display()
+            ),
+            Self::TemporaryInside { temporary, folder } => write!(
+                f,
+                "The temporary directory {} is inside {}, where a dry run must write nothing. Set TMPDIR to a directory outside the source and the destination",
+                temporary.display(),
+                folder.display()
             ),
             Self::Failed(error) => write!(f, "{error:#}"),
         }
@@ -129,11 +158,73 @@ pub enum SourceKind {
     Archive,
 }
 
+/// What the import would find at its destination, read without writing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Destination {
+    /// Absent, or empty by the marker rule and without a lease entry. Its
+    /// owner and permissions are not checked here.
+    Free,
+    /// It holds this entry and no marker: the import would refuse it.
+    NotEmpty(String),
+    /// It has a valid marker: a Rust installation is there already.
+    Marked,
+    /// It has a marker entry that is not a valid marker.
+    BadMarker(ownership_marker::MarkerRefusal),
+    /// It, or its marker, could not be read. A destination that is a file
+    /// is one case.
+    Unreadable(std::io::ErrorKind),
+}
+
+impl fmt::Display for Destination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Free => f.write_str("is absent or empty, as the import needs"),
+            Self::NotEmpty(entry) => write!(f, "holds {entry:?}, so the import refuses it"),
+            Self::Marked => f.write_str("is a Rust installation, so the import refuses it"),
+            Self::BadMarker(refusal) => write!(
+                f,
+                "has a {} entry that is no valid marker ({refusal}), so the import refuses it",
+                ownership_marker::MARKER_FILE
+            ),
+            Self::Unreadable(kind) => {
+                write!(f, "cannot be read ({kind}), so the import refuses it")
+            }
+        }
+    }
+}
+
+/// Inspects the folder an import would write to. Nothing is created.
+pub fn inspect_destination(destination: &Path) -> Destination {
+    use ownership_marker::{MarkerRefusal, MarkerState};
+    match ownership_marker::inspect(destination) {
+        MarkerState::Absent => {}
+        // The folder cannot be opened, for example because it is a file, or
+        // its marker cannot be read.
+        MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
+            return Destination::Unreadable(kind);
+        }
+        MarkerState::Refused(refusal) => return Destination::BadMarker(refusal),
+        MarkerState::Valid(_) => return Destination::Marked,
+    }
+    // The writer refuses a Node lease directory that the marker rule alone
+    // counts as empty, so any lease entry makes the folder unusable.
+    if destination.join(LEASE).symlink_metadata().is_ok() {
+        return Destination::NotEmpty(LEASE.into());
+    }
+    match ownership_marker::first_non_empty_entry(destination) {
+        Ok(None) => Destination::Free,
+        Ok(Some(entry)) => Destination::NotEmpty(entry),
+        Err(error) => Destination::Unreadable(error.kind()),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct TableCount {
     pub table: String,
     pub rows: u64,
-    /// Rows per `tenant_id`. Empty for a table without that column.
+    /// Rows per `tenant_id` value, as stored. Empty for a table without that
+    /// column. A value can hold a sign-in name; printing goes through
+    /// [`masked`].
     pub by_tenant: BTreeMap<String, u64>,
 }
 
@@ -145,7 +236,8 @@ pub struct Unnamed {
     pub items: u64,
 }
 
-/// What a dry run found. It holds keys, names and counts, never a stored value.
+/// What a dry run found. It holds keys, names and counts, and no stored
+/// value but the `tenant_id` values, which its text masks.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DryRunReport {
     pub source: SourceKind,
@@ -158,11 +250,21 @@ pub struct DryRunReport {
     pub printers: u64,
     /// Unmatched prints that are neither claimed nor dismissed.
     pub unmatched_prints: u64,
+    /// Every `tenant_id` value that any table holds rows under, as stored;
+    /// printing goes through [`masked`]. The Rust-only runtime reads only
+    /// `default`.
+    pub installations: BTreeSet<String>,
+    /// Rows in `users`. The Rust-only runtime signs in only with one or none.
+    pub users: u64,
+    /// The destination, when the dry run was given one.
+    pub destination: Option<Destination>,
     pub tables: Vec<TableCount>,
     /// Every inventory row with the item count of each of its shapes.
     pub rows: Vec<(&'static Row, Vec<(Shape, u64)>)>,
     /// The named shapes the import copies byte for byte.
     pub copied: Vec<(Shape, u64)>,
+    /// The named shapes no Rust code reads. The import keeps them too.
+    pub unused: Vec<(Shape, u64)>,
     /// Keys of settings that hold no JSON document. They are copied as stored.
     pub scalar_settings: BTreeSet<String>,
     pub unnamed: Vec<Unnamed>,
@@ -185,11 +287,35 @@ impl fmt::Display for DryRunReport {
             "{} Builds, {} Sources, {} printers, {} unmatched prints.",
             self.builds, self.sources, self.printers, self.unmatched_prints
         )?;
+        let values: Vec<String> = (self.installations.iter())
+            .map(|value| format!("{:?}", masked(value)))
+            .collect();
+        let label = match values.len() {
+            1 => "Installation value",
+            _ => "Installation values",
+        };
+        let values = match values.len() {
+            0 => "none".to_owned(),
+            _ => values.join(", "),
+        };
+        writeln!(f, "{label} {values}, {} accounts.", self.users)?;
+        if self.installations.iter().any(|value| value != "default") {
+            writeln!(f, "The Rust runtime reads only data under \"default\".")?;
+        }
+        if self.users > 1 {
+            writeln!(
+                f,
+                "The Rust runtime signs in only when one account is stored."
+            )?;
+        }
+        if let Some(destination) = &self.destination {
+            writeln!(f, "The destination {destination}.")?;
+        }
         writeln!(f, "\nTables with rows (rows, then rows per tenant):")?;
         for table in self.tables.iter().filter(|table| table.rows > 0) {
             write!(f, "  {} {}", table.table, table.rows)?;
             for (tenant, rows) in &table.by_tenant {
-                write!(f, " {tenant}={rows}")?;
+                write!(f, " {}={rows}", masked(tenant))?;
             }
             writeln!(f)?;
         }
@@ -213,6 +339,18 @@ impl fmt::Display for DryRunReport {
             scalars.join(", ")
         };
         writeln!(f, "  scalar settings ({}): {keys}", scalars.len())?;
+        writeln!(f, "\nKept, not used by Rust:")?;
+        let mut unused = self
+            .unused
+            .iter()
+            .filter(|(_, items)| *items > 0)
+            .peekable();
+        if unused.peek().is_none() {
+            writeln!(f, "  none")?;
+        }
+        for (shape, items) in unused {
+            writeln!(f, "  {shape} = {items}")?;
+        }
         writeln!(f, "\nStored JSON the inventory does not name:")?;
         for unnamed in &self.unnamed {
             writeln!(f, "  {} = {}", unnamed.shape, unnamed.items)?;
@@ -245,14 +383,69 @@ struct Files {
 /// data folder or a format 2 `full` backup archive. The database is copied
 /// into a private directory under the system temporary directory, upgraded
 /// there, and removed before this returns.
-pub fn dry_run(source: &Path) -> Result<DryRunReport, ImportError> {
-    dry_run_in(source, &std::env::temp_dir())
+///
+/// With a `destination`, the report also says whether the import would
+/// accept that folder. The folder is read, never created.
+pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport, ImportError> {
+    dry_run_in(source, destination, &std::env::temp_dir())
 }
 
-fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportError> {
+/// Refuses when `temporary` is `folder` or lies inside it. Both are resolved
+/// through links first. A path that does not resolve holds no directory.
+fn ensure_outside(temporary: &Path, folder: &Path) -> Result<(), ImportError> {
+    match (temporary.canonicalize(), folder.canonicalize()) {
+        (Ok(inside), Ok(resolved)) if inside.starts_with(&resolved) => {
+            Err(ImportError::TemporaryInside {
+                temporary: temporary.to_owned(),
+                folder: folder.to_owned(),
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Free space kept beyond the copies, for the tables the upgrade adds.
+const STAGE_RESERVE: u64 = 64 * 1024 * 1024;
+
+/// The free bytes staging needs for a database of `database` bytes, of which
+/// `staged` copies are still to be written. Beside the staged copy, the
+/// startup check makes one short-lived copy; it is gone before the upgrade
+/// writes its write-ahead log, which can grow as large again.
+fn stage_bytes(database: u64, staged: u64) -> u64 {
+    (database.saturating_mul(staged.saturating_add(1))).saturating_add(STAGE_RESERVE)
+}
+
+/// Refuses when the directory that holds `stage` has fewer than `needed`
+/// bytes free.
+fn ensure_space(stage: &Path, needed: u64) -> Result<(), ImportError> {
+    let directory = stage.parent().unwrap_or(stage);
+    let free = fs4::available_space(directory).map_err(|error| unreadable(directory, error))?;
+    if free >= needed {
+        return Ok(());
+    }
+    Err(ImportError::NoSpace {
+        directory: directory.to_owned(),
+        needed,
+        free,
+    })
+}
+
+/// [`dry_run`] with its scratch copy under `temporary`, which is also where
+/// the startup check copies the database when it is the system's directory.
+fn dry_run_in(
+    source: &Path,
+    destination: Option<&Path>,
+    temporary: &Path,
+) -> Result<DryRunReport, ImportError> {
     let metadata = source
         .metadata()
         .map_err(|error| anyhow::anyhow!("Read import source {}: {error}", source.display()))?;
+    // Before any scratch exists: a dry run writes nothing into the source or
+    // the destination.
+    for folder in [Some(source), destination].into_iter().flatten() {
+        ensure_outside(temporary, folder)?;
+    }
+    let destination = destination.map(inspect_destination);
     let scratch = Scratch(temporary.join(format!(
         "pp-import-dry-run-{}",
         hex::encode(rand::random::<[u8; 12]>())
@@ -265,14 +458,21 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
     } else {
         return Err(anyhow::anyhow!("The import source is neither a folder nor a file").into());
     };
+    let (connection, ready) = upgrade(&scratch.0)?;
+    let report = measure(&connection, kind, &ready, &files)?;
+    Ok(DryRunReport {
+        destination,
+        ..report
+    })
+}
+
+/// Checks the staged database as startup checks a live one and upgrades it
+/// in place to the current Rust schema, without rollback copies.
+fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportError> {
     // A failed check can hide the version: a Rust database stamped 35 or
     // later fails the job-table check first. Refuse by version when one was read.
-    let admitted = crate::restore::admit_schema(&scratch.0);
-    let found = admitted
-        .as_ref()
-        .ok()
-        .copied()
-        .or_else(versions::preflight_version);
+    let admitted = crate::restore::admit_schema(stage);
+    let found = (admitted.as_ref().ok().copied()).or_else(versions::preflight_version);
     if let Some(found) = found
         && versions::classify(found, versions::NODE_SCHEMA).is_err()
     {
@@ -283,12 +483,9 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
         }));
     }
     let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
-    let (connection, ready) = schema::initialize(
-        &scratch.0.join(archive::DATABASE_FILE),
-        version,
-        &crate::auth::catalog_timestamp(),
-    )?;
-    measure(&connection, kind, &ready, &files)
+    let database = stage.join(archive::DATABASE_FILE);
+    let now = crate::auth::catalog_timestamp();
+    Ok(schema::initialize_with(&database, version, &now, false)?)
 }
 
 /// A read failure that names the source entry it happened on.
@@ -336,6 +533,8 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if before[0].is_none() {
         return Err(ImportError::NoDatabase);
     }
+    let bytes: u64 = before.iter().flatten().map(|(bytes, _)| bytes).sum();
+    ensure_space(scratch, stage_bytes(bytes, 1))?;
     for name in DATABASE_FILES {
         let path = source.join(name);
         if let Some(mut file) = open_regular(&path)? {
@@ -384,6 +583,11 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
+    // The archive's size says nothing here: it also holds `repos/`, which a
+    // dry run only lists. The database size is known once it is extracted.
+    let extracted = |name| scratch.join(name).metadata().map_or(0, |file| file.len());
+    let bytes: u64 = DATABASE_FILES.map(extracted).iter().sum();
+    ensure_space(scratch, stage_bytes(bytes, 0))?;
     Ok(Files {
         documents: scratch.to_owned(),
         repo_files: paths
@@ -414,6 +618,19 @@ fn key_pattern(key: &str) -> String {
         }
     }
     pattern
+}
+
+/// A `tenant_id` value as a report or a message may show it. Values are
+/// counted and compared as stored and masked only here, when printed, so two
+/// account ids stay two values. `default` and
+/// `anonymous` are Node's own words. Any other value is an account id or
+/// `basic-<login>`, so only the `basic-` prefix is kept.
+fn masked(value: &str) -> String {
+    match value {
+        "default" | "anonymous" => value.to_owned(),
+        _ if value.starts_with("basic-") => "basic-***".to_owned(),
+        _ => "***".to_owned(),
+    }
 }
 
 fn quoted(identifier: &str) -> String {
@@ -552,6 +769,11 @@ fn measure(
             tenants.into_iter().cloned().collect(),
         ));
     }
+    // Every table with the column counts: an account without Builds or
+    // Sources still stores its settings and events under its own value.
+    let installations = (tables.iter())
+        .flat_map(|table| table.by_tenant.keys().cloned())
+        .collect();
 
     let settings: Vec<(String, String)> = {
         let mut statement = connection.prepare("SELECT key, value FROM app_settings")?;
@@ -605,11 +827,12 @@ fn measure(
             .map(|(_, value)| items(value.as_bytes(), 0))
             .sum(),
         unmatched_prints,
+        installations,
+        users: table("users").map_or(0, |table| table.rows),
+        destination: None,
         rows,
-        copied: inventory::COPIED
-            .iter()
-            .map(count)
-            .collect::<Result<_, _>>()?,
+        copied: (inventory::COPIED.iter().map(count)).collect::<Result<_, _>>()?,
+        unused: (inventory::UNUSED.iter().map(count)).collect::<Result<_, _>>()?,
         scalar_settings,
         unnamed,
         tables,

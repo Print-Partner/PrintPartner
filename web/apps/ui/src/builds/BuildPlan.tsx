@@ -1,3 +1,4 @@
+import { KEEP_EDITS, SignedOutNote, signedOut } from "../auth/SignedOutNote";
 import type {
   AcceptDraftReceipt,
   DraftAcceptPreview,
@@ -103,6 +104,8 @@ function useDraftWrites(id: number) {
   const header = useMutation({
     scope,
     mutationKey,
+    // A 401 keeps the page, so the typed edit stays on screen (`SignedOutNote`).
+    meta: KEEP_EDITS,
     mutationFn: ({ fields, key }: { fields: HeaderFields; key: string }) => {
       const body = once(key, () => {
         const data = latest();
@@ -122,6 +125,7 @@ function useDraftWrites(id: number) {
   const parts = useMutation({
     scope,
     mutationKey,
+    meta: KEEP_EDITS,
     mutationFn: ({ choice, key }: { choice: PlanChoice; key: string }) => {
       const body = once(key, () => {
         const draft = latest()?.draft;
@@ -163,7 +167,7 @@ function SaveStatus({ writes }: { writes: Writes }) {
           : "";
   return (
     <p role="status" className="pp-save-status" data-failed={failed ? "" : undefined}>
-      {text}
+      {failed && signedOut(failed) ? <SignedOutNote /> : text}
     </p>
   );
 }

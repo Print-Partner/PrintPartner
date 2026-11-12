@@ -389,13 +389,42 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         text_params: &[],
         headers: &[],
     },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route("readAuthStatus", "GET", "/auth/status", None, "AuthStatus")
+    },
+    route("readCurrentUser", "GET", "/auth/me", None, "CurrentUser"),
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "signIn",
+            "POST",
+            "/auth/login",
+            Some("SignInRequest"),
+            "SignedIn",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "registerOwner",
+            "POST",
+            "/auth/register",
+            Some("RegisterRequest"),
+            "SignedIn",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route("signOut", "POST", "/auth/logout", None, "SignedOut")
+    },
 ];
 
 #[cfg(feature = "codegen")]
 pub use codegen::{document, document_bytes};
 
 #[cfg(feature = "codegen")]
-mod codegen {
+pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
     use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
@@ -524,6 +553,21 @@ mod codegen {
         schema("BuildWorkflow", schemars::schema_for!(BuildWorkflow))?;
         schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema("AuthStatus", schemars::schema_for!(crate::auth::AuthStatus))?;
+        schema(
+            "CurrentUser",
+            schemars::schema_for!(crate::auth::CurrentUser),
+        )?;
+        schema("SignedIn", schemars::schema_for!(crate::auth::SignedIn))?;
+        schema("SignedOut", schemars::schema_for!(crate::auth::SignedOut))?;
+        schema(
+            "SignInRequest",
+            schemars::schema_for!(crate::auth::SignInRequest),
+        )?;
+        schema(
+            "RegisterRequest",
+            schemars::schema_for!(crate::auth::RegisterRequest),
+        )?;
         schema(
             "SetModuleRequest",
             schemars::schema_for!(crate::modules::SetModuleRequest),
@@ -999,14 +1043,18 @@ mod codegen {
         Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
     }
 
-    fn served(dto: &str, name: &str, value: impl Serialize) -> Result<Value, serde_json::Error> {
+    pub(crate) fn served(
+        dto: &str,
+        name: &str,
+        value: impl Serialize,
+    ) -> Result<Value, serde_json::Error> {
         Ok(
             json!({"dto": dto, "name": name, "value": serde_json::to_value(value)?, "rust_accepts": true}),
         )
     }
 
     /// A request body and whether the Rust deserializer accepts it.
-    fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
+    pub(crate) fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
         let rust_accepts = serde_json::from_value::<T>(value.clone()).is_ok();
         json!({"dto": dto, "name": name, "value": value, "rust_accepts": rust_accepts})
     }
@@ -1920,6 +1968,7 @@ mod codegen {
                 },
             )?,
         ];
+        cases.extend(crate::auth::contract::fixtures()?);
         for (name, value) in [
             ("on", json!({"on": true})),
             ("off", json!({"on": false})),

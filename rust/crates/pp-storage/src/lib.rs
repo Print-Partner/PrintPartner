@@ -48,6 +48,8 @@ pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;
 #[cfg(feature = "desktop_rebuild")]
+pub mod printer_setup;
+#[cfg(feature = "desktop_rebuild")]
 pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
@@ -69,7 +71,10 @@ pub mod uploads;
 pub mod versions;
 #[cfg(feature = "desktop_rebuild")]
 pub mod working_drafts;
+#[cfg(feature = "desktop_rebuild")]
+mod write;
 mod writer_admission;
+pub use writer_admission::WriterFailure;
 
 #[cfg(feature = "desktop_rebuild")]
 use restore::recover as recover_restore;
@@ -94,6 +99,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+use writer_admission::AdmissionError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -136,6 +142,14 @@ enum Work {
     Archive(Box<archive::Job>),
     #[cfg(feature = "desktop_rebuild")]
     TlsPin(tls_pins::Command),
+}
+/// One queued `Shared::write`. It opens its own transaction and sends its
+/// own typed reply, so a storage family needs no envelope of its own.
+type WriteJob = Box<dyn FnOnce(&mut Connection, writer_admission::Deadline) + Send>;
+impl From<WriteJob> for Envelope {
+    fn from(job: WriteJob) -> Self {
+        Self::Write(job)
+    }
 }
 enum WriterControl {
     PageCount,
@@ -252,6 +266,7 @@ enum Envelope {
         work: Work,
         reply: mpsc::Sender<Result<bool>>,
     },
+    Write(WriteJob),
     Auth {
         command: auth::Command,
         policy: auth::AuthPolicy,
@@ -430,28 +445,33 @@ fn execute(
 }
 impl Shared {
     /// Waits up to `wait` for room in the writer queue, then queues `envelope`.
-    fn admit(&self, envelope: Envelope, cancelled: &AtomicBool, wait: Duration) -> Result<()> {
+    fn admit(
+        &self,
+        envelope: Envelope,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<(), AdmissionError> {
         let deadline = Instant::now() + wait;
-        let mut queue = self
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        let mut queue = self.queue.lock().map_err(|_| AdmissionError::Poisoned)?;
         loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
+            if queue.closed {
+                return Err(AdmissionError::Stopped);
+            }
+            if cancelled.load(Ordering::Acquire) {
+                return Err(AdmissionError::Cancelled);
+            }
             if queue.pending.len() < self.capacity {
                 queue.pending.push_back(envelope);
                 self.changed.notify_all();
                 return Ok(());
             }
-            ensure!(Instant::now() < deadline, "Writer queue full");
+            if Instant::now() >= deadline {
+                return Err(AdmissionError::QueueFull);
+            }
             queue = self
                 .changed
                 .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
+                .map_err(|_| AdmissionError::Poisoned)?
                 .0;
         }
     }
@@ -1005,6 +1025,7 @@ impl WriterOwner {
                     Envelope::Setting { work, reply } => {
                         let _ = reply.send(execute(&mut connection, work, admission));
                     }
+                    Envelope::Write(job) => job(&mut connection, admission),
                     Envelope::Auth {
                         command,
                         policy,

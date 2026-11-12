@@ -16,6 +16,7 @@ use axum::{
     response::Response,
 };
 mod wire;
+use pp_storage::{WriterFailure, auth::AuthFailure};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 pub use wire::*;
@@ -61,6 +62,41 @@ pub fn overloaded(detail: &str) -> Response {
         StatusCode::SERVICE_UNAVAILABLE,
         detail,
     )
+}
+
+/// `code` of a write whose transaction could not start before its deadline.
+pub const TRANSACTION_UNAVAILABLE: &str = "transaction_unavailable";
+/// `code` of a write that may or may not have committed.
+pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+const UNAVAILABLE: &str = "Service temporarily unavailable";
+
+/// The problem for a [`WriterFailure`], the same for every storage family
+/// that writes through the write seam. A family maps its own error variants
+/// and hands this one here. The cause of an internal failure is never sent.
+pub fn writer_failure(failure: &WriterFailure) -> Response {
+    use AuthFailure::{
+        CommitUnknown, CredentialChanged, InvalidCredentials, OwnerMappingRequired, QueueFull,
+        SessionRequired, Stopped, Storage,
+    };
+    let unavailable = StatusCode::SERVICE_UNAVAILABLE;
+    match failure {
+        WriterFailure::Auth(SessionRequired | InvalidCredentials | CredentialChanged) => {
+            response(StatusCode::UNAUTHORIZED, "Authentication required")
+        }
+        WriterFailure::Auth(OwnerMappingRequired) => response(
+            StatusCode::FORBIDDEN,
+            "Explicit account owner mapping is required",
+        ),
+        WriterFailure::QueueFull | WriterFailure::Auth(QueueFull) => overloaded(UNAVAILABLE),
+        WriterFailure::Busy => coded(unavailable, UNAVAILABLE, TRANSACTION_UNAVAILABLE),
+        WriterFailure::Auth(CommitUnknown) => coded(unavailable, UNAVAILABLE, OUTCOME_UNKNOWN),
+        WriterFailure::Stopped
+        | WriterFailure::Cancelled
+        | WriterFailure::Auth(Stopped | Storage) => response(unavailable, UNAVAILABLE),
+        WriterFailure::Auth(_) | WriterFailure::Internal(_) => {
+            response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        }
+    }
 }
 
 pub fn problem(status: StatusCode, detail: &str, code: Option<&str>) -> Problem {

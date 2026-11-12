@@ -1,4 +1,4 @@
-use crate::schema::BUSY_TIMEOUT;
+use crate::{auth::AuthFailure, schema::BUSY_TIMEOUT};
 use anyhow::Result;
 use rusqlite::{Connection, Error, ErrorCode, Transaction, TransactionBehavior};
 use std::{
@@ -7,6 +7,84 @@ use std::{
 };
 
 const RETRY_PAUSE: Duration = Duration::from_millis(10);
+
+/// Why the writer queue did not take a request. The text is the message
+/// existing callers and `pp-api` compare, so `?` into `anyhow::Error` gives
+/// them the same error as before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub(super) enum AdmissionError {
+    #[error("Storage stopped")]
+    Stopped,
+    #[error("Cancelled before admission")]
+    Cancelled,
+    #[error("Writer queue full")]
+    QueueFull,
+    #[error("Writer admission poisoned")]
+    Poisoned,
+}
+
+/// A failure every write on the writer thread shares, whatever its family.
+/// A family's error enum carries it in one variant, and `pp-api` maps it in
+/// one place (`pp_api::problem::writer_failure`). Nothing was written in any
+/// of these cases.
+#[derive(Debug, thiserror::Error)]
+pub enum WriterFailure {
+    /// The credential did not prove a tenant.
+    #[error("credential refused: {0}")]
+    Auth(#[from] AuthFailure),
+    /// The writer queue stayed full for the caller's whole wait, so the
+    /// write was never queued. Retry later.
+    #[error("writer queue full")]
+    QueueFull,
+    /// Storage is shutting down or its writer has stopped.
+    #[error("storage stopped")]
+    Stopped,
+    /// The caller gave up before the write was queued.
+    #[error("cancelled before the write was queued")]
+    Cancelled,
+    /// The write was queued and reached the writer thread, but its
+    /// transaction could not start before the deadline: another process
+    /// holds the database, where `QueueFull` means this process's own queue
+    /// is backed up. Retry later.
+    #[error("writer busy past the deadline")]
+    Busy,
+    /// SQLite or another failure no caller can act on. Never holds a secret.
+    #[error("storage failure")]
+    Internal(#[source] anyhow::Error),
+}
+
+impl From<AdmissionError> for WriterFailure {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::Stopped | AdmissionError::Poisoned => Self::Stopped,
+            AdmissionError::Cancelled => Self::Cancelled,
+            AdmissionError::QueueFull => Self::QueueFull,
+        }
+    }
+}
+
+impl From<anyhow::Error> for WriterFailure {
+    /// An auth refusal keeps its [`AuthFailure`] and SQLite's busy code is
+    /// [`WriterFailure::Busy`]; anything else is `Internal`.
+    fn from(error: anyhow::Error) -> Self {
+        let busy = error
+            .downcast_ref::<Error>()
+            .is_some_and(|error| error.sqlite_error_code() == Some(ErrorCode::DatabaseBusy));
+        if busy {
+            return Self::Busy;
+        }
+        match error.downcast::<AuthFailure>() {
+            Ok(failure) => Self::Auth(failure),
+            Err(error) => Self::Internal(error),
+        }
+    }
+}
+
+impl From<Error> for WriterFailure {
+    fn from(error: Error) -> Self {
+        anyhow::Error::from(error).into()
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Deadline(Instant);

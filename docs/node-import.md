@@ -54,7 +54,7 @@ Schema 34, upgraded to 48 on a temporary copy.
 Then it lists:
 
 - **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
-- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way.
+- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
 - **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.

@@ -198,11 +198,11 @@ fn an_account_without_builds_or_sources_is_reported_under_its_own_value() {
            ('basic-alice', 'date_format', 'iso'), ('synthetic-account-7', 'date_format', 'iso');",
     );
     let report = run(folder.path()).unwrap();
-    let values = ["***", "basic-***", "default"].map(str::to_owned);
+    let values = ["basic-alice", "default", "synthetic-account-7"].map(str::to_owned);
     assert_eq!(report.installations, values.into());
     let text = report.to_string();
     for line in [
-        "Installation values \"***\", \"basic-***\", \"default\", 1 accounts.",
+        "Installation values \"basic-***\", \"default\", \"***\", 1 accounts.",
         "The Rust runtime reads only data under \"default\".",
         "  app_settings ",
     ] {
@@ -226,10 +226,11 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
-    // The value can hold a sign-in name, so only its masked form is kept.
-    let solo = vec![("basic-***".to_owned(), synthetic::SOURCES)];
+    // The value is counted as stored and masked when printed: it can hold a
+    // sign-in name.
+    let solo = vec![("basic-solo".to_owned(), synthetic::SOURCES)];
     assert_eq!(by_tenant(&report, "projects"), solo);
-    let values = ["basic-***", "default"].map(str::to_owned);
+    let values = ["basic-solo", "default"].map(str::to_owned);
     assert_eq!((&report.installations, report.users), (&values.into(), 2));
     let text = report.to_string();
     assert!(!text.contains("solo"), "{text}");
@@ -431,11 +432,24 @@ fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
         &folder,
         "INSERT INTO build_profiles (tenant_id, name) VALUES ('other', 'Synthetic Build 04')",
     );
-    let error = refused("more than one tenant (***, default)");
+    let error = refused("more than one tenant (default, ***)");
     assert!(matches!(error, ImportError::SplitTenants(_)));
+    // Two values that print alike are still two: masking happens only when
+    // the message is written.
     execute(
         &folder,
-        "DELETE FROM build_profiles WHERE tenant_id = 'other'",
+        "UPDATE build_profiles SET tenant_id = 'basic-a' WHERE tenant_id = 'default';
+         UPDATE build_profiles SET tenant_id = 'basic-b' WHERE tenant_id = 'other';
+         UPDATE projects SET tenant_id = 'basic-a';",
+    );
+    let error = refused("more than one tenant (basic-***, basic-***)");
+    assert!(
+        matches!(&error, ImportError::SplitTenants(values) if values == &["basic-a", "basic-b"])
+    );
+    execute(
+        &folder,
+        "DELETE FROM build_profiles WHERE tenant_id = 'basic-b';
+         UPDATE build_profiles SET tenant_id = 'default'; UPDATE projects SET tenant_id = 'default';",
     );
 
     std::fs::create_dir(folder.path().join(LEASE)).unwrap();

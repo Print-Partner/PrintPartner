@@ -108,7 +108,9 @@ impl fmt::Display for ImportError {
             Self::SplitTenants(tenants) => write!(
                 f,
                 "Builds or Sources belong to more than one tenant ({}); the import does not merge tenants",
-                tenants.join(", ")
+                (tenants.iter().map(|tenant| masked(tenant)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::NoSpace {
                 directory,
@@ -220,8 +222,9 @@ pub fn inspect_destination(destination: &Path) -> Destination {
 pub struct TableCount {
     pub table: String,
     pub rows: u64,
-    /// Rows per `tenant_id` value, each as [`masked`] writes it. Empty for a
-    /// table without that column.
+    /// Rows per `tenant_id` value, as stored. Empty for a table without that
+    /// column. A value can hold a sign-in name; printing goes through
+    /// [`masked`].
     pub by_tenant: BTreeMap<String, u64>,
 }
 
@@ -233,7 +236,8 @@ pub struct Unnamed {
     pub items: u64,
 }
 
-/// What a dry run found. It holds keys, names and counts, never a stored value.
+/// What a dry run found. It holds keys, names and counts, and no stored
+/// value but the `tenant_id` values, which its text masks.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DryRunReport {
     pub source: SourceKind,
@@ -246,8 +250,9 @@ pub struct DryRunReport {
     pub printers: u64,
     /// Unmatched prints that are neither claimed nor dismissed.
     pub unmatched_prints: u64,
-    /// Every `tenant_id` value that any table holds rows under, each as
-    /// [`masked`] writes it. The Rust-only runtime reads only `default`.
+    /// Every `tenant_id` value that any table holds rows under, as stored;
+    /// printing goes through [`masked`]. The Rust-only runtime reads only
+    /// `default`.
     pub installations: BTreeSet<String>,
     /// Rows in `users`. The Rust-only runtime signs in only with one or none.
     pub users: u64,
@@ -283,7 +288,7 @@ impl fmt::Display for DryRunReport {
             self.builds, self.sources, self.printers, self.unmatched_prints
         )?;
         let values: Vec<String> = (self.installations.iter())
-            .map(|value| format!("{value:?}"))
+            .map(|value| format!("{:?}", masked(value)))
             .collect();
         let label = match values.len() {
             1 => "Installation value",
@@ -310,7 +315,7 @@ impl fmt::Display for DryRunReport {
         for table in self.tables.iter().filter(|table| table.rows > 0) {
             write!(f, "  {} {}", table.table, table.rows)?;
             for (tenant, rows) in &table.by_tenant {
-                write!(f, " {tenant}={rows}")?;
+                write!(f, " {}={rows}", masked(tenant))?;
             }
             writeln!(f)?;
         }
@@ -615,7 +620,9 @@ fn key_pattern(key: &str) -> String {
     pattern
 }
 
-/// A `tenant_id` value as a report or a message may show it. `default` and
+/// A `tenant_id` value as a report or a message may show it. Values are
+/// counted and compared as stored and masked only here, when printed, so two
+/// account ids stay two values. `default` and
 /// `anonymous` are Node's own words. Any other value is an account id or
 /// `basic-<login>`, so only the `basic-` prefix is kept.
 fn masked(value: &str) -> String {
@@ -681,7 +688,7 @@ fn count_tables(
             let count = group.get::<_, i64>(1)?.unsigned_abs();
             rows += count;
             if let Some(tenant) = group.get::<_, Option<String>>(0)? {
-                *by_tenant.entry(masked(&tenant)).or_insert(0) += count;
+                by_tenant.insert(tenant, count);
             }
             for (index, total) in found.iter_mut().enumerate() {
                 *total += group.get::<_, i64>(index + 2)?.unsigned_abs();

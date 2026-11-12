@@ -361,7 +361,7 @@ fn is_id(id: &str) -> bool {
 /// The schema version of the database in `directory`, refused as startup
 /// refuses a live one: newer than supported, too old to upgrade, missing, or
 /// failing integrity or job-table checks.
-fn admit_schema(directory: &Path) -> Result<u64> {
+pub(crate) fn admit_schema(directory: &Path) -> Result<u64> {
     let version = schema::preflight(
         #[cfg(test)]
         &directory.join(archive::DATABASE_FILE),
@@ -370,7 +370,7 @@ fn admit_schema(directory: &Path) -> Result<u64> {
         |name| File::open(directory.join(name)),
         || Ok(()),
     )?;
-    ensure!(version > 0, "backup database has no schema version");
+    ensure!(version > 0, "database has no schema version");
     Ok(version)
 }
 

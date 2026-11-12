@@ -26,7 +26,7 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `.github/dependabot.yml` and `.github/zizmor.yml`.
 - `rust/scripts/check-*` and `rust/deny.toml`.
 - The action pin, CI tool pin, desktop workflow, and workaround checks and their tests.
-- The Windows tier selector `scripts/ci-path-filter.py` and its test `scripts/test_ci_path_filter.py`.
+- The CI job selector `scripts/ci-path-filter.py` and its test `scripts/test_ci_path_filter.py`.
 - The duplication checker, its tests, and `scripts/duplication-baseline.json`.
 - The PR evidence checker and its test, and the `scripts/linear/` directory.
   Linear PR sync runs a script from that directory with the Linear secret. Python imports files next to that script before the standard library.
@@ -34,7 +34,7 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `rust/ast-grep-baseline.json`, `rust/clippy-limits-baseline.json`,
   `scripts/workaround-baseline.json`, and Rust snapshot directories under `rust/crates/`.
 
-Who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus three things CODEOWNERS does not list: the safety guard and its hook adapters (`scripts/agent-guard.py`, `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. The coordinator merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) as sensitive PRs after two scorer seats score the exact head 9 or more, except a PR that weakens a security boundary: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py` stays with Chad. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
+Who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus things CODEOWNERS does not list: the release signing key `cosign.pub` and the Git hooks under `.githooks/` (owner decision, 2026-11-11), the safety guard, its classifier and its hook adapters (`scripts/agent-guard.py`, `scripts/merge_class.py` and `scripts/merge-classes.json` (owner decision, 2026-11-11), `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. The coordinator merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) and the rules documents (`AGENTS.md`, `docs/development/definition-of-done.md` and this page; owner decision, 2026-11-11) as sensitive PRs after two scorer seats score the exact head 9 or more, except a PR that weakens a security boundary: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py` stays with Chad. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
 
 The workflow `.github/workflows/actionlint.yml` starts on every `pull_request`, on pushes to `main` and `master`, on merge groups and on manual dispatch.
 Its `changes` job selects the `actionlint` and `zizmor` jobs.
@@ -54,6 +54,34 @@ There is no confidence filter.
 This keeps low-severity notices visible without adding the pedantic persona's style checks.
 The pinned `zizmor-action` runs online audits and emits job annotations without a SARIF upload or write permission.
 Its default pin policy requires every external action, including `actions/*`, to use a full commit SHA.
+
+## Cross-OS capacity
+
+Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
+labels do not select them. Job-level skips preserve check reports. Main pushes,
+merge groups, schedules and manual runs keep full coverage; Linux PR selection
+and the required contexts remain unchanged. See the
+[event table](ci.md#cross-os-pr-label).
+
+The stale merge-group canceller runs every ten minutes or by manual dispatch
+on main. Its minimum permissions are `actions: write` for cancellation,
+`contents: read` for refs and `pull-requests: read` for PR merge state, using only
+`GITHUB_TOKEN`. It checks out no code and downloads only main's public script.
+Startup must read the expected main ref. It selects only the two cross-OS
+workflows' queue runs whose ref is gone and PR is open or closed without merging,
+and whose run is more than ten minutes old. A merged PR is always preserved;
+ancestry cannot identify squash merges. Unparseable refs, PR read errors and
+unexpected states abort preflight without cancellation. Each ref is rechecked
+before cancellation; reappeared refs are skipped. A final probe failure stops
+further writes, and cancel 409 skips a finished run and continues. Concurrency
+keys include queue ref and head SHA to isolate reused names; reruns of the same
+pair can cancel older runs of that pair. Build-job permissions and secrets stay
+unchanged. See [Superseded runs](ci.md#superseded-runs).
+
+The Mac runner stays unused. A follow-up must wait for Chad to configure a
+restricted runner group: selected workflows pinned to main, with fork access
+disabled. Repository YAML alone cannot enforce that trust boundary. Runner VM
+registration and making `duplication` required also remain owner work.
 
 ## Existing findings
 

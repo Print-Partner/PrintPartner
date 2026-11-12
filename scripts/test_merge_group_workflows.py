@@ -249,9 +249,12 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     selected = "needs.changes.outputs.relevant != 'false'"
                     if job_id == "rust-windows":
                         selected = "needs.changes.outputs.windows != 'false'"
+                    label_guard = ""
+                    if job_id == "rust-windows":
+                        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
-                                     f"(needs.changes.result != 'success' || {selected}))")
+                                     f"{label_guard}(needs.changes.result != 'success' || {selected}))")
                     checkout = next(step for step in job["steps"]
                                     if step.get("uses", "").startswith("actions/checkout@"))
                     self.assertNotIn("ref", checkout.get("with", {}))
@@ -310,10 +313,9 @@ class MergeGroupWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory, "output")
             for event, relevant, label, draft, macos, intel in (
-                ("pull_request", "false", "true", "false", "false", "false"),
-                ("pull_request", "true", "true", "false", "true", "false"),
-                ("pull_request", "true", "false", "false", "false", "false"),
-                ("pull_request", "true", "true", "true", "false", "false"),
+                ("pull_request", "false", "false", "false", "false", "false"),
+                ("pull_request", "true", "false", "false", "true", "false"),
+                ("pull_request", "true", "false", "true", "false", "false"),
                 ("merge_group", "false", "false", "true", "true", "true"),
                 ("push", "false", "false", "true", "true", "true"),
             ):
@@ -326,15 +328,23 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                                         "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
                     self.assertEqual(output.read_text(), f"macos={macos}\nintel={intel}\n")
 
-    def test_rust_macos_uses_the_same_selection_as_required_jobs(self):
+    def test_cross_os_requires_label_even_if_input_selection_fails(self):
         workflow = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
                              Loader=yaml.BaseLoader)
-        self.assertIn("(needs.changes.result != 'success' || "
-                      "needs.changes.outputs.relevant != 'false')",
-                      workflow["jobs"]["rust-macos"]["if"])
-        for label in ["macos", "ci:full"]:
-            self.assertIn(f"contains(github.event.pull_request.labels.*.name, '{label}')",
-                          workflow["jobs"]["rust-macos"]["if"])
+        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os'))"
+        for job in ("rust-windows", "rust-macos"):
+            condition = workflow["jobs"][job]["if"]
+            self.assertIn(f"{label_guard} && (needs.changes.result != 'success'", condition)
+
+    def test_macos_jobs_use_the_label_selector(self):
+        for filename in ("rust-cross-os.yml", "desktop-native-macos.yml"):
+            workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
+                                 Loader=yaml.BaseLoader)
+            self.assertTrue(any(step.get("run") == "python3 scripts/ci-path-filter.py macos"
+                                for step in workflow["jobs"]["changes"]["steps"]))
+        self.assertIn("needs.changes.outputs.macos != 'false'",
+                      yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
+                                Loader=yaml.BaseLoader)["jobs"]["rust-macos"]["if"])
 
     def test_merge_group_runs_filters_even_for_docs_only_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -422,7 +432,13 @@ class MainPushConcurrencyTests(unittest.TestCase):
                 continue
             checked += 1
             with self.subTest(workflow=path.name):
-                self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
+                expected = "${{ github.event_name == 'pull_request' }}"
+                if path.name in {"rust-cross-os.yml", "desktop-native-macos.yml"}:
+                    expected = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
+                    self.assertIn("github.event_name == 'merge_group'", concurrency["group"])
+                    self.assertIn("github.ref", concurrency["group"])
+                    self.assertIn("github.event.merge_group.head_sha", concurrency["group"])
+                self.assertEqual(cancel, expected)
                 self.assertIn("github.run_id", concurrency["group"])
                 if path.name in self.EACH_PUSH:
                     self.assertNotIn("'main'", concurrency["group"], f"{path.name} compares each push with the one before")

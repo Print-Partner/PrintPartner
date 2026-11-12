@@ -321,7 +321,11 @@ impl fmt::Display for DryRunReport {
             self.builds, self.sources, self.printers, self.unmatched_prints
         )?;
         let value = self.installation.as_deref().unwrap_or("default");
-        writeln!(f, "Installation value {value:?}, {} accounts.", self.users)?;
+        writeln!(
+            f,
+            "Installation value {value:?}; accounts stored: {}.",
+            self.users
+        )?;
         let refused = "so the import would refuse this installation";
         if value != "default" {
             writeln!(

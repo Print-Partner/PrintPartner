@@ -141,6 +141,9 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
         (SourceKind::Archive, files, copied)
     };
     let (connection, ready) = upgrade(&stage.0)?;
+    // Sign-in state is not carried: every Node session ends with the import.
+    // It goes before the count, so the report describes what was imported.
+    connection.execute_batch("DELETE FROM sessions; DELETE FROM password_reset_tokens;")?;
     let counts = measure(&connection, kind, &ready, &files)?;
     if !counts.unnamed.is_empty() {
         let shapes = counts.unnamed.iter().map(|unnamed| unnamed.shape.clone());
@@ -160,10 +163,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
     if counts.users > 1 {
         return Err(ImportError::Accounts(counts.users));
     }
-    // Sign-in state is not carried: every Node session ends with the import.
-    connection.execute_batch(
-        "DELETE FROM sessions; DELETE FROM password_reset_tokens; PRAGMA wal_checkpoint(TRUNCATE);",
-    )?;
+    connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
     let report = ImportReport::new(&counts, copied.0, copied.1);
     publish(&stage.0, destination, &report)?;

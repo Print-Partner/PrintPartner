@@ -1,4 +1,4 @@
-use crate::{auth::AuthFailure, schema::BUSY_TIMEOUT};
+use crate::{ReaderFailure, auth::AuthFailure, schema::BUSY_TIMEOUT};
 use anyhow::Result;
 use rusqlite::{Connection, Error, ErrorCode, Transaction, TransactionBehavior};
 use std::{
@@ -23,10 +23,11 @@ pub(super) enum AdmissionError {
     Poisoned,
 }
 
-/// A failure every write on the writer thread shares, whatever its family.
-/// A family's error enum carries it in one variant, and `pp-api` maps it in
-/// one place (`pp_api::problem::writer_failure`). Nothing was written in any
-/// of these cases.
+/// A failure every storage operation shares, whatever its family: a write
+/// through `Shared::write` or a read through `SettingsClient::read`. A
+/// family's error enum carries it in one variant, and `pp-api` maps it in one
+/// place (`pp_api::problem::writer_failure`). Nothing was written in any of
+/// these cases.
 #[derive(Debug, thiserror::Error)]
 pub enum WriterFailure {
     /// The credential did not prove a tenant.
@@ -45,7 +46,8 @@ pub enum WriterFailure {
     /// The write was queued and reached the writer thread, but its
     /// transaction could not start before the deadline: another process
     /// holds the database, where `QueueFull` means this process's own queue
-    /// is backed up. Retry later.
+    /// is backed up. For a read, every reader stayed checked out for the
+    /// caller's whole wait. Retry later.
     #[error("writer busy past the deadline")]
     Busy,
     /// SQLite or another failure no caller can act on. Never holds a secret.
@@ -59,6 +61,16 @@ impl From<AdmissionError> for WriterFailure {
             AdmissionError::Stopped | AdmissionError::Poisoned => Self::Stopped,
             AdmissionError::Cancelled => Self::Cancelled,
             AdmissionError::QueueFull => Self::QueueFull,
+        }
+    }
+}
+
+impl From<ReaderFailure> for WriterFailure {
+    fn from(failure: ReaderFailure) -> Self {
+        match failure {
+            ReaderFailure::Stopped | ReaderFailure::Poisoned => Self::Stopped,
+            ReaderFailure::Full => Self::Busy,
+            ReaderFailure::Unusable(error) => Self::Internal(error),
         }
     }
 }

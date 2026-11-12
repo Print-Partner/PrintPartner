@@ -48,14 +48,17 @@ const PAGES = [
   ["printer-states", "/states/printers", ""],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],
   ["shortcuts", "/today", key({ key: "?" })],
+  ["sign-in", "/login", ""],
+  ["setup", "/setup", ""],
 ];
 
 /** The async body run in the page: wait for the frame, set up, then measure. */
 const body = ({ setup = "", audit = false, theme = "dark" }) => `
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const deadline = Date.now() + 15000;
-  const ready = () => document.querySelector("h1") &&
-    document.querySelector(".pp-connection:not([data-status=checking])") &&
+  // The sign-in and setup screens have no frame; they are ready once the core answered.
+  const ready = () => document.querySelector("h1") && (document.querySelector(".pp-auth[data-ready] form") ||
+    document.querySelector(".pp-connection:not([data-status=checking])")) &&
     // A data screen is audited once its read settles; the loading specimen stays loading.
     (location.pathname.startsWith("/states/") || !document.querySelector("[data-state=loading]"));
   while (!ready()) {

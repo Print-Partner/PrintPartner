@@ -183,6 +183,7 @@ pub fn auth_router(
     };
     let mut router = Router::new()
         .route("/auth/me", get(me))
+        .route("/auth/status", get(status))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -359,7 +360,9 @@ pub(super) fn session_response(
     let mut value = if only_ok {
         json!({})
     } else {
-        json!({"user":wire::public_user(user)})
+        json!(wire::SignedIn {
+            user: wire::public_user(user)
+        })
     };
     if include_ok {
         value["ok"] = json!(true);
@@ -378,11 +381,22 @@ async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Fail
     let session = wire::session(&headers)
         .map_err(|_| Failure(StatusCode::UNAUTHORIZED, "Not authenticated"))?;
     match invoke(&app.auth, Request::ResolveSession { token: session }).await? {
-        Outcome::User(Some(user)) => Ok(wire::json_response(
-            json!({"user":wire::public_user(user),"multi_user":app.config.multi_user}),
-        )),
+        Outcome::User(Some(user)) => Ok(wire::json_response(json!(wire::CurrentUser {
+            user: wire::public_user(user),
+            multi_user: app.config.multi_user,
+        }))),
         _ => Err(Failure(StatusCode::UNAUTHORIZED, "Not authenticated")),
     }
+}
+/// Whether the owner account still has to be created, so the UI can tell
+/// first run from signed out. It needs no session and names no account.
+async fn status(State(app): State<App>) -> Result<Response, Failure> {
+    let Outcome::Status(status) = invoke(&app.auth, Request::Status).await? else {
+        unreachable!()
+    };
+    Ok(wire::json_response(json!(wire::AuthStatus {
+        setup_required: status.single_user_setup_required,
+    })))
 }
 async fn register(
     State(app): State<App>,
@@ -441,7 +455,7 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
         )
         .await?;
     }
-    let mut response = wire::json_response(json!({"ok":true}));
+    let mut response = wire::json_response(json!(wire::SignedOut { ok: true }));
     wire::set_cookie(&mut response, "pp_session", "", 0, app.config.transport);
     Ok(response)
 }

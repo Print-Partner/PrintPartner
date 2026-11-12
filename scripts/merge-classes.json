@@ -48,14 +48,32 @@
     "scripts/workaround-ratchet.test.mjs",
     "scripts/duplication-baseline.json",
     "scripts/check-duplication.mjs",
-    "scripts/check-duplication.test.mjs"
+    "scripts/check-duplication.test.mjs",
+    "rust/crates/pp-storage/src/schema.rs",
+    "rust/crates/pp-storage/src/versions.rs",
+    "rust/crates/pp-storage/data/schema.json",
+    "rust/crates/pp-storage/data/historical/**",
+    "rust/crates/pp-storage/**/*.sql",
+    "rust/crates/pp-storage/src/archive.rs",
+    "rust/crates/pp-storage/src/archive/**",
+    "rust/crates/pp-storage/src/restore.rs",
+    "rust/crates/pp-storage/src/restore/**",
+    "rust/crates/pp-storage/src/backup_retention.rs",
+    "rust/crates/pp-storage/src/import.rs",
+    "rust/crates/pp-storage/src/import/**",
+    "rust/crates/pp-storage/src/plan_publication.rs",
+    "rust/crates/pp-storage/src/plan_publication/**",
+    "rust/crates/pp-storage/src/plates/initialize.rs",
+    "rust/crates/pp-storage/src/working_drafts/save.rs"
   ],
   "scorer_authors": [
     "poitee"
   ],
-  "vendors": ["anthropic", "openai", "xai"],
+  "vendors": ["anthropic", "deepseek", "openai", "xai", "zhipu"],
   "scorer_seats": {
     "claude-opus-5-5": "anthropic",
-    "grok-4.7": "xai"
+    "grok-4.7": "xai",
+    "glm-5.3-flash-free": "zhipu",
+    "deepseek-v4.1-flash-free": "deepseek"
   }
 }

@@ -31,6 +31,12 @@ class ClassifyTests(unittest.TestCase):
         ]:
             self.assertEqual(mc.path_class(path, self.classes), "owner", path)
 
+    def test_rust_only_image_is_owner(self):
+        # GRE-1458: the Rust-only image is owner-merged like the released Dockerfile; only the exact path.
+        self.assertEqual(mc.classify(["Dockerfile.rust"], self.classes), "owner")
+        for path in ("Dockerfile.rust.bak", "docker-compose.yml", "scripts/pp-iso/Dockerfile"):
+            self.assertEqual(mc.path_class(path, self.classes), "lane", path)
+
     def test_case_variants_of_owner_paths_are_owner(self):
         # A case-insensitive checkout writes these over the real owner files.
         for path in (".GITHOOKS/pre-commit", ".Claude/hooks/guard.py", "Scripts/agent-guard.py", "COSIGN.PUB"):

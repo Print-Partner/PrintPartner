@@ -292,6 +292,29 @@ def prepare_empty_states(seed):
     say("prepared synthetic empty states (History uses Build 1000)")
 
 
+def seed_planning_brief(seed, steps):
+    """Gives each mcp-receipt Build a planning brief with one open requirement, before startup.
+
+    No Rust route writes a brief; the assistant's analysis does. This writes the same
+    `build_planning.v1.<id>` setting that `propose_update_build_brief` reads.
+    """
+    for step in steps:
+        if step["name"] != "mcp-receipt":
+            continue
+        build = step["arg"]
+        brief = {"version": 1, "build_id": build, "special_request": "Synthetic evidence brief",
+                 "requirements": [{"key": "toolhead", "value": "Synthetic toolhead", "status": "unverified"}],
+                 "evidence": [], "contributions": [], "compatibility_findings": [], "differences": [],
+                 "resolutions": {}, "role_filaments": [], "checklist_items": [], "draft_review_blockers": [],
+                 "created_at": "2026-11-01T00:00:00.000Z", "updated_at": "2026-11-01T00:00:00.000Z"}
+        with sqlite3.connect(seed / "print-partner.db") as db:
+            db.execute("INSERT INTO app_settings(tenant_id,key,value) VALUES('default',?,?) "
+                       "ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
+                       (f"build_planning.v1.{build}", json.dumps(brief)))
+        db.close()
+        say(f"seeded a planning brief with one open requirement on Build {build}")
+
+
 def seed_order_holder(seed, steps):
     """Gives duplicate-order captures a holder in the disposable seed before startup."""
     for step in steps:
@@ -357,6 +380,7 @@ def session(args, work, out_dir, node, binary):
             stdout=subprocess.DEVNULL)
         turn_on_modules(seed, args.module)
         seed_order_holder(seed, args.step)
+        seed_planning_brief(seed, args.step)
         if args.empty_states:
             prepare_empty_states(seed)
         # verify.py copies the seed into its own temporary data directory under launch_tmp,

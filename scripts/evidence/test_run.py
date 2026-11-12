@@ -152,6 +152,22 @@ class OrderHolderSeed(unittest.TestCase):
                                  [(1, None), (2, None), (3, "EVIDENCE-ORDER-2")])
 
 
+class PlanningBriefSeed(unittest.TestCase):
+    def test_only_the_mcp_receipt_build_gets_a_brief_with_one_open_requirement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            seed = Path(folder)
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                db.execute("CREATE TABLE app_settings(tenant_id TEXT, key TEXT, value TEXT, PRIMARY KEY(tenant_id,key))")
+            with contextlib.redirect_stdout(io.StringIO()):
+                run.seed_planning_brief(seed, [{"name": "snapshot", "arg": 3}, {"name": "mcp-receipt", "arg": 2}])
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                rows = db.execute("SELECT tenant_id,key,value FROM app_settings").fetchall()
+            self.assertEqual([(tenant, key) for tenant, key, _ in rows], [("default", "build_planning.v1.2")])
+            brief = json.loads(rows[0][2])
+            self.assertEqual(brief["build_id"], 2)
+            self.assertEqual([r["status"] for r in brief["requirements"]], ["unverified"])
+
+
 class CaptureNeverPublishes(unittest.TestCase):
     def test_a_clean_capture_run_prints_the_next_step_and_never_publishes(self):
         import publisher

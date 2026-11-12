@@ -354,11 +354,22 @@ async fn present_tampered_replacement_bundle_refuses_startup() {
 #[ignore = "runs in an isolated subprocess with explicit environment"]
 async fn tampered_replacement_in_child() {
     let data = proof_data();
-    let source = launch(data.clone()).bundle.web_root.join("apps/ui/dist");
     let input = super::launcher_start::launcher_input(data, true);
+    // Every measured path exists, so only the bytes differ. The fixture does
+    // not need the built `web/apps/ui/dist`, which CI partitions do not ship.
     let assets = input.bundle.web_root.join("apps/ui/dist");
-    super::copy_directory(&source, &assets);
-    std::fs::write(assets.join("index.html"), "tampered document").unwrap();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(super::release::manifest_path()).unwrap()).unwrap();
+    let measured = manifest["replacement_frontend"].as_object().unwrap();
+    assert!(
+        !measured.is_empty(),
+        "the release measures no replacement UI"
+    );
+    for key in measured.keys() {
+        let path = assets.join(key);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "tampered document").unwrap();
+    }
     let error = match CoreRuntime::start_for_launcher(input).await {
         Ok(runtime) => {
             runtime.shutdown().await;

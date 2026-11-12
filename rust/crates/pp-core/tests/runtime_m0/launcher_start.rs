@@ -52,6 +52,10 @@ async fn slice0_mount_launcher_in_child() {
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
     let absent = std::env::var_os("PP_UI_ABSENT").is_some();
     let input = launcher_input(data, absent);
+    // The digests are compiled in, so no fixture can stand in for the built
+    // replacement UI. A runner without it (a CI test partition) checks the
+    // fallback to the legacy UI instead.
+    let replacement = input.bundle.web_root.join("apps/ui/dist").exists();
     let mut runtime = CoreRuntime::start_for_launcher(input).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
     // The desktop tray holds a handle and its subscription for the process lifetime.
@@ -80,8 +84,8 @@ async fn slice0_mount_launcher_in_child() {
     let origin = runtime.origin().to_owned();
     let desktop = desktop_cookie(&mut runtime).await;
     assert_runtime_json(&origin, &desktop, rust).await;
-    assert_served_ui(&origin, &desktop, rust && !absent).await;
-    if absent {
+    assert_served_ui(&origin, &desktop, rust && replacement).await;
+    if rust && !replacement {
         assert_legacy_navigation(&origin, &desktop).await;
     }
 

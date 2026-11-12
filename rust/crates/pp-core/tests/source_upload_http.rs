@@ -196,13 +196,13 @@ impl Server {
         );
         held.write_all(headers.as_bytes()).await.unwrap();
         held.write_all(head).await.unwrap();
-        for _ in 0..200 {
+        for _ in 0..400 {
             if self.staged() > 0 {
-                break;
+                return held;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        held
+        panic!("the held upload staged nothing");
     }
 
     fn staged(&self) -> usize {
@@ -444,9 +444,16 @@ async fn cut_off_upload_is_discarded() {
     assert_eq!(server.staged(), 0);
     assert_eq!(server.job_count().await, 0);
     assert_eq!(server.revision(source).await, Value::Null);
-    // The slot is free again.
-    let (status, accepted) = server.upload(source, &[("a.stl", &stl("a"))]).await;
-    assert_eq!(status, 202, "{accepted}");
+    // The slot is free again once the discarded upload returns it.
+    let mut answer = (0, Value::Null);
+    for _ in 0..200 {
+        answer = server.upload(source, &[("a.stl", &stl("a"))]).await;
+        if answer.0 != 409 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(answer.0, 202, "{}", answer.1);
     server.stop().await;
 }
 

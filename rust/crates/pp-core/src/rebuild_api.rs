@@ -20,6 +20,7 @@ use pp_api::{
     plates::plates_router,
     printers::printers_router,
     settings::settings_router,
+    source_files::source_files_router,
     workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
@@ -245,6 +246,18 @@ fn setup_routes(
         .merge(printers))
 }
 
+/// Library's file list of a Source's current revision.
+fn source_file_routes(
+    owner: &Mutex<WriterOwner>,
+    policy: AuthPolicy,
+    config: AcceptedHttpConfig,
+) -> Result<Router> {
+    let guard = owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
+    Ok(source_files_router(config, guard.source_files(policy)?))
+}
+
 fn read_router_with_updates(
     rebuild: DesktopRebuild,
     owner: Arc<Mutex<WriterOwner>>,
@@ -317,6 +330,7 @@ fn read_router_with_updates(
     let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
+    let source_files = source_file_routes(&owner, policy, config.clone())?;
     let admin_config = admin_config.with_server_update_checks(server_updates);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
@@ -356,6 +370,7 @@ fn read_router_with_updates(
             .merge(events)
             .merge(checkoff)
             .merge(plates)
+            .merge(source_files)
             .merge(mcp),
     ))
 }

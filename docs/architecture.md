@@ -239,7 +239,7 @@ use the same operation interface. A transport must not repeat its policy.
 | --- | --- |
 | Authentication, sessions, API keys, pairing | `pp-api` admission; `pp-storage::auth` owns credential/session transactions; gateway owns listener admission |
 | Product Module choices and settings | `pp-storage` feature/settings modules; `pp-api` exposes effective state and off reasons; recheck before worker effects |
-| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
+| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam (`pp-storage::source_files`, GRE-430); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
 | Builds, drafts, parts, order/customer/due-date fields | `pp-storage` build/draft modules own lifecycle, autosave receipts and order authority; `pp-services` holds extracted pure policy where useful |
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |

@@ -70,6 +70,8 @@ pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings_support;
 #[cfg(feature = "desktop_rebuild")]
+pub mod source_files;
+#[cfg(feature = "desktop_rebuild")]
 mod update_check;
 #[cfg(feature = "desktop_rebuild")]
 pub mod workflow;

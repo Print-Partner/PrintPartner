@@ -68,6 +68,10 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `POST /api/v2/integrations` | `CreateIntegrationRequest` | `IntegrationView` |
 | `DELETE /api/v2/integrations/{id}` | | `IntegrationView` |
+| `POST /api/v2/printers` | `CreatePrinterRequest` | `PrinterConfig` |
+| `GET /api/v2/printers/{id}` | | `PrinterConfig` |
+| `PATCH /api/v2/printers/{id}` | `UpdatePrinterRequest` | `PrinterConfig` |
+| `DELETE /api/v2/printers/{id}` | | `PrinterConfig` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).

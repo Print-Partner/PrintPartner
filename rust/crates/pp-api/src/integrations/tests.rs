@@ -8,7 +8,7 @@ use pp_storage::{
 use serde_json::{Value, json};
 
 async fn answered(error: PrinterSetupError) -> (u16, Value) {
-    let response = refused(&error);
+    let response = refused(&error, &WORDING);
     assert!(problem::is_problem(&response));
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
@@ -17,7 +17,8 @@ async fn answered(error: PrinterSetupError) -> (u16, Value) {
 
 #[tokio::test]
 async fn each_error_variant_has_one_status_and_code() {
-    let fault = InvalidDocument {
+    let fault = |document| InvalidDocument {
+        document,
         entry: Some(3),
         reason: DocumentFault::WrongShape,
     };
@@ -33,9 +34,19 @@ async fn each_error_variant_has_one_status_and_code() {
             json!(code::INTEGRATION_LIMIT),
         ),
         (
-            PrinterSetupError::StoredDocumentInvalid(fault),
+            PrinterSetupError::StoredDocumentInvalid(fault(SetupDocument::Integrations)),
             500,
             json!(code::INTEGRATIONS_UNREADABLE),
+        ),
+        (
+            PrinterSetupError::StoredDocumentInvalid(fault(SetupDocument::Printers)),
+            500,
+            json!(code::PRINTERS_UNREADABLE),
+        ),
+        (
+            PrinterSetupError::SlotHoldsFilament,
+            409,
+            json!(code::FILAMENT_SLOT_IN_USE),
         ),
         (
             PrinterSetupError::Writer(WriterFailure::Auth(AuthFailure::SessionRequired)),
@@ -120,8 +131,7 @@ async fn an_unreadable_body_is_typed_without_echoing_it() {
         let Err(found) = problem::parse_body::<CreateIntegrationRequest>(&bytes) else {
             panic!("the body parsed")
         };
-        let readable = problem::is_json_object(&bytes) || !found.is_empty();
-        let response = invalid(readable, found);
+        let response = unreadable(&bytes, found, &WORDING);
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
         let text = String::from_utf8(bytes.to_vec()).unwrap();

@@ -252,6 +252,55 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
 ```
 
+## Printer routes (GRE-1448)
+
+`POST /api/v2/printers` adds a printer, and `GET`, `PATCH` and `DELETE
+/api/v2/printers/{id}` read, edit and remove one, for the replacement Settings
+screen. They are `createPrinter`, `readPrinter`, `updatePrinter` and
+`deletePrinter` in the generated `@print-partner/rust-client`. Each answers
+`200` with a `PrinterConfig`: `id`, `name`, `model`, `bed_width_mm`,
+`bed_depth_mm`, `bed_height_mm`, `margin_mm`, `max_filament_slots` and
+`integration_id`. Delete answers the printer it removed. `GET /api/v2/printers`
+is still the Farm list, which adds the live state.
+
+- They mount like the integration routes above: `/api/v2` only, Rust-only
+  runtime only, behind the accepted gate, with the credential proved in the
+  operation's own transaction.
+- Lengths are whole millimetres. Create takes `name`, `model`, `bed_width_mm`,
+  `bed_depth_mm` and `bed_height_mm`, plus optional `margin_mm` (default 4),
+  `max_filament_slots` (default 1) and `integration_id`.
+- `PATCH` changes only the fields it sends. `integration_id: null` unlinks the
+  printer; leaving the field out keeps the link.
+- A new or relinked printer needs no restart: the Farm list reads the stored
+  printers on each request.
+- Delete removes the printer only. Its integration stays.
+- The three writes run through the write seam and the read through the read
+  seam (`pp-storage/src/read.rs`), so a read does not wait in the writer queue.
+
+| Case | Status | `code` |
+| --- | --- | --- |
+| A value is invalid, or the body is not the request shape. `errors` names each field. Nothing is stored. | `400` | `invalid_printer` |
+| No stored printer has that id | `404` | `printer_not_found` |
+| The installation already has 64 printers | `409` | `printer_limit` |
+| The edit lowers `max_filament_slots` below a slot that holds filament | `409` | `filament_slot_in_use` |
+| The stored `printer.fleet` document is not the typed shape. Every operation is refused and the stored text is left as it is. | `500` | `printers_unreadable` |
+
+Invalid values:
+
+- `name`, `model`: empty after trimming, or longer than 200 bytes.
+- `bed_width_mm`, `bed_depth_mm`, `bed_height_mm`: not a whole number from 1 to
+  10,000.
+- `margin_mm`: half the bed width or depth, or more. Accept applies the same
+  test and cannot place on a printer that fails it.
+- `max_filament_slots`: not 1 to 4.
+- `integration_id`: names no stored Moonraker, PrusaLink or Bambu integration.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
+  --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+  --no-tests=fail -E 'test(integration_setup) | test(printers::tests) | test(printer_setup::) | test(read::tests)'
+```
+
 ## GitHub PAT and Discord notification settings (GRE-1360)
 
 The settings router mounts `/settings/github-pat`, `/settings/discord-notify`

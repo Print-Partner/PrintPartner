@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Limits,
+    Limits, SettingSnapshot,
     app_settings::{Key, Outcome as SettingOutcome, Write},
     auth::{FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
     printer_hosts,
@@ -51,10 +51,14 @@ impl Fixture {
             .delete_integration(self.session(), id.into(), &IDLE, WAIT)
     }
 
-    /// The stored document's text.
+    /// The stored integrations document's text.
     fn stored(&self) -> Option<String> {
+        self.stored_at(INTEGRATIONS_KEY)
+    }
+
+    fn stored_at(&self, key: &str) -> Option<String> {
         let reader = self.owner.client().reader(WAIT).unwrap();
-        match reader.snapshot("default", INTEGRATIONS_KEY).unwrap() {
+        match reader.snapshot("default", key).unwrap() {
             SettingSnapshot::Stored { value } => Some(value),
             SettingSnapshot::Missing => None,
         }
@@ -221,7 +225,11 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
     for (document, entry, reason) in cases {
         let text = document.to_string();
         fixture.seed(&text);
-        let fault = InvalidDocument { entry, reason };
+        let fault = InvalidDocument {
+            document: SetupDocument::Integrations,
+            entry,
+            reason,
+        };
         for refused in [
             fixture.create(new(ServiceKind::Moonraker, "http://moon.test")),
             fixture.delete("moon-1"),
@@ -310,3 +318,5 @@ fn the_limit_and_a_refused_credential_store_nothing() {
     fixture.delete("ai-0").unwrap();
     fixture.create(moon()).unwrap();
 }
+
+mod printers;

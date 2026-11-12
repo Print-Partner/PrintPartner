@@ -1,6 +1,6 @@
 // Replays fixtures/admin through the Node app and checks the replies against
 // node-oracle.json and settings-oracle.json, which the Rust routes tests
-// (rust/crates/pp-api/tests/ticket_t_62_admin_http.rs and
+// (rust/crates/pp-api/tests/admin_http.rs and
 // settings_routes_http.rs) also replay.
 // UPDATE_ADMIN_ORACLE=1 rewrites the oracle files instead of checking them.
 import { createHash } from "node:crypto";
@@ -85,10 +85,10 @@ describe("admin routes oracle", () => {
     matchOracle("node-oracle.json", `${JSON.stringify(out, null, 2)}\n`);
   });
 
-  it("date-format, build-tracking and spoolman-default replies match settings-oracle.json", async () => {
+  it.each(["settings", "secret-settings"])("%s replies match the Node oracle", async (suite) => {
     dir = mkdtempSync(join(tmpdir(), "pp-settings-oracle-"));
     const { app, ports } = await makeApp(dir);
-    const cases = JSON.parse(readFileSync(new URL("settings-cases.json", here), "utf8")) as SettingsCases;
+    const cases = JSON.parse(readFileSync(new URL(`${suite}-cases.json`, here), "utf8")) as SettingsCases;
     const repo = ports.repository;
     repo.setSetting("integrations", cases.integrations);
     const replies: unknown[] = [];
@@ -119,6 +119,6 @@ describe("admin routes oracle", () => {
     }
     // One reply per line keeps the recorded file reviewable.
     const lines = replies.map((entry) => `  ${JSON.stringify(entry)}`).join(",\n");
-    matchOracle("settings-oracle.json", `{"replies": [\n${lines}\n]}\n`);
+    matchOracle(`${suite}-oracle.json`, `{"replies": [\n${lines}\n]}\n`);
   });
 });

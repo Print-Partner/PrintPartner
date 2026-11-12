@@ -5,6 +5,7 @@ pub mod production;
 pub mod admin;
 #[cfg(feature = "desktop_rebuild")]
 pub mod app_settings;
+pub mod filaments;
 
 pub mod archive;
 #[cfg(feature = "desktop_rebuild")]
@@ -41,6 +42,7 @@ pub mod plates;
 pub use pp_domain::printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::slicer_grams;
+mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
@@ -75,6 +77,14 @@ use restore::recover as recover_restore;
 #[cfg(not(feature = "desktop_rebuild"))]
 fn recover_restore(_: &Path) -> Result<bool> {
     Ok(false)
+}
+
+#[cfg(feature = "desktop_rebuild")]
+use restore::recover as recover_restore;
+
+#[cfg(not(feature = "desktop_rebuild"))]
+fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
 }
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -164,6 +174,7 @@ enum Envelope {
         command: features::Command,
         reply: mpsc::Sender<Result<features::Reply>>,
     },
+    Filaments(filaments::Message),
     #[cfg(feature = "desktop_rebuild")]
     AppSettings {
         command: app_settings::Command,
@@ -687,6 +698,7 @@ impl WriterOwner {
                 return Err(error);
             }
         };
+        // Admit the live schema before recovery can remove or replay copies.
         let version = match recover_restore(lease.data_dir()).and_then(|replayed| {
             if replayed {
                 lease.preflight()
@@ -716,6 +728,7 @@ impl WriterOwner {
                 .with_context(|| format!("WriterOwner::open: create storage directory {name}"))?;
         }
         let (mut connection, ready) = schema::initialize(&path, version, seed_timestamp)?;
+        filaments::cleanup_temporary_files(lease.data_dir());
         jobs::recover(&mut connection)?;
         #[cfg(feature = "desktop_rebuild")]
         send_queue::recover(&mut connection)?;
@@ -868,6 +881,9 @@ impl WriterOwner {
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Features { command, reply } => {
                         let _ = reply.send(features::execute(&mut connection, command, admission));
+                    }
+                    Envelope::Filaments(message) => {
+                        filaments::dispatch(&mut connection, message, admission)
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::AppSettings { command, reply } => {

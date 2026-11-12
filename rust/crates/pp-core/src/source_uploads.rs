@@ -22,8 +22,11 @@ pub const UPLOAD_LIMITS: AdmissionLimits = AdmissionLimits {
 /// The library budget the journal admits imports against: its largest value.
 pub const IMPORT_QUOTA: u64 = 64 * 1024 * MIB;
 
-/// Imports that may hold a slot at once.
-pub const IMPORT_SLOTS: usize = 2;
+/// Imports that may hold a slot at once: one, as the worker admission runs
+/// one Source import at a time and one job per Source. A second upload while
+/// one runs is refused as busy (409) before any byte is read, never answered
+/// 202 for work no worker could claim.
+pub const IMPORT_SLOTS: usize = 1;
 
 /// Free space an upload must leave on the data volume.
 pub const FREE_SPACE_RESERVE: u64 = 5 * 1024 * MIB;

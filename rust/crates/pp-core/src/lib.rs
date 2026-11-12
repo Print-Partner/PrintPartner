@@ -1001,13 +1001,15 @@ async fn stop_rust(
     let mut receipt = ShutdownReceipt::drained(tracked_idle, gateway_idle, None, gateway_stopped);
     receipt.compat_reaped = true;
     if !imports_idle {
+        tracing::warn!("Source import workers still running; storage stays owned until exit");
         receipt.errors.push("source_imports_not_drained");
     }
     if !gateway_stopped {
         receipt.errors.push("gateway_join_failed");
     }
-    if !tracked_idle {
-        // Tracked work may still use storage: keep the lock until process exit.
+    if !tracked_idle || !imports_idle {
+        // Tracked work or an import worker may still write storage: keep the
+        // lock until process exit.
         std::mem::forget(writer);
         receipt.errors.push("storage_ownership_retained");
         return receipt;

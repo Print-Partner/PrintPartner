@@ -10,7 +10,7 @@ use pp_core::{
     DesktopRebuild,
     rebuild_api::{desktop_policy, product_router},
     source_acquisition::SourceAcquisitions,
-    source_uploads::{IMPORT_QUOTA, SourceUploadService},
+    source_uploads::{IMPORT_QUOTA, IMPORT_SLOTS, SourceUploadService},
 };
 use pp_storage::{Limits, WriterOwner};
 use reqwest::{Client, Method};
@@ -110,16 +110,25 @@ impl Server {
             .json(
                 Method::POST,
                 "/api/v1/sources",
-                Some(json!({"name": "Upload Source", "source_kind": "local"})),
+                Some(json!({"name": format!("Upload {}", rand::random::<u32>()), "source_kind": "local"})),
             )
             .await;
         assert!(matches!(status, 200 | 201), "{status} {created}");
         created["id"].as_i64().unwrap()
     }
 
+    /// Uploads `files` after the previous import has returned its slot, which
+    /// happens just after its job shows `done`.
     async fn upload(&self, source: i64, files: &[(&str, &[u8])]) -> (u16, Value) {
-        self.post_body(&format!("/api/v1/sources/{source}"), multipart(files))
-            .await
+        let path = format!("/api/v1/sources/{source}");
+        for _ in 0..200 {
+            let answer = self.post_body(&path, multipart(files)).await;
+            if answer.0 != 409 {
+                return answer;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the import slot stayed busy");
     }
 
     async fn post_body(&self, source: &str, body: Vec<u8>) -> (u16, Value) {
@@ -306,7 +315,7 @@ fn stl(name: &str) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upload_files_publishes_and_reuses_revisions() {
-    let server = Server::start(2, 0).await;
+    let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
     assert_eq!(server.revision(source).await, Value::Null);
 
@@ -365,7 +374,7 @@ async fn upload_files_publishes_and_reuses_revisions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upload_refusals_create_no_job() {
-    let server = Server::start(2, 0).await;
+    let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
     let a = stl("a");
 
@@ -396,7 +405,7 @@ async fn upload_refusals_create_no_job() {
 
     // An upload that would leave less than the reserve free is refused
     // before any byte is staged.
-    let server = Server::start(2, u64::MAX / 2).await;
+    let server = Server::start(IMPORT_SLOTS, u64::MAX / 2).await;
     let source = server.source().await;
     let (status, problem) = server.upload(source, &[("a.stl", &a)]).await;
     assert_eq!(status, 507, "{problem}");
@@ -406,16 +415,19 @@ async fn upload_refusals_create_no_job() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn upload_while_slots_are_full_is_conflict() {
-    let server = Server::start(1, 0).await;
-    let source = server.source().await;
-    let a = stl("a");
-    let body = multipart(&[("a.stl", &a)]);
+async fn overlapping_uploads_are_refused_as_busy() {
+    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let (first, other) = (server.source().await, server.source().await);
+    let body = multipart(&[("a.stl", &stl("a"))]);
     let (head, tail) = body.split_at(body.len() / 2);
-    // The held upload owns the only slot once its candidate exists.
-    let mut held = server.held_upload(source, body.len(), head).await;
-    let (status, problem) = server.upload(source, &[("b.stl", &stl("b"))]).await;
-    assert_eq!(status, 409, "{problem}");
+    // The held upload owns the one import slot once its candidate exists.
+    let mut held = server.held_upload(first, body.len(), head).await;
+    let second = multipart(&[("b.stl", &stl("b"))]);
+    for source in [other, first] {
+        let path = format!("/sources/{source}");
+        let (status, problem) = server.post_body(&path, second.clone()).await;
+        assert_eq!(status, 409, "{problem}");
+    }
     assert_eq!(server.job_count().await, 0);
 
     held.write_all(tail).await.unwrap();
@@ -426,12 +438,13 @@ async fn upload_while_slots_are_full_is_conflict() {
         without_envelope(serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap());
     let done = server.finished(accepted["job_id"].as_str().unwrap()).await;
     assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(server.job_count().await, 1);
     server.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cut_off_upload_is_discarded() {
-    let server = Server::start(1, 0).await;
+    let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
     let body = multipart(&[("a.stl", &stl("a"))]);
     // The client goes away halfway through the file.
@@ -450,21 +463,14 @@ async fn cut_off_upload_is_discarded() {
     assert_eq!(server.job_count().await, 0);
     assert_eq!(server.revision(source).await, Value::Null);
     // The slot is free again once the discarded upload returns it.
-    let mut answer = (0, Value::Null);
-    for _ in 0..200 {
-        answer = server.upload(source, &[("a.stl", &stl("a"))]).await;
-        if answer.0 != 409 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(answer.0, 202, "{}", answer.1);
+    let (status, accepted) = server.upload(source, &[("a.stl", &stl("a"))]).await;
+    assert_eq!(status, 202, "{accepted}");
     server.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_import_names_its_reason() {
-    let server = Server::start(2, 0).await;
+    let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
     // A file type the engine does not take yet (GRE-428 PR 2 keeps it).
     let (status, accepted) = server

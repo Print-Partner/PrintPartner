@@ -107,8 +107,8 @@ Only the server entry point allows environment-driven update checks. By coordina
   runtime keeps `apps/web/dist` and its legacy policy. See
   [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
-  session, then the gateway ends the desktop session and stops the runtime as
-  it does today.
+  session. The desktop app then ends the desktop session and its runtime;
+  headless `pp-server` keeps serving (`SignOut::KeepsServing`).
 - Moonraker status (GRE-335, GRE-449): the gateway's status watchers poll the
   Moonraker hosts in the stored `integrations` setting (tenant `default`).
   `pp_storage::printer_hosts` projects that setting the way Node's private

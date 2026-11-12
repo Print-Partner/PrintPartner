@@ -3,6 +3,7 @@
 use crate::source_acquisition::{AcquisitionError, SourceAcquisitions, StreamedRequest};
 use pp_api::catalog::{SourceUploads, UploadFailure, UploadParts};
 use pp_storage::{
+    WriterFailure,
     catalog::Credentials,
     jobs::Credential,
     uploads::{AdmissionLimits, Target},
@@ -111,9 +112,11 @@ fn failure(error: AcquisitionError) -> UploadFailure {
             tracing::warn!("Source upload gate poisoned");
             UploadFailure::Failed
         }
-        AcquisitionError::Refused(error) => {
-            tracing::warn!(error = %format!("{error:#}"), "Source upload refused");
-            UploadFailure::Refused
+        AcquisitionError::Refused(failure) => {
+            if let WriterFailure::Internal(error) = &failure {
+                tracing::warn!(error = %format!("{error:#}"), "Source upload storage failure");
+            }
+            UploadFailure::Storage(failure)
         }
         AcquisitionError::Failed(error) => {
             tracing::warn!(error = %format!("{error:#}"), "Source upload failed");

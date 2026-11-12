@@ -18,8 +18,11 @@ Other refusals:
 | Status | Cause |
 | --- | --- |
 | 400 | No file part, an unsafe or repeated path, or a broken body. |
+| 401 or 403 | Storage refused the credential when admitting the import, answered as on every storage write (`pp_api::problem::writer_failure`). |
+| 409 | Another import holds the one slot. Retry when it finishes. |
 | 413 | Input over the journal's 256 MiB limit. |
-| 503 | Imports closed: startup recovery left a capture to repair, or shutdown has begun. |
+| 500 | A storage fault or another unexpected failure. The cause is logged, never sent. |
+| 503 | Imports closed (startup recovery left a capture to repair, or shutdown has begun), or the storage writer is busy or stopped. Retry later. |
 
 Each refusal is an RFC 9457 problem. It creates no job and leaves the Source unchanged. A body cut off mid-file is discarded, never stored short: each part ends only on an explicit end marker. Each upload is a new import, so a retry after a lost 202 imports again; identical files keep the revision.
 

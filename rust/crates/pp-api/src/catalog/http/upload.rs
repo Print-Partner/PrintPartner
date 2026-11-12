@@ -15,7 +15,7 @@ use axum::{
     routing::post,
 };
 use pp_storage::{
-    WriterOwner,
+    WriterFailure, WriterOwner,
     catalog::{Credentials, Outcome, Request as CatalogRequest},
 };
 use std::{
@@ -34,7 +34,7 @@ pub type UploadParts = Box<dyn Iterator<Item = io::Result<UploadPart>> + Send>;
 
 /// Why an upload was refused or failed. Every refusal leaves no job and the
 /// Source unchanged.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum UploadFailure {
     NoFiles,
     /// A file was refused; the text names it in words.
@@ -47,8 +47,11 @@ pub enum UploadFailure {
     /// Imports are not open: startup recovery has not finished, or the
     /// server is stopping.
     Unavailable,
-    /// The Source or the credential refused the import.
-    Refused,
+    /// Storage refused or failed the import's admission. The route answers
+    /// it as every storage family does, through
+    /// [`crate::problem::writer_failure`]: a refused credential is 401 or 403,
+    /// a busy or stopped writer is a retryable 503, and a storage fault is 500.
+    Storage(WriterFailure),
     Failed,
 }
 
@@ -176,7 +179,7 @@ fn refused(failure: UploadFailure) -> Response {
             "Another import is running; try again later",
         ),
         UploadFailure::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "Imports are closed"),
-        UploadFailure::Refused => (StatusCode::CONFLICT, "The Source cannot take this import"),
+        UploadFailure::Storage(failure) => return crate::problem::writer_failure(&failure),
         UploadFailure::Failed => (StatusCode::INTERNAL_SERVER_ERROR, "Upload failed"),
     };
     reject(status, detail)
@@ -314,5 +317,57 @@ impl Read for PartReader {
         let read = buffer.len().min(self.current.len());
         buffer[..read].copy_from_slice(&self.current.split_to(read));
         Ok(read)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UploadFailure, refused};
+    use axum::http::StatusCode;
+    use pp_storage::{WriterFailure, auth::AuthFailure};
+
+    fn status(failure: UploadFailure) -> StatusCode {
+        refused(failure).status()
+    }
+
+    #[test]
+    fn a_storage_fault_is_a_server_error() {
+        let fault = WriterFailure::Internal(anyhow::anyhow!("disk I/O error"));
+        assert_eq!(
+            status(UploadFailure::Storage(fault)),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn a_backed_up_or_stopped_writer_is_retryable() {
+        for failure in [
+            WriterFailure::Busy,
+            WriterFailure::QueueFull,
+            WriterFailure::Stopped,
+        ] {
+            assert_eq!(
+                status(UploadFailure::Storage(failure)),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_credential_answers_like_the_auth_seam() {
+        let refused = WriterFailure::Auth(AuthFailure::SessionRequired);
+        assert_eq!(
+            status(UploadFailure::Storage(refused)),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn only_a_busy_import_slot_is_a_conflict() {
+        assert_eq!(status(UploadFailure::Busy), StatusCode::CONFLICT);
+        assert_eq!(
+            status(UploadFailure::Failed),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

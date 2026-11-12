@@ -8,7 +8,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 - Composes `pp-storage`, `pp-compat`, and `pp-gateway` into `CoreRuntime`, run on a dedicated owner thread.
 - Node-backed startup: release verification, storage lease (refusing any ownership marker), cutover recovery, Source Sync admission, loopback port, Node readiness (32-second budget), then the gateway.
-- Rust-only startup (`start_for_launcher` or `start_for_server` with `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, in `rust_startup`): the storage writer takes the lease and makes the ownership marker decision first. Release verification, cutover recovery (no ownership index) and Source Sync admission run after it, only on an accepted directory; a failure in any of them shuts the writer down. Then the saved loopback listener, or the server's explicit IP listener, and the gateway with the `pp-api` routers. No Node child.
+- Rust-only startup (`start_for_launcher` for `pp-desktop`, `start_for_server` for `pp-server`/Docker, with `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, in `rust_startup`): the storage writer takes the lease and makes the ownership marker decision first. Release verification, cutover recovery (no ownership index) and Source Sync admission run after it, only on an accepted directory; a failure in any of them shuts the writer down. Then the saved loopback listener, or the server's explicit IP listener, and the gateway with the `pp-api` routers. No Node child.
 - Shutdown: rejects new work, drains within `MUTATION_DRAIN`, stops Node and the gateway, releases the lease, and reports a `ShutdownReceipt`. It can commit one operation cutover during that drain.
 - Keeps the desktop state files: saved port, browser preferences, and desktop settings.
 - Owns process launch for performance captures; `pp-perf` owns the records.
@@ -27,8 +27,9 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 | Item | What it does |
 | --- | --- |
-| `CoreRuntime::start(DesktopLaunch)` | Node-backed entry point. `start_with_compat_config` takes a `SupervisorConfig`. `start_for_launcher` is the launchers' entry point: Rust-only with both gates on, otherwise `start`. |
-| `CoreRuntime::start_for_server(DesktopLaunch, listen)` | Headless entry point. `listen: Option<SocketAddr>` selects an explicit IP listener only in Rust-only mode; `None` retains the saved loopback listener. `pp-server` parses `PP_LISTEN_ADDR` and passes it here. Desktop startup never reads that variable. |
+| `CoreRuntime::start(DesktopLaunch)` | Node-backed entry point. `start_with_compat_config` takes a `SupervisorConfig`. |
+| `CoreRuntime::start_for_launcher(DesktopLaunch)` | Desktop entry point: Rust-only with both gates on, otherwise Node-backed. Update checks are disabled; repository, version and cache environment overrides are ignored. |
+| `CoreRuntime::start_for_server(DesktopLaunch, listen)` | pp-server/Docker entry point with the same rebuild gates. Only this startup owner allows environment-driven update checks in the Rust-only runtime. `listen: Option<SocketAddr>` selects an explicit IP listener only in Rust-only mode; `None` retains the saved loopback listener. `pp-server` parses `PP_LISTEN_ADDR` and passes it here. Desktop startup never reads that variable. |
 | `CoreRuntime` methods | `origin`, `handle`, `take_launch_target`, `shutdown_requested`, `shutdown`, `shutdown_with_cutover`, `origin_change`, `runtime_dir`, `desktop_rebuild`. |
 | `DesktopLaunch`, `VerifiedBundle`, `CoreStatus` | Launch input (`data_dir`, `bundle`, `assets`) and child status, re-exported from `pp-compat`. |
 | `RuntimeStatus`, `StatusReceiver`, `RustStatus` | What `CoreHandle::subscribe` returns: the Node child's `CoreStatus`, or the Rust-only runtime's `RustStatus` (no child `generation` or `pid`). |

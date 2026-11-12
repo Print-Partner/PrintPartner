@@ -1,0 +1,1 @@
+{"sources":[{"source_name":"Addon","conflicts_with":["Base"],"replaces_slots":["probe"],"not_for":["Base"],"replaces_parts":[{"from":"old/stock.stl","to":"new/part.stl"}]},{"source_name":"Base","kind":"probe"}]}

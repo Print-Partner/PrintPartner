@@ -2,7 +2,7 @@
   "version": 2,
   "crates": {
     "pp-core": {
-      "module": 45,
+      "module": 46,
       "item": 40,
       "statement": 12
     }

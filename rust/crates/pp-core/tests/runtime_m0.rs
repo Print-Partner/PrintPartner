@@ -42,6 +42,10 @@ mod printer_host;
 mod bambu_pin;
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/integration_setup.rs"]
+mod integration_setup;
+
+#[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/mcp_gateway.rs"]
 mod mcp_gateway;
 

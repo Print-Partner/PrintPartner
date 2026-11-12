@@ -6,9 +6,11 @@
 //! [`super::integrations`]: it changes only through a numbered schema step.
 //!
 //! Lengths are whole millimetres, as integers. A fractional value is not this
-//! shape. The import (GRE-412) normalises a Node row that has one: bed width,
-//! depth and height round down, the margin rounds up, and each change is
-//! listed in the import report.
+//! shape, and Node accepted one. The import (GRE-412) is to normalise such a
+//! row: bed width, depth and height round down, the margin rounds up, and each
+//! change is listed in the import report. That conversion is not built yet
+//! (`import/inventory.rs` lists `printer.fleet` as pending), so until it is, a
+//! document with a fractional length is refused whole.
 //!
 //! `loaded_filaments`, `device_id`, `preset_id` and `preferred_slicer` are
 //! stored and kept; no operation here sets them.

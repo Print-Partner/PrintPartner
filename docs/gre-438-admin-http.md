@@ -272,7 +272,7 @@ Farm list, which adds the live state.
 | Case | Status | `code` |
 | --- | --- | --- |
 | No stored printer has that id | `404` | `printer_not_found` |
-| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length. The read is refused for every id and the stored text is left as it is. | `500` | `printers_unreadable` |
+| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. The read is refused for every id and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
 | No reader came free in time | `503` | `transaction_unavailable` |
 
 ```sh

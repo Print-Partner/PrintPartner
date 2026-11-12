@@ -283,7 +283,8 @@ pub fn read_router(
     let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings)?;
     let plates = plates_router(config.clone(), plates_client);
     let mcp = mcp_router(
-        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+            .with_filament_reader(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         auth_client.clone(),
         McpClients {
             builds: builds_client,

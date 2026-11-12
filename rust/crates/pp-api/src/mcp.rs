@@ -68,6 +68,7 @@ pub struct McpHttpConfig {
     wait: Duration,
     limit: u32,
     window: Duration,
+    filament_reader: Option<Arc<dyn crate::filaments::CatalogReader>>,
     #[cfg(test)]
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
     #[cfg(test)]
@@ -86,11 +87,21 @@ impl McpHttpConfig {
             wait: Duration::from_millis(100),
             limit: rate_limit::LIMIT,
             window: rate_limit::WINDOW,
+            filament_reader: None,
             #[cfg(test)]
             confirm_gate: None,
             #[cfg(test)]
             clock: None,
         })
+    }
+
+    /// Checked inventory reads for confirmed role-filament assignments.
+    pub fn with_filament_reader(
+        mut self,
+        reader: Arc<dyn crate::filaments::CatalogReader>,
+    ) -> Self {
+        self.filament_reader = Some(reader);
+        self
     }
 
     /// A smaller budget on a clock the test advances, so a test can exhaust
@@ -139,6 +150,7 @@ struct Reads {
     progress: ProgressClient,
     accepted: ReadClient,
     wait: Duration,
+    filament_reader: Option<Arc<dyn crate::filaments::CatalogReader>>,
     #[cfg(test)]
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
 }
@@ -184,6 +196,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         progress,
         accepted,
         wait: config.wait,
+        filament_reader: config.filament_reader.clone(),
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
     };
@@ -497,7 +510,10 @@ impl ServerHandler for ProductMcp {
             .then(|| arguments.get("action_id").and_then(Value::as_str))
             .flatten()
             .and_then(|id| self.session.pending(id))
-            .filter(|action| action.action_type == plan_accept::PROPOSE);
+            .filter(|action| {
+                action.action_type == plan_accept::PROPOSE
+                    || draft_planning::TOOLS.contains(&action.action_type.as_str())
+            });
         let result = match presented {
             Some(presented) if request.name == "get_build_workflow" => {
                 self.build_workflow(&arguments, presented).await
@@ -507,6 +523,10 @@ impl ServerHandler for ProductMcp {
             }
             Some(presented) if progress_reads::TOOLS.contains(&request.name.as_ref()) => {
                 self.progress_tool(&request.name, &arguments, presented)
+                    .await
+            }
+            Some(presented) if draft_planning::TOOLS.contains(&request.name.as_ref()) => {
+                self.propose_draft_planning(&request.name, &arguments, presented)
                     .await
             }
             Some(presented) if request.name == plan_accept::PROPOSE => {
@@ -519,7 +539,10 @@ impl ServerHandler for ProductMcp {
                 }
                 // Taken before Accept so a concurrent confirm cannot apply it twice.
                 match confirming.and_then(|action| self.session.take_pending(&action.id)) {
-                    Some(action) => self.confirm_accept(action, presented).await,
+                    Some(action) if action.action_type == plan_accept::PROPOSE => {
+                        self.confirm_accept(action, presented).await
+                    }
+                    Some(action) => self.confirm_draft_planning(action, presented).await,
                     None => {
                         self.session_tool(request.name.to_string(), arguments, Some(presented))
                             .await?
@@ -538,6 +561,10 @@ impl ServerHandler for ProductMcp {
 
 #[path = "mcp/checkoff.rs"]
 mod checkoff;
+#[path = "mcp/draft_parts.rs"]
+mod draft_parts;
+#[path = "mcp/draft_planning.rs"]
+mod draft_planning;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]

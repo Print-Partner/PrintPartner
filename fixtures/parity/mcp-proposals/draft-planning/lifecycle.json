@@ -1,0 +1,455 @@
+{
+  "scenario": "draft-planning/lifecycle",
+  "description": "Reviewed draft edits, filament assignments and rebuilds",
+  "steps": [
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_edit_plan_draft_parts",
+          "arguments": {
+            "plan_id": 1,
+            "draft_id": 2,
+            "parts": [
+              {
+                "part_id": 4,
+                "quantity_override": 4
+              },
+              {
+                "id": 5,
+                "included": true
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"status\":\"proposed\",\"note\":\"Not applied yet — user must confirm via Apply in the UI.\",\"action\":{\"id\":\"<action-id-1>\",\"type\":\"propose_edit_plan_draft_parts\",\"plan_id\":1,\"label\":\"edit plan draft parts\",\"summary\":\"Apply the reviewed part inclusion and quantity changes.\",\"params\":{\"plan_id\":1,\"draft_id\":2,\"expected_snapshot_digest\":\"ae11e670337e3e5eab736b29b4e294edbea8b564661cf15972625783f8930ee3\",\"parts\":[{\"part_id\":4,\"quantity_override\":4},{\"part_id\":5,\"included\":true}]}}}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "confirm_apply",
+          "arguments": {
+            "action_id": "<action-id-1>"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"ok\": true,\n  \"result\": {\n    \"edit_result\": \"updated\",\n    \"draft\": {\n      \"id\": 2,\n      \"profileId\": 1,\n      \"baseRevisionId\": 1,\n      \"basePlanVersion\": 1,\n      \"state\": \"open\",\n      \"lifecycleVersion\": 0,\n      \"consumedRevisionId\": null,\n      \"consumedAt\": null,\n      \"origin\": {\n        \"kind\": \"recompute\"\n      },\n      \"digestFormat\": \"plan-draft-v1\",\n      \"snapshotDigest\": \"d93c21d7bed759a1880fa83a1a311acd745943e433feeb3aaa39e1011a205723\",\n      \"createdBy\": \"default\",\n      \"idempotencyKey\": \"working\",\n      \"createdAt\": \"<timestamp>\",\n      \"requiredUnitReconciliation\": null,\n      \"inputs\": [\n        {\n          \"id\": 2,\n          \"draftId\": 2,\n          \"sourceId\": 1,\n          \"sourceLayer\": \"base:Fixture Source\",\n          \"layerOrder\": 0,\n          \"trackingKind\": \"revision\",\n          \"sourceRevisionId\": 1,\n          \"manifestDigest\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n          \"effectiveNamingDigest\": \"2a4d5de52a78e3061a683e653adb73f201978beac974776e2dc8267214cc4430\"\n        }\n      ],\n      \"parts\": [\n        {\n          \"id\": 4,\n          \"draftId\": 2,\n          \"baseRevisionPartId\": 1,\n          \"partKey\": \"bracket.stl\",\n          \"relativePath\": \"bracket.stl\",\n          \"filename\": \"bracket.stl\",\n          \"sourceLayer\": \"base:Fixture Source\",\n          \"status\": \"base\",\n          \"roleInferred\": \"primary\",\n          \"roleOverride\": null,\n          \"filamentColorId\": null,\n          \"filamentCustomHex\": null,\n          \"spoolmanSpoolId\": null,\n          \"quantityInferred\": 1,\n          \"quantityOverride\": 4,\n          \"quantityEffective\": 4,\n          \"included\": true,\n          \"notes\": \"\",\n          \"githubBlobUrl\": null,\n          \"geometrySame\": null,\n          \"requirement\": null,\n          \"optionGroupId\": null,\n          \"manifestSource\": null,\n          \"artifactDigest\": \"fc7cc5712f34edc6eaca4f553629002435bcae43928b5e155d972a62c0154293\"\n        },\n        {\n          \"id\": 5,\n          \"draftId\": 2,\n          \"baseRevisionPartId\": 2,\n          \"partKey\": \"excluded.stl\",\n          \"relativePath\": \"excluded.stl\",\n          \"filename\": \"excluded.stl\",\n          \"sourceLayer\": \"base:Fixture Source\",\n          \"status\": \"excluded\",\n          \"roleInferred\": \"primary\",\n          \"roleOverride\": null,\n          \"filamentColorId\": null,\n          \"filamentCustomHex\": null,\n          \"spoolmanSpoolId\": null,\n          \"quantityInferred\": 1,\n          \"quantityOverride\": 1,\n          \"quantityEffective\": 1,\n          \"included\": true,\n          \"notes\": \"\",\n          \"githubBlobUrl\": null,\n          \"geometrySame\": null,\n          \"requirement\": null,\n          \"optionGroupId\": null,\n          \"manifestSource\": null,\n          \"artifactDigest\": \"6308c023a1294eb7200ecc2d08c9bd307fc84b66c5842a7945146c2b3ab95278\"\n        },\n        {\n          \"id\": 6,\n          \"draftId\": 2,\n          \"baseRevisionPartId\": 3,\n          \"partKey\": \"gear.stl\",\n          \"relativePath\": \"gear.stl\",\n          \"filename\": \"gear.stl\",\n          \"sourceLayer\": \"base:Fixture Source\",\n          \"status\": \"base\",\n          \"roleInferred\": \"primary\",\n          \"roleOverride\": null,\n          \"filamentColorId\": null,\n          \"filamentCustomHex\": null,\n          \"spoolmanSpoolId\": null,\n          \"quantityInferred\": 1,\n          \"quantityOverride\": 2,\n          \"quantityEffective\": 2,\n          \"included\": true,\n          \"notes\": \"\",\n          \"githubBlobUrl\": null,\n          \"geometrySame\": null,\n          \"requirement\": null,\n          \"optionGroupId\": null,\n          \"manifestSource\": null,\n          \"artifactDigest\": \"3aebcc89f291e84d3ca003a38723728c5ca6add772cca24ed3fc639211d78754\"\n        }\n      ]\n    }\n  }\n}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_assign_role_filament",
+          "arguments": {
+            "plan_id": 1,
+            "assignment": {
+              "role": " accent ",
+              "inventory_kind": "custom",
+              "color_hex": "#aA1122",
+              "substitution_confirmed": true
+            }
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"status\":\"proposed\",\"note\":\"Not applied yet — user must confirm via Apply in the UI.\",\"action\":{\"id\":\"<action-id-2>\",\"type\":\"propose_assign_role_filament\",\"plan_id\":1,\"label\":\"assign role filament\",\"summary\":\"Apply the confirmed Build planning change.\",\"params\":{\"plan_id\":1,\"assignment\":{\"role\":\" accent \",\"inventory_kind\":\"custom\",\"color_hex\":\"#aA1122\",\"substitution_confirmed\":true}}}}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "confirm_apply",
+          "arguments": {
+            "action_id": "<action-id-2>"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"ok\": true,\n  \"result\": {\n    \"role\": \"accent\"\n  }\n}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_assign_role_filament",
+          "arguments": {
+            "plan_id": 1,
+            "assignment": {
+              "role": "primary",
+              "inventory_kind": "catalog",
+              "inventory_id": "abs-matte::black-pantone-7c",
+              "color_hex": "#C0AFA1",
+              "requested_name": "Black (Pantone 7C)",
+              "requested_brand": "ABS Matte"
+            }
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"status\":\"proposed\",\"note\":\"Not applied yet — user must confirm via Apply in the UI.\",\"action\":{\"id\":\"<action-id-3>\",\"type\":\"propose_assign_role_filament\",\"plan_id\":1,\"label\":\"assign role filament\",\"summary\":\"Apply the confirmed Build planning change.\",\"params\":{\"plan_id\":1,\"assignment\":{\"role\":\"primary\",\"inventory_kind\":\"catalog\",\"inventory_id\":\"abs-matte::black-pantone-7c\",\"color_hex\":\"#C0AFA1\",\"requested_name\":\"Black (Pantone 7C)\",\"requested_brand\":\"ABS Matte\"}}}}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "confirm_apply",
+          "arguments": {
+            "action_id": "<action-id-3>"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"ok\": true,\n  \"result\": {\n    \"role\": \"primary\"\n  }\n}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_rebuild_plan",
+          "arguments": {
+            "plan_id": 3,
+            "idempotency_key": "fixture-rebuild"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"status\":\"proposed\",\"note\":\"Not applied yet — user must confirm via Apply in the UI.\",\"action\":{\"id\":\"<action-id-4>\",\"type\":\"propose_rebuild_plan\",\"plan_id\":3,\"label\":\"rebuild plan\",\"summary\":\"Apply the confirmed Build planning change.\",\"params\":{\"plan_id\":3,\"idempotency_key\":\"fixture-rebuild\"}}}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "confirm_apply",
+          "arguments": {
+            "action_id": "<action-id-4>"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"ok\": true,\n  \"result\": {\n    \"draft_id\": 3,\n    \"recompute\": \"created\"\n  }\n}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_edit_plan_draft_parts",
+          "arguments": {
+            "plan_id": 3,
+            "draft_id": 3,
+            "parts": [
+              {
+                "part_id": 7,
+                "quantity_override": 2
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"status\":\"proposed\",\"note\":\"Not applied yet — user must confirm via Apply in the UI.\",\"action\":{\"id\":\"<action-id-5>\",\"type\":\"propose_edit_plan_draft_parts\",\"plan_id\":3,\"label\":\"edit plan draft parts\",\"summary\":\"Apply the reviewed part inclusion and quantity changes.\",\"params\":{\"plan_id\":3,\"draft_id\":3,\"expected_snapshot_digest\":\"9d69761be1fdfd4916426945192f67453251cd13329ac629ba22468d240467b2\",\"parts\":[{\"part_id\":7,\"quantity_override\":2}]}}}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "confirm_apply",
+          "arguments": {
+            "action_id": "<action-id-5>"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"ok\": true,\n  \"result\": {\n    \"edit_result\": \"updated\",\n    \"draft\": {\n      \"id\": 3,\n      \"profileId\": 3,\n      \"baseRevisionId\": null,\n      \"basePlanVersion\": 0,\n      \"state\": \"open\",\n      \"lifecycleVersion\": 0,\n      \"consumedRevisionId\": null,\n      \"consumedAt\": null,\n      \"origin\": {\n        \"kind\": \"recompute\"\n      },\n      \"digestFormat\": \"plan-draft-v1\",\n      \"snapshotDigest\": \"2c59dd1531268934197b926d7d323cb11a1f04e1db717cb602b678d50a29b928\",\n      \"createdBy\": \"assistant:build-planning\",\n      \"idempotencyKey\": \"fixture-rebuild:ae4e7efd6dd74ee3\",\n      \"createdAt\": \"<timestamp>\",\n      \"requiredUnitReconciliation\": null,\n      \"inputs\": [\n        {\n          \"id\": 3,\n          \"draftId\": 3,\n          \"sourceId\": 4,\n          \"sourceLayer\": \"base:Base\",\n          \"layerOrder\": 0,\n          \"trackingKind\": \"untracked\",\n          \"sourceRevisionId\": null,\n          \"manifestDigest\": null,\n          \"effectiveNamingDigest\": \"2a4d5de52a78e3061a683e653adb73f201978beac974776e2dc8267214cc4430\"\n        }\n      ],\n      \"parts\": [\n        {\n          \"id\": 7,\n          \"draftId\": 3,\n          \"baseRevisionPartId\": null,\n          \"partKey\": \"bracket.stl\",\n          \"relativePath\": \"bracket.stl\",\n          \"filename\": \"bracket.stl\",\n          \"sourceLayer\": \"base:Base\",\n          \"status\": \"base\",\n          \"roleInferred\": \"primary\",\n          \"roleOverride\": null,\n          \"filamentColorId\": null,\n          \"filamentCustomHex\": null,\n          \"spoolmanSpoolId\": null,\n          \"quantityInferred\": 1,\n          \"quantityOverride\": 2,\n          \"quantityEffective\": 2,\n          \"included\": true,\n          \"notes\": \"\",\n          \"githubBlobUrl\": null,\n          \"geometrySame\": null,\n          \"requirement\": null,\n          \"optionGroupId\": null,\n          \"manifestSource\": null,\n          \"artifactDigest\": null\n        },\n        {\n          \"id\": 8,\n          \"draftId\": 3,\n          \"baseRevisionPartId\": null,\n          \"partKey\": \"gear.stl\",\n          \"relativePath\": \"gear.stl\",\n          \"filename\": \"gear.stl\",\n          \"sourceLayer\": \"base:Base\",\n          \"status\": \"base\",\n          \"roleInferred\": \"primary\",\n          \"roleOverride\": null,\n          \"filamentColorId\": null,\n          \"filamentCustomHex\": null,\n          \"spoolmanSpoolId\": null,\n          \"quantityInferred\": 1,\n          \"quantityOverride\": null,\n          \"quantityEffective\": 1,\n          \"included\": true,\n          \"notes\": \"\",\n          \"githubBlobUrl\": null,\n          \"geometrySame\": null,\n          \"requirement\": null,\n          \"optionGroupId\": null,\n          \"manifestSource\": null,\n          \"artifactDigest\": null\n        }\n      ]\n    }\n  }\n}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_assign_role_filament",
+          "arguments": {
+            "plan_id": 1,
+            "assignment": {
+              "role": "accent",
+              "inventory_kind": "catalog",
+              "inventory_id": "unknown",
+              "color_hex": "#123456"
+            }
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"status\":\"proposed\",\"note\":\"Not applied yet — user must confirm via Apply in the UI.\",\"action\":{\"id\":\"<action-id-6>\",\"type\":\"propose_assign_role_filament\",\"plan_id\":1,\"label\":\"assign role filament\",\"summary\":\"Apply the confirmed Build planning change.\",\"params\":{\"plan_id\":1,\"assignment\":{\"role\":\"accent\",\"inventory_kind\":\"catalog\",\"inventory_id\":\"unknown\",\"color_hex\":\"#123456\"}}}}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "confirm_apply",
+          "arguments": {
+            "action_id": "<action-id-6>"
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"ok\": false,\n  \"detail\": \"Catalog inventory filament not found\"\n}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "dismiss_proposed_action",
+          "arguments": {
+            "action_id": "<action-id-6>"
+          }
+        }
+      },
+      "response": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"ok\":true,\"action_id\":\"<action-id-6>\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_rebuild_plan",
+          "arguments": {
+            "plan_id": 2
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"Build planning brief not found\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_edit_plan_draft_parts",
+          "arguments": {
+            "plan_id": 2,
+            "draft_id": 2,
+            "parts": [
+              {
+                "part_id": 4,
+                "included": false
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"Build planning brief not found\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_assign_role_filament",
+          "arguments": {
+            "plan_id": 2,
+            "assignment": {
+              "role": "x",
+              "inventory_kind": "custom",
+              "color_hex": "#123456",
+              "substitution_confirmed": true
+            }
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"Build planning brief not found\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_rebuild_plan",
+          "arguments": {
+            "plan_id": 999999
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"Build planning brief not found\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_edit_plan_draft_parts",
+          "arguments": {
+            "plan_id": 999999,
+            "draft_id": 2,
+            "parts": [
+              {
+                "part_id": 4,
+                "included": false
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"Build planning brief not found\"}"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "propose_assign_role_filament",
+          "arguments": {
+            "plan_id": 999999,
+            "assignment": {
+              "role": "x",
+              "inventory_kind": "custom",
+              "color_hex": "#123456",
+              "substitution_confirmed": true
+            }
+          }
+        }
+      },
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"Build planning brief not found\"}"
+          }
+        ]
+      }
+    }
+  ],
+  "final_state": {
+    "pending_action_ids": [],
+    "custom_filaments": []
+  }
+}

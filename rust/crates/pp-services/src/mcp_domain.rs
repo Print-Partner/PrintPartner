@@ -89,6 +89,8 @@ pub struct ProposedAction {
     pub label: String,
     pub summary: String,
     pub params: Map<String, Value>,
+    /// In-memory confirmation basis. Never part of Node's proposal or history JSON.
+    pub confirmation_guard: Option<Value>,
 }
 
 impl ProposedAction {
@@ -107,6 +109,7 @@ impl ProposedAction {
             label,
             summary: summary.into(),
             params,
+            confirmation_guard: None,
         }
     }
 

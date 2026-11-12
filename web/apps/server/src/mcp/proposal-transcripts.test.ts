@@ -336,3 +336,35 @@ describe("Build planning proposal parity", () => {
     try { checkGolden(scenario,run.transcript); } finally { await run.cleanup(); }
   });
 });
+
+describe("Draft planning proposal parity", () => {
+  it("records edits, assignments and rebuilds on the shared seed", async () => {
+    const scenario = "draft-planning/lifecycle";
+    const seed = readFileSync(join(FIXTURE_DIR,"draft-planning/seed.sql"),"utf8");
+    const run = await runScenario(scenario,"Reviewed draft edits, filament assignments and rebuilds",async (s) => {
+      mkdirSync(join(s.dataDir,"repos/4"),{recursive:true});
+      writeFileSync(join(s.dataDir,"repos/4/bracket.stl"),"solid bracket\nendsolid bracket\n");
+      writeFileSync(join(s.dataDir,"repos/4/gear.stl"),"solid gear\nendsolid gear\n");
+      await s.call("propose_edit_plan_draft_parts", {plan_id:1,draft_id:2,parts:[{part_id:4,quantity_override:4},{id:5,included:true}]});
+      await s.call("confirm_apply",{action_id:s.lastProposedId()});
+      await s.call("propose_assign_role_filament", {plan_id:1,assignment:{role:" accent ",inventory_kind:"custom",color_hex:"#aA1122",substitution_confirmed:true}});
+      await s.call("confirm_apply",{action_id:s.lastProposedId()});
+      await s.call("propose_assign_role_filament",{plan_id:1,assignment:{role:"primary",inventory_kind:"catalog",inventory_id:"abs-matte::black-pantone-7c",color_hex:"#C0AFA1",requested_name:"Black (Pantone 7C)",requested_brand:"ABS Matte"}});
+      await s.call("confirm_apply",{action_id:s.lastProposedId()});
+      await s.call("propose_rebuild_plan",{plan_id:3,idempotency_key:"fixture-rebuild"});
+      const rebuilt = await s.call("confirm_apply",{action_id:s.lastProposedId()});
+      expect(rebuilt, JSON.stringify(rebuilt)).toHaveProperty("ok",true);
+      await s.call("propose_edit_plan_draft_parts",{plan_id:3,draft_id:(rebuilt.result as {draft_id:number}).draft_id,parts:[{part_id:7,quantity_override:2}]});
+      await s.call("confirm_apply",{action_id:s.lastProposedId()});
+      await s.call("propose_assign_role_filament",{plan_id:1,assignment:{role:"accent",inventory_kind:"catalog",inventory_id:"unknown",color_hex:"#123456"}});
+      await s.call("confirm_apply",{action_id:s.lastProposedId()});
+      await s.call("dismiss_proposed_action",{action_id:s.lastProposedId()});
+      for (const plan_id of [2,999999]) {
+        await s.call("propose_rebuild_plan",{plan_id});
+        await s.call("propose_edit_plan_draft_parts",{plan_id,draft_id:2,parts:[{part_id:4,included:false}]});
+        await s.call("propose_assign_role_filament",{plan_id,assignment:{role:"x",inventory_kind:"custom",color_hex:"#123456",substitution_confirmed:true}});
+      }
+    },seed);
+    try {checkGolden(scenario,run.transcript)} finally {await run.cleanup()}
+  });
+});

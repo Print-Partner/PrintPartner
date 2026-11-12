@@ -389,7 +389,7 @@ fn mark_modified(tx: &Transaction<'_>, tenant: &str, build: i64, now: &str) -> R
     Ok(())
 }
 
-fn mutation(
+pub(crate) fn mutation(
     tx: &Transaction<'_>,
     tenant: &str,
     command: &BuildCommand,
@@ -698,7 +698,7 @@ pub(super) fn execute(
     let read_only = matches!(
         command.command,
         BuildCommand::List | BuildCommand::Read { .. } | BuildCommand::ListLayers { .. }
-    ) || matches!(&command.command, BuildCommand::Mcp(request) if !request.apply)
+    ) || matches!(&command.command, BuildCommand::Mcp(request) if !request.apply || request.verify_only)
         || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read())
         || matches!(&command.command, BuildCommand::PlanFeatures(request) if request.patch.is_none());
     let tx = if read_only {
@@ -723,7 +723,12 @@ pub(super) fn execute(
         !command.cancelled.load(Ordering::Acquire),
         Failure::Cancelled
     );
-    tx.commit()?;
+    if matches!(&outcome, BuildOutcome::Mcp(value) if value["ok"] == false || value.get("error").is_some())
+    {
+        tx.rollback()?;
+    } else {
+        tx.commit()?;
+    }
     Ok(outcome)
 }
 

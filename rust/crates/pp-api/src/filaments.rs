@@ -21,6 +21,14 @@ use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Durat
 /// Reads filament types only, using the core's checked outbound connector.
 pub trait CatalogReader: Send + Sync {
     fn read(&self, integration: Value) -> Pin<Box<dyn Future<Output = Option<Vec<Value>>> + Send>>;
+    /// Verify one inventory filament for a confirmed planning assignment.
+    fn resolve(
+        &self,
+        _integration: Value,
+        _filament_id: i64,
+    ) -> Pin<Box<dyn Future<Output = Option<Value>> + Send>> {
+        Box::pin(async { None })
+    }
 }
 #[derive(Clone)]
 struct App {

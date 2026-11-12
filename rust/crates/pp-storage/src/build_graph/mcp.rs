@@ -10,6 +10,10 @@ pub struct Request {
     pub params: Value,
     pub apply: bool,
     pub action: Option<Value>,
+    pub confirmation_guard: Option<Value>,
+    pub verify_only: bool,
+    pub inventory_proof: Option<Value>,
+    pub(crate) authority: Option<(Arc<read_model::Credential>, auth::AuthPolicy)>,
     source_stamp: Option<Source>,
     source_allowed: bool,
 }
@@ -21,6 +25,10 @@ impl Request {
             params,
             apply: action.is_some(),
             action,
+            confirmation_guard: None,
+            verify_only: false,
+            inventory_proof: None,
+            authority: None,
             source_stamp: None,
             source_allowed: false,
         }
@@ -62,6 +70,23 @@ pub(crate) fn execute(
     let failure = |detail: &str| request.failure(detail);
     if request.tool == "propose_update_build_brief" {
         return brief(tx, account, request);
+    }
+    if crate::working_drafts::save::mcp::handles(&request.tool) {
+        if *apply && !build_exists(tx, account, *build)? {
+            return Ok(failure("Plan not found"));
+        }
+        let result =
+            crate::working_drafts::save::mcp::execute(tx, account, request, repos, cancelled)?;
+        if *apply && result["ok"] == true {
+            log(
+                tx,
+                account,
+                *build,
+                request.action.as_ref(),
+                &result["result"],
+            )?;
+        }
+        return Ok(result);
     }
     if !build_exists(tx, account, *build)? {
         return Ok(failure(if *apply {
@@ -108,6 +133,10 @@ impl BuildGraphClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<BuildOutcome> {
+        request.authority = Some((
+            Arc::new(crate::working_drafts::save::copy_credential(&credential)),
+            self.policy,
+        ));
         if request.tool == "add_addon" {
             let captured = {
                 let mut reader = self.settings.reader(wait)?;

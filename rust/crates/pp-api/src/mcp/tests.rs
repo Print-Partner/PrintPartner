@@ -2,6 +2,8 @@ use super::*;
 use reqwest::{Client, Method, RequestBuilder};
 use std::net::SocketAddr;
 
+#[path = "tests/draft_planning.rs"]
+mod draft_planning;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]

@@ -15,6 +15,7 @@ use pp_contracts::{
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+pub(crate) mod mcp;
 
 pub struct SaveCommand {
     pub(super) credential: Credential,
@@ -178,7 +179,7 @@ pub(super) fn keyed_expectations(
         json!(draft),
     )
 }
-pub(super) fn copy_credential(credential: &Credential) -> Credential {
+pub(crate) fn copy_credential(credential: &Credential) -> Credential {
     match credential {
         Credential::Session(secret) => {
             Credential::Session(auth::Secret::new(secret.expose().to_owned()))

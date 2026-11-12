@@ -26,6 +26,12 @@ Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge
 
 These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway). The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
+- `propose_edit_plan_draft_parts` proposes normalized Part inclusion and quantity edits for a Working Plan. Confirmation uses the existing draft edit transaction and captured snapshot digest. A conflicting edit keeps the action pending.
+- `propose_rebuild_plan` proposes the Build's planning choices. Confirmation checks the brief, Sources, layers and Accepted Plan basis again, then updates managed layers, prepares a Working Plan and selects it in the brief in one transaction. A preparation failure rolls back the layer changes. It does not accept or publish a Plan.
+- `propose_assign_role_filament` proposes a role assignment without reading remote inventory. Confirmation validates catalog matches and explicit substitutions. Spoolman confirmation uses the existing checked inventory reader, then checks the API key, feature access, integration and planning basis again before saving the role defaults and brief together. Confirmation clears the brief's selected draft.
+
+These three tools retain Node's proposal fields and errors. Rust additionally refuses a rebuild or role assignment when its planning basis changed since proposal, with `Build planning changed since the proposal; propose again`. The confirmation basis stays in session memory and is absent from the tool response and decision history. The default Node runtime and rebuild defaults stay unchanged.
+
 Every other product tool still answers that it has no Rust port. `get_farm_status` and `get_print_stats` have no Rust port yet.
 
 ## To be written

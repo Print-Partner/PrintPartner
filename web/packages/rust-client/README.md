@@ -68,6 +68,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `POST /api/v2/integrations` | `CreateIntegrationRequest` | `IntegrationView` |
 | `DELETE /api/v2/integrations/{id}` | | `IntegrationView` |
+| `GET /api/v2/printers/{id}` | | `PrinterConfig` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).
@@ -103,7 +104,7 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 
 - **Unknown keys.** Request DTOs use `#[serde(deny_unknown_fields)]`, so their schemas are `z.strictObject` and reject unknown keys. Response DTOs use `z.object`, which strips unknown keys.
 - **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors` (omitted when empty, as RFC 9457 allows) and `Health`'s `modules` and the six members Node's `/health` does not send (`degraded_detail`, `single_user_auth`, `single_user_setup_required`, `owner_mapping_required`, `github_oauth_configured`, `discord_oauth_configured`), so a client decodes both bodies. `Omittable<T>` marks such a member. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, using `schemars(with = "RequiredNullable<T>")` or an explicit required key in the exported nullable schema.
-- **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision.
+- **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision. The generator supports integers only: it has no fractional number type, so every numeric field in the contract is an integer. `PrinterConfig`'s lengths are whole millimetres for that reason.
 - **Maps and free JSON.** A Rust map (`BTreeMap<String, T>`) becomes `z.record(z.string(), T)`, and `serde_json::Value` inside a map becomes `z.json()`. Decision `params` and `result` are the only free JSON. The round-trip tests skip the unknown-key and omitted-field checks for record entries and every check under `z.json()`.
 - **Tagged unions.** Internally tagged enums become `z.discriminatedUnion` on their tag (`kind` or `status`).
 - **Not expressed.** JSON Schema cannot state the one-edit-per-Part-field rule for `EditDraftPartsRequest`; the server refuses such a request with 400.

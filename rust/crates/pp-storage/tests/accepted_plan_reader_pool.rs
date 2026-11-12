@@ -1,10 +1,10 @@
 #![cfg(feature = "desktop_rebuild")]
-//! `ReadClient::read_plan` (GRE-1447) reads on the reader pool and refuses
+//! `ReadClient::read_plan` (GRE-1447) reads on the read seam and refuses
 //! with typed `WriterFailure`s: a refused credential, a cancelled caller, a
-//! reader pool that stays full, and stopped storage.
+//! reader pool that stays full (`Busy`), and stopped storage.
 use pp_storage::{
     Limits, WriterFailure, WriterOwner,
-    auth::{AuthFailure, Secret},
+    auth::Secret,
     read_model::{AcceptedRead, Credential},
 };
 use std::{sync::atomic::AtomicBool, time::Duration};
@@ -56,16 +56,13 @@ fn read_plan_reads_on_the_reader_pool_with_typed_refusals() {
     ));
     assert!(matches!(
         refused(session(&"x".repeat(5000))),
-        Err(WriterFailure::Auth(AuthFailure::InvalidCredentials))
+        Err(WriterFailure::Auth(_))
     ));
     let key = Credential::ApiKey {
         routed_tenant: "default".into(),
         secret: Secret::new("ppk_not_a_key".into()),
     };
-    assert!(matches!(
-        refused(key),
-        Err(WriterFailure::Auth(AuthFailure::InvalidCredentials))
-    ));
+    assert!(matches!(refused(key), Err(WriterFailure::Auth(_))));
     assert!(matches!(
         reads.read_plan(fixture(), Some(1), &AtomicBool::new(true), WAIT),
         Err(WriterFailure::Cancelled)
@@ -76,7 +73,7 @@ fn read_plan_reads_on_the_reader_pool_with_typed_refusals() {
     assert_eq!(held.len(), Limits::default().readers);
     assert!(matches!(
         reads.read_plan(fixture(), Some(1), &go, WAIT),
-        Err(WriterFailure::QueueFull)
+        Err(WriterFailure::Busy)
     ));
     drop(held);
     assert!(

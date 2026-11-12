@@ -115,7 +115,7 @@ python3 scripts/local-ci.py --only <step-ids> --fail-on-skip
 
 `scripts/agent-guard.py` checks one shell command, file edit, or patch before it runs. It refuses actions reserved for the maintainer. Exit 0 allows the operation. Exit 2 refuses it, or rejects input it does not understand, with the reason on stderr.
 
-Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
+Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). Grok and the Cursor CLI read the same Claude settings and run the adapter for their shell tools. OpenCode and Pi don't read Claude hook settings. For them and any other runner, configure the runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
 
 ```sh
 python3 -B scripts/agent-guard.py command --cwd "$PWD" 'git push -u origin HEAD:chore/topic'
@@ -181,6 +181,8 @@ Known limits of the merge refusals, accepted rather than fixed:
 ### Claude Code
 
 `.claude/hooks/guard.py` maps Claude Code's PreToolUse payload onto the guard. `Bash` becomes `check_command(command, cwd)`. `Write`, `Edit`, and `MultiEdit` check `file_path`, and `NotebookEdit` checks `notebook_path`. The adapter exits 2, which blocks the call, on a refusal and on any payload it cannot read: a non-object, a missing or empty field, a relative or missing `cwd`, an unknown tool, or an internal error.
+
+Grok and the Cursor CLI load hooks from Claude settings and match `Bash` to their own shell tools, so the matcher keeps Claude's names. The adapter treats Grok's `run_terminal_command` and Cursor's `Shell` like `Bash`: it checks `tool_input.command` with `check_command`. Both CLIs can keep one shell across calls, so the payload's `cwd`, the session's directory, may not be where the command runs. The adapter uses `tool_input.cwd` only when it is an absolute path. Otherwise the directory is unknown, and the guard applies its rules for that case: it refuses coordinator merges and any push whose branch or settings it can't read. The adapter refuses Grok input marked `toolInputTruncated`. Their file tools, such as Grok's `search_replace` and Cursor's `Write` with `path`, are still refused, because the adapter reads only Claude's file payloads.
 
 The repository doesn't commit Claude Code settings. Add this to `.claude/settings.local.json` in your checkout (Git ignores that file). The guard then refuses later edits to it:
 

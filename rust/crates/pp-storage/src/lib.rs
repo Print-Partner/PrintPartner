@@ -53,6 +53,8 @@ pub mod printer_hosts;
 pub mod printer_setup;
 #[cfg(feature = "desktop_rebuild")]
 pub mod profiles;
+#[cfg(feature = "desktop_rebuild")]
+mod read;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
 pub mod required_units;
@@ -338,6 +340,26 @@ pub struct ReaderCheckout {
     connection: Option<Connection>,
     pool: Arc<ReaderPool>,
 }
+/// Why no reader was checked out. Converting it into `anyhow::Error` gives
+/// the messages `reader` has always reported.
+enum ReaderFailure {
+    Stopped,
+    /// Every reader stayed checked out for the caller's whole wait.
+    Full,
+    Poisoned,
+    /// The connection could not be made read-only.
+    Unusable(anyhow::Error),
+}
+impl From<ReaderFailure> for anyhow::Error {
+    fn from(failure: ReaderFailure) -> Self {
+        match failure {
+            ReaderFailure::Stopped => anyhow!("Storage stopped"),
+            ReaderFailure::Full => anyhow!("Reader pool full"),
+            ReaderFailure::Poisoned => anyhow!("Reader pool poisoned"),
+            ReaderFailure::Unusable(error) => error,
+        }
+    }
+}
 pub struct WriterOwner {
     client: SettingsClient,
     join: Option<JoinHandle<()>>,
@@ -520,27 +542,21 @@ impl SettingsClient {
         Arc::clone(&self.shared.print_file_snapshots)
     }
     pub fn reader(&self, wait: Duration) -> Result<ReaderCheckout> {
-        self.checkout(wait).map_err(|failure| match failure {
-            WriterFailure::Stopped => anyhow!("Storage stopped"),
-            WriterFailure::QueueFull => anyhow!("Reader pool full"),
-            WriterFailure::Internal(error) => error,
-            other => anyhow!(other),
-        })
+        Ok(self.checkout(wait)?)
     }
-    /// [`SettingsClient::reader`] with typed refusals: a closed pool is
-    /// `Stopped` and a pool still full at `wait` is `QueueFull`.
-    pub(crate) fn checkout(&self, wait: Duration) -> Result<ReaderCheckout, WriterFailure> {
-        let poisoned = || WriterFailure::Internal(anyhow!("Reader pool poisoned"));
+    /// [`SettingsClient::reader`] with the refusal typed.
+    fn checkout(&self, wait: Duration) -> Result<ReaderCheckout, ReaderFailure> {
         let deadline = Instant::now() + wait;
-        let mut state = self.readers.state.lock().map_err(|_| poisoned())?;
+        let poisoned = |_| ReaderFailure::Poisoned;
+        let mut state = self.readers.state.lock().map_err(poisoned)?;
         loop {
             if state.closed {
-                return Err(WriterFailure::Stopped);
+                return Err(ReaderFailure::Stopped);
             }
             if let Some(connection) = state.idle.pop() {
                 if let Err(error) = schema::configure(&connection, true) {
                     state.idle.push(connection);
-                    return Err(WriterFailure::Internal(error));
+                    return Err(ReaderFailure::Unusable(error));
                 }
                 state.active += 1;
                 return Ok(ReaderCheckout {
@@ -549,24 +565,17 @@ impl SettingsClient {
                 });
             }
             if Instant::now() >= deadline {
-                return Err(WriterFailure::QueueFull);
+                return Err(ReaderFailure::Full);
             }
-            state = self
-                .readers
-                .changed
-                .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
-                .map_err(|_| poisoned())?
-                .0;
+            let left = deadline.saturating_duration_since(Instant::now());
+            let waited = self.readers.changed.wait_timeout(state, left);
+            state = waited.map_err(|_| ReaderFailure::Poisoned)?.0;
         }
     }
 }
 impl ReaderCheckout {
     pub(crate) fn connection(&self) -> &Connection {
         self.connection.as_ref().expect("checked out connection")
-    }
-    #[cfg(feature = "desktop_rebuild")]
-    pub(crate) fn connection_mut(&mut self) -> Option<&mut Connection> {
-        self.connection.as_mut()
     }
     pub fn snapshot(&self, tenant: &str, key: &str) -> Result<SettingSnapshot> {
         snapshot(self.connection(), tenant, key)

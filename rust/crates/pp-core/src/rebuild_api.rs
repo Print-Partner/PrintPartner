@@ -746,6 +746,22 @@ mod tests {
         cookie.split(';').next().unwrap().to_owned()
     }
 
+    /// A second session for the account `session` registered.
+    async fn sign_in(client: &reqwest::Client, origin: &str) -> String {
+        let body = Some(sample_body("SignInRequest"));
+        let request = contract_request(client, origin, ("POST", "/auth/login"), &[], None, body);
+        let signed_in = request.send().await.unwrap();
+        assert_eq!(signed_in.status(), 200);
+        let cookie = signed_in.headers()["set-cookie"].to_str().unwrap();
+        cookie.split(';').next().unwrap().to_owned()
+    }
+
+    /// The single owner already exists, so a second register is refused by its
+    /// handler (403), which still shows the route runs.
+    fn owner_exists(route: &pp_api::client_contract::ClientRoute, status: u16) -> bool {
+        route.path == "/auth/register" && status == 403
+    }
+
     /// A body each client route's request DTO accepts.
     fn sample_body(dto: &str) -> Value {
         match dto {
@@ -837,6 +853,37 @@ mod tests {
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
     /// print, so those handlers answer their own 404 with a code or detail.
+    /// Whether an anonymous request got the answer the route's stated auth predicts.
+    fn answers_without_credential(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+    ) -> bool {
+        match route.auth {
+            pp_api::client_contract::ClientAuth::Credential => status == 401,
+            pp_api::client_contract::ClientAuth::None => {
+                status == 200 || owner_exists(route, status)
+            }
+        }
+    }
+
+    /// A 200, or a refusal only the route's own handler gives for the sample
+    /// request.
+    fn reached_handler(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+        body: &Value,
+    ) -> bool {
+        // A manual burst names an Accepted Plan basis no stored Build has.
+        let stale = status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
+        // A draft header save on a Build with no layers can prepare no draft.
+        let no_layers = status == 422 && body["code"] == "no_layers";
+        status == 200
+            || handler_not_found(status, body)
+            || stale
+            || no_layers
+            || owner_exists(route, status)
+    }
+
     fn handler_not_found(status: u16, body: &Value) -> bool {
         const CODES: [&str; 4] = [
             "integration_not_found",
@@ -857,7 +904,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_routes_match_registrations() {
-        use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
+        use pp_api::client_contract::CLIENT_ROUTES;
         let (owner, directory, listener, origin) = bound().await;
         let rebuild = DesktopRebuild::from_value(Some("1"));
         let (policy, lifetimes) = (desktop_policy(), lifetimes());
@@ -915,18 +962,7 @@ mod tests {
         assert_eq!(unregistered.status(), 404);
         assert_eq!(unregistered.text().await.unwrap(), "");
         // Sign-out revokes the session it is sent with, so it gets its own.
-        let spare = send(
-            "POST",
-            "/auth/login",
-            &[],
-            None,
-            Some(sample_body("SignInRequest")),
-        )
-        .await
-        .unwrap();
-        assert_eq!(spare.status(), 200);
-        let spare = spare.headers()["set-cookie"].to_str().unwrap();
-        let spare = spare.split(';').next().unwrap().to_owned();
+        let spare = sign_in(&client, &origin).await;
         for route in CLIENT_ROUTES
             .iter()
             .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
@@ -943,16 +979,8 @@ mod tests {
                 .unwrap();
             let anonymous_status = anonymous.status().as_u16();
             let anonymous_body: Value = anonymous.json().await.unwrap_or(Value::Null);
-            // The single owner already exists, so a second register is refused by
-            // its handler (403), which shows the route needs no credential.
-            let owner_exists = |status: u16| route.path == "/auth/register" && status == 403;
-            let expected = match route.auth {
-                ClientAuth::Credential => 401,
-                ClientAuth::None => 200,
-            };
             assert!(
-                anonymous_status == expected
-                    || (route.auth == ClientAuth::None && owner_exists(anonymous_status)),
+                answers_without_credential(route, anonymous_status),
                 "{} {path} without credentials: {anonymous_status} {anonymous_body}",
                 route.method
             );
@@ -966,18 +994,8 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            let handler_not_found = handler_not_found(status, &body);
-            // A manual burst names an Accepted Plan basis no stored Build has.
-            let handler_stale =
-                status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
-            // A draft header save on a Build with no layers can prepare no draft.
-            let handler_no_layers = status == 422 && body["code"] == "no_layers";
             assert!(
-                status == 200
-                    || handler_not_found
-                    || handler_stale
-                    || handler_no_layers
-                    || owner_exists(status),
+                reached_handler(route, status, &body),
                 "{} {path}: {status} {body}",
                 route.method
             );

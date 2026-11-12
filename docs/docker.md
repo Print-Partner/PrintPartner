@@ -67,7 +67,7 @@ A browser gets in through a single-use sign-in URL. Ask the running server for o
 docker exec print-partner pp-server bootstrap-url --data /data
 ```
 
-The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. Open it in a browser on the same host within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest.
+The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. Open it in a browser on the same host within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest. The replacement UI then opens its setup screen to create the owner account on first run, and its sign-in screen later whenever the browser has no valid session ([GRE-1429](https://linear.app/greetz/issue/GRE-1429)).
 
 - **Where the URL goes.** Only to the terminal that ran the command. `pp-server` does not print or log it, and it is not in `docker logs` or the status file.
 - **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. The command also refuses a directory the caller does not own or that other accounts can write, and a socket whose server runs as another account. With a host bind mount for `/data` and no user-namespace remapping, a host process running as the data directory's UID can also reach the socket and get a URL. That is by design: that account already owns the data.
@@ -127,7 +127,6 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 
 - **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
 - **MCP is off.** The gateway answers 403 to `/mcp` and `/api/v1/mcp` in Rust-only mode, whatever key a client sends.
-- **No sign-in screen.** The image serves the replacement UI with the GRE-1117 CSP, and the replacement UI has no sign-in or setup screen yet ([GRE-1429](https://linear.app/greetz/issue/GRE-1429)). The bootstrap URL admits the browser and the UI loads, but product routes answer 401 until an account session exists: `POST /auth/register` once, then `POST /auth/login`.
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test

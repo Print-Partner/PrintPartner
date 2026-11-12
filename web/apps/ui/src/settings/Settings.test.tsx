@@ -204,6 +204,19 @@ describe("Module changes use the Rust route", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("opens sign-in with next when a Module change answers 401", async () => {
+    // Only writes marked to keep their edits (the Plan's) stay on the page after a 401.
+    const { fetchMock } = changingCore(() => json({ detail: "refused" }, 401));
+    const { router } = renderSettings(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Turn Orders on" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Module change" }));
+    await waitFor(() =>
+      expect(router.state.location.pathname + router.state.location.search).toBe(
+        "/login?next=%2Fsettings",
+      ),
+    );
+  });
+
   it("turns on an off Module through the same absolute-state contract", async () => {
     const { fetchMock, writes } = changingCore();
     renderSettings(fetchMock);

@@ -8,6 +8,7 @@ import {
   LINK_ENDED,
   MISMATCH,
   OWNER_EXISTS,
+  REFUSED,
   TOO_MANY,
   UNREACHABLE,
   WRONG,
@@ -121,9 +122,11 @@ describe("first run", () => {
     expect(sent(fetchMock, "/auth/register")).toEqual([]);
   });
 
-  it("points to sign-in when an owner already exists", async () => {
+  it("points to sign-in when the core confirms an owner already exists", async () => {
+    // Setup was required when the screen opened; another tab created the owner since.
+    const status = [true, false];
     const fetchMock = core({
-      "/auth/status": () => json({ setup_required: true }),
+      "/auth/status": () => json({ setup_required: status.shift() ?? false }),
       "/auth/register": () => problem(403, "refused"),
     });
     renderAt(["/setup"], fetchMock);
@@ -133,6 +136,21 @@ describe("first run", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
     expect((await screen.findByRole("alert")).textContent).toBe(OWNER_EXISTS);
     expect(screen.getByRole("link", { name: "Go to sign-in" }).getAttribute("href")).toBe("/login");
+  });
+
+  it("does not claim an owner exists when the auth guard refuses the register", async () => {
+    // Still no account: the 403 came from the origin, host or loopback check.
+    const fetchMock = core({
+      "/auth/status": () => json({ setup_required: true }),
+      "/auth/register": () => problem(403, "refused"),
+    });
+    renderAt(["/setup"], fetchMock);
+    await fill("Email", "owner@example.com");
+    await fill("Password", "password-1234");
+    await fill("Password again", "password-1234");
+    fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(REFUSED);
+    expect(screen.queryByRole("link", { name: "Go to sign-in" })).toBeNull();
   });
 
   it("sends an owner who already set up to sign-in", async () => {

@@ -1,11 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
+import { CoreError } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
 import { routes } from "../routes";
 import {
   MISMATCH,
   OWNER_EXISTS,
+  OwnerExists,
   setupProblem,
   signInProblem,
   statusProblem,
@@ -200,7 +202,15 @@ export function SetupScreen() {
       throw new Error(MISMATCH);
     }
     setMismatch(false);
-    await writeCore("registerOwner", {}, { email: text(form, "email"), password });
+    await writeCore("registerOwner", {}, { email: text(form, "email"), password }).catch(
+      async (error: unknown) => {
+        // The register handler and the auth guard both answer 403. Only a status read that
+        // now finds the owner account says the handler refused because it exists.
+        if (!(error instanceof CoreError) || error.status !== 403) throw error;
+        const status = await readCore("readAuthStatus", {}).catch(() => null);
+        throw status?.setup_required === false ? new OwnerExists() : error;
+      },
+    );
     queryClient.clear();
     await navigate(HOME, { replace: true });
   }, (error) => (error instanceof Error && error.message === MISMATCH ? MISMATCH : setupProblem(error)));

@@ -8,7 +8,7 @@
 use super::{
     Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch, SourceKind,
     ensure_space, inspect_destination, inventory, measure, open_regular, repo_files,
-    stage_directory, unreadable, upgrade,
+    stage_directory, unreadable, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -52,6 +52,8 @@ pub struct ImportReport {
     pub sources: u64,
     pub printers: u64,
     pub unmatched_prints: u64,
+    /// Sources whose path now leads into the destination's `repos/`.
+    pub rebased_sources: u64,
     /// Files copied or extracted under the roots, and their bytes.
     pub files: u64,
     pub bytes: u64,
@@ -61,7 +63,7 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    fn new(counts: &DryRunReport, files: u64, bytes: u64) -> Self {
+    fn new(counts: &DryRunReport, rebased_sources: u64, (files, bytes): (u64, u64)) -> Self {
         let rows = counts.rows.iter().map(|(row, shapes)| RowReport {
             step: row.step,
             status: row.status.to_string(),
@@ -80,6 +82,7 @@ impl ImportReport {
             sources: counts.sources,
             printers: counts.printers,
             unmatched_prints: counts.unmatched_prints,
+            rebased_sources,
             files,
             bytes,
             rows: rows.collect(),
@@ -103,15 +106,13 @@ impl fmt::Display for ImportReport {
             self.unmatched_prints,
             self.files
         )?;
-        let pending = self
-            .rows
-            .iter()
+        let pending = (self.rows.iter())
             .filter(|row| row.status == "pending")
             .count();
         writeln!(
             f,
-            "complete: {}. {pending} inventory rows are not converted yet.",
-            self.complete
+            "complete: {}. {pending} inventory rows are not converted yet. {} Source paths now lead into the destination.",
+            self.complete, self.rebased_sources
         )?;
         writeln!(
             f,
@@ -142,7 +143,11 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
         let (files, copied) = extract_archive(source, metadata.len(), &stage.0)?;
         (SourceKind::Archive, files, copied)
     };
-    let (connection, ready) = upgrade(&stage.0)?;
+    let (connection, ready, stored) = upgrade(&stage.0, |database| {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let source = rusqlite::Connection::open_with_flags(database, flags)?;
+        Ok(verify::digests(&source, None)?)
+    })?;
     let counts = measure(&connection, kind, &ready, &files)?;
     if !counts.unnamed.is_empty() {
         let shapes = counts.unnamed.iter().map(|unnamed| unnamed.shape.clone());
@@ -155,12 +160,18 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
     {
         return Err(ImportError::Installation(value.to_owned()));
     }
+    let repos = destination.join("repos");
+    let rebased = verify::rebase_sources(&connection, &stage.0.join("repos"), &repos)?;
+    let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
+    if !changed.is_empty() {
+        return Err(ImportError::RowsChanged(changed));
+    }
     // Sign-in state is not carried: every Node session ends with the import.
     connection.execute_batch(
         "DELETE FROM sessions; DELETE FROM password_reset_tokens; PRAGMA wal_checkpoint(TRUNCATE);",
     )?;
     connection.close().map_err(|(_, error)| error)?;
-    let report = ImportReport::new(&counts, copied.0, copied.1);
+    let report = ImportReport::new(&counts, rebased, copied);
     publish(&stage.0, destination, &report)?;
     drop(stage);
     ownership_marker::mark_imported(destination)?;

@@ -2,13 +2,12 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats, and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Step 1 and the first half of step 2 exist today.
+The import lands in six steps. Steps 1 and 2 exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
 | 1 | The dry run and this inventory | in this release |
-| 2 | The import: copy, schema upgrade, report, ownership marker | in this release, see [Import](#import) |
-| 2 | `projects.local_path` rebase and verification against the source | not written |
+| 2 | The import: copy, schema upgrade, `projects.local_path` rebase, verification, report, ownership marker | in this release, see [Import](#import) |
 | 3 | Printers and integrations | not written; needs the typed fleet and integrations documents |
 | 4 | Checkoff links, unmatched prints and the send queue | not written |
 | 5 | Sources | not written |
@@ -53,7 +52,7 @@ Schema 34, upgraded to 48 on a temporary copy.
 Then it lists:
 
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column.
-- **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
+- **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the import has the row's converter, then `converted`. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
 - **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.
 - **Stored JSON the inventory does not name:** every other setting or column that holds a JSON object or array, as `setting <key>` or `table.column` with its count. The inventory below was built by reading code and may be incomplete. The dry run lists them and still exits 0. The import itself will refuse while any line is here: every stored JSON shape must be named as converted, copied unchanged, kept unused or dropped. So run the dry run on a copy of the real data, report every line, and import after the inventory names them.
@@ -86,20 +85,19 @@ A single value other than `default` is reported by the dry run, not refused. See
 PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive> --data <destination>
 ```
 
-`--data` must be absent, or empty by the ownership-marker rule. Run the dry run first: the import refuses everything the dry run refuses, and also a source that holds stored JSON the inventory does not name, and data under an installation value other than `default`.
+`--data` must be absent, or empty by the ownership-marker rule. Run the dry run first: the import refuses everything the dry run refuses, and also a source that holds stored JSON the inventory does not name, and data under an installation value other than `default`. It also stops when a Source's current revision has no files under `repos/`, or when a Source without a revision stores a path that does not lead below a `repos` folder.
 
 What it does:
 
 1. Creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
 2. From a folder, copies the database files and every backup root: regular files and directories, no links. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. From an archive, validates and extracts it as a restore does.
-3. Checks and upgrades the staged database as the dry run does, then deletes the rows of `sessions` and `password_reset_tokens`. Lease files and `backups/` are not copied. Users and password hashes are.
+3. Checks and upgrades the staged database as the dry run does. It then points every Source at its files in the new folder: a Source with a current revision gets `<destination>/repos/<snapshot_locator>`, and one without keeps the part of its stored path below Node's `repos`. It compares the rows of the accepted Plan, Required-unit, Plate, Checkoff and print outcome tables with the digests it took before the upgrade, and stops if a row differs. Last, it deletes the rows of `sessions` and `password_reset_tokens`. Lease files and `backups/` are not copied. Users and password hashes are.
 4. Moves the database and the roots into the destination, saves the report as `import-report.json`, removes the stage, and writes `.pp-rust-owned.json` last.
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 
-The report holds keys, names and counts, never a stored value. It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. Two limits apply to a copy made today:
+The report holds keys, names and counts, never a stored value. It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. One more limit applies to a copy made today:
 
-- `projects.local_path` still holds the Node folder's absolute paths, so the copy reads Source files from the original folder until the rebase lands.
 - Node's send queue arrives as stored. The Rust runtime turns `sending` items into `error` when it opens the folder and never starts an upload on its own, so nothing prints without a Send action. Step 4 will turn `queued` items into `error` too.
 
 ## Conversion inventory
@@ -108,7 +106,7 @@ The report holds keys, names and counts, never a stored value. It says `complete
 
 | Step | Stored shape | Rust reader today | Typed target | Status |
 | --- | --- | --- | --- | --- |
-| 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>` | pending |
+| 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>` | converted |
 | 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document | pending |
 | 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; unknown kinds kept as they are | pending |
 | 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | pending |

@@ -40,7 +40,8 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
 | `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient, McpClients)`, where `McpClients` holds the `BuildGraphClient`, `WorkflowClient`, `WorkingDraftClient`, `PlanningClient`, `ProgressClient` and accepted `ReadClient`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. `get_build_workflow` reads the `WorkflowClient` with that key. `list_plans` reads the `BuildGraphClient`, and `get_plan_decisions` and `list_plan_snapshots` read the `PlanningClient`, `get_remaining` reads the accepted `ReadClient`, and `get_printer_checkoff` reads links and unattributed prints through the `ProgressClient`, each with that key. `propose_verify_printer_checkoff` reads the link, and its `confirm_apply` runs a one-bed Checkoff burst through the `ProgressClient` under the key `mcp:<action_id>` ([MCP](../../../docs/mcp.md)). |
-| `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |
+| `client_contract` | Base metadata: `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document` and `document_bytes` return the base contract, excluding the probe extension. |
+| `printer_host::probe` | `printer_probe_router`, `PrinterProbePort`, request/result DTOs and `CLIENT_ROUTE` for authenticated `POST /api/v2/printers/probe`. With `codegen`: `client_document` adds probe metadata, schemas and fixtures to the base contract. |
 | `problem` | With `desktop_rebuild` only (feature off, just an identity `without_envelope`): `Problem`, `FieldError`, `ProblemType` (stable types, `title`, `classify`) and their bounds, plus the one builder for error responses: `response`, `coded`, `typed`, `overloaded`, `build`, the `layer` backstop each router mounts, `parse_body` for field errors, and `without_envelope` for Node comparisons. See [Problem responses](../../../docs/problem-responses.md). |
 | `fixtures` | Node/Rust parity runner: `Sandbox`, `Served`, `Exchange`, `Ledger`, `StateGraph`, `Labels`. |
 
@@ -48,7 +49,7 @@ Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_star
 
 Binaries:
 
-- `export-rust-client PATH` (needs `--features codegen`): writes the generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
+- `export-rust-client PATH` (needs `--features codegen`): composes `client_contract::document()` with `printer_host::probe::client_document()` and writes the complete generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
 - `auth-http-fixture DISPOSABLE_DIRECTORY [PORT] [single|open|closed] [dev-reset|production] [CONFIG_JSON]`: serves only `auth_router` over a store in that directory on `127.0.0.1` for manual auth checks. Use a disposable directory.
 
 ## Effects and flags
@@ -69,7 +70,7 @@ Cargo features:
 - `tests/auth_http.rs`: auth router behavior.
 - `src/problem/tests.rs` and, with `desktop_rebuild`, `src/problem/tests/canary.rs` (`-E 'test(problem_response)'`): problem envelope, extractor rejections, field-error bounds, and the leak canary.
 - `tests/builds_http.rs`, `catalog_http.rs`, `jobs_http.rs`, `manifest_options_http.rs`: mostly `desktop_rebuild`-gated tests against `fixtures/parity/*-http` and related directories.
-- `tests/ticket_t_10_fixtures.rs`, `ticket_t_61_read_model_http.rs`, `ticket_t_62_admin_http.rs`: gated parity suites.
+- `tests/node_fixture_replay.rs`, `accepted_plan_checkoff_http.rs`, `admin_http.rs`: gated parity suites.
 - Unit tests: `src/auth/tests/` (provider and SMTP, with `tests/fixtures/loopback-*.der`), `src/drafts/http/tests.rs`, `src/mcp/tests.rs`. Lib tests share scratch helpers from `pp-storage/tests/common`.
 - Dev-dependencies: `tokio-rustls`, `rusqlite`, `tempfile`.
 

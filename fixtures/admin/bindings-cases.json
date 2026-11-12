@@ -1,0 +1,48 @@
+[
+  {
+    "method": "GET",
+    "path": "/settings/printer-plan-bindings"
+  },
+  {
+    "method": "PUT",
+    "path": "/settings/printer-plan-bindings",
+    "body": "{\"integration_id\":\" printer/a \",\"profile_id\":12}"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/v1/settings/printer-plan-bindings",
+    "body": "{\"integration_id\":\"second\",\"profile_id\":\"14\"}"
+  },
+  {
+    "method": "PUT",
+    "path": "/settings/printer-plan-bindings",
+    "body": "{\"integration_id\":\"printer/a\",\"profile_id\":null}"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/settings/printer-plan-bindings"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/settings/printer-plan-bindings/printer%2Fa"
+  },
+  {
+    "method": "DELETE",
+    "path": "/settings/printer-plan-bindings/missing"
+  },
+  {
+    "method": "PUT",
+    "path": "/settings/printer-plan-bindings",
+    "body": "{}"
+  },
+  {
+    "method": "PUT",
+    "path": "/settings/printer-plan-bindings",
+    "content_type": "text/plain",
+    "body": "{\"integration_id\":\"ignored\",\"profile_id\":4}"
+  },
+  {
+    "method": "GET",
+    "path": "/settings/printer-plan-bindings"
+  }
+]

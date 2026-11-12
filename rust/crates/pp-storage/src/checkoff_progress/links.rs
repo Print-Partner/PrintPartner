@@ -69,7 +69,7 @@ pub(super) fn js_trim(s: &str) -> &str {
 }
 
 /// `String(value)` for a JSON value.
-pub(super) fn js_string(value: &Value) -> String {
+pub(crate) fn js_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Array(items) => items

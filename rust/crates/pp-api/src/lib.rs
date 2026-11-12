@@ -32,6 +32,8 @@ pub mod events;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm;
 #[cfg(feature = "desktop_rebuild")]
+pub mod filaments;
+#[cfg(feature = "desktop_rebuild")]
 pub mod file_assignments;
 #[cfg(feature = "desktop_rebuild")]
 pub mod fixtures;
@@ -61,6 +63,10 @@ pub mod printer_stream;
 pub mod send_queue;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings;
+#[cfg(feature = "desktop_rebuild")]
+pub mod settings_support;
+#[cfg(feature = "desktop_rebuild")]
+mod update_check;
 #[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 

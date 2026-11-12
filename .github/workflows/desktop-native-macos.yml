@@ -3,7 +3,7 @@ name: Native macOS bundle
 on:
   workflow_dispatch:
   # Job conditions keep skipped check reports present. Hosted macOS runs on
-  # ready PRs only with the macos label and relevant changed paths. Main, merge groups, nightly and manual
+  # ready PRs only with the ci:cross-os label. Main, merge groups, nightly and manual
   # runs select every macOS job, including Intel, regardless of changed paths.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
@@ -17,13 +17,11 @@ on:
 permissions:
   contents: read
 
-# Superseded PR runs cancel. Main pushes share one group (one running, one pending,
-# never cancelling); merge groups, nightly and manual runs each get their own and
-# never cancel. A rerun keeps its run's id and event, so a rerun of a non-PR run
-# shares that run's group without cancelling, and a rerun of a PR run stays in the PR group.
+# Main pushes share one non-cancelling group. PRs and merge-group ref/SHA pairs
+# cancel older runs of the same entry, including reruns. Other events use run_id.
 concurrency:
-  group: native-macos-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: native-macos-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('{0}-{1}', github.ref, github.event.merge_group.head_sha) || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 defaults:
   run:
@@ -50,27 +48,27 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/ci-path-filter.py native
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 scripts/ci-path-filter.py macos
       - name: Decide which macOS jobs run
         id: plan
         shell: bash
         env:
-          RELEVANT: ${{ steps.select.outputs.relevant }}
+          RELEVANT: ${{ steps.select.outputs.macos }}
           EVENT_NAME: ${{ github.event_name }}
           IS_DRAFT: ${{ github.event.pull_request.draft }}
-          HAS_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'macos') }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" != pull_request ]]; then
             macos=true intel=true
-          elif [[ "$HAS_LABEL" == true && "$IS_DRAFT" == false && "$RELEVANT" != false ]]; then
+          elif [[ "$IS_DRAFT" == false && "$RELEVANT" != false ]]; then
             macos=true intel=false
           else
             macos=false intel=false
           fi
           echo "macos=$macos" >> "$GITHUB_OUTPUT"
           echo "intel=$intel" >> "$GITHUB_OUTPUT"
-          echo "macOS jobs: $macos (intel: $intel; macos label: $HAS_LABEL; draft: $IS_DRAFT)" >> "$GITHUB_STEP_SUMMARY"
+          echo "macOS jobs: $macos (intel: $intel; draft: $IS_DRAFT)" >> "$GITHUB_STEP_SUMMARY"
 
   # Fast Linux gate: macOS runners only start once the shared web build passes,
   # so doomed commits never burn a macOS queue slot.
@@ -101,7 +99,7 @@ jobs:
 
   server-smoke:
     needs: [changes, linux-precheck]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'macos'))) && needs.changes.outputs.macos == 'true' && needs.linux-precheck.result == 'success')
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.changes.outputs.macos == 'true' && needs.linux-precheck.result == 'success')
     concurrency:
       group: native-macos-server-smoke-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -161,7 +159,7 @@ jobs:
     # Explicit architecture jobs keep both check names present even when skipped.
     name: bundle (macos-26, arm64, arm64, aarch64-apple-darwin, ee35ee364a0c626df7852d9a5bc0c5394b6440772e9...
     needs: [changes, linux-precheck]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'macos'))) && needs.changes.outputs.macos == 'true' && needs.linux-precheck.result == 'success')
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.changes.outputs.macos == 'true' && needs.linux-precheck.result == 'success')
     concurrency:
       group: native-macos-bundle-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -353,7 +351,7 @@ jobs:
 
   macos-storage-gate:
     needs: [changes, linux-precheck]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'macos'))) && needs.changes.outputs.macos == 'true' && needs.linux-precheck.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.changes.outputs.macos == 'true' && needs.linux-precheck.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))
     concurrency:
       group: native-macos-storage-gate-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}

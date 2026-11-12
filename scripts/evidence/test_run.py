@@ -53,6 +53,18 @@ class ParseArgs(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse("--shot", "/farm", "--module", "telemetry")
 
+    def test_both_capture_modes_reach_the_browser_config(self):
+        args = parse("--empty-states", "--review-plan", "--shot", "/builds",
+                     "--shot", "/builds/1000/plan")
+        with mock.patch.object(run, "run") as capture:
+            run.capture(args, "http://127.0.0.1:3000", "http://127.0.0.1:4000",
+                        Path("credential.json"), Path("shots"), "node", Path("browser"))
+        config = json.loads(capture.call_args.args[2])
+        self.assertTrue(config["emptyStates"])
+        self.assertTrue(config["reviewPlan"])
+        self.assertEqual([shot["path"] for shot in config["shots"]],
+                         ["/builds", "/builds/1000/plan"])
+
     def test_shot_names(self):
         self.assertEqual(run.shot_name("/builds/2/history"), "builds-2-history.png")
         self.assertEqual(run.shot_name("/"), "root.png")
@@ -61,6 +73,37 @@ class ParseArgs(unittest.TestCase):
         for argv in (("--publish", "7"), ("--note", "x")):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 parse("--shot", "/builds", *argv)
+
+
+class EmptyStates(unittest.TestCase):
+    def test_requires_synthetic_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                run.prepare_empty_states(Path(tmp))
+            self.assertFalse((Path(tmp) / "print-partner.db").exists())
+
+    def test_preserves_builds_and_history_but_removes_waiting_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = Path(tmp)
+            (seed / "SYNTHETIC-DATASET.json").write_text("{}")
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                db.executescript("""
+                    CREATE TABLE build_profiles(id INTEGER PRIMARY KEY,name TEXT,archived_at TEXT);
+                    CREATE TABLE app_settings(key TEXT,value TEXT);
+                    CREATE TABLE plan_revisions(id INTEGER PRIMARY KEY);
+                    INSERT INTO build_profiles VALUES(2,'Existing',NULL);
+                    INSERT INTO plan_revisions VALUES(9);
+                    INSERT INTO app_settings VALUES('printer.send_queue','[]');
+                    INSERT INTO app_settings VALUES('printer.farm_log','[]');
+                    INSERT INTO app_settings VALUES('printer.checkoff_links','[]');
+                    INSERT INTO app_settings VALUES('printer.fleet','kept');
+                """)
+            run.prepare_empty_states(seed)
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                self.assertEqual(db.execute("SELECT id FROM build_profiles ORDER BY id").fetchall(), [(2,), (1000,)])
+                self.assertEqual(db.execute("SELECT count(*) FROM build_profiles WHERE archived_at IS NULL").fetchone(), (0,))
+                self.assertEqual(db.execute("SELECT * FROM plan_revisions").fetchall(), [(9,)])
+                self.assertEqual(db.execute("SELECT * FROM app_settings").fetchall(), [('printer.fleet', 'kept')])
 
 
 class Stop(Exception):

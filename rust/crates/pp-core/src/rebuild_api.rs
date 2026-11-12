@@ -212,6 +212,26 @@ pub fn read_router(
     api_key_tenant: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
+    read_router_with_updates(
+        rebuild,
+        owner,
+        auth,
+        origin,
+        api_key_tenant,
+        community_manifests,
+        false,
+    )
+}
+
+fn read_router_with_updates(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    auth: AuthRoutes,
+    origin: &str,
+    api_key_tenant: &str,
+    community_manifests: Option<&Path>,
+    server_updates: bool,
+) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
@@ -226,7 +246,7 @@ pub fn read_router(
         history_client,
         planning_client,
         workflow_client,
-        (admin_files, app_settings, features),
+        (admin_files, app_settings, features, filament_client),
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -247,6 +267,7 @@ pub fn read_router(
                 guard.admin_files()?,
                 guard.app_settings_with_policy(policy)?,
                 guard.features_with_policy(policy)?,
+                guard.filaments_with_policy(policy)?,
             ),
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
@@ -265,17 +286,17 @@ pub fn read_router(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
         Arc::clone(&owner),
     );
+    let admin_config = AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     let admin = admin_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        admin_config.clone(),
         accepted_client.clone(),
         admin_files.clone(),
     );
+    let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
+    let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = modules_router(config.clone(), features);
-    let settings_routes = settings_router(
-        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        accepted_client.clone(),
-        app_settings,
-    );
+    let admin_config = admin_config.with_server_update_checks(server_updates);
+    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
@@ -307,7 +328,9 @@ pub fn read_router(
             .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(modules)
+            .merge(filaments)
             .merge(settings_routes)
+            .merge(probe)
             .merge(events)
             .merge(checkoff)
             .merge(plates)
@@ -392,6 +415,16 @@ pub fn product_router(
     origin: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
+    product_router_with_updates(rebuild, owner, origin, community_manifests, false)
+}
+
+pub(crate) fn product_router_with_updates(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    community_manifests: Option<&Path>,
+    server_updates: bool,
+) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
@@ -427,13 +460,14 @@ pub fn product_router(
             job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
         )
     };
-    let reads = read_router(
+    let reads = read_router_with_updates(
         rebuild,
         owner,
         auth,
         origin,
         DESKTOP_TENANT,
         community_manifests,
+        server_updates,
     )?;
     Ok(reads
         .zip(drafts)
@@ -443,6 +477,19 @@ pub fn product_router(
 
 /// API keys route to the default tenant under the single-account policy.
 pub(crate) const DESKTOP_TENANT: &str = "default";
+
+fn filaments(
+    config: AdminHttpConfig,
+    reads: &pp_storage::read_model::ReadClient,
+    client: pp_storage::filaments::FilamentClient,
+) -> Result<Router> {
+    Ok(pp_api::filaments::filament_router(
+        config,
+        reads.clone(),
+        client,
+        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
+    ))
+}
 
 #[cfg(test)]
 mod tests {
@@ -688,6 +735,9 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "PrinterProbeRequest" => {
+                json!({"kind":"unsupported", "address":"http://fixture.invalid"})
+            }
             "SetModuleRequest" => json!({"on": true}),
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
@@ -839,7 +889,10 @@ mod tests {
         let unregistered = unregistered.await.unwrap();
         assert_eq!(unregistered.status(), 404);
         assert_eq!(unregistered.text().await.unwrap(), "");
-        for route in CLIENT_ROUTES {
+        for route in CLIENT_ROUTES
+            .iter()
+            .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
+        {
             let path = route
                 .path
                 .replace("{id}", &build)

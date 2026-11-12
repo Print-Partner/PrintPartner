@@ -23,9 +23,10 @@ Windows, Rust macOS and native arm64 jobs run on a ready PR only with
 `ci:cross-os` starts a new run. Without it, jobs report skipped checks rather
 than leaving missing contexts. Draft PRs skip every PR CI job as before.
 
-`rust (linux)` keeps its existing path selection. Main pushes, schedules and
-manual runs still run all cross-OS jobs. A merge group runs the short Linux set
-and no Windows or macOS Rust job ([Merge queue](#merge-queue)). Windows and macOS remain
+`rust (linux)` keeps its existing path selection. Schedules and manual runs
+still run all cross-OS jobs. A push to `main` runs the Linux Rust jobs only, and
+a merge group runs the short Linux set; neither starts a Windows or macOS Rust
+job ([Merge queue](#merge-queue)). Windows and macOS remain
 advisory; the required-check set stays `actionlint`, `zizmor`, `rust (linux)`,
 `Lint Evidence block` and `review-gate`. The ruleset snapshot is unchanged.
 
@@ -34,7 +35,7 @@ advisory; the required-check set stays `actionlint`, `zizmor`, `rust (linux)`,
 | PR without `ci:cross-os` | Windows path or old label tier / `macos` or `ci:full` plus Rust inputs / `macos` plus native inputs | skip / skip / skip |
 | PR with `ci:cross-os` only | Windows path tier / skip / skip | run / run / run |
 | `merge_group` | run / run / run (+ Intel) | skip / skip / run (+ Intel) |
-| `push` to main | run / run / run (+ Intel) | run / run / run (+ Intel) |
+| `push` to main | run / run / run (+ Intel) | skip / skip / run (+ Intel) |
 
 Native jobs still require a successful Linux precheck; fork PRs still skip the
 native storage gate. Intel stays off on PRs. Scheduled/manual events retain full
@@ -46,7 +47,7 @@ Editable PR YAML and selectors cannot enforce that boundary. Chad configures
 that restriction; enabling the Mac runner belongs in a follow-up. This change
 adds no Mac runner selection, mount cleanup or cache policy.
 
-Pushes to `main`, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A merge group runs only the short Linux set ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). The three jobs show code that compiles or passes on one OS only. Windows and macOS are advisory and do not run in the merge queue, so such a failure is first seen on the push to `main`.
+Nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A push to `main` runs the Linux jobs only, with `all()` (owner decision, 2026-11-12, GRE-1476): pushes to `main` share one concurrency group, and a run that had its Linux result kept that group for hours while it waited for a macOS runner, so the runs for later merges were cancelled before they started. A merge group runs only the short Linux set ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). The three jobs show code that compiles or passes on one OS only. Windows and macOS are advisory and run neither in the merge queue nor on a push to `main`, so such a failure is first seen on the nightly run, or on a PR with the `ci:cross-os` label.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
@@ -711,7 +712,7 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
   The status target executes the complete extracted workflow step through `bash --noprofile --norc -e -o pipefail`, using disposable files and executable tool doubles. Its 35 cases combine statuses 0, 1, 23, 130 and 255 with normal detach success on each attempt and all diagnostic-success/failure and forced-detach-success/failure combinations. Each case asserts the exact exit status, combined output, ordered command arguments and preserved fixture and unrelated sentinel bytes. The analysis target requires empty successful output from both tools, then injects an unquoted mount expansion into the cleanup body and requires SC2086 from each tool to prove the function is inspected. The cross-OS workflow has no matching EXIT trap to extract.
 - **Desktop runtime** (`desktop-runtime.yml`) builds `pp-api` and `pp-server` and runs the proofs that need the built server on Linux: the serial `runtime_m0` lifecycle log, the Python lifecycle, upload and gateway drivers, the source artifact checks and `verify.py`. Unit tests, clippy and fmt are not repeated here; `rust (linux)` runs them.
 
-When `rust (macos)` or a Native macOS bundle workflow job fails on a push to `main`, an alert job opens an issue labelled `ci-macos-main` for that workflow run, or comments on the existing open issue for the same run. Rust failures confined to Linux or Windows do not alert. Only the alert job receives `issues: write`.
+When `rust (macos)` fails on the nightly run, or a Native macOS bundle workflow job fails on a push to `main`, an alert job opens an issue labelled `ci-macos-main` for that workflow run, or comments on the existing open issue for the same run. Rust failures confined to Linux or Windows do not alert. Only the alert job receives `issues: write`.
 
 Required Rust and lint jobs fail if their input-selection job fails, so a broken filter or failing filter test cannot pass through the required checks. `rust (macos)` also runs that check when the label and draft state select it. Failure alerts run independently with a separate issue per workflow run, so a shared concurrency queue cannot drop pending alerts. Reruns comment on the existing open issue for that run.
 
@@ -944,7 +945,7 @@ The short Rust set is an owner decision (2026-11-12, GRE-1466). On 2026-11-12 `r
 
 A queued PR has not necessarily passed the whole suite. On its own head it passed clippy and the tests that `scripts/ci-affected-nextest-filter.py` selects: the changed crates and the crates that depend on them or read their sources, or `all()` when a shared input changed. A PR that changes no Rust input skips `rust (linux)`. Before this change the merge group was the only run of `all()` before a merge.
 
-The merge group now checks only that the queued PRs still format, compile and lint together, and `all()` first runs on the push to `main`, on all three systems. Two kinds of failure are therefore first seen on `main`, where `main-red.yml` reports them:
+The merge group now checks only that the queued PRs still format, compile and lint together, and `all()` first runs on the push to `main`, on Linux. Two kinds of failure are therefore first seen on `main`, where `main-red.yml` reports them:
 
 - a test that fails only when two PRs meet;
 - a test outside a PR's selection that the PR breaks.

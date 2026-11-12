@@ -643,9 +643,9 @@ def claude_call(tool, cwd="/", **data):
     return {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd, "tool_input": data}
 
 
-def grok_call(command, cwd):
+def grok_call(command, cwd, own=None):
     """The fields of a Grok PreToolUse payload captured on omarch-3, Grok's snake_case aliases included."""
-    data = {"command": command, "description": "d"}
+    data = {"command": command, "description": "d", **({} if own is None else {"cwd": own})}
     return {"hookEventName": "pre_tool_use", "hook_event_name": "PreToolUse", "cwd": cwd, "workspaceRoot": cwd,
             "toolName": "run_terminal_command", "toolInput": data, "toolInputTruncated": False,
             "tool_name": "run_terminal_command", "tool_input": data}
@@ -706,8 +706,8 @@ class ClaudeAdapterTests(unittest.TestCase):
             Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
             for command in filter(None, COMMANDS):
                 bash = hook(CLAUDE, claude_call("Bash", folder, command=command, description="d"))
-                for payload in (grok_call(command, folder), cursor_call(command, folder),
-                                cursor_call(command, own=folder), cursor_call(command, "/", os.path.relpath(folder, "/"))):
+                for payload in (grok_call(command, folder, folder), grok_call(command, "", folder),
+                                cursor_call(command, folder, folder), cursor_call(command, own=folder)):
                     with self.subTest(command=command, payload=payload):
                         result = hook(CLAUDE, payload)
                         self.assertEqual((result.returncode, result.stderr), (bash.returncode, bash.stderr))
@@ -720,13 +720,32 @@ class ClaudeAdapterTests(unittest.TestCase):
                     with self.subTest(command=command, payload=payload):
                         self.assertRefused(hook(CLAUDE, payload), "Only the coordinator worktree merges")
 
-    def test_cursor_shell_without_a_directory_uses_the_unknown_directory_rules(self):
+    def assertUnknownDirectory(self, payload_for):
         guard = load(CLI, "agent_guard_unknown_cwd")
         for command in ("git status", "cargo test", "git push origin HEAD", "git push -u origin HEAD:topic",
                         "cd /tmp && git push origin HEAD:topic", MERGE_FORM):
             with self.subTest(command=command):
-                result, reason = hook(CLAUDE, cursor_call(command)), guard.check_command(command, None)
+                result, reason = hook(CLAUDE, payload_for(command)), guard.check_command(command, None)
                 self.assertEqual((result.returncode, result.stderr), (2, f"pp guard: {reason}\n") if reason else (0, ""))
+
+    def test_cursor_shell_without_any_directory_uses_the_unknown_directory_rules(self):
+        self.assertUnknownDirectory(cursor_call)
+
+    def test_cursor_shell_without_its_own_directory_ignores_the_session_directory(self):
+        # A persistent Shell may have run cd since the session started in this folder.
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertUnknownDirectory(lambda command: cursor_call(command, folder))
+
+    def test_grok_shell_without_its_own_directory_ignores_the_session_directory(self):
+        # Grok sends the session's directory, which a persistent shell may have left.
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertUnknownDirectory(lambda command: grok_call(command, folder))
+
+    def test_relative_shell_directory_is_unknown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "sub").mkdir()
+            self.assertUnknownDirectory(lambda command: cursor_call(command, folder, "sub"))
+            self.assertUnknownDirectory(lambda command: grok_call(command, folder, "sub"))
 
     def test_file_tools_refuse_protected_paths(self):
         protected = {"/repo/.env": "environment files", "/repo/.git/config": "Git metadata",
@@ -774,7 +793,6 @@ class ClaudeAdapterTests(unittest.TestCase):
                         json.dumps({**grok_call("git status", folder), "cwd": 7}),
                         json.dumps(cursor_call("", folder)), json.dumps(cursor_call(["git", "status"], folder)),
                         json.dumps(cursor_call("git status", folder, own=7)),
-                        json.dumps(cursor_call("git status", folder, own="missing")),
                         json.dumps(cursor_call("git status", own=folder + "/missing")),
                         json.dumps({**cursor_call("git status", folder), "tool_input": "git status"}),
                         json.dumps({**cursor_call("git status", folder), "tool_name": "shell"}),
@@ -818,8 +836,18 @@ class CoordinatorMergeTests(unittest.TestCase):
     def results(self, command, cwd, coordinator):
         return (guard_call(execute_call(command, cwd), coordinator),
                 hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator),
-                hook(CLAUDE, grok_call(command, cwd), coordinator),
+                hook(CLAUDE, grok_call(command, cwd, cwd), coordinator),
                 hook(CLAUDE, cursor_call(command, own=cwd), coordinator))
+
+    def test_shells_that_may_have_left_the_coordinator_worktree_cannot_merge(self):
+        # The session started in the coordinator worktree, but a persistent shell may now be in a lane.
+        bash = hook(CLAUDE, claude_call("Bash", self.coordinator, command=MERGE_FORM), self.coordinator)
+        self.assertEqual(bash.returncode, 0, bash.stderr)
+        for payload in (grok_call(MERGE_FORM, self.coordinator), cursor_call(MERGE_FORM, self.coordinator)):
+            with self.subTest(payload=payload):
+                result = hook(CLAUDE, payload, self.coordinator)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Only the coordinator worktree merges", result.stderr)
 
     def test_lane_worktree_merges_are_refused(self):
         # OLD_MERGE_GATE is exactly what a lane following the retired merge_gate would run.

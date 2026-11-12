@@ -37,19 +37,19 @@ def field(data, name, where):
 
 
 def shell_directory(policy, payload, data):
-    """The directory a Grok or Cursor shell call runs in, or None when the payload leaves it unknown.
+    """The directory a Grok or Cursor shell call runs in, or None when it is unknown.
 
-    Cursor sends an empty cwd when the call runs in its shell's current directory. The policy then
-    applies its rules for an unknown directory, which refuse coordinator merges and pushes it cannot place.
+    Both CLIs can keep one shell across calls, so a call runs wherever an earlier cd left it unless it
+    names an absolute tool_input.cwd. The payload cwd is only the session's directory, so it never
+    stands in for the shell's. None applies the policy's rules for an unknown directory, which refuse
+    coordinator merges and pushes it cannot place.
     """
     base, own = payload.get("cwd", ""), data.get("cwd", "")
     if not isinstance(base, str) or not isinstance(own, str):
         raise ValueError("cwd and tool_input.cwd must be strings")
-    if own.strip() and (os.path.isabs(own) or base.strip()):
-        return policy.directory(os.path.join(base, own))
-    if own.strip() or not base.strip():
-        return None
-    return policy.directory(base)
+    if base.strip():
+        policy.directory(base)  # A malformed session directory still refuses the payload.
+    return policy.directory(own) if os.path.isabs(own) else None
 
 
 def decide(payload):

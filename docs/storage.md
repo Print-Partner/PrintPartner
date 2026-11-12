@@ -122,6 +122,37 @@ Each runtime stops on it instead of reopening the database:
 
 A downgrade refuses the live schema before restore cleanup. It preserves the database, all SQLite sidecars (`-wal`, `-shm`, `-journal`), saved backup archives, and pending restore uploads and stages. Repeated refused starts do not prune or replace these copies. This does not restore older data automatically; rollback after new writes still needs informed owner approval (ADR 0010).
 
+### Unsupported-schema acceptance evidence
+
+GRE-405 builds on two merged changes. GRE-1362 (#1666) added named schema
+paths, terminal version refusals, desktop recovery text and headless exit 78.
+GRE-1363 (#1699) moved restore cleanup after schema admission so a refused
+start preserves the database, SQLite sidecars and recovery copies.
+
+| Requirement | Existing verification |
+| --- | --- |
+| Fresh and Node schemas 31–34 | `ticket_t_7_migrations` checks the named paths and historical migration inputs. |
+| Version range and actionable recovery text | `schema_versions` checks the typed writer refusal and the Node lease refusal without changing database bytes. |
+| Downgrade preserves recovery copies | `downgrade_recovery` checks repeated refusal, an uncheckpointed WAL version, saved archives and staged copies. |
+| No headless reopen loop or partial startup | `ticket_t_8_versions_headless_refusals_exit_without_restarts` launches the executable three times for each old/new schema in both runtime modes. Each launch must exit 78 within 30 seconds, print exactly one diagnostic and recovery message, leave database bytes unchanged, and publish neither an origin, health status nor launch credential. |
+
+Schema admission changes no routes or workers. A refused startup never announces
+an origin or publishes launch credentials; it cannot activate a second mutation
+owner or fall back to the other runtime. Existing migration and restore parity
+fixtures remain the gates for those operations.
+
+Run the parent's acceptance selector with a nonzero count in both builds:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(ticket_t_8_versions)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_8_versions)' --success-output immediate
+```
+
+The feature-off selector covers storage refusal. The feature-on selector also
+covers both headless modes. The executable proof prints the runtime mode, attempt,
+exit code, version diagnostic and unchanged-byte result for every launch. These
+are disposable installations; no real library or printer is used.
+
 ## Ownership today
 
 - `pp-storage` owns the SQLite connection, migrations, the bounded settings writer, the read-only pool, the storage lease and safe backups.

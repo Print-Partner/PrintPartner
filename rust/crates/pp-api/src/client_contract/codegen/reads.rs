@@ -672,9 +672,7 @@ pub(super) fn build_workflows() -> Result<Vec<BuildWorkflow>, serde_json::Error>
         farm(5, 0, 0, 2),
     ]
     .iter()
-    .map(|facts| {
-        workflow::resolve(facts).map_err(<serde_json::Error as serde::ser::Error>::custom)
-    })
+    .map(|facts| workflow::resolve(facts).map_err(<serde_json::Error as serde::ser::Error>::custom))
     .collect()
 }
 
@@ -751,4 +749,3 @@ pub(super) fn shortfalls() -> Vec<FilamentShortfalls> {
         },
     ]
 }
-

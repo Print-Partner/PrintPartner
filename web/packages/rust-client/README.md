@@ -19,12 +19,11 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not edit them; change the Rust types or the metadata consumed by `export-rust-client` and regenerate.
 
-The exporter composes the base `CLIENT_ROUTES` and `document()` in
-`rust/crates/pp-api/src/client_contract.rs` with the first-run probe's
-`CLIENT_ROUTE` and `client_document()` in
-`rust/crates/pp-api/src/printer_host/probe.rs`. The probe module adds its DTO
-schemas and Rust-serialized fixtures. `document()` and `document_bytes()` return
-the base contract only; use the export binary for the complete generator input.
+`pp_api::client_contract::CLIENT_ROUTES` is the single route inventory.
+`document()` adds its DTO schemas and serialized fixtures, organized under
+`client_contract/codegen/`; `document_bytes()` is the complete, sorted export
+written by `export-rust-client`. `ClientRoute` and `ClientAuth` derive the one
+metadata serializer used for every route, including the first-run probe.
 
 | File | Contents |
 | --- | --- |
@@ -111,7 +110,7 @@ The emitter (`web/scripts/rust-contracts/client.mjs`, `rust-client-zod/1`) refus
 ## Add a route
 
 1. Make sure the request and response types derive `schemars::JsonSchema` under the `codegen` feature, and that the handler serializes that type rather than a `json!` literal.
-2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. The base uses `CLIENT_ROUTES` and `document()` in `rust/crates/pp-api/src/client_contract.rs`; the probe module supplies an extension composed by the binary. Include module metadata in `pp-core`'s mounted-route contract test as well.
+2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. Add the route to `CLIENT_ROUTES` in `rust/crates/pp-api/src/client_contract.rs` and its schemas and fixtures under `client_contract/codegen/`. The mounted-route contract test consumes that same inventory.
 3. Run `generate`, then `check`.
 
 ## Add a descriptor table

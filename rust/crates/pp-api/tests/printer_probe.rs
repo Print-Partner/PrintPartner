@@ -32,6 +32,7 @@ impl PrinterProbePort for Fake {
     ) -> Pin<Box<dyn Future<Output = PrinterProbeResult> + Send>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if request.kind == "wait" {
+            self.entered.notify_one();
             return Box::pin(std::future::pending());
         }
         if request.kind == "hold" {
@@ -185,19 +186,39 @@ async fn authenticated_probe_does_not_write_and_limits_requests_before_network_w
     ]
     .map(|p| std::fs::read(p).unwrap_or_default());
     assert_eq!(before, after);
-    let timed = loopback::send(
-        &router(Some("true")),
-        "POST",
-        path,
-        Some(r#"{"kind":"wait","address":"http://fixture.invalid"}"#),
-        cookie,
-    )
-    .await;
+    drop(app);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn probe_deadline_uses_eight_seconds_of_paused_time() {
+    let (_data, owner, fake) = fixture();
+    let app = router(&owner, fake.clone(), Some("true"));
+    let request = tokio::spawn(async move {
+        loopback::send(
+            &app,
+            "POST",
+            PATH,
+            Some(r#"{"kind":"wait","address":"http://fixture.invalid"}"#),
+            COOKIE,
+        )
+        .await
+    });
+    // Authenticate against the real writer before pausing the clock.
+    fake.entered.notified().await;
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    tokio::time::advance(std::time::Duration::from_secs(7)).await;
+    assert!(!request.is_finished());
+    // A timer created before pause can round up to the next millisecond tick.
+    tokio::time::advance(std::time::Duration::from_millis(1001)).await;
+    let timed = request.await.unwrap();
+    assert_eq!(started.elapsed(), std::time::Duration::from_millis(8001));
+    tokio::time::resume();
     assert_eq!(timed.0, 200);
     assert_eq!(
         pp_api::problem::without_envelope(timed.1)["reason"],
         "Printer probe timed out."
     );
-    drop(app);
     owner.shutdown().unwrap();
 }

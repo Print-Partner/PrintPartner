@@ -12,6 +12,8 @@
 
 /// What a request must present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "codegen", derive(serde::Serialize))]
+#[cfg_attr(feature = "codegen", serde(rename_all = "lowercase"))]
 pub enum ClientAuth {
     /// Loopback admission only; no session or API key.
     None,
@@ -29,6 +31,7 @@ impl ClientAuth {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "codegen", derive(serde::Serialize))]
 pub struct ClientRoute {
     /// The generated TypeScript route key.
     pub name: &'static str,
@@ -362,6 +365,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         text_params: &[],
         headers: &[],
     },
+    route(
+        "probePrinter",
+        "POST",
+        "/api/v2/printers/probe",
+        Some("PrinterProbeRequest"),
+        "PrinterProbeResult",
+    ),
 ];
 
 #[cfg(feature = "codegen")]

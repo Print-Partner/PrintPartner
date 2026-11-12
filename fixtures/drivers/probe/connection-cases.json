@@ -1,0 +1,15 @@
+[
+  {
+    "name": "moonraker-without-klippy-state",
+    "kind": "moonraker",
+    "routes": {"/server/info": [200, {"result": {"components": ["file_manager"]}}]}
+  },
+  {
+    "name": "prusalink-status-fallback",
+    "kind": "prusalink",
+    "routes": {
+      "/api/v1/info": [404, {}],
+      "/api/v1/status": [200, {"printer": {"state": "IDLE"}}]
+    }
+  }
+]

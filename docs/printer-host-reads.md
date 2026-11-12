@@ -68,6 +68,7 @@ The runtime test (`pp-core` `printer_host::ticket_t_21_ticket_t_22_*`) starts th
 
 ## First-run probe
 
+This unsaved-address endpoint is Rust-only; Node has no equivalent.
 With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, authenticated
 `POST /api/v2/printers/probe` accepts `{ "kind": "moonraker", "address": "http://printer.local" }`.
 The generated client calls it `probePrinter`. Kind may also be `prusalink`;
@@ -76,8 +77,26 @@ other kinds return an unsupported result without connecting. The response has
 A probe makes one unauthenticated GET through the existing driver and checked
 network guard. It accepts no credentials, saves nothing and never sends a print.
 The overall deadline is eight seconds, with one probe at a time and ten per
-minute; busy refusals do not consume that quota. Invalid request bodies return
-an `invalid_printer_probe` problem. Reasons contain neither the address nor upstream reply text. A 401 or
+minute, compared with five tests per minute for Node's saved-integration
+connection-test route. Busy refusals do not consume the Rust quota. Invalid request bodies return
+an `invalid_printer_probe` problem. Redirects are refused: a 3xx reply is not
+followed and reports an unidentified address. Reasons contain neither the
+address nor upstream reply text. A 401 or
 403 reports that credentials are needed. Capability names come from recognized
 protocol information; unreported capabilities stay absent. Saving is a separate,
 explicit action. LAN discovery and its recorded announcements remain GRE-1370.
+
+### Saved connection-test parity
+
+The recorded edge cases distinguish the saved, credentialed adapter test from
+the unsaved probe. The existing Rust adapter connection tests match Node:
+
+| Recorded response | Saved Node/Rust connection test | Unsaved Rust probe |
+| --- | --- | --- |
+| Moonraker JSON without `klippy_state` | Succeeds with `klippy: unknown` | Reachable, unidentified; one GET |
+| Older PrusaLink: `/api/v1/info` is 404, `/api/v1/status` is idle | Succeeds through the status fallback | Reachable, unidentified; one GET to `/api/v1/info` |
+
+The unsaved probe requires identifying information and never takes the saved
+adapter's credential or status fallback path. The fixtures and Node oracle
+check these differences without contacting a printer; see
+[probe tests](development/printer-probe-tests.md).

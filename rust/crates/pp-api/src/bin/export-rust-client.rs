@@ -4,9 +4,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let [_, path] = args.as_slice() else {
         return Err("Usage: export-rust-client PATH".into());
     };
-    std::fs::write(
-        path,
-        pp_api::printer_host::probe::client_document(pp_api::client_contract::document()?)?,
-    )?;
+    std::fs::write(path, pp_api::client_contract::document_bytes()?)?;
     Ok(())
 }

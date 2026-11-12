@@ -17,17 +17,15 @@ use pp_storage::{
         ProfileList, ProfileSummary,
     },
     checkoff_progress::wire::{
-        BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
-        ClaimUnattributedReceipt, ClaimUnattributedRequest, ClaimedLink,
-        DismissUnattributedReceipt, DismissUnattributedRequest, ManualBurstPart,
-        ManualBurstReceipt, ManualBurstRequest, UndoBatchReceipt, UndoBatchRequest, UnitPlate,
-        VerifyBatchReceipt, VerifyBatchRequest,
+        BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits, ClaimUnattributedReceipt,
+        ClaimUnattributedRequest, ClaimedLink, DismissUnattributedReceipt,
+        DismissUnattributedRequest, ManualBurstPart, ManualBurstReceipt, ManualBurstRequest,
+        UndoBatchReceipt, UndoBatchRequest, UnitPlate, VerifyBatchReceipt, VerifyBatchRequest,
     },
     plan_publication::preview::{
-        AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue,
-        HeaderChange, InputChange, PartRef, PlateChanges, PlateRef, PreviewChanges,
-        PreviewRevision, ProductionCheck, SnapshotNote, SpoolImpact, StockImpact, UnitChanges,
-        UnitRef, Unmappable,
+        AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, HeaderChange,
+        InputChange, PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision,
+        ProductionCheck, SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
     },
     plan_publication::{ApplyPlanDraftReceipt, ApplyRequest},
     read_model::{
@@ -37,8 +35,8 @@ use pp_storage::{
             FarmPrinterList, FileNameEvidence, HostOutcome, IntegrationKind, LoadedFilament,
             MatchBasis, MatchConfidence, MatchEvidence, MatchSuggestion, MatchSuggestionList,
             ObjectListEvidence, PrinterIntegration, PrinterReason, QueuedSend, ResolvedUnit,
-            SendQueue, SendState, SuggestedBuild, SuggestedPlate, TimeWindowEvidence,
-            UnitResult, UnmatchedPrint, UnmatchedPrintList,
+            SendQueue, SendState, SuggestedBuild, SuggestedPlate, TimeWindowEvidence, UnitResult,
+            UnmatchedPrint, UnmatchedPrintList,
         },
         planning::{
             BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, BuildPlanningReadiness,
@@ -50,15 +48,15 @@ use pp_storage::{
         },
     },
     required_units::{
-        AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
-        DraftListResponse, PartView, ReconciliationRequest, ReconciliationView, Workspace,
+        AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity, DraftListResponse,
+        PartView, ReconciliationRequest, ReconciliationView, Workspace,
     },
     working_drafts::{
         AbandonRequest, EditRequest,
         autosave::{AutosaveReceipt, DraftAutosaved, SavePlanChoicesRequest},
         header::{
-            BuildHeader, BuildHeaderView, DraftHeaderReceipt, DraftHeaderSaved,
-            DraftHeaderState, HeaderView, SaveDraftHeaderRequest,
+            BuildHeader, BuildHeaderView, DraftHeaderReceipt, DraftHeaderSaved, DraftHeaderState,
+            HeaderView, SaveDraftHeaderRequest,
         },
         restore::RestoreSnapshotRequest,
     },
@@ -76,6 +74,7 @@ use serde_json::{Map, Value, json};
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const UNICODE: &str = "Ünïcødé 🧵 \u{200d} 層";
 
+mod probe;
 mod reads;
 mod requests;
 use reads::*;
@@ -216,14 +215,8 @@ pub fn document() -> Result<Value, serde_json::Error> {
     )?;
     schema("Problem", schemars::schema_for!(Problem))?;
     schema("ProblemType", schemars::schema_for!(ProblemType))?;
-    let routes: Vec<Value> = CLIENT_ROUTES
-        .iter()
-        .map(|route| {
-            json!({"name": route.name, "method": route.method, "path": route.path,
-                "auth": route.auth.as_str(), "request": route.request, "response": route.response,
-                "text_params": route.text_params, "headers": route.headers})
-        })
-        .collect();
+    probe::schemas(&mut dtos)?;
+    let routes = serde_json::to_value(CLIENT_ROUTES)?;
     // Emitted as a TypeScript record keyed by `key`; rows in Rust order.
     let descriptors = json!([{"name": "printerDisplayDescriptors",
         "dto": "PrinterDisplayDescriptor", "key": "state",
@@ -604,6 +597,6 @@ fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
     }
     cases.extend(burst_fixtures()?);
     cases.extend(planning_fixtures()?);
+    cases.extend(probe::fixtures()?);
     Ok(cases)
 }
-

@@ -27,4 +27,5 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws
 sha2.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 pp-testkit = { path = "../pp-testkit" }

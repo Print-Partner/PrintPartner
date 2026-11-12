@@ -1,0 +1,23 @@
+{
+  "moonraker-without-klippy-state": {
+    "result": {
+      "ok": true,
+      "message": "Connected (klippy: unknown)"
+    },
+    "requests": [
+      "GET /server/info"
+    ]
+  },
+  "prusalink-status-fallback": {
+    "result": {
+      "ok": true,
+      "message": "Connected (Idle)"
+    },
+    "requests": [
+      "GET /api/v1/status",
+      "GET /api/v1/info",
+      "GET /api/v1/status",
+      "GET /api/v1/status"
+    ]
+  }
+}

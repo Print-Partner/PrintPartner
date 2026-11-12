@@ -798,6 +798,33 @@ mod tests {
                 || DETAILS.iter().any(|detail| body["detail"] == *detail))
     }
 
+    async fn assert_probe_classification(client: &reqwest::Client, origin: &str, cookie: &str) {
+        let printer = pp_testkit::moonraker::RecordedPrinter::start(vec![(
+            200,
+            br#"{"result":{"klippy_state":"ready","components":["file_manager"]}}"#,
+        )])
+        .unwrap();
+        let response = contract_request(
+            client,
+            origin,
+            ("POST", "/api/v2/printers/probe"),
+            &[],
+            Some(cookie),
+            Some(json!({"kind":"moonraker", "address":printer.url()})),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["reachable"], true);
+        assert_eq!(body["kind"], "moonraker");
+        assert_eq!(body["credentials_needed"], false);
+        assert_eq!(body["capabilities"], json!(["status", "files"]));
+        assert_eq!(printer.calls(), 1);
+        assert!(printer.request_lines()[0].starts_with("GET /server/info "));
+    }
+
     #[tokio::test]
     async fn client_routes_match_registrations() {
         use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
@@ -857,10 +884,7 @@ mod tests {
         let unregistered = unregistered.await.unwrap();
         assert_eq!(unregistered.status(), 404);
         assert_eq!(unregistered.text().await.unwrap(), "");
-        for route in CLIENT_ROUTES
-            .iter()
-            .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
-        {
+        for route in CLIENT_ROUTES {
             let path = route
                 .path
                 .replace("{id}", &build)
@@ -898,6 +922,7 @@ mod tests {
                 route.method
             );
         }
+        assert_probe_classification(&client, &origin, &cookie).await;
         server.stop().await.unwrap();
         let owner = Arc::into_inner(owner).expect("routers dropped");
         owner.into_inner().unwrap().shutdown().unwrap();

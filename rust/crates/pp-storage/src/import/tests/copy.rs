@@ -1,5 +1,7 @@
 use super::*;
+use crate::import::copy::{confirm_copy, copy_verified};
 use crate::import::{REPORT_FILE, import};
+use sha2::{Digest, Sha256};
 
 fn setting(database: &Path, sql: &str) -> String {
     let connection = Connection::open(database).unwrap();
@@ -171,4 +173,25 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
     );
     std::fs::remove_dir(destination.join(".pp-import")).unwrap();
     import(node_folder().path(), &destination).expect("the emptied folder imports");
+}
+
+#[test]
+fn a_copy_that_reads_back_differently_stops_the_import() {
+    let folder = tempfile::tempdir().unwrap();
+    let (from, to) = (
+        folder.path().join("source.stl"),
+        folder.path().join("copy.stl"),
+    );
+    std::fs::write(&from, "solid synthetic").unwrap();
+    assert_eq!(copy_verified(&from, &to).unwrap(), 15);
+    let stored = Sha256::digest("solid synthetic");
+    confirm_copy(&to, &stored).expect("an intact copy is confirmed");
+    // One byte of the copy changes on disk after it was written.
+    std::fs::write(&to, "solid synthetiC").unwrap();
+    let error = confirm_copy(&to, &stored).unwrap_err();
+    assert!(
+        matches!(&error, ImportError::CopyMismatch(copy) if *copy == to),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("does not match its source"));
 }

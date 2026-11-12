@@ -60,6 +60,8 @@ pub enum ImportError {
     Unnamed(Vec<String>),
     /// The data is under an installation value the Rust runtime cannot read.
     Installation(String),
+    /// A copied file read back differently from its source.
+    CopyMismatch(PathBuf),
     /// The staging directory has too little free space.
     NoSpace {
         directory: PathBuf,
@@ -127,6 +129,11 @@ impl fmt::Display for ImportError {
             Self::Installation(value) => write!(
                 f,
                 "The data is under the installation value {value:?}, and Rust reads only \"default\""
+            ),
+            Self::CopyMismatch(copy) => write!(
+                f,
+                "The copy {} does not match its source. Check the disk, empty the destination and retry",
+                copy.display()
             ),
             Self::NoSpace {
                 directory,

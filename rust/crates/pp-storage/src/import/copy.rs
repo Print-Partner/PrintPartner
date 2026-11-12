@@ -193,7 +193,7 @@ fn copy_roots(source: &Path, stage: &Path) -> Result<(u64, u64), ImportError> {
 
 /// Copies one file, keeps its modification time, and reads the copy back:
 /// its SHA-256 must equal that of the bytes read from the source.
-fn copy_verified(from: &Path, to: &Path) -> Result<u64, ImportError> {
+pub(super) fn copy_verified(from: &Path, to: &Path) -> Result<u64, ImportError> {
     let missing = || unreadable(from, std::io::ErrorKind::NotFound.into());
     let mut source = open_regular(from)?.ok_or_else(missing)?;
     let mut copy = File::create_new(to)?;
@@ -213,14 +213,19 @@ fn copy_verified(from: &Path, to: &Path) -> Result<u64, ImportError> {
         copy.set_modified(modified)?;
     }
     copy.sync_all()?;
+    confirm_copy(to, read.finalize().as_slice())?;
+    Ok(bytes)
+}
+
+/// Reads the copy at `to` back from disk: its SHA-256 must be `expected`,
+/// the digest of the bytes read from the source.
+pub(super) fn confirm_copy(to: &Path, expected: &[u8]) -> Result<(), ImportError> {
     let mut written = Sha256::new();
     std::io::copy(&mut File::open(to)?, &mut written)?;
-    if read.finalize() != written.finalize() {
-        return Err(
-            anyhow::anyhow!("The copy of {} does not match its source", from.display()).into(),
-        );
+    if written.finalize().as_slice() != expected {
+        return Err(ImportError::CopyMismatch(to.to_owned()));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 /// Validates a backup archive and extracts all of it into `stage`.

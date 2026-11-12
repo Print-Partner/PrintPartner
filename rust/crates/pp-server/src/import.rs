@@ -52,7 +52,9 @@ pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         }
         Err(error) => {
             let outcome = match error {
-                node_import::ImportError::Failed(_) => "failed",
+                node_import::ImportError::Io { .. } | node_import::ImportError::Sqlite(_) => {
+                    "failed"
+                }
                 _ => "refused",
             };
             eprintln!("import {outcome}: {error}");

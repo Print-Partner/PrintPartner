@@ -106,5 +106,8 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
     );
     let (code, _, error) = import_dry_run("1", &rust.path().join("missing"));
     assert_eq!(code, Some(1));
-    assert!(error.starts_with("import failed: Read "), "{error}");
+    assert!(
+        error.starts_with("import failed: ") && error.contains("missing: "),
+        "{error}"
+    );
 }

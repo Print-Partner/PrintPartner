@@ -285,5 +285,6 @@ pub(super) fn save(
     Ok(())
 }
 
+/// Shared with `source_roles` tests, which start from a created brief.
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

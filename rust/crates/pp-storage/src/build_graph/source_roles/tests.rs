@@ -1,49 +1,36 @@
 use super::*;
 use crate::{
-    Limits, SettingSnapshot, WriterOwner,
-    auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
-    build_graph::NewBuild,
-    write::test_support::{WAIT, first_session, seed_setting},
+    SettingSnapshot,
+    auth::Secret,
+    build_graph::{
+        NewBuild,
+        create_with_brief::tests::{Fixture as Created, IDLE},
+    },
+    write::test_support::{WAIT, seed_setting},
 };
 use serde_json::{Value, json};
+use std::ops::Deref;
 
-static IDLE: AtomicBool = AtomicBool::new(false);
-const POLICY: AuthPolicy = AuthPolicy {
-    registration: RegistrationPolicy::FirstAccountOnly,
-    first_user: FirstUserTenant::NewUser,
-    session_tenant: SessionTenantPolicy::SingleAccountDefault,
-};
-
+/// A Build whose brief `create_with_brief` stored, then given evidence `e1`
+/// (Source 11) and `e2` (Source 12) with no roles and draft 5.
 struct Fixture {
-    _directory: tempfile::TempDir,
-    owner: WriterOwner,
-    client: BuildGraphClient,
-    token: String,
+    created: Created,
     build: PositiveId,
 }
 
+impl Deref for Fixture {
+    type Target = Created;
+    fn deref(&self) -> &Created {
+        &self.created
+    }
+}
+
 impl Fixture {
-    /// A Build whose brief `create_with_brief` stored, then given evidence
-    /// `e1` (Source 11) and `e2` (Source 12) with no roles and draft 5.
     fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
-        let token = first_session(&owner);
-        seed_setting(&owner, "feature_toggles", r#"{"orders":true}"#);
-        let client = owner.build_graph_with_policy(POLICY).unwrap();
-        let session = Credential::Session(Secret::new(token.clone()));
+        let created = Created::new();
         let new = NewBuild::parse("Voron", "A Voron 2.4", None).unwrap();
-        let build = client
-            .create_with_brief(session, new, &IDLE, WAIT)
-            .unwrap()
-            .id;
-        let fixture = Self {
-            _directory: directory,
-            owner,
-            client,
-            token,
-            build,
-        };
+        let build = created.create(new).unwrap().id;
+        let fixture = Self { created, build };
         let mut brief = fixture.brief();
         brief["evidence"] = json!([evidence("e1", 11), evidence("e2", 12)]);
         brief["draft_id"] = json!(5);
@@ -51,10 +38,6 @@ impl Fixture {
         brief["updated_at"] = json!("2020-01-01T00:00:00.000Z");
         fixture.store(&brief);
         fixture
-    }
-
-    fn session(&self) -> Credential {
-        Credential::Session(Secret::new(self.token.clone()))
     }
 
     fn key(&self) -> String {

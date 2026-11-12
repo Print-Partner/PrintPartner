@@ -307,22 +307,12 @@ async fn mcp_source_roles_propose_refuses_with_a_code() {
 async fn mcp_source_roles_without_a_key_is_refused_and_proposes_nothing() {
     let seeded = Seeded::new().await;
     let before = seeded.state();
-    let session_id = seeded
-        .headers
-        .iter()
-        .find(|(name, _)| name == "mcp-session-id")
-        .map(|(_, value)| value.as_str())
-        .unwrap();
-    let request = json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-        "params": { "name": TOOL, "arguments": {
-            "plan_id": seeded.build, "roles": [{ "evidence_id": "E1", "role": "addon" }] } } });
-    let unkeyed = [
-        ("mcp-session-id", session_id),
-        ("mcp-protocol-version", "2025-06-18"),
-        // Same-origin, so only the key check can refuse.
-        ("origin", SELF),
-    ];
-    let (status, _, _) = seeded.server.post("/api/v1/mcp", &unkeyed, &request).await;
+    let arguments =
+        json!({ "plan_id": seeded.build, "roles": [{ "evidence_id": "E1", "role": "addon" }] });
+    let status = seeded
+        .server
+        .unkeyed_call_status(&seeded.headers, TOOL, arguments)
+        .await;
     assert_eq!(status, 401);
     assert!(pending(&seeded.server, &seeded.headers).await.is_empty());
     assert_eq!(seeded.state(), before);

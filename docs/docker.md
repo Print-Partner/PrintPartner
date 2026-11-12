@@ -121,12 +121,12 @@ The image's `HEALTHCHECK` runs `readiness` every 30 s, with a 5 s timeout, a 120
 
 `pp-server` registers its signal handlers after startup finishes. A SIGTERM during startup (lease, preflight, migrations) ends the process at once with exit 143 and no drain; SQLite transactions keep the database consistent, and the next start recovers.
 
-Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the desktop runtime. The container then exits 0. `--restart unless-stopped` starts it again.
+Signing out (`POST /auth/logout`) revokes the account session and clears its cookie; `pp-server` keeps serving. The browser keeps its admission from the sign-in link, so signing in again (`POST /auth/login`) needs no restart and no new `pp-server bootstrap-url`. The old session authorizes no new request; an event or printer stream it opened ends at its next session check, within about 15 seconds. On the desktop app, signing out still ends the runtime.
 
 ## What the Rust-only image cannot do yet
 
 - **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
-- **MCP is off.** The gateway answers 403 to `/mcp` and `/api/v1/mcp` in Rust-only mode, whatever key a client sends.
+- **MCP only on loopback.** `/mcp` and `/api/v1/mcp` answer an MCP client that sends a valid API key, and, like the other Rust routes, refuse a non-loopback peer. See [Assistant MCP](assistant-mcp.md).
 - **No sign-in screen.** The image serves the replacement UI with the GRE-1117 CSP, and the replacement UI has no sign-in or setup screen yet ([GRE-1429](https://linear.app/greetz/issue/GRE-1429)). The bootstrap URL admits the browser and the UI loads, but product routes answer 401 until an account session exists: `POST /auth/register` once, then `POST /auth/login`.
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 

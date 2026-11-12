@@ -519,11 +519,13 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 /// gateway answers admitted requests from the `pp-api` routers. The marker
 /// decision runs first; release verification, cutover recovery and source-sync
 /// admission run only on an accepted directory (`rust_startup::admit`).
+/// `server` is the headless `pp-server`: it checks for server updates, and
+/// sign-out keeps it serving. The desktop launcher does neither.
 #[cfg(feature = "desktop_rebuild")]
 async fn start_rust_resources(
     input: DesktopLaunch,
     desktop_rebuild: DesktopRebuild,
-    server_updates: bool,
+    server: bool,
 ) -> Result<Resources> {
     let (assets, replacement_present) = rust_startup::select_frontend(&input.bundle, input.assets)?;
     let data_dir = prepare_data_dir(&input.data_dir)?;
@@ -578,15 +580,20 @@ async fn start_rust_resources(
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        server_updates,
+        server,
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
     let product = move |status| product.merge(status_routes.mount(status));
+    let sign_out = if server {
+        pp_gateway::SignOut::KeepsServing
+    } else {
+        pp_gateway::SignOut::EndsRuntime
+    };
     let gateway = match snapshot {
-        Some(files) => {
-            Gateway::start_rust_only_with_assets(listener, assets, files, product, receiver, hosts)
-        }
+        Some(files) => Gateway::start_rust_only_with_assets(
+            listener, assets, files, product, receiver, hosts, sign_out,
+        ),
         None => Gateway::start_rust_only(
             listener,
             assets,
@@ -594,6 +601,7 @@ async fn start_rust_resources(
             product,
             receiver,
             hosts,
+            sign_out,
         ),
     }?;
     // The writer opened above and the gateway is serving.

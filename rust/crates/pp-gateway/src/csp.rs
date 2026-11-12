@@ -65,6 +65,7 @@ impl Fixture {
                         product,
                         receiver,
                         Arc::new(NoHosts),
+                        SignOut::EndsRuntime,
                     ),
                     ServedUi::Legacy => Gateway::start_rust_only(
                         listener,
@@ -73,6 +74,7 @@ impl Fixture {
                         product,
                         receiver,
                         Arc::new(NoHosts),
+                        SignOut::EndsRuntime,
                     ),
                 }
                 .unwrap()

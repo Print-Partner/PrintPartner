@@ -140,8 +140,16 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     }
     let scalars: Vec<&String> = report.scalar_settings.iter().collect();
     assert_eq!(scalars, ["date_format"]);
-    let created = Shape::SettingPrefix("build_planning.create.");
-    assert!(report.copied.contains(&(created, 1)), "{:?}", report.copied);
+    // Settings no Rust code reads are named, so they are kept and not flagged.
+    for prefix in ["build_planning.create.", "filename_grouping:"] {
+        let kept = (Shape::SettingPrefix(prefix), 1);
+        assert!(report.unused.contains(&kept), "{:?}", report.unused);
+    }
+    assert_eq!(
+        (report.installation.as_deref(), report.users),
+        (Some("default"), 0)
+    );
+    assert_eq!(report.destination, None);
     assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
 
     let text = report.to_string();
@@ -149,6 +157,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
     holds("step 3 pending: setting printer.fleet = 2");
     holds("Stored JSON the inventory does not name:\n  none");
+    holds("Kept, not used by Rust:\n  setting build_planning.create.* = 1");
     // No stored value: not the integration's key, a printer name or a free-text key.
     let stored = [
         synthetic::INTEGRATION_SECRET,
@@ -181,12 +190,86 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     execute(
         &folder,
         "UPDATE build_profiles SET tenant_id = 'solo'; UPDATE projects SET tenant_id = 'solo';
-         UPDATE app_settings SET value = '{}' WHERE key = 'printer.fleet';",
+         UPDATE app_settings SET value = '{}' WHERE key = 'printer.fleet';
+         INSERT INTO users (id, display_name, created_at) VALUES
+           ('synthetic-a', 'Synthetic A', '2026-10-02'), ('synthetic-b', 'Synthetic B', '2026-10-02');",
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
     let solo = vec![("solo".to_owned(), synthetic::SOURCES)];
     assert_eq!(by_tenant(&report, "projects"), solo);
+    assert_eq!(
+        (report.installation.as_deref(), report.users),
+        (Some("solo"), 2)
+    );
+    let text = report.to_string();
+    assert!(
+        text.contains("installation value \"solo\". Rust reads only \"default\""),
+        "{text}"
+    );
+    assert!(text.contains("2 accounts are stored."), "{text}");
+}
+
+#[test]
+fn a_destination_is_inspected_and_never_created() {
+    let parent = tempfile::tempdir().unwrap();
+    let absent = parent.path().join("absent");
+    assert_eq!(inspect_destination(&absent).unwrap(), Destination::Free);
+    assert!(!absent.exists(), "inspecting created the destination");
+    let leftovers = Installation::create(Fixture::EmptyWithLeaseLeftovers).unwrap();
+    assert_eq!(
+        inspect_destination(leftovers.path()).unwrap(),
+        Destination::Free
+    );
+    let marked = Installation::create(Fixture::RustMarked).unwrap();
+    assert_eq!(
+        inspect_destination(marked.path()).unwrap(),
+        Destination::Marked
+    );
+    let node = Installation::create(Fixture::NodeSchema34).unwrap();
+    let before = state(node.path());
+    let holds = Destination::NotEmpty(pp_testkit::DATABASE_FILE.into());
+    assert_eq!(inspect_destination(node.path()).unwrap(), holds);
+    assert!(
+        before == state(node.path()),
+        "inspecting changed the destination"
+    );
+}
+
+#[test]
+fn staging_refuses_with_the_bytes_needed_and_free() {
+    let directory = tempfile::tempdir().unwrap();
+    let ImportError::NoSpace { needed, free, .. } =
+        ensure_space(directory.path(), u64::MAX).unwrap_err()
+    else {
+        panic!("a directory cannot have u64::MAX bytes free");
+    };
+    assert_eq!(needed, u64::MAX);
+    let text = ensure_space(directory.path(), u64::MAX)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        text.contains(&format!("needs {needed} bytes")) && text.contains("Set TMPDIR"),
+        "{text}"
+    );
+    assert!(free > 0 && ensure_space(directory.path(), 1).is_ok());
+}
+
+#[test]
+fn the_staged_upgrade_keeps_no_rollback_copies() {
+    for copies in [false, true] {
+        let folder = node_folder();
+        let now = crate::auth::catalog_timestamp();
+        let (connection, ready) =
+            schema::initialize_with(&folder.database_path(), 34, &now, copies).unwrap();
+        drop(connection);
+        assert_eq!(
+            (ready.previous_version, ready.version),
+            (34, versions::RUST_SCHEMA)
+        );
+        assert_eq!(ready.backup.is_some(), copies);
+        assert_eq!(folder.path().join("backups").exists(), copies);
+    }
 }
 
 #[test]

@@ -239,3 +239,30 @@ async fn mcp_draft_part_edit_needs_an_api_key() {
     assert!(session.is_none());
     assert_eq!(parts(&database), before);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_draft_part_edit_takes_the_ids_get_plan_draft_returns() {
+    let (server, headers, database) = fixture().await;
+    let (read, failed) = tool(&server, &headers, "get_plan_draft", json!({"plan_id":1})).await;
+    assert!(!failed, "{read}");
+    let draft = &read["draft"];
+    let part = &draft["parts"][0];
+    let part_id = part["draft_part_id"].clone();
+    let args = json!({
+        "plan_id": 1,
+        "draft_id": draft["draft_id"],
+        "expected_snapshot_digest": draft["snapshot_digest"],
+        "parts": [{"part_id": part_id, "included": !part["included"].as_bool().unwrap()}],
+    });
+    let (proposed, failed) = tool(&server, &headers, TOOL, args).await;
+    assert!(!failed, "{proposed}");
+    let id = proposed["action"]["id"].as_str().unwrap();
+    let (confirmed, failed) =
+        tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+    assert!(!failed, "{confirmed}");
+    assert_eq!(confirmed["result"]["draft_id"], draft["draft_id"]);
+    assert_eq!(confirmed["result"]["parts"][0]["part_id"], part_id);
+    let stored = parts(&database);
+    let edited = stored.iter().find(|row| json!(row.0) == part_id).unwrap();
+    assert_eq!(edited.1, !part["included"].as_bool().unwrap());
+}

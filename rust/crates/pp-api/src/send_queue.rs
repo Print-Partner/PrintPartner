@@ -12,9 +12,14 @@
 //!   `queued` items, optionally for one `printer_id`, at most one per printer.
 //!   An item whose printer is busy or reserved stays queued.
 //! - `POST /api/v2/printer-send-queue/{id}/reconcile`: the user's answer for a
-//!   send with an unknown outcome, `{"printed": true|false, "job_id": ...}`, where
-//!   `job_id` is the item's `upload_job_id` the user answered about.
+//!   send with an unknown outcome, [`ReconcileSendRequest`], where `job_id`
+//!   is the item's `upload_job_id` the user answered about.
 //! - `DELETE /api/v2/printer-send-queue/{id}` (Remove).
+//!
+//! Add, Reconcile and Remove answer [`QueuedSendReceipt`]; Send now answers
+//! [`SendNowReceipt`]. Both carry the item as the queue read shows it,
+//! without its staged file path or host name. [`CLIENT_ROUTES`] lists these
+//! four for the generated client; Send ready answers untyped JSON.
 //!
 //! A dispatch only claims the item and enqueues its durable printer-upload
 //! job in one writer transaction; the send worker uploads it. Send now on an
@@ -23,6 +28,7 @@
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, failure, internal, ok_json, read_error},
+    client_contract::{ClientRoute, route},
     loopback::PresentedCredential,
     multipart_form::{self, Limits},
     printer_host::{Windows, throttled},
@@ -37,14 +43,43 @@ use axum::{
 };
 use pp_storage::{
     checkoff_progress::print_file::MAX_UPLOAD_BYTES,
+    read_model::farm::QueuedSend,
     send_queue::writes::{NewItem, Reply, Request, SendQueueClient, may_have_written},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashSet,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+
+/// Add, Reconcile and Remove: the item as it now is.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct QueuedSendReceipt {
+    pub item: QueuedSend,
+}
+
+/// Send now: the claimed `sending` item and the upload job that settles it.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct SendNowReceipt {
+    pub item: QueuedSend,
+    pub job_id: String,
+}
+
+/// Reconcile's body: whether the send `job_id` printed. `job_id` is the
+/// item's `upload_job_id` the user answered about, so a late answer never
+/// closes a newer send.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReconcileSendRequest {
+    pub printed: bool,
+    /// May be omitted: serde reads a missing `Option` as `None`.
+    pub job_id: Option<String>,
+}
 
 /// Whether a stored item can go to its printer now. `pp-core` implements it
 /// over the fleet settings, the staged file and the status watchers.
@@ -230,10 +265,14 @@ async fn writes<T: Send + 'static>(
 
 fn present(reply: Option<anyhow::Result<Reply>>) -> Response {
     match reply {
-        Some(Ok(Reply::Item(item))) => ok_json(&json!({ "item": item })),
-        Some(Ok(Reply::Dispatched { item, job_id })) => {
-            ok_json(&json!({ "item": item, "job_id": job_id }))
-        }
+        Some(Ok(Reply::Item(item))) => match QueuedSend::from_item(&item) {
+            Some(item) => ok_json(&QueuedSendReceipt { item }),
+            None => internal(),
+        },
+        Some(Ok(Reply::Dispatched { item, job_id })) => match QueuedSend::from_item(&item) {
+            Some(item) => ok_json(&SendNowReceipt { item, job_id }),
+            None => internal(),
+        },
         Some(Ok(Reply::Refused {
             status,
             detail,
@@ -340,20 +379,12 @@ async fn reconcile(
 /// The user's answer as a [`Request::Reconcile`], or the 400 detail for a
 /// bad body.
 fn reconcile_request(id: &str, body: &[u8]) -> Result<Request, &'static str> {
-    let body = object(body).ok_or(NOT_OBJECT)?;
-    let printed = body
-        .get("printed")
-        .and_then(Value::as_bool)
-        .ok_or("printed must be true or false")?;
-    let job_id = match body.get("job_id") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(job_id)) => Some(job_id.clone()),
-        Some(_) => return Err("job_id must be a string or null"),
-    };
+    let body: ReconcileSendRequest = serde_json::from_slice(body)
+        .map_err(|_| "Send {\"printed\": true or false, \"job_id\": the send's upload_job_id}")?;
     Ok(Request::Reconcile {
         id: id.trim().to_owned(),
-        job_id,
-        printed,
+        job_id: body.job_id,
+        printed: body.printed,
     })
 }
 
@@ -455,4 +486,130 @@ fn unsettled(error: &anyhow::Error) -> &'static str {
         }
         _ => "This item's send could not be confirmed; reread the queue",
     }
+}
+
+/// The send routes in the generated client, composed by `export-rust-client`
+/// and checked by `pp-core`'s mounted-route contract test. Add to queue takes
+/// a `multipart/form-data` body, so it lists no request DTO; Send now sends no
+/// body, since the replacement UI never sends `force`.
+pub const CLIENT_ROUTES: [ClientRoute; 4] = [
+    route(
+        "addQueuedSend",
+        "POST",
+        "/api/v2/printer-send-queue",
+        None,
+        "QueuedSendReceipt",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "sendQueuedNow",
+            "POST",
+            "/api/v2/printer-send-queue/{id}/dispatch",
+            None,
+            "SendNowReceipt",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "reconcileQueuedSend",
+            "POST",
+            "/api/v2/printer-send-queue/{id}/reconcile",
+            Some("ReconcileSendRequest"),
+            "QueuedSendReceipt",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "removeQueuedSend",
+            "DELETE",
+            "/api/v2/printer-send-queue/{id}",
+            None,
+            "QueuedSendReceipt",
+        )
+    },
+];
+
+/// Adds [`CLIENT_ROUTES`], their DTO schemas and Rust-serialized fixtures to
+/// the generator input.
+#[cfg(feature = "codegen")]
+pub fn client_document(document: &mut Value) -> Result<(), serde_json::Error> {
+    use pp_storage::read_model::farm::SendState;
+    document["dtos"]["QueuedSendReceipt"] =
+        serde_json::to_value(schemars::schema_for!(QueuedSendReceipt))?;
+    document["dtos"]["SendNowReceipt"] =
+        serde_json::to_value(schemars::schema_for!(SendNowReceipt))?;
+    // The client always sends `job_id`, null included; the route also
+    // takes it omitted.
+    let mut reconcile = schemars::schema_for!(ReconcileSendRequest);
+    if let Some(object) = reconcile.schema.object.as_mut() {
+        object.required.insert("job_id".into());
+    }
+    document["dtos"]["ReconcileSendRequest"] = serde_json::to_value(reconcile)?;
+    if let Some(routes) = document["routes"].as_array_mut() {
+        for route in CLIENT_ROUTES {
+            routes.push(serde_json::to_value(route)?);
+        }
+    }
+    let item = |state, filled: bool| QueuedSend {
+        id: "send-1".into(),
+        filename: "Ünïcødé 🧵 層.gcode".into(),
+        printer_id: "printer-0".into(),
+        profile_id: Some(9_007_199_254_740_991),
+        state,
+        start: !filled,
+        wait_for_idle: !filled,
+        unit_count: 0,
+        created_at: Some("2026-11-12T00:00:00.000Z".into()),
+        updated_at: Some("2026-11-12T00:10:00.000Z".into()),
+        error: filled.then(|| "Upload failed (HTTP 500)".into()),
+        upload_job_id: filled.then(|| "job-1".into()),
+        outcome_unknown: filled,
+    };
+    let served = |dto: &str, name: &str, value: Value| json!({"dto": dto, "name": name, "value": value, "rust_accepts": true});
+    let request = |name: &str, value: Value| {
+        let rust_accepts = serde_json::from_value::<ReconcileSendRequest>(value.clone()).is_ok();
+        json!({"dto": "ReconcileSendRequest", "name": name, "value": value, "rust_accepts": rust_accepts})
+    };
+    let cases = [
+        served(
+            "QueuedSendReceipt",
+            "queued",
+            serde_json::to_value(QueuedSendReceipt {
+                item: item(SendState::Queued, false),
+            })?,
+        ),
+        served(
+            "QueuedSendReceipt",
+            "outcome-unknown",
+            serde_json::to_value(QueuedSendReceipt {
+                item: item(SendState::Error, true),
+            })?,
+        ),
+        served(
+            "SendNowReceipt",
+            "sending",
+            serde_json::to_value(SendNowReceipt {
+                item: QueuedSend {
+                    upload_job_id: Some("job-1".into()),
+                    ..item(SendState::Sending, false)
+                },
+                job_id: "job-1".into(),
+            })?,
+        ),
+        request("printed", json!({"printed": true, "job_id": "job-1"})),
+        request("no-job", json!({"printed": false, "job_id": null})),
+        request(
+            "unknown-key",
+            json!({"printed": true, "job_id": null, "force": true}),
+        ),
+        request("printed-text", json!({"printed": "no"})),
+        request("printed-missing", json!({"job_id": "job-1"})),
+    ];
+    if let Some(fixtures) = document["fixtures"].as_array_mut() {
+        fixtures.extend(cases);
+    }
+    Ok(())
 }

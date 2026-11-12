@@ -302,10 +302,14 @@ may have happened. An unknown printer send becomes reconciliation work, never a
 second send. An outbox is suitable for at-least-once notifications, not automatic
 printer resend. Spoolman deductions need their own duplicate/reconciliation rules.
 
-Require a send capability constructible only from an authenticated, explicitly
-confirmed user action. A freely constructible `Actor::User` enum alone is not
-authorization. MCP/background watchers cannot mint the capability. Upload-only
-and upload-and-start are separate confirmed effects; upload-only is the default.
+A printer send starts only from a signed-in request to the send queue routes
+(`pp_api::send_queue`): Add to queue stages the file and sends nothing, and
+Send now or Send ready is each one explicit user action. Reconcile only
+records the user's answer about an unknown send and never sends. No MCP tool
+and no watcher calls `SendQueueClient`, and there is no separate send
+capability type (GRE-1103 design call 4). Adding an MCP send tool needs an
+owner decision. Upload-only and upload-and-start are separate confirmed
+effects; upload-only is the default.
 Shutdown stops admission, signals cancellation, settles permitted writes and
 joins workers before releasing the directory lock.
 
@@ -328,10 +332,12 @@ Add method/path/auth/request/response metadata tied to actual Rust registration,
 including the existing `/api/v2` draft routes. `web/packages/rust-client` is
 that package for Builds list and detail, layers, `/api/v2` drafts and health. Its
 exported route table combines `pp_api::client_contract::CLIENT_ROUTES` with
-`pp_api::printer_host::probe::CLIENT_ROUTE`. The `export-rust-client` binary
+`pp_api::printer_host::probe::CLIENT_ROUTE` and
+`pp_api::send_queue::CLIENT_ROUTES`. The `export-rust-client` binary
 composes their metadata, DTO schemas and serialized fixtures; the base
-`document()` and `document_bytes()` omit the probe extension. A `pp-core` test
-checks both route inventories against the composed routers. Its
+`document()` and `document_bytes()` omit the probe and send queue extensions.
+A `pp-core` test checks all three route inventories against the composed
+routers. Its
 [README](../web/packages/rust-client/README.md) lists the coverage and wire rules. REST shape may change for the new
 UI; do not invent `/api/v3` or promise old aliases for screen parity. Preserve
 external MCP paths/tool names and verify the actual inventory before retirement.

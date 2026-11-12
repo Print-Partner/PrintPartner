@@ -260,3 +260,106 @@ fn ticket_t_26_a_legacy_setting_wins_over_table_rows() {
         )]
     );
 }
+
+#[test]
+fn an_error_item_reads_outcome_unknown_only_when_send_now_refuses_it() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(include_str!("../jobs/schema.sql"))
+        .unwrap();
+    for (id, tenant, kind, state) in [
+        (
+            "job-held",
+            "default",
+            "printer-upload",
+            "reconciliation_required",
+        ),
+        ("job-failed", "default", "printer-upload", "failed"),
+        (
+            "job-quarantined",
+            "default",
+            "printer-upload",
+            "quarantined",
+        ),
+        (
+            "job-other",
+            "other",
+            "printer-upload",
+            "reconciliation_required",
+        ),
+        ("job-sync", "default", "sync", "reconciliation_required"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO durable_jobs(id,tenant,kind,state,resource,version,generation,created,updated,document) VALUES(?1,?2,?3,?4,'',1,1,0,0,'{}')",
+                params![id, tenant, kind, state],
+            )
+            .unwrap();
+    }
+    let item = |state: &str, job: Option<&str>, error: Option<&str>| json!({"id": "q", "state": state, "upload_job_id": job, "error": error});
+    let cases = [
+        (item("queued", None, None), false),
+        (
+            item("error", Some("job-held"), Some(UNKNOWN_OUTCOME_ERROR)),
+            true,
+        ),
+        (
+            item("error", Some("job-held"), Some(INTERRUPTED_ERROR)),
+            true,
+        ),
+        (
+            item(
+                "error",
+                Some("job-failed"),
+                Some("Upload failed (HTTP 500)"),
+            ),
+            false,
+        ),
+        // An untrusted job document is never shown as safe to send.
+        (
+            item("error", Some("job-quarantined"), Some("Upload failed")),
+            true,
+        ),
+        // A send Node started has no Rust job: Node's restart text decides.
+        (
+            item("error", Some("node-job"), Some(INTERRUPTED_ERROR)),
+            true,
+        ),
+        (item("error", None, Some(INTERRUPTED_ERROR)), true),
+        (
+            item("error", None, Some("Artifact file missing on disk")),
+            false,
+        ),
+        // Another tenant's or kind's job is no Rust upload of this item.
+        (
+            item("error", Some("job-other"), Some(UNKNOWN_OUTCOME_ERROR)),
+            false,
+        ),
+        (
+            item("error", Some("job-sync"), Some(INTERRUPTED_ERROR)),
+            true,
+        ),
+        (item("done", Some("job-held"), None), false),
+    ];
+    let (mut items, expected): (Vec<_>, Vec<_>) = cases.into_iter().unzip();
+    mark_outcomes(Some(&connection), "default", &mut items).unwrap();
+    let marked: Vec<_> = items
+        .iter()
+        .map(|item| item["outcome_unknown"].clone())
+        .collect();
+    assert_eq!(
+        marked,
+        expected.into_iter().map(Value::Bool).collect::<Vec<_>>()
+    );
+
+    // Items still in Node's setting have no Rust job.
+    let mut legacy = vec![
+        item("error", Some("job-held"), Some("Upload failed")),
+        item("error", Some("job-held"), Some(INTERRUPTED_ERROR)),
+    ];
+    mark_outcomes(None, "default", &mut legacy).unwrap();
+    assert_eq!(
+        (&legacy[0]["outcome_unknown"], &legacy[1]["outcome_unknown"]),
+        (&json!(false), &json!(true))
+    );
+}

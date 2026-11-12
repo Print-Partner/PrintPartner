@@ -788,6 +788,7 @@ mod tests {
                 "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
             "ClaimUnattributedRequest" => json!({"profile_id": 1}),
             "DismissUnattributedRequest" => json!({}),
+            "ReconcileSendRequest" => json!({"printed": false, "job_id": null}),
             other => panic!("no sample body for {other}"),
         }
     }
@@ -831,8 +832,26 @@ mod tests {
         }
     }
 
-    /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
-    /// print, so those handlers answer their own 404 with a code or detail.
+    /// Send queue checks for the contract test. No sample reaches them: the
+    /// sample ids name no queue item and Add gets no form.
+    struct NoTargets;
+
+    impl pp_api::send_queue::SendTargets for NoTargets {
+        fn prepare(&self, _: &Value, _: bool) -> pp_api::send_queue::Prepared {
+            unreachable!("no sample item is sendable")
+        }
+        fn host(&self, _: &str) -> Result<String, (axum::http::StatusCode, String)> {
+            unreachable!("no sample form is read")
+        }
+        fn stage(&self, _: &str, _: &[u8]) -> std::io::Result<String> {
+            unreachable!("no sample form is read")
+        }
+        fn dispatched(&self) {}
+        fn discard(&self, _: &Value) {}
+    }
+
+    /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
+    /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
         const CODES: [&str; 4] = [
             "integration_not_found",
@@ -840,11 +859,12 @@ mod tests {
             "snapshot_not_found",
             "farm_log_entry_not_found",
         ];
-        const DETAILS: [&str; 4] = [
+        const DETAILS: [&str; 5] = [
             "beds[0]: Checkoff link not found",
             "Checkoff burst not found",
             "History entry not found",
             "Unattributed print not found",
+            "Queue item not found",
         ];
         status == 404
             && (CODES.iter().any(|code| body["code"] == *code)
@@ -873,13 +893,20 @@ mod tests {
             owner.lock().unwrap().farm_reads(policy).unwrap(),
             Arc::new(NoObservations),
         );
+        let sends = pp_api::send_queue::send_queue_router(
+            pp_api::accepted::AcceptedHttpConfig::from_startup(&origin, "default", Some("1"))
+                .unwrap(),
+            owner.lock().unwrap().send_queue(policy).unwrap(),
+            Arc::new(NoTargets),
+        );
         let mut server = serve(
             listener,
             reads
                 .unwrap()
                 .unwrap()
                 .merge(drafts.unwrap().unwrap())
-                .merge(farm),
+                .merge(farm)
+                .merge(sends),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {
@@ -913,6 +940,7 @@ mod tests {
         for route in CLIENT_ROUTES
             .iter()
             .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
+            .chain(&pp_api::send_queue::CLIENT_ROUTES)
         {
             let path = route
                 .path
@@ -945,8 +973,15 @@ mod tests {
                 status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
             // A draft header save on a Build with no layers can prepare no draft.
             let handler_no_layers = status == 422 && body["code"] == "no_layers";
+            // Add to queue reads only a multipart form.
+            let handler_no_form =
+                status == 415 && body["detail"] == "Send the print file as multipart/form-data";
             assert!(
-                status == 200 || handler_not_found || handler_stale || handler_no_layers,
+                status == 200
+                    || handler_not_found
+                    || handler_stale
+                    || handler_no_layers
+                    || handler_no_form,
                 "{} {path}: {status} {body}",
                 route.method
             );

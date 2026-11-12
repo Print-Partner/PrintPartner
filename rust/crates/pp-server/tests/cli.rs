@@ -87,6 +87,7 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
         report.contains("3 Builds, 2 Sources, 2 printers, 2 unmatched prints."),
         "{report}"
     );
+    assert!(report.contains("Destination: absent or empty. The import would accept it."));
     assert!(
         !std::path::Path::new("unused").exists(),
         "a dry run creates no destination"

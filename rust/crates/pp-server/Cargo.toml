@@ -20,6 +20,7 @@ libc.workspace = true
 
 [dev-dependencies]
 pp-testkit = { path = "../pp-testkit" }
+pp-storage = { path = "../pp-storage" }
 tempfile = "=3.27.0"
 
 [target.'cfg(windows)'.dev-dependencies]

@@ -41,7 +41,7 @@ fn refusal(error: &anyhow::Error) -> IncompatibleSchema {
 }
 
 #[test]
-fn writer_refuses_unsupported_schemas_without_changing_the_database() {
+fn ticket_t_8_versions_writer_refuses_unsupported_schemas_without_changing_the_database() {
     let cases = [1, OLDEST_UPGRADABLE - 1, RUST_SCHEMA + 1, 999]
         .map(|found| (installation_at(found), found));
     // The version is checked before the integrity check, so a file that also

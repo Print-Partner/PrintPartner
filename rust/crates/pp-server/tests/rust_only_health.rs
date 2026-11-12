@@ -76,47 +76,79 @@ fn healthcheck_help_exits_zero() {
     assert!(String::from_utf8_lossy(&output.stdout).starts_with("Usage: pp-server healthcheck"));
 }
 
-/// A database newer than this build stops the headless start once, with exit
-/// code 78 and the incompatible-storage lines, and stays byte for byte as it was.
-#[test]
-fn rust_only_server_exits_78_on_incompatible_storage() {
-    let installation = pp_testkit::Installation::create(pp_testkit::Fixture::NodeSchema34).unwrap();
-    pp_testkit::node_schema::restamp_schema_version(&installation.database_path(), 999).unwrap();
-    let before = pp_testkit::node_schema::database_files(installation.path());
-    let root = scratch::Scratch::new("pp-rust-only-incompatible-");
-    let bundle = release::launch(installation.path().to_path_buf()).bundle;
-    let output = child_process::command(server_binary())
-        .env("PP_DESKTOP_REBUILD", "1")
-        .args(["--data".as_ref(), installation.path().as_os_str()])
-        .args(["--web".as_ref(), bundle.web_root.as_os_str()])
-        .args(["--commit", &bundle.commit])
-        .args([
-            "--status-file".as_ref(),
-            root.join("status.json").as_os_str(),
-        ])
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("{stderr}");
-    assert_eq!(output.status.code(), Some(78), "{stderr}");
-    let mut lines = stderr
-        .lines()
-        .skip_while(|line| !line.starts_with("incompatible_storage: "));
-    assert!(
-        lines.next().is_some_and(|line| line
-            .starts_with("incompatible_storage: found=999 supported=31..=")
-            && line.ends_with(" direction=newer")),
-        "{stderr}"
-    );
-    assert!(
-        lines.next().is_some_and(|line| line.starts_with(
-            "Incompatible storage: database schema version 999 is newer than supported version"
-        )),
-        "{stderr}"
-    );
-    assert!(output.stdout.is_empty(), "no origin was announced");
-    assert_eq!(
-        pp_testkit::node_schema::database_files(installation.path()),
-        before
-    );
+/// Unsupported storage must stop the executable before readiness, in either
+/// runtime mode, even when a process manager launches it again.
+#[tokio::test]
+async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
+    use pp_storage::versions::{IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA};
+    use pp_testkit::{Fixture, Installation, node_schema};
+    use std::time::Duration;
+
+    for rust_only in [false, true] {
+        let newest = if rust_only { RUST_SCHEMA } else { NODE_SCHEMA };
+        for found in [OLDEST_UPGRADABLE - 1, RUST_SCHEMA + 1] {
+            let installation = Installation::create(Fixture::NodeSchema34).unwrap();
+            node_schema::restamp_schema_version(&installation.database_path(), found).unwrap();
+            let before = node_schema::database_files(installation.path());
+            let root = scratch::Scratch::new("pp-schema-refusal-");
+            let status = root.join("status.json");
+            let credential = root.join("credential.json");
+            let bundle = release::launch(installation.path().to_path_buf()).bundle;
+            let refusal = IncompatibleSchema {
+                found,
+                oldest: OLDEST_UPGRADABLE,
+                newest,
+            };
+
+            for attempt in 1..=3 {
+                let mut command = child_process::command(server_binary());
+                command
+                    .env("PP_DESKTOP_REBUILD", if rust_only { "1" } else { "0" })
+                    .args(["--data".as_ref(), installation.path().as_os_str()])
+                    .args(["--web".as_ref(), bundle.web_root.as_os_str()])
+                    .args(["--node".as_ref(), bundle.node.as_os_str()])
+                    .args(["--commit", &bundle.commit])
+                    .args(["--status-file".as_ref(), status.as_os_str()])
+                    .args(["--test-credential-file".as_ref(), credential.as_os_str()]);
+                let output = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    tokio::process::Command::from(command)
+                        .kill_on_drop(true)
+                        .output(),
+                )
+                .await
+                .expect("unsupported storage did not terminate; possible reopen loop")
+                .unwrap();
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert_eq!(output.status.code(), Some(78), "{stderr}");
+                let diagnostic = refusal.diagnostic();
+                assert_eq!(
+                    stderr.lines().filter(|line| *line == diagnostic).count(),
+                    1,
+                    "{stderr}"
+                );
+                assert!(
+                    stderr.lines().any(|line| line == refusal.to_string()),
+                    "{stderr}"
+                );
+                assert!(
+                    output.stdout.is_empty(),
+                    "refused start announced an origin or shutdown receipt"
+                );
+                assert!(!status.exists(), "refused start left a health status file");
+                assert!(
+                    !credential.exists(),
+                    "refused start published a launch credential"
+                );
+                assert_eq!(
+                    node_schema::database_files(installation.path()),
+                    before,
+                    "runtime rust_only={rust_only}, schema {found}, attempt {attempt}"
+                );
+                println!(
+                    "rust_only={rust_only} attempt={attempt} exit=78 {diagnostic}; database unchanged; no readiness or launch credential"
+                );
+            }
+        }
+    }
 }

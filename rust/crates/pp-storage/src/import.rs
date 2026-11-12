@@ -147,7 +147,8 @@ pub enum SourceKind {
 /// What the import would find at its destination, read without writing.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Destination {
-    /// Absent, or empty by the marker rule: the import would accept it.
+    /// Absent, or empty by the marker rule and without a lease entry. Its
+    /// owner and permissions are not checked here.
     Free,
     /// It holds this entry and no marker: the import would refuse it.
     NotEmpty(String),
@@ -158,7 +159,7 @@ pub enum Destination {
 impl fmt::Display for Destination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Free => f.write_str("is absent or empty, so the import would accept it"),
+            Self::Free => f.write_str("is absent or empty, as the import needs"),
             Self::NotEmpty(entry) => write!(f, "holds {entry:?}, so the import refuses it"),
             Self::Marked => f.write_str("is a Rust installation, so the import refuses it"),
         }
@@ -174,6 +175,11 @@ pub fn inspect_destination(destination: &Path) -> Result<Destination, ImportErro
             return Err(unreadable(destination, kind.into()));
         }
         _ => return Ok(Destination::Marked),
+    }
+    // The writer refuses a Node lease directory that the marker rule alone
+    // counts as empty, so any lease entry makes the folder unusable.
+    if destination.join(LEASE).symlink_metadata().is_ok() {
+        return Ok(Destination::NotEmpty(LEASE.into()));
     }
     match ownership_marker::first_non_empty_entry(destination) {
         Ok(None) => Ok(Destination::Free),
@@ -247,21 +253,15 @@ impl fmt::Display for DryRunReport {
             "{} Builds, {} Sources, {} printers, {} unmatched prints.",
             self.builds, self.sources, self.printers, self.unmatched_prints
         )?;
-        if let Some(value) = self
-            .installation
-            .as_deref()
-            .filter(|value| *value != "default")
-        {
-            writeln!(
-                f,
-                "The data is under the installation value {value:?}. Rust reads only \"default\", so the import refuses it today."
-            )?;
+        let value = self.installation.as_deref().unwrap_or("default");
+        writeln!(f, "Installation value {value:?}, {} accounts.", self.users)?;
+        if value != "default" {
+            writeln!(f, "The Rust runtime reads only data under \"default\".")?;
         }
         if self.users > 1 {
-            let users = self.users;
             writeln!(
                 f,
-                "{users} accounts are stored. Rust signs in only when there is one."
+                "The Rust runtime signs in only when one account is stored."
             )?;
         }
         if let Some(destination) = &self.destination {
@@ -351,8 +351,21 @@ pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport
     })
 }
 
-/// Refuses when `directory` has fewer than `needed` bytes free.
-fn ensure_space(directory: &Path, needed: u64) -> Result<(), ImportError> {
+/// Free space kept beyond the copies, for the tables the upgrade adds.
+const STAGE_RESERVE: u64 = 64 * 1024 * 1024;
+
+/// The free bytes staging needs for a database of `database` bytes, of which
+/// `staged` copies are still to be written. Beside the staged copy, the
+/// startup check makes one short-lived copy; it is gone before the upgrade
+/// writes its write-ahead log, which can grow as large again.
+fn stage_bytes(database: u64, staged: u64) -> u64 {
+    (database.saturating_mul(staged.saturating_add(1))).saturating_add(STAGE_RESERVE)
+}
+
+/// Refuses when the directory that holds `stage` has fewer than `needed`
+/// bytes free.
+fn ensure_space(stage: &Path, needed: u64) -> Result<(), ImportError> {
+    let directory = stage.parent().unwrap_or(stage);
     let free = fs4::available_space(directory).map_err(|error| unreadable(directory, error))?;
     if free >= needed {
         return Ok(());
@@ -363,10 +376,6 @@ fn ensure_space(directory: &Path, needed: u64) -> Result<(), ImportError> {
         free,
     })
 }
-
-/// Free space kept beyond the copies, for the upgrade's new tables and its
-/// write-ahead log.
-const STAGE_RESERVE: u64 = 64 * 1024 * 1024;
 
 fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportError> {
     let metadata = source
@@ -384,14 +393,17 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
     } else {
         return Err(anyhow::anyhow!("The import source is neither a folder nor a file").into());
     };
+    let (connection, ready) = upgrade(&scratch.0)?;
+    measure(&connection, kind, &ready, &files)
+}
+
+/// Checks the staged database as startup checks a live one and upgrades it
+/// in place to the current Rust schema, without rollback copies.
+fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportError> {
     // A failed check can hide the version: a Rust database stamped 35 or
     // later fails the job-table check first. Refuse by version when one was read.
-    let admitted = crate::restore::admit_schema(&scratch.0);
-    let found = admitted
-        .as_ref()
-        .ok()
-        .copied()
-        .or_else(versions::preflight_version);
+    let admitted = crate::restore::admit_schema(stage);
+    let found = (admitted.as_ref().ok().copied()).or_else(versions::preflight_version);
     if let Some(found) = found
         && versions::classify(found, versions::NODE_SCHEMA).is_err()
     {
@@ -402,13 +414,9 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
         }));
     }
     let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
-    let (connection, ready) = schema::initialize_with(
-        &scratch.0.join(archive::DATABASE_FILE),
-        version,
-        &crate::auth::catalog_timestamp(),
-        false,
-    )?;
-    measure(&connection, kind, &ready, &files)
+    let database = stage.join(archive::DATABASE_FILE);
+    let now = crate::auth::catalog_timestamp();
+    Ok(schema::initialize_with(&database, version, &now, false)?)
 }
 
 /// A read failure that names the source entry it happened on.
@@ -456,10 +464,8 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if before[0].is_none() {
         return Err(ImportError::NoDatabase);
     }
-    // Room for this copy, the copy the startup check makes of it, and the
-    // upgrade's write-ahead log.
     let bytes: u64 = before.iter().flatten().map(|(bytes, _)| bytes).sum();
-    ensure_space(scratch, 3 * bytes + STAGE_RESERVE)?;
+    ensure_space(scratch, stage_bytes(bytes, 1))?;
     for name in DATABASE_FILES {
         let path = source.join(name);
         if let Some(mut file) = open_regular(&path)? {
@@ -499,6 +505,12 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
 /// Validates a backup archive and extracts its database and single-file
 /// roots into `scratch`.
 fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
+    // The database is at least as large as the archive that holds it.
+    let compressed = source
+        .metadata()
+        .map_err(|error| unreadable(source, error))?
+        .len();
+    ensure_space(scratch, compressed.saturating_add(STAGE_RESERVE))?;
     let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
         .map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
@@ -508,11 +520,10 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
-    // The database size is known only once it is extracted. The startup
-    // check's copy and the upgrade's write-ahead log still need room.
+    // The database size is known only once it is extracted.
     let extracted = |name| scratch.join(name).metadata().map_or(0, |file| file.len());
     let bytes: u64 = DATABASE_FILES.map(extracted).iter().sum();
-    ensure_space(scratch, 2 * bytes + STAGE_RESERVE)?;
+    ensure_space(scratch, stage_bytes(bytes, 0))?;
     Ok(Files {
         documents: scratch.to_owned(),
         repo_files: paths

@@ -94,6 +94,8 @@ pub const ROWS: [Row; 16] = [
     pending(6, &[
         Setting("stl_naming_defaults"),
         SettingPrefix("build_planning.v1."),
+        // The key ends in free text; the report counts these keys and never prints them.
+        SettingPrefix("build_planning.create."),
         Column("plan_decisions", "params_json"),
         Column("plan_decisions", "result_json"),
         Column("plan_draft_required_unit_reconciliations", "selection_basis_json"),
@@ -115,14 +117,11 @@ pub const COPIED: [Shape; 6] = [
 
 /// Stored data no Rust code reads. The import keeps it byte for byte, also
 /// for features the product has cut.
-pub const UNUSED: [Shape; 12] = [
+pub const UNUSED: [Shape; 11] = [
     Table("board_posts"),
     Table("plan_shares"),
     Table("printer_telemetry"),
     Table("slicer_instances"),
-    // The value is a Build id as text. The key ends in free text, so the
-    // report counts these keys and never prints them.
-    SettingPrefix("build_planning.create."),
     SettingPrefix("filename_grouping:"),
     SettingPrefix("manifest_v2_"),
     Setting("integration_webhooks_v1"),

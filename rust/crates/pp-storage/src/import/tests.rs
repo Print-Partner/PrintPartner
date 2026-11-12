@@ -141,10 +141,10 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let scalars: Vec<&String> = report.scalar_settings.iter().collect();
     assert_eq!(scalars, ["date_format"]);
     // Settings no Rust code reads are named, so they are kept and not flagged.
-    for prefix in ["build_planning.create.", "filename_grouping:"] {
-        let kept = (Shape::SettingPrefix(prefix), 1);
-        assert!(report.unused.contains(&kept), "{:?}", report.unused);
-    }
+    // A setting no Rust code reads is named, so it is kept and not flagged.
+    let kept = (Shape::SettingPrefix("filename_grouping:"), 1);
+    assert!(report.unused.contains(&kept), "{:?}", report.unused);
+    assert_eq!(items["setting build_planning.create.*"], 1);
     assert_eq!(
         (report.installation.as_deref(), report.users),
         (Some("default"), 0)
@@ -157,7 +157,8 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
     holds("step 3 pending: setting printer.fleet = 2");
     holds("Stored JSON the inventory does not name:\n  none");
-    holds("Kept, not used by Rust:\n  setting build_planning.create.* = 1");
+    holds("Installation value \"default\", 0 accounts.");
+    holds("Kept, not used by Rust:\n  setting filename_grouping:* = 1");
     // No stored value: not the integration's key, a printer name or a free-text key.
     let stored = [
         synthetic::INTEGRATION_SECRET,
@@ -203,11 +204,13 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
         (Some("solo"), 2)
     );
     let text = report.to_string();
-    assert!(
-        text.contains("installation value \"solo\". Rust reads only \"default\""),
-        "{text}"
-    );
-    assert!(text.contains("2 accounts are stored."), "{text}");
+    for line in [
+        "Installation value \"solo\", 2 accounts.",
+        "The Rust runtime reads only data under \"default\".",
+        "The Rust runtime signs in only when one account is stored.",
+    ] {
+        assert!(text.contains(line), "{line} is not in:\n{text}");
+    }
 }
 
 #[test]
@@ -216,9 +219,9 @@ fn a_destination_is_inspected_and_never_created() {
     let absent = parent.path().join("absent");
     assert_eq!(inspect_destination(&absent).unwrap(), Destination::Free);
     assert!(!absent.exists(), "inspecting created the destination");
-    let leftovers = Installation::create(Fixture::EmptyWithLeaseLeftovers).unwrap();
+    let empty = Installation::create(Fixture::Empty).unwrap();
     assert_eq!(
-        inspect_destination(leftovers.path()).unwrap(),
+        inspect_destination(empty.path()).unwrap(),
         Destination::Free
     );
     let marked = Installation::create(Fixture::RustMarked).unwrap();
@@ -226,6 +229,10 @@ fn a_destination_is_inspected_and_never_created() {
         inspect_destination(marked.path()).unwrap(),
         Destination::Marked
     );
+    // The writer refuses a folder with a Node lease directory, so the import does too.
+    let leased = Installation::create(Fixture::EmptyWithLeaseLeftovers).unwrap();
+    let lease = Destination::NotEmpty(LEASE.into());
+    assert_eq!(inspect_destination(leased.path()).unwrap(), lease);
     let node = Installation::create(Fixture::NodeSchema34).unwrap();
     let before = state(node.path());
     let holds = Destination::NotEmpty(pp_testkit::DATABASE_FILE.into());
@@ -238,38 +245,55 @@ fn a_destination_is_inspected_and_never_created() {
 
 #[test]
 fn staging_refuses_with_the_bytes_needed_and_free() {
-    let directory = tempfile::tempdir().unwrap();
-    let ImportError::NoSpace { needed, free, .. } =
-        ensure_space(directory.path(), u64::MAX).unwrap_err()
-    else {
-        panic!("a directory cannot have u64::MAX bytes free");
+    // The staged copy, plus the larger of the startup check's copy and the
+    // upgrade's write-ahead log, plus the reserve.
+    assert_eq!(stage_bytes(100, 1), 200 + STAGE_RESERVE);
+    assert_eq!(stage_bytes(100, 0), 100 + STAGE_RESERVE);
+    assert_eq!(stage_bytes(u64::MAX, 1), u64::MAX);
+}
+
+/// Linux only: the test needs a sparse file larger than any disk.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_database_that_cannot_fit_is_refused_before_it_is_copied() {
+    let folder = node_folder();
+    let database = std::fs::OpenOptions::new()
+        .write(true)
+        .open(folder.database_path())
+        .unwrap();
+    database.set_len(1 << 43).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let error = dry_run_in(folder.path(), temporary.path()).unwrap_err();
+    let staged = std::fs::read_dir(temporary.path()).unwrap().count();
+    assert_eq!(staged, 0, "the refusal left its stage behind");
+    let refusal = error.to_string();
+    let ImportError::NoSpace { needed, free, .. } = error else {
+        panic!("a sparse 8 TiB database was not refused for space: {refusal}");
     };
-    assert_eq!(needed, u64::MAX);
-    let text = ensure_space(directory.path(), u64::MAX)
-        .unwrap_err()
-        .to_string();
+    assert!(needed > (1 << 44) && free < needed);
     assert!(
-        text.contains(&format!("needs {needed} bytes")) && text.contains("Set TMPDIR"),
-        "{text}"
+        refusal.contains(&format!("needs {needed} bytes")) && refusal.contains("Set TMPDIR"),
+        "{refusal}"
     );
-    assert!(free > 0 && ensure_space(directory.path(), 1).is_ok());
 }
 
 #[test]
 fn the_staged_upgrade_keeps_no_rollback_copies() {
-    for copies in [false, true] {
-        let folder = node_folder();
-        let now = crate::auth::catalog_timestamp();
-        let (connection, ready) =
-            schema::initialize_with(&folder.database_path(), 34, &now, copies).unwrap();
-        drop(connection);
-        assert_eq!(
-            (ready.previous_version, ready.version),
-            (34, versions::RUST_SCHEMA)
-        );
-        assert_eq!(ready.backup.is_some(), copies);
-        assert_eq!(folder.path().join("backups").exists(), copies);
-    }
+    // The import's own upgrade of a staged folder writes no copy beside it.
+    let (folder, stage) = (node_folder(), tempfile::tempdir().unwrap());
+    stage_directory(folder.path(), stage.path()).unwrap();
+    let (connection, ready) = upgrade(stage.path()).unwrap();
+    drop(connection);
+    assert_eq!(
+        (ready.previous_version, ready.version),
+        (34, versions::RUST_SCHEMA)
+    );
+    assert!(ready.backup.is_none() && !stage.path().join("backups").exists());
+    // The writer's upgrade of the same database still keeps its copies.
+    let now = crate::auth::catalog_timestamp();
+    let (connection, ready) = schema::initialize(&folder.database_path(), 34, &now).unwrap();
+    drop(connection);
+    assert!(ready.backup.is_some() && folder.path().join("backups").is_dir());
 }
 
 #[test]

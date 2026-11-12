@@ -351,7 +351,8 @@ async fn mcp_plan_draft_follows_the_brief_selection_when_it_moves() {
     assert_eq!(consumed["draft"]["draft_id"], 1);
     assert_eq!(consumed["draft"]["state"], "consumed");
 
-    // Hydration clears a selection whose Sources moved: the open draft, phase preparing.
+    // Hydration clears a selection whose Sources moved: no draft, although
+    // draft 2 is still open, and phase preparing.
     update(
         "json_set(json_set(value,'$.draft_id',2),'$.draft_source_revisions',json('{\"1\":\"moved\"}'))",
     );
@@ -362,6 +363,8 @@ async fn mcp_plan_draft_follows_the_brief_selection_when_it_moves() {
         json!({ "plan_id": BUILD }),
     )
     .await;
-    assert_eq!(cleared["draft"]["draft_id"], 2);
-    assert_eq!(cleared["planning_phase"], json!({ "kind": "preparing" }));
+    assert_eq!(
+        cleared,
+        json!({ "draft": null, "planning_phase": { "kind": "preparing" } })
+    );
 }

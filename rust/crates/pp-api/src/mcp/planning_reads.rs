@@ -184,15 +184,15 @@ impl ProductMcp {
                 next_required_decisions: required_decisions(&planning.brief),
             });
         }
-        let selected = planning.as_ref().and_then(|planning| {
-            planning
+        // With a brief, only the draft it selects: a selection hydration
+        // cleared stays cleared, so the draft and the phase agree. Without
+        // one, the Build's open draft, such as one made in the Plan tab.
+        let draft = match &planning {
+            Some(planning) => planning
                 .brief
                 .draft_id
                 .and_then(|id| u64::try_from(id).ok())
-                .and_then(|id| PositiveId::new(id).ok())
-        });
-        let draft = match selected {
-            Some(draft) => Some(draft),
+                .and_then(|id| PositiveId::new(id).ok()),
             None => match self.open_draft(build, presented.clone()).await {
                 Ok(draft) => draft,
                 Err(refusal) => return refused(refusal),

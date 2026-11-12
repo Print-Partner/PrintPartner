@@ -83,6 +83,14 @@ fn new(kind: ServiceKind, base_url: &str) -> NewIntegration {
     }
 }
 
+/// The fields an `Invalid` refusal names, in order.
+fn invalid_fields<T>(refused: Result<T, PrinterSetupError>, case: usize) -> Vec<(Field, Reason)> {
+    let Err(PrinterSetupError::Invalid(invalid)) = refused else {
+        panic!("case {case} was not refused as invalid")
+    };
+    invalid.iter().map(|one| (one.field, one.reason)).collect()
+}
+
 fn secret(value: &str) -> Option<Secret> {
     Some(Secret::new(value.into()))
 }
@@ -193,11 +201,8 @@ fn an_invalid_value_names_its_field_and_stores_nothing() {
         ),
     ];
     for (index, (request, expected)) in cases.into_iter().enumerate() {
-        let Err(PrinterSetupError::Invalid(invalid)) = fixture.create(request) else {
-            panic!("case {index} was not refused as invalid")
-        };
-        let invalid: Vec<_> = invalid.iter().map(|one| (one.field, one.reason)).collect();
-        assert_eq!(invalid, expected, "case {index}");
+        let named = invalid_fields(fixture.create(request), index);
+        assert_eq!(named, expected, "case {index}");
     }
     assert_eq!(fixture.stored(), None);
 }

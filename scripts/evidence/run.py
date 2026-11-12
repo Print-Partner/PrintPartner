@@ -27,7 +27,7 @@ from publisher import EVIDENCE_BIN
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-STEP_NAMES = ("settle-reconciliation", "snapshot", "duplicate-order")
+STEP_NAMES = ("settle-reconciliation", "snapshot", "duplicate-order", "mcp-receipt")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
 HARNESS_DIR = ROOT / "rust/target/evidence-harness"

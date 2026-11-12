@@ -31,10 +31,10 @@ The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-
 
 ### Release check without Node
 
-A Rust-only start checks the release with `pp_compat::verify_rust_only_release`. It checks:
+A Rust-only start checks the release without Node. When `web/apps/ui/dist` is installed, `pp-core` calls `pp_compat::snapshot_rust_only_release`, which checks the `replacement_frontend` inventory and keeps the verified bytes for serving. When it is absent, as in the Docker image today, `pp-core` calls `pp_compat::verify_rust_only_legacy_release`, which checks the `frontend` inventory instead. Both check:
 
 - The runtime version and commit match the manifest embedded in the binary.
-- The frontend's file list and digests match exactly.
+- The selected frontend's file list and digests match exactly.
 - The community manifests' file list and digests match exactly.
 
 It does not measure the Node executable, the Node backend, the workspace packages or `node_modules`, so `pp-server` needs no `--node` in this mode. The Node-backed start still runs the full `verify_bundle` and still requires `--node`.
@@ -50,7 +50,7 @@ docker run -d --name print-partner \
   --cap-drop ALL --security-opt no-new-privileges \
   -v pp-data:/data \
   pp-server:test
-docker logs print-partner    # first line: the origin, http://127.0.0.1:<port>
+docker logs print-partner    # includes the origin, http://127.0.0.1:<port>
 ```
 
 - **User.** The image runs as UID 1000, GID 1000 (`ppuser`) from the first instruction. It never starts as root and has no `gosu` or entrypoint `chown`.
@@ -127,7 +127,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 
 - **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
 - **MCP is off.** The gateway answers 403 to `/mcp` and `/api/v1/mcp` in Rust-only mode, whatever key a client sends.
-- **The old UI.** The image serves the measured desktop build of `apps/web`, the UI the Rust-only desktop serves. The replacement UI (`apps/ui`) is not served by any Rust runtime yet.
+- **UI packaging.** Today's image includes only the measured `apps/web` build. The Rust-only runtime serves it with its existing SPA routes and policy and logs one line when `apps/ui/dist` is absent. An installed replacement bundle must pass its separate inventory check before it is served with the GRE-1117 CSP. Docker replacement UI packaging follows in [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test

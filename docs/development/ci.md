@@ -364,7 +364,7 @@ Each job declares its runner in `runs-on`, its package scope in `CARGO_SCOPE`, a
 
 ## Run the required checks with one command
 
-A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full set before each push:
+A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full set before its first push. Later pushes run the short checks in [Set up and run checks](agent-workflow.md#set-up-and-run-checks).
 
 ```sh
 PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci

@@ -40,6 +40,12 @@ impl Secret {
         &self.0
     }
 }
+/// A fixed placeholder, so a type that holds a secret can derive `Debug`.
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret([REDACTED])")
+    }
+}
 #[derive(Clone, Copy)]
 pub enum FirstUserTenant {
     NewUser,

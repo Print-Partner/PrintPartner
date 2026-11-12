@@ -48,6 +48,8 @@ pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;
 #[cfg(feature = "desktop_rebuild")]
+pub mod printer_setup;
+#[cfg(feature = "desktop_rebuild")]
 pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]

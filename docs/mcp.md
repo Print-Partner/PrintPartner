@@ -79,7 +79,7 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 | `accepted_baseline_required` | Confirm: the Build has no Accepted Plan to edit against. |
 | `edit_refused` | Confirm: the edit refused for another reason. |
 
-`unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
+`unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
 
 Every other product tool still answers that it has no Rust port. `get_farm_status` and `get_print_stats` have no Rust port yet.
 

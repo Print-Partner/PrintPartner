@@ -1066,22 +1066,31 @@ pub(crate) fn read_session_tenant(
     secret: &Secret,
     policy: AuthPolicy,
 ) -> Result<String> {
-    ensure!(
-        !secret.expose().is_empty() && secret.expose().len() <= 4096,
-        "Authentication required"
-    );
+    ensure!(session_sized(secret), "Authentication required");
     policy::tenant_for_authenticated_actor(
         tx,
         &actor(tx, &crypto::digest(secret.expose()))?,
         policy,
     )
 }
+/// Whether a session token has a size [`read_session_tenant`] looks up.
+pub(crate) fn session_sized(secret: &Secret) -> bool {
+    !secret.expose().is_empty() && secret.expose().len() <= 4096
+}
 pub(crate) fn read_key_tenant(
     tx: &Transaction<'_>,
     routed_tenant: &str,
     secret: &Secret,
 ) -> Result<String> {
-    keys::read_tenant(tx, routed_tenant, secret)
+    ensure!(
+        key_proves(tx, routed_tenant, secret)?,
+        "Authentication required"
+    );
+    Ok(routed_tenant.to_owned())
+}
+/// Whether `secret` is an active, unexpired API key of `tenant`.
+pub(crate) fn key_proves(tx: &Transaction<'_>, tenant: &str, secret: &Secret) -> Result<bool> {
+    keys::proves(tx, tenant, secret)
 }
 pub(crate) fn catalog_timestamp() -> String {
     timestamp(0)

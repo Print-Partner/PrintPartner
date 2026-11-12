@@ -33,6 +33,7 @@ tower-http = { version = "=0.6.11", features = ["fs"] }
 tokio-util = { version = "=0.7.16", features = ["rt"] }
 regex = "=1.13.1"
 tracing = "=0.1.44"
+thiserror = "=2.0.21"
 
 [profile.dev.package.sha2]
 opt-level = 3

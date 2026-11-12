@@ -42,6 +42,8 @@ scrypt = { version = "=0.11.0", default-features = false }
 base64 = "=0.22.1"
 subtle = { version = "=2.6.1", default-features = false }
 hmac.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 getrandom = "=0.3.4"
 icu_collator = "=2.3.1"
 regress = "=0.11.1"

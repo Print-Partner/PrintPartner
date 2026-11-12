@@ -3785,7 +3785,9 @@ dependencies = [
  "subtle",
  "tar",
  "tempfile",
+ "thiserror 2.0.21",
  "time",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

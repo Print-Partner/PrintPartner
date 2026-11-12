@@ -469,6 +469,30 @@ async fn cut_off_upload_is_discarded() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_discards_a_streaming_upload() {
+    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let source = server.source().await;
+    let body = multipart(&[("a.stl", &stl("a"))]);
+    let (head, tail) = body.split_at(body.len() / 2);
+    let mut held = server.held_upload(source, body.len(), head).await;
+    // Shutdown does not wait on the slow client: the upload is discarded and
+    // its key and slot are released within the drain budget.
+    let imports = Arc::clone(&server.imports);
+    let drain = tokio::task::spawn_blocking(move || imports.shutdown(Duration::from_secs(5)));
+    let drain = drain.await.unwrap().unwrap();
+    assert!(drain.idle && drain.pending.is_empty(), "{drain:?}");
+    // The client finishing after the stop gets the closed-imports answer.
+    let _ = held.write_all(tail).await;
+    let mut response = String::new();
+    let _ = held.read_to_string(&mut response).await;
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert_eq!(server.staged(), 0);
+    assert_eq!(server.job_count().await, 0);
+    assert_eq!(server.revision(source).await, Value::Null);
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_import_names_its_reason() {
     let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
@@ -480,8 +504,18 @@ async fn failed_import_names_its_reason() {
         )
         .await;
     assert_eq!(status, 202, "{accepted}");
-    let failed = server.finished(accepted["job_id"].as_str().unwrap()).await;
+    let job = accepted["job_id"].as_str().unwrap();
+    let failed = server.finished(job).await;
     assert_eq!(failed["status"], "error", "{failed}");
+    // No route cancels a job, so an upload's job cannot be cancelled yet.
+    for (method, path) in [
+        (Method::POST, format!("/api/v1/jobs/{job}")),
+        (Method::DELETE, format!("/jobs/{job}")),
+        (Method::POST, format!("/api/v1/jobs/{job}/cancel")),
+    ] {
+        let (status, body) = server.json(method, &path, None).await;
+        assert!(matches!(status, 404 | 405), "{path}: {status} {body}");
+    }
     assert_eq!(
         failed["error"], "A file has a type the import does not accept",
         "{failed}"

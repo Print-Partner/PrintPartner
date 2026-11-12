@@ -19,11 +19,13 @@ Other refusals:
 | --- | --- |
 | 400 | No file part, an unsafe or repeated path, or a broken body. |
 | 413 | Input over the journal's 256 MiB limit. |
-| 503 | Imports closed. |
+| 503 | Imports closed: startup recovery left a capture to repair, or shutdown has begun. |
 
 Each refusal is an RFC 9457 problem. It creates no job and leaves the Source unchanged. A body cut off mid-file is discarded, never stored short: each part ends only on an explicit end marker. Each upload is a new import, so a retry after a lost 202 imports again; identical files keep the revision.
 
 The import job, kind `supplied-source-import`, is served by `GET /jobs/{id}`, the job list and `/ws/jobs/{id}`. A failed import's `error` gives the reason in words.
+
+An upload can't be cancelled yet. The job routes are read-only: no route cancels a job, so a POST or DELETE on a job answers 404 or 405 and changes nothing. Cancelling an import needs a cleanup claim that runs while the server is up, and that claim doesn't exist yet.
 
 ## Runtime
 
@@ -31,7 +33,7 @@ The import job, kind `supplied-source-import`, is served by `GET /jobs/{id}`, th
 
 The send worker and the import worker share the owner's one worker admission. Each claims only its own kind.
 
-`stop_rust` drains the imports within the gateway's drain bound. An upload still streaming is discarded, and an admitted import resumes at the next start. If an import worker is still running when the bound runs out, the runtime keeps storage ownership until the process exits, as it does for tracked work. It logs this and records `source_imports_not_drained` and `storage_ownership_retained` in the shutdown receipt.
+`stop_rust` drains the imports within the gateway's drain bound. An upload still streaming is discarded: its reader wakes every 250 ms to check for shutdown, so a slow client can't hold the drain. Its key and slot are released, and the client gets 503. An admitted import resumes at the next start. If an import worker is still running when the bound runs out, the runtime keeps storage ownership until the process exits, as it does for tracked work. It logs this and records `source_imports_not_drained` and `storage_ownership_retained` in the shutdown receipt.
 
 ## Checks
 

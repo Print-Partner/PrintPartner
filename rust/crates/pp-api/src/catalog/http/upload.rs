@@ -21,6 +21,7 @@ use pp_storage::{
 use std::{
     io::{self, Read},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::mpsc;
 
@@ -56,6 +57,10 @@ pub trait SourceUploads: Send + Sync + 'static {
     /// Refuses an upload of `bytes` that would leave less free space on the
     /// data volume than the reserve.
     fn check_space(&self, bytes: u64) -> Result<(), UploadFailure>;
+
+    /// Whether imports are closing for shutdown. A streaming upload checks it
+    /// while it waits for the client, so shutdown never waits on a slow body.
+    fn closing(&self) -> bool;
 
     /// Stores `files` as a new revision of `source_id` and returns the import
     /// job's ID once the import is recorded. Blocks the calling thread.
@@ -127,10 +132,12 @@ async fn upload_files(
     };
     let (parts, received) = mpsc::channel(1);
     let credential = credentials(principal);
+    let service = Arc::clone(&uploads);
     let stored = tokio::task::spawn_blocking(move || {
-        uploads.upload(credential, id, Box::new(Parts(received)))
+        let parts = Parts(received, Arc::clone(&service));
+        service.upload(credential, id, Box::new(parts))
     });
-    let streamed = pump(multipart, parts).await;
+    let streamed = pump(multipart, parts, &uploads).await;
     match (streamed, stored.await) {
         (Err(()), _) => reject(StatusCode::BAD_REQUEST, "The upload body could not be read"),
         (Ok(()), Ok(Ok(job_id))) => (
@@ -156,7 +163,7 @@ fn refused(failure: UploadFailure) -> Response {
             StatusCode::CONFLICT,
             "Another import is running; try again later",
         ),
-        UploadFailure::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "Imports are not open yet"),
+        UploadFailure::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "Imports are closed"),
         UploadFailure::Refused => (StatusCode::CONFLICT, "The Source cannot take this import"),
         UploadFailure::Failed => (StatusCode::INTERNAL_SERVER_ERROR, "Upload failed"),
     };
@@ -172,7 +179,11 @@ type Sent<T> = io::Result<Option<T>>;
 /// shorter one. Returns `Err` when the body itself could not be read; a
 /// receiver that stopped early is the blocking side's refusal, not an error
 /// here.
-async fn pump(mut multipart: Multipart, parts: mpsc::Sender<Sent<UploadPart>>) -> Result<(), ()> {
+async fn pump(
+    mut multipart: Multipart,
+    parts: mpsc::Sender<Sent<UploadPart>>,
+    uploads: &Arc<dyn SourceUploads>,
+) -> Result<(), ()> {
     let broken = || io::Error::new(io::ErrorKind::InvalidData, "Upload body unreadable");
     loop {
         let mut field = match multipart.next_field().await {
@@ -195,6 +206,7 @@ async fn pump(mut multipart: Multipart, parts: mpsc::Sender<Sent<UploadPart>>) -
             chunks: received,
             current: Bytes::new(),
             done: false,
+            uploads: Arc::clone(uploads),
         };
         if parts
             .send(Ok(Some((name, Box::new(reader)))))
@@ -222,17 +234,39 @@ async fn pump(mut multipart: Multipart, parts: mpsc::Sender<Sent<UploadPart>>) -
     }
 }
 
-struct Parts(mpsc::Receiver<Sent<UploadPart>>);
+/// Waits on the blocking side for the next message from the pump, waking
+/// every 250 ms so a slow client cannot hold up shutdown. `Err` once imports
+/// are closing; `None` once the pump has gone.
+fn next_sent<T>(
+    receiver: &mut mpsc::Receiver<T>,
+    uploads: &Arc<dyn SourceUploads>,
+) -> io::Result<Option<T>> {
+    let runtime = tokio::runtime::Handle::current();
+    loop {
+        if uploads.closing() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Imports are closing",
+            ));
+        }
+        let waited = tokio::time::timeout(Duration::from_millis(250), receiver.recv());
+        if let Ok(message) = runtime.block_on(waited) {
+            return Ok(message);
+        }
+    }
+}
+
+struct Parts(mpsc::Receiver<Sent<UploadPart>>, Arc<dyn SourceUploads>);
 
 impl Iterator for Parts {
     type Item = io::Result<UploadPart>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.0.blocking_recv() {
-            Some(Ok(Some(part))) => Some(Ok(part)),
-            Some(Ok(None)) => None,
-            Some(Err(error)) => Some(Err(error)),
-            None => Some(Err(io::Error::new(
+        match next_sent(&mut self.0, &self.1) {
+            Ok(Some(Ok(Some(part)))) => Some(Ok(part)),
+            Ok(Some(Ok(None))) => None,
+            Ok(Some(Err(error))) | Err(error) => Some(Err(error)),
+            Ok(None) => Some(Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "Upload ended early",
             ))),
@@ -244,6 +278,7 @@ struct PartReader {
     chunks: mpsc::Receiver<Sent<Bytes>>,
     current: Bytes,
     done: bool,
+    uploads: Arc<dyn SourceUploads>,
 }
 
 impl Read for PartReader {
@@ -252,7 +287,7 @@ impl Read for PartReader {
             if self.done {
                 return Ok(0);
             }
-            match self.chunks.blocking_recv() {
+            match next_sent(&mut self.chunks, &self.uploads)? {
                 Some(Ok(Some(bytes))) => self.current = bytes,
                 Some(Ok(None)) => self.done = true,
                 Some(Err(error)) => return Err(error),

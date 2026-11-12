@@ -63,6 +63,10 @@ impl SourceUploads for SourceUploadService {
         Ok(())
     }
 
+    fn closing(&self) -> bool {
+        self.acquisitions.closing()
+    }
+
     fn upload(
         &self,
         credentials: Credentials,
@@ -87,6 +91,7 @@ impl SourceUploads for SourceUploadService {
             .map_err(failure)?;
         match reply.admitted() {
             Ok(operation) => Ok(operation.job_id),
+            Err(_) if self.acquisitions.closing() => Err(UploadFailure::Unavailable),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "Source upload not admitted");
                 Err(UploadFailure::Failed)

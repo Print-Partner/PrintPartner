@@ -557,7 +557,36 @@ impl SourceAcquisitions {
     /// input is read and preflight runs after. A refusal at any step removes
     /// the candidate and writes no journal row. Returns once the files are
     /// frozen and the worker is admitting them.
+    ///
+    /// A failure once shutdown has begun is [`AcquisitionError::Closed`]: the
+    /// stop flag also stops the writes, so the candidate is discarded and the
+    /// key and slot are released.
     pub fn acquire_streamed<F, R>(
+        &self,
+        request: StreamedRequest<F>,
+    ) -> Result<AcquisitionReply, AcquisitionError>
+    where
+        F: Iterator<Item = io::Result<(String, R)>>,
+        R: Read,
+    {
+        match self.streamed(request) {
+            Err(
+                AcquisitionError::Input(_)
+                | AcquisitionError::Refused(_)
+                | AcquisitionError::Failed(_),
+            ) if self.closing() => Err(AcquisitionError::Closed(
+                "Source acquisition is shutting down",
+            )),
+            result => result,
+        }
+    }
+
+    /// Whether shutdown has begun.
+    pub fn closing(&self) -> bool {
+        self.shared.stop.load(Ordering::Acquire)
+    }
+
+    fn streamed<F, R>(
         &self,
         request: StreamedRequest<F>,
     ) -> Result<AcquisitionReply, AcquisitionError>

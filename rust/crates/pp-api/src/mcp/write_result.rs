@@ -1,4 +1,4 @@
-//! The refusal codes MCP write tools answer, and the one mapping from a
+//! The refusal codes MCP tools answer, and the one mapping from a
 //! storage [`WriterFailure`] to an MCP result: the MCP counterpart of
 //! `problem::writer_failure`. [`Code`] is the closed list `docs/mcp.md`
 //! documents; a new write tool adds its codes here.
@@ -32,6 +32,12 @@ pub(super) enum Code {
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
+    // get_build_planning_state, get_plan_draft
+    InvalidPlanId,
+    PlanNotFound,
+    NoPlanningBrief,
+    /// A read failed; the stored data may be invalid. Nothing was written.
+    ReadFailed,
 }
 
 impl Code {
@@ -50,6 +56,10 @@ impl Code {
             Self::OrdersModuleOff => "orders_module_off",
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
+            Self::InvalidPlanId => "invalid_plan_id",
+            Self::PlanNotFound => "plan_not_found",
+            Self::NoPlanningBrief => "no_planning_brief",
+            Self::ReadFailed => "read_failed",
         }
     }
 }

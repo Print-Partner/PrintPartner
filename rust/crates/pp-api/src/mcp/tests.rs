@@ -8,6 +8,8 @@ mod create_build;
 mod mcp_rpc;
 #[path = "tests/planning.rs"]
 mod planning;
+#[path = "tests/planning_reads.rs"]
+mod planning_reads;
 #[path = "tests/progress_reads.rs"]
 mod progress_reads;
 #[path = "tests/reads.rs"]

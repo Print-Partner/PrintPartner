@@ -1,7 +1,7 @@
 name: Rust cross-OS
 
-# Relevant PRs test Rust on Linux. Windows and macOS run on main, nightly and manual
-# runs. Ready PRs test Windows and macOS only with ci:cross-os.
+# Relevant PRs test Rust on Linux. Windows and macOS run on the nightly and manual
+# runs, and on a ready PR only with ci:cross-os. A push to main runs Linux only.
 # A merge group runs the short set on Linux only: fmt, clippy in both feature
 # states and the Clippy limits. It runs no nextest, no doctests, no partitions
 # and no Windows or macOS job. A PR ran only its affected-crate tests, so the
@@ -507,8 +507,8 @@ jobs:
   rust-macos:
     name: rust (macos)
     needs: changes
-    # Only ci:cross-os selects PRs; a merge group never runs it; other events always run.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
+    # Only ci:cross-os selects PRs; a merge group or a push to main never runs it; nightly and manual runs do.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'merge_group' && github.event_name != 'push' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -523,9 +523,9 @@ jobs:
   rust-windows:
     name: rust (windows)
     needs: changes
-    # Explicit jobs preserve skipped check reports. Main, nightly and manual runs always
-    # select Windows; a ready PR selects it only with the ci:cross-os label; a merge group never does.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
+    # Explicit jobs preserve skipped check reports. Nightly and manual runs always select Windows;
+    # a ready PR selects it only with the ci:cross-os label; a merge group or a push to main never does.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'merge_group' && github.event_name != 'push' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
     runs-on: windows-latest
     env:
       RUST_OS: windows
@@ -536,7 +536,8 @@ jobs:
 
   alert-macos-main:
     needs: [rust-linux, rust-macos, rust-windows]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (failure() && github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # rust (macos) runs on the nightly schedule, not on pushes, so the alert follows it there.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (failure() && github.event_name == 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

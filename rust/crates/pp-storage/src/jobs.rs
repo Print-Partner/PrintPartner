@@ -827,6 +827,19 @@ impl ServerWorkerClient {
     /// Claims the oldest admissible job of one admitted kind.
     #[cfg(feature = "desktop_rebuild")]
     pub fn claim_kind(&self, kind: JobKind) -> Result<Option<ClaimedAttempt>> {
+        self.claim_pending_kind(kind, &AtomicBool::new(false), Duration::from_secs(5))?
+            .receive()
+    }
+    /// Claims the next queued job of `kind` only, so a worker that shares the
+    /// owner's admission with other kinds never takes another worker's job
+    /// (GRE-428).
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn claim_pending_kind(
+        &self,
+        kind: JobKind,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<PendingClaim> {
         ensure!(
             self.admission
                 .kinds
@@ -834,7 +847,7 @@ impl ServerWorkerClient {
                 .any(|(admitted, _)| *admitted == kind),
             "Job kind is not admitted"
         );
-        PendingClaim(submit(
+        Ok(PendingClaim(submit(
             &self.storage,
             Command::Claim {
                 worker: self.identity.clone(),
@@ -844,10 +857,9 @@ impl ServerWorkerClient {
                 policy: self.policy,
                 storage: self.storage.clone(),
             },
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )?)
-        .receive()
+            cancelled,
+            wait,
+        )?))
     }
     /// Claims one queued supplied import by id. A refused original authority
     /// commits the refusal and returns the typed failure instead of moving on.

@@ -27,7 +27,7 @@ use pp_storage::{
     auth::{AuthFailure, AuthPolicy, AuthorityFailure},
     jobs::{
         AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobFailure,
-        Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerOperation,
+        JobKind, Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerOperation,
     },
     printer_hosts::{self, PrinterLink},
     read_model::farm::{HostState, Observation},
@@ -127,7 +127,7 @@ impl SendWorker {
                 let flag = Arc::clone(&cancelled);
                 let claimed = tokio::task::spawn_blocking(move || {
                     worker
-                        .claim_pending(&flag, Duration::from_secs(1))?
+                        .claim_pending_kind(JobKind::PrinterUpload, &flag, Duration::from_secs(1))?
                         .receive()
                 })
                 .await;

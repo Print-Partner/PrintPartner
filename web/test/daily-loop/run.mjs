@@ -11,6 +11,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
 
@@ -21,8 +22,11 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding:
 const name = `pp-daily-loop-${randomBytes(4).toString("hex")}`;
 const image = `${name}:test`;
 
+// A run that stops before the tests must not leave an older run's score in place.
+rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
+
 let child;
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child?.kill(signal));
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child?.kill(signal));
 
 /** Runs a command with this terminal's output; resolves to its exit code. */
 const run = (command, args, options = {}) =>
@@ -69,9 +73,12 @@ try {
   }
   const left = ["ps -aq --filter", "volume ls -q --filter", "images -q --filter"]
     .map((list, index) => `${list} ${index === 2 ? "reference" : "name"}=${name}`)
-    .filter((list) => spawnSync("docker", list.split(" "), { encoding: "utf8" }).stdout.trim());
+    .filter((list) => {
+      const listed = spawnSync("docker", list.split(" "), { encoding: "utf8" });
+      return listed.status !== 0 || listed.stdout.trim() !== "";
+    });
   if (left.length > 0) {
-    console.error(`Left behind, remove by hand: ${left.map((list) => `docker ${list}`).join("; ")}`);
+    console.error(`Not removed, check by hand: ${left.map((list) => `docker ${list}`).join("; ")}`);
     code ||= 1;
   } else {
     console.log(`Removed container ${name}, volume ${name} and image tag ${image}.`);

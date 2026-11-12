@@ -18,8 +18,14 @@ type Body = (fixtures: { page: Page }) => Promise<void>;
  */
 function step(number: number, ticket: `GRE-${number}` | null, body: Body) {
   const title = `${number}. ${STEPS[number - 1]}`;
-  if (ticket) test.fail(title, { annotation: { type: "ticket", description: ticket } }, body);
-  else test(title, body);
+  const walk: Body = async ({ page }) => {
+    await body({ page });
+    // Proof for score.ts that the body ran to its end. Playwright can report a test it
+    // never ran as passed, for one, after the browser failed to start.
+    test.info().annotations.push({ type: "walked" });
+  };
+  if (ticket) test.fail(title, { annotation: { type: "ticket", description: ticket } }, walk);
+  else test(title, walk);
 }
 
 /**
@@ -31,19 +37,37 @@ function unwritten(rest: string): never {
 }
 
 const inContainer = (...command: string[]) =>
-  spawnSync("docker", ["exec", CONTAINER, ...command], { encoding: "utf8" });
+  spawnSync("docker", ["exec", CONTAINER, ...command], { encoding: "utf8", timeout: 30_000 });
 
-/** Opens a new `pp-server bootstrap-url` link in this browser, once the server is ready. */
+/**
+ * Marks a failure of the harness itself: the server, the sign-in link or the owner's
+ * sign-in. score.ts scores it `fail` even on a marked step, so a broken harness never
+ * reads as twelve expected failures.
+ */
+const harness = <T>(what: string, action: () => Promise<T>) =>
+  action().catch((error: unknown) => {
+    throw new Error(`Harness: ${what}. ${String(error).split("\n")[0]}`);
+  });
+
+/** Waits for pp-server, which starts again after a sign-out stops it. */
+const serverReady = () =>
+  harness("pp-server is not ready", async () => {
+    const readiness = () =>
+      inContainer("pp-server", "healthcheck", "readiness", "--status-file", "/tmp/pp-server.status.json")
+        .status;
+    await expect.poll(readiness, { timeout: 180_000 }).toBe(0);
+  });
+
+/** Opens a new `pp-server bootstrap-url` link in this browser. */
 async function openSignInLink(page: Page) {
-  const readiness = () =>
-    inContainer("pp-server", "healthcheck", "readiness", "--status-file", "/tmp/pp-server.status.json")
-      .status;
-  await expect.poll(readiness, { message: "pp-server readiness", timeout: 180_000 }).toBe(0);
-  const link = inContainer("pp-server", "bootstrap-url", "--data", "/data");
-  if (link.status !== 0) throw new Error(`pp-server bootstrap-url failed: ${link.stderr.trim()}`);
-  // The link is a secret, so a failed navigation must not print it.
-  await page.goto(link.stdout.trim()).catch(() => {
-    throw new Error("The sign-in link did not open.");
+  await serverReady();
+  await harness("the sign-in link did not open", async () => {
+    const link = inContainer("pp-server", "bootstrap-url", "--data", "/data");
+    if (link.status !== 0) throw new Error(`bootstrap-url: ${link.stderr.trim()}`);
+    // The link is a secret, so a failed navigation must not print it.
+    await page.goto(link.stdout.trim()).catch(() => {
+      throw new Error("the browser could not load it");
+    });
   });
 }
 
@@ -58,8 +82,10 @@ const screen = (page: Page, name: string) => page.getByRole("heading", { name, l
 /** Every step after the first starts here: a new browser, signed in as the owner, on Today. */
 async function signIn(page: Page) {
   await openSignInLink(page);
-  await fillSignIn(page);
-  await expect(screen(page, "Today")).toBeVisible();
+  await harness("the owner could not sign in", async () => {
+    await fillSignIn(page);
+    await expect(screen(page, "Today")).toBeVisible();
+  });
 }
 
 async function go(page: Page, destination: string) {
@@ -93,6 +119,7 @@ step(1, "GRE-1453", async ({ page }) => {
 });
 
 step(2, "GRE-412", async ({ page }) => {
+  await serverReady();
   const imported = inContainer("pp-server", "import", "--from", "/tmp/node-installation");
   expect(imported.status, imported.stderr).toBe(0);
   await signIn(page);

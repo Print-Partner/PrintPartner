@@ -3,7 +3,7 @@ name: Daily loop
 # The twelve steps of docs/product/daily-loop.md, driven in a browser against the
 # Rust-only image built from Dockerfile.rust at the commit under test. The score is
 # the number of steps that pass with no expected-fail marker. It runs on each push
-# to main, on manual dispatch, and on a pull request that carries the label
+# to main, on manual dispatch, and on a ready pull request that carries the label
 # ci:daily-loop. It is not a required check and does not run in merge groups
 # (docs/development/ci.md#daily-loop).
 on:
@@ -11,13 +11,13 @@ on:
     branches: [main]
   workflow_dispatch:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened, labeled, ready_for_review, converted_to_draft]
 
 permissions:
   contents: read
 
-# Every push to main gets its own run and its own score. A new push to a pull
-# request cancels that pull request's older run.
+# Every push to main gets its own run and its own score. A new push, label or
+# draft change on a pull request cancels that pull request's older run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,11 +29,10 @@ defaults:
 jobs:
   daily-loop:
     name: daily loop
-    # On a pull request: only with the label, and a label event only when it adds it.
+    # On a pull request: only when it is ready for review and carries the label.
     if: >-
-      github.event_name != 'pull_request'
-      || (contains(github.event.pull_request.labels.*.name, 'ci:daily-loop')
-      && (github.event.action != 'labeled' || github.event.label.name == 'ci:daily-loop'))
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+      && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:daily-loop'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:

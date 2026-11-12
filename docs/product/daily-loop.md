@@ -50,7 +50,7 @@ only. No step is skipped.
 | --- | --- | --- |
 | `pass` | The step passed and has no marker. | passes |
 | `expected_fail` | The step failed and has a marker: the ticket that will make it pass. | passes |
-| `fail` | The step failed or did not finish, and has no marker. | fails |
+| `fail` | The step failed and has no marker. Or, marker or not, it did not finish: it timed out, did not run, or the harness failed (the server was not ready or the sign-in did not work). | fails |
 | `unexpected_pass` | The step passed and still has a marker. | fails |
 
 A marker is the ticket in `step(3, "GRE-1431", …)`. The test of a marked step goes as far

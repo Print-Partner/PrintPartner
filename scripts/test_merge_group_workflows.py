@@ -510,7 +510,7 @@ class PullRequestEditTests(unittest.TestCase):
 class MainPushConcurrencyTests(unittest.TestCase):
     """Main pushes never cancel a running run (GRE-1228) and queue at most one pending run per workflow."""
 
-    EACH_PUSH = {"duplication.yml", "desktop-fleet-rust.yml"}
+    EACH_PUSH = {"duplication.yml", "desktop-fleet-rust.yml", "daily-loop.yml"}
     MAIN_GROUP = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main'"
 
     def test_only_pull_requests_cancel_and_other_events_get_their_own_group(self):

@@ -17,8 +17,8 @@ const numberOf = (test: TestCase) => Number(/^(\d+)\. /.exec(test.title)?.[1]);
 
 /**
  * Scores the run: a step is `pass` only when it passed with no marker. A marked step
- * that passes (`unexpected_pass`), an unmarked step that fails, and a step that did not
- * run or timed out (`fail`) each fail the run.
+ * that passes (`unexpected_pass`) fails the run. So does `fail`: an unmarked step that
+ * fails, and any step that did not run, timed out or stopped on a harness failure.
  */
 export default class ScoreReporter implements Reporter {
   private tickets = new Map<number, string | null>();
@@ -33,16 +33,19 @@ export default class ScoreReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult) {
-    const marked = test.expectedStatus === "failed";
-    const passed = result.status === "passed";
-    const state = passed
-      ? marked ? "unexpected_pass" : "pass"
-      : marked && result.status === "failed" ? "expected_fail" : "fail";
-    this.states.set(numberOf(test), state);
     // Where the step stops: the failure's first line and the control it waited for.
     const lines = stripVTControlCharacters(result.error?.message ?? "").split("\n");
     const target = lines.find((line) => /waiting for |^Locator: /.test(line))?.trim();
     if (lines[0]) this.reasons.set(numberOf(test), [lines[0], target].filter(Boolean).join(" "));
+    // A marker excuses the step's own failure, not a harness that did not get that far.
+    const harness = /Harness: |browserType\.launch/.test(lines[0]);
+    const marked = test.expectedStatus === "failed";
+    // The spec adds `walked` when a body runs to its end; a pass without it did not run.
+    const walked = [...test.annotations, ...result.annotations].some((a) => a.type === "walked");
+    let state: State = "fail";
+    if (result.status === "passed" && walked) state = marked ? "unexpected_pass" : "pass";
+    else if (result.status === "failed" && marked && !harness) state = "expected_fail";
+    this.states.set(numberOf(test), state);
   }
 
   onEnd(result: FullResult) {

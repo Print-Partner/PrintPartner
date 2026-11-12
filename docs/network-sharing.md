@@ -21,16 +21,16 @@ The Docker image does not use this setting. It requires sign-in. See [Docker ima
 
 ## Content security policy
 
-The gateway sets `Content-Security-Policy` on every document and asset it serves. The policy depends on which UI build the gateway serves. `pp-core` names it with `pp_gateway::ServedUi` when it calls `Gateway::start_rust_only`:
+The gateway sets `Content-Security-Policy` on every document and asset it serves. The policy depends on which UI build the gateway serves. `pp-core` names it with `pp_gateway::ServedUi` when it starts the Rust-only gateway:
 
 - The old `apps/web` build, in every runtime (Node-backed, or Rust-only with `ServedUi::Legacy`): `frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, unchanged.
 - The replacement `apps/ui` build on a Rust-only runtime (`desktop_rebuild` with `PP_DESKTOP_REBUILD=1` or `true`, and `ServedUi::Replacement`): the policy in [`replacement-csp.txt`](../rust/crates/pp-gateway/src/replacement-csp.txt), for the replacement UI (GRE-1117):
 
   ```text
-  default-src 'none'; script-src 'self'; style-src 'self' 'nonce-<nonce>'; font-src 'self'; img-src 'self'; connect-src 'self' ws://127.0.0.1:<port>/ws/printers; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  default-src 'none'; script-src 'self'; style-src 'self' 'nonce-<nonce>'; font-src 'self'; img-src 'self'; connect-src 'self' ws://<host>/ws/printers; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   ```
 
-  Scripts, styles, fonts, images, workers and connections stay on the gateway's own origin. `connect-src` also names the printer event stream by its full `ws://` URL, because older WebKit builds do not match `ws:` to `'self'`. There is no `'unsafe-inline'` and no `'unsafe-eval'`, and `base-uri` is `'none'`.
+  Scripts, styles, fonts, images, workers and connections stay on the gateway's own origin. `connect-src` also names the printer event stream by its full `ws://` URL, because older WebKit builds do not match `ws:` to `'self'`. The gateway builds that URL for each response from the authority admission accepted for the request: `127.0.0.1:<port>` on the desktop's loopback listener, or the literal-IP Host the browser used on an explicit `PP_LISTEN_ADDR` listener. A browser at a LAN address or a different published port therefore gets its own WebSocket origin. There is no `'unsafe-inline'` and no `'unsafe-eval'`, and `base-uri` is `'none'`.
 
   Each document response gets a fresh 128-bit nonce. The gateway templates its verified in-memory `index.html` copy (never a `.gz` sibling) and inserts `<meta name="pp-style-nonce" nonce="<nonce>">` right after the `<head>` start tag, or after the doctype when there is no `<head>` tag. The document is always sent uncoded, even to a client that refuses `identity`. [`web/apps/ui/src/csp.ts`](../web/apps/ui/src/csp.ts) hands the nonce to Radix's scroll lock, the one library that inserts a `<style>` element at run time, and turns on Zod's jitless mode so Zod does not probe `new Function`. Asset responses carry the same policy without a nonce.
 

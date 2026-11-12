@@ -47,6 +47,8 @@ impl Fixture {
         let mut brief = fixture.brief();
         brief["evidence"] = json!([evidence("e1", 11), evidence("e2", 12)]);
         brief["draft_id"] = json!(5);
+        // An old stamp, so the write's new one always differs.
+        brief["updated_at"] = json!("2020-01-01T00:00:00.000Z");
         fixture.store(&brief);
         fixture
     }
@@ -131,12 +133,18 @@ fn set_source_roles_sets_each_role_and_clears_the_selected_draft() {
     assert_eq!(roles(&after), [json!("structural_base"), json!("addon")]);
     assert!(after.get("draft_id").is_none(), "{after}");
     assert_ne!(after["updated_at"], before["updated_at"]);
+    assert!(
+        !after.to_string().contains("null"),
+        "stored without nulls: {after}"
+    );
+    // Only the roles, the draft and the stamp change.
     let mut unchanged = after.clone();
-    for field in ["evidence", "updated_at"] {
-        unchanged[field] = before[field].clone();
+    for item in unchanged["evidence"].as_array_mut().unwrap() {
+        item.as_object_mut().unwrap().remove("source_role");
     }
+    unchanged["updated_at"] = before["updated_at"].clone();
     unchanged["draft_id"] = json!(5);
-    assert_eq!(unchanged, before, "only roles, draft and stamp change");
+    assert_eq!(unchanged, before);
 }
 
 #[test]

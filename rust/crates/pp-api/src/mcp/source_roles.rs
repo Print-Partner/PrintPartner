@@ -10,7 +10,6 @@
 
 use super::{
     checkoff::CheckoffDomain,
-    reads::as_int,
     write_result::{Code, Refusal, writer_failure},
 };
 use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
@@ -28,6 +27,11 @@ const ROLES: &str = "roles";
 const INVALID_PLAN: Refusal = Refusal::new(
     Code::InvalidPlanId,
     "plan_id must name a Build by its positive number.",
+);
+/// Confirm adds the unknown id as `evidence_id`.
+const EVIDENCE_NOT_FOUND: Refusal = Refusal::new(
+    Code::EvidenceNotFound,
+    "An evidence_id names no evidence in this Build's planning brief.",
 );
 const INVALID_ROLES: Refusal = Refusal::new(
     Code::InvalidRoles,
@@ -91,15 +95,20 @@ impl CheckoffDomain {
                     "ok": true,
                     "result": { "updated": set.len(), "evidence": set.iter().map(item).collect::<Vec<_>>() },
                 }),
+                Err(SourceRolesError::EvidenceNotFound(id)) => {
+                    let mut refused = EVIDENCE_NOT_FOUND.confirmation();
+                    refused["evidence_id"] = id.into();
+                    refused
+                }
                 Err(error) => storage_refusal(&error).confirmation(),
             },
         )
     }
 }
 
+/// A JSON whole number above zero; no string or fraction coercion.
 fn plan(args: &Map<String, Value>) -> Option<PositiveId> {
-    let id = u64::try_from(as_int(args.get(PLAN_ID))?).ok()?;
-    PositiveId::new(id).ok()
+    PositiveId::new(args.get(PLAN_ID)?.as_u64()?).ok()
 }
 
 /// The checked assignments, or the first refusal. A missing or non-string
@@ -141,10 +150,7 @@ fn storage_refusal(error: &SourceRolesError) -> Refusal {
             Code::PlanningBriefInvalid,
             "This Build's stored planning brief is invalid.",
         ),
-        SourceRolesError::EvidenceNotFound(_) => Refusal::new(
-            Code::EvidenceNotFound,
-            "An evidence_id names no evidence in this Build's planning brief.",
-        ),
+        SourceRolesError::EvidenceNotFound(_) => EVIDENCE_NOT_FOUND,
         SourceRolesError::MultipleStructuralBases => Refusal::new(
             Code::MultipleStructuralBases,
             "A Build can have only one structural base.",

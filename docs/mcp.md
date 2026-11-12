@@ -57,20 +57,20 @@ The last four codes are shared by MCP write tools that use the storage write sea
 
 `propose_set_build_source_roles` `{ plan_id, roles: [{ evidence_id, role }] }` sets each named evidence item's role for this Build in its planning brief (GRE-1300 PR 1). `role` is `structural_base`, `overlay`, `addon` or `evidence`. A Source's Library role and the Build's layers do not change.
 
-- **Propose** checks that `plan_id` names a Build by a positive number and that `roles` is a list, then finds the Build's planning brief with the request's API key. It writes nothing.
+- **Propose** checks that `plan_id` is a JSON whole number above zero (a string or fraction is refused) and that `roles` is a list, then finds the Build's planning brief with the request's API key. It writes nothing.
 - **Confirm** trims each `evidence_id` and `role`, then runs one transaction: it sets the roles, checks that at most one evidence item is the structural base, clears the brief's selected draft and stores the brief. A later item for the same `evidence_id` wins. It answers `{ "ok": true, "result": { "updated", "evidence": [{ "id", "source_id", "source_role" }] } }`, listing the changed items in brief order. The planning phase returns to `preparing`.
 
 A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
 
 | Code | When |
 | --- | --- |
-| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
+| `invalid_plan_id` | `plan_id` is missing or not a JSON whole number above zero. |
 | `invalid_roles` | `roles` is missing or not a list. |
 | `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
 | `planning_brief_invalid` | The stored brief does not parse. |
 | `invalid_role_assignment` | A `roles` item is not an object. |
 | `invalid_source_role` | A `role` is not one of the four. |
-| `evidence_not_found` | An `evidence_id` names no evidence in the brief. |
+| `evidence_not_found` | An `evidence_id` names no evidence in the brief. The refusal names it in `evidence_id`. |
 | `multiple_structural_bases` | More than one evidence item would be the structural base, counting roles already in the brief. |
 
 It also answers the four shared codes above.

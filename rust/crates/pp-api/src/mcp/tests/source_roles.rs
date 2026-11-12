@@ -18,8 +18,8 @@ struct Seeded {
 
 impl Seeded {
     /// Build B from `propose_create_build`, Library Sources S1 (role `mod`)
-    /// and S2 (role `addon`), and B's brief given evidence E1 (S1) and E2
-    /// (S2) with no roles and selected draft D.
+    /// and S2 (role `overlay`), one layer of B on S1, and B's brief given
+    /// evidence E1 (S1) and E2 (S2) with no roles and selected draft D.
     async fn new() -> Self {
         let (server, headers) = orders_on().await;
         let args = json!({ "name": "Voron for Sam", "request": "Voron 2.4, black ABS" });
@@ -32,10 +32,19 @@ impl Seeded {
             &server,
             "INSERT INTO projects(tenant_id,name,url,role) VALUES \
              ('default','S1','https://github.com/example/s1','mod'), \
-             ('default','S2','https://github.com/example/s2','addon');",
+             ('default','S2','https://github.com/example/s2','overlay');",
+        );
+        let sources = [seeded_source(&server, "S1"), seeded_source(&server, "S2")];
+        execute(
+            &server,
+            &format!(
+                "INSERT INTO profile_layers(tenant_id,profile_id,layer_order,layer_type,project_id) \
+                 VALUES('default',{build},0,'base',{});",
+                sources[0]
+            ),
         );
         let seeded = Self {
-            sources: [seeded_source(&server, "S1"), seeded_source(&server, "S2")],
+            sources,
             server,
             headers,
             build,
@@ -149,6 +158,21 @@ async fn mcp_source_roles_set_the_roles_and_clear_the_selected_draft() {
     let seeded = Seeded::new().await;
     let library = seeded.untouched();
     let layers = seeded.state()[0].clone();
+    let b_layers: i64 = seeded
+        .database()
+        .query_row(
+            "SELECT COUNT(*) FROM profile_layers WHERE profile_id=?1",
+            [seeded.build as i64],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(b_layers, 1, "B has one layer");
+    let planning::Outcome::BuildPlanning(response) =
+        build_planning(&seeded.server, seeded.build).await
+    else {
+        panic!("the brief reads");
+    };
+    assert_eq!(response.planning.unwrap().brief.draft_id, Some(DRAFT));
     let id = seeded
         .proposed(json!([
             { "evidence_id": "E1", "role": "structural_base" },
@@ -187,6 +211,7 @@ async fn mcp_source_roles_set_the_roles_and_clear_the_selected_draft() {
         ]
     );
     assert_eq!(planning.brief.draft_id, None);
+    assert!(seeded.brief().get("draft_id").is_none(), "stored brief");
     assert_eq!(planning.planning_phase, BuildPlanningPhase::Preparing);
     assert_eq!(
         seeded.untouched(),
@@ -225,6 +250,9 @@ async fn mcp_source_roles_confirm_refuses_with_a_code_and_changes_nothing() {
         assert_eq!(refused["ok"], false, "{roles}: {refused}");
         assert_eq!(refused["code"], code, "{roles}: {refused}");
         assert!(refused["detail"].is_string(), "{refused}");
+        if code == "evidence_not_found" {
+            assert_eq!(refused["evidence_id"], "E9", "{refused}");
+        }
         assert_eq!((seeded.state(), seeded.untouched()), before, "{roles}");
         kept.push(id);
     }
@@ -244,6 +272,10 @@ async fn mcp_source_roles_propose_refuses_with_a_code() {
     let cases = [
         (json!({ "roles": roles }), "invalid_plan_id"),
         (json!({ "plan_id": 0, "roles": roles }), "invalid_plan_id"),
+        (
+            json!({ "plan_id": seeded.build.to_string(), "roles": roles }),
+            "invalid_plan_id",
+        ),
         (json!({ "plan_id": seeded.build }), "invalid_roles"),
         (
             json!({ "plan_id": seeded.build, "roles": { "E1": "addon" } }),

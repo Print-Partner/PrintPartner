@@ -1,7 +1,7 @@
 //! Startup for a Rust-only gateway, with an optional explicit network listener.
 use super::{
-    Gateway, GatewayState, MoonrakerHosts, MoonrakerStatus, OperationOwners, RustStatus, ServedUi,
-    SignOut,
+    Gateway, GatewayState, MoonrakerHosts, MoonrakerStatus, OperationOwners, RustOnlyMode,
+    RustStatus, ServedUi, SignOut,
 };
 use anyhow::Result;
 use pp_compat::CompatHandle;
@@ -34,13 +34,15 @@ impl Gateway {
     ) -> Result<Self> {
         Self::start_rust_only_with_network(
             listener,
-            false,
+            RustOnlyMode {
+                network: false,
+                sign_out,
+            },
             assets,
             (ui, None),
             product,
             status,
             hosts,
-            sign_out,
         )
     }
 
@@ -49,13 +51,12 @@ impl Gateway {
     /// bytes retained by release verification, when present.
     pub fn start_rust_only_with_network(
         listener: TcpListener,
-        network: bool,
+        mode: RustOnlyMode,
         assets: PathBuf,
         served: (ServedUi, Option<pp_compat::AssetSnapshot>),
         product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
         hosts: Arc<dyn MoonrakerHosts>,
-        sign_out: SignOut,
     ) -> Result<Self> {
         Self::start_inner(
             listener,
@@ -64,7 +65,7 @@ impl Gateway {
             CompatHandle::unpublished(),
             &OperationOwners::node_only(),
             Some(Box::new(product)),
-            Some((status, hosts, network, sign_out)),
+            Some((status, hosts, mode)),
         )
     }
 }

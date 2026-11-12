@@ -584,7 +584,7 @@ async fn start_rust_resources(
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        server,
+        server_updates,
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
@@ -599,15 +599,12 @@ async fn start_rust_resources(
     } else {
         pp_gateway::SignOut::EndsRuntime
     };
-    let gateway = Gateway::start_rust_only_with_network(
-        listener,
-        listen.is_some(),
-        assets,
-        served,
-        product,
-        receiver,
-        hosts,
+    let mode = pp_gateway::RustOnlyMode {
+        network: listen.is_some(),
         sign_out,
+    };
+    let gateway = Gateway::start_rust_only_with_network(
+        listener, mode, assets, served, product, receiver, hosts,
     )?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);

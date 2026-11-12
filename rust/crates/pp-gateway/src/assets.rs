@@ -409,7 +409,14 @@ impl super::Gateway {
             pp_compat::CompatHandle::unpublished(),
             &super::OperationOwners::node_only(),
             Some(Box::new(product)),
-            Some((status, hosts, false, sign_out)),
+            Some((
+                status,
+                hosts,
+                super::RustOnlyMode {
+                    network: false,
+                    sign_out,
+                },
+            )),
         )
     }
 }

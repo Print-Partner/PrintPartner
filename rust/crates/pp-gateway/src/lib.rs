@@ -83,6 +83,14 @@ pub enum SignOut {
     KeepsServing,
 }
 
+/// How a Rust-only start admits requests and answers sign-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RustOnlyMode {
+    /// An explicit headless listener (`PP_LISTEN_ADDR`) instead of loopback.
+    pub network: bool,
+    pub sign_out: SignOut,
+}
+
 #[derive(Clone)]
 pub struct ShutdownRequested {
     token: CancellationToken,
@@ -391,15 +399,19 @@ impl Gateway {
         rust_only: Option<(
             tokio::sync::watch::Receiver<RustStatus>,
             Arc<dyn MoonrakerHosts>,
-            bool,
-            SignOut,
+            RustOnlyMode,
         )>,
     ) -> Result<Self> {
-        let (rust_status, hosts, network, sign_out) = match rust_only {
-            Some((status, hosts, network, sign_out)) => {
-                (Some(status), Some(hosts), network, sign_out)
-            }
-            None => (None, None, false, SignOut::EndsRuntime),
+        let (rust_status, hosts, RustOnlyMode { network, sign_out }) = match rust_only {
+            Some((status, hosts, mode)) => (Some(status), Some(hosts), mode),
+            None => (
+                None,
+                None,
+                RustOnlyMode {
+                    network: false,
+                    sign_out: SignOut::EndsRuntime,
+                },
+            ),
         };
         let mut address = listener.local_addr()?;
         anyhow::ensure!(

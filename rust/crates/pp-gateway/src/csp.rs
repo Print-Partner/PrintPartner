@@ -372,7 +372,10 @@ async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
     let status = tokio::sync::watch::channel(RustStatus::Ready);
     let mut gateway = Gateway::start_rust_only_with_network(
         TcpListener::bind("127.0.0.1:0").await.unwrap(),
-        true,
+        crate::RustOnlyMode {
+            network: true,
+            sign_out: SignOut::KeepsServing,
+        },
         scratch.to_path_buf(),
         (
             ServedUi::Replacement,

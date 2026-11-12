@@ -261,7 +261,7 @@ The Rust-only send queue stores a tenant's opt-in upload-only preference as a
 JSON boolean in `app_settings` under `printer.upload_only`. A missing setting
 means disabled. It has no schema migration, timer or dispatcher of its own.
 
-- `GET /api/v2/printer-send-queue/upload-only` returns
+- `GET /api/v2/printer-send-queue/settings/upload-only` returns
   `{"item":{"enabled":false}}` when the preference is absent.
 - `PUT` on that same route requires `{"enabled":true}` or
   `{"enabled":false}`. Strings and numbers are refused. Both routes use the

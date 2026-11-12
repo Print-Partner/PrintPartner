@@ -700,10 +700,14 @@ async fn add_to_queue_needs_a_valid_session_before_it_reads_the_upload() {
 
 #[tokio::test]
 async fn ticket_t_27_upload_only_routes_are_guarded_and_require_a_boolean() {
-    let path = "/api/v2/printer-send-queue/upload-only";
+    let path = "/api/v2/printer-send-queue/settings/upload-only";
     let off = Queue::open("false", Targets::default(), &[]);
     assert_eq!(off.send("GET", path, "").await.0, StatusCode::NOT_FOUND);
-    let queue = Queue::open("1", Targets::default(), &[]);
+    let queue = Queue::open(
+        "1",
+        Targets::default(),
+        &[("upload-only", "p-a", "queued", None)],
+    );
     for method in ["GET", "PUT"] {
         assert_eq!(
             loopback::send(
@@ -750,6 +754,14 @@ async fn ticket_t_27_upload_only_routes_are_guarded_and_require_a_boolean() {
         0,
         "mode changes never dispatch"
     );
+    assert_eq!(
+        queue
+            .send("DELETE", "/api/v2/printer-send-queue/upload-only", "")
+            .await
+            .0,
+        StatusCode::OK,
+        "legacy queue IDs must retain their remove route"
+    );
 }
 
 #[tokio::test]
@@ -766,7 +778,7 @@ async fn ticket_t_27_explicit_dispatch_and_drain_override_stale_start_flags() {
     queue
         .send(
             "PUT",
-            "/api/v2/printer-send-queue/upload-only",
+            "/api/v2/printer-send-queue/settings/upload-only",
             r#"{"enabled":true}"#,
         )
         .await;

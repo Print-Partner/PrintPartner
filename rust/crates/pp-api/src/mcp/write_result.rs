@@ -32,6 +32,8 @@ pub(super) enum Code {
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
+    // get_print_stats
+    InvalidHours,
     // get_build_planning_state, get_plan_draft
     InvalidPlanId,
     PlanNotFound,
@@ -54,6 +56,7 @@ impl Code {
             Self::OrdersModuleOff => "orders_module_off",
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
+            Self::InvalidHours => "invalid_hours",
             Self::InvalidPlanId => "invalid_plan_id",
             Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",

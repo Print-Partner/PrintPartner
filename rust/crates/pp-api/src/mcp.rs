@@ -553,6 +553,9 @@ pub(crate) mod plan_accept;
 mod planning;
 #[path = "mcp/planning_reads.rs"]
 mod planning_reads;
+#[path = "mcp/print_stats.rs"]
+#[allow(dead_code)] // Wired into the session once the farm clients reach it (GRE-1467).
+mod print_stats;
 #[path = "mcp/progress_reads.rs"]
 mod progress_reads;
 #[path = "mcp/rate_limit.rs"]

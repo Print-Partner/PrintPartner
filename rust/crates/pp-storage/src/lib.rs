@@ -46,6 +46,8 @@ pub use pp_domain::printer_display_state;
 pub use pp_domain::slicer_grams;
 mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_activity;
+#[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;

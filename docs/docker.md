@@ -58,6 +58,7 @@ docker logs print-partner    # includes the origin, http://127.0.0.1:<port>
 - **Capabilities.** `pp-server` needs no Linux capabilities. Drop all of them with `--cap-drop ALL`, and use `--security-opt no-new-privileges`. The image has no setuid helper that needs either.
 - **Process tree.** `tini` is PID 1 and forwards signals. `pp-server` is its only child. In Rust-only mode `pp-server` starts no child process.
 - **Port.** `pp-server` binds `127.0.0.1` on a free port and saves it in `/data/desktop.toml`. Later starts reuse that port while it is free.
+- **Logs.** Stdout carries the origin and, at shutdown, the receipt. Stderr carries `pp-server`'s events at INFO and above, one JSON row each (`time` in epoch seconds, `level` as a pino number, `target`, `message` and fields), with secrets scrubbed as in `core.log`. Each start logs `pp_server_ready` with the origin. Both reach `docker logs`. This destination and format are provisional ([GRE-1457](https://linear.app/greetz/issue/GRE-1457)). The desktop app writes the same rows to `core.log` instead.
 
 ## Sign in
 

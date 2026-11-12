@@ -47,7 +47,15 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         assert_eq!(String::from_utf8_lossy(&output.stdout), line);
     }
 
-    let (exit, printed, _) = server.stop();
+    let (exit, printed, logged) = server.stop();
+    // Tracing events reach stderr as scrubbed JSON rows (provisional, GRE-1457).
+    let ready = logged
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|row| row["message"] == "pp_server_ready")
+        .unwrap_or_else(|| panic!("no pp_server_ready row on stderr: {logged}"));
+    assert_eq!(ready["level"], 30, "{ready}");
+    assert_eq!(ready["origin"], origin.as_str(), "{ready}");
     let mut lines = printed.lines();
     assert_eq!(lines.next(), Some(origin.as_str()), "origin first");
     let receipt: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();

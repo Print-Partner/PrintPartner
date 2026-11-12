@@ -33,6 +33,10 @@ fn main() -> Result<()> {
         args.next();
         return import(args);
     }
+    // The headless server's tracing events go to stderr, which a container
+    // collects (provisional, GRE-1457). The subcommands above print only
+    // their own output.
+    pp_core::CoreLog::stderr().install();
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -195,6 +199,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
         return Err(error);
     }
+    tracing::info!(origin = %runtime.origin(), "pp_server_ready");
     println!("{}", runtime.origin());
     let shutdown_requested = runtime.shutdown_requested();
     tokio::select! {

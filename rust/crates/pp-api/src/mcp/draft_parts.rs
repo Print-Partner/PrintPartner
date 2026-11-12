@@ -9,9 +9,11 @@
 use super::{
     checkoff::CheckoffDomain,
     positive_id,
-    write_result::{Code, Refusal},
+    write_result::{Code, Refusal, writer_failure},
 };
 use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
+use pp_storage::WriterFailure;
+use pp_storage::auth::AuthFailure;
 use pp_storage::build_graph::{BuildCommand, BuildOutcome, DecisionOutcome, PositiveId};
 use pp_storage::required_units::{Outcome as EditOutcome, Workspace};
 use pp_storage::working_drafts::{
@@ -45,6 +47,10 @@ const EDIT_EMPTY: Refusal = Refusal::new(
 const INVALID_DIGEST: Refusal = Refusal::new(
     Code::InvalidDigest,
     "expected_snapshot_digest must be 64 lowercase hex characters.",
+);
+const OUTCOME_UNKNOWN: Refusal = Refusal::new(
+    Code::OutcomeUnknown,
+    "The result is unknown. Check the draft before proposing again.",
 );
 const UNAVAILABLE: Refusal = Refusal::new(
     Code::Unavailable,
@@ -138,11 +144,41 @@ impl CheckoffDomain {
         let workspace = match edited {
             Ok(EditOutcome::Ready { workspace }) => workspace,
             Ok(outcome) => return Ok(edit_refusal(&outcome).confirmation()),
-            Err(error) => return Ok(storage_refusal(&error).confirmation()),
+            Err(error) => {
+                return Ok(self
+                    .failed_edit(plan, draft, action, &error)?
+                    .confirmation());
+            }
         };
         let result = applied(&workspace, &action.params);
         self.log(plan, action, &result)?;
         Ok(json!({ "ok": true, "result": result }))
+    }
+
+    /// The refusal for an edit that returned an error. The edit commits the
+    /// Part changes before it selects Required units in a second transaction,
+    /// so an error can follow a committed edit. Only a draft whose digest still
+    /// matches the proposal is known to be unwritten; anything else is
+    /// `outcome_unknown`, which drops the proposal.
+    fn failed_edit(
+        &self,
+        plan: PositiveId,
+        draft: PositiveId,
+        action: &ProposedAction,
+        error: &anyhow::Error,
+    ) -> Result<Refusal, String> {
+        let refusal = storage_refusal(error);
+        if refusal.code == Code::OutcomeUnknown {
+            return Ok(refusal);
+        }
+        let expected = action
+            .params
+            .get("expected_snapshot_digest")
+            .and_then(Value::as_str);
+        Ok(match self.workspace(plan, draft)? {
+            Ok(workspace) if Some(workspace.draft.snapshot_digest.as_str()) == expected => refusal,
+            _ => OUTCOME_UNKNOWN,
+        })
     }
 
     /// The draft as the Plan tab reads it, or the refusal for its absence.
@@ -360,15 +396,45 @@ fn edit_refusal(outcome: &EditOutcome) -> Refusal {
     }
 }
 
+/// The refusal for a storage error, mapped as the Plan tab's HTTP handler
+/// maps it: credential failures first, then the draft client's own failures.
 fn storage_refusal(error: &anyhow::Error) -> Refusal {
+    if let Some(auth) = error.downcast_ref::<AuthFailure>() {
+        return writer_failure(&WriterFailure::Auth(*auth));
+    }
     match error.downcast_ref::<Failure>() {
-        Some(Failure::OutcomeUnknown) => Refusal::new(
-            Code::OutcomeUnknown,
-            "The result is unknown. Check the draft before proposing again.",
-        ),
+        Some(Failure::OutcomeUnknown) => OUTCOME_UNKNOWN,
         Some(Failure::Cancelled | Failure::QueueFull | Failure::Stopped) => UNAVAILABLE,
         Some(Failure::CorruptOrigin) | None => {
             Refusal::new(Code::Internal, "Storage failed. Nothing was written.")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_errors_map_to_the_shared_write_codes() {
+        let code = |error: anyhow::Error| storage_refusal(&error).code;
+        for (failure, expected) in [
+            (AuthFailure::InvalidCredentials, Code::Unauthorized),
+            (AuthFailure::CredentialChanged, Code::Unauthorized),
+            (AuthFailure::QueueFull, Code::Unavailable),
+            (AuthFailure::Stopped, Code::Unavailable),
+            (AuthFailure::CommitUnknown, Code::OutcomeUnknown),
+        ] {
+            assert_eq!(code(anyhow::Error::new(failure)), expected, "{failure:?}");
+        }
+        for (failure, expected) in [
+            (Failure::OutcomeUnknown, Code::OutcomeUnknown),
+            (Failure::QueueFull, Code::Unavailable),
+            (Failure::Cancelled, Code::Unavailable),
+            (Failure::CorruptOrigin, Code::Internal),
+        ] {
+            let name = format!("{failure:?}");
+            assert_eq!(code(anyhow::Error::new(failure)), expected, "{name}");
         }
     }
 }

@@ -21,6 +21,8 @@ use std::{
 };
 mod desktop_settings;
 mod drain;
+#[cfg(feature = "desktop_rebuild")]
+mod network;
 mod origin;
 pub mod perf_launch;
 pub mod perf_seed;
@@ -301,7 +303,9 @@ enum Selection {
     Node,
     /// The shipped launchers: Rust only when both rebuild gates are on.
     Launcher,
-    Server,
+    /// `pp-server`: the launcher gates plus environment update checks and an
+    /// optional explicit listener.
+    Server(Option<std::net::SocketAddr>),
 }
 
 #[derive(Serialize, Debug)]
@@ -523,6 +527,7 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 async fn start_rust_resources(
     input: DesktopLaunch,
     desktop_rebuild: DesktopRebuild,
+    listen: Option<std::net::SocketAddr>,
     server_updates: bool,
 ) -> Result<Resources> {
     let (assets, replacement_present) = rust_startup::select_frontend(&input.bundle, input.assets)?;
@@ -562,9 +567,7 @@ async fn start_rust_resources(
         eprintln!("Replacement UI bundle absent");
     }
     let community_manifests = bundle.community_manifests_dir();
-    let (listener, origin_change) =
-        bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
-    let origin = format!("http://{}", listener.local_addr()?);
+    let (listener, origin_change, origin) = network::bind(listen, writer.lease()).await?;
     let hosts = Arc::new(printer_status::StoredMoonrakerHosts::new(writer.client()));
     let send_worker = send_worker::SendWorker::new(
         &writer,
@@ -582,20 +585,21 @@ async fn start_rust_resources(
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let product = move |status| product.merge(status_routes.mount(status));
-    let gateway = match snapshot {
-        Some(files) => {
-            Gateway::start_rust_only_with_assets(listener, assets, files, product, receiver, hosts)
-        }
-        None => Gateway::start_rust_only(
-            listener,
-            assets,
-            pp_gateway::ServedUi::Legacy,
-            product,
-            receiver,
-            hosts,
-        ),
-    }?;
+    let product =
+        move |status| network::for_listener(product.merge(status_routes.mount(status)), listen);
+    let served = match snapshot {
+        Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
+        None => (pp_gateway::ServedUi::Legacy, None),
+    };
+    let gateway = Gateway::start_rust_only_with_network(
+        listener,
+        listen.is_some(),
+        assets,
+        served,
+        product,
+        receiver,
+        hosts,
+    )?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
     let stop_sends = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -632,11 +636,6 @@ impl CoreRuntime {
         Self::start_selected(input, SupervisorConfig::default(), Selection::Launcher).await
     }
 
-    /// Standalone server startup; only this owner allows environment update checks.
-    pub async fn start_for_server(input: DesktopLaunch) -> Result<Self> {
-        Self::start_selected(input, SupervisorConfig::default(), Selection::Server).await
-    }
-
     /// Start with a per-instance compatibility timing policy.
     pub async fn start_with_compat_config(
         input: DesktopLaunch,
@@ -645,14 +644,36 @@ impl CoreRuntime {
         Self::start_selected(input, compat_config, Selection::Node).await
     }
 
+    /// Standalone server startup; only this owner allows environment update checks.
+    /// `listen` selects an explicit listener; desktop startup never uses one.
+    pub async fn start_for_server(
+        input: DesktopLaunch,
+        listen: Option<std::net::SocketAddr>,
+    ) -> Result<Self> {
+        Self::start_selected(
+            input,
+            SupervisorConfig::default(),
+            Selection::Server(listen),
+        )
+        .await
+    }
+
     async fn start_selected(
         input: DesktopLaunch,
         compat_config: SupervisorConfig,
         selection: Selection,
     ) -> Result<Self> {
         let desktop_rebuild = DesktopRebuild::from_env();
-        let rust_only = matches!(selection, Selection::Launcher | Selection::Server)
+        let rust_only = matches!(selection, Selection::Launcher | Selection::Server(_))
             && desktop_rebuild.enabled();
+        let listen = match selection {
+            Selection::Server(listen) => listen,
+            _ => None,
+        };
+        anyhow::ensure!(
+            listen.is_none() || rust_only,
+            "PP_LISTEN_ADDR requires the Rust-only runtime"
+        );
         let ownership = (desktop_rebuild.enabled() && !rust_only)
             .then(admit_bundled_manifest)
             .transpose()
@@ -678,7 +699,7 @@ impl CoreRuntime {
                 runtime.block_on(async move {
                     let resources = if rust_only {
                         #[cfg(feature = "desktop_rebuild")]
-                        { start_rust_resources(input, desktop_rebuild, matches!(selection, Selection::Server)).await }
+                        { start_rust_resources(input, desktop_rebuild, listen, matches!(selection, Selection::Server(_))).await }
                         #[cfg(not(feature = "desktop_rebuild"))]
                         { unreachable!("Rust-only runtime requires desktop_rebuild") }
                     } else {

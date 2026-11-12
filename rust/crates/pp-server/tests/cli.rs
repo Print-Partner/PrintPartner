@@ -35,6 +35,30 @@ fn unknown_argument_is_rejected_before_startup() {
     rejected(&["--unknown", "value"], "Unknown argument");
 }
 
+#[test]
+fn malformed_listener_is_rejected_before_opening_paths() {
+    let binary = binary();
+    for address in [
+        "",
+        "localhost:8080",
+        "0.0.0.0",
+        "0.0.0.0:99999",
+        "[::ffff:0.0.0.0]:8080",
+        "[::ffff:224.0.0.1]:8080",
+        "224.0.0.1:8080",
+        "[ff02::1]:8080",
+    ] {
+        let output = child_process::command(&binary)
+            .env("PP_LISTEN_ADDR", address)
+            .args(["--web", "/path-that-must-not-be-opened"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid PP_LISTEN_ADDR"));
+    }
+}
+
 #[cfg(not(feature = "desktop_rebuild"))]
 #[test]
 fn import_needs_a_rebuild_build() {
@@ -87,6 +111,7 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
         report.contains("3 Builds, 2 Sources, 2 printers, 2 unmatched prints."),
         "{report}"
     );
+    assert!(report.contains("The destination is absent or empty, as the import needs."));
     assert!(
         !std::path::Path::new("unused").exists(),
         "a dry run creates no destination"

@@ -252,6 +252,35 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
 ```
 
+## Printer read route (GRE-1452)
+
+`GET /api/v2/printers/{id}` reads one stored printer for the replacement
+Settings screen. It is `readPrinter` in the generated
+`@print-partner/rust-client` and answers `200` with a `PrinterConfig`: `id`,
+`name`, `model`, `bed_width_mm`, `bed_depth_mm`, `bed_height_mm`, `margin_mm`,
+`max_filament_slots` and `integration_id`. `GET /api/v2/printers` is still the
+Farm list, which adds the live state.
+
+- It mounts like the integration routes above: `/api/v2` only, Rust-only
+  runtime only, behind the accepted gate, with the credential proved in the
+  read's own transaction.
+- Lengths are whole millimetres, as integers. `bed_height_mm` is null only for
+  a printer that came from an installation without one.
+- The read runs through the read seam (`pp-storage/src/read.rs`) on the
+  read-only pool, so it does not wait in the writer queue.
+
+| Case | Status | `code` |
+| --- | --- | --- |
+| No stored printer has that id | `404` | `printer_not_found` |
+| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. The read is refused for every id and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
+| No reader came free in time | `503` | `transaction_unavailable` |
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
+  --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+  --no-tests=fail -E 'test(read::tests) | test(printer_setup::) | test(printers::tests) | test(client_routes_match_registrations)'
+```
+
 ## GitHub PAT and Discord notification settings (GRE-1360)
 
 The settings router mounts `/settings/github-pat`, `/settings/discord-notify`

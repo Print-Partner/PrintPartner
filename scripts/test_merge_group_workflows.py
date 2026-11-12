@@ -317,7 +317,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         selected = "needs.changes.outputs.windows != 'false'"
                     label_guard = ""
                     if job_id == "rust-windows":
-                        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
+                        label_guard = "github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
                                      f"{label_guard}(needs.changes.result != 'success' || {selected}))")
@@ -367,9 +367,38 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         if step.get("name") == "Require linux build and rebuild partitions"
                     )
                     self.assertEqual(require["env"]["EVENT_NAME"], "${{ github.event_name }}")
-                    self.assertIn("push|merge_group|workflow_dispatch)", require["run"])
+                    self.assertIn("push|workflow_dispatch)", require["run"])
+                    self.assertNotIn("merge_group", require["run"])
                     self.assertIn('test "$REBUILD_RESULT" = success', require["run"])
                     self.assertIn("success|skipped)", require["run"])
+
+    def test_merge_groups_run_the_short_rust_set(self):
+        """A merge group runs fmt and clippy on Linux: no tests, no partitions, no other OS."""
+        jobs = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
+                         Loader=yaml.BaseLoader)["jobs"]
+        not_queued = "github.event_name != 'merge_group'"
+        full_events = "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+        for job_id in ("rust-windows", "rust-macos"):
+            self.assertIn(f"!cancelled() && {not_queued} && ", jobs[job_id]["if"], job_id)
+        self.assertIn(f"needs.rust-linux-build.result == 'success' && {full_events})",
+                      jobs["rust-linux-rebuild"]["if"])
+        self.assertNotIn("merge_group", jobs["rust-linux-rebuild"]["if"])
+        tests, checks = [], []
+        for step in jobs["rust-linux-build"]["steps"]:
+            run = step.get("run", "")
+            if "cargo nextest" in run or "cargo test" in run:
+                tests.append(step)
+            elif "cargo fmt" in run or "cargo clippy" in run or "check-clippy-limits.py" in run:
+                checks.append(step)
+        self.assertEqual(len(tests), 5, [step["name"] for step in tests])
+        for step in tests:
+            self.assertTrue(f"&& {not_queued}" in step["if"] or step["if"].endswith(f"&& {full_events} }}}}"),
+                            step["name"])
+        self.assertEqual([step["name"] for step in checks],
+                         ["cargo fmt", "clippy (desktop_rebuild off)", "clippy (desktop_rebuild on)",
+                          "Check Rust Clippy limits"])
+        for step in checks:
+            self.assertNotIn("merge_group", step["if"], step["name"])
 
     def test_native_macos_plan_respects_paths_and_event(self):
         workflow = yaml.load((ROOT / ".github/workflows/desktop-native-macos.yml").read_text(),

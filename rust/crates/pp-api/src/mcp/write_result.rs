@@ -1,4 +1,4 @@
-//! The refusal codes MCP write tools answer, and the one mapping from a
+//! The refusal codes MCP tools answer, and the one mapping from a
 //! storage [`WriterFailure`] to an MCP result: the MCP counterpart of
 //! `problem::writer_failure`. [`Code`] is the closed list `docs/mcp.md`
 //! documents; a new write tool adds its codes here.
@@ -45,6 +45,10 @@ pub(super) enum Code {
     BaseChanged,
     AcceptedBaselineRequired,
     EditRefused,
+    // get_build_planning_state, get_plan_draft
+    InvalidPlanId,
+    PlanNotFound,
+    NoPlanningBrief,
 }
 
 impl Code {
@@ -75,6 +79,9 @@ impl Code {
             Self::BaseChanged => "base_changed",
             Self::AcceptedBaselineRequired => "accepted_baseline_required",
             Self::EditRefused => "edit_refused",
+            Self::InvalidPlanId => "invalid_plan_id",
+            Self::PlanNotFound => "plan_not_found",
+            Self::NoPlanningBrief => "no_planning_brief",
         }
     }
 }

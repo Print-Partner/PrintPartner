@@ -52,6 +52,7 @@ pub enum FirstUserTenant {
     ClaimDefault,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Email,

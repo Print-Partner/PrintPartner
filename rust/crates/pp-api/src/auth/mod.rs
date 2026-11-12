@@ -1,3 +1,5 @@
+#[cfg(feature = "codegen")]
+pub(crate) mod contract;
 mod http;
 mod mail;
 mod provider;
@@ -6,7 +8,9 @@ pub use http::{AuthBackend, AuthHttpConfig, CookieTransport, auth_router};
 pub use mail::{Delivery, ResetMailer, SmtpConfig, SmtpSecurity};
 pub use provider::{OAuthCredentials, ProviderClient};
 #[cfg(feature = "codegen")]
-pub(crate) use wire::Health;
+pub(crate) use wire::{
+    AuthStatus, CurrentUser, Health, RegisterRequest, SignInRequest, SignedIn, SignedOut,
+};
 #[cfg(all(test, feature = "desktop_rebuild"))]
 pub(crate) use {provider::network, wire::Failure};
 

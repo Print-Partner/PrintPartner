@@ -28,6 +28,7 @@
     "web/scripts/check-ci-event-tree.test.mjs",
     "web/scripts/atomic-package-build.mjs",
     "Dockerfile",
+    "Dockerfile.rust",
     "docker-entrypoint.sh",
     "rust/deny.toml",
     "rust/scripts/check-macos-bundle.py"

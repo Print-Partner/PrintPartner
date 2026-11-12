@@ -24,7 +24,7 @@ use pp_storage::{
     auth::Secret,
     printer_setup::{
         Field, IntegrationSummary, InvalidField, NewIntegration, PrinterSetupClient,
-        PrinterSetupError, Reason, ServiceKind,
+        PrinterSetupError, Reason, ServiceKind, SetupDocument,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -35,13 +35,34 @@ use std::{
 
 const BODY_LIMIT: usize = 16 * 1024;
 
-/// Every `code` these routes answer.
+/// Every `code` the integration and printer routes answer.
 pub mod code {
     pub const INVALID_INTEGRATION: &str = "invalid_integration";
     pub const INTEGRATION_NOT_FOUND: &str = "integration_not_found";
     pub const INTEGRATION_LIMIT: &str = "integration_limit";
     pub const INTEGRATIONS_UNREADABLE: &str = "integrations_unreadable";
+    pub const INVALID_PRINTER: &str = "invalid_printer";
+    pub const PRINTER_NOT_FOUND: &str = "printer_not_found";
+    pub const PRINTER_LIMIT: &str = "printer_limit";
+    pub const PRINTERS_UNREADABLE: &str = "printers_unreadable";
 }
+
+/// The text and codes that differ between integrations and printers. The
+/// mapping itself is [`refused`], once, for both.
+pub(crate) struct Wording {
+    pub(crate) invalid: &'static str,
+    pub(crate) not_found: (&'static str, &'static str),
+    pub(crate) limit: (&'static str, &'static str),
+}
+
+const WORDING: Wording = Wording {
+    invalid: code::INVALID_INTEGRATION,
+    not_found: ("Integration not found", code::INTEGRATION_NOT_FOUND),
+    limit: (
+        "The integration limit is reached. Delete one first.",
+        code::INTEGRATION_LIMIT,
+    ),
+};
 
 /// `POST /api/v2/integrations` body. `kind` is `moonraker`, `prusalink` or
 /// `spoolman`. Moonraker and Spoolman take `api_key`; PrusaLink takes
@@ -92,24 +113,33 @@ impl From<IntegrationSummary> for IntegrationView {
 }
 
 #[derive(Clone)]
-struct App {
-    gate: Gate,
-    setup: PrinterSetupClient,
+pub(crate) struct App {
+    pub(crate) gate: Gate,
+    pub(crate) setup: PrinterSetupClient,
 }
 
-/// Mounts the routes when `PP_DESKTOP_REBUILD` was exactly `1` or `true`;
+/// Mounts `routes` when `PP_DESKTOP_REBUILD` was exactly `1` or `true`;
 /// otherwise nothing. The accepted gate admits loopback requests with an
 /// exact Host and Origin and a credential; storage proves the credential in
-/// the write's own transaction.
-pub fn integrations_router(config: AcceptedHttpConfig, setup: PrinterSetupClient) -> Router {
+/// the operation's own transaction.
+pub(crate) fn mounted(
+    config: AcceptedHttpConfig,
+    setup: PrinterSetupClient,
+    routes: Router<App>,
+) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
+    gate.guard(routes).with_state(App { gate, setup })
+}
+
+/// The integration create and delete routes, under [`mounted`]'s guard.
+pub fn integrations_router(config: AcceptedHttpConfig, setup: PrinterSetupClient) -> Router {
     let routes = Router::new()
         .route("/api/v2/integrations", post(create))
         .route("/api/v2/integrations/{id}", delete(remove))
         .layer(DefaultBodyLimit::max(BODY_LIMIT));
-    gate.guard(routes).with_state(App { gate, setup })
+    mounted(config, setup, routes)
 }
 
 async fn create(
@@ -119,10 +149,7 @@ async fn create(
 ) -> Response {
     let request = match problem::parse_body::<CreateIntegrationRequest>(&body) {
         Ok(request) => request,
-        Err(errors) => {
-            let readable = problem::is_json_object(&body) || !errors.is_empty();
-            return invalid(readable, errors);
-        }
+        Err(errors) => return unreadable(&body, errors, &WORDING),
     };
     let new = NewIntegration {
         kind: request.kind,
@@ -167,44 +194,54 @@ async fn answer(
         .blocking(move |cancelled, wait| write(setup, cancelled, wait));
     match written.await {
         Ok(Ok(summary)) => ok_json(&IntegrationView::from(summary)),
-        Ok(Err(error)) => refused(&error),
+        Ok(Err(error)) => refused(&error, &WORDING),
         Err(_) => internal(),
     }
 }
 
 /// The one mapping from the family's error to a response.
-fn refused(error: &PrinterSetupError) -> Response {
+pub(crate) fn refused(error: &PrinterSetupError, wording: &Wording) -> Response {
+    let coded = |status, (detail, code): (&str, &str)| problem::coded(status, detail, code);
     match error {
-        PrinterSetupError::Invalid(fields) => invalid(true, fields.iter().map(field_error)),
-        PrinterSetupError::NotFound => problem::coded(
-            StatusCode::NOT_FOUND,
-            "Integration not found",
-            code::INTEGRATION_NOT_FOUND,
-        ),
-        PrinterSetupError::LimitReached => problem::coded(
-            StatusCode::CONFLICT,
-            "The integration limit is reached. Delete one first.",
-            code::INTEGRATION_LIMIT,
-        ),
-        PrinterSetupError::StoredDocumentInvalid(_) => problem::coded(
+        PrinterSetupError::Invalid(fields) => {
+            invalid(true, fields.iter().map(field_error), wording)
+        }
+        PrinterSetupError::NotFound => coded(StatusCode::NOT_FOUND, wording.not_found),
+        PrinterSetupError::LimitReached => coded(StatusCode::CONFLICT, wording.limit),
+        PrinterSetupError::StoredDocumentInvalid(fault) => coded(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Stored integrations are unreadable",
-            code::INTEGRATIONS_UNREADABLE,
+            match fault.document {
+                SetupDocument::Integrations => (
+                    "Stored integrations are unreadable",
+                    code::INTEGRATIONS_UNREADABLE,
+                ),
+                SetupDocument::Printers => {
+                    ("Stored printers are unreadable", code::PRINTERS_UNREADABLE)
+                }
+            },
         ),
         PrinterSetupError::Writer(failure) => problem::writer_failure(failure),
     }
 }
 
-/// 400 naming each invalid field. A body that is not JSON at all is malformed
-/// (`readable` false), not a validation failure.
-fn invalid(readable: bool, errors: impl IntoIterator<Item = FieldError>) -> Response {
+/// 400 for a body serde refused: it names the field, never a value. A body
+/// that is not JSON at all is malformed, not a validation failure.
+pub(crate) fn unreadable(body: &[u8], errors: Vec<FieldError>, wording: &Wording) -> Response {
+    let readable = problem::is_json_object(body) || !errors.is_empty();
+    invalid(readable, errors, wording)
+}
+
+fn invalid(
+    readable: bool,
+    errors: impl IntoIterator<Item = FieldError>,
+    wording: &Wording,
+) -> Response {
     let kind = if readable {
         ProblemType::Validation
     } else {
         ProblemType::MalformedRequest
     };
-    let problem =
-        Problem::new(kind, 400, "Request is invalid").with_code(code::INVALID_INTEGRATION);
+    let problem = Problem::new(kind, 400, "Request is invalid").with_code(wording.invalid);
     problem::build(problem.with_errors(errors), serde_json::Map::new())
 }
 

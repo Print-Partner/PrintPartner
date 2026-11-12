@@ -53,6 +53,8 @@ pub mod printer_hosts;
 pub mod printer_setup;
 #[cfg(feature = "desktop_rebuild")]
 pub mod profiles;
+#[cfg(feature = "desktop_rebuild")]
+mod read;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
 pub mod required_units;
@@ -338,6 +340,26 @@ pub struct ReaderCheckout {
     connection: Option<Connection>,
     pool: Arc<ReaderPool>,
 }
+/// Why no reader was checked out. Converting it into `anyhow::Error` gives
+/// the messages `reader` has always reported.
+enum ReaderFailure {
+    Stopped,
+    /// Every reader stayed checked out for the caller's whole wait.
+    Full,
+    Poisoned,
+    /// The connection could not be made read-only.
+    Unusable(anyhow::Error),
+}
+impl From<ReaderFailure> for anyhow::Error {
+    fn from(failure: ReaderFailure) -> Self {
+        match failure {
+            ReaderFailure::Stopped => anyhow!("Storage stopped"),
+            ReaderFailure::Full => anyhow!("Reader pool full"),
+            ReaderFailure::Poisoned => anyhow!("Reader pool poisoned"),
+            ReaderFailure::Unusable(error) => error,
+        }
+    }
+}
 pub struct WriterOwner {
     client: SettingsClient,
     join: Option<JoinHandle<()>>,
@@ -520,18 +542,21 @@ impl SettingsClient {
         Arc::clone(&self.shared.print_file_snapshots)
     }
     pub fn reader(&self, wait: Duration) -> Result<ReaderCheckout> {
+        Ok(self.checkout(wait)?)
+    }
+    /// [`SettingsClient::reader`] with the refusal typed.
+    fn checkout(&self, wait: Duration) -> Result<ReaderCheckout, ReaderFailure> {
         let deadline = Instant::now() + wait;
-        let mut state = self
-            .readers
-            .state
-            .lock()
-            .map_err(|_| anyhow!("Reader pool poisoned"))?;
+        let poisoned = |_| ReaderFailure::Poisoned;
+        let mut state = self.readers.state.lock().map_err(poisoned)?;
         loop {
-            ensure!(!state.closed, "Storage stopped");
+            if state.closed {
+                return Err(ReaderFailure::Stopped);
+            }
             if let Some(connection) = state.idle.pop() {
                 if let Err(error) = schema::configure(&connection, true) {
                     state.idle.push(connection);
-                    return Err(error);
+                    return Err(ReaderFailure::Unusable(error));
                 }
                 state.active += 1;
                 return Ok(ReaderCheckout {
@@ -539,13 +564,12 @@ impl SettingsClient {
                     pool: self.readers.clone(),
                 });
             }
-            ensure!(Instant::now() < deadline, "Reader pool full");
-            state = self
-                .readers
-                .changed
-                .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
-                .map_err(|_| anyhow!("Reader pool poisoned"))?
-                .0;
+            if Instant::now() >= deadline {
+                return Err(ReaderFailure::Full);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            let waited = self.readers.changed.wait_timeout(state, left);
+            state = waited.map_err(|_| ReaderFailure::Poisoned)?.0;
         }
     }
 }

@@ -59,6 +59,16 @@ Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --n
 
 ## Tests
 
+`send_worker::tests::recovery` runs the production send worker and checked driver
+against `pp-testkit`'s loopback fault printer. The fake reads the complete upload,
+then waits while the test verifies committed effect intent before accepting it.
+Lost upload/start replies and a worker aborted before local confirmation retain
+uncertainty across storage reopen. Tests check exact request counts, retained
+staged bytes, no Checkoff completion and refused redispatch. An aborted future
+and reopened writer model an interrupted attempt; this is not a whole-process
+power-loss test. Other job kinds, route/worker cutover and final parent receipts
+remain in the GRE-409 follow-ups.
+
 - Unit tests in `src/` (`origin_tests.rs`, `review_observations_tests.rs`, `rust_startup/tests.rs` (Rust-only startup order on pp-testkit installations, feature only), `preferences/tests.rs`, `desktop_settings/tests.rs`, and others).
 - Lifecycle: `runtime_m0.rs` (with `runtime_m0/`), `single_owner.rs`, `process_group_drain.rs`, `shutdown_gate_wait_idle.rs`, `source_sync_process_admission.rs`, `app_launch_capture.rs`.
 - Feature-only: `production_geometry.rs`, `profile_interpreter*.rs`, `source_acquisition_*.rs`, `source_import_*.rs`, and `rebuild_*_http.rs` (empty stubs without the feature).

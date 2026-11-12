@@ -10,6 +10,8 @@ use pp_testkit::moonraker::RoutedPrinter;
 use serde_json::{Value, json};
 use std::io::Read;
 
+mod recovery;
+
 const UPLOAD: &str = "/server/files/upload";
 
 struct Farm {

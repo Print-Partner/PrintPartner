@@ -1,6 +1,8 @@
 //! A loopback Moonraker that replays recorded responses, for status-watcher
 //! tests in several crates. It runs on its own OS thread, so it needs no async
 //! runtime, and it only ever answers: it never initiates a connection.
+pub mod fault;
+
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},

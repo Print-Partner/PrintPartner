@@ -15,7 +15,10 @@ use super::{
     ProductMcp, positive_id,
     write_result::{Code, Refusal, writer_failure},
 };
-use crate::loopback::PresentedCredential;
+use crate::{
+    loopback::PresentedCredential,
+    problem::{Admission, writer_admission},
+};
 use pp_services::mcp_domain::ToolResult;
 use pp_storage::{
     WriterFailure,
@@ -51,9 +54,16 @@ const NO_BRIEF: Refusal = Refusal::new(
 const INTERNAL: Refusal = Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
 
 /// A failed read: busy or stopped storage, a refused key, or stored data
-/// that does not read, mapped as every MCP tool maps storage failures.
+/// that does not read, mapped as every MCP tool maps storage failures. These
+/// reads queue like the older storage families, which report a full or
+/// stopped queue as a plain message; `problem::writer_admission` classifies
+/// it as the HTTP routes do, so it answers `unavailable`.
 fn storage_failure(error: anyhow::Error) -> Refusal {
-    writer_failure(&WriterFailure::from(error))
+    writer_failure(&match writer_admission(&error) {
+        Some(Admission::Full) => WriterFailure::QueueFull,
+        Some(Admission::Stopped) => WriterFailure::Stopped,
+        None => WriterFailure::from(error),
+    })
 }
 
 /// `get_build_planning_state`: the hydrated brief and what is derived from it.
@@ -301,5 +311,27 @@ impl ProductMcp {
             working_drafts::Outcome::DraftNotFound => Ok(None),
             _ => Err(INTERNAL),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Code, storage_failure};
+
+    #[test]
+    fn admission_failures_answer_unavailable_and_others_internal() {
+        for message in [
+            "Writer queue full",
+            "Storage stopped",
+            "Storage stopped without read result",
+            "Cancelled before admission",
+        ] {
+            let plain = storage_failure(anyhow::anyhow!(message));
+            assert_eq!(plain.code, Code::Unavailable, "{message}");
+            let wrapped = storage_failure(anyhow::anyhow!(message).context("planning read"));
+            assert_eq!(wrapped.code, Code::Unavailable, "{message} under context");
+        }
+        let invalid = storage_failure(anyhow::anyhow!("Invalid Build planning brief data"));
+        assert_eq!(invalid.code, Code::Internal);
     }
 }

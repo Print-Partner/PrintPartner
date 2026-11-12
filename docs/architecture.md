@@ -224,7 +224,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |
 | Workflow, readiness, Today tasks, History | `pp-storage::read_model` owns consistent projections; task feed extends the GRE-415 workflow projection, not a second ranking engine (served by `read_model::build_workflow`, [Build workflow](build-workflow.md)); History includes legacy assistant decisions |
 | Exports and production setup | Pure encoding/packing modules in `pp-domain` or existing `pp-services`, storage owns revision-bound artifact/job metadata, core runs workers and publishes staged files |
-| Printers, queue, discovery, Bambu | Storage owns admitted queue/effect records; `pp-drivers` owns protocols through `pp-net`; core owns watchers; Bambu remains status-only. Farm reads join stored printers, results and queue (`pp-storage::read_model::farm`) with the watchers' observation port, read-only ([Farm reads](farm-reads.md)); `GET /ws/printers` streams the same projection from the watchers' ordered transitions ([Printer stream](printer-stream.md)); Moonraker connection test, capabilities, file browse and camera list are on-demand driver reads through the gateway ([Printer-host reads](printer-host-reads.md)) |
+| Printers, queue, discovery, Bambu | Storage owns admitted queue/effect records; `pp-drivers` owns protocols through `pp-net`; core owns watchers; Bambu remains status-only. Farm reads join stored printers, results and queue (`pp-storage::read_model::farm`) with the watchers' observation port, read-only ([Farm reads](farm-reads.md)); `GET /ws/printers` streams the same projection from the watchers' ordered transitions ([Printer stream](printer-stream.md)); Moonraker connection test, capabilities, file browse and camera list are on-demand driver reads through the gateway ([Printer-host reads](printer-host-reads.md)); first-run `POST /api/v2/printers/probe` checks a typed Moonraker or PrusaLink address without saving, through the same guarded drivers (GRE-1127; LAN discovery remains GRE-1370) |
 | Stock and Spoolman shortfalls | `pp-drivers` provides Spoolman reads/effects; storage projects readiness/tasks and owns deduction intent/reconciliation. Spoolman alone owns stock counts. Today `pp-storage::read_model::stock` computes shortfalls (the workflow input for Today, Build Overview and the task feed) and `pp-core::spoolman` reads inventory through `pp_net` checked connections, injected into `pp-api` because `pp-core` may not depend on `pp-drivers` |
 | Native slicers and profiles | `pp-services` owns discovery/profile/handoff operations; storage binds artifacts to accepted revisions; shell/core invokes native adapters |
 | Optional external slicer jobs | Typed HTTP adapter in existing `pp-drivers`, policy in `pp-services`, job/effect state in `pp-storage`, worker lifetime in core |
@@ -309,8 +309,11 @@ by hand-authoring the generated Rust file.
 Add method/path/auth/request/response metadata tied to actual Rust registration,
 including the existing `/api/v2` draft routes. `web/packages/rust-client` is
 that package for Builds list and detail, layers, `/api/v2` drafts and health. Its
-route table is `pp_api::client_contract::CLIENT_ROUTES`, which a `pp-core` test
-checks against the composed routers. Its
+exported route table combines `pp_api::client_contract::CLIENT_ROUTES` with
+`pp_api::printer_host::probe::CLIENT_ROUTE`. The `export-rust-client` binary
+composes their metadata, DTO schemas and serialized fixtures; the base
+`document()` and `document_bytes()` omit the probe extension. A `pp-core` test
+checks both route inventories against the composed routers. Its
 [README](../web/packages/rust-client/README.md) lists the coverage and wire rules. REST shape may change for the new
 UI; do not invent `/api/v3` or promise old aliases for screen parity. Preserve
 external MCP paths/tool names and verify the actual inventory before retirement.

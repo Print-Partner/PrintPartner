@@ -272,6 +272,7 @@ pub fn read_router(
         accepted_client.clone(),
         admin_files.clone(),
     );
+    let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = modules_router(config.clone(), features);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
@@ -308,6 +309,7 @@ pub fn read_router(
             .merge(modules)
             .merge(filaments)
             .merge(settings_routes)
+            .merge(probe)
             .merge(events)
             .merge(checkoff)
             .merge(plates)
@@ -701,6 +703,9 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "PrinterProbeRequest" => {
+                json!({"kind":"unsupported", "address":"http://fixture.invalid"})
+            }
             "SetModuleRequest" => json!({"on": true}),
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
@@ -852,7 +857,10 @@ mod tests {
         let unregistered = unregistered.await.unwrap();
         assert_eq!(unregistered.status(), 404);
         assert_eq!(unregistered.text().await.unwrap(), "");
-        for route in CLIENT_ROUTES {
+        for route in CLIENT_ROUTES
+            .iter()
+            .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
+        {
             let path = route
                 .path
                 .replace("{id}", &build)

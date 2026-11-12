@@ -3,6 +3,7 @@ mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 mod experiments;
+pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
@@ -45,13 +46,7 @@ pub enum Failure {
     OutcomeUnknown,
 }
 
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{self:?}")
-    }
-}
-
-impl std::error::Error for Failure {}
+crate::impl_debug_error!(Failure);
 
 #[derive(Clone)]
 pub enum BuildCommand {
@@ -585,12 +580,13 @@ fn mutation(
             }
             tx.pragma_update(None, "defer_foreign_keys", "ON")?;
             tx.execute(
-                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4)",
+                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4,?5)",
                 params![
                     tenant,
                     format!("production_setup:{build}"),
                     format!("role_filaments_{build}"),
-                    format!("feature_toggles:plan:{build}")
+                    format!("feature_toggles:plan:{build}"),
+                    format!("kit_manifest_{build}")
                 ],
             )?;
             ensure!(

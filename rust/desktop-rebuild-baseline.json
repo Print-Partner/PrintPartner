@@ -1,87 +1,90 @@
 {
-  "pp-api": {
-    "module": 59,
-    "item": 165,
-    "statement": 23
-  },
-  "pp-api-types": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-compat": {
-    "module": 1,
-    "item": 6,
-    "statement": 1
-  },
-  "pp-contracts": {
-    "module": 7,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-core": {
-    "module": 44,
-    "item": 40,
-    "statement": 7
-  },
-  "pp-desktop": {
-    "module": 2,
-    "item": 6,
-    "statement": 12
-  },
-  "pp-domain": {
-    "module": 6,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-drivers": {
-    "module": 1,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-gateway": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-net": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-os": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-perf": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-server": {
-    "module": 2,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-services": {
-    "module": 2,
-    "item": 0,
-    "statement": 0
-  },
-  "pp-source": {
-    "module": 7,
-    "item": 5,
-    "statement": 3
-  },
-  "pp-storage": {
-    "module": 128,
-    "item": 403,
-    "statement": 362
-  },
-  "pp-testkit": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
+  "version": 2,
+  "crates": {
+    "pp-api": {
+      "module": 59,
+      "item": 165,
+      "statement": 23
+    },
+    "pp-api-types": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-compat": {
+      "module": 1,
+      "item": 6,
+      "statement": 3
+    },
+    "pp-contracts": {
+      "module": 7,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-core": {
+      "module": 44,
+      "item": 40,
+      "statement": 12
+    },
+    "pp-desktop": {
+      "module": 2,
+      "item": 6,
+      "statement": 13
+    },
+    "pp-domain": {
+      "module": 6,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-drivers": {
+      "module": 1,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-gateway": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-net": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-os": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-perf": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-server": {
+      "module": 2,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-services": {
+      "module": 2,
+      "item": 0,
+      "statement": 0
+    },
+    "pp-source": {
+      "module": 7,
+      "item": 5,
+      "statement": 3
+    },
+    "pp-storage": {
+      "module": 130,
+      "item": 405,
+      "statement": 370
+    },
+    "pp-testkit": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    }
   }
 }

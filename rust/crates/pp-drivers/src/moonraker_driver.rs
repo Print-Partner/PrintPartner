@@ -140,6 +140,11 @@ impl Driver {
         })
     }
 
+    pub(crate) async fn probe_reply(&self) -> Result<(u16, Vec<u8>)> {
+        let reply = self.fetch("/server/info").await?;
+        Ok((reply.status, reply.body))
+    }
+
     pub async fn test_connection(&self) -> TestResult {
         let result = async {
             let reply = self.fetch("/server/info").await?;

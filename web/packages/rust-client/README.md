@@ -6,18 +6,25 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Purpose
 
-- Owns the generated TypeScript view of the Rust routes listed in `CLIENT_ROUTES` in `rust/crates/pp-api/src/client_contract.rs`: one Zod schema per DTO and one entry per route.
+- Owns the generated TypeScript view of the complete contract written by `pp-api`'s `export-rust-client` binary: one Zod schema per DTO and one entry per route.
 - `web/apps/ui` imports it for its core reads and printer status descriptors; no other app does.
 
 ## Not responsible for
 
 - Rust DTOs and route registration: `pp-api-types` and `pp-api`. Change those and regenerate.
 - The hand-maintained Node API types: `@print-partner/contracts` ([README](../contracts/README.md)).
-- `/api/v1` mounts and routes outside `CLIENT_ROUTES`.
+- `/api/v1` mounts and routes absent from the exported contract.
 
 ## Interface
 
-One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not edit them; change the Rust types or `pp_api::client_contract` and regenerate.
+One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not edit them; change the Rust types or the metadata consumed by `export-rust-client` and regenerate.
+
+The exporter composes the base `CLIENT_ROUTES` and `document()` in
+`rust/crates/pp-api/src/client_contract.rs` with the first-run probe's
+`CLIENT_ROUTE` and `client_document()` in
+`rust/crates/pp-api/src/printer_host/probe.rs`. The probe module adds its DTO
+schemas and Rust-serialized fixtures. `document()` and `document_bytes()` return
+the base contract only; use the export binary for the complete generator input.
 
 | File | Contents |
 | --- | --- |
@@ -48,6 +55,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v2/plans/{id}/build-planning` | | `BuildPlanningResponse` |
 | `GET /api/v2/plans/{id}/decisions` | | `PlanDecisionList` |
 | `GET /api/v2/printers` | | `FarmPrinterList` |
+| `POST /api/v2/printers/probe` | `PrinterProbeRequest` | `PrinterProbeResult` |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
@@ -92,7 +100,7 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 ## Wire rules
 
 - **Unknown keys.** Request DTOs use `#[serde(deny_unknown_fields)]`, so their schemas are `z.strictObject` and reject unknown keys. Response DTOs use `z.object`, which strips unknown keys.
-- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors` (omitted when empty, as RFC 9457 allows) and `Health`'s `modules` and the six members Node's `/health` does not send (`degraded_detail`, `single_user_auth`, `single_user_setup_required`, `owner_mapping_required`, `github_oauth_configured`, `discord_oauth_configured`), so a client decodes both bodies. `Omittable<T>` marks such a member. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, through `schemars(with = "RequiredNullable<T>")`.
+- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors` (omitted when empty, as RFC 9457 allows) and `Health`'s `modules` and the six members Node's `/health` does not send (`degraded_detail`, `single_user_auth`, `single_user_setup_required`, `owner_mapping_required`, `github_oauth_configured`, `discord_oauth_configured`), so a client decodes both bodies. `Omittable<T>` marks such a member. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, using `schemars(with = "RequiredNullable<T>")` or an explicit required key in the exported nullable schema.
 - **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision.
 - **Maps and free JSON.** A Rust map (`BTreeMap<String, T>`) becomes `z.record(z.string(), T)`, and `serde_json::Value` inside a map becomes `z.json()`. Decision `params` and `result` are the only free JSON. The round-trip tests skip the unknown-key and omitted-field checks for record entries and every check under `z.json()`.
 - **Tagged unions.** Internally tagged enums become `z.discriminatedUnion` on their tag (`kind` or `status`).
@@ -103,7 +111,7 @@ The emitter (`web/scripts/rust-contracts/client.mjs`, `rust-client-zod/1`) refus
 ## Add a route
 
 1. Make sure the request and response types derive `schemars::JsonSchema` under the `codegen` feature, and that the handler serializes that type rather than a `json!` literal.
-2. Add the route to `CLIENT_ROUTES` and its schema and fixtures to `document()` in `rust/crates/pp-api/src/client_contract.rs`.
+2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. The base uses `CLIENT_ROUTES` and `document()` in `rust/crates/pp-api/src/client_contract.rs`; the probe module supplies an extension composed by the binary. Include module metadata in `pp-core`'s mounted-route contract test as well.
 3. Run `generate`, then `check`.
 
 ## Add a descriptor table

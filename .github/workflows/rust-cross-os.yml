@@ -1,13 +1,18 @@
 name: Rust cross-OS
 
-# Relevant PRs test Rust on Linux. Windows runs on main, merge groups, nightly and manual
+# Relevant PRs test Rust on Linux. Windows and macOS run on main, nightly and manual
 # runs. Ready PRs test Windows and macOS only with ci:cross-os.
+# A merge group runs the short set on Linux only: fmt, clippy in both feature
+# states and the Clippy limits. It runs no nextest, no doctests, no partitions
+# and no Windows or macOS job. A PR ran only its affected-crate tests, so the
+# full all() suite first runs on the push to main, which is where a test broken
+# outside that selection or by two PRs meeting is seen (docs/development/ci.md).
 # PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
 # desktop_rebuild on; macOS PRs skip it.
 # On PRs, nextest uses rdeps(=crate) for changed rust/crates/* (see
 # scripts/ci-affected-nextest-filter.py); shared inputs and non-PR events keep
-# all(). On main push, merge_group, and workflow_dispatch, Linux archives
+# all(). On main push and workflow_dispatch, Linux archives
 # desktop_rebuild nextest once and runs --partition slice:m/3 across three
 # runners. Schedule keeps the in-job monolithic desktop_rebuild nextest.
 # The Linux jobs run on the pp-local fleet for main pushes and manual runs, and on
@@ -249,7 +254,7 @@ jobs:
           python3 -B rust/scripts/check-clippy-limits.py
       - name: nextest (desktop_rebuild off)
         id: nextest-off
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && github.event_name != 'merge_group' }}
         timeout-minutes: 45
         run: cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
       - name: Disk after nextest (desktop_rebuild off)
@@ -257,11 +262,11 @@ jobs:
         if: ${{ !cancelled() && steps.nextest-off.outcome != 'skipped' && runner.environment == 'github-hosted' && runner.os == 'Linux' }}
         run: df -h /
       - name: Archive nextest (desktop_rebuild on)
-        # Main push / merge_group / workflow_dispatch: build once for slice partitions.
+        # Main push / workflow_dispatch: build once for slice partitions.
         # PRs never archive; they run the rebuild-on suite in-job.
         # zstd level 11 shrinks transfer vs default 0 (upload previously >17–33m).
         id: archive-rebuild
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' && env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         timeout-minutes: 45
         run: cargo nextest archive --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --features desktop_rebuild -E "$NEXTEST_FILTER" --archive-file nextest-archive-desktop-rebuild.tar.zst --zstd-level 11
       - name: Disk after nextest (archive)
@@ -287,7 +292,7 @@ jobs:
       # topology; packing only current with -h flattens the link and mismatches.
       - name: Pack desktop release assets for partitions
         id: pack-assets
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' && env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         run: |
           set -euo pipefail
           test -f "$GITHUB_WORKSPACE/rust/bundle-manifest.json"
@@ -337,9 +342,9 @@ jobs:
       - name: nextest (desktop_rebuild on)
         id: nextest-on
         # Linux and Windows PRs run it; macOS PRs still skip it. Linux main push /
-        # merge_group / workflow_dispatch use the archived slice partitions instead.
-        # Schedule keeps this in-job pass.
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' && (github.event_name != 'pull_request' || env.RUST_OS != 'macos') && !(env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch')) }}
+        # workflow_dispatch use the archived slice partitions instead. A merge
+        # group runs no nextest. Schedule keeps this in-job pass.
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || env.RUST_OS != 'macos') && !(env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) }}
         timeout-minutes: 75
         run: cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER" --features desktop_rebuild
       - name: Disk after nextest (desktop_rebuild on)
@@ -348,24 +353,24 @@ jobs:
         run: df -h /
       # nextest does not run doctests.
       - name: doctests (desktop_rebuild off)
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && github.event_name != 'merge_group' }}
         run: cargo test --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --doc
       - name: doctests (desktop_rebuild on)
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' && (env.RUST_OS != 'macos' || github.event_name != 'pull_request') }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && github.event_name != 'merge_group' && (env.RUST_OS != 'macos' || github.event_name != 'pull_request') }}
         run: cargo test --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --doc --features desktop_rebuild
       - name: sccache stats
         if: always() && env.PP_RUNNER_KIND == 'pp-local'
         continue-on-error: true
         run: '"${RUSTC_WRAPPER:-sccache}" --show-stats'
 
-  # Three Linux partitions (see docs/development/ci.md). Only main push,
-  # merge_group, and workflow_dispatch; PRs run desktop_rebuild nextest in-job.
+  # Three Linux partitions (see docs/development/ci.md). Only main push and
+  # workflow_dispatch; PRs run desktop_rebuild nextest in-job, merge groups run none.
   rust-linux-rebuild:
     name: rust (linux) rebuild ${{ matrix.partition }}/3
     needs: [rust-linux-build]
     # Draft guard first (merge-group workflow tests). Event filter still keeps
-    # partitions off pull_request; only push / merge_group / workflow_dispatch.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.rust-linux-build.result == 'success' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'))
+    # partitions off pull_request and merge_group; only push / workflow_dispatch.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.rust-linux-build.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))
     # Same runner as the build: the archived binaries link its system libraries.
     runs-on: ${{ fromJSON(needs.rust-linux-build.outputs.runs_on || '"ubuntu-latest"') }}
     strategy:
@@ -465,13 +470,13 @@ jobs:
         continue-on-error: true
         run: '"${RUSTC_WRAPPER:-sccache}" --show-stats'
 
-  # Preserve the required check name rust (linux). Partitions are skipped on PRs
-  # and on schedule (monolithic in-job rebuild-on nextest).
+  # Preserve the required check name rust (linux). Partitions are skipped on PRs,
+  # on schedule (monolithic in-job rebuild-on nextest) and in merge groups (short set).
   rust-linux:
     name: rust (linux)
     needs: [rust-linux-build, rust-linux-rebuild]
     # Draft guard first. !cancelled() so cancel reports skipped, not aggregate fail.
-    # Rebuild may be skipped on PRs/schedule; push / merge_group / dispatch require success.
+    # Rebuild may be skipped on PRs, schedule and merge groups; push / dispatch require success.
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.rust-linux-build.result != 'skipped')
     runs-on: ${{ fromJSON(needs.rust-linux-build.outputs.runs_on || '"ubuntu-latest"') }}
     timeout-minutes: 5
@@ -485,7 +490,7 @@ jobs:
           set -euo pipefail
           test "$BUILD_RESULT" = success
           case "$EVENT_NAME" in
-            push|merge_group|workflow_dispatch)
+            push|workflow_dispatch)
               test "$REBUILD_RESULT" = success
               ;;
             *)
@@ -502,8 +507,8 @@ jobs:
   rust-macos:
     name: rust (macos)
     needs: changes
-    # Only ci:cross-os selects PRs; non-PR events always run.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
+    # Only ci:cross-os selects PRs; a merge group never runs it; other events always run.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -518,9 +523,9 @@ jobs:
   rust-windows:
     name: rust (windows)
     needs: changes
-    # Explicit jobs preserve skipped check reports. Main, merge groups, nightly and manual
-    # runs always select Windows; a ready PR selects it only with the ci:cross-os label.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
+    # Explicit jobs preserve skipped check reports. Main, nightly and manual runs always
+    # select Windows; a ready PR selects it only with the ci:cross-os label; a merge group never does.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
     runs-on: windows-latest
     env:
       RUST_OS: windows

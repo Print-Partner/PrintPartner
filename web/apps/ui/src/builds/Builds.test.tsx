@@ -299,7 +299,9 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
     expect(screen.queryByRole("table", { name: "Builds" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show all Builds" }));
     expect(names()).toHaveLength(7);
-    expect(screen.getByRole("radio", { name: "All (7)" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "All (7)" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
   });
 
   it("normalizes order numbers as order_authority::normalize does", () => {
@@ -661,10 +663,10 @@ describe("UI2-02 Build Overview", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Layers" })).toBeTruthy();
   });
 
-  it("other tabs say what they will hold in a later slice and keep the tab bar", async () => {
+  it("the Production tab replaces its placeholder and keeps the tab bar", async () => {
     renderAt("/builds/2/production", core(plans));
     expect(screen.getByRole("heading", { level: 1, name: "Production" })).toBeTruthy();
-    expect(screen.getByText(/This tab arrives in a later slice/)).toBeTruthy();
+    expect(screen.queryByText(/This tab arrives in a later slice/)).toBeNull();
     const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole(
       "link",
     );

@@ -42,6 +42,7 @@ const PAGES = [
   ["build-checkoff", "/builds/3/checkoff", ""],
   ["build-checkoff-plate", "/builds/3/checkoff", PLATE_KEY],
   ["build-history", "/builds/3/history", ""],
+  ["build-production", "/builds/3/production", ""],
   ["farm-log", "/farm/log", ""],
   ["build-plan", "/builds/3/plan", ""],
   ["build-plan-gate", "/builds/3/plan", GATE],

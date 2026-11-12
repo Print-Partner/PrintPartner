@@ -18,6 +18,8 @@ export const filamentShortfallsQuery = (id: number) => ({
   queryFn: ({ signal }: { signal: AbortSignal }) =>
     readCore("readFilamentShortfalls", { id }, signal),
   refetchOnReconnect: false,
+  // A retry would ask Spoolman again; the owner presses Retry instead.
+  retry: false,
 });
 
 const NEED_UNKNOWN: Record<Extract<Needed, { kind: "unknown" }>["reason"], string> = {
@@ -70,7 +72,8 @@ export function stockText(available: Available): { value: string; basis: string 
 
 /** The filament's name: Spoolman's or the catalog label, else its filament ID. */
 function filamentName(filament: Filament): string {
-  if (filament.label.trim()) return filament.label;
+  const label = filament.label.trim();
+  if (label) return label;
   return filament.filament_color_id || "No filament chosen";
 }
 

@@ -30,4 +30,4 @@ The Overview has a **Filament** section under its facts and above Layers (`web/a
 - Unknown stock is never shown as 0 g, and a row with either side unknown never shows "Short".
 - A failed read keeps the last rows, says so with the time they were read, and offers Retry.
 
-Not yet: a shortfall task on Today, deductions on this section (GRE-1102 PR 2, after GRE-411), and a colour swatch.
+Not yet: a shortfall task on Today, deductions on this section (GRE-1102 PR 2, after GRE-411), and a color swatch.

@@ -60,7 +60,7 @@ The Rust core compares the grams a Build still needs with the grams Spoolman rep
 - **Grams available come from Spoolman**, summed over the filament's unarchived spools. If Spoolman cannot be reached, does not know the filament, or a spool has no remaining weight, stock is unknown, not zero. The check reads plain `http://` Spoolman URLs only; an `https://` URL reads as unknown.
 - A shortfall is reported only when both numbers are known. Reading the check never reserves or deducts stock.
 
-The Build Overview's **Filament** section shows the check (GRE-1102). It reads when the Overview opens and when the owner presses Refresh, and says when it read. Each row names the filament (by its filament ID when Spoolman could not be read), the grams needed with their basis, the grams in Spoolman with the number of spools, and Enough, Short by N g, or Not known, with its Parts and their remaining units. Unknown stock reads "Not known" with the reason, never 0 g. With the Module off it shows the Module-off notice and makes no request to Spoolman.
+The Build Overview's **Filament** section shows the check (GRE-1102). It reads when the Overview opens and when the owner presses Refresh, and says when it read. Each row names the filament (by its filament ID when no label is known), the grams needed with their basis, the grams in Spoolman with the number of spools, and Enough, Short by N g, or Not known, with its Parts and their remaining units. Unknown stock reads "Not known" with the reason, never 0 g. With the Module off it shows the Module-off notice and makes no request to Spoolman.
 
 ## Material deductions
 

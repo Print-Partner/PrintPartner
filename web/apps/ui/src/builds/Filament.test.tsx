@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
+import { neededText, stockText } from "./FilamentSection";
 
 // A scripted core. The rows match rust/crates/pp-core/tests/filament_shortfalls_http.rs,
 // which builds the same Build from fixtures/integrations/spoolman.
@@ -131,7 +132,10 @@ describe("GRE-1102 Filament section on the Build Overview", () => {
     await screen.findByText("Enough");
     expect(reads(fetchMock)).toBe(1);
     answer = SHORT;
-    fireEvent.click(within(section()).getByRole("button", { name: "Refresh" }));
+    const refresh = within(section()).getByRole("button", { name: "Refresh" });
+    // A second press while the read runs joins it instead of asking Spoolman again.
+    fireEvent.click(refresh);
+    fireEvent.click(refresh);
     const tag = await within(section()).findByText("Short by 24 g");
     expect(tag.classList.contains("pp-tag")).toBe(true);
     expect(fact("In Spoolman")).toBe("18 gon 1 spool");
@@ -190,21 +194,23 @@ describe("GRE-1102 Filament section on the Build Overview", () => {
 
   it("a failed refresh keeps the rows with their time and offers Retry", async () => {
     let fail = false;
-    renderOverview(core(() => (fail ? json({}, 503) : json(ready([row()])))));
+    const fetchMock = core(() => (fail ? json({}, 503) : json(ready([row()]))));
+    renderOverview(fetchMock);
     await screen.findByText("Enough");
     fail = true;
     fireEvent.click(within(section()).getByRole("button", { name: "Refresh" }));
-    const status = await within(section()).findByText(
-      /Could not refresh: Rust core answered 503/,
-      {},
-      { timeout: 3000 },
-    );
+    const status = await within(section()).findByText(/Could not refresh: Rust core answered 503/);
     expect(status.querySelector("time")).toBeTruthy();
     expect(screen.getByText("Enough")).toBeTruthy();
+    // A failed read is not retried by itself: each retry would ask Spoolman again.
+    expect(reads(fetchMock)).toBe(2);
     fail = false;
     fireEvent.click(within(section()).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(within(section()).queryByText(/Could not refresh/)).toBeNull());
-    expect(screen.getByText("Enough")).toBeTruthy();
+    await waitFor(() =>
+      expect(within(section()).getByRole("status").textContent).toMatch(/^Read .+\.$/),
+    );
+    expect(within(section()).getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(reads(fetchMock)).toBe(3);
   });
 
   it("offline keeps the rows with their time and disables Refresh with the reason", async () => {
@@ -216,15 +222,47 @@ describe("GRE-1102 Filament section on the Build Overview", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderOverview(fetchMock);
     await screen.findByText("Enough");
+    const readAt = within(section()).getByRole("status").querySelector("time")!.dateTime;
     down = true;
     await act(() => vi.advanceTimersByTimeAsync(31_000));
     await waitFor(() => expect(within(section()).getByText(OFFLINE_REASON)).toBeTruthy());
     expect(screen.getByText("Enough")).toBeTruthy();
-    expect(within(section()).getByRole("status").querySelector("time")).toBeTruthy();
+    expect(within(section()).getByRole("status").querySelector("time")!.dateTime).toBe(readAt);
+    // Health polls and the lost connection read nothing from Spoolman.
+    expect(reads(fetchMock as unknown as ReturnType<typeof core>)).toBe(1);
     const refresh = within(section()).getByRole("button", { name: "Refresh" });
     expect(refresh.getAttribute("aria-disabled")).toBe("true");
-    const before = fetchMock.mock.calls.filter(([p]) => p === SHORTFALLS).length;
     fireEvent.click(refresh);
-    expect(fetchMock.mock.calls.filter(([p]) => p === SHORTFALLS).length).toBe(before);
+    expect(reads(fetchMock as unknown as ReturnType<typeof core>)).toBe(1);
+  });
+});
+
+describe("Filament amounts in words", () => {
+  it.each([
+    [{ kind: "measured", grams: 120, job_count: 3 }, "120 g", "measured over 3 prints"],
+    [{ kind: "estimated", grams: 30, job_count: 2, reason: null }, "30 g", "slicer estimate"],
+    [
+      { kind: "estimated", grams: 30, job_count: 2, reason: "measured_length_not_convertible" },
+      "30 g",
+      "slicer estimate; a printer's measured length could not be turned into grams",
+    ],
+    [
+      { kind: "unknown", reason: "part_not_printed" },
+      "Not known yet",
+      "a Part has no print with recorded grams",
+    ],
+  ] as const)("needed %j", (needed, value, basis) => {
+    expect(neededText(needed)).toEqual({ value, basis });
+  });
+
+  it("stock with no spools is 0 g, and unknown stock is never 0 g", () => {
+    expect(stockText({ kind: "spoolman", grams: 0, spool_ids: [] })).toEqual({
+      value: "0 g",
+      basis: "no spools",
+    });
+    expect(stockText({ kind: "unknown", reason: "filament_missing" })).toEqual({
+      value: "Not known",
+      basis: "Spoolman has no filament with this ID",
+    });
   });
 });

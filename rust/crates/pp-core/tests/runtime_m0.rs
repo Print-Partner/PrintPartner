@@ -41,6 +41,10 @@ mod printer_host;
 #[path = "runtime_m0/bambu_pin.rs"]
 mod bambu_pin;
 
+#[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/integration_setup.rs"]
+mod integration_setup;
+
 #[path = "support/process.rs"]
 mod process;
 

@@ -16,9 +16,10 @@ current decisions to the target design.
 | [0007](0007-rust-crate-layout.md) | Record the Rust crate layout and dependency edges | Accepted record of the layout on 2026-10-13 | Ownership direction refined by [0009](0009-keep-crates-and-deepen-modules.md); its dependency evidence stays historical |
 | [0008](0008-replace-the-old-screens.md) | Replace the old screens instead of porting them | Accepted 2026-11-02 | None. Supersedes parity-first screen delivery and the UI v11 sequence. Cutover is recorded separately in [0010](0010-whole-runtime-cutover.md) |
 | [0009](0009-keep-crates-and-deepen-modules.md) | Keep current crates and deepen modules | Accepted 2026-11-02, amended 2026-11-03 | Amended by [0015](0015-shared-filesystem-portability.md), which permits a narrow `pp-os` |
-| [0010](0010-whole-runtime-cutover.md) | Cut over the whole runtime with explicit rollback limits | Accepted 2026-11-02; production execution needs separate owner approval | None |
+| [0010](0010-whole-runtime-cutover.md) | Cut over the whole runtime with explicit rollback limits | Accepted 2026-11-02; production execution needs separate owner approval | Step 4, the migration to a Rust-owned copy, refined by [0016](0016-rust-owns-its-data-formats.md) |
 | 0011 to 0014 | Reserved by a separate design proposal | Not adopted | Not applicable |
 | [0015](0015-shared-filesystem-portability.md) | Share narrow filesystem portability mechanics | Accepted design 2026-11-03; not implemented | None. Amends [0009](0009-keep-crates-and-deepen-modules.md) without changing [0010](0010-whole-runtime-cutover.md) |
+| [0016](0016-rust-owns-its-data-formats.md) | Rust owns its data formats; the import is the only reader of Node's | Accepted 2026-11-12 | None. Refines [0010](0010-whole-runtime-cutover.md) and replaces the "keep SQLite formats" rule |
 
 "No status line; in force" means the record predates status lines and no later
 record supersedes it.
@@ -33,7 +34,7 @@ record supersedes it.
 
 ## Adding a record
 
-1. Take the next unused number. 0011 to 0014 are reserved, so the next is 0016.
+1. Take the next unused number. 0011 to 0014 are reserved, so the next is 0017.
 2. Start the file with the title, then a `Status:` line with the date and who
    accepted it.
 3. Link any record it refines, amends or supersedes, and add a row to the table

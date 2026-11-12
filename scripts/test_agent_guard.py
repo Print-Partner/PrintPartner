@@ -1,15 +1,59 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
+import tracemalloc
+import time
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+IN_PROCESS = {}
+
+
+def in_process(target):
+    """Return the module for a guard entry point, loaded once. The adapters share one copy of the policy."""
+    if not IN_PROCESS:
+        policy = load(ROOT / "scripts/agent-guard.py", "agent_guard_in_process")
+        IN_PROCESS[ROOT / "scripts/agent-guard.py"] = policy
+        for path, name in ((ROOT / ".claude/hooks/guard.py", "claude_adapter"),):
+            adapter = load(path, name)
+            adapter.load_policy = lambda policy=policy: policy
+            IN_PROCESS[path] = adapter
+    return IN_PROCESS.get(target)
+
+
+def spawn(cmd, input=None, env=None, cwd=None, **kwargs):
+    """Run a command like subprocess.run, but run the Claude hook adapter and the guard CLI in this process.
+
+    Spawning Python and recompiling the guard for each of about a thousand calls made the suite outrun the
+    CI job. The entry point still reads stdin, the environment, its arguments and the working directory,
+    and its exit code and stderr come back as a CompletedProcess. Any other command, such as an adapter
+    copied elsewhere, still runs as a real process.
+    """
+    target = Path(cmd[2]) if len(cmd) >= 3 and cmd[:2] == [sys.executable, "-B"] else None
+    module = in_process(target) if target else None
+    if module is None or (target.name != "agent-guard.py" and len(cmd) != 3):
+        return subprocess.run(cmd, input=input, env=env, cwd=cwd, **kwargs)
+    out, err = io.StringIO(), io.StringIO()
+    with patch.dict(os.environ, dict(os.environ) if env is None else env, clear=True), \
+            patch.object(sys, "stdin", io.StringIO(input or "")), patch.object(sys, "argv", [str(target), *cmd[3:]]), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), contextlib.chdir(cwd or os.getcwd()):
+        try:
+            code = module.main()
+        except SystemExit as error:
+            if isinstance(error.code, str):
+                print(error.code, file=err)
+            code = error.code if isinstance(error.code, int) else int(error.code is not None)
+    return subprocess.CompletedProcess(cmd, code, out.getvalue(), err.getvalue())
+
 CLI = ROOT / "scripts/agent-guard.py"
 
 
@@ -25,9 +69,9 @@ def tool_request(payload):
     raise ValueError(f"no neutral operation for {tool}")
 
 
-def guard_call(payload, coordinator=None):
+def guard_call(payload, coordinator=None, extra=None):
     """Run a tool-call payload through scripts/agent-guard.py json, with hook()'s coordinator environment."""
-    return hook(CLI, tool_request(payload), coordinator, "json")
+    return hook(CLI, tool_request(payload), coordinator, extra, None, "json")
 
 
 def run(tool, data):
@@ -423,10 +467,12 @@ class GuardHookTests(unittest.TestCase):
             self.assertBlocked("Execute", {"command": command}, "need the maintainer")
         self.assertBlocked("Execute", {"command": f"gh variable $ACTION {name}"}, "Cannot classify")
         for command in ("gh variable list", f"gh variable get {name}", "gh variable", "gh variable --help",
-                        "gh variable -h", "gh -R o/r variable list --json name,value", "gh help variable",
+                        "gh variable -h", "gh -R o/r variable list --json name,value",
                         f"gh api repos/o/r/actions/variables/{name}", "gh api repos/o/r/actions/variables",
                         f"gh api -X GET orgs/o/actions/variables/{name}"):
             self.assertAllowed("Execute", {"command": command})
+        # gh help could run a config alias named help (GRE-1280); gh variable --help stays allowed above.
+        self.assertBlocked("Execute", {"command": "gh help variable"}, "gh <command> --help")
 
     def test_gh_options_before_the_subcommand(self):
         name = "PP_REVIEW_FALLBACK_UNTIL"
@@ -499,7 +545,7 @@ class GuardHookTests(unittest.TestCase):
 
 
 def neutral(*args, stdin=""):
-    return subprocess.run([sys.executable, "-B", str(CLI), *args], input=stdin,
+    return spawn([sys.executable, "-B", str(CLI), *args], input=stdin,
                           capture_output=True, text=True, check=False)
 
 
@@ -568,7 +614,7 @@ class NeutralGuardCliTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", "-b", "main", str(folder / "repo")], check=True)
             cwd, push = str(folder / "link/../repo"), "git push origin HEAD"
             self.assertPasses(neutral("command", "--cwd", cwd, push))
-            self.assertPasses(subprocess.run([sys.executable, "-B", str(CLI), "command", "--cwd", "link/../repo", push],
+            self.assertPasses(spawn([sys.executable, "-B", str(CLI), "command", "--cwd", "link/../repo", push],
                                              cwd=folder, capture_output=True, text=True, check=False))
             self.assertPasses(request({"operation": "command", "cwd": cwd, "command": push}))
             self.assertPasses(hook(CLAUDE, claude_call("Bash", cwd, command=push)))
@@ -626,12 +672,13 @@ OLD_MERGE_GATE = f"gh pr merge 12 -R Print-Partner/PrintPartner --squash --match
 CLAUDE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 
-def hook(adapter, payload, coordinator=None, *args):
+def hook(adapter, payload, coordinator=None, extra=None, cwd=None, *args):
     env = {key: value for key, value in os.environ.items() if key != "PP_COORDINATOR_WORKTREE"}
+    env.update(extra or {})
     if coordinator is not None:
         env["PP_COORDINATOR_WORKTREE"] = coordinator
     text = payload if isinstance(payload, str) else json.dumps(payload)
-    return subprocess.run([sys.executable, "-B", str(adapter), *args], input=text, env=env,
+    return spawn([sys.executable, "-B", str(adapter), *args], input=text, env=env, cwd=cwd,
                           capture_output=True, text=True, check=False)
 
 
@@ -758,9 +805,9 @@ class CoordinatorMergeTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def results(self, command, cwd, coordinator):
-        return (guard_call(execute_call(command, cwd), coordinator),
-                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator))
+    def results(self, command, cwd, coordinator, extra=None):
+        return (guard_call(execute_call(command, cwd), coordinator, extra),
+                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator, extra))
 
     def test_lane_worktree_merges_are_refused(self):
         # OLD_MERGE_GATE is exactly what a lane following the retired merge_gate would run.
@@ -928,15 +975,17 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         self.assertIn("merge refused", self.check([], pr_override=missing_old))
 
     def test_gh_budget_exhaustion_refused(self):
+        # Isolate the API budget from the separate bounded command-parser clock.
         guard = load(CLI, "agent_guard_budget")
         clock = iter([0.0, guard.GH_BUDGET_SECONDS + 1.0])
         with patch.object(guard, "coordinator_worktree", return_value=True), \
                 patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
                 patch.object(guard.subprocess, "run") as run:
-            self.assertIn("merge refused", guard.check_command(MERGE_FORM, "/coordinator"))
+            self.assertIn("merge refused", guard.coordinator_merge_reason(MERGE_FORM.split(), "/coordinator"))
             run.assert_not_called()
 
     def test_gh_gets_only_the_remaining_budget(self):
+        # Isolate the API budget from the separate bounded command-parser clock.
         guard = load(CLI, "agent_guard_remaining")
         replies = [{"headRefOid": SHA, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]],
                    {"headRefOid": SHA}]
@@ -945,7 +994,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         with patch.object(guard, "coordinator_worktree", return_value=True), \
                 patch.object(guard.time, "monotonic", side_effect=lambda: next(clock)), \
                 patch.object(guard.subprocess, "run", side_effect=responses) as run:
-            self.assertIsNone(guard.check_command(MERGE_FORM, "/coordinator"))
+            self.assertIsNone(guard.coordinator_merge_reason(MERGE_FORM.split(), "/coordinator"))
             budget = guard.GH_BUDGET_SECONDS
             self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list],
                              [budget - 5.0, budget - 20.0, budget - 30.0])
@@ -1330,6 +1379,700 @@ class UnreadableCommentBodyTests(unittest.TestCase):
             for result in self.results(command, self.coordinator, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+
+def nested_shells(command, levels):
+    """Wrap command in sh -c that many times, quoting each level for the shell."""
+    for _ in range(levels):
+        command = "sh -c " + shlex.quote(command)
+    return command
+
+
+class HiddenMergeTests(unittest.TestCase):
+    """Merges spelled so the shell, not the guard, assembles them. Lanes never merge (GRE-1280)."""
+
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+    SHA_ARG = f"--squash --match-head-commit {SHA}"
+    # Each was a probe that reached gh pr merge, or a gh api merge, without the guard refusing it.
+    REFUSED = (f"printf '%s\\n' --admin | xargs gh pr merge 12 {SHA_ARG}",
+               f"find . -maxdepth 0 -exec gh pr merge 12 {SHA_ARG} --admin \\;",
+               f"alias m='gh pr merge 12 {SHA_ARG} --admin'", f"alias m='gh pr merge 12 {SHA_ARG} --admin'; m",
+               f"C='gh pr merge 12 {SHA_ARG} --admin'; $C", f"git -c alias.m='!gh pr merge 12 {SHA_ARG} --admin' m",
+               f"git config alias.m '!gh pr merge 12 {SHA_ARG}'", f"setsid gh pr merge 12 {SHA_ARG}",
+               f"flock /tmp/x gh pr merge 12 {SHA_ARG}", f"watch -n 1 gh pr merge 12 {SHA_ARG}",
+               f"script -c 'gh pr merge 12 {SHA_ARG}' /dev/null", f"timeout 5 gh pr merge 12 {SHA_ARG}",
+               f"python3 -c 'import os; os.system(\"gh pr merge 12 {SHA_ARG} --admin\")'",
+               "gh pr  'merge' 12", "gh -R o/r pr merge 12", "bash -c 'gh pr merge 12'",
+               "find . -exec sh -c 'gh pr merge 12' \\;", "ssh host 'gh pr merge 12'",
+               f"gh alias set m 'pr merge 12 {SHA_ARG}'",
+               # Quoting and escapes the shell removes after the guard reads the line.
+               "printf '%s\\n' --admin | xargs gh pr me''rge 12", "find . -maxdepth 0 -exec gh pr mer''ge 12 --admin \\;",
+               "xargs gh pr m\\erge 12 --admin", 'xargs gh pr "mer"ge 12 --admin', "xargs g''h pr merge 12",
+               "xargs gh pr $'m\\x65rge' 12 --admin", "script -c \"gh pr mer''ge 12 --admin\" /dev/null",
+               "setsid gh pr 'mer'ge 12 --admin", "flock /tmp/x gh pr me\\rge 12 --admin",
+               "watch -n 1 gh pr me''rge 12 --admin", "parallel gh pr me''rge ::: 12", "tmux new-session gh pr me''rge 12",
+               "xargs gh api -X PUT repos/o/r/pulls/12/merge", "find . -exec gh api -X PUT repos/o/r/pulls/12/mer''ge \\;",
+               "xargs gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+               "xargs gh $(printf pr) view 12", "setsid gh pr `echo x` 12",
+               # Split variables: the line sets a variable to gh and expands variables.
+               "G=gh; P=pr; M=merge; $G $P $M 12", "G=gh P=pr; $G $P view 12", "export G=gh && $G pr view 12",
+               "G=gh; xargs $G pr merge 12", "G=gh; find . -exec $G pr view 12 \\;",
+               # Runners whose options and operands come before the program (Crouton at c6f8a958).
+               "G=gh; flock /tmp/x $G pr merge 12", "G=gh; watch -n 1 $G pr view 12", "G=gh; xargs -n 1 $G pr view 12",
+               "G=gh; ssh host $G pr merge 12",
+               # A shell -c script inside an alias value, a git alias value, or a runner.
+               "alias m='sh -c \"gh pr merge 12\"'", "alias m='env X=1 bash -c \"gh pr merge 12\"'",
+               "git config alias.m '!sh -c \"gh pr merge 12\"'", "git -c alias.m='!sh -c \"gh pr merge 12\"' m",
+               "xargs env bash -c 'gh pr merge 12'",
+               # An expansion or substitution in program position, followed by pr merge.
+               "$(echo gh) pr merge 12", "`echo gh` pr merge 12", "$X pr merge 12", "$X -R o/r pr merge 12",
+               # Interpreter code with gh options between pr and merge (Sol at c6f8a958).
+               "python3 -c 'import os; os.system(\"gh pr --repo=o/r merge 1620 --squash\")'",
+               "node -e 'require(\"child_process\").execSync(\"gh pr --help=false merge 1620 --squash\")'",
+               "python3 -c 'import subprocess; subprocess.run([\"gh\", \"pr\", \"-R\", \"o/r\", \"merge\", \"1620\"])'",
+               # Nested shell strings under a runner, and gh api merges inside them.
+               "xargs sh -c 'sh -c \"gh pr merge 1620\"'", "xargs sh -c 'gh api -X PUT repos/o/r/pulls/1620/merge'",
+               "xargs sh -c \"gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) "
+               "{ clientMutationId } }'\"",
+               "alias m='gh api -X PUT repos/o/r/pulls/1620/merge'",
+               "G=gh; flock /tmp/pp-lock $G pr merge 1620", "G=gh; watch -n 1 $G pr merge 1620",
+               # Help is decided per simple command, so a merge next to a help request is still refused.
+               "gh pr merge 12 && gh pr merge --help", "gh pr merge --help; gh pr merge 12",
+               # A shell's -c under an argv runner, and a command string under a runner that runs one.
+               "xargs sh -c 'gh pr merge 1'", "find . -exec sh -c 'gh pr merge 1' \\;", "watch 'gh pr merge 1'",
+               "flock /tmp/x -c 'gh pr merge 1'", "entr -s 'gh pr merge 1'",
+               # A gh alias or extension, and a line that moves gh's config to one (r4519428620).
+               "GH_CONFIG_DIR=/tmp/c gh m", "XDG_CONFIG_HOME=/tmp gh m", "gh m", "gh co 12", "sh -c 'gh m'",
+               "export GH_CONFIG_DIR=/tmp/c; gh pr view 12", "env XDG_CONFIG_HOME=/tmp gh pr view 12",
+               "env -u GH_CONFIG_DIR gh pr view 12", "env -i gh pr view 12", "HOME=/tmp gh pr view 12",
+               "sh -c 'GH_CONFIG_DIR=/tmp/c gh m'", "env --unset=HOME gh pr view 12",
+               # gh subcommands that run or change an extension, an agent skill, a codespace, or the Copilot CLI
+               # (r4519498648 at edac4614).
+               "gh extension exec x", "gh ext exec x", "gh extensions exec x", "gh -R o/r extension exec x",
+               "gh extension --help=false exec x", "gh ext browse", "gh ext create foo", "gh ext remove foo",
+               "gh codespace ssh", "gh codespace cp a b", "gh copilot", "gh copilot -p hi", "gh skill install o/r",
+               "gh skills update", "gh skill publish", "gh agent-task create 'fix it'", "gh agent-task -R o/r create x",
+               "xargs gh agent-task create x",
+               # Sol at edac4614: gh classified fully wherever it runs, and config redirects the line still missed.
+               "GH_CONFIG_DIR=/tmp/c xargs gh m </dev/null", "xargs gh m </dev/null", "find . -maxdepth 0 -exec gh m \\;",
+               "flock /tmp/x gh m", "setsid gh ext exec x", "xargs gh alias set m 'pr view'",
+               "python3 -c 'import os; os.system(\"gh m\")'",
+               "node -e 'require(\"child_process\").execSync(\"gh m\")'",
+               "python3 -c 'import subprocess; subprocess.run([\"gh\", \"ext\", \"exec\", \"x\"])'",
+               "unset GH_CONFIG_DIR; gh pr view 12", "unset HOME; gh pr view 12",
+               "env -C /tmp -u GH_CONFIG_DIR gh pr view 12", "env -C /tmp -i gh pr view 12",
+               "env --chdir=/tmp -u HOME gh pr view 12", "env -vu HOME gh pr view 12", "env -vu FOO gh pr merge 12",
+               "GH_CONFIG_DIR=/tmp/c sh -c 'gh pr view 12'", "export HOME=/tmp; bash -c 'gh pr view 12'",
+               "declare -x HOME=/tmp; gh pr view 12", "typeset -x XDG_CONFIG_HOME=/tmp; gh pr view 12",
+               "set -a; HOME=/tmp; gh pr view 12", "env HOME=/tmp gh pr view 12",
+               # Wrapper bundles read letter by letter: an attached value does not use up the program word.
+               "timeout -k1s 5 gh pr merge 12", "env -uFOOu gh pr merge 12", "env -uXC gh pr merge 12",
+               # Final round at 10689550: unknown wrapper options and long-option abbreviations, gh help, and the
+               # redirects that still count.
+               "env -a ignored gh pr merge 12", "env --argv0 x gh pr merge 12", "env --un FOO gh pr merge 12",
+               "timeout --kill-a 1 5 gh pr merge 12", "nice --adju 5 gh pr merge 12", "/usr/bin/time --fo x gh pr merge 12",
+               "env -a ignored gh pr view 12", "gh help", "gh help pr", "HOME=/tmp; gh pr view 12",
+               "GH_CONFIG_DIR=/tmp/c xargs gh pr view", "gh cs ssh", "gh agent create x",
+               # gh's own aliases resolve to their canonical commands before any check (19ad103f threads).
+               "gh agents create x", "gh agent-tasks create x", "gh cs ls --help=false ssh", "gh skills install o/r",
+               "gh extensions exec x", "xargs sh -c 'gh m'",
+               # Redirect counterparts that stay refused, and runners whose program position holds gh.
+               "export HOME=/tmp; gh pr view 12", "env -uGH_CONFIG_DIR gh pr view 12", "(export HOME=/tmp; gh pr view 12)",
+               "(export HOME=/tmp; (gh pr view 12))", "(export HOME=/tmp; gh pr view 12 | cat)",
+               "HOME=/tmp find . -exec gh pr view 12 \\;",
+               # xargs options read the way getopt reads them (Sol at 4ed57bd3); an unknown one falls back to
+               # trying every word. Every find -exec is a program position, even as another option's value.
+               "printf '12\\n' | xargs -rI {} gh pr merge {}", "xargs --replace gh pr merge 12", "xargs -i gh pr merge 12",
+               "xargs -0rn1 gh pr merge", "xargs -I{} gh pr merge {}", "xargs --replace={} gh pr merge {}",
+               "xargs -a f.txt gh pr merge", "xargs -Z gh pr merge 12", "xargs --rep gh pr merge 12",
+               "xargs -l gh pr merge 12", "find . -name -exec gh pr merge {} \\;",
+               "find . -exec echo ';' -exec gh pr merge {} \\;", "env -S 'gh pr view' 12",
+               "HOME=/tmp flock /tmp/x gh pr view 12", "env -C/tmp gh pr merge 12", "timeout -k0.5s 5 gh pr merge 12",
+               "/usr/bin/time -f%E gh pr merge 12", "env -x/tmp gh pr view 12",
+               "xargs find . -exec sh -c 'gh pr merge 1' \\;", "find . -exec xargs gh pr merge 1 \\;",
+               "sudo -nu bob gh pr merge 12", "env -xu FOO gh pr merge 12", "env -vuFOO gh pr merge 12",
+               "nice -n5 gh pr merge 12", "timeout -s9 5 gh pr merge 12", "sudo -uroot gh pr merge 12",
+               "time -fx gh pr merge 12", "exec -abash gh pr merge 12", "stdbuf -oL gh pr merge 12",
+               "ionice -c2 gh pr merge 12", "taskset -c0 gh pr merge 12",
+               # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
+               "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
+               "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
+               "xargs " + nested_shells("gh pr merge 1", 8),
+               # Accepted edge: under a runner other than find or xargs each later word is tried as its program.
+               "setsid grep -e gh -e pr -e merge docs/x.md",
+               # Quotes and backslashes are removed before interpreter code is matched.
+               "python3 -c 'import os; os.system(\"gh pr m\\\\erge 12\")'",
+               "python3 -c \"import os; os.system('gh pr me''rge 12')\"", "entr -cs 'gh pr merge 1'",
+               "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
+               # gh aliases and extensions run commands the guard never sees.
+               "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
+               "gh extension install owner/repo", "gh extensions install owner/repo", "gh ext install ./local",
+               "gh extension upgrade --all",
+               # Options between gh, the group, and the action (Sol at ea18d1aa).
+               'gh alias --help=false set m "api -X PUT repos/o/r/pulls/12/merge"', "gh extension --help=false install o/r",
+               "gh alias -R x set m 'pr view 12'", "gh alias --repo=x set m 'pr view 12'", "gh ext -R x install o/r",
+               "gh extension --repo=o/r upgrade --all", "gh pr --help=false merge 12", "gh --repo=x pr merge 12",
+               # A GraphQL merge under a runner, with the query's literal $id in single quotes.
+               "xargs gh api graphql -f query='mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) "
+               "{ clientMutationId } }'")
+    ALLOWED = (# A quoted argument that only mentions the command is data, not a merge (r4515518236).
+               f"gh pr comment 1650 --body \"gh pr merge 1650 {SHA_ARG}\"",
+               f"git commit -m 'Merged with gh pr merge 1650 {SHA_ARG}'", 'grep -rn "gh pr merge" docs/',
+               "echo 'gh pr merge 12 --squash' > notes.md",
+               # An expansion used as data, not as the program, on a line that sets a variable to gh.
+               "G=gh; echo $HOME", "G=gh; git status; echo $X", "G=gh; X=$HOME",
+               "echo $(date)", "$EDITOR notes.md", "$(which gh) pr view 12",
+               # Help on the normalized words is help, as on main (Sol P3), and code that never runs gh pr merge.
+               "gh pr --repo=o/r merge --help", "gh -R o/r pr merge -h", "python3 -c 'print(\"merge sort\")'",
+               # Help in a compound line or behind a wrapper, and an ordinary program's data arguments (cd78c5f3).
+               "gh pr merge --help && echo ok", "gh pr merge --help; echo done", "gh pr --repo=o/r merge --help | less",
+               "command gh pr merge --help", "echo gh pr merge 12", "grep -e gh -e pr -e merge docs/x.md",
+               # An argv runner's program arguments are data (r4518829993).
+               "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
+               "xargs echo 'gh pr merge 1'", "entr -s 'make test'",
+               # Built-in gh commands, and a config variable on a line without gh.
+               "gh run list --limit 5", "gh api repos/o/r/pulls/12", "gh version", "gh ext list",
+               "gh repo view", "gh auth status", "GH_CONFIG_DIR=/tmp/c echo hi", "export FOO=1; gh pr view 12",
+               # Read-only and help forms of those groups, and env -u of a variable that does not move gh's config.
+               "gh extension search foo", "gh extension exec --help", "gh ext", "gh codespace", "gh codespace --help",
+               "gh copilot --help", "gh skill list", "gh skill preview o/r x", "gh alias list", "gh alias delete m",
+               "gh agent-task list", "gh agent-task view 1", "gh agent-task create --help",
+               "gh attestation verify f --owner o", "env -u PATH gh pr view 12", "env --unset=FOO gh pr view 12",
+               # Words that only look like an assignment, and env options that leave gh's config alone.
+               "gh pr comment 12 --body HOME=/tmp", "echo HOME=/tmp; gh pr view 12", "env -u FOO gh pr view 12",
+               "env -C /tmp gh pr view 12", "env -C /tmp -u PATH gh pr view 12", "env -vu FOO gh pr view 12",
+               "unset FOO; gh pr view 12", "HOME=/tmp echo hi", "find . -maxdepth 0 -exec gh pr view 12 \\;",
+               "timeout -k1s 5 gh pr view 12", "env -uFOO gh pr view 12", "nice -19 gh pr view 12",
+               # A redirect counts only for the command it is attached to, or after export, declare or unset, and
+               # only for a gh program; gh's own command aliases are built in.
+               "HOME=/tmp echo gh", "HOME=/tmp python3 -c 'print(\"gh pr view 12\")'", "HOME=/tmp npm test; gh pr view 12",
+               "HOME=/tmp npm test; gh pr comment 12 --body \"Verified.\"", "gh at verify artifact --owner o",
+               "gh rs list", "gh agent list", "gh agent-tasks list", "gh agents view 1", "gh extension ls", "gh skill ls",
+               "gh skill show o/r x", "gh pr --help", "gh pr view --help", "gh --help", "env --chdir=/tmp gh pr view 12",
+               "env --unset FOO gh pr view 12", "timeout --kill-after=1 5 gh pr view 12",
+               "nice --adjustment 5 gh pr view 12", "/usr/bin/time --format x gh pr view 12",
+               "sudo --preserve-env=PATH gh pr view 12", "nice --help", "env --version",
+               "gh at download artifact", "gh rs ls", "gh rs view 1", "gh rs check main", "gh agent view 1",
+               "gh extensions ls",
+               # Sol at 19ad103f: attached wrapper operands, runner data, redirects kept inside a subshell or a
+               # pipeline stage, and every group's ls alias.
+               "env -C/tmp gh pr view 12", "timeout -k0.5s 5 gh pr view 12",
+               "/usr/bin/time -f%E gh pr view 12", "env -uGH_TOKEN npm test", "HOME=/tmp xargs echo gh",
+               "HOME=/tmp find docs -name gh -print",
+               "gh pr ls", "gh secret ls",
+               "gh repo ls", "gh alias ls", "find docs -exec grep -e gh -e pr -e merge {} +",
+
+               "xargs grep -e gh -e pr -e merge",
+               "printf 'x\\n' | xargs -rI {} echo {}", "xargs -0 -r -n 1 -P 4 echo",
+               "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
+               "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
+               "ionice -c2 gh pr view 12", "taskset -c0 gh pr view 12",
+               "python3 -c 'import os; os.system(\"gh pr view 12\")'", "xargs " + nested_shells("echo hi", 8),
+               # entr runs its arguments as a shell command line only with -s.
+               "entr echo 'gh pr merge 1'",
+               "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
+               "sh -c 'gh api repos/o/r/pulls/12/merge'",
+               "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
+               "find . -name '*.md' -exec grep -l merge {} \\;", "setsid gh pr checks 12", "N=12; gh pr view $N",
+               "X=1; echo $X", "gh pr merge --help", "gh pr comment 12 -b 'Ready to merge once CI is green.'",
+               "gh alias list", "gh alias set --help", "gh alias delete m", "gh extension list",
+               "gh extension install --help", "gh alias --help",
+               # A literal $ inside single quotes is data, not an expansion.
+               "xargs gh api graphql -f query='query($id: ID!) { node(id: $id) { id } }'")
+
+    def setUp(self):
+        self.make_worktrees()
+
+    def run_all(self, commands, cwd, coordinator):
+        return [(command, self.results(command, cwd, coordinator)) for command in commands]
+
+    def test_background_separator_keeps_following_config_changes_in_current_shell(self):
+        commands = ("true & export GH_CONFIG_DIR=/tmp/evil; gh pr view 12",
+                    "true & HOME=/tmp; gh pr view 12",
+                    "true & declare -x HOME=/tmp; gh pr view 12",
+                    "echo \\|& export GH_CONFIG_DIR=/tmp/evil; gh pr view 12")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config redirected", result.stderr)
+
+    def test_pipeline_after_background_separator_keeps_each_stage_scoped(self):
+        guard = in_process(CLI)
+        parsed = guard.shell_commands("a & b | c")
+        self.assertEqual([args for args, _, _ in parsed], [["a"], ["b"], ["c"]])
+        stages = [scoped[1] for _, scoped, _ in parsed[1:]]
+        self.assertTrue(all(stage is not None for stage in stages))
+        self.assertEqual(len(set(stages)), 2)
+        for command in ("true & echo hi | export HOME=/tmp; gh pr view 12",
+                        "true & export HOME=/tmp | cat; gh pr view 12",
+                        "export HOME=/tmp & gh pr view 12"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_stderr_pipe_keeps_cd_and_exports_in_pipeline_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            for operator in ("|&", "|&\n", "|\\\n&", "|\n", "|\\\r\n&"):
+                command = f"true {operator} cd ../lane-wt; git push origin HEAD"
+                for result in self.results(command, str(main), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                for declaration in ("export GH_CONFIG_DIR=/tmp/evil", "export HOME=/tmp"):
+                    command = f"true {operator} {declaration}; gh pr view 12"
+                    for result in self.results(command, str(main), None):
+                        with self.subTest(command=command):
+                            self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        self.assertTrue(all(scope for _, scope, _ in guard.shell_commands("a |& b")))
+
+    def test_python_executable_suffixes_are_recognized(self):
+        for executable in ("python3-dbg", "python3.14T", "python3.12-dbg-x86_64", "python3.14t", "/usr/bin/python3.14t-dbg"):
+            command = f"{executable} -c 'import os; os.system(\"gh pr merge 12\")'"
+            for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+                for result in self.results(command, cwd, coordinator):
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+            for result in self.results(f"{executable} -c 'print(1)'", self.lane, None):
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_daily_lane_runners_refuse_merges(self):
+        commands = ("xvfb-run -a gh pr merge 12", "pp-netns gh pr merge 12",
+                    "direnv exec . gh pr merge 12", "xvfb-run -a pp-netns gh pr merge 12",
+                    "xvfb-run --server-args='-screen 0 800x600x24' gh pr merge 12")
+        for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+            for command, results in self.run_all(commands, cwd, coordinator):
+                for result in results:
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+        for command in ("xvfb-run -a gh pr view 12", "pp-netns gh pr view 12",
+                        "direnv exec . gh pr view 12", "xvfb-run --server-args='-screen 0 800x600x24' gh pr view 12"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_daily_wrappers_expose_gh_config_redirects(self):
+        commands = ("export GH_CONFIG_DIR=/tmp/evil; direnv exec . gh pr view 12",
+                    "HOME=/tmp direnv exec . gh pr comment 12 -b x",
+                    "export GH_CONFIG_DIR=/tmp/evil; xvfb-run -e /tmp/err -f /tmp/auth gh pr view 12")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config redirected", result.stderr)
+
+    def test_daily_wrappers_expose_git_refusals(self):
+        commands = ("direnv exec . git push -f", "xvfb-run -a git push --force origin topic",
+                    "pp-netns git push origin HEAD:main", "direnv exec . git commit --no-verify -m x")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_daily_wrapper_options_resolve_the_real_program(self):
+        guard = in_process(CLI)
+        for option in ("-a", "-n 90", "-s '-screen 0 800x600x24'", "-e /tmp/err", "-f /tmp/auth",
+                       "-p MIT-MAGIC-COOKIE-1", "-w 2", "--auto-servernum", "--server-num=90",
+                       "--server-args='-screen 0 800x600x24'", "--error-file=/tmp/err", "--auth-file=/tmp/auth",
+                       "--xauth-protocol=MIT-MAGIC-COOKIE-1", "--wait=2"):
+            words, *_ = guard.shell_commands(f"xvfb-run {option} gh pr view 12")[0]
+            with self.subTest(option=option):
+                self.assertEqual(guard.program(words)[:2], ("gh", ["pr", "view", "12"]))
+        self.assertEqual(guard.program(["pp-netns", "--", "git", "status"])[:2], ("git", ["status"]))
+        self.assertEqual(guard.program(["direnv", "exec", ".", "git", "status"])[:2], ("git", ["status"]))
+
+    def test_background_and_or_lists_do_not_move_parent_cwd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            for operator in ("&&", "||", "&&\n"):
+                command = f"cd ../lane-wt {operator} git status & git push origin HEAD"
+                for result in self.results(command, str(main), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        parsed = guard.shell_commands("a; b && c & d")
+        self.assertFalse(parsed[0][1])
+        self.assertFalse(parsed[1][1])
+        self.assertTrue(parsed[2][1])
+        self.assertFalse(parsed[3][1])
+
+    def test_routine_wrapped_builds_and_background_jobs_stay_allowed(self):
+        for command in ("xvfb-run -a cargo test", "direnv exec . cargo build", "pp-netns npx vite --port 5173",
+                        "cargo build & npm run dev; wait"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_background_list_exports_reach_only_their_own_subshell(self):
+        for command in ("export GH_CONFIG_DIR=/tmp/evil && gh pr view 12 &",
+                        "(export GH_CONFIG_DIR=/tmp/evil; gh pr view 12) &"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config redirected", result.stderr)
+        for result in self.results("export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12", self.lane, None):
+            self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_direnv_file_targets_are_programs(self):
+        for command in ("direnv exec /usr/bin/gh pr merge 12",
+                        "export GH_CONFIG_DIR=/tmp/evil; direnv exec /usr/bin/gh pr view 12",
+                        "direnv exec /usr/bin/git push -f"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        for command in ("direnv allow", "direnv status", "direnv reload",
+                        "direnv exec . git push origin topic"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        readings = guard.program_readings(["direnv", "exec", "environment", "git", "status"])
+        self.assertEqual({(name, tuple(rest)) for name, rest, *_ in readings},
+                         {("git", ("status",)), ("environment", ("git", "status"))})
+
+    def test_direnv_checks_both_readings_without_stat(self):
+        commands = ('direnv exec "$PWD" gh pr merge 12', "direnv exec $PWD gh pr merge 12",
+                    "direnv exec ~ git push -f origin topic", "mkdir -p d && direnv exec d gh pr merge 12",
+                    "env -C / direnv exec usr/bin gh pr merge 12", "cd / && direnv exec usr/bin gh pr merge 12",
+                    "git worktree add ../w2 && direnv exec ../w2 git push origin HEAD:main")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        with patch.object(guard.os.path, "isdir", side_effect=AssertionError("direnv must not stat PATH")):
+            self.assertIsNone(guard.check_command("direnv exec . cargo build", self.lane))
+
+    def test_background_and_directory_changes_make_the_whole_line_unknown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            commands = ("cd ../main-wt && git push origin HEAD | cat &",
+                        "cd ../main-wt && git push origin HEAD 2>&1 | tee /tmp/guard-test.log &",
+                        "cd ../main-wt && git push origin HEAD |& cat &",
+                        "cd ../main-wt && true | git push origin HEAD &",
+                        "(cd ../main-wt && (git push origin HEAD | cat)) &",
+                        "env -C / git push origin topic &", "git -C / push origin topic &",
+                        "pushd /; git push origin topic &", "cd / & gh pr comment 12 -b x")
+            for command in commands:
+                for result in self.results(command, str(lane), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+            command = "{ cd ../lane-wt; } & git push origin HEAD"
+            for result in self.results(command, str(main), None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_redirects_taint_gh_across_all_scopes(self):
+        commands = ("(export GH_CONFIG_DIR=/tmp/evil; gh pr view 12 &)",
+                    "(export GH_CONFIG_DIR=/tmp/evil; (gh pr view 12) &)",
+                    "export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12",
+                    "env -uGH_TOKEN gh pr view 12", "(export HOME=/tmp); gh pr view 12",
+                    "export HOME=/tmp | cat; gh pr view 12", "(export HOME=/tmp); (gh pr view 12)",
+                    "export HOME=/tmp | gh pr view 12", "(declare GH_TOKEN=x); gh pr view 12",
+                    "env GH_TOKEN=x echo hi; gh pr view 12")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        for command in ("HOME=/tmp npm test; gh pr view 12", "GH_TOKEN=x echo hi; gh pr view 12"):
+            for result in self.results(command, self.lane, None):
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_coproc_with_git_or_gh_is_unclear(self):
+        for command in ("coproc { export GH_CONFIG_DIR=/tmp/evil; gh pr view 12; }", "coproc git status"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("Cannot classify", result.stderr)
+
+    def test_required_routine_commands_stay_allowed(self):
+        commands = ("xvfb-run -a cargo test", "direnv exec . cargo build", "pp-netns npx vite --port 5173",
+                    "cargo build & npm run dev; wait", "direnv allow", "direnv status",
+                    "xvfb-run -a gh pr view 12 --json mergeable", "gh pr view 12 2>&1",
+                    "git push origin topic", "direnv exec . git push origin topic")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_wrapped_directory_commands_never_move_parent_cwd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            for wrapper in ("xvfb-run -a", "pp-netns", "direnv exec .", "env", "nohup", "timeout 5", "builtin"):
+                for command in ("cd", "pushd"):
+                    line = f"{wrapper} {command} ../lane-wt; git push origin HEAD"
+                    for result in self.results(line, str(main), None):
+                        with self.subTest(command=line):
+                            self.assertEqual(result.returncode, 2, result.stderr)
+            for result in self.results("git -C../main-wt push origin HEAD", str(lane), None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+            for result in self.results("git -C../lane-wt push origin HEAD", str(main), None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+            guard = in_process(CLI)
+            self.assertEqual(guard.git_command(["-C../lane-wt", "status"])[1], ["-C", "../lane-wt"])
+
+    def test_coproc_uses_parsed_words_and_ignores_comments(self):
+        commands = ("co\\\nproc git push origin HEAD:main", "coproc gi''t push origin HEAD:main",
+                    "coproc g''h pr merge 12", 'coproc { cd ../main-wt; "g"it push origin HEAD; }')
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("Cannot classify", result.stderr)
+        for result in self.results("git status # coproc", self.lane, None):
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_builtin_eval_source_and_function_definitions_fail_closed(self):
+        commands = ("builtin eval 'gh pr merge 12'", "f() { gh pr merge 12; }; f",
+                    "function f { git push origin topic; }; f", "f () { echo hi; }; git status")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "commands.sh").write_text("gh pr merge 12")
+            for result in self.results("builtin source ./commands.sh", folder, None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_previous_main_sweep_exceptions_are_refused(self):
+        commands = ("env -uSSH_AUTH_SOCK gh pr view 12", "env -uSSH_AUTH_SOCK npm test",
+                    "gh release ls", "gh variable ls")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_hidden_merges_are_refused_everywhere(self):
+        for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+            for command, results in self.run_all(self.REFUSED, cwd, coordinator):
+                for result in results:
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_runner_words_are_classified_quickly(self):
+        # A runner tries every later word as its program; runner names as data once took 18 s for 40 words and
+        # 22.9 s for 800 (Sol at c545852a), past the hook's 10-second limit.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        for words, limit in ((40, 1.0), (800, 2.5)):
+            flood = "xargs echo " + " ".join(["find"] * words)
+            started = time.monotonic()
+            reason = guard.check_command(flood, self.lane)
+            with self.subTest(words=words):
+                self.assertLess(time.monotonic() - started, limit)
+                self.assertTrue(reason is None or "too complex" in reason, reason)
+                if words == 40:
+                    self.assertIsNone(reason)
+        self.assertIsNotNone(guard.check_command("setsid " + " ".join(["find"] * 40) + " gh pr merge 1", self.lane))
+        # An ordinary long line stays allowed quickly.
+        started = time.monotonic()
+        self.assertIsNone(guard.check_command("echo " + " ".join(f"word{i}" for i in range(5000)), self.lane))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_the_check_refuses_a_line_past_its_budget_or_deadline(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        self.assertIn("too complex", guard.check_command("setsid echo " + " ".join(["find"] * 6000), self.lane))
+        with patch.object(guard, "CHECK_SECONDS", 0):
+            self.assertIn("too complex", guard.check_command("xargs echo find find", self.lane))
+        self.assertIsNone(guard.check_command("xargs echo find find", self.lane))
+
+    def test_whole_line_limits(self):
+        # Sol at f7f4141d: nested sh -c scripts each started fresh limits, so a 112 KB line ran past the hook's
+        # 10-second limit, and a 5 MB python3 -c took 3.6 s.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        inner = "xargs echo " + " ".join(['watch " "'] * 700)
+        sol = "; ".join("sh -c " + shlex.quote(inner) for _ in range(16))
+        for command in (sol + "; xargs gh pr merge 1", sol, "python3 -c '" + "pass;" * 1_000_000 + "'"):
+            started = time.monotonic()
+            reason = guard.check_command(command, self.lane)
+            with self.subTest(size=len(command)):
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertIn("too long", reason)
+        # An ordinary long line under the cap stays allowed.
+        with patch.object(guard, "CHECK_SECONDS", 60):  # the step budget, not the clock, decides this line
+            self.assertIsNone(guard.check_command("xargs echo " + " ".join(f"file{i}" for i in range(2000)),
+                                                  self.lane))
+        # Thousands of nested substitutions are refused at the deadline, not after the hook's limit. A 0.2 s
+        # deadline makes the deadline, not the machine's speed, end the parse.
+        started = time.monotonic()
+        with patch.object(guard, "CHECK_SECONDS", 0.2):
+            self.assertIn("too complex", guard.check_command("echo " + "$(" * 3000 + "x" + ")" * 3000, self.lane))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_memory_stays_small_on_a_long_line(self):
+        # r4519290573 at f45f9f5c: the memo copied every suffix it visited; 32K one-letter words peaked at 535 MB.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        tracemalloc.start()
+        try:
+            with patch.object(guard, "CHECK_SECONDS", 60):  # the step budget, not the clock, ends this line
+                reason = guard.check_command("xargs echo " + " ".join(["a"] * 32000), self.lane)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        # xargs runs echo, so the words are data; the line is allowed or, past the budget, refused as too complex.
+        self.assertTrue(reason is None or "too complex" in reason, reason)
+        self.assertLess(peak, 50_000_000)
+
+    def test_deep_recursion_in_a_nested_script_is_too_complex(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        nested = "sh -c " + shlex.quote("echo " + "$(" * 600 + "x" + ")" * 600)
+        # A low recursion limit and a long deadline make the parser's RecursionError, not the clock, end the check.
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(400)
+        try:
+            with patch.object(guard, "CHECK_SECONDS", 60):
+                self.assertIn("too complex", guard.check_command(nested, self.lane))
+        finally:
+            sys.setrecursionlimit(limit)
+
+    def test_git_lookups_are_cached_and_bounded_per_line(self):
+        # Sol at f45f9f5c: each git push ran git config again, so 1,000 pushes took 20 s and both adapters timed
+        # out at 10 s with no decision.
+        pushes = "; ".join(["git push origin HEAD:review-topic"] * 1000)
+        for command, expect in ((pushes + "; gh pr merge 1", 2), (pushes, 0)):
+            started = time.monotonic()
+            for result in self.results(command, self.lane, None):
+                with self.subTest(merge=bool(expect)):
+                    self.assertEqual(result.returncode, expect, result.stderr)
+            self.assertLess(time.monotonic() - started, 2.5)
+        # One line runs each distinct git lookup once.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        real, calls = guard.subprocess.run, []
+        with patch.object(guard.subprocess, "run", lambda *a, **k: calls.append(a[0]) or real(*a, **k)):
+            self.assertIsNone(guard.check_command(pushes, self.lane))
+        self.assertLessEqual(len(calls), 3, calls)
+        self.assertIsNone(guard.LINE_GIT)
+        # Lookups the cache cannot share still stop at the line's deadline. git is stubbed to take 10 ms and the
+        # deadline set to 0.2 s, so the timeout path runs on any machine; each git call gets at most the time left.
+        # Keep parsing below the synthetic deadline so this case exercises Git lookup timeouts.
+        distinct = "; ".join(f"git -c pp.k{k}=1 push origin HEAD:review-topic" for k in range(100))
+        timeouts = []
+
+        def slow_git(args, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            time.sleep(0.01)
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        with patch.object(guard, "CHECK_SECONDS", 0.2), patch.object(guard.subprocess, "run", slow_git):
+            self.assertIn("too complex", guard.check_command(distinct, self.lane))
+        self.assertTrue(timeouts and max(timeouts) <= 0.2, timeouts[:3])
+
+    def test_a_marker_line_that_runs_out_of_time_is_too_complex(self):
+        # r4519380166 at 25d70ecf: coordinator_worktree runs git through run_git, which can raise TooComplex; the
+        # marker check now sits inside check_command's handler, so the result is a refusal, not an exception.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        marker = "pp-review" + "-gate"
+        with patch.dict(os.environ, {"PP_COORDINATOR_WORKTREE": self.coordinator}), \
+                patch.object(guard, "CHECK_SECONDS", 0):
+            self.assertIn("too complex", guard.check_command(f"echo '{marker}'", self.coordinator))
+        # When git only times out before the line's deadline, the coordinator check is false and the marker rule
+        # refuses as before.
+        with patch.dict(os.environ, {"PP_COORDINATOR_WORKTREE": self.coordinator}), \
+                patch.object(guard.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+                    subprocess.TimeoutExpired(a[0], 1))):
+            self.assertIn("Only the coordinator worktree posts", guard.check_command(f"echo '{marker}'", self.coordinator))
+
+    def test_nested_scripts_share_one_line_state(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        made = []
+        real = guard.merge_state
+        with patch.object(guard, "merge_state", lambda: made.append(1) or real()):
+            self.assertIsNone(guard.check_command("sh -c 'echo a'; bash -c 'sh -c \"echo b\"'", self.lane))
+        self.assertEqual(len(made), 1)
+        self.assertIsNone(guard.LINE_DEADLINE)
+
+    def test_top_level_shell_scripts_keep_their_own_cwd_and_input_rules(self):
+        # 19ad103f thread: a top-level sh -c script is checked by check_command with its own cwd and alone, so a
+        # body or query file read by the script's only command is allowed, as on main.
+        Path(self.lane, "body.md").write_text("Verified.\n")
+        Path(self.lane, "q.graphql").write_text("query { viewer { login } }\n")
+        for command in ("bash -c 'gh pr comment 12 --body-file body.md'", "sh -c 'gh api graphql -F query=@q.graphql'"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gh_aliases_and_config_redirects_name_the_reason(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        for command in ("GH_CONFIG_DIR=/tmp/c gh m", "XDG_CONFIG_HOME=/tmp gh m", "env -i gh pr view 12"):
+            with self.subTest(command=command):
+                self.assertIn("gh config redirected", guard.check_command(command, self.lane))
+        for command, name in (("gh extension exec x", "extension exec"), ("gh copilot", "copilot")):
+            with self.subTest(command=command):
+                self.assertIn(f"`gh {name}` runs or changes code", guard.check_command(command, self.lane))
+        for command, name in (("gh m", "m"), ("gh co 12", "co"), ("gh -R o/r my-ext run", "my-ext")):
+            with self.subTest(command=command):
+                reason = guard.check_command(command, self.lane)
+                self.assertIn(f"`gh {name}` is not a built-in gh command", reason)
+                self.assertIn("alias or an extension", reason)
+
+    def test_split_variables_name_the_reason(self):
+        for command, results in self.run_all(("G=gh; P=pr; M=merge; $G $P $M 12", "G=gh; $G pr view 12"),
+                                              self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertIn("built from variables", result.stderr)
+
+    def test_ordinary_commands_stay_allowed(self):
+        for command, results in self.run_all(self.ALLOWED, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_coordinator_merge_is_refused_with_git_location_env(self):
+        for name, value in (("GIT_DIR", str(Path(self.lane, ".git"))), ("GIT_WORK_TREE", self.lane)):
+            for result in self.results(MERGE_FORM, self.coordinator, self.coordinator, {name: value}):
+                with self.subTest(name=name):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        for result in self.results(MERGE_FORM, self.coordinator, self.coordinator):
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gh_config_files_are_protected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            custom = str(Path(folder, "ghconf"))
+            env = {"GH_CONFIG_DIR": custom, "XDG_CONFIG_HOME": str(Path(folder, "xdg"))}
+            paths = (str(Path.home() / ".config/gh/config.yml"), str(Path.home() / ".config/gh/hosts.yml"),
+                     f"{custom}/config.yml", str(Path(folder, "xdg/gh/config.yml")), "~/.config/gh/config.yml")
+            calls = [claude_call(tool, file_path=path, **fields) for path in paths
+                     for tool, fields in (("Write", {"content": "aliases: {}"}),
+                                          ("Edit", {"old_string": "a", "new_string": "b"}))]
+            results = [hook(CLAUDE, call, None, env) for call in calls]
+            for call, result in zip(calls, results):
+                with self.subTest(call=call["tool_input"]["file_path"]):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config", result.stderr)
+            # Relative paths resolve against the hook's working directory, and so does a relative GH_CONFIG_DIR.
+            repo = Path(folder, "home/repo")
+            repo.mkdir(parents=True)
+            home = {"HOME": str(Path(folder, "home")), "XDG_CONFIG_HOME": "", "GH_CONFIG_DIR": ""}
+            for path, extra in (("../.config/gh/config.yml", home), ("ghconf/hosts.yml", {**home, "GH_CONFIG_DIR": "ghconf"}),
+                                ("./../.config/gh/hosts.yml", home)):
+                result = hook(CLAUDE, claude_call("Write", str(repo), file_path=path, content="x"), None, extra, cwd=repo)
+                with self.subTest(path=path, extra=extra):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config", result.stderr)
+            lookalike = hook(CLAUDE, claude_call("Write", str(repo), file_path="docs/.config/gh/example.md", content="x"), None,
+                             home, cwd=repo)
+            self.assertEqual(lookalike.returncode, 0, lookalike.stderr)
+            # The Claude adapter passes the payload's cwd, which wins over the hook process's own directory.
+            for tool in CLAUDE_TOOLS - {"Bash"}:
+                key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                payload = claude_call(tool, str(repo), **{key: "../.config/gh/config.yml"})
+                result = hook(CLAUDE, payload, None, home, cwd="/")
+                with self.subTest(tool=tool):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config", result.stderr)
+            # A repository folder that only looks like the config path is not the gh config.
+            for path in (str(Path(folder, "notes/config.yml")), str(Path(folder, "repo/docs/.config/gh/example.md"))):
+                allowed = hook(CLAUDE, claude_call("Write", file_path=path, content="x"), None, env)
+                with self.subTest(path=path):
+                    self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
 
 class RetiredFleetIntakeTests(unittest.TestCase):

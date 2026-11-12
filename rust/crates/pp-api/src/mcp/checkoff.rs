@@ -143,12 +143,18 @@ impl DomainPort for CheckoffDomain {
         if name == VERIFY {
             return self.propose(args);
         }
+        if name == super::create_build::PROPOSE {
+            return self.create_build_propose(args);
+        }
         Err(format!("{name} has no Rust port yet"))
     }
 
     fn apply_action(&self, action: &ProposedAction) -> Result<Value, String> {
         if super::planning::TOOLS.contains(&action.action_type.as_str()) {
             return self.planning_apply(action);
+        }
+        if action.action_type == super::create_build::PROPOSE {
+            return self.create_build_apply(action);
         }
         if action.action_type != VERIFY {
             return Ok(

@@ -11,7 +11,10 @@
 //! work is still running, so the next owner's [`recover`] never removes an
 //! upload or stage in use.
 
-use crate::{Envelope, SettingsClient, WriterOwner, archive, ownership_marker, schema};
+use crate::writer_admission::AdmissionError;
+use crate::{
+    Envelope, SettingsClient, WriterFailure, WriterOwner, archive, ownership_marker, schema,
+};
 
 pub(crate) mod activation;
 mod backup;
@@ -69,6 +72,36 @@ impl fmt::Display for Refusal {
 }
 
 impl std::error::Error for Refusal {}
+
+/// Why a backup or an activation did not complete.
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    /// Nothing changed.
+    #[error(transparent)]
+    Refused(#[from] Refusal),
+    /// Activation failed after it began and rolled back.
+    #[error("restore failed; the previous installation is kept")]
+    RolledBack(#[source] anyhow::Error),
+    /// Rollback failed too. Storage stays stopped until a restart replays
+    /// the journal.
+    #[error("restore failed and could not roll back; restart to recover")]
+    RestartRequired(#[source] anyhow::Error),
+    #[error(transparent)]
+    Writer(#[from] WriterFailure),
+}
+
+impl From<anyhow::Error> for RestoreError {
+    fn from(error: anyhow::Error) -> Self {
+        let error = match error.downcast::<Refusal>() {
+            Ok(refusal) => return Self::Refused(refusal),
+            Err(error) => error,
+        };
+        match error.downcast::<AdmissionError>() {
+            Ok(admission) => Self::Writer(admission.into()),
+            Err(error) => Self::Writer(error.into()),
+        }
+    }
+}
 
 /// A validated archive extracted beside the live installation.
 ///
@@ -214,7 +247,27 @@ impl Drop for Upload {
 impl InstallationClient {
     /// Activates the staged restore `restore_id` once `confirmation` equals
     /// [`CONFIRMATION`]. Blocks until the writer has reopened.
-    pub fn activate(&self, restore_id: &str, confirmation: &str) -> Result<Activated> {
+    pub fn activate(
+        &self,
+        restore_id: &str,
+        confirmation: &str,
+    ) -> Result<Activated, RestoreError> {
+        let _active = self.activity.enter()?;
+        let _gate = self
+            .activity
+            .staging
+            .lock()
+            .map_err(|_| anyhow!("Restore staging lock poisoned"))?;
+        let receiver = self.queue_activation(restore_id, confirmation)?;
+        receiver.recv().map_err(|_| WriterFailure::Stopped)?
+    }
+
+    /// Checks the request, then queues the swap on the writer thread.
+    fn queue_activation(
+        &self,
+        restore_id: &str,
+        confirmation: &str,
+    ) -> Result<mpsc::Receiver<Result<Activated, RestoreError>>> {
         ensure!(confirmation == CONFIRMATION, Refusal::Confirmation);
         ensure!(
             restore_id.len() == 32
@@ -223,12 +276,6 @@ impl InstallationClient {
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
             Refusal::UnknownRestore
         );
-        let _active = self.activity.enter()?;
-        let _gate = self
-            .activity
-            .staging
-            .lock()
-            .map_err(|_| anyhow!("Restore staging lock poisoned"))?;
         let staged = self
             .data_dir
             .join(WORK_DIR)
@@ -244,25 +291,22 @@ impl InstallationClient {
         require_marker(&self.data_dir)?;
         admit_schema(&staged)?;
         let (reply, receiver) = mpsc::channel();
-        {
-            let mut queue = self
-                .client
-                .shared
-                .queue
-                .lock()
-                .map_err(|_| anyhow!("Writer admission poisoned"))?;
-            ensure!(!queue.closed && !queue.restoring, "Storage stopped");
-            queue
-                .pending
-                .push_back(Envelope::Control(crate::storage_control::Command::Restore(
-                    activation::Command { staged, reply },
-                )));
-            self.client.shared.changed.notify_all();
-        }
-        receiver
-            .recv()
-            .map_err(|_| anyhow!("Writer stopped without restore result"))?
+        let mut queue = self
+            .client
+            .shared
+            .queue
+            .lock()
+            .map_err(|_| AdmissionError::Poisoned)?;
+        ensure!(!queue.closed && !queue.restoring, AdmissionError::Stopped);
+        queue
+            .pending
+            .push_back(Envelope::Control(crate::storage_control::Command::Restore(
+                activation::Command { staged, reply },
+            )));
+        self.client.shared.changed.notify_all();
+        Ok(receiver)
     }
+
     /// Starts an upload of at most `limit` bytes, capped at
     /// [`MAX_UPLOAD_BYTES`].
     pub fn begin_upload(&self, limit: u64) -> Result<Upload> {

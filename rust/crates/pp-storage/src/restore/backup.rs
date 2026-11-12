@@ -22,7 +22,11 @@ impl Drop for BackupFile {
 impl InstallationClient {
     /// Writes a full backup to a new private temporary directory, outside
     /// managed storage, through the writer like `WriterOwner::create_archive`.
-    pub fn backup_to_temporary(&self, app_version: &str) -> Result<BackupFile> {
+    pub fn backup_to_temporary(&self, app_version: &str) -> Result<BackupFile, RestoreError> {
+        Ok(self.write_backup(app_version)?)
+    }
+
+    fn write_backup(&self, app_version: &str) -> Result<BackupFile> {
         let _active = self.activity.enter()?;
         let directory = std::env::temp_dir().join(format!("pp-backup-{}", random_id()));
         ensure!(

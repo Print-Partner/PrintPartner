@@ -34,7 +34,7 @@ impl Context {
 
 pub(crate) struct Command {
     pub staged: PathBuf,
-    pub reply: mpsc::Sender<Result<Activated>>,
+    pub reply: mpsc::Sender<Result<Activated, RestoreError>>,
 }
 
 pub(crate) fn execute(
@@ -83,7 +83,7 @@ fn activate(
     connection: &mut Connection,
     staged: &Path,
     mut refresh: impl FnMut(&mut Connection) -> Result<()>,
-) -> Result<Activated> {
+) -> Result<Activated, RestoreError> {
     pause_admission(shared)?;
     let database = data_dir.join(archive::DATABASE_FILE);
     let reader_count = match drain_readers(readers) {
@@ -142,16 +142,15 @@ fn activate(
             })();
             let Err(rollback) = rollback else {
                 resume_admission(shared, true);
-                return Err(error.context("Restore failed; the previous installation is kept"));
+                return Err(RestoreError::RolledBack(error));
             };
             // Stay stopped: the next start replays the journal.
             let mut queue = queue(shared);
             queue.closed = true;
             reject_queued(&mut queue);
             shared.changed.notify_all();
-            return Err(error.context(format!(
-                "Restore rollback failed ({rollback:#}); restart to recover"
-            )));
+            let error = error.context(format!("Rollback failed: {rollback:#}"));
+            return Err(RestoreError::RestartRequired(error));
         }
     };
     install_readers(shared, readers, prepared)?;
@@ -171,7 +170,7 @@ fn queue(shared: &Shared) -> MutexGuard<'_, crate::Queue> {
 /// `closed`; [`reject_queued`] fails what they add meanwhile.
 fn pause_admission(shared: &Shared) -> Result<()> {
     let mut queue = queue(shared);
-    ensure!(!queue.closed, "Storage stopped");
+    ensure!(!queue.closed, AdmissionError::Stopped);
     queue.restoring = true;
     shared.restoration.activity.lock().paused = true;
     Ok(())

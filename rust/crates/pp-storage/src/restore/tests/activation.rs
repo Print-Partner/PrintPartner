@@ -1,6 +1,6 @@
 use super::*;
-use crate::restore::CONFIRMATION;
 use crate::restore::journal::{Journal, JournalState};
+use crate::restore::{CONFIRMATION, RestoreError};
 use std::sync::Arc;
 fn assert_marked(root: &Path) {
     assert!(matches!(
@@ -141,7 +141,7 @@ fn an_open_reader_refuses_activation_and_keeps_the_installation() {
     let error = client
         .activate(&staged.restore_id, CONFIRMATION)
         .unwrap_err();
-    assert_eq!(refusal(&error), Some(&Refusal::Busy));
+    assert!(matches!(error, RestoreError::Refused(Refusal::Busy)));
     let pages = queued.join().unwrap();
     assert!(
         pages.is_ok_and(|pages| pages.is_ok()),
@@ -208,13 +208,14 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
             }
             let error = result.unwrap_err();
             if !crash {
-                assert!(format!("{error:#}").contains("injected restore failure"));
+                assert!(matches!(&error, RestoreError::RolledBack(error)
+                    if format!("{error:#}").contains("injected restore failure")));
                 assert_eq!(state(&root), old, "failure at step {at}");
 
                 running = Some(owner);
                 continue;
             }
-            assert!(error.is::<Crash>());
+            assert!(matches!(&error, RestoreError::RestartRequired(e) if e.is::<Crash>()));
             assert!(owner.client().shared.queue.lock().unwrap().closed);
             let committed = Journal::read(&root)
                 .unwrap()
@@ -255,10 +256,8 @@ fn refused_restore_operations_preserve_database_and_archive() {
             Refusal::UnknownRestore,
         ),
     ] {
-        assert_eq!(
-            refusal(&client.activate(id, confirmation).unwrap_err()),
-            Some(&expected)
-        );
+        assert!(matches!(client.activate(id, confirmation),
+            Err(RestoreError::Refused(refused)) if refused == expected));
         assert!(pp_testkit::node_schema::database_files(&root) == database);
         assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
         assert_eq!(

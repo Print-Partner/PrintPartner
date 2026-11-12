@@ -12,7 +12,7 @@ export const MISMATCH = "The two passwords don't match.";
 export const BUSY = "Print Partner is busy or stopping. Try again in a moment.";
 
 /** No answer at all, or a proxy that says the core behind it is gone. */
-export function unreachable(error: unknown): boolean {
+function unreachable(error: unknown): boolean {
   if (error instanceof CoreError) return error.status === 502 || error.status === 504;
   return !(error instanceof ContractError) && !(error instanceof RequestContractError);
 }

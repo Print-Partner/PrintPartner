@@ -1,7 +1,7 @@
 // A fake Rust core for the browser checks: GET /health with every Module listed, the
 // Builds, task feed and workflow routes over `count` generated Builds, the farm read
 // over a fixed fleet, two printer Checkoff results waiting on Today, each Build's
-// History and the farm log. Bodies follow
+// History, the farm log, and GET /auth/status. Bodies follow
 // the generated client schemas. There is no /ws/printers, so screens show the stream as
 // down.
 const MODULES = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"];
@@ -333,6 +333,10 @@ export function fakeCore(count, { orders = "on" } = {}) {
   return (pathname, request) => {
     if (pathname === "/health") {
       return (request.headers.referer ?? "").includes("core=down") ? { status: 503, body: {} } : { status: 200, body: health };
+    }
+    // The setup screen asks from /setup; every other page sees an existing owner.
+    if (pathname === "/auth/status") {
+      return { status: 200, body: { setup_required: (request.headers.referer ?? "").includes("/setup") } };
     }
     if (pathname === "/api/v2/plans") return { status: 200, body: { profiles: builds } };
     if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };

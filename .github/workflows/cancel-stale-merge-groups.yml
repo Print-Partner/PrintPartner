@@ -1,0 +1,36 @@
+name: Cancel stale merge groups
+
+on:
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+
+# Minimum permissions: actions:write to cancel runs, contents:read to verify
+# refs, pull-requests:read to distinguish merged PRs. No checkout or PR trigger.
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: cancel-stale-merge-groups
+  cancel-in-progress: false
+
+jobs:
+  cancel:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the canceller from trusted main
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/$GH_REPO/refs/heads/main/scripts/cancel-stale-merge-groups.py" \
+            --output "$RUNNER_TEMP/cancel-stale-merge-groups.py"
+      - name: Cancel runs whose queue ref is gone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 -B "$RUNNER_TEMP/cancel-stale-merge-groups.py"

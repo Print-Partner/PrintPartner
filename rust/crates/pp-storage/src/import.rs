@@ -113,13 +113,12 @@ impl fmt::Display for ImportError {
                 "Builds or Sources belong to more than one tenant ({}); the import does not merge tenants",
                 tenants.join(", ")
             ),
-            Self::Destination(Destination::Marked) => {
-                f.write_str("The destination is a Rust installation already")
+            Self::Destination(found) => {
+                write!(
+                    f,
+                    "The destination {found}. Empty it or choose another folder"
+                )
             }
-            Self::Destination(found) => write!(
-                f,
-                "The destination must be absent or empty; found {found:?}. Empty it or choose another folder"
-            ),
             Self::Unnamed(shapes) => write!(
                 f,
                 "The inventory does not name this stored JSON: {}. Report it; the import runs once the inventory names it",

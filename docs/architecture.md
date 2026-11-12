@@ -204,10 +204,16 @@ classify fixture/test uses, move SQL setup behind storage-owned helpers, and
 prove HTTP behavior unchanged. Do not describe test imports as production SQL
 ownership. No new production SQL belongs outside `pp-storage`.
 
-Under GRE-339, replace the central `Envelope` collision point family by family
-with private dispatch modules and typed handles. Keep bounded admission, one
-writer, cancellation, deadlines, and reply semantics intact. Exposing unrestricted
-connection/write closures to callers would undo this ownership.
+Under GRE-339, replace the central `Envelope` collision point family by family.
+The seam is the crate-private write helper in `pp-storage/src/write.rs`
+(GRE-1433): a family's client queues a closure, and the writer thread runs it
+inside one `BEGIN IMMEDIATE` transaction, commits on `Ok` and rolls back on
+`Err`. A new family adds no `Envelope` variant and no arm in the writer loop,
+and returns its own typed result. Failures every write shares are one enum,
+`WriterFailure`, which `pp_api::problem::writer_failure` maps to a response.
+Bounded admission, one writer, cancellation, deadlines, and reply semantics stay
+as they are. The helper is never exported from `pp-storage`: exposing
+unrestricted connection or write closures to callers would undo this ownership.
 
 ## Operation families and write ownership
 

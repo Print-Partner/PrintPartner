@@ -33,14 +33,13 @@ does and serializes it as `JSON.stringify` would:
 | Any other JSON value, or an object without `filaments` | `200` `{}` |
 | The literal `null` | `500` with Fastify's `TypeError` body |
 
-Rust only reads the file. Node keeps writing it (`POST` and `DELETE`
-`/filaments/custom` stay on Node), so the `custom-filaments` live format still
-declares `rust_writes: "none"`.
+The read behavior remains as above; the Rust-only mutation and catalog routes
+are described below.
 
 One known difference: Rust's JSON parser stops at 128 levels of nesting and
 then treats the store as unparsable (`{"filaments":[]}`), while Node serves
 the nested value. Node writes flat entries, so only a hand-edited store nests
-that deep. `ticket_t_62_admin_http` pins this case.
+that deep. `admin_http` pins this case.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-storage -p pp-core \
@@ -54,8 +53,8 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
 `/` and `/api/v1` under the same flag and credential check, and
 `read_router` mounts them beside the admin reads. Each request reads or writes
 one `app_settings` row on the writer thread, in the tenant its credential
-resolves to in the same transaction. The `pp_storage::app_settings` client
-names only these three keys.
+resolves to in the same transaction. The `pp_storage::app_settings` client names fixed supported keys; this group
+uses the three rows below.
 
 | Route | Row | `GET` body | `PUT` |
 | --- | --- | --- | --- |
@@ -74,9 +73,9 @@ own routes and there is no dual write or fallback.
 
 `fixtures/admin/settings-cases.json` lists 52 requests;
 `fixtures/admin/settings-oracle.json` records Node's reply and the three stored
-rows after each one. `settings_routes_http` replays them and matches status,
-cache header and stored rows on all 52, and the body on every `200` and on
-each `400` with a `detail`. These differ by design:
+rows after each one. `settings_routes_http` replays them and matches status on
+48 requests, and cache headers and stored rows on all 52. It matches the body
+on every `200` and each Node `400` with a `detail`. These differ by design:
 
 - Errors are `application/problem+json`; the `detail` matches Node's.
 - An empty or unparsable JSON body answers `400` `Request is invalid` instead
@@ -84,10 +83,13 @@ each `400` with a `detail`. These differ by design:
 - Rust also answers `400` for JSON that Fastify accepts but `serde_json`
   refuses: a leading byte order mark, invalid UTF-8, a number out of `f64`
   range such as `1e400`, or nesting past 128 levels.
-- A chunked empty body with no content type answers `500`; Fastify answers
+- A chunked empty body with no content type answers `400`; Fastify answers
   `415`.
-- A `null` body, or a `PUT` with no body and no content type, answers `500`
-  `Internal Server Error`, where Node answers its `TypeError`.
+- A `null` JSON body, or a `PUT` with no body and no content type, answers
+  `400` with the malformed-request problem type and detail `Request is invalid`,
+  without writing. Node answers `500` with its `TypeError`. The four recorded
+  cases assert this intended difference; separate HTTP coverage checks both
+  bodies on all three routes at `/` and `/api/v1` (GRE-1368).
 - A stored `integrations` value with an unpaired UTF-16 surrogate escape holds
   no integrations for Rust, so the Spoolman `PUT` answers `400` where Node
   would accept it.
@@ -98,3 +100,187 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
   --no-tests=fail -E 'binary(settings_routes_http) | binary(rebuild_read_http) | test(spoolman_lookup) | test(/^settings::/)'
 (cd web && UPDATE_ADMIN_ORACLE=1 npm run test -w @print-partner/server -- src/routes/admin-routes.oracle.test.ts)
 ```
+
+## Core diagnostics
+
+The feature and runtime switches also mount authenticated logging config
+(`GET`, `POST`), log tail (`GET`, `DELETE`), stats (`GET`) and `/metrics`
+(`GET`) at `/` and `/api/v1`. Both aliases share one view. Cookie writes
+require the listener Origin. Admission and credential checks use the admin gate.
+
+These routes describe Rust's `core.log`, including its six rotated archives,
+not Node's in-memory workflow logger. Reads use the desktop reader's limits:
+64 KiB per file and complete rows of at most 8 KiB. The view shows the
+newest 1,000 records. Clear observes up to 1,000 rows per file before that
+view cap, so every retained file contributes its end offset.
+Invalid rows are omitted. Every returned record passes the unchanged Scrubber
+again. Rows use the existing UI WorkflowLog shape. `id` is the stable file identity
+and end offset; `timestamp` converts epoch-second `time` to RFC 3339.
+Non-HTTP records use empty method/URL and zero duration/status. Original
+scrubbed core fields remain in `context`. Severity maps trace/debug to
+`debug`, info to `info`, warn to `warn`, and error/fatal to `error`.
+
+Config starts with `minSeverity: "info"`, `maxLogs: 1000` and
+`enableWorkflowTracking: true`. POST accepts only `minSeverity` and
+`enableWorkflowTracking`, with the same enum and boolean validation as Node.
+These settings filter the diagnostics view; the crash writer continues to
+record independently. Config is process-local and resets on restart.
+`severity` and `method` tail filters match exactly; `limit` defaults to 100,
+is capped at 1,000, and accepts nonnegative integers (zero returns no rows).
+Invalid query values return 400.
+
+DELETE records the current per-file end offsets and clears the view,
+not the retained crash files. Clear pins up to seven read handles until the
+next clear or view shutdown; deleted files can retain up to about 70 MiB.
+Renamed archives keep their identities; later appends have larger offsets.
+Restart creates a fresh view over retained files,
+as opposed to Node's empty in-memory buffer. It never unlinks an active writer
+or removes compat/supervisor records. Stats summarize the same bounded view:
+`totalLogs`, `bySeverity`, `byMethod`, `avgDuration` and `errorCount`.
+Rows without method do not contribute to `byMethod`; absent durations count
+as zero. Timestamps, methods and HTTP durations are not invented.
+
+`/metrics` returns Prometheus text version 0.0.4 with `core_log_records`
+gauges by severity and `app_info` with version and Rust runtime. Counts can
+fall after clear or rotation. Node HTTP counters, print-job totals, Plan
+progress and live printer gauges are not inferred from log messages or
+reported as fabricated zeroes; this endpoint makes no printer network calls.
+Read failures return 500 without exposing paths or raw records. All responses
+use `private, no-store`.
+
+| Node metric names | Rust status |
+| --- | --- |
+| `app_info` | Served with version and `runtime="rust"`; no Node-version label |
+| `http_requests_total`, `http_request_duration_ms` (quantiles), `http_request_duration_ms_sum`, `http_request_duration_ms_count`, `http_errors_total`, `http_success_total`, `http_error_rate` | Missing; HTTP instrumentation in GRE-1395 |
+| `plates_sent_total`, `plates_completed_total`, `plates_failed_total`, `filament_consumed_g` | Missing; domain metrics in GRE-1395 |
+| `plan_progress_collection_available`, `plan_progress_state`, `parts_remaining`, `printers_idle`, `printers_printing` | Missing; domain metrics in GRE-1395 |
+
+[GRE-1395](https://linear.app/greetz/issue/GRE-1395/port-remaining-node-http-request-and-domain-prometheus-metrics-to-rust)
+tracks the coordinator-approved split. `core_log_records` is a Rust-only gauge.
+The core writer currently captures info and above; selecting debug in the view
+cannot recover events the writer did not capture. External in-place truncation
+of a retained file is not supported; rotation creates a new file identity.
+
+## Module write route (GRE-1341)
+
+`PUT /api/v2/modules/{module}` turns one Module on or off for the replacement
+Settings screen. `{module}` is one of the five `GET /health` lists (`farm`,
+`spoolman`, `orders`, `bambu`, `assembly_tracking`) and the body is exactly
+`{"on": true}` or `{"on": false}`. It is `setModule` in the generated
+`@print-partner/rust-client`.
+
+- It mounts only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
+  `true`, so only the Rust-only runtime serves it. Node keeps
+  `PATCH /settings/features` at `/` and `/api/v1` in mixed mode, as
+  `operations.json` records, so the two never write the same setting.
+- The accepted gate admits loopback requests with an exact Host and Origin and
+  a credential; storage proves the credential inside the write's transaction
+  (401, or 403 when the account needs an owner mapping). 30 requests a minute
+  that reach the write, whatever storage answers, then 429.
+- `FeatureClient::set_module` writes and reads back in one transaction.
+  `farm`, `spoolman`, `orders` and `bambu` write the user's `feature_toggles`
+  layer. Plan overrides (`feature_toggles:plan:<id>`) and every other stored key
+  stay as they were. `assembly_tracking` writes `build_tracking_assembly` as
+  `"1"` or `"0"`, as Node's `PUT /settings/build-tracking` does.
+- `200` answers `{"modules": [...]}`: every Module's state read from the same
+  rows `GET /health` and send admission read.
+- `404` `Module not found` for any other name. `400` for any other body.
+- When the stored `feature_toggles` doesn't parse (as `/health` reads it), a
+  feature Module answers
+  `500` with code `FEATURE_TOGGLES_INVALID` (Node's text) and nothing is
+  written. `/health` keeps reporting those Modules `setting_unreadable`.
+  `assembly_tracking` is its own row and still writes.
+- A writer that stays busy past its admission deadline answers `503`
+  `transaction_unavailable`; a full or stopping writer answers `503` as the
+  other routes do. Nothing was written in either case.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
+  --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+  --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
+```
+
+## GitHub PAT and Discord notification settings (GRE-1360)
+
+The settings router mounts `/settings/github-pat`, `/settings/discord-notify`
+(`GET`, `HEAD`, `PUT`) at `/` and
+`/api/v1`. The default-off rebuild gates and the existing credential and Origin
+checks apply. Rust owns these operations only in the Rust-only runtime.
+
+Following the coordinator's 2026-11-11 decision, storage uses Node's existing
+`app_settings` keys and text formats. `github_pat` holds the trimmed token;
+`discord_notify_webhook_url` holds the trimmed URL. Empty strings clear them.
+Discord flags use `"1"` and `"0"` in `discord_notify_on_update`,
+`discord_notify_on_sync`, and `discord_auto_sync_updates`; missing defaults are
+true, false, true. A Discord partial update and its readback share one writer
+transaction. PAT replies expose only `configured` and `masked`, matching Node.
+Native secret storage and migration remain later work under GRE-1330.
+
+Differences by design:
+
+- Discord GET and PUT return `https://<host>/[REDACTED]` for a configured webhook,
+  preserving scheme and host but masking the entire path, query and fragment.
+  Invalid legacy text returns `[REDACTED]`. Node returns the complete URL.
+  A masked response is not a valid replacement URL; omit `webhook_url` to keep
+  the stored value. These settings routes never return the stored secret.
+- Errors use the Rust problem envelope, with Node validation detail where applicable.
+- Null Discord JSON bodies and non-string webhook values answer 400 rather than
+  Node's TypeError. PAT null or absent bodies use the Rust malformed-request
+  detail instead of Node's `Token must be a string`.
+  Backslashes and control characters in webhook tokens are rejected.
+
+Explicit test delivery moves to GRE-1403; external-access settings and their
+admission policy move to GRE-1404. Each child quotes the unmet parent items.
+They start from main after this settings change merges. Neither operation is
+mounted by this change. Sharing, listener binding and MCP authentication stay
+unchanged.
+
+`fixtures/admin/secret-settings-cases.json` contains 32 requests using obviously
+fake values. The Node oracle records exact stored bytes; Rust checks them,
+asserts the stricter response redaction, refuses unauthorized/cross-site writes,
+and reopens the database to check restart persistence.
+
+## Custom filament mutations and catalog (GRE-1358)
+
+In Rust-only mode, authenticated `POST /filaments/custom` adds a trimmed name,
+RGB hex and optional product line; `DELETE /filaments/custom/:id` removes the
+matching entry. Both root and `/api/v1` aliases use one credentialed writer
+command. The family facade dispatches to an item-gated implementation; without
+`desktop_rebuild` its request type is uninhabited, so no filament request can be
+constructed. Cookie writes require the listener's Origin. There is no Node fallback.
+Rust keeps Node's entry fields and the `custom-` plus eight hex digit ID shape.
+The writer writes a new temporary file in the data directory, syncs it, renames
+it onto `custom_filaments.json`, then syncs the directory. An interrupted write
+leaves the previous published file readable. At writer startup, Rust removes
+regular `.custom-filaments-*` temporary files older than one hour and keeps
+recent temporary files. A directory-sync error after a successful live-store rename is
+logged; the write still succeeds because the entry is already published, so
+the response must not invite a duplicate retry. The live-format version is 1;
+regenerate its declaration with
+`python3 scripts/generate-filament-format.py`.
+
+`GET /filaments/catalog` combines the bundled colors and custom colors. Spoolman
+access is checked before connector lookup and again after the network read.
+Disabled access withholds Spoolman colors and the stored default connector.
+Rust refuses updates to a Node-valid store it cannot decode losslessly (for
+example, an isolated UTF-16 surrogate or nesting past 128 levels). POST and
+DELETE return a 400 problem without writing, preserving the original file bytes.
+Only a real JSON syntax failure uses Node's empty-store fallback. As a deliberate
+difference from Node, before POST replaces malformed bytes, Rust preserves an
+exact copy at the sibling `custom_filaments.json.corrupt-<UTC timestamp>`.
+The copy uses a temporary file, file fsync, rename and directory fsync before
+the fresh store is published. UTC timestamps include nanoseconds and use filesystem-safe digits
+and `T`, `Z`, `.` separators. A copy failure refuses the update and keeps the
+original store. Reads still return the empty store and do not create copies;
+corrupt copies are retained and are not part of temporary-file cleanup.
+Catalog reads still preserve escaped UTF-16 values using the same Node-compatible parser as
+`GET /filaments/custom`. For a store nested past 128 levels, both GET aliases
+keep today's 200 response: custom GET returns `{"filaments":[]}`; catalog GET
+returns the bundled colors and `custom_colors: []`. Neither GET changes the file.
+External requests use the existing bounded, checked Rust connector. Connector
+failures return a generic message so configuration and credentials stay private.
+
+Path-hints remains read-only here. Missing custom hints use the shipped rules;
+partial or corrupt documents refuse preparation instead of publishing changed
+Plan state. A valid replacement can be read again after recovery. GRE-1394 tracks
+the Rust publisher and its separate live-format ownership decision.

@@ -1,7 +1,7 @@
 import type { BuildHistoryPage, RestoreSnapshotRequest } from "@print-partner/rust-client";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { useNavigate, useOutletContext } from "react-router";
+import { Link, useNavigate, useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
 import { lostSend, newKey } from "../core/writes";
@@ -353,7 +353,10 @@ export function BuildHistory() {
           <OlderEntries query={query} table={table} />
         </>
       )}
-      empty={{ message: HISTORY_EMPTY }}
+      empty={{
+        message: HISTORY_EMPTY,
+        action: <Link to={`/builds/${id}/plan`} className="pp-link">Open Plan</Link>,
+      }}
     />
   );
 }

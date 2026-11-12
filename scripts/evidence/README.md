@@ -26,6 +26,7 @@ It prints each PNG path and the command to publish them at the end, and exits 1 
 | `--step NAME:BUILD` | Setup step before the shots, run in the order given. See below. |
 | `--module NAME` | Turn a Module on (`farm`, `orders`, `bambu` or `spoolman`) before the core starts. Repeat for more. All four start off, so `/farm/...` paths need `--module farm`. |
 | `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed. |
+| `--review-plan` | Open Review and accept before capturing each Plan shot. |
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
@@ -36,6 +37,7 @@ It prints each PNG path and the command to publish them at the end, and exits 1 
 | Step | What it does through the Rust API |
 | --- | --- |
 | `settle-reconciliation:BUILD` | Resolves every conflict on the Build's open draft with a `replace` decision (`PUT .../drafts/{draft}/reconciliation`). Does nothing without an open draft or conflicts. |
+| `duplicate-order:BUILD` | Assign an order to another Build in the disposable seed before startup, save that order to the target draft through the API, then settle reconciliation. Never accepts. Combine with `--module orders --review-plan --shot /builds/2/plan`. |
 | `snapshot:BUILD` | Accepts the Build's open draft. Without an open draft it opens one by saving the current header unchanged. Settles reconciliation first. Accept stores a pre-apply snapshot only when the Build has an Accepted revision whose Source rows the core can still read: no snapshot without an Accepted revision or its input set, with a missing Source row, or with `legacy:` rows. The step reads `snapshot.saved_before_accept` from the accept preview and fails with `Build N: Accept saves no snapshot (<core note>)` before Accept when it is false. |
 
 `--module` is not an API step: no Rust route writes tenant Module choices yet (Node owns `PATCH /settings/features`). It writes the `default` tenant's `feature_toggles` setting in the generated seed, the row that route and Rust's `/health` read, before the copy is made.
@@ -87,3 +89,17 @@ How (`scripts/evidence/publisher.py`, tests in `test_publisher.py`):
   - any fetch or push URL of `origin` (`git remote get-url [--push] --all origin`) is not exactly `https://github.com/Print-Partner/PrintPartner`, with or without `.git`. ssh and scp forms, userinfo, other spellings and other repositories are refused, so no accepted URL carries a token.
 - **A checked first publish.** A missing cache is cloned first (`git clone --quiet --no-checkout --filter=blob:none`) and checked the same way. A clone that fails or fails the check is removed.
 - **No output from git or the publisher.** Refusals name the cache path, never a URL. Any error while reading or parsing a remote counts as a refusal and is dropped, for example Python's `ValueError` for an NFKC-unsafe character in a host, which quotes the whole netloc. The publisher's stdout and stderr are captured. On success the harness prints only the evidence URLs it reports, matched against `https://github.com/Print-Partner/PrintPartner/...`. On failure it prints `publish failed (exit N)` and nothing else.
+
+## Empty-state audit
+
+`--empty-states` prepares only the generated synthetic seed: it archives the
+Builds, clears waiting checkoff links, clears the Farm log and send
+queue, and adds archived Build 1000 without history. Existing histories remain.
+The Builds shot selects Overdue to show the empty filter. Use both Modules:
+
+```sh
+xvfb-run -a scripts/evidence/run.sh --empty-states --module farm --module orders \
+  --shot /today --shot /builds --shot /builds/1000/history --shot /farm/log
+```
+
+See [empty-state actions](../../docs/product/empty-state-actions.md) for scope.

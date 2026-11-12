@@ -2,6 +2,9 @@ pub mod manifest_options;
 mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
+mod experiments;
+pub(crate) const SCHEMA_STEP: u64 = 48;
+pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
@@ -43,13 +46,7 @@ pub enum Failure {
     OutcomeUnknown,
 }
 
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{self:?}")
-    }
-}
-
-impl std::error::Error for Failure {}
+crate::impl_debug_error!(Failure);
 
 #[derive(Clone)]
 pub enum BuildCommand {
@@ -72,6 +69,10 @@ pub enum BuildCommand {
     Create {
         name: BuildName,
         base_source: Option<PositiveId>,
+    },
+    Duplicate {
+        build: PositiveId,
+        name: BuildName,
     },
     Touch {
         build: PositiveId,
@@ -125,6 +126,10 @@ pub enum BuildOutcome {
     },
     Touched {
         profile: Box<ProfileSummary>,
+    },
+    Duplicated(ExperimentCopy),
+    HasExperiments {
+        builds: Vec<ExperimentBuild>,
     },
     Deleted,
     MissingBuild,
@@ -426,6 +431,7 @@ fn mutation(
                 layers: layers(tx, tenant, build, cancelled)?,
             })
         }
+        BuildCommand::Duplicate { build, name } => experiments::duplicate(tx, tenant, *build, name),
         BuildCommand::Touch { build } => {
             let build = build.get() as i64;
             let now = auth::catalog_timestamp();
@@ -568,14 +574,19 @@ fn mutation(
             if !build_exists(tx, tenant, build)? {
                 return Ok(BuildOutcome::MissingBuild);
             }
+            let builds = experiments::children(tx, build)?;
+            if !builds.is_empty() {
+                return Ok(BuildOutcome::HasExperiments { builds });
+            }
             tx.pragma_update(None, "defer_foreign_keys", "ON")?;
             tx.execute(
-                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4)",
+                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4,?5)",
                 params![
                     tenant,
                     format!("production_setup:{build}"),
                     format!("role_filaments_{build}"),
-                    format!("feature_toggles:plan:{build}")
+                    format!("feature_toggles:plan:{build}"),
+                    format!("kit_manifest_{build}")
                 ],
             )?;
             ensure!(

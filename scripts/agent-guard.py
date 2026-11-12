@@ -16,6 +16,7 @@ invocation, it refuses rather than guessing.
 
 import argparse
 import html
+import importlib.util
 import itertools
 import json
 import os
@@ -140,8 +141,12 @@ VARIABLE_READS = {"get", "help", "list"}
 # automatic review. Outside the coordinator worktree, any command line that contains it in any case
 # or decodable encoding is refused, wherever it appears.
 MARKER_WORD = "pp-review-gate"
-MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or runs any command that names "
-          "pp-review-gate, in any case or encoding; report readiness to the coordinator instead.")
+# The coordinator's scorer record, which the sensitive-merge check trusts by comment author. Lanes post
+# as the same account, so the word gets the same protection as MARKER_WORD.
+SCORE_WORD = "pp-score"
+MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or pp-score records, or runs any "
+          "command that names pp-review-gate or pp-score, in any case or encoding; report readiness to the coordinator "
+          "instead.")
 # Shells whose -c script the guard classifies like a top-level command, and the long options they
 # accept before it. Any other option makes the script position unknown.
 SHELLS = {"sh", "bash", "zsh", "dash"}
@@ -206,6 +211,12 @@ ALLOWED_MUTATIONS = {"addComment", "addPullRequestReviewComment", "addPullReques
 GRAPHQL_TOKEN = re.compile(r'"""(?:\\"""|[^"]|"(?!""))*"""|"(?:\\.|[^"\\\n\r])*"|#[^\n\r]*|\.\.\.|[A-Za-z_]\w*|\S')
 STALE_INPUT = ("Run a gh api request that reads a file as a separate command; "
                "other commands could change the file or directory before gh reads it.")
+COMMENT_EDIT = ("Only the coordinator worktree edits or deletes PR comments: a score record must not change "
+                "after it is posted. Post a new comment instead.")
+COMMENT_ID = re.compile(REPO_PATH + r"(?:issues|pulls)/comments/\d+$")
+# GraphQL mutations that change or remove an existing comment.
+COMMENT_EDIT_MUTATIONS = {"updateIssueComment", "updatePullRequestReviewComment", "deleteIssueComment",
+                          "deletePullRequestReviewComment"}
 API_WRITE = ("Through gh api, agents may read and write PR or issue comments and review threads; "
              "other writes need the maintainer.")
 SAFE_PUSH_LONG = {"--atomic", "--dry-run", "--force-if-includes", "--ipv4", "--ipv6", "--no-atomic",
@@ -1038,7 +1049,7 @@ def json_unescape(text):
 
 
 def names_marker(text):
-    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD.
+    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD or SCORE_WORD.
 
     The decoders (JSON and GraphQL escapes, URL encoding, HTML entities) are applied repeatedly in
     every order, up to four layers deep, and the match ignores case.
@@ -1047,7 +1058,7 @@ def names_marker(text):
     for _ in range(4):
         frontier = [decoded for value in frontier for decode in (json_unescape, unquote_plus, html.unescape)
                     if (decoded := decode(value)) not in forms and not forms.add(decoded)]
-    return any(MARKER_WORD in form.casefold() for form in forms)
+    return any(word in form.casefold() for form in forms for word in (MARKER_WORD, SCORE_WORD))
 
 
 def marker_reason(texts, files, cwd, alone, ansi_c=False):
@@ -1168,10 +1179,14 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     if args[:2] in COMMENT_COMMANDS:
         if marker and not coordinator_worktree(cwd):
             return MARKER
-        return marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
+        reason = marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
+        if reason:
+            return reason
+        edits = any(arg.split("=", 1)[0] in ("--edit-last", "--delete-last") for arg in args[2:])
+        return COMMENT_EDIT if edits and not coordinator_worktree(cwd) else None
     if args[:1] != ["api"]:
         return None
-    method, endpoint, fields, body, i = None, None, [], None, 1
+    method, endpoint, fields, body, headers, i = None, None, [], None, [], 1
     while i < len(args):
         arg = args[i]
         i += 1
@@ -1206,11 +1221,16 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
             fields.append((name, value))
         elif name == "--input":
             body = value
+        elif name in ("-H", "--header"):
+            headers.append(value)
     if endpoint is None:
         return None
     # gh sends POST when the request has fields or a body.
     method = (method or ("POST" if fields or body is not None else "GET")).upper()
+    override = any(header.partition(":")[0].strip().lower() == "x-http-method-override" for header in headers)
     if method in ("GET", "HEAD"):
+        if override and COMMENT_ID.search(urlsplit(endpoint).path.strip("/")) and not coordinator_worktree(cwd):
+            return COMMENT_EDIT
         return None
     if marker and not coordinator_worktree(cwd):
         return MARKER
@@ -1243,11 +1263,16 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     if graphql:
         for document in graphql_documents(fields, body, cwd):
             names = mutation_fields(document)
+            if names and COMMENT_EDIT_MUTATIONS & set(names) and not coordinator_worktree(cwd):
+                return COMMENT_EDIT
             if names is None or set(names) - ALLOWED_MUTATIONS:
                 return API_WRITE
         return None
     if method == "POST" and REVIEW_WRITES.search(path):
         return None if review_events(fields, body, cwd) <= {"", "COMMENT"} else API_WRITE
+    # Any method but GET or HEAD on an existing comment, including POST and an implicit POST, edits it.
+    if COMMENT_ID.search(path) and not coordinator_worktree(cwd):
+        return COMMENT_EDIT
     if method in ("POST", "PATCH") and COMMENT_WRITES.search(path):
         return None
     return API_WRITE
@@ -1256,7 +1281,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
 def coordinator_merge(args, cwd):
     """Whether args is the one merge the coordinator may run.
 
-    The form is gh pr merge [<number>] --squash --match-head-commit <full sha>, with no other
+    The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other
     option, run from the coordinator worktree (see coordinator_worktree).
     """
     if args[:3] != ["gh", "pr", "merge"] or cwd is None or os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
@@ -1274,7 +1299,136 @@ def coordinator_merge(args, cwd):
             number = arg
         else:
             return False
-    return bool(squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+    return bool(number and squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+
+
+FILE_LIST_CAP = 3000
+
+
+def changed_paths(pages, changed_files):
+    """Return every path a PR touches, both sides of each rename; refuse incomplete lists."""
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise ValueError("missing PR file pages")
+    files = [entry for page in pages for entry in page]
+    # The REST file list stops at 3000 entries, so a list of that size may be incomplete.
+    if type(changed_files) is int and changed_files >= FILE_LIST_CAP:
+        raise ValueError("PR file list at the API cap")
+    if not files or type(changed_files) is not int or changed_files != len(files):
+        raise ValueError("missing or incomplete PR files")
+    paths = []
+    for entry in files:
+        paths.append(entry["filename"])
+        if entry["status"] == "renamed":
+            paths.append(entry["previous_filename"])
+    if any(not isinstance(path, str) or not path for path in paths):
+        raise ValueError("missing PR file path")
+    return paths
+
+
+def trusted_comment_bodies(pages, authors, head):
+    """Return (bodies, edited) for PR comments whose author is in authors; refuse malformed pages.
+
+    edited says a trusted comment holding a pp-score record for head was changed after it was
+    posted (updated_at differs from created_at). Records for older heads never count, so their
+    edits do not matter. A deleted record cannot be seen here (GRE-1408)."""
+    if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+        raise ValueError("missing PR comment pages")
+    bodies, edited = [], False
+    for page in pages:
+        for comment in page:
+            login, body = comment["user"]["login"], comment["body"]
+            if not isinstance(login, str) or not login or not isinstance(body, str):
+                raise ValueError("missing comment author or body")
+            if login not in authors:
+                continue
+            if any(line.startswith(f"pp-score head={head} ") for line in body.splitlines()):
+                created, updated = comment["created_at"], comment["updated_at"]
+                if not isinstance(created, str) or not created or not isinstance(updated, str) or not updated:
+                    raise ValueError("missing comment timestamps")
+                edited = edited or created != updated
+            bodies.append(body)
+    return bodies, edited
+
+
+def head_moved(gh_json, number, sha):
+    """Refuse when the PR head changed while the guard read its files and comments."""
+    if gh_json("pr", "view", number, "--json", "headRefOid")["headRefOid"] != sha:
+        return "Merge refused: the PR head changed while the guard checked it."
+    return None
+
+
+# Total time the coordinator merge check may spend in gh. It stays below the 60-second timeout of
+# the documented coordinator hook (agent-workflow.md): Claude Code lets the tool call run when a
+# hook times out, so the check must refuse on its own before that happens.
+GH_BUDGET_SECONDS = 45
+
+
+def coordinator_merge_reason(args, cwd):
+    """Check files and trusted score records for an already validated merge command."""
+    try:
+        # Adapters load this file by path, without putting scripts on sys.path.
+        spec = importlib.util.spec_from_file_location("merge_class", Path(__file__).with_name("merge_class.py"))
+        merge_class = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(merge_class)
+        config = json.loads(merge_class.CLASSES.read_text(encoding="utf-8"))
+        for key in ("owner", "sensitive", "scorer_authors", "vendors"):
+            if not isinstance(config[key], list) or any(not isinstance(v, str) or not v for v in config[key]):
+                raise ValueError("invalid merge class configuration")
+        sha = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--match-head-commit=")), None)
+        if sha is None:
+            sha = args[args.index("--match-head-commit") + 1]
+        operands = args[3:].copy()
+        if "--match-head-commit" in operands:
+            index = operands.index("--match-head-commit")
+            del operands[index:index + 2]
+        number = next(arg for arg in operands if re.fullmatch(r"[1-9][0-9]*", arg))
+
+        deadline = time.monotonic() + GH_BUDGET_SECONDS
+
+        def gh_json(*arguments):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(["gh", *arguments], GH_BUDGET_SECONDS)
+            result = subprocess.run(["gh", *arguments], cwd=cwd, capture_output=True,
+                                    text=True, timeout=remaining, check=True)
+            return json.loads(result.stdout)
+
+        pr = gh_json("pr", "view", number, "--json", "headRefOid,changedFiles")
+        if pr["headRefOid"] != sha:
+            raise ValueError("stale PR head")
+        # The REST file list carries previous_filename; GraphQL `files` gives only a rename's new path.
+        paths = changed_paths(gh_json("api", f"repos/{{owner}}/{{repo}}/pulls/{number}/files", "--paginate", "--slurp"),
+                              pr["changedFiles"])
+        classes = {key: [merge_class.glob_regex(p) for p in config[key]] for key in ("owner", "sensitive")}
+        kind = merge_class.classify(paths, classes)
+        if kind == "owner":
+            return "The owner merges this PR: it changes owner-class paths."
+        if kind == "lane":
+            return head_moved(gh_json, number, sha)
+        # The coordinator posts from the owner's account. A dedicated bot
+        # identity is the follow-up; the login alone cannot identify seats.
+        authors = config["scorer_authors"]
+        if not authors:
+            return "Sensitive PR refused: the owner must configure scorer_authors first."
+        pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
+        bodies, edited = trusted_comment_bodies(pages, authors, sha)
+        if edited:
+            return "Sensitive PR refused: a pp-score comment was edited after it was posted; edited records never count."
+        record_pattern = merge_class.score_pattern(config["vendors"])
+        # author= records the head branch's author vendor, supplied by the
+        # coordinator. Never infer a model vendor from the GitHub login.
+        author_vendors = set()
+        for body in bodies:
+            for line in body.splitlines():
+                match = record_pattern.fullmatch(line)
+                if match and match.group(1) == sha:
+                    author_vendors.add(match.group(5))
+        author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None
+        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"], config["vendors"]):
+            return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
+        return head_moved(gh_json, number, sha)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
+        return "Cannot verify merge class or scores; merge refused (missing or unreadable data)."
 
 
 def coordinator_worktree(cwd):
@@ -1868,7 +2022,7 @@ def check_line(command, cwd, outer, state):
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
-            return None
+            return coordinator_merge_reason(parsed[0][0], cwd)
         commands = resolved_commands(parsed, cwd)
         assigned = [word for _, _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.

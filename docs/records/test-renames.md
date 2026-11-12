@@ -1,23 +1,25 @@
 # Test file renames
 
 Ticket-named Rust test files, renamed to the behaviour they prove (GRE-1323, plan W1.3).
-Each file keeps its ticket id in its first doc comment, except the server file, which never
-carried one. Test function names do not change, so `-E 'test(...)'` filters still match. The
-file stem is the test binary name, so `--test <name>` and `binary(...)` filters must use the
-new name. Linear acceptance items quote old commands; they are not edited.
+Each file keeps its ticket id in its first doc comment, or in its table row when the old
+name carried no id. Test function names do not change, so `-E 'test(...)'` filters still
+match. The file stem is the test binary name for top-level tests, so `--test <name>` and
+`binary(...)` filters must use the new name. A file that a test binary includes as a module
+gets the new module name, so the full test path gains the new prefix. Linear acceptance items
+quote old commands; they are not edited.
 
-| Old file | New file | Ticket |
-| --- | --- | --- |
-| `rust/crates/pp-api-types/tests/ticket_t_63_contracts.rs` | `rust/crates/pp-api-types/tests/node_boundary_contracts.rs` | T-63 |
-| `rust/crates/pp-api-types/tests/ticket_t_9_semantics.rs` | `rust/crates/pp-api-types/tests/schema_semantics.rs` | T-9 |
-| `rust/crates/pp-desktop/tests/ticket_t_29_tray.rs` | `rust/crates/pp-desktop/tests/tray_status_badge.rs` | T-29 |
-| `rust/crates/pp-desktop/tests/ticket_t_31_autostart.rs` | `rust/crates/pp-desktop/tests/launch_agent.rs` | GRE-369 (T-31) |
-| `rust/crates/pp-net/tests/ticket_t_22_stream.rs` | `rust/crates/pp-net/tests/streamed_replies.rs` | GRE-1044 (T-22) |
-| `rust/crates/pp-perf/tests/ticket_t_53.rs` | `rust/crates/pp-perf/tests/perf_record_gate.rs` | GRE-388 (T-53) |
-| `rust/crates/pp-perf/tests/ticket_t_53_capture.rs` | `rust/crates/pp-perf/tests/perf_capture.rs` | GRE-388 (T-53) |
-| `rust/crates/pp-server/tests/slice0_mount.rs` | `rust/crates/pp-server/tests/server_binary_routes.rs` | none in file |
-| `rust/crates/pp-services/tests/ticket_t_44_discovery.rs` | `rust/crates/pp-services/tests/native_discovery.rs` | GRE-456 (T-44) |
-| `rust/crates/pp-services/tests/ticket_t_58_kit.rs` | `rust/crates/pp-services/tests/kit_bundle_golden.rs` | GRE-425 (T-58) |
-| `rust/crates/pp-services/tests/ticket_t_59_sync.rs` | `rust/crates/pp-services/tests/github_sync_golden.rs` | GRE-429 (T-59) |
-| `rust/crates/pp-services/tests/ticket_t_60_profile_sync.rs` | `rust/crates/pp-services/tests/profile_sync_golden.rs` | T-60 |
-| `rust/crates/pp-services/tests/ticket_t_62_mcp_domain.rs` | `rust/crates/pp-services/tests/mcp_dispatch_parity.rs` | GRE-441 (T-62) |
+Rename PRs add rows only to their crate's file. Leave other crate pages unchanged;
+update this index only when a crate gets its first rename record. Keep each existing
+row verbatim when moving records.
+
+| Crate | Rename records |
+| --- | --- |
+| `pp-api` | [pp-api](test-renames/pp-api.md) |
+| `pp-api-types` | [pp-api-types](test-renames/pp-api-types.md) |
+| `pp-core` | [pp-core](test-renames/pp-core.md) |
+| `pp-desktop` | [pp-desktop](test-renames/pp-desktop.md) |
+| `pp-net` | [pp-net](test-renames/pp-net.md) |
+| `pp-perf` | [pp-perf](test-renames/pp-perf.md) |
+| `pp-server` | [pp-server](test-renames/pp-server.md) |
+| `pp-services` | [pp-services](test-renames/pp-services.md) |
+| `pp-storage` | [pp-storage](test-renames/pp-storage.md) |

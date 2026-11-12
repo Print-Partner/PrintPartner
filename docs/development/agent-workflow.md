@@ -195,7 +195,7 @@ The guard allows exactly one merge form, and only when `PP_COORDINATOR_WORKTREE`
 gh pr merge <number> --squash --match-head-commit <40-character sha>
 ```
 
-The command must stand alone: no other options such as `--admin`, `--auto`, or `-R`; no wrapper, environment assignment, `cd`, pipeline, or substitution; no `GIT_DIR` or `GIT_WORK_TREE` in the guard's environment; and a literal lowercase SHA. Every other merge, including the same command from a lane worktree, is refused. The coordinator runs it only after the [merge gate](definition-of-done.md#merge-gate) passes. In the coordinator worktree, the Claude Code hook settings become:
+The command must stand alone: no other options such as `--admin`, `--auto`, or `-R`; no wrapper, environment assignment, `cd`, pipeline, or substitution; no `GIT_DIR` or `GIT_WORK_TREE` in the guard's environment; and a literal lowercase SHA. Every other merge, including the same command from a lane worktree, is refused. The coordinator runs it only after the [merge gate](definition-of-done.md#merge-gate) passes. Before it allows that command, the guard reads the PR's changed files (both paths of a rename) and its comments with `gh`, refuses owner-class PRs, and for a sensitive PR requires two qualifying `pp-score` records on the exact head (see [Merge gate](definition-of-done.md#merge-gate)). Those `gh` calls share a 45-second budget, and running out refuses the merge. The coordinator hook below therefore has a 60-second timeout: Claude Code lets a tool call run when its hook times out, so the timeout must outlast the budget. In the coordinator worktree, the Claude Code hook settings become:
 
 ```json
 {
@@ -204,7 +204,7 @@ The command must stand alone: no other options such as `--admin`, `--auto`, or `
       {
         "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
-          {"type": "command", "command": "PP_COORDINATOR_WORKTREE=/persist/coordinator/PrintPartner python3 -B \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard.py", "timeout": 10}
+          {"type": "command", "command": "PP_COORDINATOR_WORKTREE=/persist/coordinator/PrintPartner python3 -B \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard.py", "timeout": 60}
         ]
       }
     ]

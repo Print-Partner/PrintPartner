@@ -1871,7 +1871,7 @@ fn ticket_t_7_migrations_preserves_refused_inputs() {
         "Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to",
     );
     let newer = if cfg!(feature = "desktop_rebuild") {
-        "48"
+        "49"
     } else {
         "40"
     };
@@ -3145,6 +3145,8 @@ fn omit_source_schema(graph: &mut SchemaGraph) {
                     || name == "plan_snapshot_headers"
                     || name == "print_link_grams"
                     || name == "sqlite_autoindex_print_link_grams_1"
+                    || name == "build_experiments"
+                    || name == "idx_build_experiments_parent"
                     || name == "printer_tls_pins"
                     || name == "sqlite_autoindex_printer_tls_pins_1"
                     || name == "sqlite_autoindex_plan_draft_header_receipts_1"

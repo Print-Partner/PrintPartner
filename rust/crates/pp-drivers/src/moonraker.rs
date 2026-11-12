@@ -1324,10 +1324,9 @@ mod tests {
             .filter(|p| p.task.as_ref().is_some_and(|task| !task.is_finished()))
             .count()
     }
-    async fn frozen(printer: &RecordedPrinter) -> bool {
-        let before = printer.calls();
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        printer.calls() == before
+    // Keep task state after removal; server-side recordings can lag cancellation.
+    fn worker_task(watchers: &Watchers, id: &str) -> tokio::task::AbortHandle {
+        watchers.hosts[id].task.as_ref().unwrap().abort_handle()
     }
     async fn polled(printer: &RecordedPrinter) {
         let before = printer.calls();
@@ -1362,6 +1361,8 @@ mod tests {
             watchers.replace(hosts.clone()).await.unwrap();
         }
         assert_eq!(live_workers(&watchers), 2, "one worker per enabled host");
+        let a_task = worker_task(&watchers, "a");
+        let b_task = worker_task(&watchers, "b");
         polled(&a).await;
         polled(&b).await;
         assert_eq!(c.calls(), 0, "a disabled host has no worker");
@@ -1376,8 +1377,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(live_workers(&watchers), 2);
-        assert!(frozen(&b).await, "the replaced worker kept polling");
+        assert!(b_task.is_finished(), "the replaced worker was not joined");
         polled(&moved).await;
+        let moved_task = worker_task(&watchers, "b");
 
         // Removing a cancels and joins its worker.
         watchers
@@ -1385,13 +1387,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(live_workers(&watchers), 1);
-        assert!(frozen(&a).await, "the removed worker kept polling");
+        assert!(a_task.is_finished(), "the removed worker was not joined");
         assert_eq!(watchers.hosts.len(), 1);
 
         // Shutdown joins the last worker.
         watchers.stop().await;
         assert!(watchers.hosts.is_empty());
-        assert!(frozen(&moved).await);
+        assert!(moved_task.is_finished(), "the last worker was not joined");
         for printer in [&a, &b, &moved] {
             sent_only_status_queries(printer);
         }

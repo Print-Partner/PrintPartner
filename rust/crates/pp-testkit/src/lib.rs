@@ -18,6 +18,7 @@
 //! ```
 
 pub mod bambu;
+pub mod build_experiments;
 pub mod moonraker;
 pub mod node_path;
 pub mod node_schema;
@@ -381,6 +382,16 @@ impl Installation {
         )
     }
 
+    /// Copies the required-unit database with its recorded authenticated session.
+    pub fn with_authenticated_fixture() -> io::Result<Self> {
+        let installation = Self::create(Fixture::Empty)?;
+        fs::write(
+            installation.database_path(),
+            include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db"),
+        )?;
+        Ok(installation)
+    }
+
     /// Creates the installation in a new directory under `parent`, for tests
     /// that need a specific filesystem. Nothing outside the new directory is
     /// written.
@@ -519,6 +530,13 @@ fn create_new(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options.open(path)
+}
+
+/// A bound loopback listener and its HTTP origin for disposable HTTP fixtures.
+pub async fn http_listener() -> std::io::Result<(tokio::net::TcpListener, String)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    Ok((listener, origin))
 }
 
 #[cfg(test)]

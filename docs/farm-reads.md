@@ -110,7 +110,7 @@ read as cleared. Otherwise it is
   fail those checks are left out, never guessed; `unit_count` and
   `resolved_unit_count` still count the stored lists. These are what
   `POST /printer-checkoff/verify-batch` decides, so a client can build a burst
-  and show what it will mark ([Checkoff bursts](desktop-rebuild.md#checkoff-bursts-gre-1090)).
+  and show what it will mark ([Checkoff bursts](records/d19-publication-client.md#checkoff-bursts-gre-1090)).
 - `UnmatchedPrint`: open prints only (not claimed, not dismissed) that no
   watching, awaiting or verified result matches by integration and
   case-insensitive basename, as Node's `filterLinkedUnattributedPrints`

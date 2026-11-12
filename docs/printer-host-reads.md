@@ -34,7 +34,7 @@ Uploads go through the send queue's worker, which calls each driver's `upload_fi
 
 ## Streamed downloads and camera views
 
-With `profile_id`, `files/content` also captures the file for the print-file assignment route and returns an `X-PrintPartner-Snapshot` token ([Print-file assignment routes](desktop-rebuild.md#print-file-assignment-routes-gre-1220-gre-1255-gre-1256)).
+With `profile_id`, `files/content` also captures the file for the print-file assignment route and returns an `X-PrintPartner-Snapshot` token ([Print-file assignment routes](records/d19-publication-client.md#print-file-assignment-routes-gre-1220-gre-1255-gre-1256)).
 
 `files/content` and `cameras/view` stream the printer's reply as Node's `sendUpstreamResponse` does. A 2xx reply streams through with its `Content-Type`, `Content-Length` and `Cache-Control: private, no-store` (the gateway then sets `no-store` on every admitted reply). Unlike Node, both add `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`, `files/content` adds `Content-Disposition: attachment`, and `cameras/view` passes only `image/jpeg`, `image/png`, `image/webp`, `image/gif` and `multipart/x-mixed-replace`, sending any other type as `application/octet-stream`. A printer can serve a listed file or a same-origin camera URL as HTML or SVG, and these replies come from Print Partner's own origin, so this keeps such a reply from running as a page of the app. The web client reads `files/content` with `fetch` and shows `cameras/view` in an `<img>`, which these headers do not change. A 404 from the printer answers 404 `Printer resource not found`; any other status answers 502 `Printer host returned HTTP <status>`. Neither reads the printer's body. A failed driver request answers 502 with its message, as the other routes do.
 
@@ -65,3 +65,19 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
 ```
 
 The runtime test (`pp-core` `printer_host::ticket_t_21_ticket_t_22_*`) starts the Rust-only launcher on a disposable data directory against a loopback Moonraker and PrusaLink that replay `fixtures/drivers/moonraker/driver/routes.json` and `fixtures/drivers/prusalink/driver/routes.json`. It checks that each route answers 401 without a session, that browse and cameras equal the Node adapters' results in `node-oracle.json` and `node-oracle-reads.json`, that the connection tests succeed, that a listed print file and camera view from each printer stream through byte for byte with their length, that unlisted, cross-origin and disabled cameras, unlisted files and `profile_id` requests are refused, that every request the printers saw was a GET with no upload or print path, and that Checkoff, queue, job and settings rows are unchanged.
+
+## First-run probe
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, authenticated
+`POST /api/v2/printers/probe` accepts `{ "kind": "moonraker", "address": "http://printer.local" }`.
+The generated client calls it `probePrinter`. Kind may also be `prusalink`;
+other kinds return an unsupported result without connecting. The response has
+`reachable`, nullable `kind`, `capabilities`, `credentials_needed` and `reason`.
+A probe makes one unauthenticated GET through the existing driver and checked
+network guard. It accepts no credentials, saves nothing and never sends a print.
+The overall deadline is eight seconds, with one probe at a time and ten per
+minute; busy refusals do not consume that quota. Invalid request bodies return
+an `invalid_printer_probe` problem. Reasons contain neither the address nor upstream reply text. A 401 or
+403 reports that credentials are needed. Capability names come from recognized
+protocol information; unreported capabilities stay absent. Saving is a separate,
+explicit action. LAN discovery and its recorded announcements remain GRE-1370.

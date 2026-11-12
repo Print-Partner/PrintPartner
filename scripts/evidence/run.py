@@ -27,7 +27,7 @@ from publisher import EVIDENCE_BIN
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-STEP_NAMES = ("settle-reconciliation", "snapshot")
+STEP_NAMES = ("settle-reconciliation", "snapshot", "duplicate-order")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
 HARNESS_DIR = ROOT / "rust/target/evidence-harness"
@@ -239,6 +239,9 @@ def parse_args(argv):
     parser.add_argument("--module", choices=MODULES, action="append", default=[],
                         help="turn this Module on in the seed before start; repeat for more")
     parser.add_argument("--out", type=Path, help="directory for the PNGs (default: a new temporary directory)")
+    parser.add_argument("--empty-states", action="store_true",
+                        help="prepare empty Today, History, Farm log and overdue Builds on synthetic data")
+    parser.add_argument("--review-plan", action="store_true", help="open Review and accept on Plan shots")
     parser.add_argument("--full-page", action="store_true", help="capture the whole scrolled page")
     parser.add_argument("--rebuild", action="store_true", help="build even if the checkout is unchanged")
     parser.add_argument("--display", nargs="?", const=os.environ.get("EVIDENCE_DISPLAY", ":99"),
@@ -274,6 +277,40 @@ def turn_on_modules(seed, modules):
     say(f"turned on in the seed: {', '.join(modules)}")
 
 
+def prepare_empty_states(seed):
+    """Only the harness-generated seed: no runtime writes or real library access."""
+    if not (seed / "SYNTHETIC-DATASET.json").is_file():
+        raise SystemExit("empty states require a synthetic seed")
+    with sqlite3.connect(seed / "print-partner.db") as db:
+        # Keep the existing histories intact. An archived, newly seeded Build has
+        # no history and contributes no ranked task. The seed has no due dates.
+        db.execute("UPDATE build_profiles SET archived_at='2026-11-01T00:00:00Z'")
+        db.execute("INSERT INTO build_profiles(id,name,archived_at) VALUES(1000,?,?)",
+                   ("Synthetic empty Build", "2026-11-01T00:00:00Z"))
+        db.execute("DELETE FROM app_settings WHERE key IN "
+                   "('printer.checkoff_links','printer.farm_log','printer.send_queue')")
+    say("prepared synthetic empty states (History uses Build 1000)")
+
+
+def seed_order_holder(seed, steps):
+    """Gives duplicate-order captures a holder in the disposable seed before startup."""
+    for step in steps:
+        if step["name"] != "duplicate-order":
+            continue
+        with sqlite3.connect(seed / "print-partner.db") as db:
+            holder = db.execute(
+                "SELECT id FROM build_profiles WHERE archived_at IS NULL AND id <> ? ORDER BY id LIMIT 1",
+                (step["arg"],),
+            ).fetchone()
+            if holder is None:
+                raise RuntimeError("no other synthetic Build for an order holder")
+            db.execute("UPDATE build_profiles SET order_number=? WHERE id=?",
+                       (f"EVIDENCE-ORDER-{step['arg']}", holder[0]))
+        db.close()
+    if any(step["name"] == "duplicate-order" for step in steps):
+        say("prepared an order holder in the disposable seed")
+
+
 def display_geometry(name):
     out = subprocess.run(["xdpyinfo", "-display", name], check=True, capture_output=True, text=True).stdout
     width, height = re.search(r"dimensions:\s+(\d+)x(\d+)", out).groups()
@@ -282,7 +319,7 @@ def display_geometry(name):
 
 def capture(args, origin, ui_origin, credential, out_dir, node, browser_tmp):
     config = {"root": str(ROOT), "coreOrigin": origin, "uiOrigin": ui_origin, "shots": [{"path": path, "file": shot_name(path)} for path in args.shot],
-              "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
+              "emptyStates": args.empty_states, "reviewPlan": args.review_plan, "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
     if args.display:
         width, height = display_geometry(args.display)
         config["display"] = {"name": args.display, "width": width, "height": height, "evidenceBin": EVIDENCE_BIN}
@@ -319,6 +356,9 @@ def session(args, work, out_dir, node, binary):
         run("npm", "--prefix", "web", "run", "--silent", "fixture:synthetic", "--", "--seed", args.seed, seed,
             stdout=subprocess.DEVNULL)
         turn_on_modules(seed, args.module)
+        seed_order_holder(seed, args.step)
+        if args.empty_states:
+            prepare_empty_states(seed)
         # verify.py copies the seed into its own temporary data directory under launch_tmp,
         # adds the Rust ownership marker, and removes the copy when it stops.
         env = dict(os.environ, PP_DESKTOP_REBUILD="1", TMPDIR=str(launch_tmp))

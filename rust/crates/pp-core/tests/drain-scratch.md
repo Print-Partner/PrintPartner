@@ -20,7 +20,7 @@ For `cargo test`, outer libtest parallelism also requires `--test-threads=1`.
 Run these commands from `rust`.
 
 ```sh
-cargo test -p pp-core --test ticket_t_3_drain -- --test-threads=1
-cargo nextest run -p pp-core --test ticket_t_3_drain
-cargo nextest run -P pp-local-linux -p pp-core --test ticket_t_3_drain
+cargo test -p pp-core --test process_group_drain -- --test-threads=1
+cargo nextest run -p pp-core --test process_group_drain
+cargo nextest run -P pp-local-linux -p pp-core --test process_group_drain
 ```

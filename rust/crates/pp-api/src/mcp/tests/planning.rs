@@ -21,7 +21,38 @@ async fn mcp_planning_replays_node_text_and_confirmation_identity() {
         "../../../../../../fixtures/parity/mcp-proposals/build-planning/addon-brief.json"
     ))
     .unwrap();
-    super::draft_planning::replay(&server, &headers, &golden).await;
+    let mut ids = Vec::<(String, String)>::new();
+    for step in golden["steps"].as_array().unwrap() {
+        let request = &step["request"]["params"];
+        let mut arguments = request["arguments"].to_string();
+        for (placeholder, raw) in &ids {
+            arguments = arguments.replace(placeholder, raw);
+        }
+        let (mut text, is_error) = call(
+            &server,
+            &headers,
+            request["name"].as_str().unwrap(),
+            serde_json::from_str(&arguments).unwrap(),
+        )
+        .await;
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        if let Some(id) = parsed["action"]["id"].as_str() {
+            ids.push((format!("<action-id-{}>", ids.len() + 1), id.into()));
+        }
+        for (placeholder, raw) in &ids {
+            text = text.replace(raw, placeholder);
+        }
+        text = text.replace(
+            &server._directory.to_string_lossy().to_string(),
+            "<data-dir>",
+        );
+        assert_eq!(
+            text,
+            step["response"]["content"][0]["text"].as_str().unwrap(),
+            "{request}"
+        );
+        assert_eq!(is_error, step["response"]["isError"] == true, "{request}");
+    }
     let (pending, failed) = call(&server, &headers, "list_pending_actions", json!({})).await;
     assert!(!failed);
     assert_eq!(

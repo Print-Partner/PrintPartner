@@ -4,65 +4,6 @@ use super::*;
 const SEED: &str =
     include_str!("../../../../../../fixtures/parity/mcp-proposals/draft-planning/seed.sql");
 
-fn normalize_dates(value: &Value, text: &mut String) {
-    match value {
-        Value::String(value)
-            if time::OffsetDateTime::parse(
-                value,
-                &time::format_description::well_known::Rfc3339,
-            )
-            .is_ok() =>
-        {
-            *text = text.replace(value, "<timestamp>")
-        }
-        Value::Array(values) => {
-            for value in values {
-                normalize_dates(value, text)
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                normalize_dates(value, text)
-            }
-        }
-        _ => {}
-    }
-}
-pub(super) async fn replay(server: &McpServer, headers: &[(String, String)], golden: &Value) {
-    let mut ids = Vec::<(String, String)>::new();
-    for step in golden["steps"].as_array().unwrap() {
-        let request = &step["request"]["params"];
-        let mut arguments = request["arguments"].to_string();
-        for (placeholder, raw) in &ids {
-            arguments = arguments.replace(placeholder, raw);
-        }
-        let (mut text, is_error) = call(
-            server,
-            headers,
-            request["name"].as_str().unwrap(),
-            serde_json::from_str(&arguments).unwrap(),
-        )
-        .await;
-        let parsed: Value = serde_json::from_str(&text).unwrap();
-        if let Some(id) = parsed["action"]["id"].as_str() {
-            ids.push((format!("<action-id-{}>", ids.len() + 1), id.into()));
-        }
-        for (placeholder, raw) in &ids {
-            text = text.replace(raw, placeholder);
-        }
-        text = text.replace(
-            &server._directory.to_string_lossy().to_string(),
-            "<data-dir>",
-        );
-        normalize_dates(&parsed, &mut text);
-        assert_eq!(
-            text,
-            step["response"]["content"][0]["text"].as_str().unwrap(),
-            "{request}"
-        );
-        assert_eq!(is_error, step["response"]["isError"] == true, "{request}");
-    }
-}
 async fn fixture() -> (McpServer, Vec<(String, String)>) {
     let server = McpServer::seeded(SEED).await;
     let root = server._directory.join("repos/4");
@@ -77,16 +18,115 @@ async fn fixture() -> (McpServer, Vec<(String, String)>) {
     let headers = session(&server, &format!("Bearer {}", server.create_key().await.1)).await;
     (server, headers)
 }
+async fn apply(server: &McpServer, headers: &[(String, String)], tool: &str, args: Value) -> Value {
+    let id = propose(server, headers, tool, args).await;
+    let (text, failed) = call(server, headers, "confirm_apply", json!({"action_id":id})).await;
+    assert!(!failed, "{text}");
+    serde_json::from_str(&text).unwrap()
+}
+fn parts(result: &Value) -> Vec<(i64, Value, bool)> {
+    let parts = result["result"]["draft"]["parts"].as_array().unwrap();
+    parts
+        .iter()
+        .map(|p| {
+            (
+                p["id"].as_i64().unwrap(),
+                p["quantityOverride"].clone(),
+                p["included"] == true,
+            )
+        })
+        .collect()
+}
+// Acceptance is what a client observes: results, the drafts left behind, and no Accept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_draft_planning_replays_node_text() {
+async fn mcp_draft_planning_edits_drafts_and_roles_without_accepting() {
     let (server, headers) = fixture().await;
-    let golden: Value = serde_json::from_str(include_str!(
-        "../../../../../../fixtures/parity/mcp-proposals/draft-planning/lifecycle.json"
-    ))
-    .unwrap();
     let database = server._directory.join("print-partner.db");
     let before = pp_testkit::mcp_planning::state(&database).unwrap();
-    replay(&server, &headers, &golden).await;
+    let edited = apply(
+        &server,
+        &headers,
+        "propose_edit_plan_draft_parts",
+        json!({"plan_id":1,"draft_id":2,"parts":[{"part_id":4,"quantity_override":4},{"id":5,"included":true}]}),
+    )
+    .await;
+    assert_eq!(edited["result"]["edit_result"], "updated");
+    assert_eq!(
+        parts(&edited),
+        [
+            (4, json!(4), true),
+            (5, json!(1), true),
+            (6, json!(2), true)
+        ]
+    );
+    for assignment in [
+        json!({"role":" accent ","inventory_kind":"custom","color_hex":"#aA1122","substitution_confirmed":true}),
+        json!({"role":"primary","inventory_kind":"catalog","inventory_id":"abs-matte::black-pantone-7c","color_hex":"#C0AFA1","requested_name":"Black (Pantone 7C)","requested_brand":"ABS Matte"}),
+    ] {
+        let assigned = apply(
+            &server,
+            &headers,
+            "propose_assign_role_filament",
+            json!({"plan_id":1,"assignment":assignment}),
+        )
+        .await;
+        assert_eq!(assigned["ok"], true, "{assigned}");
+    }
+    let rebuilt = apply(
+        &server,
+        &headers,
+        "propose_rebuild_plan",
+        json!({"plan_id":3,"idempotency_key":"fixture-rebuild"}),
+    )
+    .await;
+    assert_eq!(
+        rebuilt["result"],
+        json!({"draft_id":3,"recompute":"created"})
+    );
+    let edited = apply(
+        &server,
+        &headers,
+        "propose_edit_plan_draft_parts",
+        json!({"plan_id":3,"draft_id":3,"parts":[{"part_id":7,"quantity_override":2}]}),
+    )
+    .await;
+    assert_eq!(
+        parts(&edited),
+        [(7, json!(2), true), (8, Value::Null, true)]
+    );
+    let id = propose(
+        &server,
+        &headers,
+        "propose_assign_role_filament",
+        json!({"plan_id":1,"assignment":{"role":"accent","inventory_kind":"catalog","inventory_id":"unknown","color_hex":"#123456"}}),
+    )
+    .await;
+    let (text, failed) = call(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+    assert!(failed, "{text}");
+    let (text, failed) = call(
+        &server,
+        &headers,
+        "dismiss_proposed_action",
+        json!({"action_id":id}),
+    )
+    .await;
+    assert!(!failed, "{text}");
+    for plan_id in [2, 999_999] {
+        for (tool, args) in [
+            ("propose_rebuild_plan", json!({"plan_id":plan_id})),
+            (
+                "propose_edit_plan_draft_parts",
+                json!({"plan_id":plan_id,"draft_id":2,"parts":[{"part_id":4,"included":false}]}),
+            ),
+            (
+                "propose_assign_role_filament",
+                json!({"plan_id":plan_id,"assignment":{"role":"x","inventory_kind":"custom","color_hex":"#123456","substitution_confirmed":true}}),
+            ),
+        ] {
+            let (text, failed) = call(&server, &headers, tool, args).await;
+            assert!(failed, "{tool} {plan_id}: {text}");
+        }
+    }
     let after = pp_testkit::mcp_planning::state(&database).unwrap();
     for table in [7, 8] {
         assert_eq!(before[table], after[table], "Accepted Plan history changed");

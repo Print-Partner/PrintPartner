@@ -11,16 +11,17 @@ export function createQueryClient(): QueryClient {
 }
 
 /**
- * A 401 from any read or write means the owner is signed out: open the sign-in screen,
- * which returns to this page afterwards. The two account screens handle their own
- * answers, such as a wrong password.
+ * A 401 from a read means the owner is signed out: open the sign-in screen, which returns
+ * to this page afterwards. A 401 from a write never navigates, so an unsaved edit stays on
+ * screen; the write's own status offers sign-in instead (`SignedOutNote`). Provisional
+ * (GRE-1429 review). The two account screens handle their own answers.
  */
 function useSignInOnUnauthorized(router: AppRouter) {
   useEffect(
     () =>
-      onUnauthorized(() => {
+      onUnauthorized(({ write }) => {
         const location = router.state.location;
-        if (isAuthPath(location.pathname)) return;
+        if (write || isAuthPath(location.pathname)) return;
         void router.navigate(signInFor(location), { replace: true });
       }),
     [router],

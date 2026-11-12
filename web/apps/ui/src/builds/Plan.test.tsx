@@ -356,6 +356,23 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(writes(fetchMock).some((w) => w.path.endsWith("/apply"))).toBe(false);
   });
 
+  it("keeps a typed header value on the page when its save answers 401", async () => {
+    const fetchMock = core({
+      write: (path) =>
+        path === "/api/v2/plans/2/drafts/header" ? json({ detail: "refused" }, 401) : undefined,
+    });
+    renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.keyDown(name, { key: "Enter" });
+    const link = await screen.findByRole("link", { name: "Sign in to save." });
+    expect(link.closest("p")?.textContent).toBe("You were signed out. Sign in to save.");
+    expect(link.getAttribute("href")).toBe("/login?next=%2Fbuilds%2F2%2Fplan");
+    // A write's 401 never navigates: the Plan and the typed value stay.
+    expect(field("Name").value).toBe("Bracket kit v3");
+    expect(writes(fetchMock)).toHaveLength(1);
+  });
+
   it("keeps a field being typed while an earlier field's save lands", async () => {
     let saved = draftHeader(1);
     let release = () => {};

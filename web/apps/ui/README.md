@@ -100,9 +100,12 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
   in `next`. `next` is used only when it is a same-origin path to a screen this UI
   routes (`src/auth/next.ts`); `//host`, full URLs and unknown paths open Today.
   The email is never filled in from the core.
-- **Signed out.** A 401 from any read or write opens `/login?next=<this page>`
-  (`App.tsx`). If `/auth/status` itself answers 401, the browser's link to the
-  core has ended, and the screen asks for a new sign-in link.
+- **Signed out.** A 401 from a read opens `/login?next=<this page>` (`App.tsx`).
+  A 401 from a write never navigates, so an unsaved edit stays on screen; the
+  Plan's save status says "You were signed out." with a "Sign in to save." link
+  (`src/auth/SignedOutNote.tsx`). Provisional. If `/auth/status` itself answers
+  401, the browser's link to the core has ended, and the screen asks for a new
+  sign-in link.
 - **Messages.** A wrong email or password, 20 attempts in a minute (429), and an
   unreachable core each have their own text, with no account detail. An
   unreachable core offers Try again.

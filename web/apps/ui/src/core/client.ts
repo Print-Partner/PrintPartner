@@ -48,13 +48,16 @@ const SAME_ORIGIN_PATH = /^\/(?![/\\])(?![\s\S]*[\t\r\n])/;
 /** True for a path on this page's own origin, such as `/builds/3`. */
 export const isSameOriginPath = (path: string) => SAME_ORIGIN_PATH.test(path);
 
-const unauthorized = new Set<() => void>();
+/** What a 401 answered: a read (GET or HEAD) or a write. */
+export type Unauthorized = { write: boolean };
+
+const unauthorized = new Set<(answer: Unauthorized) => void>();
 
 /**
  * Calls `listener` whenever the core answers 401, from any read or write, so the app can
  * open sign-in. Returns the function that stops the calls.
  */
-export function onUnauthorized(listener: () => void): () => void {
+export function onUnauthorized(listener: (answer: Unauthorized) => void): () => void {
   unauthorized.add(listener);
   return () => void unauthorized.delete(listener);
 }
@@ -67,7 +70,10 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
   }
   const response = await fetch(path, { ...init, credentials: "same-origin" });
   if (!response.ok) {
-    if (response.status === 401) for (const listener of unauthorized) listener();
+    if (response.status === 401) {
+      const write = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
+      for (const listener of unauthorized) listener({ write });
+    }
     const { detail, code, conflictingBuilds } = await problem(response);
     throw new CoreError(response.status, path, detail, code, conflictingBuilds);
   }

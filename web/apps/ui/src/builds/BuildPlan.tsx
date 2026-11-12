@@ -1,3 +1,4 @@
+import { SignedOutNote, signedOut } from "../auth/SignedOutNote";
 import type {
   AcceptDraftReceipt,
   DraftAcceptPreview,
@@ -163,7 +164,7 @@ function SaveStatus({ writes }: { writes: Writes }) {
           : "";
   return (
     <p role="status" className="pp-save-status" data-failed={failed ? "" : undefined}>
-      {text}
+      {failed && signedOut(failed) ? <SignedOutNote /> : text}
     </p>
   );
 }

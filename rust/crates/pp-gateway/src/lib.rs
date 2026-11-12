@@ -444,10 +444,9 @@ impl Gateway {
         };
         let observations = watchers.observations();
         let asset_policy = if rust_status.is_some() && ui == ServedUi::Replacement {
-            assets::Policy::replacement(
-                &origin,
-                replacement_assets.context("Replacement UI requires verified bytes")?,
-            )
+            assets::Policy::Replacement {
+                files: replacement_assets.context("Replacement UI requires verified bytes")?,
+            }
         } else {
             assets::Policy::Legacy
         };
@@ -1097,7 +1096,7 @@ async fn handle(
             &state.assets,
             relative,
             document && spa,
-            &state.asset_policy,
+            (&state.asset_policy, &expected_host),
             request.method(),
             request.headers(),
         )

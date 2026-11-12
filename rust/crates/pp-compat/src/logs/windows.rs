@@ -262,6 +262,15 @@ pub(super) fn rename(directory: &Directory, from: &str, to: &str) -> std::io::Re
     directory.entries.rename_replace(from, to)
 }
 
+#[cfg(feature = "desktop_rebuild")]
+pub(super) fn file_id(file: &File) -> std::io::Result<String> {
+    let info = information(file)?;
+    Ok(format!(
+        "{}:{}:{}",
+        info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+    ))
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{CurrentUser, SE_FILE_OBJECT, information, open};

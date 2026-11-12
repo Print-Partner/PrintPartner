@@ -5,6 +5,7 @@ pub mod production;
 pub mod admin;
 #[cfg(feature = "desktop_rebuild")]
 pub mod app_settings;
+pub mod filaments;
 
 pub mod archive;
 #[cfg(feature = "desktop_rebuild")]
@@ -41,6 +42,7 @@ pub mod plates;
 pub use pp_domain::printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::slicer_grams;
+mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
@@ -68,6 +70,14 @@ pub mod versions;
 #[cfg(feature = "desktop_rebuild")]
 pub mod working_drafts;
 mod writer_admission;
+
+#[cfg(feature = "desktop_rebuild")]
+use restore::recover as recover_restore;
+
+#[cfg(not(feature = "desktop_rebuild"))]
+fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
 
 use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -138,7 +148,9 @@ enum Envelope {
         reply: mpsc::Sender<Result<working_drafts::Outcome>>,
     },
     #[cfg(feature = "desktop_rebuild")]
-    WorkingDraftWrite { command: working_drafts::Write },
+    WorkingDraftWrite {
+        command: working_drafts::Write,
+    },
     #[cfg(feature = "desktop_rebuild")]
     BuildGraph {
         command: build_graph::Command,
@@ -152,8 +164,9 @@ enum Envelope {
     #[cfg(feature = "desktop_rebuild")]
     Features {
         command: features::Command,
-        reply: mpsc::Sender<Result<features::View>>,
+        reply: mpsc::Sender<Result<features::Reply>>,
     },
+    Filaments(filaments::Message),
     #[cfg(feature = "desktop_rebuild")]
     AppSettings {
         command: app_settings::Command,
@@ -647,11 +660,6 @@ impl WriterOwner {
             locked.abandon();
             return Err(error);
         }
-        #[cfg(feature = "desktop_rebuild")]
-        if let Err(error) = restore::recover(locked.path()) {
-            locked.abandon();
-            return Err(error);
-        }
         if let Err(error) = locked.preflight() {
             locked.abandon();
             return Err(error);
@@ -665,6 +673,12 @@ impl WriterOwner {
                 return Err(error);
             }
         };
+        // Recovery removes uploads and stages. Admit the live schema first so
+        // an older runtime cannot discard a newer installation's recovery copy.
+        if let Err(error) = recover_restore(lease.data_dir()) {
+            lease.abandon();
+            return Err(error);
+        }
         // Preserve one literal per line so the covers suppression applies only to that literal.
         #[rustfmt::skip]
         let directories = [
@@ -681,6 +695,7 @@ impl WriterOwner {
                 .with_context(|| format!("WriterOwner::open: create storage directory {name}"))?;
         }
         let (mut connection, ready) = schema::initialize(&path, version, seed_timestamp)?;
+        filaments::cleanup_temporary_files(lease.data_dir());
         jobs::recover(&mut connection)?;
         #[cfg(feature = "desktop_rebuild")]
         send_queue::recover(&mut connection)?;
@@ -828,6 +843,9 @@ impl WriterOwner {
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Features { command, reply } => {
                         let _ = reply.send(features::execute(&mut connection, command, admission));
+                    }
+                    Envelope::Filaments(message) => {
+                        filaments::dispatch(&mut connection, message, admission)
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::AppSettings { command, reply } => {

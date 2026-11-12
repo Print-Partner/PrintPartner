@@ -50,3 +50,31 @@ test("a missing or long snapshot note still refuses with one short line", async 
     assert.ok(error.message.length < 220, error.message);
   }
 });
+
+test("duplicate-order proposes a held order without accepting or changing the holder", async () => {
+  const calls = [];
+  const draft = { ...DRAFT, lifecycle_version: 1, base: REVISION.expected_base };
+  const api = async (method, path, body) => {
+    calls.push({ method, path, body });
+    if (path === "/api/v2/plans") return { profiles: [
+      { id: 2, order_number: "own" },
+      { id: 5, order_number: " OWN ", archived_at: null },
+      { id: 3, order_number: "archived", archived_at: "2026-11-01" },
+      { id: 4, order_number: "held", archived_at: null },
+    ] };
+    if (path === "/api/v2/plans/2/drafts/header") return method === "GET"
+      ? { build: { name: "Kit", order_number: "own", customer: null, due_date: null } }
+      : {};
+    if (path === "/api/v2/plans/2/drafts") return { drafts: [draft] };
+    if (path.endsWith("/68/header")) return { draft: { header_version: 3 } };
+    if (path.endsWith("/68")) return { draft, reconciliation: { kind: "ready" } };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  await STEPS["duplicate-order"](api, 2);
+  const writes = calls.filter(({ method }) => method !== "GET");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "/api/v2/plans/2/drafts/header");
+  assert.equal(writes[0].body.header.order_number, "held");
+  assert.deepEqual(writes[0].body.expected_draft, draft);
+  assert.equal(writes[0].body.expected_header_version, 3);
+});

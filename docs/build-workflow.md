@@ -199,3 +199,39 @@ result rather than a second local stock authority.
   `rebuild_workflow_routes_and_mcp_agree` mounts `read_router` and compares the
   HTTP workflow, the task feed entry and the MCP answer to each other, then
   checks 401 and 404 answers.
+
+## Experiments
+
+With `desktop_rebuild` compiled and `PP_DESKTOP_REBUILD=1` or `true`,
+`POST /api/v2/plans/{id}/duplicate` takes `{"name":"Alternative"}` and returns
+201 with `build_id`, `parent_build_id` and nullable `draft_id`. The unprefixed
+Rust route uses this same strict body and response, unlike Node's legacy route.
+A legacy `clear_checkoff` field is rejected with 400; `/api/v1` refuses duplication.
+The request cannot supply ancestry or order authority. Node keeps its existing
+duplicate route in the default runtime.
+
+The Rust writer copies the Source layers, special request, customer, due date,
+kit manifest, feature settings and role filament defaults in one immediate
+transaction. Accepted Plan choices and pinned inputs become an open draft on the new Build, with no
+Accepted predecessors. A Build without an Accepted revision yields no draft;
+its copied Source layers can be recomputed as usual. Open drafts on the parent
+are not copied. Experiments start active with no order number or Accepted Plan.
+They copy no printed progress, Required-unit tokens, Plates or printer history.
+Production setup is not copied; choose the experiment's printer and bed settings
+before arranging Plates. Role filament defaults remain available when recompute
+finds new Parts.
+The parent's immutable IDs, Accepted history and open drafts stay unchanged.
+An experiment can Accept its choices, but preview and Accept refuse an order
+number with `experiment_order_requires_promotion` until promotion is implemented.
+
+Deleting a Build with experiments returns 409 `build_has_experiments` with
+`builds: [{build_id, name}]`, ordered by ID, and writes nothing. Archived
+experiments still prevent parent deletion. Delete the experiments first to
+remove the parent. Delete also removes the Build's kit manifest and other
+per-Build settings. Archive keeps its existing rules and does not affect ancestry.
+This follows the coordinator call on GRE-1284 (2026-11-10).
+
+Promotion and its injected-failure rollback verification are tracked in
+[GRE-1389](https://linear.app/greetz/issue/GRE-1389/promote-an-experiment-and-retire-its-parent-atomically),
+which carries ORD-03 verbatim. It must transfer authority and retire the parent
+in one transaction, keeping the parent row and ancestry link.

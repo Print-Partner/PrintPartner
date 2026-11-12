@@ -34,6 +34,18 @@ pub async fn send_as(
     body: Vec<u8>,
     cookie: Option<&str>,
 ) -> (StatusCode, Value) {
+    send_with_headers(router, method, path, content_type, body, cookie, &[]).await
+}
+
+pub async fn send_with_headers(
+    router: &Router,
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+    cookie: Option<&str>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
@@ -41,6 +53,9 @@ pub async fn send_as(
         .header("origin", ORIGIN);
     if let Some(content_type) = content_type {
         request = request.header("content-type", content_type);
+    }
+    for (name, value) in headers {
+        request = request.header(*name, *value);
     }
     if let Some(cookie) = cookie {
         request = request.header("cookie", cookie);

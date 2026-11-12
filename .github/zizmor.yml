@@ -3,9 +3,6 @@ rules:
     ignore:
       # Linear sync runs trusted base/default-branch tooling for closed PRs.
       - linear-pr-sync.yml:4
-      # @droid mentions arrive as comments. droid-action ignores commenters
-      # without write access, and comment events check out the default branch.
-      - droid.yml:5
       # Marker comments and finished review runs only rerun the review-gate
       # job through the API. The job checks out nothing and passes no comment text to a shell.
       - review-gate-rerun.yml:11
@@ -13,7 +10,7 @@ rules:
       # The gate must run the base branch's logic, so a PR cannot edit its own
       # gate. It checks out nothing, runs no PR code, gets no secrets, and only
       # reads the API with actions, checks and pull-requests read permission.
-      - review-gate.yml:31
+      - review-gate.yml:29
   self-repository:
     ignore:
       # actionlint 1.7.12 rejects the replacement $/ syntax. These local workflows
@@ -25,5 +22,5 @@ rules:
       # chain-tip-gate.yml keeps its inline install: it checks out any ref, which may predate the action.
       - desktop-e2e.yml:45
       - desktop-webkit.yml:46
-      - rust-cross-os.yml:177
-      - rust-cross-os.yml:390
+      - rust-cross-os.yml:186
+      - rust-cross-os.yml:399

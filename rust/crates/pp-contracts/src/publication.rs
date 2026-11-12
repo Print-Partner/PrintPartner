@@ -56,6 +56,7 @@ pub enum Outcome {
     },
     NotFound,
     BuildArchived,
+    ExperimentOrderRequiresPromotion,
     NotOpen {
         state: ClosedDraftState,
     },

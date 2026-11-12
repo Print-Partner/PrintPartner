@@ -16,6 +16,7 @@ desktop_rebuild = [
     "dep:rmcp",
     "dep:serde_path_to_error",
     "axum/multipart",
+    "time/formatting",
 ]
 codegen = ["desktop_rebuild", "dep:schemars", "pp-storage/codegen"]
 
@@ -58,3 +59,7 @@ tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 hyper = { workspace = true, features = ["server"] }
 hyper-util.workspace = true
 pp-testkit = { path = "../pp-testkit" }
+
+[[test]]
+name = "printer_probe"
+required-features = ["desktop_rebuild"]

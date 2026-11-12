@@ -54,8 +54,7 @@ struct Server {
 impl Server {
     async fn start(directory: &Path, flag: Option<&str>) -> Self {
         let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (listener, origin) = pp_testkit::http_listener().await.unwrap();
         let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
         let settings = owner.app_settings_with_policy(policy()).unwrap();
         let router = settings_router(config, owner.accepted_reads().unwrap(), settings);
@@ -149,10 +148,19 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
     let replies = oracle["replies"].as_array().unwrap();
     assert_eq!(steps.len(), replies.len());
     let mut exact = 0;
+    let mut intended_differences = 0;
     for (index, (step, node)) in steps.iter().zip(replies).enumerate() {
         let context = format!("step {index}: {step}");
         let reply = server.send(step, &[COOKIE]).await;
-        assert_eq!(json!(reply.status), node["status"], "{context}");
+        // These four recorded Node TypeErrors are malformed requests in Rust.
+        let malformed_body = matches!(index, 11 | 12 | 31 | 50);
+        if malformed_body {
+            assert_eq!(node["status"], 500, "{context}");
+            assert_malformed(&reply);
+            intended_differences += 1;
+        } else {
+            assert_eq!(json!(reply.status), node["status"], "{context}");
+        }
         assert_eq!(
             reply.cache_control.as_deref(),
             Some("private, no-store"),
@@ -171,12 +179,14 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
         assert_eq!(reply.content_type.as_deref(), Some(PROBLEM), "{context}");
         // Rust answers its own problem text instead of Fastify's error code or
         // Node's TypeError; every other refusal keeps Node's `detail`.
-        if reply.status < 500 && !fastify_refusal {
+        if reply.status < 500 && !fastify_refusal && !malformed_body {
             let body = pp_api::problem::without_envelope(reply.json());
             assert_eq!(body, node["body"], "{context}");
             exact += 1;
         }
     }
+    assert_eq!(intended_differences, 4);
+    assert_eq!(steps.len() - intended_differences, 48);
     assert_eq!(exact, 43, "replies matched exactly");
     let saved = server.stored();
     assert_eq!(saved, replies.last().unwrap()["stored"]);
@@ -200,6 +210,35 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
             .send(&json!({"method": "GET", "path": path}), &[COOKIE])
             .await;
         assert_eq!((reply.status, reply.json()), (200, body), "{path}");
+    }
+    server.stop().await;
+}
+
+fn assert_malformed(reply: &Reply) {
+    assert_eq!(reply.status, 400);
+    assert_eq!(reply.content_type.as_deref(), Some(PROBLEM));
+    let body = reply.json();
+    assert_eq!(body["status"], 400);
+    assert_eq!(body["type"], "urn:print-partner:problem:malformed-request");
+    assert_eq!(body["detail"], "Request is invalid");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_routes_refuse_null_and_absent_bodies_without_writing() {
+    let (_directory, server) = seeded().await;
+    let before = server.stored();
+    for prefix in ["", "/api/v1"] {
+        for setting in ["date-format", "build-tracking", "spoolman-default"] {
+            let path = format!("{prefix}/settings/{setting}");
+            for step in [
+                json!({"method": "PUT", "path": path,
+                       "content_type": "application/json", "body": "null"}),
+                json!({"method": "PUT", "path": path}),
+            ] {
+                assert_malformed(&server.send(&step, &[COOKIE]).await);
+                assert_eq!(server.stored(), before, "{step}");
+            }
+        }
     }
     server.stop().await;
 }
@@ -272,5 +311,90 @@ async fn settings_routes_take_an_api_key_without_origin_and_answer_head() {
     let head = server.send(&head, &[("authorization", &bearer)]).await;
     assert_eq!(head.status, 200);
     assert!(head.body.is_empty());
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn secret_settings_match_node_bytes_redact_responses_and_restart() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/admin/secret-settings-cases.json"
+    ))
+    .unwrap();
+    let oracle: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/admin/secret-settings-oracle.json"
+    ))
+    .unwrap();
+    let (directory, mut server) = seeded().await;
+    server.keys = cases["keys"].clone();
+    for (index, (step, node)) in cases["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(oracle["replies"].as_array().unwrap())
+        .enumerate()
+    {
+        let reply = server.send(step, &[COOKIE]).await;
+        assert_eq!(
+            reply.status,
+            node["status"].as_u64().unwrap() as u16,
+            "step {index}"
+        );
+        let mut expected = node["body"].clone();
+        if expected["webhook_url"].is_string() {
+            expected["webhook_url"] = json!("https://discord.com/[REDACTED]");
+        }
+        let actual = if reply.status >= 400 {
+            pp_api::problem::without_envelope(reply.json())
+        } else {
+            reply.json()
+        };
+        assert_eq!(actual, expected, "step {index}");
+        assert!(!String::from_utf8_lossy(&reply.body).contains("obviously-fake"));
+        assert_eq!(server.stored(), node["stored"], "step {index}");
+    }
+    for (path, body) in [
+        (
+            "github-pat",
+            json!({"token":"obviously-fake-persistent-pat"}),
+        ),
+        (
+            "discord-notify",
+            json!({"webhook_url":"https://discord.com/api/webhooks/123/obviously-fake-persistent-webhook"}),
+        ),
+    ] {
+        let step = json!({"method":"PUT","path":format!("/settings/{path}"),"content_type":"application/json","body":body.to_string()});
+        assert_eq!(server.send(&step, &[COOKIE]).await.status, 200);
+    }
+    let before = server.stored();
+    for prefix in ["", "/api/v1"] {
+        for path in ["github-pat", "discord-notify"] {
+            let step = json!({"method":"PUT","path":format!("{prefix}/settings/{path}"),"content_type":"application/json","body":"{}"});
+            assert_eq!(server.send(&step, &[]).await.status, 401);
+            let mut cross = step.clone();
+            cross["cross_site"] = json!(true);
+            assert_eq!(server.send(&cross, &[COOKIE]).await.status, 403);
+        }
+    }
+    assert_eq!(server.stored(), before);
+    server.stop().await;
+    let mut server = Server::start(directory.path(), Some("true")).await;
+    server.keys = cases["keys"].clone();
+    assert_eq!(server.stored(), before);
+    let step = json!({"method":"GET","path":"/api/v1/settings/discord-notify"});
+    assert_eq!(
+        server.send(&step, &[COOKIE]).await.json(),
+        json!({"webhook_url":"https://discord.com/[REDACTED]","notify_on_update":false,"notify_on_sync":true,"auto_sync_updates":true})
+    );
+    let pat = json!({"method":"GET","path":"/settings/github-pat"});
+    assert_eq!(
+        server.send(&pat, &[COOKIE]).await.json(),
+        json!({"configured":true,"masked":null})
+    );
+    server.stop().await;
+    let server = Server::start(directory.path(), None).await;
+    for path in ["github-pat", "discord-notify"] {
+        let step = json!({"method":"GET","path":format!("/settings/{path}")});
+        assert_eq!(server.send(&step, &[COOKIE]).await.status, 404);
+    }
     server.stop().await;
 }

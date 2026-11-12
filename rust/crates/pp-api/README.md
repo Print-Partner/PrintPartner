@@ -33,14 +33,15 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `printer_host` | `printer_host_router(AdminHttpConfig, ReadClient, Arc<dyn PrinterHostPort>, Arc<SnapshotStore>)`: `GET /printers/{id}/capabilities`, `/files`, `/cameras`, the streamed `/files/content` (capturing a Build's snapshot into the store) and `/cameras/view` at the root and under `/api/v1`, and `POST /api/v1/integrations/{id}/test` with Node's errors and per-route budgets ([Printer-host reads](../../../docs/printer-host-reads.md)). The caller supplies the port. |
 | `events` | `events_router(AcceptedHttpConfig, DomainEventsClient, StreamLimits)`: the domain event stream at `/api/v1/events` as Server-Sent Events ([Domain events](../../../docs/domain-events.md#http-stream)). |
 | `farm` | `farm_router(AcceptedHttpConfig, FarmClient, Arc<dyn FarmObservations>)`: read-only `/api/v2/printers`, `/api/v2/printer-checkoff`, `/api/v2/printer-checkoff/unattributed`, `/api/v2/printer-checkoff/unattributed/suggestions` and `/api/v2/printer-send-queue` ([Farm reads](../../../docs/farm-reads.md)). The caller supplies the observations. |
-| `file_assignments` | `file_assignments_router(AcceptedHttpConfig, ProgressClient, Arc<SnapshotStore>, Arc<dyn PrinterHostPort>)`: `POST /printer-checkoff/file-assignments`, `/preview` and `/upload` at `/` and `/api/v1`, redeeming files/content snapshots and held uploads, and reading a print file off its printer ([Print-file assignment routes](../../../docs/desktop-rebuild.md#print-file-assignment-routes-gre-1220-gre-1255-gre-1256)). |
+| `file_assignments` | `file_assignments_router(AcceptedHttpConfig, ProgressClient, Arc<SnapshotStore>, Arc<dyn PrinterHostPort>)`: `POST /printer-checkoff/file-assignments`, `/preview` and `/upload` at `/` and `/api/v1`, redeeming files/content snapshots and held uploads, and reading a print file off its printer ([Print-file assignment routes](../../../docs/records/d19-publication-client.md#print-file-assignment-routes-gre-1220-gre-1255-gre-1256)). |
 | `history` | `history_router(AcceptedHttpConfig, HistoryClient)`: paged Build history at `/plans/{id}/history` and `/api/v2/plans/{id}/history`. |
 | `planning` | `planning_router(AcceptedHttpConfig, PlanningClient)`: `/plans/{id}/build-planning` and `/plans/{id}/decisions` at `/`, `/api/v1` and `/api/v2`, with Node's data ([Build planning and decisions](../../../docs/build-planning.md)). |
 | `workflow` | `workflow_router(AcceptedHttpConfig, WorkflowClient)`: `/plans/{id}/workflow` at `/`, `/api/v1`, `/api/v2`, and the task feed at `/api/v1/tasks` and `/api/v2/tasks` ([Build workflow](../../../docs/build-workflow.md)). |
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
 | `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient, McpClients)`, where `McpClients` holds the `BuildGraphClient`, `WorkflowClient`, `WorkingDraftClient`, `PlanningClient`, `ProgressClient` and accepted `ReadClient`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. `get_build_workflow` reads the `WorkflowClient` with that key. `list_plans` reads the `BuildGraphClient`, and `get_plan_decisions` and `list_plan_snapshots` read the `PlanningClient`, `get_remaining` reads the accepted `ReadClient`, and `get_printer_checkoff` reads links and unattributed prints through the `ProgressClient`, each with that key. `propose_verify_printer_checkoff` reads the link, and its `confirm_apply` runs a one-bed Checkoff burst through the `ProgressClient` under the key `mcp:<action_id>` ([MCP](../../../docs/mcp.md)). |
-| `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |
+| `client_contract` | Base metadata: `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document` and `document_bytes` return the base contract, excluding the probe extension. |
+| `printer_host::probe` | `printer_probe_router`, `PrinterProbePort`, request/result DTOs and `CLIENT_ROUTE` for authenticated `POST /api/v2/printers/probe`. With `codegen`: `client_document` adds probe metadata, schemas and fixtures to the base contract. |
 | `problem` | With `desktop_rebuild` only (feature off, just an identity `without_envelope`): `Problem`, `FieldError`, `ProblemType` (stable types, `title`, `classify`) and their bounds, plus the one builder for error responses: `response`, `coded`, `typed`, `overloaded`, `build`, the `layer` backstop each router mounts, `parse_body` for field errors, and `without_envelope` for Node comparisons. See [Problem responses](../../../docs/problem-responses.md). |
 | `fixtures` | Node/Rust parity runner: `Sandbox`, `Served`, `Exchange`, `Ledger`, `StateGraph`, `Labels`. |
 
@@ -48,7 +49,7 @@ Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_star
 
 Binaries:
 
-- `export-rust-client PATH` (needs `--features codegen`): writes the generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
+- `export-rust-client PATH` (needs `--features codegen`): composes `client_contract::document()` with `printer_host::probe::client_document()` and writes the complete generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
 - `auth-http-fixture DISPOSABLE_DIRECTORY [PORT] [single|open|closed] [dev-reset|production] [CONFIG_JSON]`: serves only `auth_router` over a store in that directory on `127.0.0.1` for manual auth checks. Use a disposable directory.
 
 ## Effects and flags
@@ -69,7 +70,7 @@ Cargo features:
 - `tests/auth_http.rs`: auth router behavior.
 - `src/problem/tests.rs` and, with `desktop_rebuild`, `src/problem/tests/canary.rs` (`-E 'test(problem_response)'`): problem envelope, extractor rejections, field-error bounds, and the leak canary.
 - `tests/builds_http.rs`, `catalog_http.rs`, `jobs_http.rs`, `manifest_options_http.rs`: mostly `desktop_rebuild`-gated tests against `fixtures/parity/*-http` and related directories.
-- `tests/ticket_t_10_fixtures.rs`, `ticket_t_61_read_model_http.rs`, `ticket_t_62_admin_http.rs`: gated parity suites.
+- `tests/node_fixture_replay.rs`, `accepted_plan_checkoff_http.rs`, `admin_http.rs`: gated parity suites.
 - Unit tests: `src/auth/tests/` (provider and SMTP, with `tests/fixtures/loopback-*.der`), `src/drafts/http/tests.rs`, `src/mcp/tests.rs`. Lib tests share scratch helpers from `pp-storage/tests/common`.
 - Dev-dependencies: `tokio-rustls`, `rusqlite`, `tempfile`.
 

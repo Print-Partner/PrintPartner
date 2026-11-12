@@ -1,0 +1,153 @@
+id: desktop-rebuild-item
+language: Rust
+severity: warning
+message: Keep desktop_rebuild gates on modules or items; shrink statement gates.
+files:
+  - crates/**/*.rs
+utils:
+  gate:
+    all:
+      - any:
+          - kind: attribute_item
+          - kind: inner_attribute_item
+      - has:
+          kind: attribute
+          has:
+            kind: identifier
+            regex: '^(r#)?cfg(_attr)?$'
+      - has:
+          any:
+            - kind: string_literal
+              regex: >-
+                (?x) ^ "
+                (?:\\\r?\n[\x20\t\r\n]*)*
+                (?:d|\\x64|\\u\{_*(?:0_*)*6_*4_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:e|\\x65|\\u\{_*(?:0_*)*6_*5_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:s|\\x73|\\u\{_*(?:0_*)*7_*3_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:k|\\x6[bB]|\\u\{_*(?:0_*)*6_*[bB]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:t|\\x74|\\u\{_*(?:0_*)*7_*4_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:o|\\x6[fF]|\\u\{_*(?:0_*)*6_*[fF]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:p|\\x70|\\u\{_*(?:0_*)*7_*0_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:_|\\x5[fF]|\\u\{_*(?:0_*)*5_*[fF]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:r|\\x72|\\u\{_*(?:0_*)*7_*2_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:e|\\x65|\\u\{_*(?:0_*)*6_*5_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:b|\\x62|\\u\{_*(?:0_*)*6_*2_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:u|\\x75|\\u\{_*(?:0_*)*7_*5_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:i|\\x69|\\u\{_*(?:0_*)*6_*9_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:l|\\x6[cC]|\\u\{_*(?:0_*)*6_*[cC]_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                (?:d|\\x64|\\u\{_*(?:0_*)*6_*4_*\})(?:\\\r?\n[\x20\t\r\n]*)*
+                " $
+            - kind: raw_string_literal
+              regex: '^r#*"desktop_rebuild"#*$'
+          follows:
+            kind: identifier
+            regex: '^(r#)?feature$'
+            stopBy:
+              not:
+                any:
+                  - regex: '^=$'
+                  - kind: line_comment
+                  - kind: block_comment
+          all:
+            - not:
+                inside:
+                  matches: applied-metadata
+                  stopBy: end
+          not:
+            inside:
+              kind: token_tree
+              follows:
+                kind: identifier
+                not:
+                  regex: '^(r#)?(cfg|cfg_attr|all|any|not)$'
+                stopBy:
+                  not:
+                    any:
+                      - kind: line_comment
+                      - kind: block_comment
+              stopBy: end
+          stopBy: end
+  applied-metadata:
+    kind: token_tree
+    follows:
+      kind: identifier
+      not:
+        regex: '^(r#)?cfg(_attr)?$'
+      follows:
+        regex: '^,$'
+        stopBy:
+          not:
+            any:
+              - kind: line_comment
+              - kind: block_comment
+      stopBy:
+        not:
+          any:
+            - kind: line_comment
+            - kind: block_comment
+    inside:
+      kind: token_tree
+      follows:
+        kind: identifier
+        regex: '^(r#)?cfg_attr$'
+        stopBy:
+          not:
+            any:
+              - kind: line_comment
+              - kind: block_comment
+  module:
+    any:
+      - all:
+          - kind: inner_attribute_item
+          - inside:
+              any:
+                - kind: source_file
+                - all:
+                    - kind: declaration_list
+                    - inside:
+                        kind: mod_item
+      - all:
+          - kind: attribute_item
+          - precedes:
+              any:
+                - kind: mod_item
+                - kind: use_declaration
+              stopBy:
+                not:
+                  any:
+                    - kind: attribute_item
+                    - kind: line_comment
+                    - kind: block_comment
+  item:
+    all:
+      - kind: attribute_item
+      - any:
+          - inside:
+              kind: ordered_field_declaration_list
+          - precedes:
+              any:
+                - kind: function_item
+                - kind: function_signature_item
+                - kind: struct_item
+                - kind: enum_item
+                - kind: union_item
+                - kind: type_item
+                - kind: const_item
+                - kind: static_item
+                - kind: trait_item
+                - kind: impl_item
+                - kind: foreign_mod_item
+                - kind: macro_definition
+                - kind: enum_variant
+                - kind: field_declaration
+                - kind: associated_type
+              stopBy:
+                not:
+                  any:
+                    - kind: attribute_item
+                    - kind: line_comment
+                    - kind: block_comment
+rule:
+  all:
+      - matches: gate
+      - matches: item

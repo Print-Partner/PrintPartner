@@ -1,5 +1,6 @@
 """Exercise the real ast-grep ratchet, including file and crate exemptions."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,52 @@ import unittest
 
 RUST = Path(__file__).resolve().parents[1]
 RAISE_OVERRIDE = "PP_AST_GREP_ALLOW_BASELINE_RAISE"
+
+
+SPEC = importlib.util.spec_from_file_location("ast_checker", RUST / "scripts/check-ast-grep.py")
+CHECKER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CHECKER)
+
+
+class TextGateTests(unittest.TestCase):
+    def test_only_cfg_attr_predicate_counts(self):
+        for text, expected in (
+            ('#[cfg_attr(all(feature="desktop_rebuild", unix), allow(unused))] let x=1;', 1),
+            ('#[cfg_attr(test, doc="desktop_rebuild")] struct S;', 0),
+            ('#[r#cfg(feature=r###"desktop_rebuild"###)] fn f() {}', 1),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(len(CHECKER.text_gates(text.encode())), expected)
+
+    def test_nested_cfg_attributes_and_doc_literals(self):
+        for text, expected in (
+            ('#[cfg_attr(all(), cfg(feature="desktop_rebuild"))]', 1),
+            ('#[cfg_attr(not(any()), cfg_attr(feature="desktop_rebuild", cfg(all())))]', 1),
+            ('#![cfg_attr(not(test), cfg(feature="desktop_rebuild"))]', 1),
+            ('#[cfg_attr(all(), cfg_attr(test, doc="desktop_rebuild"))]', 0),
+            ('#[cfg_attr(feature="desktop_rebuild", cfg(feature="desktop_rebuild"))]', 1),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(len(CHECKER.text_gates(text.encode())), expected)
+
+    def test_escaped_feature_values_are_decoded(self):
+        for literal in (rb'"desktop\x5frebuild"', rb'"desktop\u{5f}rebuild"',
+                        rb'"desktop_rebui\u{6c}d"'):
+            code = b"#[cfg(feature=" + literal + b")] fn f() {}"
+            self.assertEqual(CHECKER.text_gates(code), {0})
+
+    def test_non_code_and_nested_comments_do_not_count(self):
+        gate = '#[cfg(feature="desktop_rebuild")]'
+        text = f'// {gate}\n/* outer /* {gate} */ end */ const S: &str = r##"{gate}"##;'
+        self.assertEqual(CHECKER.text_gates(text.encode()), set())
+        for prefix in ("r", "br", "cr"):
+            text = f'const S = {prefix}###"quoted " text {gate}"###;'
+            self.assertEqual(CHECKER.text_gates(text.encode()), set())
+
+    def test_character_literals_and_unicode_preserve_gate_offsets(self):
+        text = """const C: char = '"'; /* é */ #[cfg(feature="desktop_rebuild")] fn f() {}"""
+        data = text.encode()
+        self.assertEqual(CHECKER.text_gates(data), {data.index(b"#")})
 
 
 class RatchetTests(unittest.TestCase):
@@ -32,7 +79,15 @@ class RatchetTests(unittest.TestCase):
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(text)
 
+    def placement_baseline(self):
+        counts = getattr(self, "placements", {
+            p.name: dict.fromkeys(("module", "item", "statement"), 0)
+            for p in (self.root / "crates").iterdir()
+        })
+        (self.root / "desktop-rebuild-baseline.json").write_text(json.dumps({"version": 2, "crates": counts}))
+
     def baseline(self, unwrap=0, command=0):
+        self.placement_baseline()
         (self.root / "ast-grep-baseline.json").write_text(json.dumps({
             "no-unwrap-expect": unwrap,
             "runtime-process-command": command,
@@ -57,6 +112,7 @@ class RatchetTests(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
     def check(self, allow_raise=False):
+        self.placement_baseline()
         environment = {key: value for key, value in os.environ.items() if key != RAISE_OVERRIDE}
         if allow_raise:
             environment[RAISE_OVERRIDE] = "1"
@@ -66,6 +122,250 @@ class RatchetTests(unittest.TestCase):
             capture_output=True,
             env=environment,
         )
+
+    def test_cfg_macro_additions_fail(self):
+        for expression in (
+            'cfg!(feature="desktop_rebuild")',
+            r'r#cfg!(r#feature="desktop\x5frebuild")',
+            'cfg!(any(test, feature=r###"desktop_rebuild"###))',
+            'cfg! { feature="desktop_rebuild" }',
+            'cfg![feature="desktop_rebuild"]',
+        ):
+            with self.subTest(expression=expression):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ let x = {expression}; }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("statement=1", result.stdout)
+
+    def test_cfg_macro_baseline_migrates_once_from_main_inventory(self):
+        self.source("pp-source/src/lib.rs", 'fn f() { let x=cfg!(feature="desktop_rebuild"); }')
+        self.publish_main()
+        # Simulate main before cfg! entered the statement inventory.
+        old = {"pp-source": {"module": 0, "item": 0, "statement": 0}}
+        (self.root / "desktop-rebuild-baseline.json").write_text(json.dumps(old))
+        self.commit_main()
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Adding a second cfg! cannot enlarge the main-derived allowance.
+        self.source("pp-source/src/lib.rs", 'fn f() { let x=cfg!(feature="desktop_rebuild");'
+                    ' let y=cfg!(feature="desktop_rebuild"); }')
+        self.placements["pp-source"]["statement"] = 2
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+        # Once v2 lands, existing cfg! gates grant no further allowance.
+        self.publish_main()
+        self.placements["pp-source"]["statement"] = 3
+        self.source("pp-source/src/lib.rs", 'fn f() { let x=cfg!(feature="desktop_rebuild");'
+                    ' let y=cfg!(feature="desktop_rebuild"); let z=cfg!(feature="desktop_rebuild"); }')
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+
+    def test_macro_comments_and_literals_are_ignored(self):
+        code = r'''fn f() { other!("cfg!(feature=desktop_rebuild)",
+            r###"cfg(feature="desktop_rebuild")"###,
+            /* cfg!(feature="desktop_rebuild") */
+            other_feature); }'''
+        self.source("pp-source/src/lib.rs", code)
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 classified = 0 text gates", result.stdout)
+
+    def test_docsrs_metadata_is_not_a_gate(self):
+        for attr in (
+            '#[cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))]',
+            '#[cfg_attr(docsrs, doc /* gap */ (cfg(feature="desktop_rebuild")))]',
+            '#[cfg_attr(test, all(feature="desktop_rebuild"))]',
+            '#[cfg_attr(test, cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild"))))]',
+        ):
+            with self.subTest(attr=attr):
+                self.source("pp-source/src/lib.rs", f"{attr} struct S; fn f() {{ {attr} let x=1; }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("0 classified = 0 text gates", result.stdout)
+
+    def test_opaque_macro_doc_metadata_is_conservatively_frozen(self):
+        for meta, count in (
+            ('cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))', 1),
+            ('#[cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))] struct S;', 0),
+        ):
+            with self.subTest(meta=meta):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ m!({meta}); }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, count, result.stdout + result.stderr)
+                self.assertIn(f"{count} classified = {count} text gates", result.stdout)
+                self.assertIn(f"statement={count}", result.stdout)
+
+    def test_macro_argument_meta_counts_as_statement(self):
+        for meta in ('cfg(feature="desktop_rebuild")',
+                     'cfg_attr(all(), cfg(feature="desktop_rebuild"))',
+                     r'r#cfg(r#feature="desktop\u{5f}rebuild")'):
+            with self.subTest(meta=meta):
+                self.source("pp-source/src/lib.rs",
+                            'macro_rules! gate { ($m:meta) => { #[cfg_attr(all(), $m)] let x=1; } }'
+                            f'fn f() {{ gate!({meta}); }}')
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("1 classified = 1 text gates", result.stdout)
+                self.assertIn("statement=1", result.stdout)
+
+    def test_statement_gate_addition_fails(self):
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement=1", result.stdout)
+
+    def test_escaped_statement_gate_is_classified(self):
+        self.source("pp-source/src/lib.rs",
+                    r'fn f() { #[cfg(feature="desktop\x5frebuild")] let x=1; }')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement=1", result.stdout)
+
+    def test_statement_baseline_raise_cannot_hide_addition(self):
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 0}}
+        self.publish_main()
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.placements["pp-source"]["statement"] = 1
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+
+    def test_module_and_item_baselines_can_grow(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg(feature = "desktop_rebuild")] mod m;'
+                    '#[cfg(feature = "desktop_rebuild")] struct S;')
+        self.placements = {"pp-source": {"module": 1, "item": 1, "statement": 0}}
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_statement_count_is_per_crate(self):
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+        self.publish_main()
+        self.source("pp-source/src/lib.rs", "fn f() {}")
+        self.source("pp-other/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.placements = {
+            "pp-source": {"module": 0, "item": 0, "statement": 0},
+            "pp-other": {"module": 0, "item": 0, "statement": 1},
+        }
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("pp-other: statement baseline raised", result.stdout)
+
+    def test_ambiguous_item_forms_remain_frozen_as_statements(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg(feature="desktop_rebuild")] extern crate foo;'
+                    '#[cfg(feature="desktop_rebuild")] node_case!(x);'
+                    'impl S { #![cfg(feature="desktop_rebuild")] fn f() {} }'
+                    'trait T { #![cfg(feature="desktop_rebuild")] fn f(); }'
+                    'extern "C" { #![cfg(feature="desktop_rebuild")] fn f(); }')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement=5", result.stdout)
+
+    def test_nested_conditional_statement_gates_cannot_bypass_freeze(self):
+        for attr in (
+            '#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]',
+            '#[cfg_attr(not(any()), cfg_attr(feature = "desktop_rebuild", cfg(all())))]',
+            '#![cfg_attr(not(test), cfg(feature = "desktop_rebuild"))]',
+        ):
+            with self.subTest(attr=attr):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ {attr} let x=1; }}")
+                self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+                self.baseline()
+                result = self.check(allow_raise=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("statement=1", result.stdout)
+                self.assertIn("statement baseline raised", result.stdout)
+
+    def test_inner_conditional_crate_gate_is_counted_once(self):
+        self.source("pp-source/src/lib.rs",
+                    '#![cfg_attr(not(test), cfg(feature = "desktop_rebuild"))] fn f() {}')
+        self.placements = {"pp-source": {"module": 1, "item": 0, "statement": 0}}
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 classified = 1 text gates", result.stdout)
+
+    def test_ast_hit_without_text_gate_fails_coverage(self):
+        self.source("pp-source/src/lib.rs", '#[cfg(feature="other_feature")] struct S;')
+        self.baseline()
+        rule = self.root / "rules/desktop-rebuild-item.yml"
+        # Deliberately broaden one AST rule to a non-desktop feature.
+        text = rule.read_text().replace("  gate:\n", "  gate:\n    kind: attribute_item\n  unused-gate:\n", 1)
+        rule.write_text(text)
+        result = self.check()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("AST placement hits have no text gate", result.stderr)
+
+    def test_macro_token_gates_count_as_statements(self):
+        for code in (
+            'fn f() { json!({ #[cfg(feature="desktop_rebuild")] "x": 1 }); }',
+            'fn f() { vec![#[cfg(feature="desktop_rebuild")] 1]; }',
+            'fn f() { select! { #[cfg(feature="desktop_rebuild")] x = f() => x }; }',
+            'macro_rules! m { () => { #[cfg(feature="desktop_rebuild")] let x=1; } }',
+        ):
+            with self.subTest(code=code):
+                self.source("pp-source/src/lib.rs", code)
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("statement=1", result.stdout)
+
+    def test_single_rule_cannot_drop_or_double_classify_a_gate(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg(feature="desktop_rebuild")] struct S;')
+        self.baseline()
+        rule = self.root / "rules/desktop-rebuild-item.yml"
+        original = rule.read_text()
+        for replacement in ("      - kind: function_item", "      - matches: gate"):
+            with self.subTest(replacement=replacement):
+                # Drop item coverage, or make the module rule overlap it.
+                target = rule if "kind:" in replacement else self.root / "rules/desktop-rebuild-module.yml"
+                before = target.read_text()
+                target.write_text(before.replace(
+                    "      - matches: item" if target == rule else "      - matches: module",
+                    replacement))
+                result = self.check()
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("placement coverage expected one class", result.stderr)
+                target.write_text(before)
+        rule.write_text(original)
+
+    def test_cfg_attr_body_is_not_a_feature_predicate(self):
+        for attr in (
+            '#[cfg_attr(test, doc="desktop_rebuild")]',
+            '#[cfg_attr(all(), cfg_attr(test, doc="desktop_rebuild"))]',
+        ):
+            with self.subTest(attr=attr):
+                self.source("pp-source/src/lib.rs", f"{attr} struct S;")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("0 classified = 0 text gates", result.stdout)
+
+    def test_placement_first_landing_is_reported(self):
+        (self.root / "desktop-rebuild-baseline.json").unlink()
+        self.commit_main()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("desktop-rebuild raise check skipped (first landing)", result.stdout)
 
     def test_matching_baseline_passes(self):
         result = self.check()

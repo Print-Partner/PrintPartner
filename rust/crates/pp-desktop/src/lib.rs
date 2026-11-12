@@ -728,6 +728,29 @@ mod tests {
                 refusal.to_string()
             )
         );
+        #[derive(Debug)]
+        struct StartupFailure(pp_core::IncompatibleSchema);
+
+        impl std::fmt::Display for StartupFailure {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("Core owner startup failed")
+            }
+        }
+
+        impl std::error::Error for StartupFailure {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let sourced =
+            anyhow::Error::new(StartupFailure(refusal)).context("Desktop core startup failed");
+        assert!(
+            sourced
+                .downcast_ref::<pp_core::IncompatibleSchema>()
+                .is_none()
+        );
+        assert_eq!(startup_error_text(&sourced), startup_error_text(&wrapped));
         let other = anyhow::anyhow!("private/path?bootstrap=secret-token")
             .context("Desktop core startup failed");
         let (title, text) = startup_error_text(&other);

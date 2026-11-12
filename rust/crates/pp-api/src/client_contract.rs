@@ -369,11 +369,38 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "IntegrationView",
         )
     },
+    route(
+        "createPrinter",
+        "POST",
+        "/api/v2/printers",
+        Some("CreatePrinterRequest"),
+        "PrinterConfig",
+    ),
     ClientRoute {
         text_params: &["id"],
         ..route(
             "readPrinter",
             "GET",
+            "/api/v2/printers/{id}",
+            None,
+            "PrinterConfig",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "updatePrinter",
+            "PATCH",
+            "/api/v2/printers/{id}",
+            Some("UpdatePrinterRequest"),
+            "PrinterConfig",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "deletePrinter",
+            "DELETE",
             "/api/v2/printers/{id}",
             None,
             "PrinterConfig",
@@ -588,6 +615,11 @@ pub(crate) mod codegen {
                 .extend(["base_url", "username"].map(String::from));
         }
         schema("IntegrationView", view)?;
+        use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
+        let create = schemars::schema_for!(CreatePrinterRequest);
+        schema("CreatePrinterRequest", create)?;
+        let update = schemars::schema_for!(UpdatePrinterRequest);
+        schema("UpdatePrinterRequest", update)?;
         // The view always serializes these two, null included.
         let mut config = schemars::schema_for!(crate::printers::PrinterConfig);
         if let Some(object) = config.schema.object.as_mut() {
@@ -1850,10 +1882,48 @@ pub(crate) mod codegen {
             max_filament_slots: 4,
             integration_id: filled.then(|| "fedcba9876543210fedcba9876543210".into()),
         };
-        Ok(vec![
+        use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
+        let mut cases = vec![
             served("PrinterConfig", "linked", config(true))?,
             served("PrinterConfig", "nulls", config(false))?,
-        ])
+        ];
+        let voron = json!({"name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
+            "bed_depth_mm": 350, "bed_height_mm": 340});
+        let with = |key: &str, value: Value| {
+            let mut body = voron.clone();
+            body[key] = value;
+            body
+        };
+        let short =
+            json!({"name": "Voron", "model": "v", "bed_width_mm": 350, "bed_depth_mm": 350});
+        for (name, value) in [
+            ("minimal", voron.clone()),
+            ("linked", with("integration_id", json!("moon-1"))),
+            ("margin", with("margin_mm", json!(6))),
+            ("slots", with("max_filament_slots", json!(2))),
+            ("fractional-size", with("bed_width_mm", json!(350.5))),
+            ("negative-size", with("bed_height_mm", json!(-1))),
+            ("extra-key", with("nozzle", json!(1))),
+            ("missing-height", short),
+        ] {
+            let dto = "CreatePrinterRequest";
+            cases.push(request::<CreatePrinterRequest>(dto, name, value));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            ("rename", json!({"name": "Big Voron"})),
+            ("unlink", json!({"integration_id": null})),
+            ("sizes-and-slots", with("max_filament_slots", json!(2))),
+            ("margin", json!({"margin_mm": 6})),
+            ("link", json!({"integration_id": "moon-1"})),
+            ("fractional-margin", json!({"margin_mm": 2.5})),
+            ("slots-over-a-byte", json!({"max_filament_slots": 256})),
+            ("extra-key", json!({"id": "p-1"})),
+        ] {
+            let dto = "UpdatePrinterRequest";
+            cases.push(request::<UpdatePrinterRequest>(dto, name, value));
+        }
+        Ok(cases)
     }
 
     fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {

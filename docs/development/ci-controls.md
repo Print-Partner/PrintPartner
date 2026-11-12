@@ -86,9 +86,10 @@ CI-control changes and merges after two scorer seats score the head 9 or more.
 ## Cross-OS capacity
 
 Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
-labels do not select them. Job-level skips preserve check reports. Main pushes,
-schedules and manual runs keep full coverage; a merge group runs the short Linux
-Rust set ([Merge queue](ci.md#merge-queue)); Linux PR selection
+labels do not select them. Job-level skips preserve check reports. Schedules
+and manual runs keep full coverage; a push to `main` runs the Linux Rust jobs
+only and a merge group runs the short Linux Rust set
+([Merge queue](ci.md#merge-queue)); Linux PR selection
 and the required contexts remain unchanged. See the
 [event table](ci.md#cross-os-pr-label).
 

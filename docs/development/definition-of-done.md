@@ -55,7 +55,7 @@ The safety guard classifies the PR files with `scripts/merge-classes.json`. It r
 
 ### Scorer seats
 
-Two scorer seats from different vendors, chosen by the owner. `scorer_seats` in `scripts/merge-classes.json` is the single source for them; the guard reads it, so this page names none. A seat counts only when its model's vendor differs from the PR author's. A sensitive PR needs both seats; a marker-only head needs one.
+The owner chooses the scorer seats, each from a named vendor. `scorer_seats` in `scripts/merge-classes.json` is the single source for them; the guard reads it, so this page names none. A seat counts only when its model's vendor differs from the PR author's. A sensitive PR needs two seats from two different vendors; a marker-only head needs one.
 
 `post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR or a marker-only head, the gate is the coordinator's own scorer run on the exact head.
 

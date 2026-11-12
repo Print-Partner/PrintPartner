@@ -69,9 +69,11 @@
   "scorer_authors": [
     "poitee"
   ],
-  "vendors": ["anthropic", "openai", "xai"],
+  "vendors": ["anthropic", "deepseek", "openai", "xai", "zhipu"],
   "scorer_seats": {
     "claude-opus-5-5": "anthropic",
-    "grok-4.7": "xai"
+    "grok-4.7": "xai",
+    "glm-5.3-flash-free": "zhipu",
+    "deepseek-v4.1-flash-free": "deepseek"
   }
 }

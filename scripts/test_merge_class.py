@@ -133,9 +133,12 @@ class CoverageTests(unittest.TestCase):
     def test_merge_classes_file_is_valid_json(self):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors"})
-        self.assertEqual(data["vendors"], ["anthropic", "openai", "xai"])
+        self.assertEqual(data["vendors"], ["anthropic", "deepseek", "openai", "xai", "zhipu"])
         self.assertEqual(data["scorer_authors"], ["poitee"])
-        self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai"})
+        # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max. Sol is not a seat.
+        self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
+                                                "glm-5.3-flash-free": "zhipu",
+                                                "deepseek-v4.1-flash-free": "deepseek"})
 
 
 class ScoreTests(unittest.TestCase):
@@ -156,6 +159,28 @@ class ScoreTests(unittest.TestCase):
 
     def test_opus_and_grok_pass_on_a_sol_pr(self):
         self.assertTrue(self.check([self.line(), self.grok()]))
+
+    def glm(self, **kwargs):
+        return self.line("glm-5.3-flash-free", vendor="zhipu", **kwargs)
+
+    def deepseek(self, **kwargs):
+        return self.line("deepseek-v4.1-flash-free", vendor="deepseek", **kwargs)
+
+    def test_grok_and_glm_pass_on_a_claude_pr(self):
+        self.assertTrue(self.check([self.grok(author="anthropic"), self.glm(author="anthropic")], author="anthropic"))
+
+    def test_glm_and_deepseek_pass_on_a_claude_pr(self):
+        self.assertTrue(self.check([self.glm(author="anthropic"), self.deepseek(author="anthropic")],
+                                   author="anthropic"))
+
+    def test_opus_with_any_other_seat_refused_on_a_claude_pr(self):
+        opus = self.line(author="anthropic")
+        for other in (self.grok(author="anthropic"), self.glm(author="anthropic"), self.deepseek(author="anthropic")):
+            with self.subTest(other=other):
+                self.assertFalse(self.check([opus, other], author="anthropic"))
+        # The refusal holds even beside two qualifying seats.
+        self.assertFalse(self.check([opus, self.glm(author="anthropic"), self.deepseek(author="anthropic")],
+                                    author="anthropic"))
 
     def test_sol_seat_on_a_sol_pr_refused(self):
         self.assertFalse(self.check([self.line(), self.line("gpt-6.1-sol", vendor="openai")]))

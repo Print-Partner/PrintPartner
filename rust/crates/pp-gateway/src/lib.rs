@@ -711,11 +711,27 @@ impl Admission {
     }
 
     fn acquire(access: &Arc<Mutex<Sessions>>, cookie: Option<&str>) -> Result<Self, StatusCode> {
+        Self::enter(access, |state| {
+            cookie.is_some_and(|value| state.sessions.contains(&digest(value)))
+        })
+    }
+
+    /// Counts a request that proves its own identity downstream, so the
+    /// shutdown drain still waits for it. Only MCP uses this: its guard in
+    /// `pp-api` requires an API key and refuses every cookie.
+    fn keyed(access: &Arc<Mutex<Sessions>>) -> Result<Self, StatusCode> {
+        Self::enter(access, |_| true)
+    }
+
+    fn enter(
+        access: &Arc<Mutex<Sessions>>,
+        admitted: impl FnOnce(&Sessions) -> bool,
+    ) -> Result<Self, StatusCode> {
         let mut state = access.lock().expect("Session mutex poisoned");
         if state.draining {
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
-        if !cookie.is_some_and(|value| state.sessions.contains(&digest(value))) {
+        if !admitted(&state) {
             return Err(StatusCode::UNAUTHORIZED);
         }
         state.active += 1;
@@ -943,15 +959,41 @@ async fn handle(
             _ => error(StatusCode::FORBIDDEN, "Private quota debit required"),
         };
     }
+    // With the Rust product routes mounted, MCP answers from their key-only
+    // guard. MCP clients are not browsers and send no Origin; the guard
+    // refuses an unsafe request without one unless it carries an API key.
+    // An explicit network listener never routes MCP: LAN peers stay out until
+    // MCP trust classes exist, whatever key they present.
+    let mcp = if (path == "/mcp" || path == "/api/v1/mcp") && !state.network {
+        product_router(&state)
+    } else {
+        None
+    };
     let mut origins = request.headers().get_all("origin").iter();
     let origin = origins.next();
     let upgrade = request.headers().contains_key("upgrade");
     let unsafe_method = !matches!(request.method().as_str(), "GET" | "HEAD" | "OPTIONS");
     if origins.next().is_some()
         || origin.is_some_and(|value| value.as_bytes() != expected_origin.as_bytes())
-        || ((unsafe_method || upgrade) && origin.is_none())
+        || (((unsafe_method && mcp.is_none()) || upgrade) && origin.is_none())
     {
         return error(StatusCode::FORBIDDEN, "Invalid Origin");
+    }
+    if let Some(product) = mcp {
+        // The desktop cookie is not MCP authorization: the request is only
+        // counted for the drain, and the guard checks loopback, Host, Origin,
+        // the MCP rate limit and the API key. A POST answers as an event
+        // stream while its tool runs, so only the GET notification stream
+        // stops counting when the drain begins.
+        let Ok(admission) = Admission::keyed(&state.access) else {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "Runtime is stopping");
+        };
+        let streams = if request.method() == "GET" {
+            Streams::Release
+        } else {
+            Streams::Count
+        };
+        return product_response(&state, product, request, admission, streams).await;
     }
     if path == "/__desktop/bootstrap" && request.method() == "GET" {
         let token = request
@@ -1006,9 +1048,12 @@ async fn handle(
     if path == "/auth/logout" && request.method() == "POST" {
         // Rust revokes its own session before the gateway ends the desktop one.
         let revoked = match product_router(&state) {
-            Some(product) => {
-                Some(buffered(product_response(&state, product, request, admission).await).await)
-            }
+            Some(product) => Some(
+                buffered(
+                    product_response(&state, product, request, admission, Streams::Release).await,
+                )
+                .await,
+            ),
             None => None,
         };
         state
@@ -1023,6 +1068,8 @@ async fn handle(
         return revoked
             .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }
+    // Without the Rust product routes, or on an explicit network listener,
+    // nothing here serves MCP.
     if path == "/mcp" || path == "/api/v1/mcp" {
         return error(
             StatusCode::FORBIDDEN,
@@ -1065,7 +1112,7 @@ async fn handle(
     }
 
     if let Some(product) = product_router(&state) {
-        return product_response(&state, product, request, admission).await;
+        return product_response(&state, product, request, admission, Streams::Release).await;
     }
     // Route miss: no gateway, asset or Rust product route answered, so the
     // request enters the compatibility branch. Counted here, before any early
@@ -1996,16 +2043,26 @@ fn product_router(state: &GatewayState) -> Option<axum::Router> {
         .clone()
 }
 
+/// Whether a `text/event-stream` response stops counting when draining begins.
+#[derive(Clone, Copy)]
+enum Streams {
+    /// The stream only reads, so the drain need not wait for it.
+    Release,
+    /// The stream carries the result of work in progress, such as an MCP tool call.
+    Count,
+}
+
 /// Answer from the Rust product routes. They see the peer as `ConnectInfo`
-/// and apply the composed transport and credential gates. A `text/event-stream` body only
-/// reads, so when draining begins it stops counting as active and ends at its
-/// next poll, even if its client has stopped reading; other bodies end when
-/// the drain finishes.
+/// and apply the composed transport and credential gates. With
+/// `Streams::Release`, a `text/event-stream` body stops counting as active when
+/// draining begins and ends at its next poll, even if its client has stopped
+/// reading; other bodies end when the drain finishes.
 async fn product_response(
     state: &GatewayState,
     product: axum::Router,
     request: Request<Body>,
     mut admission: Admission,
+    streams: Streams,
 ) -> Response<Body> {
     let Ok(mut response) = tower::ServiceExt::oneshot(product, request).await;
     // Same dynamic-response policy as the compatibility branch: account and
@@ -2013,10 +2070,11 @@ async fn product_response(
     response
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
-    let cancelled = if response
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .is_some_and(|value| value == "text/event-stream")
+    let cancelled = if matches!(streams, Streams::Release)
+        && response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .is_some_and(|value| value == "text/event-stream")
     {
         admission.release_at(state.watcher_cancelled.clone());
         state.watcher_cancelled.clone()

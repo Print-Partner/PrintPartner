@@ -218,6 +218,20 @@ mod tests {
                         );
                     }
                 }
+                // A presented API key does not route a LAN peer to the MCP guard.
+                for path in ["/mcp", "/api/v1/mcp"] {
+                    let mut keyed = request("POST", path, host, &origin, Some(&cookie));
+                    keyed.headers_mut().insert(
+                        "authorization",
+                        "Bearer ppk_not_a_real_key".parse().unwrap(),
+                    );
+                    let (status, body) = exchange(&gateway, keyed).await;
+                    assert_eq!(status, StatusCode::FORBIDDEN, "keyed POST {path}");
+                    assert!(
+                        body.contains("MCP is disabled"),
+                        "keyed POST {path}: {body}"
+                    );
+                }
             }
             gateway.drain().await;
             gateway.stop().await.unwrap();

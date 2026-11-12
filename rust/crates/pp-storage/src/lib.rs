@@ -6,6 +6,8 @@ pub mod admin;
 #[cfg(feature = "desktop_rebuild")]
 pub mod app_settings;
 pub mod filaments;
+#[cfg(feature = "desktop_rebuild")]
+pub mod import;
 
 pub mod archive;
 #[cfg(feature = "desktop_rebuild")]

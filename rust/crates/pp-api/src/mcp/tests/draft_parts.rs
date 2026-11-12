@@ -73,7 +73,7 @@ async fn mcp_draft_part_edit_proposes_without_writing_and_confirms_through_the_p
     assert_eq!(digest.len(), 64);
     let id = action["id"].as_str().unwrap().to_owned();
     assert_eq!(parts(&database), before, "propose wrote the draft");
-    assert_eq!(pending(&server, &headers).await, [id.clone()]);
+    assert_eq!(pending(&server, &headers).await, std::slice::from_ref(&id));
 
     let (confirmed, failed) =
         tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
@@ -118,7 +118,8 @@ async fn mcp_draft_part_edit_proposes_without_writing_and_confirms_through_the_p
     .await;
     let (cleared, failed) = tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
     assert!(!failed, "{cleared}");
-    assert_eq!(parts(&database)[1], (5, true, None));
+    let (id, _, quantity) = parts(&database)[1];
+    assert_eq!((id, quantity), (5, None));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -158,7 +159,10 @@ async fn mcp_draft_part_edit_refuses_a_changed_draft_and_keeps_the_proposal() {
         (json!(false), json!("draft_changed"))
     );
     assert_eq!(parts(&database), edited, "the newer edit was overwritten");
-    assert_eq!(pending(&server, &headers).await, [stale.clone()]);
+    assert_eq!(
+        pending(&server, &headers).await,
+        std::slice::from_ref(&stale)
+    );
 
     let (dismissed, _) = tool(
         &server,

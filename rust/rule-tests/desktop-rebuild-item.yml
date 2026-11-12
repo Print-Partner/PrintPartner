@@ -1,5 +1,8 @@
 id: desktop-rebuild-item
 valid:
+  - "#[cfg_attr(docsrs, doc /* gap */ (cfg(feature=\"desktop_rebuild\")))] struct S;"
+  - "#[cfg_attr(test, all(feature=\"desktop_rebuild\"))] struct S;"
+  - "#[cfg_attr(docsrs, doc(cfg(feature=\"desktop_rebuild\")))] struct S;"
   - "#[cfg(feature = \"other\")] fn f() {}"
   - "const S: &str = \"#[cfg(feature = \\\"desktop_rebuild\\\")]\";"
   - "#[doc = \"desktop_rebuild\"] fn f() {}"

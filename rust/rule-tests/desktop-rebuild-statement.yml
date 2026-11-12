@@ -1,5 +1,8 @@
 id: desktop-rebuild-statement
 valid:
+  - "#[cfg_attr(docsrs, doc /* gap */ (cfg(feature=\"desktop_rebuild\")))] struct S;"
+  - "#[cfg_attr(test, all(feature=\"desktop_rebuild\"))] struct S;"
+  - "#[cfg_attr(docsrs, doc(cfg(feature=\"desktop_rebuild\")))] struct S;"
   - "#[cfg(feature = \"other\")] fn f() {}"
   - "const S: &str = \"#[cfg(feature = \\\"desktop_rebuild\\\")]\";"
   - "#[doc = \"desktop_rebuild\"] fn f() {}"
@@ -43,3 +46,6 @@ invalid:
   - "fn f() { #[cfg_attr(all(), cfg(feature = \"desktop_rebuild\"))] let x = 1; }"
   - "fn f() { #[cfg_attr(not(any()), cfg_attr(feature = \"desktop_rebuild\", cfg(all())))] let y = 2; }"
   - "extern \"C\" { #![cfg(feature=\"desktop_rebuild\")] fn f(); }"
+
+  - "fn f() { let x=cfg!(feature=\"desktop_rebuild\"); }"
+  - "fn f() { let x=r#cfg!(r#feature=\"desktop\\x5frebuild\"); }"

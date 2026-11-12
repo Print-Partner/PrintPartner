@@ -1,7 +1,7 @@
 #![cfg(feature = "desktop_rebuild")]
 use pp_api::builds::{BuildHttpConfig, build_router};
 use pp_storage::{Limits, WriterOwner};
-use pp_testkit::{Fixture, Installation, build_experiments as fixtures};
+use pp_testkit::{Installation, build_experiments as fixtures};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 #[path = "support/loopback.rs"]
@@ -12,12 +12,7 @@ mod auth_policy;
 use auth_policy::policy;
 
 fn open() -> (Installation, WriterOwner, axum::Router) {
-    let data = Installation::create(Fixture::Empty).unwrap();
-    std::fs::write(
-        data.database_path(),
-        include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db"),
-    )
-    .unwrap();
+    let data = Installation::with_authenticated_fixture().unwrap();
     let owner = WriterOwner::open(data.path(), Limits::default()).unwrap().0;
     let router = router(&owner, Some("true"));
     (data, owner, router)

@@ -571,16 +571,7 @@ async fn start_rust_resources(
         pp_gateway::printer_host::HostSends::new()?,
     )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
-    let imports = start_imports(&writer).await?;
-    let uploads = Arc::new(source_uploads::SourceUploadService::new(
-        Arc::clone(&imports),
-        writer
-            .lease()
-            .context("Storage lease unavailable")?
-            .data_dir()
-            .to_owned(),
-        source_uploads::FREE_SPACE_RESERVE,
-    ));
+    let (imports, uploads) = start_imports(&writer).await?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let product = rebuild_api::product_router_with_updates(
         desktop_rebuild,
@@ -641,7 +632,10 @@ async fn start_rust_resources(
 #[cfg(feature = "desktop_rebuild")]
 async fn start_imports(
     writer: &pp_storage::WriterOwner,
-) -> Result<Arc<source_acquisition::SourceAcquisitions>> {
+) -> Result<(
+    Arc<source_acquisition::SourceAcquisitions>,
+    Arc<source_uploads::SourceUploadService>,
+)> {
     let imports = Arc::new(source_acquisition::SourceAcquisitions::new(
         writer,
         rebuild_api::desktop_policy(),
@@ -657,7 +651,16 @@ async fn start_imports(
     if let (Err(error), _) | (_, Err(error)) = recovered {
         tracing::warn!(error = %format!("{error:#}"), "Source import recovery incomplete");
     }
-    Ok(imports)
+    let data_dir = writer
+        .lease()
+        .context("Storage lease unavailable")?
+        .data_dir();
+    let uploads = Arc::new(source_uploads::SourceUploadService::new(
+        Arc::clone(&imports),
+        data_dir.to_owned(),
+        source_uploads::FREE_SPACE_RESERVE,
+    ));
+    Ok((imports, uploads))
 }
 
 impl CoreRuntime {

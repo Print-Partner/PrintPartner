@@ -145,6 +145,14 @@ impl Server {
         panic!("job {job} did not finish");
     }
 
+    /// Uploads `files` and waits until their import is done.
+    async fn imported(&self, source: i64, files: &[(&str, &[u8])]) {
+        let (status, accepted) = self.upload(source, files).await;
+        assert_eq!(status, 202, "{accepted}");
+        let job = self.finished(accepted["job_id"].as_str().unwrap()).await;
+        assert_eq!(job["status"], "done", "{job}");
+    }
+
     /// The statuses `/ws/jobs/{job}` sends until the stream ends.
     async fn streamed_statuses(&self, job: &str) -> Vec<String> {
         let host = self.origin.trim_start_matches("http://");
@@ -163,16 +171,19 @@ impl Server {
         assert!(head.starts_with(b"HTTP/1.1 101"));
         let mut statuses = Vec::new();
         loop {
-            let Ok(first) = tokio::time::timeout(Duration::from_secs(20), socket.read_u8()).await
-            else {
+            // Server frames are unmasked; job snapshots fit a 16-bit length.
+            let mut frame = [0u8; 2];
+            let read = socket.read_exact(&mut frame);
+            if tokio::time::timeout(Duration::from_secs(20), read)
+                .await
+                .is_err()
+            {
                 panic!("stream stalled after {statuses:?}");
-            };
-            let opcode = first.unwrap() & 0x0f;
-            let length = match socket.read_u8().await.unwrap() & 0x7f {
-                126 => usize::from(socket.read_u16().await.unwrap()),
-                127 => usize::try_from(socket.read_u64().await.unwrap()).unwrap(),
-                length => usize::from(length),
-            };
+            }
+            let (opcode, mut length) = (frame[0] & 0x0f, usize::from(frame[1] & 0x7f));
+            if length == 126 {
+                length = usize::from(socket.read_u16().await.unwrap());
+            }
             let mut payload = vec![0; length];
             socket.read_exact(&mut payload).await.unwrap();
             if opcode != 1 {
@@ -336,10 +347,7 @@ async fn upload_files_publishes_and_reuses_revisions() {
 
     // Different files make a new revision; the earlier one stays on disk.
     let c = stl("c");
-    let (status, accepted) = server.upload(source, &[("c.stl", &c)]).await;
-    assert_eq!(status, 202, "{accepted}");
-    let done = server.finished(accepted["job_id"].as_str().unwrap()).await;
-    assert_eq!(done["status"], "done", "{done}");
+    server.imported(source, &[("c.stl", &c)]).await;
     let second = server.revision(source).await;
     assert_ne!(second, first);
     let files = revision_files(&server.data);
@@ -349,10 +357,7 @@ async fn upload_files_publishes_and_reuses_revisions() {
     );
 
     // The same files again keep the revision.
-    let (status, accepted) = server.upload(source, &[("c.stl", &c)]).await;
-    assert_eq!(status, 202, "{accepted}");
-    let done = server.finished(accepted["job_id"].as_str().unwrap()).await;
-    assert_eq!(done["status"], "done", "{done}");
+    server.imported(source, &[("c.stl", &c)]).await;
     assert_eq!(server.revision(source).await, second);
     assert_eq!(revision_files(&server.data), files);
     server.stop().await;

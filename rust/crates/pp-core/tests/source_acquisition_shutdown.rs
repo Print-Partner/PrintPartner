@@ -2,8 +2,7 @@
 //! Draining Source acquisition workers through SourceAcquisitions::shutdown.
 use pp_core::{
     source_acquisition::{
-        AcquisitionDrain, AcquisitionError, AcquisitionReply, CaptureRequest, CapturedFile,
-        SourceAcquisitions,
+        AcquisitionDrain, AcquisitionReply, CaptureRequest, CapturedFile, SourceAcquisitions,
     },
     uploads::SourceImports,
 };
@@ -252,7 +251,7 @@ fn hold_input<'scope>(
     (release, worker)
 }
 
-fn refusal(result: Result<AcquisitionReply, AcquisitionError>) -> String {
+fn refusal(result: Result<AcquisitionReply, impl std::fmt::Display>) -> String {
     match result {
         Ok(reply) => panic!("expected refusal, got {:?}", reply.wait()),
         Err(error) => format!("{error:#}"),

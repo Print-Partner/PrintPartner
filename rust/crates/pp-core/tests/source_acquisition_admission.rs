@@ -1,9 +1,7 @@
 #![cfg(feature = "desktop_rebuild")]
 //! Bounded admission of Source acquisitions through SourceAcquisitions::acquire.
 use pp_core::{
-    source_acquisition::{
-        AcquisitionError, AcquisitionReply, CaptureRequest, CapturedFile, SourceAcquisitions,
-    },
+    source_acquisition::{AcquisitionReply, CaptureRequest, CapturedFile, SourceAcquisitions},
     uploads::SourceImports,
 };
 use pp_source::SourcePath;
@@ -239,7 +237,9 @@ fn hold<'scope>(
     (release, worker)
 }
 
-fn refusal(result: Result<AcquisitionReply, AcquisitionError>) -> String {
+fn refusal(
+    result: Result<AcquisitionReply, pp_core::source_acquisition::AcquisitionError>,
+) -> String {
     match result {
         Ok(reply) => panic!("expected refusal, got {:?}", reply.wait()),
         Err(error) => format!("{error:#}"),

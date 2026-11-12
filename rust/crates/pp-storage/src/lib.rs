@@ -78,9 +78,11 @@ pub mod working_drafts;
 #[cfg(feature = "desktop_rebuild")]
 mod write;
 mod writer_admission;
+pub use writer_admission::WriterFailure;
+
 #[cfg(feature = "desktop_rebuild")]
 use restore::recover as recover_restore;
-pub use writer_admission::WriterFailure;
+
 #[cfg(not(feature = "desktop_rebuild"))]
 fn recover_restore(_: &Path) -> Result<bool> {
     Ok(false)

@@ -35,7 +35,7 @@ fn state(source: &Path) -> Vec<(PathBuf, u64, SystemTime, Option<Vec<u8>>)> {
 fn run(source: &Path) -> Result<DryRunReport, ImportError> {
     let temporary = tempfile::tempdir().unwrap();
     let before = state(source);
-    let result = dry_run_in(source, temporary.path());
+    let result = dry_run_in(source, None, temporary.path());
     assert!(before == state(source), "the dry run changed its source");
     assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
     result
@@ -217,35 +217,83 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
 fn a_destination_is_inspected_and_never_created() {
     let parent = tempfile::tempdir().unwrap();
     let absent = parent.path().join("absent");
-    assert_eq!(inspect_destination(&absent).unwrap(), Destination::Free);
+    assert_eq!(inspect_destination(&absent), Destination::Free);
     assert!(!absent.exists(), "inspecting created the destination");
     let empty = Installation::create(Fixture::Empty).unwrap();
-    assert_eq!(
-        inspect_destination(empty.path()).unwrap(),
-        Destination::Free
-    );
+    assert_eq!(inspect_destination(empty.path()), Destination::Free);
     let marked = Installation::create(Fixture::RustMarked).unwrap();
-    assert_eq!(
-        inspect_destination(marked.path()).unwrap(),
-        Destination::Marked
-    );
+    assert_eq!(inspect_destination(marked.path()), Destination::Marked);
     // A damaged marker is refused for what it is, not as a Rust installation.
     let damaged = Installation::create(Fixture::MarkedCorrupt).unwrap();
-    let found = inspect_destination(damaged.path()).unwrap();
+    let found = inspect_destination(damaged.path());
     assert!(matches!(found, Destination::BadMarker(_)), "{found:?}");
     assert!(found.to_string().contains("is no valid marker"), "{found}");
     // The writer refuses a folder with a Node lease directory, so the import does too.
     let leased = Installation::create(Fixture::EmptyWithLeaseLeftovers).unwrap();
     let lease = Destination::NotEmpty(LEASE.into());
-    assert_eq!(inspect_destination(leased.path()).unwrap(), lease);
+    assert_eq!(inspect_destination(leased.path()), lease);
     let node = Installation::create(Fixture::NodeSchema34).unwrap();
     let before = state(node.path());
     let holds = Destination::NotEmpty(pp_testkit::DATABASE_FILE.into());
-    assert_eq!(inspect_destination(node.path()).unwrap(), holds);
+    assert_eq!(inspect_destination(node.path()), holds);
     assert!(
         before == state(node.path()),
         "inspecting changed the destination"
     );
+    // A destination that cannot be read is a refusal with its reason, not a
+    // failed run. A file is one that every platform has.
+    let file = parent.path().join("file");
+    std::fs::write(&file, "synthetic").unwrap();
+    let found = inspect_destination(&file);
+    assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
+    assert!(found.to_string().contains("cannot be read ("), "{found}");
+    let report = dry_run_in(node.path(), Some(&file), parent.path()).unwrap();
+    assert_eq!(report.destination, Some(found));
+}
+
+#[test]
+fn a_temporary_directory_inside_the_source_or_the_destination_is_refused() {
+    let folder = node_folder();
+    let inside = folder.path().join("synthetic-tmp");
+    std::fs::create_dir(&inside).unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let before = state(folder.path());
+    let refused = |target: Option<&Path>, temporary: &Path, named: &Path| {
+        let error = dry_run_in(folder.path(), target, temporary).unwrap_err();
+        let text = error.to_string();
+        let ImportError::TemporaryInside { folder: found, .. } = error else {
+            panic!(
+                "{} was not refused as a temporary directory: {text}",
+                temporary.display()
+            );
+        };
+        assert_eq!(found, named);
+        assert!(text.contains("Set TMPDIR"), "{text}");
+        assert!(
+            before == state(folder.path()),
+            "the refusal wrote into the source"
+        );
+        assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
+    };
+    refused(None, folder.path(), folder.path());
+    refused(None, &inside, folder.path());
+    refused(
+        Some(destination.path()),
+        destination.path(),
+        destination.path(),
+    );
+    // A link that leads into the source is resolved first.
+    #[cfg(unix)]
+    {
+        let beside = tempfile::tempdir().unwrap();
+        let link = beside.path().join("link");
+        std::os::unix::fs::symlink(&inside, &link).unwrap();
+        refused(None, &link, folder.path());
+    }
+    // A directory beside both is used.
+    let beside = tempfile::tempdir().unwrap();
+    let report = dry_run_in(folder.path(), Some(destination.path()), beside.path()).unwrap();
+    assert_eq!(report.destination, Some(Destination::Free));
 }
 
 #[test]
@@ -268,7 +316,7 @@ fn a_database_that_cannot_fit_is_refused_before_it_is_copied() {
         .unwrap();
     database.set_len(1 << 43).unwrap();
     let temporary = tempfile::tempdir().unwrap();
-    let error = dry_run_in(folder.path(), temporary.path()).unwrap_err();
+    let error = dry_run_in(folder.path(), None, temporary.path()).unwrap_err();
     let staged = std::fs::read_dir(temporary.path()).unwrap().count();
     assert_eq!(staged, 0, "the refusal left its stage behind");
     let refusal = error.to_string();

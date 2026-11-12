@@ -5,7 +5,7 @@ import type { ProxyOptions } from "vite";
 export const CORE_URL_ENV = "PP_UI_CORE_URL";
 
 /** Path prefixes the dev server forwards to the Rust core. Vite serves the rest. */
-export const CORE_PATHS = ["/api", "/ws", "/health"] as const;
+export const CORE_PATHS = ["/api", "/ws", "/health", "/auth"] as const;
 
 /**
  * Builds the dev server proxy. There is no default target: without

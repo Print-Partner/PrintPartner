@@ -72,7 +72,8 @@ pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<()> {
             let outcome = match error {
                 node_import::ImportError::Io { .. }
                 | node_import::ImportError::Sqlite(_)
-                | node_import::ImportError::CopyMismatch(_) => "failed",
+                | node_import::ImportError::CopyMismatch(_)
+                | node_import::ImportError::Flush { .. } => "failed",
                 _ => "refused",
             };
             eprintln!("import {outcome}: {error}");

@@ -54,8 +54,8 @@ Schema 34, upgraded to 48 on a temporary copy.
 
 Then it lists:
 
-- **Installation value and accounts:** one line with the `tenant_id` value the data is stored under and the number of accounts, and a line each when the value is not `default` or more than one account is stored.
-- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column.
+- **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
+- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
 - **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.
@@ -82,7 +82,7 @@ Each refusal exits 1 and writes nothing to the source.
 | Too little free space in the temporary directory | The message gives the bytes needed and the bytes free. For an archive this check runs after extraction; a database that does not fit while it is extracted ends the run with `import failed:` instead. |
 | `TMPDIR` that is the source folder or the destination, or lies inside one | A dry run writes nothing into either. Set `TMPDIR` to a directory outside both. |
 
-A single value other than `default`, and more than one account, are reported by the dry run and do not fail it. The import will refuse both. See [Installation value and accounts](#installation-value-and-accounts).
+A value other than `default` in any table, and more than one account, are reported by the dry run and do not fail it. The import will refuse both. See [Installation value and accounts](#installation-value-and-accounts).
 
 ## Import
 
@@ -103,9 +103,13 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 What it does:
 
 1. Creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
-2. From a folder, copies the database files and every backup root: regular files and directories, no links. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. A folder has no cap on its size, on the size of one file or on the number of entries: the only size refusal for a folder is too little free space at the destination. From an archive, validates and extracts it as a restore does, under the restore caps (100,000 entries, 20 GiB expanded, 8 GiB for one entry). An installation above those caps is imported from a folder: a filesystem snapshot or a copy of the stopped data folder (owner decision, 2026-11-12).
+2. From a folder, copies the database files and every backup root: regular files and directories, no links. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. The read-back runs before the flush in step 4 and reads the page cache: it catches a wrong copy, and it is not a check of the disk. A folder has no cap on its size, on the size of one file or on the number of entries: the only size refusal for a folder is too little free space at the destination. From an archive, validates and extracts it as a restore does, under the restore caps (100,000 entries, 20 GiB expanded, 8 GiB for one entry). An installation above those caps is imported from a folder: a filesystem snapshot or a copy of the stopped data folder (owner decision, 2026-11-12).
 3. Checks and upgrades the staged database as the dry run does, then deletes the rows of `sessions` and `password_reset_tokens`. Lease files and `backups/` are not copied. Users and password hashes are.
-4. Moves the database and the roots into the destination, saves the report as `import-report.json`, removes the stage, and writes `.pp-rust-owned.json` last.
+4. Checkpoints and closes the staged database, so it is one file with no `-wal` or `-shm` beside it. Then it flushes everything it staged to disk in one call: `syncfs` on the destination's filesystem on Linux, which the Docker image runs on. Other platforms have no such call, so there it syncs every staged file and directory. The stage is inside the destination, so one flush covers both. A flush that fails ends the run with `import failed:` and no marker.
+5. Moves the database and the roots into the destination, saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
+6. Writes `.pp-rust-owned.json` last, and syncs it and its directory.
+
+A destination with a marker is complete and durable; one without a marker is discarded. Two rules enforce the second half: the Rust runtime refuses to open a folder that holds data and no marker (`ownership_marker::admit_writer`), and the import refuses a destination that is not empty (`inspect_destination`).
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 
@@ -158,4 +162,4 @@ No Rust code reads these. The import keeps them byte for byte, also for features
 
 Node stores every row under a `tenant_id` value. It writes `default` when it runs without accounts or with single-user sign-in, and for the first account otherwise. A later account's id, `basic-<login>` or `anonymous` appear in other setups. The Rust-only runtime maps every session to `default` (`ps/auth/policy.rs`), so it cannot see data under another value, and it refuses to sign in when `users` holds more than one row.
 
-The dry run prints a value other than `default` when any table holds rows under one, else the value that holds the Builds and Sources, and the number of accounts, as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.
+The dry run reads the values from every table that has the column, not only from Builds and Sources: an account with no Build and no Source still stores its settings and events under its own value. It prints them masked (see [Report](#report)), and the number of accounts as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.

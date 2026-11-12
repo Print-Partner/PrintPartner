@@ -124,15 +124,55 @@ impl fmt::Display for ImportReport {
 /// archive, into `destination`, which must be absent or empty by the
 /// ownership-marker rule. The source is never opened for writing.
 pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportError> {
-    import_with(source, destination, archive::Limits::default())
+    let limits = archive::Limits::default();
+    import_with(source, destination, limits, flush_destination)
 }
 
-/// [`import`] with the caps an archive must stay under. A folder has none:
-/// the only size refusal for one is free space at the destination.
+/// Makes everything the import staged in `destination` durable. Linux
+/// flushes the destination's filesystem in one call. Other platforms have no
+/// such call, so every staged file and directory is synced.
+fn flush_destination(destination: &Path) -> std::io::Result<()> {
+    if pp_os::SYNCS_FILESYSTEM {
+        return pp_os::sync_filesystem(destination);
+    }
+    sync_tree(&destination.join(STAGE))
+}
+
+/// Syncs every file under `root`, then each directory after its entries.
+pub(super) fn sync_tree(root: &Path) -> std::io::Result<()> {
+    let (mut pending, mut directories) = (vec![root.to_owned()], Vec::new());
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else {
+                pp_os::sync_file(&entry.path())?;
+            }
+        }
+        directories.push(directory);
+    }
+    directories
+        .iter()
+        .rev()
+        .try_for_each(|directory| pp_os::sync_directory(directory))
+}
+
+/// [`import`] with the caps an archive must stay under, and with the call
+/// that flushes the destination's filesystem. A folder has no caps: the only
+/// size refusal for one is free space at the destination.
+///
+/// Durability rests on this order, and nothing may reorder it: every file is
+/// copied and read back; the database is checkpointed and closed; one flush
+/// of the destination's filesystem; the rename into place and a sync of the
+/// destination directory; the ownership marker last, synced with its
+/// directory. A destination with a marker is complete and durable. One
+/// without is discarded.
 pub(super) fn import_with(
     source: &Path,
     destination: &Path,
     limits: archive::Limits,
+    flush: fn(&Path) -> std::io::Result<()>,
 ) -> Result<ImportReport, ImportError> {
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
     match inspect_destination(destination) {
@@ -159,14 +199,10 @@ pub(super) fn import_with(
         let shapes = counts.unnamed.iter().map(|unnamed| unnamed.shape.clone());
         return Err(ImportError::Unnamed(shapes.collect()));
     }
-    if let Some(value) = counts
-        .installation
-        .as_deref()
-        .filter(|value| *value != "default")
-    {
+    if let Some(value) = (counts.installations.iter()).find(|value| *value != "default") {
         let stored = |table: &super::TableCount| table.by_tenant.get(value).copied();
         return Err(ImportError::Installation {
-            value: value.to_owned(),
+            value: value.clone(),
             rows: counts.tables.iter().filter_map(stored).sum(),
         });
     }
@@ -175,6 +211,22 @@ pub(super) fn import_with(
     }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
+    // The closed database is one file. A write-ahead log left beside it
+    // would hold rows the published copy lacks.
+    for suffix in ["-wal", "-shm"] {
+        let left = stage.0.join(format!("{}{suffix}", archive::DATABASE_FILE));
+        if left.symlink_metadata().is_ok() {
+            let detail = format!("its {suffix} file is still there after it was closed");
+            return Err(ImportError::Database(detail));
+        }
+    }
+    // Everything staged reaches the disk before the folder can become an
+    // installation. The stage is a directory the import made inside the
+    // destination, so both are one filesystem and one flush covers them.
+    flush(destination).map_err(|source| ImportError::Flush {
+        path: destination.to_owned(),
+        source,
+    })?;
     let report = ImportReport::new(&counts, copied.0, copied.1);
     publish(&stage.0, destination, &report)?;
     drop(stage);
@@ -212,7 +264,9 @@ fn copy_roots(source: &Path, stage: &Path) -> Result<(u64, u64), ImportError> {
 }
 
 /// Copies one file, keeps its modification time, and reads the copy back:
-/// its SHA-256 must equal that of the bytes read from the source.
+/// its SHA-256 must equal that of the bytes read from the source. The read
+/// comes from the page cache, so it catches a wrong copy, not a bad disk.
+/// The copy is not synced here: the import flushes everything once, later.
 pub(super) fn copy_verified(from: &Path, to: &Path) -> Result<u64, ImportError> {
     let missing = || io_error(from, std::io::ErrorKind::NotFound.into());
     let mut source = open_regular(from)?.ok_or_else(missing)?;
@@ -233,7 +287,7 @@ pub(super) fn copy_verified(from: &Path, to: &Path) -> Result<u64, ImportError> 
     if let Ok(modified) = source.metadata().and_then(|metadata| metadata.modified()) {
         copy.set_modified(modified).map_err(written)?;
     }
-    copy.sync_all().map_err(written)?;
+    drop(copy);
     confirm_copy(to, read.finalize().as_slice())?;
     Ok(bytes)
 }
@@ -294,8 +348,9 @@ pub(super) fn ensure_room(stage: &Path, needed: u64) -> Result<(), ImportError> 
     Err(ImportError::DestinationSpace { needed, available })
 }
 
-/// Moves the staged database and roots into `destination` and saves the
-/// report beside them.
+/// Moves the staged database and roots into `destination`, saves the report
+/// beside them and syncs the directory. The staged files are durable before
+/// this runs.
 fn publish(stage: &Path, destination: &Path, report: &ImportReport) -> Result<(), ImportError> {
     let roots = archive::FULL_ROOTS.iter().map(|(root, _)| *root);
     for name in [archive::DATABASE_FILE].into_iter().chain(roots) {
@@ -310,7 +365,5 @@ fn publish(stage: &Path, destination: &Path, report: &ImportReport) -> Result<()
     let mut file = File::create_new(&path).map_err(saved)?;
     file.write_all(&text).map_err(saved)?;
     file.sync_all().map_err(saved)?;
-    let database = destination.join(archive::DATABASE_FILE);
-    pp_os::sync_file(&database).map_err(|error| io_error(&database, error))?;
     pp_os::sync_directory(destination).map_err(|error| io_error(destination, error))
 }

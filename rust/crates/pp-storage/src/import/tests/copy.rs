@@ -1,5 +1,5 @@
 use super::*;
-use crate::import::copy::{confirm_copy, copy_verified, ensure_room, import_with};
+use crate::import::copy::{confirm_copy, copy_verified, ensure_room, import_with, sync_tree};
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
 
@@ -153,13 +153,41 @@ fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
     let uncapped = import(source.path(), &parent.path().join("uncapped")).unwrap();
     for (index, limits) in caps.into_iter().enumerate() {
         let refused = parent.path().join(format!("archive-{index}"));
-        let error = import_with(archive.path(), &refused, limits).unwrap_err();
+        let flush = pp_os::sync_filesystem;
+        let error = import_with(archive.path(), &refused, limits, flush).unwrap_err();
         assert!(matches!(error, ImportError::InvalidArchive(_)), "{error:?}");
         assert_eq!(entries(&refused), [] as [String; 0], "{error}");
         let destination = parent.path().join(format!("folder-{index}"));
-        let report = import_with(source.path(), &destination, limits).unwrap();
+        let report = import_with(source.path(), &destination, limits, flush).unwrap();
         assert_eq!(report, uncapped);
     }
+}
+
+/// The marker is written only after the staged files were flushed. A flush
+/// that fails ends the import with its own error and leaves a folder the
+/// next import accepts.
+#[test]
+fn a_failed_flush_leaves_no_marker_and_is_reported() {
+    let source = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let limits = archive::Limits::default();
+    let failing = |_: &Path| Err(std::io::Error::other("synthetic flush failure"));
+    let error = import_with(source.path(), &destination, limits, failing).unwrap_err();
+    let text = error.to_string();
+    let ImportError::Flush { path, .. } = error else {
+        panic!("a failed flush was reported as: {text}");
+    };
+    assert_eq!(path, destination);
+    assert!(text.contains("synthetic flush failure"), "{text}");
+    assert_eq!(entries(&destination), Vec::<String>::new());
+    import(source.path(), &destination).unwrap();
+    assert!(destination.join(ownership_marker::MARKER_FILE).is_file());
+
+    // The walk that platforms without one flush call use reaches every
+    // staged file and directory.
+    sync_tree(&destination).unwrap();
+    assert!(sync_tree(&destination.join("absent")).is_err());
 }
 
 #[test]
@@ -206,7 +234,7 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
         "{error:?}"
     );
     assert!(
-        refusal.starts_with("Rows stored under the installation value \"solo\": 5."),
+        refusal.starts_with("Rows stored under the installation value \"***\": 5."),
         "{refusal}"
     );
     assert!(

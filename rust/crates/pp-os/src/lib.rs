@@ -271,6 +271,25 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
     platform::sync_directory(path)
 }
 
+/// Whether [`sync_filesystem`] flushes anything on this platform. Where it
+/// is false, a caller that needs durability syncs each file it writes.
+pub const SYNCS_FILESYSTEM: bool = cfg!(target_os = "linux");
+
+/// Flush every file and directory of the filesystem that holds `path` in one
+/// call: `syncfs` on Linux. It does nothing on other platforms, which have
+/// no such call for an unprivileged process.
+pub fn sync_filesystem(path: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(rustix::fs::syncfs(std::fs::File::open(path)?)?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 /// `path` as a user or Node writes it. The verbatim `\\?\C:\…` that
 /// `canonicalize` returns on Windows becomes `C:\…`, and `\\?\UNC\server\share\…`
 /// becomes `\\server\share\…`. Every other prefix, such as `\\?\GLOBALROOT` or

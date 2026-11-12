@@ -71,6 +71,11 @@ pub enum ImportError {
     Accounts(u64),
     /// A copied file read back differently from its source.
     CopyMismatch(PathBuf),
+    /// The flush of the staged files to disk failed. No marker is written.
+    Flush {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// The staging directory has too little free space.
     NoSpace {
         directory: PathBuf,
@@ -144,7 +149,9 @@ impl fmt::Display for ImportError {
             Self::SplitTenants(tenants) => write!(
                 f,
                 "Builds or Sources belong to more than one tenant ({}); the import does not merge tenants",
-                tenants.join(", ")
+                (tenants.iter().map(|tenant| masked(tenant)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::Destination(found) => {
                 write!(
@@ -159,7 +166,8 @@ impl fmt::Display for ImportError {
             ),
             Self::Installation { value, rows } => write!(
                 f,
-                "Rows stored under the installation value {value:?}: {rows}. The import handles only data stored under \"default\" today. Send the dry-run report back so this case can be added"
+                "Rows stored under the installation value {:?}: {rows}. The import handles only data stored under \"default\" today. Send the dry-run report back so this case can be added",
+                masked(value)
             ),
             Self::Accounts(accounts) => write!(
                 f,
@@ -169,6 +177,11 @@ impl fmt::Display for ImportError {
                 f,
                 "The copy {} does not match its source. Check the disk, empty the destination and retry",
                 copy.display()
+            ),
+            Self::Flush { path, source } => write!(
+                f,
+                "The imported files could not be flushed to disk in {}: {source}. Empty the destination and retry",
+                path.display()
             ),
             Self::NoSpace {
                 directory,
@@ -274,7 +287,9 @@ pub fn inspect_destination(destination: &Path) -> Destination {
 pub struct TableCount {
     pub table: String,
     pub rows: u64,
-    /// Rows per `tenant_id`. Empty for a table without that column.
+    /// Rows per `tenant_id` value, as stored. Empty for a table without that
+    /// column. A value can hold a sign-in name; printing goes through
+    /// [`masked`].
     pub by_tenant: BTreeMap<String, u64>,
 }
 
@@ -286,7 +301,8 @@ pub struct Unnamed {
     pub items: u64,
 }
 
-/// What a dry run found. It holds keys, names and counts, never a stored value.
+/// What a dry run found. It holds keys, names and counts, and no stored
+/// value but the `tenant_id` values, which its text masks.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DryRunReport {
     pub source: SourceKind,
@@ -299,10 +315,10 @@ pub struct DryRunReport {
     pub printers: u64,
     /// Unmatched prints that are neither claimed nor dismissed.
     pub unmatched_prints: u64,
-    /// A `tenant_id` value other than `default` when any table holds rows
-    /// under one, else the value that holds the Builds and Sources, when
-    /// there are any. The Rust-only runtime reads only `default`.
-    pub installation: Option<String>,
+    /// Every `tenant_id` value that any table holds rows under, as stored;
+    /// printing goes through [`masked`]. The Rust-only runtime reads only
+    /// `default`.
+    pub installations: BTreeSet<String>,
     /// Rows in `users`. The Rust-only runtime signs in only with one or none.
     pub users: u64,
     /// The destination, when the dry run was given one.
@@ -336,14 +352,20 @@ impl fmt::Display for DryRunReport {
             "{} Builds, {} Sources, {} printers, {} unmatched prints.",
             self.builds, self.sources, self.printers, self.unmatched_prints
         )?;
-        let value = self.installation.as_deref().unwrap_or("default");
-        writeln!(
-            f,
-            "Installation value {value:?}; accounts stored: {}.",
-            self.users
-        )?;
+        let values: Vec<String> = (self.installations.iter())
+            .map(|value| format!("{:?}", masked(value)))
+            .collect();
+        let label = match values.len() {
+            1 => "Installation value",
+            _ => "Installation values",
+        };
+        let values = match values.len() {
+            0 => "none".to_owned(),
+            _ => values.join(", "),
+        };
+        writeln!(f, "{label} {values}; accounts stored: {}.", self.users)?;
         let refused = "so the import would refuse this installation";
-        if value != "default" {
+        if self.installations.iter().any(|value| value != "default") {
             writeln!(
                 f,
                 "The Rust runtime reads only data under \"default\", {refused}."
@@ -362,7 +384,7 @@ impl fmt::Display for DryRunReport {
         for table in self.tables.iter().filter(|table| table.rows > 0) {
             write!(f, "  {} {}", table.table, table.rows)?;
             for (tenant, rows) in &table.by_tenant {
-                write!(f, " {tenant}={rows}")?;
+                write!(f, " {}={rows}", masked(tenant))?;
             }
             writeln!(f)?;
         }
@@ -681,6 +703,19 @@ fn key_pattern(key: &str) -> String {
     pattern
 }
 
+/// A `tenant_id` value as a report or a message may show it. Values are
+/// counted and compared as stored and masked only here, when printed, so two
+/// account ids stay two values. `default` and
+/// `anonymous` are Node's own words. Any other value is an account id or
+/// `basic-<login>`, so only the `basic-` prefix is kept.
+fn masked(value: &str) -> String {
+    match value {
+        "default" | "anonymous" => value.to_owned(),
+        _ if value.starts_with("basic-") => "basic-***".to_owned(),
+        _ => "***".to_owned(),
+    }
+}
+
 fn quoted(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -817,11 +852,11 @@ fn measure(
             tenants.into_iter().cloned().collect(),
         ));
     }
-    // The Rust runtime cannot see a row under another value in any table,
-    // so one counts also when no Build or Source is stored under it.
-    let mut values = tables.iter().flat_map(|table| table.by_tenant.keys());
-    let other = values.find(|value| *value != "default");
-    let installation = other.or(tenants.into_iter().next()).cloned();
+    // Every table with the column counts: an account without Builds or
+    // Sources still stores its settings and events under its own value.
+    let installations = (tables.iter())
+        .flat_map(|table| table.by_tenant.keys().cloned())
+        .collect();
 
     let settings: Vec<(String, String)> = {
         let mut statement = connection.prepare("SELECT key, value FROM app_settings")?;
@@ -875,7 +910,7 @@ fn measure(
             .map(|(_, value)| items(value.as_bytes(), 0))
             .sum(),
         unmatched_prints,
-        installation,
+        installations,
         users: table("users").map_or(0, |table| table.rows),
         destination: None,
         rows,

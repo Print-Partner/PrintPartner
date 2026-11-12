@@ -42,7 +42,7 @@ The web ESLint config limits `complexity` to 20, nesting depth to 5 and paramete
 ## Open the pull request
 
 1. Meet the [definition of done](definition-of-done.md).
-2. Before you push, run `just ci --fast` for a normal PR, or the full `just ci` for a sensitive PR as the [merge gate](definition-of-done.md#merge-gate) defines it. Fix every failure, and name the command under `## Evidence`. [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) describes both.
+2. Before your first push, run `just ci --fast` for a normal PR, or the full `just ci` for a sensitive PR as the [merge gate](definition-of-done.md#merge-gate) defines it. Fix every failure, and name the command under `## Evidence`. A later push, for a merge of `main` or a review fix, runs the short checks in [Set up and run checks](agent-workflow.md#set-up-and-run-checks) and relies on hosted CI. [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) describes both.
 3. Fill in every section of the [pull request template](../../.github/pull_request_template.md). Put verification output under `## Evidence`.
 4. Start the PR description with `Fixes GRE-xxx`. Split unmet acceptance items into a child ticket that quotes them verbatim, as [Fixes only](definition-of-done.md#fixes-only) describes.
 5. Don't move the ticket yourself. `linear-pr-sync.yml` sets In Review, Done, and In Progress from PR events. If the PR is blocked or escalated, add a comment to the ticket.

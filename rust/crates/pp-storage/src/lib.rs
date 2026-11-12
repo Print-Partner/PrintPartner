@@ -565,8 +565,8 @@ impl ReaderCheckout {
         self.connection.as_ref().expect("checked out connection")
     }
     #[cfg(feature = "desktop_rebuild")]
-    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
-        self.connection.as_mut().expect("checked out connection")
+    pub(crate) fn connection_mut(&mut self) -> Option<&mut Connection> {
+        self.connection.as_mut()
     }
     pub fn snapshot(&self, tenant: &str, key: &str) -> Result<SettingSnapshot> {
         snapshot(self.connection(), tenant, key)

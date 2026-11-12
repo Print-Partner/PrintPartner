@@ -97,10 +97,9 @@ pub type HeadPlates = (
 
 #[derive(Clone)]
 pub struct ReadClient {
-    shared: Arc<Shared>,
-    /// The reader pool [`ReadClient::read_plan`] reads on.
-    #[cfg(feature = "desktop_rebuild")]
-    readers: crate::SettingsClient,
+    /// The writer queue reads submit to, and the reader pool
+    /// [`ReadClient::read_plan`] reads on.
+    storage: crate::SettingsClient,
     repos: PathBuf,
     policy: auth::AuthPolicy,
 }
@@ -135,9 +134,7 @@ impl WriterOwner {
         auth::validate_policy(policy)?;
         Ok(ReadClient {
             policy,
-            shared: self.client.shared.clone(),
-            #[cfg(feature = "desktop_rebuild")]
-            readers: self.client.clone(),
+            storage: self.client.clone(),
             repos: self
                 .lease
                 .as_ref()
@@ -238,14 +235,17 @@ impl ReadClient {
             Some(id) => vec![plan_id(id).map_err(WriterFailure::Internal)?],
             None => Vec::new(),
         };
-        let mut reader = self.readers.checkout(wait)?;
+        let mut reader = self.storage.checkout(wait)?;
         let command = Command {
             credential,
             target: Target::Profiles(ids),
             repos: self.repos.clone(),
             policy: self.policy,
         };
-        let batch = execute(reader.connection_mut(), command).map_err(|error| {
+        let connection = reader
+            .connection_mut()
+            .ok_or_else(|| WriterFailure::Internal(anyhow!("Reader connection missing")))?;
+        let batch = execute(connection, command).map_err(|error| {
             let busy = error
                 .downcast_ref::<rusqlite::Error>()
                 .and_then(rusqlite::Error::sqlite_error_code)
@@ -275,14 +275,16 @@ impl ReadClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Batch> {
-        submit_read(&self.shared, cancelled, wait, |reply| Envelope::Read {
-            command: Command {
-                credential,
-                target,
-                repos: self.repos.clone(),
-                policy: self.policy,
-            },
-            reply,
+        submit_read(&self.storage.shared, cancelled, wait, |reply| {
+            Envelope::Read {
+                command: Command {
+                    credential,
+                    target,
+                    repos: self.repos.clone(),
+                    policy: self.policy,
+                },
+                reply,
+            }
         })
     }
 }

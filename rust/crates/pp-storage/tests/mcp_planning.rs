@@ -99,13 +99,13 @@ fn mcp_planning_confirmations_preserve_manifest_and_accepted_history() {
     drop(db);
     let (owner, _) = WriterOwner::open(root.path(), Limits::default()).unwrap();
     let db = rusqlite::Connection::open(&database).unwrap();
-    let kit = json!({"name":"Keep","layers":["Base"],"include":["keep.stl"],"exclude":["old.stl"],"selections":{"size":"350"},"replacements":{"stock":"custom"},"choice_tree":[{"id":"tree"}],"category_links":[{"id":"link"}],"future":{"enabled":true}});
+    let kit = json!({"name":"Keep","layers":["Base"],"include":["keep.stl"],"exclude":["old.stl","old.stl"],"selections":{"size":"350"},"replacements":{"stock":"custom"},"choice_tree":[{"id":"tree"}],"category_links":[{"id":"link"}],"future":{"enabled":true}});
     assert_manifest_refusals(&owner, &db, &kit);
     drop(db);
     let addon = run(
         &owner,
         "add_addon",
-        json!({"source_name":"Addon","suggested_excludes":["stock.stl"]}),
+        json!({"source_name":"Addon","suggested_excludes":["stock.stl","old.stl","stock.stl"]}),
     );
     assert_eq!(addon["ok"], true, "{addon}");
     let brief = run(
@@ -135,6 +135,7 @@ fn mcp_planning_confirmations_preserve_manifest_and_accepted_history() {
     let mut expected = kit;
     expected["exclude"] = json!(["old.stl", "stock.stl"]);
     assert_eq!(read("kit_manifest_1"), expected);
+    assert_eq!(addon["result"]["exclude"], expected["exclude"]);
     assert_eq!(
         read("build_planning.v1.1")["requirements"],
         json!([{"key":"1","value":"100000000000000000000","status":"unverified"}])

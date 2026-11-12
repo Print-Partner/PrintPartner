@@ -270,9 +270,13 @@ fn confirm_addon(
     };
     let mut result = json!({"layers":layers.into_iter().map(wire::layer).collect::<Vec<_>>()});
     if !excludes.is_empty() {
-        let mut merged = kit["exclude"].as_array().cloned().unwrap_or_default();
-        for s in excludes {
-            let s = json!(s);
+        // Node merges with `new Set`: drop every repeat, stored or new, keeping first occurrences.
+        let stored = kit["exclude"].as_array().cloned().unwrap_or_default();
+        let mut merged = Vec::new();
+        for s in stored
+            .into_iter()
+            .chain(excludes.into_iter().map(Value::from))
+        {
             if !merged.contains(&s) {
                 merged.push(s);
             }

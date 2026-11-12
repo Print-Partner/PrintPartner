@@ -100,7 +100,15 @@ python3 -m venv "${TMPDIR:-/tmp}/pp-dev-venv"
 PATH="${TMPDIR:-/tmp}/pp-dev-venv/bin:$PATH" python3 scripts/local-ci.py --only local-ci-self-test,python-lint --fail-on-skip
 ```
 
-Before you push, a normal PR runs `just ci --fast` and lists that command and its summary under Evidence. A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full `just ci`. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
+Local checks depend on the push (owner decision, 2026-11-12):
+
+| Push | Run locally before it |
+| --- | --- |
+| First push of a PR | A normal PR runs `just ci --fast`. A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full `just ci`. |
+| Merge of `main` that was clean, or resolved by keeping both sides without editing logic | `cargo fmt --check`, and clippy with `desktop_rebuild` on for the crates the PR changes (`-p` each). For a web or UI PR, the lint and typecheck of the packages it changes. |
+| Review fix, or a merge of `main` where you edited logic to resolve a conflict | The row above, plus the tests of the crates or packages the fix touched (`cargo nextest run -p <crate> --features desktop_rebuild`, or the package's test command). |
+
+For the last two rows, hosted CI at the pushed head is the full check: do not rerun `just ci --fast` or `just ci`. Local runs share each machine's cargo queue and took 80 to 90 minutes when this was decided, and every landing on `main` made open PRs pay that again. If hosted CI fails, fix it and push again; that push is not a review round. Under Evidence, list the commands you ran, their summaries, and for the last two rows that hosted CI is the full check. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
 
 A full local CI run exits 0 even when steps print SKIP, because a tool or platform is missing. A SKIP is not a pass. List each one under Evidence. For steps that must run on your machine, add `--fail-on-skip`:
 

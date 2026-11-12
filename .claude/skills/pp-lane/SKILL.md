@@ -13,7 +13,7 @@ A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lane
 2. Run `git fetch origin`. If the Handoff names a branch, check it out and resume from the head it names; if the PR has moved past that head, the PR is the truth. For fresh work, branch from current `main` with `git switch -c <branch> origin/main`, which refuses a branch name that already exists. Worktrees often start on an old commit. Write `git` and `gh` arguments literally; the [safety guard](../../../docs/development/agent-workflow.md#safety-guard) refuses shell expansions in them.
 3. Read the [definition of done](../../../docs/development/definition-of-done.md), [Review and merge](../../../docs/development/agent-workflow.md#review-and-merge), and the docs for the code you touch ([Architecture](../../../docs/architecture.md), [Desktop rebuild flag](../../../docs/desktop-rebuild.md), and any page the ticket links).
 4. Check overlap: list open PRs (`gh pr list --state open`) and skip or coordinate with any that touch the same files.
-5. Decide whether the PR is sensitive (below). Sensitive PRs run the full local set.
+5. Decide whether the PR is sensitive (below). Sensitive PRs run the full local set before their first push.
 
 ## Build
 
@@ -25,7 +25,14 @@ A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lane
 
 ## Check
 
-**Normal PRs run `just ci --fast`**: every local CI step except `nextest-off`, `nextest-on`, `doc-off`, and `doc-on`, plus `nextest-affected`, which runs nextest with `desktop_rebuild` on for the crates the branch changes and their reverse dependents. Run `git fetch origin` first so the merge base is current. [Run the required checks with one command](../../../docs/development/ci.md#run-the-required-checks-with-one-command) has the details. **Sensitive PRs run the full `just ci`.** Rust builds share one sccache through `RUSTC_WRAPPER`; leave it set. A SKIP is not a pass: list each one under Evidence.
+**Before the first push, normal PRs run `just ci --fast`**: every local CI step except `nextest-off`, `nextest-on`, `doc-off`, and `doc-on`, plus `nextest-affected`, which runs nextest with `desktop_rebuild` on for the crates the branch changes and their reverse dependents. Run `git fetch origin` first so the merge base is current. [Run the required checks with one command](../../../docs/development/ci.md#run-the-required-checks-with-one-command) has the details. **Sensitive PRs run the full `just ci`.** Rust builds share one sccache through `RUSTC_WRAPPER`; leave it set. A SKIP is not a pass: list each one under Evidence.
+
+**After the first push, do not rerun either.** Hosted CI is the full check for these pushes:
+
+- **Merge of `main`, clean or resolved without editing logic:** `cargo fmt --check`, and clippy with `desktop_rebuild` on for the crates the PR changes. For a web or UI PR, the lint and typecheck of the packages it changes.
+- **Review fix, or a merge where you edited logic:** the same, plus the tests of the crates or packages the fix touched (`cargo nextest run -p <crate> --features desktop_rebuild`).
+
+Then push. If hosted CI fails, fix it and push again; that push is not a fix round. When you start a check in the background, register a wait on it before you end your turn.
 
 ## Sensitive PRs
 

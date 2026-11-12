@@ -227,7 +227,7 @@ pub fn read_router(
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
-/// the integration writes and the printer read, from the same owner.
+/// the integration writes and the printer routes, from the same owner.
 fn setup_routes(
     owner: &Mutex<WriterOwner>,
     policy: AuthPolicy,
@@ -802,6 +802,9 @@ mod tests {
             "CreateIntegrationRequest" => {
                 json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
             }
+            "CreatePrinterRequest" => json!({"name": "Client contract", "model": "fixture",
+                "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220}),
+            "UpdatePrinterRequest" => json!({"name": "Client contract"}),
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,

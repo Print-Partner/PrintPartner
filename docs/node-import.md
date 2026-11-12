@@ -1,6 +1,6 @@
 # Node import
 
-The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats, and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
+The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)), and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
 The import lands in six steps. Only step 1 exists today.
 
@@ -21,17 +21,21 @@ Two decisions shape the later steps:
 ## Dry run
 
 ```sh
-PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive> --dry-run
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive> [--data <destination>] --dry-run
 ```
 
-The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`, which the Rust-only Docker image sets. `--from` is a stopped Node data folder, or a format 2 `full` backup archive that Node's `POST /backups` wrote. `--data` is accepted and not read.
+The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`, which the Rust-only Docker image sets. `--from` is a stopped Node data folder, or a format 2 `full` backup archive that Node's `POST /backups` wrote. With `--data`, the dry run reads that folder and reports whether it is as the import needs (absent, or empty by the ownership-marker rule and without a `.desktop-lease` entry) or would be refused (it holds data, a lease entry, a Rust installation, or a `.pp-rust-owned.json` entry that is not a valid marker, or it cannot be read, for example because it is a file; in the last two cases the report gives the reason). It reads the folder's entries only: it never creates the folder, and it does not check the folder's owner or permissions, which the import and the server check when they open it.
 
 What it does:
 
 1. Refuses the source for any reason under [Refusals](#refusals).
 2. Copies `print-partner.db`, its `-wal` and its `-journal` into a private directory under the system temporary directory (`TMPDIR`). From an archive it extracts the database and the single-file roots there, and only lists the other entries. SQLite never opens the source database, so no `-shm` or `-wal` file appears in the source. It does not follow links: a database file or `custom_filaments.json` that is a link fails the run, and a linked `repos` is not walked.
-3. Checks the copy as startup checks a live database (schema version, `PRAGMA integrity_check`, table shapes), which makes a second short-lived copy under `TMPDIR`, and upgrades it to the current Rust schema. The upgrade keeps a copy of the database per schema step until the run ends, so the temporary directory needs about 14 times the database size. The documented Docker run mounts `/tmp` as a 1 GB tmpfs ([Docker image](docker.md#run)), enough for a database of about 70 MB; for a larger one, set `TMPDIR` to a directory on a disk.
+3. Checks the copy as startup checks a live database (schema version, `PRAGMA integrity_check`, table shapes), which makes a second short-lived copy under `TMPDIR`, and upgrades it to the current Rust schema. The upgrade keeps no rollback copies: the staged copy is discarded whole when a step fails.
 4. Counts on the upgraded copy, prints the report, and removes the temporary directory. A run that is killed leaves `pp-import-dry-run-*` under `TMPDIR`; delete it.
+
+The dry run refuses before it creates anything when `TMPDIR` is the source folder or the destination, or lies inside one: it must write nothing there.
+
+It checks free space in the temporary directory once and refuses with the bytes needed and the bytes free. For a folder the check comes before the copy and needs twice the database files plus 64 MB: the copy, and beside it the larger of the startup check's short-lived copy and the upgrade's write-ahead log. For an archive the check comes after extraction. The dry run extracts only the database and the single-file roots, so the archive's own size does not count; once they are extracted, it needs the database's size plus 64 MB more for the same two things. Nothing checks space before extraction, so an archive whose database does not fit fails during extraction with `import failed:`, not with a refusal. The temporary copy is removed and the archive is not touched. The documented Docker run mounts `/tmp` as a 1 GB tmpfs ([Docker image](docker.md#run)), enough for a database of about 450 MB. To stage elsewhere, set `TMPDIR` to a directory on a disk, for example `docker run -e TMPDIR=/stage -v <volume>:/stage ...`.
 
 The counts describe the upgraded copy, not the source file. The upgrade adds again any starter slicer profile that was deleted, and applies Node's Source revision repair.
 
@@ -49,10 +53,12 @@ Schema 34, upgraded to 48 on a temporary copy.
 
 Then it lists:
 
-- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column.
+- **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
+- **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
-- **Stored JSON the inventory does not name:** every other setting or column that holds a JSON object or array, as `setting <key>` or `table.column` with its count. The inventory below was built by reading code and may be incomplete. Report every line here before importing: each one needs a row or a place under Copied unchanged.
+- **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.
+- **Stored JSON the inventory does not name:** every other setting or column that holds a JSON object or array, as `setting <key>` or `table.column` with its count. The inventory below was built by reading code and may be incomplete. The dry run lists them and still exits 0. The import itself will refuse while any line is here: every stored JSON shape must be named as converted, copied unchanged, kept unused or dropped. So run the dry run on a copy of the real data, report every line, and import after the inventory names them.
 
 "Unmatched prints" counts entries of `printer.unattributed_prints` with no `claimed_at` time and no `dismissed: true`. "Printers" counts the elements of `printer.fleet`; a value that is not an array counts as none.
 
@@ -72,8 +78,10 @@ Each refusal exits 1 and writes nothing to the source.
 | Schema above 34 | Not a Node database, for example a backup a Rust installation made. |
 | Failed `PRAGMA integrity_check` or table-shape check | The database is damaged. |
 | Builds or Sources in more than one tenant | The import does not merge tenants. |
+| Too little free space in the temporary directory | The message gives the bytes needed and the bytes free. For an archive this check runs after extraction; a database that does not fit while it is extracted ends the run with `import failed:` instead. |
+| `TMPDIR` that is the source folder or the destination, or lies inside one | A dry run writes nothing into either. Set `TMPDIR` to a directory outside both. |
 
-A single tenant other than `default` is reported, not refused. Whether the import moves it to `default` is an open decision.
+A value other than `default` in any table, and more than one account, are reported by the dry run and do not fail it. The import will refuse both. See [Installation value and accounts](#installation-value-and-accounts).
 
 ## Conversion inventory
 
@@ -96,19 +104,27 @@ A single tenant other than `default` is reported, not refused. Whether the impor
 | 6 | settings `role_filaments_{build}`, `plan_variant_selection_{build}`, `kit_manifest_{build}` | `ps/working_drafts/preparation.rs`, `ps/build_graph/variants.rs`, `ps/manifest_options/model.rs` | one struct each; spool id one type | pending |
 | 6 | `plan_snapshots.payload_json` | `ps/working_drafts/restore.rs`, `ps/catalog.rs` | `SnapshotPayload` | pending |
 | 6 | setting `api_keys_v1` | `ps/auth/keys.rs`, re-hashes a legacy `keyHash` on load | `StoredKey`, re-hashed once | pending |
-| 6 | Checked, not rewritten: settings `stl_naming_defaults`, `build_planning.v1.{build}`; `plan_decisions.params_json`, `plan_decisions.result_json`; `plan_draft_required_unit_reconciliations.selection_basis_json`, `plan_draft_required_unit_reconciliations.result_json`; files `.printpartner-source-snapshot.json` under `repos/` | already typed, or stored without reading | must pass today's typed reader | pending |
+| 6 | Checked, not rewritten: settings `stl_naming_defaults`, `build_planning.v1.{build}`, `build_planning.create.{key}` (a Build id as text, read by `ps/build_graph/create_with_brief.rs`; its key ends in free text, so the report counts these keys and does not print them); `plan_decisions.params_json`, `plan_decisions.result_json`; `plan_draft_required_unit_reconciliations.selection_basis_json`, `plan_draft_required_unit_reconciliations.result_json`; files `.printpartner-source-snapshot.json` under `repos/` | already typed, or stored without reading | must pass today's typed reader | pending |
 
 ### Copied unchanged
 
 The import will copy these byte for byte; step 2 writes the copy and its checks:
 
 - Accepted Plan, Required-unit and Plate rows. Step 2 compares their digests with the source's.
-- Settings whose value is not a JSON object or array. `build_planning.create.{key}` holds a Build id as text; its key ends in free text, so the report counts these keys and does not print them.
-- Slicer profile text that Rust keeps opaque (`ps/profiles.rs`): `printer_profiles.raw_json`, `printer_profiles.resolved_flat_config`, `process_profiles.resolved_flat_config`, `filament_profiles.raw_json`, `filament_profiles.resolved_flat_config`, `filament_profiles.retraction`.
-- Tables Rust does not read: `board_posts`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
+- Settings whose value is not a JSON object or array.
+- Slicer profile text, which Rust reads and keeps opaque (`ps/profiles.rs`): `printer_profiles.raw_json`, `printer_profiles.resolved_flat_config`, `process_profiles.resolved_flat_config`, `filament_profiles.raw_json`, `filament_profiles.resolved_flat_config`, `filament_profiles.retraction`.
 
 The import will not carry `sessions`, `password_reset_tokens`, lease files or `backups/`. It will carry users and password hashes.
 
-### Settings without a row yet
+### Kept, not used by Rust
 
-Node also writes these settings. No row names them yet, so the dry run lists each one that holds a JSON object or array: `filename_grouping:{build}` (read by `ps/jobs.rs`), and `manifest_v2_{id}`, `integration_webhooks_v1`, `printer.print_outcomes`, `assistant_feedback`, `assistant_chat_history` and `assistant_daily_usage`, which Rust does not read. Step 2 places each one before it copies.
+No Rust code reads these. The import keeps them byte for byte, also for features the product has cut:
+
+- Tables: `board_posts`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
+- Settings: `filename_grouping:{build}`, `manifest_v2_{id}`, `integration_webhooks_v1`, `printer.print_outcomes`, `assistant_feedback`, `assistant_chat_history`, `assistant_daily_usage`. Rust's export job has a `filename_grouping` field of its own and does not read the setting.
+
+## Installation value and accounts
+
+Node stores every row under a `tenant_id` value. It writes `default` when it runs without accounts or with single-user sign-in, and for the first account otherwise. A later account's id, `basic-<login>` or `anonymous` appear in other setups. The Rust-only runtime maps every session to `default` (`ps/auth/policy.rs`), so it cannot see data under another value, and it refuses to sign in when `users` holds more than one row.
+
+The dry run reads the values from every table that has the column, not only from Builds and Sources: an account with no Build and no Source still stores its settings and events under its own value. It prints them masked (see [Report](#report)), and the number of accounts as a count with no email address. The import will handle only data under `default` with at most one account, and will refuse anything else (decision of 2026-11-12). If the dry run shows another value or a second account, send the report back: a choice for that case is added only when it is needed.

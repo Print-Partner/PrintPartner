@@ -1,6 +1,6 @@
 //! The conversion inventory: every stored Node shape the import converts,
 //! checks or copies. `docs/node-import.md` holds the same table with each
-//! shape's Rust reader, and a test keeps the two in step.
+//! shape's Rust reader; a test fails when a shape here is not named there.
 
 use Shape::{Column, File, Setting, SettingPrefix, SourceFile, Table};
 use std::fmt;
@@ -104,7 +104,7 @@ pub const ROWS: [Row; 16] = [
 
 /// Stored JSON the import copies byte for byte: Rust keeps it as opaque text
 /// or does not read its table.
-pub const COPIED: [Shape; 10] = [
+pub const COPIED: [Shape; 11] = [
     Column("printer_profiles", "raw_json"),
     Column("printer_profiles", "resolved_flat_config"),
     Column("process_profiles", "resolved_flat_config"),
@@ -115,6 +115,9 @@ pub const COPIED: [Shape; 10] = [
     Table("plan_shares"),
     Table("printer_telemetry"),
     Table("slicer_instances"),
+    // The value is a Build id as text. The key ends in free text, so the
+    // report counts these keys and never prints them.
+    SettingPrefix("build_planning.create."),
 ];
 
 impl Shape {

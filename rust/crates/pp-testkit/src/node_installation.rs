@@ -35,7 +35,7 @@ pub fn populate(directory: &Path) -> io::Result<()> {
     let settings = [
         ("printer.fleet", r#"[{"id":1,"name":"Synthetic Printer 1","bed_width_mm":"250"},{"id":"synthetic-printer-2","name":"Synthetic Printer 2","bed_width_mm":250}]"#.to_owned()),
         ("integrations", format!(r#"[{{"id":"synthetic-integration","kind":"moonraker","config":{{"host":"printer.invalid","port":"7125","api_key":"{INTEGRATION_SECRET}"}}}}]"#)),
-        ("printer.unattributed_prints", r#"[{"id":"a"},{"id":"b","claimed_at":null},{"id":"c","claimed_at":"2026-10-02T00:00:00.000Z"},{"id":"d","dismissed":true}]"#.to_owned()),
+        ("printer.unattributed_prints", r#"[{"id":"a","filename":"a.gcode"},{"id":"b","filename":"b.gcode","claimed_at":null},{"id":"c","filename":"c.gcode","claimed_at":"2026-10-02T00:00:00.000Z"},{"id":"d","filename":"d.gcode","dismissed":true}]"#.to_owned()),
         ("feature_toggles", r#"{"farm":true}"#.to_owned()),
         ("feature_toggles:plan:1", r#"{"bambu":false}"#.to_owned()),
         ("production_setup:1", r#"{"printers":[]}"#.to_owned()),

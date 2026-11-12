@@ -9,39 +9,34 @@ fn node_folder() -> Installation {
     installation
 }
 
-/// Every entry under `root` with its size and modification time.
-fn listing(root: &Path) -> Vec<(PathBuf, u64, SystemTime)> {
+/// The source and every entry under it, each with its size, modification
+/// time and, for a file, its bytes.
+fn state(source: &Path) -> Vec<(PathBuf, u64, SystemTime, Option<Vec<u8>>)> {
     let mut entries = Vec::new();
-    let mut pending = vec![root.to_owned()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(directory).unwrap() {
-            let (path, metadata) = (
-                entry.as_ref().unwrap().path(),
-                entry.unwrap().metadata().unwrap(),
+    let mut pending = vec![source.to_owned()];
+    while let Some(path) = pending.pop() {
+        let metadata = path.symlink_metadata().unwrap();
+        if metadata.is_dir() {
+            pending.extend(
+                std::fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
             );
-            if metadata.is_dir() {
-                pending.push(path.clone());
-            }
-            entries.push((path, metadata.len(), metadata.modified().unwrap()));
         }
+        let bytes = metadata.is_file().then(|| std::fs::read(&path).unwrap());
+        entries.push((path, metadata.len(), metadata.modified().unwrap(), bytes));
     }
     entries.sort();
     entries
 }
 
-/// Runs the dry run with its own temporary directory, and checks the run
-/// left the source's listing, sizes, times and bytes alone and removed its
-/// temporary copy.
+/// Runs the dry run with its own temporary directory, and checks that the
+/// run changed nothing in the source and removed its temporary copy.
 fn run(source: &Path) -> Result<DryRunReport, ImportError> {
     let temporary = tempfile::tempdir().unwrap();
-    let before = source
-        .is_dir()
-        .then(|| (listing(source), pp_testkit::snapshot(source).unwrap()));
+    let before = state(source);
     let result = dry_run_in(source, temporary.path());
-    let after = source
-        .is_dir()
-        .then(|| (listing(source), pp_testkit::snapshot(source).unwrap()));
-    assert!(before == after, "the dry run changed its source");
+    assert!(before == state(source), "the dry run changed its source");
     assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
     result
 }
@@ -149,11 +144,10 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     }
     assert_eq!(
         report.scalar_settings,
-        BTreeSet::from([
-            "build_planning.create.synthetic-key-#".to_owned(),
-            "date_format".to_owned()
-        ])
+        BTreeSet::from(["date_format".to_owned()])
     );
+    let created = Shape::SettingPrefix("build_planning.create.");
+    assert!(report.copied.contains(&(created, 1)), "{:?}", report.copied);
     assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
 
     let text = report.to_string();
@@ -169,7 +163,16 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
         text.contains("Stored JSON the inventory does not name:\n  none"),
         "{text}"
     );
-    assert!(!text.contains(synthetic::INTEGRATION_SECRET) && !text.contains("Synthetic Printer"));
+    for stored in [
+        synthetic::INTEGRATION_SECRET,
+        "Synthetic Printer",
+        "synthetic-key",
+    ] {
+        assert!(
+            !text.contains(stored),
+            "the report holds the stored value {stored}"
+        );
+    }
 }
 
 #[test]
@@ -185,6 +188,27 @@ fn a_full_archive_gives_the_same_counts() {
             ..from_archive
         },
         from_folder
+    );
+}
+
+#[test]
+fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_printers() {
+    let folder = node_folder();
+    execute(
+        &folder,
+        "UPDATE build_profiles SET tenant_id = 'solo'; UPDATE projects SET tenant_id = 'solo';
+         UPDATE app_settings SET value = '{}' WHERE key = 'printer.fleet';",
+    );
+    let report = run(folder.path()).unwrap();
+    assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
+    let sources = report
+        .tables
+        .iter()
+        .find(|table| table.table == "projects")
+        .unwrap();
+    assert_eq!(
+        sources.by_tenant,
+        BTreeMap::from([("solo".to_owned(), synthetic::SOURCES)])
     );
 }
 
@@ -217,51 +241,57 @@ fn stored_json_outside_the_inventory_is_marked() {
     );
 }
 
-/// The refusal of a synthetic folder after `change`, whose text holds `reason`.
-fn refused(change: impl FnOnce(&Installation), reason: &str) -> ImportError {
-    let folder = node_folder();
-    change(&folder);
-    let error = run(folder.path()).unwrap_err();
-    assert!(error.to_string().contains(reason), "{reason}: {error}");
-    error
-}
-
+/// One folder takes each refusal in turn and is put back between them:
+/// building the schema 34 database is the slow part of these tests.
 #[test]
 fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
-    let stamp = |version| {
-        move |folder: &Installation| {
-            node_schema::restamp_schema_version(&folder.database_path(), version).unwrap()
-        }
+    let folder = node_folder();
+    let refused = |reason: &str| {
+        let error = run(folder.path()).unwrap_err();
+        assert!(error.to_string().contains(reason), "{reason}: {error}");
+        error
     };
-    let error = refused(stamp(30), "older than schema 31");
+    let stamp =
+        |version| node_schema::restamp_schema_version(&folder.database_path(), version).unwrap();
+    stamp(30);
+    let error = refused("older than schema 31");
     assert!(matches!(error, ImportError::Schema(refusal) if refusal.found == 30));
-    let error = refused(stamp(35), "newer than Node's schema 34");
+    stamp(35);
+    let error = refused("newer than Node's schema 34");
     assert!(matches!(error, ImportError::Schema(refusal) if refusal.found == 35));
-    let mark = |folder: &Installation| folder.write_marker(&pp_testkit::Marker::default()).unwrap();
+    stamp(34);
+
+    execute(
+        &folder,
+        "INSERT INTO build_profiles (tenant_id, name) VALUES ('other', 'Synthetic Build 04')",
+    );
+    let error = refused("more than one tenant (default, other)");
+    assert!(matches!(error, ImportError::SplitTenants(_)));
+    execute(
+        &folder,
+        "DELETE FROM build_profiles WHERE tenant_id = 'other'",
+    );
+
+    std::fs::create_dir(folder.path().join(LEASE)).unwrap();
+    assert!(matches!(refused(LEASE), ImportError::Leased));
+    std::fs::remove_dir(folder.path().join(LEASE)).unwrap();
+
+    folder.write_marker(&pp_testkit::Marker::default()).unwrap();
     assert!(matches!(
-        refused(mark, "Rust installation"),
+        refused("Rust installation"),
         ImportError::RustOwned
     ));
-    let lease = |folder: &Installation| std::fs::create_dir(folder.path().join(LEASE)).unwrap();
-    assert!(matches!(refused(lease, LEASE), ImportError::Leased));
-    let damage = |folder: &Installation| {
-        node_schema::break_check_constraint(&folder.database_path()).unwrap()
-    };
+    folder.remove_marker().unwrap();
+    run(folder.path()).expect("the folder imports again once each cause is undone");
+
+    node_schema::break_check_constraint(&folder.database_path()).unwrap();
     assert!(matches!(
-        refused(damage, "integrity_check"),
+        refused("integrity_check"),
         ImportError::Database(_)
     ));
-    let split = |folder: &Installation| {
-        execute(
-            folder,
-            "INSERT INTO build_profiles (tenant_id, name) VALUES ('other', 'Synthetic Build 04')",
-        )
-    };
-    let error = refused(split, "more than one tenant (default, other)");
-    assert!(matches!(error, ImportError::SplitTenants(_)));
-    let empty = |folder: &Installation| std::fs::remove_file(folder.database_path()).unwrap();
+    std::fs::remove_file(folder.database_path()).unwrap();
     assert!(matches!(
-        refused(empty, "has no print-partner.db"),
+        refused("has no print-partner.db"),
         ImportError::NoDatabase
     ));
 }
@@ -291,16 +321,17 @@ fn only_a_full_format_2_archive_is_read() {
 fn the_documented_inventory_names_every_shape() {
     let page = include_str!("../../../../../docs/node-import.md");
     for shape in inventory::named() {
+        // A prefix is documented with its placeholder, as in `kit_manifest_{build}`.
         let name = match shape {
-            Shape::Setting(name)
-            | Shape::SettingPrefix(name)
-            | Shape::File(name)
-            | Shape::SourceFile(name) => (*name).to_owned(),
-            Shape::Column(table, column) => format!("{table}.{column}"),
-            Shape::Table(table) => (*table).to_owned(),
+            Shape::Setting(name) | Shape::File(name) | Shape::SourceFile(name) => {
+                format!("`{name}`")
+            }
+            Shape::SettingPrefix(prefix) => format!("`{prefix}{{"),
+            Shape::Column(table, column) => format!("`{table}.{column}`"),
+            Shape::Table(table) => format!("`{table}`"),
         };
         assert!(
-            page.contains(&format!("`{name}")),
+            page.contains(&name),
             "docs/node-import.md does not name {shape}"
         );
     }

@@ -29,9 +29,11 @@ The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`,
 What it does:
 
 1. Refuses the source for any reason under [Refusals](#refusals).
-2. Copies `print-partner.db`, its `-wal` and its `-journal` into a private directory under the system temporary directory (`TMPDIR`). From an archive it extracts the database and the single-file roots there, and only lists the other entries. SQLite never opens the source database, so no `-shm` or `-wal` file appears in the source.
-3. Checks the copy as startup checks a live database (schema version, `PRAGMA integrity_check`, table shapes) and upgrades it to the current Rust schema. The upgrade keeps a copy of the database per schema step until the run ends, so the temporary directory needs about 14 times the database size. The documented Docker run mounts `/tmp` as a 1 GB tmpfs ([Docker image](docker.md#run)), enough for a database of about 70 MB; for a larger one, set `TMPDIR` to a directory on a disk.
-4. Counts on the upgraded copy, prints the report, and removes the temporary directory.
+2. Copies `print-partner.db`, its `-wal` and its `-journal` into a private directory under the system temporary directory (`TMPDIR`). From an archive it extracts the database and the single-file roots there, and only lists the other entries. SQLite never opens the source database, so no `-shm` or `-wal` file appears in the source. It does not follow links: a database file or `custom_filaments.json` that is a link fails the run, and a linked `repos` is not walked.
+3. Checks the copy as startup checks a live database (schema version, `PRAGMA integrity_check`, table shapes), which makes a second short-lived copy under `TMPDIR`, and upgrades it to the current Rust schema. The upgrade keeps a copy of the database per schema step until the run ends, so the temporary directory needs about 14 times the database size. The documented Docker run mounts `/tmp` as a 1 GB tmpfs ([Docker image](docker.md#run)), enough for a database of about 70 MB; for a larger one, set `TMPDIR` to a directory on a disk.
+4. Counts on the upgraded copy, prints the report, and removes the temporary directory. A run that is killed leaves `pp-import-dry-run-*` under `TMPDIR`; delete it.
+
+The counts describe the upgraded copy, not the source file. The upgrade adds again any starter slicer profile that was deleted, and applies Node's Source revision repair.
 
 It exits 0 with the report on stdout. It exits 1 with `import refused: <reason>` on stderr when the source is refused, or `import failed: <reason>` when a read fails.
 
@@ -49,10 +51,10 @@ Then it lists:
 
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the row's converter exists. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
-- **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
+- **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
 - **Stored JSON the inventory does not name:** every other setting or column that holds a JSON object or array, as `setting <key>` or `table.column` with its count. The inventory below was built by reading code and may be incomplete. Report every line here before importing: each one needs a row or a place under Copied unchanged.
 
-"Unmatched prints" counts entries of `printer.unattributed_prints` with no `claimed_at` time and no `dismissed: true`.
+"Unmatched prints" counts entries of `printer.unattributed_prints` with no `claimed_at` time and no `dismissed: true`. "Printers" counts the elements of `printer.fleet`; a value that is not an array counts as none.
 
 ### Refusals
 
@@ -98,11 +100,15 @@ A single tenant other than `default` is reported, not refused. Whether the impor
 
 ### Copied unchanged
 
-The import copies these byte for byte:
+The import will copy these byte for byte; step 2 writes the copy and its checks:
 
-- Accepted Plan, Required-unit and Plate rows. Their digests are checked against the source.
-- Settings whose value is not a JSON object or array.
-- Slicer profile text that Rust keeps opaque (`ps/profiles.rs`): `printer_profiles.raw_json`, `printer_profiles.resolved_flat_config`, `process_profiles.resolved_flat_config`, `filament_profiles.raw_json`, `filament_profiles.resolved_flat_config`, `filament_profiles.retraction`. The dry run on the synthetic installation found these; the first inventory did not name them.
+- Accepted Plan, Required-unit and Plate rows. Step 2 compares their digests with the source's.
+- Settings whose value is not a JSON object or array. `build_planning.create.{key}` holds a Build id as text; its key ends in free text, so the report counts these keys and does not print them.
+- Slicer profile text that Rust keeps opaque (`ps/profiles.rs`): `printer_profiles.raw_json`, `printer_profiles.resolved_flat_config`, `process_profiles.resolved_flat_config`, `filament_profiles.raw_json`, `filament_profiles.resolved_flat_config`, `filament_profiles.retraction`.
 - Tables Rust does not read: `board_posts`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
 
-Not carried: `sessions`, `password_reset_tokens`, lease files and `backups/`. Users and password hashes are carried.
+The import will not carry `sessions`, `password_reset_tokens`, lease files or `backups/`. It will carry users and password hashes.
+
+### Settings without a row yet
+
+Node also writes these settings. No row names them yet, so the dry run lists each one that holds a JSON object or array: `filename_grouping:{build}` (read by `ps/jobs.rs`), and `manifest_v2_{id}`, `integration_webhooks_v1`, `printer.print_outcomes`, `assistant_feedback`, `assistant_chat_history` and `assistant_daily_usage`, which Rust does not read. Step 2 places each one before it copies.

@@ -207,12 +207,12 @@ impl fmt::Display for DryRunReport {
             writeln!(f, "  {shape} = {items}")?;
         }
         let scalars: Vec<&str> = self.scalar_settings.iter().map(String::as_str).collect();
-        writeln!(
-            f,
-            "  scalar settings ({}): {}",
-            scalars.len(),
+        let keys = if scalars.is_empty() {
+            "none".into()
+        } else {
             scalars.join(", ")
-        )?;
+        };
+        writeln!(f, "  scalar settings ({}): {keys}", scalars.len())?;
         writeln!(f, "\nStored JSON the inventory does not name:")?;
         for unnamed in &self.unnamed {
             writeln!(f, "  {} = {}", unnamed.shape, unnamed.items)?;
@@ -291,10 +291,37 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
     measure(&connection, kind, &ready, &files)
 }
 
+/// A read failure that names the source entry it happened on.
+fn unreadable(path: &Path, error: std::io::Error) -> ImportError {
+    ImportError::Failed(anyhow::anyhow!("Read {}: {error}", path.display()))
+}
+
+/// Opens the regular file at `path` for reading; `None` when nothing is
+/// there. A link, a directory or a device is an error, checked before the
+/// open so a FIFO cannot block it.
+fn open_regular(path: &Path) -> Result<Option<std::fs::File>, ImportError> {
+    match path.symlink_metadata() {
+        Ok(metadata) if metadata.is_file() => pp_os::open_read_nofollow(path)
+            .map(Some)
+            .map_err(|error| unreadable(path, error)),
+        Ok(_) => Err(ImportError::Failed(anyhow::anyhow!(
+            "{} is not a regular file; the import does not follow links",
+            path.display()
+        ))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(unreadable(path, error)),
+    }
+}
+
 /// Copies the database files of a Node data folder into `scratch`.
 fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
-    if ownership_marker::inspect(source) != ownership_marker::MarkerState::Absent {
-        return Err(ImportError::RustOwned);
+    use ownership_marker::{MarkerRefusal, MarkerState};
+    match ownership_marker::inspect(source) {
+        MarkerState::Absent => {}
+        MarkerState::Refused(MarkerRefusal::Unreadable(kind)) => {
+            return Err(unreadable(source, kind.into()));
+        }
+        _ => return Err(ImportError::RustOwned),
     }
     if source.join(LEASE).symlink_metadata().is_ok() {
         return Err(ImportError::Leased);
@@ -310,34 +337,29 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
         return Err(ImportError::NoDatabase);
     }
     for name in DATABASE_FILES {
-        let mut file = match pp_os::open_read_nofollow(&source.join(name)) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        if !file.metadata()?.is_file() {
-            return Err(anyhow::anyhow!("{name} is not a regular file").into());
+        let path = source.join(name);
+        if let Some(mut file) = open_regular(&path)? {
+            let mut copy = std::fs::File::create_new(scratch.join(name))?;
+            std::io::copy(&mut file, &mut copy).map_err(|error| unreadable(&path, error))?;
         }
-        std::io::copy(
-            &mut file,
-            &mut std::fs::File::create_new(scratch.join(name))?,
-        )?;
     }
     if stamps() != before {
         return Err(ImportError::Changed);
     }
     let mut repo_files = Vec::new();
-    let mut pending = vec![source.join("repos")];
+    let repos = source.join("repos");
+    // Neither check follows a link, so the walk stays in the folder.
+    let mut pending = Vec::from_iter(
+        repos
+            .symlink_metadata()
+            .is_ok_and(|m| m.is_dir())
+            .then_some(repos),
+    );
     while let Some(directory) = pending.pop() {
-        let entries = match std::fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        for entry in entries {
-            let entry = entry?;
-            // `file_type` does not follow a link, so the walk stays in the folder.
-            if entry.file_type()?.is_dir() {
+        let failed = |error| unreadable(&directory, error);
+        for entry in std::fs::read_dir(&directory).map_err(failed)? {
+            let entry = entry.map_err(failed)?;
+            if entry.file_type().map_err(failed)?.is_dir() {
                 pending.push(entry.path());
             } else {
                 repo_files.push(entry.file_name().to_string_lossy().into_owned());
@@ -354,7 +376,11 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
 /// roots into `scratch`.
 fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
     let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
-        .map_err(|error| ImportError::InvalidArchive(format!("{error:#}")))?;
+        .map_err(|error| match error.downcast_ref::<std::io::Error>() {
+            // The temporary directory filled up; the archive is not at fault.
+            Some(io) if io.kind() == ErrorKind::StorageFull => ImportError::Failed(error),
+            _ => ImportError::InvalidArchive(format!("{error:#}")),
+        })?;
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
@@ -369,11 +395,11 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
     })
 }
 
-/// The elements of a stored JSON array, or one item for any other value.
-fn items(stored: &[u8]) -> u64 {
+/// The elements of a stored JSON array, or `other` for any other value.
+fn items(stored: &[u8], other: u64) -> u64 {
     match serde_json::from_slice(stored) {
         Ok(Value::Array(elements)) => elements.len() as u64,
-        _ => 1,
+        _ => other,
     }
 }
 
@@ -477,7 +503,7 @@ fn count_shape(
     let items = match shape {
         Shape::Setting(name) => (settings.iter())
             .filter(|(key, _)| key == name)
-            .map(|(_, value)| items(value.as_bytes()))
+            .map(|(_, value)| items(value.as_bytes(), 1))
             .sum(),
         Shape::SettingPrefix(prefix) => settings
             .iter()
@@ -492,15 +518,15 @@ fn count_shape(
         Shape::Table(table) => {
             rows(format!("SELECT COUNT(*) FROM {}", quoted(table)))?.unsigned_abs()
         }
-        Shape::File(name) => match pp_os::open_read_nofollow(&files.documents.join(name)) {
-            Ok(mut file) => {
-                let mut stored = Vec::new();
-                file.read_to_end(&mut stored)?;
-                items(&stored)
+        Shape::File(name) => {
+            let path = files.documents.join(name);
+            let mut stored = Vec::new();
+            if let Some(mut file) = open_regular(&path)? {
+                (file.read_to_end(&mut stored)).map_err(|error| unreadable(&path, error))?;
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => 0,
-            Err(error) => return Err(error.into()),
-        },
+            // A missing file reads as empty, which is no JSON and counts as none.
+            items(&stored, u64::from(!stored.is_empty()))
+        }
         Shape::SourceFile(name) => {
             files.repo_files.iter().filter(|file| file == name).count() as u64
         }
@@ -573,7 +599,11 @@ fn measure(
         upgraded_schema: ready.version,
         builds: table("build_profiles").map_or(0, |table| table.rows),
         sources: table("projects").map_or(0, |table| table.rows),
-        printers: count(&Shape::Setting("printer.fleet"))?.1,
+        // Node reads a fleet that is not an array as no printers.
+        printers: (settings.iter())
+            .filter(|(key, _)| key == "printer.fleet")
+            .map(|(_, value)| items(value.as_bytes(), 0))
+            .sum(),
         unmatched_prints,
         rows,
         copied: inventory::COPIED

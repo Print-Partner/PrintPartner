@@ -21,7 +21,7 @@ impl Farm {
 
     fn assert_intent(&self, operation: &str) -> Value {
         let document = self.document();
-        assert_eq!(document["state"], "running");
+        assert_eq!(document["state"], "effect_admitted");
         assert_eq!(document["effects"].as_array().unwrap().len(), 1);
         let effect = &document["effects"][0];
         assert_eq!(effect["intent"]["operation"], operation);

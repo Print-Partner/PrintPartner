@@ -1,11 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CoreError, checkCoreHealth, fetchCore } from "./client";
+import { CoreError, checkCoreHealth, fetchCore, onUnauthorized } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("fetchCore", () => {
+  it("tells unauthorized listeners about every 401, reads and writes alike", async () => {
+    const answers = [401, 200, 401];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response("{}", { status: answers.shift() }))),
+    );
+    const listener = vi.fn();
+    const stop = onUnauthorized(listener);
+    await expect(fetchCore("/api/v2/plans")).rejects.toBeInstanceOf(CoreError);
+    await fetchCore("/health");
+    stop();
+    await expect(fetchCore("/api/v2/plans", { method: "POST" })).rejects.toBeInstanceOf(CoreError);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it("sends same-origin requests with same-origin credentials", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

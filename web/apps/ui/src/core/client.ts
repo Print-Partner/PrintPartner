@@ -48,6 +48,17 @@ const SAME_ORIGIN_PATH = /^\/(?![/\\])(?![\s\S]*[\t\r\n])/;
 /** True for a path on this page's own origin, such as `/builds/3`. */
 export const isSameOriginPath = (path: string) => SAME_ORIGIN_PATH.test(path);
 
+const unauthorized = new Set<() => void>();
+
+/**
+ * Calls `listener` whenever the core answers 401, from any read or write, so the app can
+ * open sign-in. Returns the function that stops the calls.
+ */
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorized.add(listener);
+  return () => void unauthorized.delete(listener);
+}
+
 export async function fetchCore(path: string, init?: RequestInit): Promise<Response> {
   if (!SAME_ORIGIN_PATH.test(path)) {
     throw new TypeError(
@@ -56,6 +67,7 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
   }
   const response = await fetch(path, { ...init, credentials: "same-origin" });
   if (!response.ok) {
+    if (response.status === 401) for (const listener of unauthorized) listener();
     const { detail, code, conflictingBuilds } = await problem(response);
     throw new CoreError(response.status, path, detail, code, conflictingBuilds);
   }

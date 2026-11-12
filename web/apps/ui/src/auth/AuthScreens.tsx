@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
 import { readCore, writeCore } from "../core/rust";
 import { routes } from "../routes";
@@ -39,6 +39,9 @@ function AuthLayout({
   children: ReactNode;
 }) {
   const id = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Arriving here is a page change, often a redirect: start reading at the heading.
+  useEffect(() => heading.current?.focus(), []);
   return (
     <main
       id="main"
@@ -47,7 +50,9 @@ function AuthLayout({
       data-ready={status.isPending ? undefined : ""}
     >
       <p className="pp-name">Print Partner</p>
-      <h1 id={id}>{title}</h1>
+      <h1 id={id} ref={heading} tabIndex={-1}>
+        {title}
+      </h1>
       {children}
     </main>
   );
@@ -76,6 +81,7 @@ function Field({
   autoComplete,
   invalid,
   describedBy,
+  hint,
 }: {
   label: string;
   name: string;
@@ -83,19 +89,29 @@ function Field({
   autoComplete: string;
   invalid?: boolean;
   describedBy?: string;
+  hint?: string;
 }) {
+  const inputId = useId();
+  const hintId = useId();
+  const described = [hint && hintId, describedBy].filter(Boolean).join(" ") || undefined;
   return (
-    <label className="pp-field">
-      <span>{label}</span>
+    <div className="pp-field">
+      <label htmlFor={inputId}>{label}</label>
       <input
+        id={inputId}
         name={name}
         type={type}
         autoComplete={autoComplete}
         required
         aria-invalid={invalid || undefined}
-        aria-describedby={describedBy}
+        aria-describedby={described}
       />
-    </label>
+      {hint && (
+        <span id={hintId} className="pp-auth-hint">
+          {hint}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -204,7 +220,13 @@ export function SetupScreen() {
         <form className="pp-auth-form" onSubmit={submit.onSubmit}>
           <p>Create the owner account. You sign in with this email and password.</p>
           <Field label="Email" name="email" type="email" autoComplete="username" />
-          <Field label="Password" name="password" type="password" autoComplete="new-password" />
+          <Field
+            label="Password"
+            name="password"
+            type="password"
+            autoComplete="new-password"
+            hint="At least 8 characters."
+          />
           <Field
             label="Password again"
             name="confirm"

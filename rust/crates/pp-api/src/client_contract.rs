@@ -397,7 +397,7 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
 pub use codegen::{document, document_bytes};
 
 #[cfg(feature = "codegen")]
-mod codegen {
+pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
     use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
@@ -994,14 +994,18 @@ mod codegen {
         Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
     }
 
-    fn served(dto: &str, name: &str, value: impl Serialize) -> Result<Value, serde_json::Error> {
+    pub(crate) fn served(
+        dto: &str,
+        name: &str,
+        value: impl Serialize,
+    ) -> Result<Value, serde_json::Error> {
         Ok(
             json!({"dto": dto, "name": name, "value": serde_json::to_value(value)?, "rust_accepts": true}),
         )
     }
 
     /// A request body and whether the Rust deserializer accepts it.
-    fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
+    pub(crate) fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
         let rust_accepts = serde_json::from_value::<T>(value.clone()).is_ok();
         json!({"dto": dto, "name": name, "value": value, "rust_accepts": rust_accepts})
     }

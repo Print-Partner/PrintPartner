@@ -23,32 +23,45 @@ function ConnectionLine() {
 
 /**
  * Ends the session and opens the sign-in screen in place of this page, so Back does not
- * return to it. Cached reads are dropped, so no earlier page shows signed-in content.
+ * return to it. Cached reads are then dropped, so no earlier page shows signed-in
+ * content; the sign-in screen's own status read stays. A failed sign-out says so and
+ * stays here, since the session may still be valid.
  */
 function SignOutButton() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   const signOut = () => {
     if (busy) return;
     setBusy(true);
+    setFailed(false);
     writeCore("signOut", {})
-      .then(
-        () => true,
-        () => false,
-      )
-      .then((signedOut) => navigate(SIGN_IN, { replace: true, state: { signedOut } }))
-      .finally(() => queryClient.clear());
+      .then(async () => {
+        await navigate(SIGN_IN, { replace: true, state: { signedOut: true } });
+        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "auth" });
+      })
+      .catch(() => {
+        setFailed(true);
+        setBusy(false);
+      });
   };
   return (
-    <button
-      type="button"
-      className="pp-header-button"
-      aria-disabled={busy || undefined}
-      onClick={signOut}
-    >
-      Sign out
-    </button>
+    <>
+      <button
+        type="button"
+        className="pp-header-button"
+        aria-disabled={busy || undefined}
+        onClick={signOut}
+      >
+        Sign out
+      </button>
+      {failed && (
+        <p role="alert" className="pp-auth-problem">
+          Sign-out did not finish. Try again.
+        </p>
+      )}
+    </>
   );
 }
 

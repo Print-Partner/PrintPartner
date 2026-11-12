@@ -825,3 +825,11 @@ body {
   margin: 0;
   color: var(--status-danger);
 }
+
+.pp-auth-hint {
+  color: var(--text-muted);
+}
+
+.pp-auth h1:focus {
+  outline: none;
+}

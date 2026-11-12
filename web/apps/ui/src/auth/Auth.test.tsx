@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 import {
+  BUSY,
   LINK_ENDED,
   MISMATCH,
   OWNER_EXISTS,
@@ -77,6 +78,12 @@ describe("next", () => {
     "builds/3",
     "/login",
     "/setup",
+    "/LOGIN",
+    "/Setup",
+    "/login/",
+    "/.//",
+    "/%2e//",
+    "/..//?x#y",
     "/nope/nothing",
   ])("ignores %s and opens Today", (raw) => expect(nextPath(raw, routes)).toBe("/today"));
 });
@@ -154,6 +161,9 @@ describe("sign-in", () => {
     });
     const { path } = renderAt(["/login?next=%2Fbuilds%2F3"], fetchMock);
     await screen.findByRole("heading", { name: "Sign in" });
+    // Nothing is filled in from the core, and the heading takes focus for screen readers.
+    expect((await screen.findByLabelText<HTMLInputElement>("Email")).value).toBe("");
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Sign in" }));
     await signIn();
     await waitFor(() => expect(path()).toBe("/builds/3"));
   });
@@ -174,7 +184,8 @@ describe("sign-in", () => {
   it.each([
     [401, WRONG],
     [429, TOO_MANY],
-    [503, UNREACHABLE],
+    [503, BUSY],
+    [502, UNREACHABLE],
   ])("says what a %i means and stays signed out", async (status, message) => {
     const { path } = renderAt(
       ["/login"],
@@ -209,6 +220,21 @@ describe("sign-in", () => {
 });
 
 describe("signed out", () => {
+  it("stays on the page when sign-out does not finish", async () => {
+    const { path } = renderAt(
+      ["/builds"],
+      core({
+        "/health": () => json({}),
+        "/api/v2/plans": () => json({ profiles: [] }),
+        "/api/v2/tasks": () => json({ tasks: [], unavailable: [] }),
+        "/auth/logout": () => problem(503, "refused"),
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Sign-out did not finish. Try again.");
+    expect(path()).toBe("/builds");
+  });
+
   it("opens sign-in with next when a read answers 401", async () => {
     const { path } = renderAt(["/builds/3"], core({ "/health": () => json({}) }));
     await waitFor(() => expect(path()).toBe("/login?next=%2Fbuilds%2F3"));

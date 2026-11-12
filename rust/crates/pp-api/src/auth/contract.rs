@@ -5,20 +5,9 @@
 use super::wire::{
     AuthStatus, CurrentUser, PublicUser, RegisterRequest, SignInRequest, SignedIn, SignedOut,
 };
+use crate::client_contract::codegen::{request, served};
 use pp_storage::auth::Provider;
-use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-
-fn served(dto: &str, name: &str, value: impl Serialize) -> Result<Value, serde_json::Error> {
-    Ok(
-        json!({"dto": dto, "name": name, "value": serde_json::to_value(value)?, "rust_accepts": true}),
-    )
-}
-
-fn request<T: DeserializeOwned>(dto: &str, name: &str, value: Value) -> Value {
-    let rust_accepts = serde_json::from_value::<T>(value.clone()).is_ok();
-    json!({"dto": dto, "name": name, "value": value, "rust_accepts": rust_accepts})
-}
 
 fn owner(email: Option<&str>) -> PublicUser {
     PublicUser {

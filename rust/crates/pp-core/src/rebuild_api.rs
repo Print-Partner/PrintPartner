@@ -979,7 +979,20 @@ mod tests {
         .unwrap();
         let mut server = serve(listener, router);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        // `/auth/status` says only whether the owner account is still missing.
+        let status = || async {
+            let response = client
+                .get(format!("{origin}/auth/status"))
+                .header("Origin", &origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        };
+        assert_eq!(status().await, json!({"setup_required": true}));
         let cookie = session(&client, &origin, "rebuild@example.com").await;
+        assert_eq!(status().await, json!({"setup_required": false}));
         let me: Value = client
             .get(format!("{origin}/auth/me"))
             .header("Origin", &origin)
@@ -1003,36 +1016,6 @@ mod tests {
         let key: Value = key.json().await.unwrap();
         // Only the rebuild client's lifetimes give API keys an expiry.
         assert!(key["expiresAt"].is_string(), "{key}");
-        server.stop().await.unwrap();
-        owner.shutdown().unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[tokio::test]
-    async fn auth_status_names_only_whether_the_owner_account_is_missing() {
-        let (owner, directory, listener, origin) = bound().await;
-        let router = router(
-            DesktopRebuild::from_value(Some("1")),
-            &owner,
-            routes(&origin),
-        )
-        .unwrap()
-        .unwrap();
-        let mut server = serve(listener, router);
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let status = || async {
-            let response = client
-                .get(format!("{origin}/auth/status"))
-                .header("Origin", &origin)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), 200);
-            response.json::<Value>().await.unwrap()
-        };
-        assert_eq!(status().await, json!({"setup_required": true}));
-        let cookie = session(&client, &origin, "owner@example.com").await;
-        assert_eq!(status().await, json!({"setup_required": false}));
         // Signing out leaves the account, so setup stays done.
         let out = client
             .post(format!("{origin}/auth/logout"))

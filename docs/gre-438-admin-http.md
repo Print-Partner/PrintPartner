@@ -252,33 +252,65 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
 ```
 
-## Printer read route (GRE-1452)
+## Printer routes (GRE-1452, GRE-1448)
 
-`GET /api/v2/printers/{id}` reads one stored printer for the replacement
-Settings screen. It is `readPrinter` in the generated
-`@print-partner/rust-client` and answers `200` with a `PrinterConfig`: `id`,
-`name`, `model`, `bed_width_mm`, `bed_depth_mm`, `bed_height_mm`, `margin_mm`,
-`max_filament_slots` and `integration_id`. `GET /api/v2/printers` is still the
-Farm list, which adds the live state.
+`POST /api/v2/printers` adds a printer, and `GET`, `PATCH` and `DELETE
+/api/v2/printers/{id}` read, edit and remove one, for the replacement Settings
+screen. They are `createPrinter`, `readPrinter`, `updatePrinter` and
+`deletePrinter` in the generated `@print-partner/rust-client`. Each answers
+`200` with a `PrinterConfig`: `id`, `name`, `model`, `bed_width_mm`,
+`bed_depth_mm`, `bed_height_mm`, `margin_mm`, `max_filament_slots` and
+`integration_id`. Delete answers the printer it removed. `GET /api/v2/printers`
+is still the Farm list, which adds the live state.
 
-- It mounts like the integration routes above: `/api/v2` only, Rust-only
+- They mount like the integration routes above: `/api/v2` only, Rust-only
   runtime only, behind the accepted gate, with the credential proved in the
-  read's own transaction.
-- Lengths are whole millimetres, as integers. `bed_height_mm` is null only for
-  a printer that came from an installation without one.
-- The read runs through the read seam (`pp-storage/src/read.rs`) on the
-  read-only pool, so it does not wait in the writer queue.
+  operation's own transaction.
+- Lengths are whole millimetres, as integers. A fractional value in a request
+  is refused with `400` naming the field. `bed_height_mm` is null only for a
+  printer that came from an installation without one.
+- Create takes `name`, `model`, `bed_width_mm`, `bed_depth_mm` and
+  `bed_height_mm`, plus optional `margin_mm` (default 4), `max_filament_slots`
+  (default 1) and `integration_id`.
+- `PATCH` changes only the fields it sends; a field that is absent or null
+  keeps its stored value. The exception is `integration_id`: null unlinks the
+  printer and only leaving the field out keeps the link.
+- An edit checks only the values it sets, so a printer with an older value
+  these rules would refuse can still be edited. Two things follow from the
+  stored row: a new bed size is compared with the stored margin, and a link is
+  checked only when it changes.
+- Every invalid field is named in one answer. A slot that holds filament
+  answers `409` only when the values themselves are valid.
+- A new or relinked printer needs no restart: the Farm list reads the stored
+  printers on each request.
+- Delete removes the printer only. Its integration stays.
+- The three writes run through the write seam. The read runs through the read
+  seam (`pp-storage/src/read.rs`) on the read-only pool, so it does not wait in
+  the writer queue.
 
 | Case | Status | `code` |
 | --- | --- | --- |
+| A value is invalid, or the body is not the request shape. `errors` names each field. Nothing is stored. | `400` | `invalid_printer` |
 | No stored printer has that id | `404` | `printer_not_found` |
-| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. The read is refused for every id and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
-| No reader came free in time | `503` | `transaction_unavailable` |
+| The installation already has 64 printers | `409` | `printer_limit` |
+| The edit lowers `max_filament_slots` below a slot that holds filament | `409` | `filament_slot_in_use` |
+| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. Every operation is refused and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
+| The write could not start before its deadline, or no reader came free in time | `503` | `transaction_unavailable` |
+
+Invalid values:
+
+- `name`, `model`: empty after trimming, or longer than 200 bytes.
+- `bed_width_mm`, `bed_depth_mm`, `bed_height_mm`: not a whole number from 1 to
+  10,000.
+- `margin_mm`: not a whole number, or half the bed width or depth, or more.
+  Accept applies the same test and cannot place on a printer that fails it.
+- `max_filament_slots`: not 1 to 4.
+- `integration_id`: names no stored Moonraker, PrusaLink or Bambu integration.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
   --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
-  --no-tests=fail -E 'test(read::tests) | test(printer_setup::) | test(printers::tests) | test(client_routes_match_registrations)'
+  --no-tests=fail -E 'test(integration_setup) | test(printers::tests) | test(printer_setup::) | test(read::tests) | test(client_routes_match_registrations)'
 ```
 
 ## GitHub PAT and Discord notification settings (GRE-1360)

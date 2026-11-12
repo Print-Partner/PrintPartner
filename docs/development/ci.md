@@ -940,7 +940,14 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 
 `rust (windows)` and `rust (macos)` are advisory, not required. Neither runs on merge groups.
 
-The short Rust set is an owner decision (2026-11-12, GRE-1466). Each queued PR already passed the full Linux suite on its own head, and the merge group repeated it: on 2026-11-12 `rust (linux)` took 47 and 49 minutes in the two merge groups measured. The merge group now checks only that the queued PRs still format, compile and lint together. A test that fails only when two PRs meet is no longer caught in the queue. It is first seen on the push to `main`, where the full suite runs on all three systems and `main-red.yml` reports the failure.
+The short Rust set is an owner decision (2026-11-12, GRE-1466). On 2026-11-12 `rust (linux)` took 47 and 49 minutes in the two merge groups measured.
+
+A queued PR has not necessarily passed the whole suite. On its own head it passed clippy and the tests that `scripts/ci-affected-nextest-filter.py` selects: the changed crates and the crates that depend on them or read their sources, or `all()` when a shared input changed. A PR that changes no Rust input skips `rust (linux)`. Before this change the merge group was the only run of `all()` before a merge.
+
+The merge group now checks only that the queued PRs still format, compile and lint together, and `all()` first runs on the push to `main`, on all three systems. Two kinds of failure are therefore first seen on `main`, where `main-red.yml` reports them:
+
+- a test that fails only when two PRs meet;
+- a test outside a PR's selection that the PR breaks.
 
 On a merge group, `review-gate` does not judge a review again. Its second step reads the queue through GraphQL (`repository.mergeQueue(branch: "main").entries`), finds the one entry whose `headCommit` is the group's head SHA, and checks that the entry's PR number matches the `pr-<n>` in the group ref. Every entry at or ahead of that position is in the group. For each of those PRs it requires base `main` and checks the `review-gate` check runs on the PR's current head. Every one of them must come from `.github/workflows/review-gate.yml` on `pull_request_target`; a same-named check from any other workflow or event fails the group. Of those, only runs whose Actions run lists this PR, with every listed PR into `main`, count, and the latest of them must have concluded `success`. A `pull_request_target` run executes the base branch's copy of the file, so a run for another PR with the same head into another branch, whose copy of the gate might always pass, does not count. A fork PR's run lists no PR, so a fork PR fails the merge group; queue fork changes from a same-repository branch. These also fail the group: no matching entry within two minutes, a group ref or base other than `main`, more than 100 queue entries, or a failed API call. An owner marker alone does not pass a merge group, because the PR's own `review-gate` already decides when a marker is enough. The step checks out nothing, reads the API only, and gets no secrets.
 

@@ -4,9 +4,9 @@ name: Rust cross-OS
 # runs. Ready PRs test Windows and macOS only with ci:cross-os.
 # A merge group runs the short set on Linux only: fmt, clippy in both feature
 # states and the Clippy limits. It runs no nextest, no doctests, no partitions
-# and no Windows or macOS job, because each queued PR already passed the suite
-# on its own head. A test that fails only when two PRs meet is first seen on
-# the push to main (docs/development/ci.md).
+# and no Windows or macOS job. A PR ran only its affected-crate tests, so the
+# full all() suite first runs on the push to main, which is where a test broken
+# outside that selection or by two PRs meeting is seen (docs/development/ci.md).
 # PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
 # desktop_rebuild on; macOS PRs skip it.

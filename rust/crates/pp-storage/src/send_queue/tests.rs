@@ -115,8 +115,10 @@ fn ticket_t_26_open_moves_a_clean_legacy_queue_into_the_table() {
         "the item reads as Node's parseItem reads it"
     );
     let mut after = sends(items);
-    after["items"][1]["state"] = before["items"][1]["state"].clone();
-    after["items"][1]["updated_at"] = before["items"][1]["updated_at"].clone();
+    assert_eq!(after["items"][1]["error"], INTERRUPTED_ERROR);
+    for key in ["state", "error", "updated_at"] {
+        after["items"][1][key] = before["items"][1][key].clone();
+    }
     assert_eq!(
         after, before,
         "the farm read is unchanged apart from the interruption"

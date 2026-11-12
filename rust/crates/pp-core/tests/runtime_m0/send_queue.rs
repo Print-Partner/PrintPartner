@@ -7,9 +7,7 @@ use super::watcher_proof::{
     proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
 use super::{request, temporary};
-use axum::{body::Body, http::StatusCode};
-use http_body_util::BodyExt;
-use hyper_util::rt::TokioIo;
+use axum::http::StatusCode;
 use pp_testkit::moonraker::RoutedPrinter;
 use serde_json::{Value, json};
 use std::{
@@ -118,30 +116,23 @@ async fn add(origin: &str, cookie: &str, printer: &str, build: i64) -> Value {
     body.push_str(&format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"plate.gcode\"\r\nContent-Type: application/octet-stream\r\n\r\nG28\nG1 X10\n\r\n--{boundary}--\r\n"
     ));
-    let authority = origin.strip_prefix("http://").unwrap();
-    let socket = tokio::net::TcpStream::connect(authority).await.unwrap();
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(socket))
-        .await
-        .unwrap();
-    tokio::spawn(connection);
-    let response = sender
-        .send_request(
-            axum::http::Request::post(QUEUE)
-                .header("host", authority)
-                .header("origin", origin)
-                .header("cookie", cookie)
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("{origin}{QUEUE}"))
+        .header("origin", origin)
+        .header("cookie", cookie)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
         )
+        .body(body)
+        .send()
         .await
         .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+    let body: Value = response.json().await.unwrap();
     assert_eq!(status, StatusCode::OK, "{body}");
     body["item"].clone()
 }
@@ -185,158 +176,176 @@ async fn refused_as_unknown(origin: &str, cookie: &str, id: &str) {
     assert_eq!(body["code"], "send_outcome_unknown", "{body}");
 }
 
-#[tokio::test]
-#[ignore = "runs in an isolated subprocess with explicit environment"]
-async fn send_queue_rust_only_runtime_in_child() {
-    let data = proof_data();
-    let accepting = RoutedPrinter::start(vec![(UPLOAD.into(), 201, b"{}".to_vec())]).unwrap();
-    let refusing = RoutedPrinter::start(vec![(
-        UPLOAD.into(),
-        500,
-        br#"{"error":{"message":"Disk full"}}"#.to_vec(),
-    )])
-    .unwrap();
-    let silent = SilentPrinter::start();
-    let host = |id: &str, url: &str| {
-        json!({"id": id, "name": id, "type": "moonraker",
-            "config": {"base_url": url, "api_key": API_KEY}})
-    };
-    seed_settings(
-        &data,
-        &[
-            ("feature_toggles", json!({"farm": true})),
-            (
-                "integrations",
-                json!([
-                    host("accepting", accepting.url()),
-                    host("silent", &silent.url),
-                    host("refusing", refusing.url()),
-                ]),
-            ),
-            (
-                "printer.fleet",
-                json!([
-                    {"id": "p-accepting", "name": "Accepting", "integration_id": "accepting"},
-                    {"id": "p-silent", "name": "Silent", "integration_id": "silent"},
-                    {"id": "p-refusing", "name": "Refusing", "integration_id": "refusing"}
-                ]),
-            ),
-        ],
-    );
-    let (runtime, origin, desktop) = start_rust_only(&data).await;
-    let cookie = signed_in(&origin, &desktop, 1).await;
+/// The simulators: one accepts the upload, one closes without answering and
+/// one refuses it.
+struct Printers {
+    accepting: RoutedPrinter,
+    silent: SilentPrinter,
+    refusing: RoutedPrinter,
+}
+
+impl Printers {
+    fn start() -> Self {
+        let refusal = br#"{"error":{"message":"Disk full"}}"#.to_vec();
+        Self {
+            accepting: RoutedPrinter::start(vec![(UPLOAD.into(), 201, b"{}".to_vec())]).unwrap(),
+            silent: SilentPrinter::start(),
+            refusing: RoutedPrinter::start(vec![(UPLOAD.into(), 500, refusal)]).unwrap(),
+        }
+    }
+
+    /// Farm on, and one saved Moonraker printer per simulator.
+    fn seed(&self, data: &std::path::Path) {
+        let host = |id: &str, url: &str| {
+            json!({"id": id, "name": id, "type": "moonraker",
+                "config": {"base_url": url, "api_key": API_KEY}})
+        };
+        let printer = |id: &str| json!({"id": format!("p-{id}"), "name": id, "integration_id": id});
+        seed_settings(
+            data,
+            &[
+                ("feature_toggles", json!({"farm": true})),
+                (
+                    "integrations",
+                    json!([
+                        host("accepting", self.accepting.url()),
+                        host("silent", &self.silent.url),
+                        host("refusing", self.refusing.url()),
+                    ]),
+                ),
+                (
+                    "printer.fleet",
+                    json!([printer("accepting"), printer("silent"), printer("refusing")]),
+                ),
+            ],
+        );
+    }
+
+    /// The send requests each simulator received, in the order above.
+    fn sends(&self) -> [usize; 3] {
+        [
+            sends(self.accepting.request_lines()).len(),
+            sends(self.silent.lines.lock().unwrap().clone()).len(),
+            sends(self.refusing.request_lines()).len(),
+        ]
+    }
+}
+
+/// The item's `(state, error, upload_job_id, outcome_unknown)`.
+fn outcome(item: &Value) -> [&Value; 4] {
+    [
+        &item["state"],
+        &item["error"],
+        &item["upload_job_id"],
+        &item["outcome_unknown"],
+    ]
+}
+
+async fn create_build(origin: &str, cookie: &str) -> i64 {
+    let name = json!({"name": "Send proof"});
     let (status, _, build) = request(
-        &origin,
+        origin,
         "/api/v2/plans",
         "POST",
-        Some(&cookie),
+        Some(cookie),
         None,
         None,
-        Some(json!({"name": "Send proof"})),
+        Some(name),
     )
     .await;
     let build: Value = serde_json::from_slice(&build).unwrap();
     assert!(status.is_success(), "{build}");
-    let build = build["id"].as_i64().unwrap();
+    build["id"].as_i64().unwrap()
+}
 
-    // Add sends nothing.
-    let (_, queue) = call(&origin, &cookie, "GET", QUEUE).await;
+/// Add sends nothing; Send now uploads once and never starts the print.
+async fn upload_only_sends_once(origin: &str, cookie: &str, build: i64, printers: &Printers) {
+    let (_, queue) = call(origin, cookie, "GET", QUEUE).await;
     assert_eq!(queue, json!({"items": []}));
-    let item = add(&origin, &cookie, "p-accepting", build).await;
-    assert_eq!(item["state"], "queued");
+    let item = add(origin, cookie, "p-accepting", build).await;
+    let none = Value::Null;
     assert_eq!(
-        (
-            &item["error"],
-            &item["upload_job_id"],
-            &item["outcome_unknown"]
-        ),
-        (&Value::Null, &Value::Null, &json!(false))
+        outcome(&item),
+        [&json!("queued"), &none, &none, &json!(false)]
     );
-    let (_, queue) = call(&origin, &cookie, "GET", QUEUE).await;
+    let (_, queue) = call(origin, cookie, "GET", QUEUE).await;
     assert_eq!(queue["items"], json!([item]));
-    assert_eq!(sends(accepting.request_lines()), Vec::<String>::new());
+    assert_eq!(printers.sends(), [0, 0, 0]);
 
-    // Send now uploads once and never starts the print.
     let id = item["id"].as_str().unwrap();
-    let job = send_now(&origin, &cookie, id).await;
-    let done = settled(&origin, &cookie, id).await;
-    assert_eq!(done["state"], "done", "{done}");
-    assert_eq!(
-        (
-            &done["error"],
-            &done["upload_job_id"],
-            &done["outcome_unknown"]
-        ),
-        (&Value::Null, &json!(job), &json!(false))
-    );
-    let lines = sends(accepting.request_lines());
+    let job = json!(send_now(origin, cookie, id).await);
+    let done = settled(origin, cookie, id).await;
+    assert_eq!(outcome(&done), [&json!("done"), &none, &job, &json!(false)]);
+    let lines = sends(printers.accepting.request_lines());
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].starts_with(&format!("POST {UPLOAD}")), "{lines:?}");
+}
 
-    // A connection closed without an answer leaves the outcome unknown.
-    let lost = add(&origin, &cookie, "p-silent", build).await;
-    let lost_id = lost["id"].as_str().unwrap().to_owned();
-    let lost_job = send_now(&origin, &cookie, &lost_id).await;
-    let unknown = settled(&origin, &cookie, &lost_id).await;
+/// A connection closed without an answer leaves the outcome unknown; the
+/// item's id and upload job.
+async fn unknown_outcome_is_refused(origin: &str, cookie: &str, build: i64) -> (String, Value) {
+    let lost = add(origin, cookie, "p-silent", build).await;
+    let id = lost["id"].as_str().unwrap().to_owned();
+    let job = json!(send_now(origin, cookie, &id).await);
+    let unknown = settled(origin, cookie, &id).await;
+    let [state, _, upload, flag] = outcome(&unknown);
     assert_eq!(
-        (
-            &unknown["state"],
-            &unknown["outcome_unknown"],
-            &unknown["upload_job_id"]
-        ),
-        (&json!("error"), &json!(true), &json!(lost_job)),
+        [state, upload, flag],
+        [&json!("error"), &job, &json!(true)],
         "{unknown}"
     );
-    refused_as_unknown(&origin, &cookie, &lost_id).await;
-    assert_eq!(sends(silent.lines.lock().unwrap().clone()).len(), 1);
+    refused_as_unknown(origin, cookie, &id).await;
+    (id, job)
+}
 
-    // A refused upload is a known failure with the printer's reason.
-    let refused = add(&origin, &cookie, "p-refusing", build).await;
-    let refused_id = refused["id"].as_str().unwrap().to_owned();
-    send_now(&origin, &cookie, &refused_id).await;
-    let failed = settled(&origin, &cookie, &refused_id).await;
-    assert_eq!(
-        (&failed["state"], &failed["outcome_unknown"]),
-        (&json!("error"), &json!(false)),
-        "{failed}"
-    );
+/// A refused upload is a known failure with the printer's reason.
+async fn refused_upload_keeps_the_reason(origin: &str, cookie: &str, build: i64) {
+    let refused = add(origin, cookie, "p-refusing", build).await;
+    let id = refused["id"].as_str().unwrap().to_owned();
+    send_now(origin, cookie, &id).await;
+    let failed = settled(origin, cookie, &id).await;
+    let [state, _, _, flag] = outcome(&failed);
+    assert_eq!([state, flag], [&json!("error"), &json!(false)], "{failed}");
     let reason = failed["error"].as_str().unwrap();
     assert!(reason.starts_with("Upload failed (HTTP 500)"), "{reason}");
     assert!(reason.contains("Disk full"), "{reason}");
     assert!(!reason.contains(API_KEY), "{reason}");
-    assert_eq!(sends(refusing.request_lines()).len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn send_queue_rust_only_runtime_in_child() {
+    let data = proof_data();
+    let printers = Printers::start();
+    printers.seed(&data);
+    let (runtime, origin, desktop) = start_rust_only(&data).await;
+    let cookie = signed_in(&origin, &desktop, 1).await;
+    let build = create_build(&origin, &cookie).await;
+    upload_only_sends_once(&origin, &cookie, build, &printers).await;
+    let (lost, job) = unknown_outcome_is_refused(&origin, &cookie, build).await;
+    refused_upload_keeps_the_reason(&origin, &cookie, build).await;
+    assert_eq!(printers.sends(), [1, 1, 1]);
     shut_down(runtime).await;
 
     // After a restart the unknown outcome stays, and nothing is resent.
     let (runtime, origin, desktop) = start_rust_only(&data).await;
     let cookie = signed_in(&origin, &desktop, 2).await;
     let (_, queue) = call(&origin, &cookie, "GET", QUEUE).await;
-    let after = queue["items"]
-        .as_array()
-        .unwrap()
+    let items = queue["items"].as_array().unwrap();
+    let after = items
         .iter()
-        .find(|item| item["id"] == lost_id.as_str())
-        .cloned()
+        .find(|item| item["id"] == lost.as_str())
         .unwrap();
+    let [state, _, upload, flag] = outcome(after);
     assert_eq!(
-        (
-            &after["state"],
-            &after["outcome_unknown"],
-            &after["upload_job_id"]
-        ),
-        (&json!("error"), &json!(true), &json!(lost_job)),
+        [state, upload, flag],
+        [&json!("error"), &job, &json!(true)],
         "{after}"
     );
-    refused_as_unknown(&origin, &cookie, &lost_id).await;
+    refused_as_unknown(&origin, &cookie, &lost).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     shut_down(runtime).await;
-    assert_eq!(
-        sends(silent.lines.lock().unwrap().clone()).len(),
-        1,
-        "the unknown send was resent"
-    );
-    assert_eq!(sends(accepting.request_lines()).len(), 1);
-    assert_eq!(sends(refusing.request_lines()).len(), 1);
+    assert_eq!(printers.sends(), [1, 1, 1], "a send was repeated");
     let text = queue.to_string();
     assert!(
         !text.contains(API_KEY) && !text.contains("printer-uploads"),

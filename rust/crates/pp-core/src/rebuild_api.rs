@@ -850,6 +850,43 @@ mod tests {
         fn discard(&self, _: &Value) {}
     }
 
+    /// The farm reads and the send queue writes, as the Rust-only runtime
+    /// mounts them, over checks that never observe or send.
+    fn farm_routes(
+        owner: &std::sync::Mutex<pp_storage::WriterOwner>,
+        origin: &str,
+        policy: pp_storage::auth::AuthPolicy,
+    ) -> axum::Router {
+        let config = || {
+            pp_api::accepted::AcceptedHttpConfig::from_startup(origin, "default", Some("1"))
+                .unwrap()
+        };
+        let owner = owner.lock().unwrap();
+        pp_api::farm::farm_router(
+            config(),
+            owner.farm_reads(policy).unwrap(),
+            Arc::new(NoObservations),
+        )
+        .merge(pp_api::send_queue::send_queue_router(
+            config(),
+            owner.send_queue(policy).unwrap(),
+            Arc::new(NoTargets),
+        ))
+    }
+
+    /// A registered handler's own answer to a sample request: 200, or a
+    /// refusal of what the sample names.
+    fn handler_answered(status: u16, body: &Value) -> bool {
+        // A manual burst names an Accepted Plan basis no stored Build has.
+        let stale = status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
+        // A draft header save on a Build with no layers can prepare no draft.
+        let no_layers = status == 422 && body["code"] == "no_layers";
+        // Add to queue reads only a multipart form.
+        let no_form =
+            status == 415 && body["detail"] == "Send the print file as multipart/form-data";
+        status == 200 || stale || no_layers || no_form || handler_not_found(status, body)
+    }
+
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
     /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
@@ -887,26 +924,14 @@ mod tests {
             "default",
             None,
         );
-        let farm = pp_api::farm::farm_router(
-            pp_api::accepted::AcceptedHttpConfig::from_startup(&origin, "default", Some("1"))
-                .unwrap(),
-            owner.lock().unwrap().farm_reads(policy).unwrap(),
-            Arc::new(NoObservations),
-        );
-        let sends = pp_api::send_queue::send_queue_router(
-            pp_api::accepted::AcceptedHttpConfig::from_startup(&origin, "default", Some("1"))
-                .unwrap(),
-            owner.lock().unwrap().send_queue(policy).unwrap(),
-            Arc::new(NoTargets),
-        );
+        let farm = farm_routes(&owner, &origin, policy);
         let mut server = serve(
             listener,
             reads
                 .unwrap()
                 .unwrap()
                 .merge(drafts.unwrap().unwrap())
-                .merge(farm)
-                .merge(sends),
+                .merge(farm),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {
@@ -967,21 +992,8 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            let handler_not_found = handler_not_found(status, &body);
-            // A manual burst names an Accepted Plan basis no stored Build has.
-            let handler_stale =
-                status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
-            // A draft header save on a Build with no layers can prepare no draft.
-            let handler_no_layers = status == 422 && body["code"] == "no_layers";
-            // Add to queue reads only a multipart form.
-            let handler_no_form =
-                status == 415 && body["detail"] == "Send the print file as multipart/form-data";
             assert!(
-                status == 200
-                    || handler_not_found
-                    || handler_stale
-                    || handler_no_layers
-                    || handler_no_form,
+                handler_answered(status, &body),
                 "{} {path}: {status} {body}",
                 route.method
             );

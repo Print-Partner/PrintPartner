@@ -12,8 +12,10 @@
 //! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
 //! and so do `get_remaining` and `get_printer_checkoff`
 //! (`mcp/progress_reads.rs`). `propose_create_build` creates a Build with
-//! its planning brief (`mcp/create_build.rs`); write refusals carry a code
-//! from `mcp/write_result.rs`.
+//! its planning brief (`mcp/create_build.rs`), and
+//! `propose_set_build_source_roles` sets the Build's own Source roles in that
+//! brief (`mcp/source_roles.rs`); write refusals carry a code from
+//! `mcp/write_result.rs`.
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -552,6 +554,8 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
+#[path = "mcp/source_roles.rs"]
+mod source_roles;
 #[path = "mcp/write_result.rs"]
 mod write_result;
 

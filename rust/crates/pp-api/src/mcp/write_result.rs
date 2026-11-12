@@ -32,6 +32,15 @@ pub(super) enum Code {
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
+    // propose_set_build_source_roles
+    InvalidPlanId,
+    InvalidRoles,
+    NoPlanningBrief,
+    PlanningBriefInvalid,
+    InvalidRoleAssignment,
+    InvalidSourceRole,
+    EvidenceNotFound,
+    MultipleStructuralBases,
 }
 
 impl Code {
@@ -50,6 +59,14 @@ impl Code {
             Self::OrdersModuleOff => "orders_module_off",
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
+            Self::InvalidPlanId => "invalid_plan_id",
+            Self::InvalidRoles => "invalid_roles",
+            Self::NoPlanningBrief => "no_planning_brief",
+            Self::PlanningBriefInvalid => "planning_brief_invalid",
+            Self::InvalidRoleAssignment => "invalid_role_assignment",
+            Self::InvalidSourceRole => "invalid_source_role",
+            Self::EvidenceNotFound => "evidence_not_found",
+            Self::MultipleStructuralBases => "multiple_structural_bases",
         }
     }
 }

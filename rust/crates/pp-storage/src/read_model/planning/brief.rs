@@ -29,6 +29,10 @@ macro_rules! string_enum {
             pub fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $text),+ }
             }
+            /// The variant whose wire text is `text`, if any.
+            pub fn from_wire(text: &str) -> Option<Self> {
+                match text { $($text => Some(Self::$variant),)+ _ => None }
+            }
         }
     };
 }

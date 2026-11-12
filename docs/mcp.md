@@ -53,7 +53,29 @@ A refused propose answers `{ "error": …, "code": … }` with `isError`. A refu
 
 The last four codes are shared by MCP write tools that use the storage write seam (`pp-api/src/mcp/write_result.rs`).
 
-These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
+### `propose_set_build_source_roles`
+
+`propose_set_build_source_roles` `{ plan_id, roles: [{ evidence_id, role }] }` sets each named evidence item's role for this Build in its planning brief (GRE-1300 PR 1). `role` is `structural_base`, `overlay`, `addon` or `evidence`. A Source's Library role and the Build's layers do not change.
+
+- **Propose** checks that `plan_id` names a Build by a positive number and that `roles` is a list, then finds the Build's planning brief with the request's API key. It writes nothing.
+- **Confirm** trims each `evidence_id` and `role`, then runs one transaction: it sets the roles, checks that at most one evidence item is the structural base, clears the brief's selected draft and stores the brief. A later item for the same `evidence_id` wins. It answers `{ "ok": true, "result": { "updated", "evidence": [{ "id", "source_id", "source_role" }] } }`, listing the changed items in brief order. The planning phase returns to `preparing`.
+
+A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
+| `invalid_roles` | `roles` is missing or not a list. |
+| `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
+| `planning_brief_invalid` | The stored brief does not parse. |
+| `invalid_role_assignment` | A `roles` item is not an object. |
+| `invalid_source_role` | A `role` is not one of the four. |
+| `evidence_not_found` | An `evidence_id` names no evidence in the brief. |
+| `multiple_structural_bases` | More than one evidence item would be the structural base, counting roles already in the brief. |
+
+It also answers the four shared codes above.
+
+These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
 Every other product tool still answers that it has no Rust port. `get_farm_status` and `get_print_stats` have no Rust port yet.
 

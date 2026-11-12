@@ -9,14 +9,14 @@ use pp_storage::read_model::{
 
 const ORDERS_ON: &str = "INSERT INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"orders\":true}') ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value;";
 
-async fn orders_on() -> (McpServer, Vec<(String, String)>) {
+pub(super) async fn orders_on() -> (McpServer, Vec<(String, String)>) {
     let server = McpServer::seeded(ORDERS_ON).await;
     let bearer = format!("Bearer {}", server.create_key().await.1);
     let headers = session(&server, &bearer).await;
     (server, headers)
 }
 
-async fn json_call(
+pub(super) async fn json_call(
     server: &McpServer,
     headers: &[(String, String)],
     tool: &str,
@@ -30,7 +30,7 @@ async fn plans(server: &McpServer, headers: &[(String, String)]) -> Value {
     json_call(server, headers, "list_plans", json!({})).await.0["plans"].clone()
 }
 
-async fn pending(server: &McpServer, headers: &[(String, String)]) -> Vec<Value> {
+pub(super) async fn pending(server: &McpServer, headers: &[(String, String)]) -> Vec<Value> {
     let (actions, _) = json_call(server, headers, "list_pending_actions", json!({})).await;
     actions["actions"].as_array().unwrap().clone()
 }
@@ -48,19 +48,23 @@ async fn propose(server: &McpServer, headers: &[(String, String)], args: Value) 
     proposal["action"]["id"].as_str().unwrap().to_owned()
 }
 
-async fn confirm(server: &McpServer, headers: &[(String, String)], id: &str) -> (Value, bool) {
+pub(super) async fn confirm(
+    server: &McpServer,
+    headers: &[(String, String)],
+    id: &str,
+) -> (Value, bool) {
     json_call(server, headers, "confirm_apply", json!({ "action_id": id })).await
 }
 
 /// Runs SQL on the database while the server holds it.
-fn execute(server: &McpServer, sql: &str) {
+pub(super) fn execute(server: &McpServer, sql: &str) {
     let connection =
         rusqlite::Connection::open(server._directory.join("print-partner.db")).unwrap();
     connection.busy_timeout(Duration::from_secs(5)).unwrap();
     connection.execute_batch(sql).unwrap();
 }
 
-async fn build_planning(server: &McpServer, build: u64) -> planning::Outcome {
+pub(super) async fn build_planning(server: &McpServer, build: u64) -> planning::Outcome {
     let client = server
         .owner
         .build_planning(policy(), server.owner.source_reads().unwrap())

@@ -72,13 +72,30 @@ impl Farm {
     }
 }
 
-async fn settled(task: tokio::task::JoinHandle<anyhow::Result<Option<Sent>>>) -> Sent {
+type RunningSend = tokio::task::JoinHandle<anyhow::Result<Option<Sent>>>;
+
+async fn settled(task: RunningSend) -> Sent {
     tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .unwrap()
         .unwrap()
         .unwrap()
         .unwrap()
+}
+
+fn begin_send(printer: &FaultPrinter, start: bool) -> (Farm, RunningSend, Value) {
+    let farm = Farm::open(&printer.url(), &[("q1", start, true)]);
+    assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
+    let worker = farm.worker();
+    let task = tokio::spawn(async move { worker.run_next().await });
+    assert_upload(&printer.request().unwrap());
+    let operation = if start {
+        "printer_upload_and_start"
+    } else {
+        "printer_upload"
+    };
+    let admitted = farm.assert_intent(operation);
+    (farm, task, admitted)
 }
 
 fn assert_upload(request: &pp_testkit::moonraker::fault::Request) {
@@ -102,12 +119,7 @@ fn assert_upload(request: &pp_testkit::moonraker::fault::Request) {
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_28_recovery_lost_upload_reply_survives_repeated_restart() {
     let printer = FaultPrinter::start().unwrap();
-    let mut farm = Farm::open(&printer.url(), &[("q1", false, true)]);
-    assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
-    let worker = farm.worker();
-    let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request().unwrap());
-    let admitted = farm.assert_intent("printer_upload");
+    let (mut farm, task, admitted) = begin_send(&printer, false);
     assert_eq!(
         printer.accepted(),
         0,
@@ -127,12 +139,7 @@ async fn ticket_t_28_recovery_lost_upload_reply_survives_repeated_restart() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
     let printer = FaultPrinter::start().unwrap();
-    let mut farm = Farm::open(&printer.url(), &[("q1", true, true)]);
-    farm.send("q1");
-    let worker = farm.worker();
-    let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request().unwrap());
-    farm.assert_intent("printer_upload_and_start");
+    let (mut farm, task, _) = begin_send(&printer, true);
     printer.accept(FaultReply::Accepted).unwrap();
     let start = printer.request().unwrap();
     assert!(
@@ -153,12 +160,7 @@ async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_28_recovery_interruption_after_remote_acceptance_keeps_intent() {
     let printer = FaultPrinter::start().unwrap();
-    let farm = Farm::open(&printer.url(), &[("q1", false, true)]);
-    farm.send("q1");
-    let worker = farm.worker();
-    let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request().unwrap());
-    let admitted = farm.assert_intent("printer_upload");
+    let (farm, task, admitted) = begin_send(&printer, false);
     printer.accept(FaultReply::Hold).unwrap();
     assert_eq!(printer.accepted(), 1);
     task.abort();

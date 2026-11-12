@@ -145,12 +145,7 @@ fn read_request(socket: &mut TcpStream) -> Option<Request> {
         if bytes.len() > 16 * 1024 {
             return None;
         }
-        let mut buffer = [0; 4096];
-        let size = socket.read(&mut buffer).ok()?;
-        if size == 0 {
-            return None;
-        }
-        bytes.extend_from_slice(&buffer[..size]);
+        read_more(socket, &mut bytes)?;
     };
     let head = std::str::from_utf8(&bytes[..end]).ok()?;
     let line = head.lines().next()?.to_owned();
@@ -167,15 +162,20 @@ fn read_request(socket: &mut TcpStream) -> Option<Request> {
         return None;
     }
     while bytes.len() < end + length {
-        let mut buffer = [0; 4096];
-        let size = socket.read(&mut buffer).ok()?;
-        if size == 0 {
-            return None;
-        }
-        bytes.extend_from_slice(&buffer[..size]);
+        read_more(socket, &mut bytes)?;
     }
     Some(Request {
         line,
         body: bytes[end..end + length].to_vec(),
     })
+}
+
+fn read_more(socket: &mut TcpStream, bytes: &mut Vec<u8>) -> Option<()> {
+    let mut buffer = [0; 4096];
+    let size = socket.read(&mut buffer).ok()?;
+    if size == 0 {
+        return None;
+    }
+    bytes.extend_from_slice(&buffer[..size]);
+    Some(())
 }

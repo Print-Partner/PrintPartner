@@ -157,9 +157,8 @@ impl CheckoffDomain {
 
     /// The refusal for an edit that returned an error. The edit commits the
     /// Part changes before it selects Required units in a second transaction,
-    /// so an error can follow a committed edit. Only a draft whose digest still
-    /// matches the proposal is known to be unwritten; anything else is
-    /// `outcome_unknown`, which drops the proposal.
+    /// so an error can follow a committed edit. The draft is re-read to tell
+    /// the cases apart; see [`after_failed_edit`].
     fn failed_edit(
         &self,
         plan: PositiveId,
@@ -175,10 +174,11 @@ impl CheckoffDomain {
             .params
             .get("expected_snapshot_digest")
             .and_then(Value::as_str);
-        Ok(match self.workspace(plan, draft)? {
-            Ok(workspace) if Some(workspace.draft.snapshot_digest.as_str()) == expected => refusal,
-            _ => OUTCOME_UNKNOWN,
-        })
+        let current = self
+            .workspace(plan, draft)?
+            .ok()
+            .map(|workspace| workspace.draft.snapshot_digest);
+        Ok(after_failed_edit(refusal, current.as_deref(), expected))
     }
 
     /// The draft as the Plan tab reads it, or the refusal for its absence.
@@ -396,6 +396,23 @@ fn edit_refusal(outcome: &EditOutcome) -> Refusal {
     }
 }
 
+/// What confirm answers after the edit returned `refusal`, given the draft's
+/// digest from a re-read (`None` when the re-read failed) and the digest the
+/// proposal expected:
+/// - the draft still has the expected digest: nothing was written, so `refusal`;
+/// - the draft has another digest: the edit may have committed, so `outcome_unknown`;
+/// - the re-read failed and `refusal` is `unauthorized` or `unavailable`: the
+///   edit was never admitted, so `refusal`, and the proposal stays pending;
+/// - otherwise `outcome_unknown`.
+fn after_failed_edit(refusal: Refusal, current: Option<&str>, expected: Option<&str>) -> Refusal {
+    match current {
+        Some(digest) if Some(digest) == expected => refusal,
+        Some(_) => OUTCOME_UNKNOWN,
+        None if matches!(refusal.code, Code::Unauthorized | Code::Unavailable) => refusal,
+        None => OUTCOME_UNKNOWN,
+    }
+}
+
 /// The refusal for a storage error, mapped as the Plan tab's HTTP handler
 /// maps it: credential failures first, then the draft client's own failures.
 fn storage_refusal(error: &anyhow::Error) -> Refusal {
@@ -414,6 +431,74 @@ fn storage_refusal(error: &anyhow::Error) -> Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pp_services::mcp_domain::{DomainPort, FarmAccess, McpSession};
+
+    const EXPECTED: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const OTHER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_failed_edit_is_unknown_unless_the_draft_shows_it_did_not_run() {
+        let unauthorized = storage_refusal(&anyhow::Error::new(AuthFailure::InvalidCredentials));
+        let unavailable = storage_refusal(&anyhow::Error::new(Failure::QueueFull));
+        let internal = storage_refusal(&anyhow::Error::new(Failure::CorruptOrigin));
+        let after = |refusal, current| after_failed_edit(refusal, current, Some(EXPECTED)).code;
+        for refusal in [unauthorized, unavailable, internal] {
+            assert_eq!(after(refusal, Some(EXPECTED)), refusal.code);
+            assert_eq!(after(refusal, Some(OTHER)), Code::OutcomeUnknown);
+        }
+        assert_eq!(after(unauthorized, None), Code::Unauthorized);
+        assert_eq!(after(unavailable, None), Code::Unavailable);
+        assert_eq!(after(internal, None), Code::OutcomeUnknown);
+    }
+
+    /// A port whose confirm answers what `draft_parts_apply` answers after
+    /// the edit and its re-read both failed with `error`.
+    struct Refused(fn() -> anyhow::Error);
+    impl DomainPort for Refused {
+        fn farm_access(&self) -> FarmAccess {
+            FarmAccess::Allowed
+        }
+        fn invoke_tool(
+            &self,
+            _: &str,
+            args: &Map<String, Value>,
+        ) -> Result<ToolInvocation, String> {
+            let action = ProposedAction::new(PROPOSE, 1, LABEL.into(), SUMMARY, args.clone());
+            Ok(ToolInvocation {
+                content: action.proposed_content(),
+                proposed_action: Some(action),
+            })
+        }
+        fn apply_action(&self, _: &ProposedAction) -> Result<Value, String> {
+            let refusal = storage_refusal(&(self.0)());
+            Ok(after_failed_edit(refusal, None, Some(EXPECTED)).confirmation())
+        }
+    }
+
+    #[test]
+    fn a_refused_key_or_full_queue_keeps_the_proposal_pending() {
+        let bad_key: fn() -> anyhow::Error = || anyhow::Error::new(AuthFailure::InvalidCredentials);
+        let full_queue: fn() -> anyhow::Error = || anyhow::Error::new(Failure::QueueFull);
+        for (error, code) in [(bad_key, "unauthorized"), (full_queue, "unavailable")] {
+            let session = McpSession::new(Refused(error), None);
+            let proposed = session
+                .call_tool(
+                    PROPOSE,
+                    &json!({"plan_id":1,"draft_id":2,"parts":[{"part_id":4,"included":false}]}),
+                )
+                .unwrap();
+            let proposed: Value = serde_json::from_str(&proposed.text).unwrap();
+            let id = proposed["action"]["id"].as_str().unwrap().to_owned();
+            let confirmed = session
+                .call_tool("confirm_apply", &json!({ "action_id": id }))
+                .unwrap();
+            assert!(confirmed.is_error);
+            let body: Value = serde_json::from_str(&confirmed.text).unwrap();
+            assert_eq!(body["code"], code);
+            assert!(body.get("outcome_unknown").is_none());
+            assert_eq!(session.pending_ids(), [id]);
+        }
+    }
 
     #[test]
     fn storage_errors_map_to_the_shared_write_codes() {

@@ -563,6 +563,9 @@ async fn start_rust_resources(
         },
     )
     .await?;
+    if !replacement_present {
+        eprintln!("Replacement UI bundle absent");
+    }
     let community_manifests = bundle.community_manifests_dir();
     let (listener, origin_change, origin) = network::bind(listen, writer.lease()).await?;
     let hosts = Arc::new(printer_status::StoredMoonrakerHosts::new(writer.client()));

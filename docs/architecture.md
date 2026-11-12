@@ -223,6 +223,9 @@ inside one `BEGIN IMMEDIATE` transaction, commits on `Ok` and rolls back on
 `Err`. A new family adds no `Envelope` variant and no arm in the writer loop,
 and returns its own typed result. Failures every write shares are one enum,
 `WriterFailure`, which `pp_api::problem::writer_failure` maps to a response.
+Reads have the sibling helper in `pp-storage/src/read.rs` (GRE-1452): a closure
+on a connection from the read-only pool, inside one read transaction, so a read
+does not wait in the writer queue. It reports the same `WriterFailure`.
 Bounded admission, one writer, cancellation, deadlines, and reply semantics stay
 as they are. The helper is never exported from `pp-storage`: exposing
 unrestricted connection or write closures to callers would undo this ownership.

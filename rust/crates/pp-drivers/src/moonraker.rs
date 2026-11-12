@@ -1169,6 +1169,8 @@ mod tests {
                 .filter(|spell| spell.seen)
                 .map(|spell| spell.since)
         };
+        // A new poller's "Awaiting status" placeholder, then its first answer.
+        enter(&entered, "host", State::Unknown, at(0));
         enter(&entered, "host", State::Idle, at(1));
         assert_eq!(seen(), None, "the first answer is not a seen change");
         enter(&entered, "host", State::Printing, at(2));

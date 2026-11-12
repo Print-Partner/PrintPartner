@@ -34,13 +34,18 @@ impl FarmObservations for Watchers {
     }
 }
 
-fn seen(state: HostState, progress: Option<u8>, filename: Option<&str>) -> Observation {
+fn seen(
+    state: HostState,
+    progress: Option<u8>,
+    filename: Option<&str>,
+    since: SystemTime,
+) -> Observation {
     Observation::Seen {
         state,
         progress_percent: progress,
         filename: filename.map(str::to_owned),
         last_heard_at: Some("2026-11-12T12:00:00.000Z".into()),
-        state_since: Some("2026-11-12T10:00:00.000Z".into()),
+        state_since: Some(pp_storage::read_model::farm::iso_time(since)),
     }
 }
 
@@ -84,11 +89,11 @@ fn watchers(idle_entered: SystemTime) -> Arc<Watchers> {
         seen: HashMap::from([
             (
                 "moon-a".into(),
-                seen(HostState::Printing, Some(40), Some("x.gcode")),
+                seen(HostState::Printing, Some(40), Some("x.gcode"), idle_entered),
             ),
             (
                 "moon-b".into(),
-                seen(HostState::Idle, None, Some("old.gcode")),
+                seen(HostState::Idle, None, Some("old.gcode"), idle_entered),
             ),
         ]),
         ..Default::default()

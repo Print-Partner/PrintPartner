@@ -40,6 +40,10 @@ const MODULES_INVALID: Refusal = Refusal::new(
     "The stored Module settings are invalid. Repair them in Settings.",
 );
 const INTERNAL: Refusal = Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
+const UNAVAILABLE: Refusal = Refusal::new(
+    Code::Unavailable,
+    "Storage is busy. Nothing was written; try again.",
+);
 
 /// A printer's state as the farm tools name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -160,9 +164,11 @@ impl CheckoffDomain {
         let Ok(PresentedCredential::ApiKey { tenant, .. }) = self.caller() else {
             return denied(INTERNAL);
         };
-        let statuses = match self.farm.modules.modules(&tenant, self.wait) {
-            Ok(statuses) => statuses,
-            Err(error) => return denied(read_failure(error)),
+        // Settings that do not parse come back as `SettingUnreadable`, so a
+        // failed read is a reader checkout that timed out or found storage
+        // stopping: busy, not broken.
+        let Ok(statuses) = self.farm.modules.modules(&tenant, self.wait) else {
+            return denied(UNAVAILABLE);
         };
         match statuses
             .into_iter()
@@ -210,8 +216,9 @@ impl CheckoffDomain {
         let seen = RefCell::new(HashMap::new());
         let list = farm.printers(|integration| {
             let observation = watchers.observe(integration);
+            let entered = watchers.seen_entering(integration);
             seen.borrow_mut()
-                .insert(integration.id.clone(), observation.clone());
+                .insert(integration.id.clone(), (observation.clone(), entered));
             observation
         });
         let seen = seen.into_inner();
@@ -220,15 +227,13 @@ impl CheckoffDomain {
             .printers
             .into_iter()
             .map(|printer| {
-                let observation = printer
+                let reading = printer
                     .integration
                     .as_ref()
                     .and_then(|integration| seen.get(&integration.id));
-                let idle_since = printer
-                    .integration
-                    .as_ref()
-                    .and_then(|integration| watchers.seen_entering(integration));
-                status(printer, observation, idle_since, now)
+                let observation = reading.map(|(observation, _)| observation);
+                let entered = reading.and_then(|(_, entered)| *entered);
+                status(printer, observation, entered, now)
             })
             .collect();
         let mut state_counts = StateCounts::default();
@@ -254,12 +259,13 @@ impl CheckoffDomain {
 }
 
 /// One printer's status from its projected row and the observation the
-/// projection used. `entered_idle` is when the watcher saw its host change
-/// into its current state.
+/// projection used. `entered` is when the watcher saw its host change into
+/// its current state; it counts only when it is that observation's
+/// `state_since`, so a change between the two reads is not mixed in.
 fn status(
     printer: FarmPrinter,
     observation: Option<&Observation>,
-    entered_idle: Option<SystemTime>,
+    entered: Option<SystemTime>,
     now: SystemTime,
 ) -> PrinterStatus {
     let (state, not_connected_reason, file) = match observation {
@@ -281,7 +287,11 @@ fn status(
     };
     let active = matches!(state, FarmState::Printing | FarmState::Paused);
     let idle = state == FarmState::Idle;
-    let idle_since = entered_idle.filter(|_| idle);
+    let since = match observation {
+        Some(Observation::Seen { state_since, .. }) => state_since.as_deref(),
+        _ => None,
+    };
+    let idle_since = entered.filter(|at| idle && since == Some(iso_time(*at).as_str()));
     let filament_slots: Vec<SlotStatus> = printer
         .loaded_filaments
         .into_iter()
@@ -371,6 +381,83 @@ fn idle_for(since: Option<SystemTime>, now: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn printer(reason: Option<PrinterReason>) -> FarmPrinter {
+        use pp_storage::printer_display_state::{
+            BedClearState, PrinterExecutionState, PrinterStateView,
+        };
+        FarmPrinter {
+            id: "p".into(),
+            name: "P".into(),
+            model: "P".into(),
+            integration: None,
+            state: PrinterStateView::new(PrinterExecutionState::Unknown, BedClearState::Unknown),
+            reason,
+            last_heard_at: None,
+            progress_percent: None,
+            loaded_filaments: Vec::new(),
+        }
+    }
+
+    fn seen(state: HostState, since: Option<SystemTime>) -> Observation {
+        Observation::Seen {
+            state,
+            progress_percent: None,
+            filename: Some("x.gcode".into()),
+            last_heard_at: None,
+            state_since: since.map(iso_time),
+        }
+    }
+
+    #[test]
+    fn states_and_reasons_follow_the_reading() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let at = now - Duration::from_secs(600);
+        for (host, state, reason) in [
+            (HostState::Paused, FarmState::Paused, None),
+            (HostState::Complete, FarmState::Complete, None),
+            (HostState::Error, FarmState::Error, None),
+            (HostState::Offline, FarmState::Offline, None),
+            (
+                HostState::Unknown,
+                FarmState::NotConnected,
+                Some(NotConnectedReason::HostStateUnknown),
+            ),
+        ] {
+            let status = status(printer(None), Some(&seen(host, Some(at))), Some(at), now);
+            assert_eq!((status.state, status.not_connected_reason), (state, reason));
+            assert_eq!(status.idle_since, None, "{state:?} is not idle");
+            assert_eq!(status.active_job.is_some(), state == FarmState::Paused);
+        }
+        let disabled = status(
+            printer(Some(PrinterReason::MonitoringDisabled)),
+            None,
+            None,
+            now,
+        );
+        assert_eq!(
+            disabled.not_connected_reason,
+            Some(NotConnectedReason::MonitoringDisabled)
+        );
+        let idle = status(
+            printer(None),
+            Some(&seen(HostState::Idle, Some(at))),
+            Some(at),
+            now,
+        );
+        assert_eq!(idle.idle_for.as_deref(), Some("10m"));
+        // An entry time from another reading than the state is not used.
+        let moved = status(
+            printer(None),
+            Some(&seen(HostState::Idle, Some(at))),
+            Some(at + Duration::from_secs(5)),
+            now,
+        );
+        assert_eq!(
+            (moved.idle_since, moved.idle_for.as_deref()),
+            (None, Some("unknown"))
+        );
+    }
 
     #[test]
     fn idle_for_labels_minutes_hours_and_days() {

@@ -135,6 +135,23 @@ async fn slice0_mount_launcher_in_child() {
         assert_eq!(status, StatusCode::OK);
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["profiles"], json!([]), "{body}");
+        // A desktop sign-out still ends the Rust-only runtime; only `pp-server`
+        // keeps serving.
+        let requested = runtime.shutdown_requested();
+        let (status, _, _) = request(
+            &origin,
+            "/auth/logout",
+            "POST",
+            Some(&cookies),
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), requested)
+            .await
+            .expect("desktop sign-out did not request shutdown");
     }
     // Serving requests did not start one later either.
     check_children();

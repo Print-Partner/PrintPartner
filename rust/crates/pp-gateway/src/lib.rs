@@ -32,6 +32,8 @@ mod assets;
 pub mod ownership;
 pub mod printer_host;
 mod rate_limit;
+mod sign_out;
+pub use sign_out::SignOut;
 mod stall;
 
 use ownership::{Owner, cutover::OperationOwners};
@@ -46,17 +48,6 @@ pub enum ServedUi {
     Legacy,
     /// The replacement `web/apps/ui` build.
     Replacement,
-}
-
-/// What `POST /auth/logout` does to a runtime with no Node child, after Rust
-/// revokes the account session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SignOut {
-    /// The desktop app: clear every desktop session and stop the runtime.
-    EndsRuntime,
-    /// The headless server (`pp-server`): keep serving, so the browser returns
-    /// to the sign-in screen without a restart or a new bootstrap URL.
-    KeepsServing,
 }
 
 /// The status of a runtime with no Node child, where the Rust writer owns the
@@ -1079,17 +1070,7 @@ async fn handle(
             ),
             None => None,
         };
-        if state.sign_out == SignOut::EndsRuntime {
-            state
-                .access
-                .lock()
-                .expect("Session mutex poisoned")
-                .sessions
-                .clear();
-            state.watcher_cancelled.cancel();
-            state.cancelled.cancel();
-            state.shutdown_requested.cancel();
-        }
+        state.sign_out.finish(&state);
         return revoked
             .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }

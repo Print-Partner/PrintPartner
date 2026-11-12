@@ -422,6 +422,62 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
     gateway.stop().await.unwrap();
 }
 
+/// After Rust revokes the account session, the desktop app ends its runtime
+/// and every desktop session; the headless server keeps both.
+#[tokio::test]
+async fn sign_out_ends_the_desktop_runtime_and_keeps_the_server_serving() {
+    for sign_out in [crate::SignOut::EndsRuntime, crate::SignOut::KeepsServing] {
+        let root = Scratch::new("pp-slice0-mount-");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
+        let mut gateway = Gateway::start_rust_only(
+            listener,
+            root.to_path_buf(),
+            ServedUi::Legacy,
+            |_| stub(),
+            receiver,
+            Arc::new(NoHosts),
+            sign_out,
+        )
+        .unwrap();
+        let cookie = gateway.test_session().await;
+        let state = || State(gateway.state.clone());
+        let mut logout = get(&gateway, "/auth/logout", Some(&cookie), Some("127.0.0.1:9"));
+        *logout.method_mut() = axum::http::Method::POST;
+        let response = handle(state(), logout).await;
+        assert_eq!(response.headers()["set-cookie"], "pp_session=; Max-Age=0");
+        assert_eq!(text(response).await, (StatusCode::OK, "revoked".to_owned()));
+        let (status, _) = text(
+            handle(
+                state(),
+                get(
+                    &gateway,
+                    "/api/v1/plans",
+                    Some(&cookie),
+                    Some("127.0.0.1:9"),
+                ),
+            )
+            .await,
+        )
+        .await;
+        let ends = sign_out == crate::SignOut::EndsRuntime;
+        let expected = if ends {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::OK
+        };
+        assert_eq!(status, expected, "{sign_out:?}: desktop session");
+        for (name, token) in [
+            ("shutdown", &gateway.state.shutdown_requested),
+            ("requests", &gateway.state.cancelled),
+            ("watchers", &gateway.state.watcher_cancelled),
+        ] {
+            assert_eq!(token.is_cancelled(), ends, "{sign_out:?}: {name}");
+        }
+        gateway.stop().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn slice0_mount_node_runtime_json_has_no_rust_status() {
     let (gateway, cookie, _root) = started(Some(stub())).await;

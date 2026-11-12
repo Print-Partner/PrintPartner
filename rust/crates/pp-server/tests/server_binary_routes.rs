@@ -110,8 +110,8 @@ fn run(value: &str, root: &Path, rust: bool) {
     check_children(child.id(), &receipt["child_pid"]);
 
     // With Rust routes, Rust revokes its session and the headless server keeps
-    // serving. The Node-backed runtime's logout stops the binary, which prints
-    // its shutdown receipt.
+    // serving until SIGTERM. The Node-backed runtime's logout stops the binary.
+    // Either way it prints its shutdown receipt.
     let response = exchange(&origin, "POST", "/auth/logout", &cookies, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert_eq!(
@@ -120,10 +120,17 @@ fn run(value: &str, root: &Path, rust: bool) {
         "{response}"
     );
     if rust {
-        signed_out_server_keeps_serving(&origin, &desktop, &cookies, &mut child);
-        child.kill().unwrap();
-        child.wait().unwrap();
-        return;
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            signed_out_server_keeps_serving(&origin, &desktop, &cookies, &mut child);
+        }));
+        if let Err(panic) = checked {
+            let _ = child.kill();
+            let _ = child.wait();
+            std::panic::resume_unwind(panic);
+        }
+        if !stop(&mut child) {
+            return;
+        }
     }
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
@@ -180,6 +187,26 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
     both
 }
 
+/// Stops `pp-server` after its sign-out: SIGTERM on Unix, so the caller checks
+/// the shutdown receipt. Elsewhere it kills the process and returns `false`;
+/// tests/stop_signal.rs covers the Windows stop.
+fn stop(child: &mut std::process::Child) -> bool {
+    #[cfg(unix)]
+    {
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        // SAFETY: plain FFI call with the child's pid; no memory is shared.
+        let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
+        assert_eq!(sent, 0, "SIGTERM: {}", std::io::Error::last_os_error());
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        false
+    }
+}
+
 /// After sign-out the process still runs, the sign-in status and page
 /// answer, the signed-out cookie authorizes nothing, and signing in again
 /// works without a restart.
@@ -201,9 +228,16 @@ fn signed_out_server_keeps_serving(
     let response = exchange_with(origin, "GET", "/", desktop, "", navigate);
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.contains("text/html"), "{response}");
-    for path in ["/api/v1/plans", "/auth/me"] {
-        let response = exchange(origin, "GET", path, signed_out, "");
-        assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+    for (method, path) in [
+        ("GET", "/api/v1/plans"),
+        ("GET", "/auth/me"),
+        ("POST", "/settings/api-keys"),
+    ] {
+        let response = exchange(origin, method, path, signed_out, "{}");
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "{method} {path}: {response}"
+        );
     }
     let response = exchange(
         origin,

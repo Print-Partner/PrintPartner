@@ -5,23 +5,29 @@ use anyhow::{Context, Result, bail, ensure};
 use pp_core::{DesktopRebuild, node_import};
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: pp-server import --from <Node data folder or backup archive> [--data <destination>] --dry-run
+const USAGE: &str = "Usage: pp-server import --from <Node data folder or backup archive> --data <destination> [--dry-run]
 
-Reports what importing a stopped Node installation would convert: the schema,
-Builds, Sources, printers, rows per table and tenant, and every stored JSON
-shape with its place in the conversion inventory. The source is never opened
-for writing. With --data, the report also says whether the import would
-accept that folder; the folder is read, never created. Needs
-PP_DESKTOP_REBUILD=1. Exits 0 with the report, or 1 with the reason the
-source is refused or could not be read.";
+Imports a stopped Node installation into <destination>, a new Rust-owned data
+folder that must be absent or empty. The source is never opened for writing.
+The report is printed and saved as import-report.json in the destination.
 
-/// The source and destination of the dry run to run, or `None` when the
-/// arguments ask for help.
-fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<(PathBuf, Option<PathBuf>)>> {
+With --dry-run nothing is written: the report says what an import would
+convert and, when --data is given, whether the import would accept that
+folder. Needs PP_DESKTOP_REBUILD=1. Exits 0 with the report, or 1 with the
+reason the import is refused or failed.";
+
+/// What the arguments ask for.
+enum Command {
+    Help,
+    DryRun(PathBuf, Option<PathBuf>),
+    Import(PathBuf, PathBuf),
+}
+
+fn parse(mut args: impl Iterator<Item = String>) -> Result<Command> {
     let (mut from, mut data, mut dry_run) = (None, None, false);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--help" | "-h" => return Ok(None),
+            "--help" | "-h" => return Ok(Command::Help),
             "--dry-run" => dry_run = true,
             "--from" => from = Some(PathBuf::from(args.next().context("--from needs a value")?)),
             "--data" => data = Some(PathBuf::from(args.next().context("--data needs a value")?)),
@@ -29,32 +35,45 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<(PathBuf, Opti
         }
     }
     let from = from.context("--from is required")?;
-    ensure!(
-        dry_run,
-        "Only --dry-run is available: this release does not write an import yet"
-    );
-    Ok(Some((from, data)))
+    if dry_run {
+        return Ok(Command::DryRun(from, data));
+    }
+    Ok(Command::Import(
+        from,
+        data.context("--data is required without --dry-run")?,
+    ))
 }
 
 pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<()> {
-    let Some((from, data)) = parse(args)? else {
+    let command = parse(args)?;
+    if matches!(command, Command::Help) {
         println!("{USAGE}");
         return Ok(());
-    };
+    }
     ensure!(
         DesktopRebuild::from_env().enabled(),
         "pp-server import needs PP_DESKTOP_REBUILD=1"
     );
-    match node_import::dry_run(&from, data.as_deref()) {
+    let report = match &command {
+        Command::DryRun(from, data) => {
+            node_import::dry_run(from, data.as_deref()).map(|report| report.to_string())
+        }
+        Command::Import(from, data) => {
+            node_import::import(from, data).map(|report| report.to_string())
+        }
+        Command::Help => Ok(String::new()),
+    };
+    match report {
         Ok(report) => {
             print!("{report}");
             Ok(())
         }
         Err(error) => {
             let outcome = match error {
-                node_import::ImportError::Io { .. } | node_import::ImportError::Sqlite(_) => {
-                    "failed"
-                }
+                node_import::ImportError::Io { .. }
+                | node_import::ImportError::Sqlite(_)
+                | node_import::ImportError::CopyMismatch(_)
+                | node_import::ImportError::Flush { .. } => "failed",
                 _ => "refused",
             };
             eprintln!("import {outcome}: {error}");

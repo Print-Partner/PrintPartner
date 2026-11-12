@@ -252,6 +252,28 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
 ```
 
+## Integration list route (GRE-1342)
+
+`GET /api/v2/integrations` lists every stored integration for the replacement
+Settings screen, in stored order. It is `listIntegrations` in the generated
+`@print-partner/rust-client` and answers `200` with
+`{"integrations": [IntegrationView, ...]}`, the same view the create and
+delete routes answer. Kinds those routes cannot create (Bambu, Home Assistant,
+AI assistant, slicer sidecar) are listed too, with `base_url: null`, so they
+can be deleted. No secret is read into the answer: a view says only whether an
+API key or password is set.
+
+- Same mount, gate and credential proof as create and delete; storage reads
+  through the read seam (`SettingsClient::read`), so the credential check and
+  the list are one snapshot. No per-minute window: the gate's admission cap
+  bounds it, as for the other `/api/v2` reads.
+- An unknown credential answers `401`. A stored `integrations` document that is
+  not the typed shape answers `500` `integrations_unreadable`.
+
+The two TLS pin routes in [Printer host reads](printer-host-reads.md) are
+`readTlsPin` and `resetTlsPin` in the same client, with the bodies `TlsPin` and
+`TlsPinReset`.
+
 ## Printer read route (GRE-1452)
 
 `GET /api/v2/printers/{id}` reads one stored printer for the replacement

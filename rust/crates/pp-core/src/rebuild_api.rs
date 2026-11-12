@@ -836,6 +836,31 @@ mod tests {
         }
     }
 
+    /// The farm read and the printer-host routes, which the runtime mounts
+    /// beside the status watchers; the TLS pin routes are among them.
+    fn farm_and_host_routes(owner: &WriterOwner, origin: &str) -> Router {
+        let (settings, policy) = (owner.client(), desktop_policy());
+        let accepted = AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+        let farm = pp_api::farm::farm_router(
+            accepted,
+            owner.farm_reads(policy).unwrap(),
+            Arc::new(NoObservations),
+        );
+        let reads = owner.accepted_reads_with_policy(policy).unwrap();
+        let config = AdminHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+        let hosts = crate::printer_host::StoredPrinterHosts::new(
+            settings.clone(),
+            HostReads::new().unwrap(),
+        );
+        let snapshots = settings.print_file_snapshots();
+        farm.merge(pp_api::printer_host::printer_host_router(
+            config,
+            reads,
+            Arc::new(hosts),
+            snapshots,
+        ))
+    }
+
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
     /// print, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
@@ -873,12 +898,7 @@ mod tests {
             "default",
             None,
         );
-        let farm = pp_api::farm::farm_router(
-            pp_api::accepted::AcceptedHttpConfig::from_startup(&origin, "default", Some("1"))
-                .unwrap(),
-            owner.lock().unwrap().farm_reads(policy).unwrap(),
-            Arc::new(NoObservations),
-        );
+        let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
         let mut server = serve(
             listener,
             reads

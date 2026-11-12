@@ -574,12 +574,6 @@ fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
 /// Validates a backup archive and extracts its database and single-file
 /// roots into `scratch`.
 fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
-    // The database is at least as large as the archive that holds it.
-    let compressed = source
-        .metadata()
-        .map_err(|error| io_error(source, error))?
-        .len();
-    ensure_space(scratch, compressed.saturating_add(STAGE_RESERVE))?;
     let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
         .map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
@@ -589,7 +583,8 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
-    // The database size is known only once it is extracted.
+    // The archive's size says nothing here: it also holds `repos/`, which a
+    // dry run only lists. The database size is known once it is extracted.
     let extracted = |name| scratch.join(name).metadata().map_or(0, |file| file.len());
     let bytes: u64 = DATABASE_FILES.map(extracted).iter().sum();
     ensure_space(scratch, stage_bytes(bytes, 0))?;

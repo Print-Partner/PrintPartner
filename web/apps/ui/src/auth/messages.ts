@@ -7,8 +7,6 @@ export const TOO_MANY = "Too many attempts. Try again in a minute.";
 export const WRONG = "That email and password don't match. Try again.";
 export const LINK_ENDED =
   "This browser is no longer connected to Print Partner. Open a new sign-in link from Print Partner.";
-export const SIGNED_OUT =
-  "You signed out, and Print Partner stopped. Start it again to sign back in.";
 export const OWNER_EXISTS = "Print Partner already has an owner account. Sign in instead.";
 export const MISMATCH = "The two passwords don't match.";
 export const BUSY = "Print Partner is busy or stopping. Try again in a moment.";

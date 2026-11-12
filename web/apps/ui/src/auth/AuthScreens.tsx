@@ -6,11 +6,9 @@ import { routes } from "../routes";
 import {
   MISMATCH,
   OWNER_EXISTS,
-  SIGNED_OUT,
   setupProblem,
   signInProblem,
   statusProblem,
-  unreachable,
 } from "./messages";
 import { HOME, SETUP, SIGN_IN, nextPath } from "./next";
 
@@ -59,13 +57,13 @@ function AuthLayout({
 }
 
 /** The status read's failure, with a retry. Null while it is loading or loaded. */
-function StatusProblem({ status, text }: { status: Status; text?: string }) {
+function StatusProblem({ status }: { status: Status }) {
   if (status.isPending) return <p role="status">Checking Print Partner…</p>;
   if (!status.isError) return null;
   return (
     <>
       <p role="alert" className="pp-auth-problem">
-        {text ?? statusProblem(status.error)}
+        {statusProblem(status.error)}
       </p>
       <button type="button" className="pp-button" onClick={() => void status.refetch()}>
         Try again
@@ -157,11 +155,8 @@ export function LoginScreen() {
   if (status.data?.setup_required) return <Navigate to={`${SETUP}${location.search}`} replace />;
   return (
     <AuthLayout title="Sign in" status={status}>
-      {signedOut && !status.isError && <p role="status">You signed out.</p>}
-      <StatusProblem
-        status={status}
-        text={signedOut && unreachable(status.error) ? SIGNED_OUT : undefined}
-      />
+      {signedOut && <p role="status">You signed out.</p>}
+      <StatusProblem status={status} />
       {status.isSuccess && (
         <form className="pp-auth-form" onSubmit={submit.onSubmit}>
           <Field label="Email" name="email" type="email" autoComplete="username" />

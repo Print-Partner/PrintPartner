@@ -107,9 +107,8 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
   unreachable core each have their own text, with no account detail. An
   unreachable core offers Try again.
 - **Sign out** is in the header. It calls `/auth/logout`, drops cached reads and
-  replaces the page with `/login`, so Back shows no signed-in content. Signing out
-  also stops the core, as in the desktop app ([Docker](../../../docs/docker.md)),
-  so signing back in needs the core started again and a new bootstrap link.
+  replaces the page with `/login`, so Back shows no signed-in content. If sign-out
+  does not finish, the header says so and the page stays.
 
 ## Builds
 

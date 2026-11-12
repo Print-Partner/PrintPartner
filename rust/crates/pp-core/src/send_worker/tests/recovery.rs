@@ -106,14 +106,14 @@ async fn ticket_t_28_recovery_lost_upload_reply_survives_repeated_restart() {
     assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
     let worker = farm.worker();
     let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request());
+    assert_upload(&printer.request().unwrap());
     let admitted = farm.assert_intent("printer_upload");
     assert_eq!(
         printer.accepted(),
         0,
         "no fake effect before committed intent"
     );
-    printer.accept(FaultReply::Lost);
+    printer.accept(FaultReply::Lost).unwrap();
     assert!(matches!(settled(task).await, Sent::Unknown(_)));
     let effect = farm.document()["effects"][0].clone();
     assert_eq!(effect, admitted["effects"][0]);
@@ -131,10 +131,10 @@ async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
     farm.send("q1");
     let worker = farm.worker();
     let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request());
+    assert_upload(&printer.request().unwrap());
     farm.assert_intent("printer_upload_and_start");
-    printer.accept(FaultReply::Accepted);
-    let start = printer.request();
+    printer.accept(FaultReply::Accepted).unwrap();
+    let start = printer.request().unwrap();
     assert!(
         start
             .line
@@ -143,7 +143,7 @@ async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
     assert!(start.body.is_empty());
     let admitted = farm.assert_intent("printer_upload_and_start");
     assert_eq!(printer.accepted(), 1);
-    printer.accept(FaultReply::Lost);
+    printer.accept(FaultReply::Lost).unwrap();
     assert!(matches!(settled(task).await, Sent::Unknown(_)));
     farm = farm.reopen();
     assert_eq!(farm.document()["effects"], admitted["effects"]);
@@ -157,9 +157,9 @@ async fn ticket_t_28_recovery_interruption_after_remote_acceptance_keeps_intent(
     farm.send("q1");
     let worker = farm.worker();
     let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request());
+    assert_upload(&printer.request().unwrap());
     let admitted = farm.assert_intent("printer_upload");
-    printer.accept(FaultReply::Hold);
+    printer.accept(FaultReply::Hold).unwrap();
     assert_eq!(printer.accepted(), 1);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
@@ -168,7 +168,7 @@ async fn ticket_t_28_recovery_interruption_after_remote_acceptance_keeps_intent(
         admitted,
         "no completion checkpoint was written"
     );
-    printer.accept(FaultReply::Lost);
+    printer.accept(FaultReply::Lost).unwrap();
     let farm = farm.reopen();
     let recovered = farm.document();
     assert_eq!(recovered["effects"], admitted["effects"]);

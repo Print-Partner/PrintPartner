@@ -14,8 +14,9 @@
 //! (`mcp/progress_reads.rs`). `propose_create_build` creates a Build with
 //! its planning brief (`mcp/create_build.rs`), and
 //! `propose_set_build_source_roles` sets the Build's own Source roles in that
-//! brief (`mcp/source_roles.rs`); write refusals carry a code from
-//! `mcp/write_result.rs`.
+//! brief (`mcp/source_roles.rs`). `get_build_planning_state` and
+//! `get_plan_draft` read the brief and draft (`mcp/planning_reads.rs`).
+//! Refusals of these tools carry a code from `mcp/write_result.rs`.
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -506,6 +507,10 @@ impl ServerHandler for ProductMcp {
             Some(presented) if request.name == "get_build_workflow" => {
                 self.build_workflow(&arguments, presented).await
             }
+            Some(presented) if planning_reads::TOOLS.contains(&request.name.as_ref()) => {
+                self.planning_read(&request.name, &arguments, presented)
+                    .await
+            }
             Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
                 self.read_tool(&request.name, &arguments, presented).await
             }
@@ -548,6 +553,8 @@ mod create_build;
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]
 mod planning;
+#[path = "mcp/planning_reads.rs"]
+mod planning_reads;
 #[path = "mcp/progress_reads.rs"]
 mod progress_reads;
 #[path = "mcp/rate_limit.rs"]

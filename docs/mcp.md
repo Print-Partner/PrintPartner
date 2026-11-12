@@ -57,14 +57,14 @@ The last four codes are shared by MCP write tools that use the storage write sea
 
 `propose_set_build_source_roles` `{ plan_id, roles: [{ evidence_id, role }] }` sets each named evidence item's role for this Build in its planning brief (GRE-1300 PR 1). `role` is `structural_base`, `overlay`, `addon` or `evidence`. A Source's Library role and the Build's layers do not change.
 
-- **Propose** checks that `plan_id` is a JSON whole number above zero (a string or fraction is refused) and that `roles` is a list, then finds the Build's planning brief with the request's API key. It writes nothing.
+- **Propose** checks that `plan_id` is a JSON whole number from 1 up (Rust does not read numeric strings) and that `roles` is a list, then finds the Build's planning brief with the request's API key. It writes nothing.
 - **Confirm** trims each `evidence_id` and `role`, then runs one transaction: it sets the roles, checks that at most one evidence item is the structural base, clears the brief's selected draft and stores the brief. A later item for the same `evidence_id` wins. It answers `{ "ok": true, "result": { "updated", "evidence": [{ "id", "source_id", "source_role" }] } }`, listing the changed items in brief order. The planning phase returns to `preparing`.
 
 A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
 
 | Code | When |
 | --- | --- |
-| `invalid_plan_id` | `plan_id` is missing or not a JSON whole number above zero. |
+| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
 | `invalid_roles` | `roles` is missing or not a list. |
 | `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
 | `planning_brief_invalid` | The stored brief does not parse. |
@@ -74,6 +74,25 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 | `multiple_structural_bases` | More than one evidence item would be the structural base, counting roles already in the brief. |
 
 It also answers the four shared codes above.
+
+### `get_build_planning_state` and `get_plan_draft`
+
+These two reads give an assistant the ids the Build planning write tools take: evidence and contribution ids for `propose_update_build_brief` and `propose_set_build_source_roles`, and the draft id, snapshot digest and Part ids for `propose_edit_plan_draft_parts` (GRE-1442). Both read with the request's API key through the same storage reads as `GET /plans/{id}/build-planning` and `GET /plans/{id}/drafts/{draft_id}`. Like those routes, they run on the storage writer queue today. Neither writes. `get_plan_draft` reads the brief and the draft in two transactions, so a write between them can pair a phase with a newer draft.
+
+- `get_build_planning_state` `{ plan_id }` returns:
+  - `brief`: the hydrated Build planning brief, as `GET /plans/{id}/build-planning` serves it, without the legacy `draft_review_blockers`.
+  - `planning_phase`, `grouped_difference_count` and `difference_count`, as that route serves them.
+  - `next_required_decisions`: what the owner still has to decide, in this order. Each item is `{ "kind": "upload", "evidence_id" }` for a model page whose files still need an upload, `{ "kind": "contribution", "contribution_id" }` for a Source contribution still proposed, or `{ "kind": "difference_group", "group_id" }` for a difference group with no resolution. Node answers prefixed strings such as `upload:<id>`; Rust answers objects.
+- `get_plan_draft` `{ plan_id }` returns `{ "draft", "planning_phase"? }`. When the Build has a brief, `draft` is the draft the brief selects. It is `null` when the brief selects none, including a selection that hydration cleared because its Sources or resolutions moved (`planning_phase` is then `preparing`), and when the selected draft is gone (`missing_draft`). When the Build has no brief, `draft` is the Build's open draft (the last created, if there are several), or `null` if there is none. `planning_phase` is present only when the Build has a brief. The draft is the identity from `GET /plans/{id}/drafts/{draft_id}`, `{ draft_id, state, lifecycle_version, snapshot_digest, base }`, with that route's `parts`. Each Part carries `draft_part_id`, `relative_path`, `filename`, `included`, `quantity_effective`, `quantity_override` and its other fields. Node refuses a Build without a brief; Rust also serves a draft made in the Plan tab.
+
+`plan_id` must be a JSON whole number from 1 up; Rust does not read numeric strings. Refusals answer `{ "error", "code" }` with `isError`:
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
+| `plan_not_found` | No Build of the key's installation has this id. |
+| `no_planning_brief` | `get_build_planning_state` only: the Build has no brief. |
+| `unauthorized`, `unavailable`, `internal` | Storage refused the key, was busy, or failed; the same codes as `propose_create_build`. A stored brief that is not valid answers `internal`. |
 
 These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 

@@ -106,9 +106,10 @@ impl CheckoffDomain {
     }
 }
 
-/// A JSON whole number above zero; no string or fraction coercion.
+/// `plan_id` as every MCP planning tool reads it: a JSON whole number from 1
+/// up, never a numeric string.
 fn plan(args: &Map<String, Value>) -> Option<PositiveId> {
-    PositiveId::new(args.get(PLAN_ID)?.as_u64()?).ok()
+    super::positive_id(&json!({ PLAN_ID: args.get(PLAN_ID)? }), PLAN_ID)
 }
 
 /// The checked assignments, or the first refusal. A missing or non-string

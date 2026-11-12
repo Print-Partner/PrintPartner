@@ -1,4 +1,4 @@
-//! The refusal codes MCP write tools answer, and the one mapping from a
+//! The refusal codes MCP tools answer, and the one mapping from a
 //! storage [`WriterFailure`] to an MCP result: the MCP counterpart of
 //! `problem::writer_failure`. [`Code`] is the closed list `docs/mcp.md`
 //! documents; a new write tool adds its codes here.
@@ -32,10 +32,12 @@ pub(super) enum Code {
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
-    // propose_set_build_source_roles
+    // get_build_planning_state, get_plan_draft, propose_set_build_source_roles
     InvalidPlanId,
-    InvalidRoles,
+    PlanNotFound,
     NoPlanningBrief,
+    // propose_set_build_source_roles
+    InvalidRoles,
     PlanningBriefInvalid,
     InvalidRoleAssignment,
     InvalidSourceRole,
@@ -60,8 +62,9 @@ impl Code {
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
             Self::InvalidPlanId => "invalid_plan_id",
-            Self::InvalidRoles => "invalid_roles",
+            Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",
+            Self::InvalidRoles => "invalid_roles",
             Self::PlanningBriefInvalid => "planning_brief_invalid",
             Self::InvalidRoleAssignment => "invalid_role_assignment",
             Self::InvalidSourceRole => "invalid_source_role",

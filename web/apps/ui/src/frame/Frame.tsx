@@ -1,5 +1,8 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
+import { SIGN_IN } from "../auth/next";
+import { writeCore } from "../core/rust";
 import { PrinterStreamProvider } from "../farm/printerStream";
 import { PulseLine } from "../farm/PulseLine";
 import { CommandPalette, type Command } from "./CommandPalette";
@@ -15,6 +18,50 @@ function ConnectionLine() {
     <p role="status" className="pp-connection" data-status={status}>
       {label}
     </p>
+  );
+}
+
+/**
+ * Ends the session and opens the sign-in screen in place of this page, so Back does not
+ * return to it. Cached reads are then dropped, so no earlier page shows signed-in
+ * content; the sign-in screen's own status read stays. A failed sign-out says so and
+ * stays here, since the session may still be valid.
+ */
+function SignOutButton() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const signOut = () => {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    writeCore("signOut", {})
+      .then(async () => {
+        await navigate(SIGN_IN, { replace: true, state: { signedOut: true } });
+        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "auth" });
+      })
+      .catch(() => {
+        setFailed(true);
+        setBusy(false);
+      });
+  };
+  return (
+    <>
+      <button
+        type="button"
+        className="pp-header-button"
+        aria-disabled={busy || undefined}
+        onClick={signOut}
+      >
+        Sign out
+      </button>
+      {failed && (
+        <p role="alert" className="pp-auth-problem">
+          Sign-out did not finish. Try again.
+        </p>
+      )}
+    </>
   );
 }
 
@@ -79,6 +126,7 @@ function FrameBody() {
         >
           Help
         </button>
+        <SignOutButton />
       </header>
       <nav aria-label="Main" className="pp-rail">
         <ul>

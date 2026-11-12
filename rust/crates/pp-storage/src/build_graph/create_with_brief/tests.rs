@@ -1,21 +1,18 @@
 use super::*;
 use crate::{
-    Limits, Setting, SettingCommand, SettingSnapshot, WriterOwner,
+    Limits, SettingSnapshot, WriterOwner,
     auth::{
-        AuthFailure, AuthPolicy, FirstUserTenant, Outcome, RegistrationPolicy, Request, Secret,
-        SessionTenantPolicy,
+        AuthFailure, AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy,
     },
+    write::test_support::{WAIT, first_session, seed_setting},
 };
-use std::sync::Arc;
 
-const WAIT: Duration = Duration::from_secs(5);
 static IDLE: AtomicBool = AtomicBool::new(false);
 const POLICY: AuthPolicy = AuthPolicy {
     registration: RegistrationPolicy::FirstAccountOnly,
     first_user: FirstUserTenant::NewUser,
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
-const TENANT: &str = "default";
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -29,24 +26,14 @@ impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
-        let register = Request::Register {
-            email: "builds@example.com".into(),
-            display_name: "Builds".into(),
-            password: Secret::new("correct-horse".into()),
-        };
-        let auth = owner.auth(FirstUserTenant::NewUser);
-        let registered = auth.submit(register, Arc::default(), WAIT).unwrap();
-        let Outcome::Session { token, .. } = registered.recv().unwrap().unwrap() else {
-            panic!("registration returns a session")
-        };
-        let fixture = Self {
+        let token = first_session(&owner);
+        seed_setting(&owner, "feature_toggles", r#"{"orders":true}"#);
+        Self {
             client: owner.build_graph_with_policy(POLICY).unwrap(),
-            token: token.expose().to_owned(),
+            token,
             owner,
             _directory: directory,
-        };
-        fixture.seed("feature_toggles", r#"{"orders":true}"#);
-        fixture
+        }
     }
 
     fn session(&self) -> Credential {
@@ -64,53 +51,36 @@ impl Fixture {
     }
 
     fn seed(&self, key: &str, value: &str) {
-        let setting = Setting {
-            tenant: TENANT.into(),
-            key: key.into(),
-            value: value.into(),
-        };
-        let reply = self
-            .owner
-            .client()
-            .submit(SettingCommand::Set(setting), &IDLE, WAIT);
-        assert!(reply.unwrap().recv().unwrap().unwrap());
+        seed_setting(&self.owner, key, value);
     }
 
     fn stored(&self, key: &str) -> Option<String> {
         let reader = self.owner.client().reader(WAIT).unwrap();
-        match reader.snapshot(TENANT, key).unwrap() {
+        match reader.snapshot("default", key).unwrap() {
             SettingSnapshot::Stored { value } => Some(value),
             SettingSnapshot::Missing => None,
         }
     }
 
-    /// Every Build's id, name and special request, by id.
-    fn builds(&self) -> Vec<(i64, String, Option<String>)> {
+    /// One SQL answer read on a reader connection.
+    fn read<T: rusqlite::types::FromSql>(&self, sql: &str) -> T {
         let reader = self.owner.client().reader(WAIT).unwrap();
         let connection = reader.connection.as_ref().unwrap();
-        let mut statement = connection
-            .prepare("SELECT id,name,special_request FROM build_profiles ORDER BY id")
-            .unwrap();
-        statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
+        connection.query_row(sql, [], |row| row.get(0)).unwrap()
     }
 
-    /// Whether any brief or idempotency record is stored.
+    /// Every Build as `[id, name, special_request]`, by id.
+    fn builds(&self) -> serde_json::Value {
+        let text: String = self.read(
+            "SELECT json_group_array(json_array(id,name,special_request)) \
+             FROM (SELECT * FROM build_profiles ORDER BY id)",
+        );
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// How many briefs and idempotency records are stored.
     fn planning_settings(&self) -> i64 {
-        let reader = self.owner.client().reader(WAIT).unwrap();
-        reader
-            .connection
-            .as_ref()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM app_settings WHERE key LIKE 'build_planning.%'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
+        self.read("SELECT COUNT(*) FROM app_settings WHERE key LIKE 'build_planning.%'")
     }
 }
 
@@ -155,11 +125,7 @@ fn create_stores_the_build_its_request_and_a_new_brief() {
     let id = created.id.get() as i64;
     assert_eq!(
         fixture.builds(),
-        vec![(
-            id,
-            "Voron for Sam".to_owned(),
-            Some("Black and red, ABS.".to_owned())
-        )]
+        serde_json::json!([[id, "Voron for Sam", "Black and red, ABS."]])
     );
 
     let text = fixture.stored(&format!("build_planning.v1.{id}")).unwrap();
@@ -193,7 +159,7 @@ fn a_recorded_key_replays_its_build_and_writes_nothing() {
     let replay = fixture.create(again).unwrap();
     assert_eq!(replay.id, first.id);
     assert!(replay.replayed);
-    assert_eq!(fixture.builds().len(), 1);
+    assert_eq!(fixture.builds().as_array().unwrap().len(), 1);
     let brief = fixture
         .stored(&format!("build_planning.v1.{}", first.id.get()))
         .unwrap();
@@ -262,7 +228,7 @@ fn the_orders_module_must_be_on_even_for_a_replay() {
         fixture.create(new_build("B", "r", None)),
         Err(CreateBuildError::ModuleSettingsInvalid)
     ));
-    assert_eq!(fixture.builds().len(), 1);
+    assert_eq!(fixture.builds().as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -282,7 +248,7 @@ fn a_refused_credential_writes_nothing() {
         ),
         "{refused:?}"
     );
-    assert!(fixture.builds().is_empty());
+    assert_eq!(fixture.builds(), serde_json::json!([]));
 }
 
 #[test]
@@ -308,6 +274,6 @@ fn a_failure_after_the_insert_rolls_the_whole_create_back() {
         ),
         "{failed:?}"
     );
-    assert!(fixture.builds().is_empty());
+    assert_eq!(fixture.builds(), serde_json::json!([]));
     assert_eq!(fixture.planning_settings(), 0);
 }

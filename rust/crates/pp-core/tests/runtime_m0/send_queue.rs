@@ -6,7 +6,6 @@
 use super::watcher_proof::{
     proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
-use super::{request, temporary};
 use axum::http::StatusCode;
 use pp_testkit::moonraker::RoutedPrinter;
 use serde_json::{Value, json};
@@ -26,7 +25,7 @@ const API_KEY: &str = "simulator-api-key-0d5f";
 
 #[tokio::test]
 async fn send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome() {
-    let data = temporary("send-queue");
+    let data = super::temporary("send-queue");
     run_in_child("send_queue::send_queue_rust_only_runtime_in_child", &data).await;
     let _ = std::fs::remove_dir_all(data);
 }
@@ -94,7 +93,8 @@ fn sends(lines: Vec<String>) -> Vec<String> {
 }
 
 async fn call(origin: &str, cookie: &str, method: &str, path: &str) -> (StatusCode, Value) {
-    let (status, _, body) = request(origin, path, method, Some(cookie), None, None, None).await;
+    let (status, _, body) =
+        super::request(origin, path, method, Some(cookie), None, None, None).await;
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
@@ -243,7 +243,7 @@ fn outcome(item: &Value) -> [&Value; 4] {
 
 async fn create_build(origin: &str, cookie: &str) -> i64 {
     let name = json!({"name": "Send proof"});
-    let (status, _, build) = request(
+    let (status, _, build) = super::request(
         origin,
         "/api/v2/plans",
         "POST",

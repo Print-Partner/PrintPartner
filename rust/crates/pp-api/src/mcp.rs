@@ -365,7 +365,7 @@ impl ProductMcp {
     fn new(reads: Reads) -> Self {
         Self {
             session: Arc::new(McpSession::new(
-                CheckoffDomain::new(reads.progress.clone(), reads.wait),
+                CheckoffDomain::new(reads.progress.clone(), reads.builds.clone(), reads.wait),
                 None,
             )),
             turn: Arc::new(tokio::sync::Mutex::new(())),
@@ -540,6 +540,8 @@ impl ServerHandler for ProductMcp {
 mod checkoff;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
+#[path = "mcp/planning.rs"]
+mod planning;
 #[path = "mcp/progress_reads.rs"]
 mod progress_reads;
 #[path = "mcp/rate_limit.rs"]

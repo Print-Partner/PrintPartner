@@ -79,14 +79,6 @@ fn recover_restore(_: &Path) -> Result<bool> {
     Ok(false)
 }
 
-#[cfg(feature = "desktop_rebuild")]
-use restore::recover as recover_restore;
-
-#[cfg(not(feature = "desktop_rebuild"))]
-fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
-    Ok(())
-}
-
 use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 pub use schema::SchemaReady;

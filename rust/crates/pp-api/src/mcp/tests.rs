@@ -154,6 +154,29 @@ impl McpServer {
         ));
     }
 
+    /// The status of a same-origin `tools/call` on the session in `headers`,
+    /// sent without its API key, so only the key check can refuse it.
+    async fn unkeyed_call_status(
+        &self,
+        headers: &[(String, String)],
+        tool: &str,
+        arguments: Value,
+    ) -> u16 {
+        let session_id = headers
+            .iter()
+            .find(|(name, _)| name == "mcp-session-id")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        let request = json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments } });
+        let unkeyed = [
+            ("mcp-session-id", session_id),
+            ("mcp-protocol-version", "2025-06-18"),
+            ("origin", SELF),
+        ];
+        self.post("/api/v1/mcp", &unkeyed, &request).await.0
+    }
+
     /// POSTs `body` to `path`; returns status, body text and any MCP session id.
     async fn post(
         &self,

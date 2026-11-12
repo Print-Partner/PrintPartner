@@ -303,21 +303,9 @@ async fn mcp_planning_reads_refuse_a_bad_or_unknown_plan_id_with_a_code() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_planning_reads_need_a_key() {
     let (server, headers) = server().await;
-    let session_id = headers
-        .iter()
-        .find(|(name, _)| name == "mcp-session-id")
-        .map(|(_, value)| value.as_str())
-        .unwrap();
     for tool in ["get_build_planning_state", "get_plan_draft"] {
-        let request = json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-            "params": { "name": tool, "arguments": { "plan_id": BUILD } } });
-        let unkeyed = [
-            ("mcp-session-id", session_id),
-            ("mcp-protocol-version", "2025-06-18"),
-            // Same-origin, so only the key check can refuse.
-            ("origin", SELF),
-        ];
-        let (status, _, _) = server.post("/api/v1/mcp", &unkeyed, &request).await;
+        let arguments = json!({ "plan_id": BUILD });
+        let status = server.unkeyed_call_status(&headers, tool, arguments).await;
         assert_eq!(status, 401, "{tool}");
     }
 }

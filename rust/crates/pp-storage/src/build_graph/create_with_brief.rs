@@ -136,7 +136,12 @@ impl BuildGraphClient {
         new: &NewBuild,
         wait: Duration,
     ) -> Result<(), CreateBuildError> {
-        let mut reader = self.settings.reader(wait)?;
+        // A reader that cannot be checked out (pool full, storage stopping)
+        // is busy storage, not a failure.
+        let mut reader = self
+            .settings
+            .reader(wait)
+            .map_err(|_| WriterFailure::Busy)?;
         let tx = reader
             .connection
             .as_mut()

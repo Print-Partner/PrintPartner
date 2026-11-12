@@ -284,3 +284,30 @@ fn a_refused_credential_writes_nothing() {
     );
     assert!(fixture.builds().is_empty());
 }
+
+#[test]
+fn a_failure_after_the_insert_rolls_the_whole_create_back() {
+    let fixture = Fixture::new();
+    let database = fixture
+        ._directory
+        .path()
+        .join(crate::archive::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection.busy_timeout(WAIT).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER refuse_brief BEFORE INSERT ON app_settings \
+             WHEN NEW.key LIKE 'build_planning.v1.%' BEGIN SELECT RAISE(ABORT,'refused'); END;",
+        )
+        .unwrap();
+    let failed = fixture.create(new_build("A", "r", Some("k")));
+    assert!(
+        matches!(
+            failed,
+            Err(CreateBuildError::Writer(WriterFailure::Internal(_)))
+        ),
+        "{failed:?}"
+    );
+    assert!(fixture.builds().is_empty());
+    assert_eq!(fixture.planning_settings(), 0);
+}

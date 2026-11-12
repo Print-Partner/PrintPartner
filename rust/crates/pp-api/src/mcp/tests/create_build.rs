@@ -39,10 +39,12 @@ async fn pending(server: &McpServer, headers: &[(String, String)]) -> Vec<Value>
 async fn propose(server: &McpServer, headers: &[(String, String)], args: Value) -> String {
     let database = server._directory.join("print-partner.db");
     let before = pp_testkit::mcp_planning::state(&database).unwrap();
+    let builds = plans(server, headers).await;
     let (proposal, error) = json_call(server, headers, "propose_create_build", args).await;
     assert!(!error, "{proposal}");
     assert_eq!(proposal["status"], "proposed", "{proposal}");
     assert_eq!(before, pp_testkit::mcp_planning::state(&database).unwrap());
+    assert_eq!(builds, plans(server, headers).await);
     proposal["action"]["id"].as_str().unwrap().to_owned()
 }
 
@@ -189,6 +191,7 @@ async fn mcp_create_build_propose_refuses_with_a_code() {
     let (server, headers) = orders_on().await;
     let database = server._directory.join("print-partner.db");
     let before = pp_testkit::mcp_planning::state(&database).unwrap();
+    let builds = plans(&server, &headers).await;
     let long_key = "k".repeat(201);
     for (args, code) in [
         (json!({ "name": "  ", "request": "r" }), "blank_name"),
@@ -237,6 +240,7 @@ async fn mcp_create_build_propose_refuses_with_a_code() {
         "UPDATE app_settings SET value='{\"orders\":true}' WHERE key='feature_toggles';",
     );
     assert_eq!(before, pp_testkit::mcp_planning::state(&database).unwrap());
+    assert_eq!(builds, plans(&server, &headers).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

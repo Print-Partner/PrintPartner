@@ -1,20 +1,24 @@
 //! Confirmation-gated Build inputs and planning brief updates on Rust storage.
 use super::{checkoff::CheckoffDomain, reads::as_int};
 use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
-use pp_storage::build_graph::{BuildCommand, BuildOutcome, mcp::Request};
+use pp_storage::build_graph::{BuildCommand, BuildOutcome, Failure, mcp::Request};
+const UNAVAILABLE: &str = "Build planning is unavailable";
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
 pub(super) const TOOLS: [&str; 2] = ["add_addon", "propose_update_build_brief"];
 impl CheckoffDomain {
-    pub(super) fn planning_run(&self, request: Request) -> Result<Value, String> {
-        match self.builds.execute(
+    fn planning_execute(&self, request: Request) -> Result<anyhow::Result<BuildOutcome>, String> {
+        Ok(self.builds.execute(
             self.caller()?.into_credential(),
             BuildCommand::Mcp(request),
             Arc::new(AtomicBool::new(false)),
             self.wait,
-        ) {
+        ))
+    }
+    pub(super) fn planning_run(&self, request: Request) -> Result<Value, String> {
+        match self.planning_execute(request)? {
             Ok(BuildOutcome::Mcp(value)) => Ok(value),
-            _ => Err("Build planning is unavailable".into()),
+            _ => Err(UNAVAILABLE.into()),
         }
     }
     pub(super) fn planning_propose(
@@ -102,12 +106,25 @@ impl CheckoffDomain {
     }
     pub(super) fn planning_apply(&self, action: &ProposedAction) -> Result<Value, String> {
         let params = Value::Object(action.params.clone());
-        self.planning_run(Request::new(
+        match self.planning_execute(Request::new(
             action.plan_id,
             action.action_type.clone(),
             params,
             Some(action.to_json()),
-        ))
+        ))? {
+            Ok(BuildOutcome::Mcp(value)) => Ok(value),
+            // The writer may have committed before the reply was lost. The session
+            // drops the proposal so a second confirm cannot apply it twice.
+            Err(error) if matches!(error.downcast_ref(), Some(Failure::OutcomeUnknown)) => {
+                Ok(json!({
+                    "ok": false,
+                    "outcome_unknown": true,
+                    "action_id": action.id,
+                    "detail": "The result of this action is unknown. Check the Build before proposing it again.",
+                }))
+            }
+            _ => Err(UNAVAILABLE.into()),
+        }
     }
 }
 fn addon_fields(canonical: &str, check: &Value) -> (String, Value) {

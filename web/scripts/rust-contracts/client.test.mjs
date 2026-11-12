@@ -121,6 +121,8 @@ const optionalMembers = {
   BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope", "entry.restorable"]),
   // Accept's serde defaults: no remap, and no header version for a draft without a header row.
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
+  // Create takes `enabled` (default true) and only the credential fields its kind uses.
+  CreateIntegrationRequest: new Set(["enabled", "username", "api_key", "password"]),
 };
 
 for (const fixture of document.fixtures) {

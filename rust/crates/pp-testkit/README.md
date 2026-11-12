@@ -9,6 +9,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Creates a fresh temporary data directory per test (`Installation`) and deletes it on drop, so tests never touch a real data directory.
 - Defines the ownership marker `.pp-rust-owned.json` (`Marker`) and the corrupt forms tests must refuse (`Corruption`).
 - Builds a Node schema 34 database from the pinned `pp-storage/data/historical/schema-34.ts`.
+- Fills that database and its directory with a small synthetic Node installation (`node_installation`), for tests of the Node import.
 
 ## Not responsible for
 
@@ -27,6 +28,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `allowed_in_empty`, `allowed_in_node_lease` | Entry names that still count as an empty data directory. |
 | `MARKER_FILE`, `MARKER_VERSION`, `MARKER_OWNER`, `FIXTURE_CREATED_AT`, `DATABASE_FILE` | Format constants. |
 | `moonraker` | Loopback Moonraker simulators on their own thread: `RecordedPrinter` replays replies in request order; `RoutedPrinter` answers by request target (unlisted targets get 404, `{ORIGIN}` becomes its origin). Both record request lines and never initiate a connection. |
+| `node_installation` | `populate(directory)` fills a `Fixture::NodeSchema34` directory with synthetic Sources, Builds, settings in Node's stored shapes, a Source snapshot under `repos/` and `custom_filaments.json`. `BUILDS`, `SOURCES`, `PRINTERS`, `UNMATCHED_PRINTS` and `INTEGRATION_SECRET` say what it wrote. |
 | `node_schema` | `write_schema_34_database`, `schema_34_statements`, `parse_schema_migrations`, `execute`, `stamp_schema_version`, `SCHEMA_34_COMMIT`, `SCHEMA_34_SHA256`. |
 
 No binaries.

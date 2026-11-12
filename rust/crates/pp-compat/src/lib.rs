@@ -28,7 +28,10 @@ use axum::{
 use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
-pub use release::{MeasuredBundle, verify_bundle, verify_rust_only_release};
+pub use release::{
+    AssetSnapshot, MeasuredBundle, snapshot_rust_only_release, verify_bundle,
+    verify_rust_only_legacy_release, verify_rust_only_release,
+};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{

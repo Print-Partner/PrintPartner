@@ -49,6 +49,64 @@ Pushes to `main`, merge groups, nightly and manual runs execute all three jobs r
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
+## Web job selection
+
+`web-ci.yml` starts on every PR, pushes to `main` and `master`, merge groups,
+manual dispatch and reusable-workflow calls. Its `changes` job runs
+`ci-path-filter.py web` and `ci-path-filter.py ui` against the complete PR diff.
+The four existing jobs (`web`, `web-build`, `sidecar`, `docker`) depend on the
+`web` output at job level. Unselected jobs report skipped checks. Draft PRs
+skip before runner allocation. Unknown diffs or a failed selector keep validation
+selected; Docker still requires successful `web` and `web-build` jobs.
+
+The `web` kind covers non-Markdown files under `web/`, `scripts/`, `fixtures/`,
+`manifests/`, `slicer-sidecar/`, `rust/`, workflows and local actions, plus shared
+package/configuration files, Docker and Compose inputs, Caddyfile and the Rust
+toolchain and root `LICENSE`. Markdown selects it anywhere under
+`web/apps/*/src/` and `fixtures/`, or for `web/DEPLOY.md` and the root
+legal/notices files. The workaround ratchet scans tracked `.ts`, `.tsx`, `.mts`,
+`.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.rs`, `.py`, `.sh`, `.yml`, `.yaml`, `.css`
+and `.html` files. Every path with one of those extensions selects `web`,
+including files outside the directories above. A selection test loads the
+ratchet's extension declarations and requires the filter's list to match.
+
+The other documentation inputs read by tests in `web` select that job:
+`README.md`, `docs/README.md`, `docs/INSTALL.md`, `docs/index.html` and
+`docs/scripts/**` cover `scripts/site-map-docs.test.mjs` in `test:release`.
+`docs/design-system.md` and `docs/product/ui-tokens.md` cover the design-token
+test's `design-system-contrast.mjs --check`. Other documentation does not select
+`web` unless it matches an input listed above.
+The `ui` kind covers `web/apps/ui/`, shared packages including `rust-client`,
+web scripts and configuration, fixtures, manifests, scripts and CI inputs.
+The `ui` kind is computed but unused until a dedicated UI job exists.
+
+The overlap is intentional: `web` still lints `apps/ui`, and its tests and
+typecheck still cover `rust-client`. Every existing step stays in its job:
+`web` keeps the action pins, Linear sync tests, immutable workflow checks,
+workaround ratchet, MCP inventory, audit, notices, lint, dead-code check,
+typecheck and unit tests; `web-build` keeps build, workflow smoke, bundle,
+runtime and browser checks; `sidecar` keeps its build and request tests;
+`docker` keeps Compose validation, image build, persistence and workflow smoke.
+The independent `release-audit` job runs `node scripts/audit-public-release.mjs`
+on every non-draft PR, with no path selection or dependency on `changes`.
+It also runs on non-PR events. It restores the public-release audit's required
+public-file checks, repository-wide forbidden text and broken local link checks,
+root `LICENSE` and `.gitignore` checks, and 1440×900 screenshot checks even when
+heavy web jobs skip. It does not run `site-map-docs.test.mjs`, the other
+`test:release` tests, the design-token contrast test or the workaround ratchet;
+their inputs select `web` as described above. Release-script and Docker-startup
+tests in `test:release` retain their existing script/image input selection.
+It needs only checkout and pinned Node, with read-only contents permission and
+no npm install. The audit still runs through `npm test` when `web` is selected;
+this cheap duplicate is intentional to keep the existing npm command intact.
+
+Merge groups select `rust`, `actions`, `windows`, `macos` and `ui`, but not
+`web`. All four legacy Web CI jobs skip there, avoiding sidecar/image builds
+for each queue entry. The merge queue does not run `web`, `web-build`, `sidecar`
+or `docker`, so a web break caused by combining two PRs is caught by the push
+to `main`, after merge. Other non-PR events select every kind. Existing job
+names, required checks and the ruleset snapshot stay unchanged.
+
 ## Agent guidance check
 
 The `agent-guidance` job in `actionlint.yml` runs `scripts/check-agent-guidance.py`. It makes no network requests.
@@ -874,7 +932,7 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 
 | Required check | Workflow | On `merge_group` |
 | --- | --- | --- |
-| `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` treats every event other than `pull_request` as relevant, because the group's diff against `main` is not the PR's diff. |
+| `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` selects the `actions` kind on merge groups, because the group's diff against `main` is not the PR's diff. |
 | `rust (linux)` | `rust-cross-os.yml` | The archive build plus three rebuild partitions, as on `main`, on `ubuntu-latest`. Merge groups never use pp-local or Blacksmith. |
 | `Lint Evidence block` | `pr-evidence.yml` | Passes without a PR body; the body was linted on the PR. |
 | `review-gate` | `review-gate.yml` | Passes only when every PR in the group passed `review-gate` on its current head. |
@@ -887,7 +945,7 @@ A merge group runs the workflow files from the group commit, so a PR that change
 
 The job has no job-level `if`. GitHub counts a skipped required job as a pass, so each step carries the event condition instead and the job always reports. Merge-group runs get their own `concurrency` group (`github.ref` is unique per group) and never cancel each other; only `pull_request_target` runs cancel older runs for the same PR.
 
-`scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on all four required workflows and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
+`scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on the required workflows and Web CI and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
 
 [CI controls](ci-controls.md#turn-on-the-merge-queue) records the merge_queue rule that turned the queue on.
 

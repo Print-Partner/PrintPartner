@@ -102,7 +102,7 @@ async function main() {
     log("signed in a throwaway account");
 
     for (const step of steps) {
-      log(`step ${step.name}:${step.arg} ${await STEPS[step.name](api, step.arg)}`);
+      log(`step ${step.name}:${step.arg} ${await STEPS[step.name](api, step.arg, { root, coreOrigin })}`);
     }
 
     for (const { path, file: name } of shots) {

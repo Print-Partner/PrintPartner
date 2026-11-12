@@ -13,6 +13,7 @@
 //! server by `web/apps/server/scripts/export-mcp-catalog.ts`; the Node test
 //! `src/mcp/rust-catalog.test.ts` fails when the two differ.
 
+pub mod addon;
 mod custom_filaments;
 
 pub use custom_filaments::list as list_custom_filaments;
@@ -404,8 +405,9 @@ impl<P: DomainPort> McpSession<P> {
         match applied {
             Ok(result) => {
                 let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
-                if !ok {
-                    // Restored so the client can retry or dismiss.
+                // Restored so the client can retry or dismiss, unless the write may
+                // already have committed: a retry could then apply it twice.
+                if !ok && result.get("outcome_unknown") != Some(&Value::Bool(true)) {
                     self.set_pending(action);
                 }
                 Ok(ToolResult {

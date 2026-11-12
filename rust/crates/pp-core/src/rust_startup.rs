@@ -3,8 +3,9 @@
 //! [`admit`] opens the storage writer, which takes the directory lease and
 //! applies the marker decision (`pp_storage::ownership_marker`) before any
 //! schema write. Only an accepted directory reaches the release check
-//! (`pp_compat::verify_rust_only_release`), `cutover::recover` and source-sync admission,
-//! in that order. A refused directory sees none of the three and stays as it
+//! (`pp_compat::snapshot_rust_only_release` or legacy verification), then
+//! `cutover::recover` and source-sync admission. A refused directory sees none
+//! of the three and stays as it
 //! was. A failure after the marker decision shuts the writer down, which
 //! releases the lease; the marker and schema stay, because Rust now owns the
 //! directory.
@@ -94,4 +95,29 @@ async fn release(writer: WriterOwner) {
             tracing::warn!(error = %error, "rust_startup_writer_release_task_failed");
         }
     }
+}
+
+/// Select a replacement only when installed; a linked root is never absence.
+/// It prints nothing: the caller reports the legacy fallback only after the
+/// data directory is admitted, so a refused start prints only its refusal.
+pub(crate) fn select_frontend(
+    bundle: &pp_compat::Bundle,
+    legacy: PathBuf,
+) -> Result<(PathBuf, bool)> {
+    let replacement = bundle.web_root.join("apps/ui/dist");
+    let present = match std::fs::symlink_metadata(&replacement) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                !metadata.is_symlink(),
+                "Release inventory contains a symlink"
+            );
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    let assets = if present { replacement } else { legacy }
+        .canonicalize()
+        .context("React assets unavailable")?;
+    Ok((assets, present))
 }

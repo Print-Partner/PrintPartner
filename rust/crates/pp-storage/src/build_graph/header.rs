@@ -39,6 +39,13 @@ pub enum ArchiveRefusal {
     Integrity,
 }
 
+/// A Build's special request as stored: surrounding whitespace removed, and
+/// `None` when nothing is left. PATCH /plans/{id} and Build creation over MCP
+/// both store it this way.
+pub fn normalized_special_request(text: &str) -> Option<&str> {
+    Some(trim_ecmascript(text)).filter(|text| !text.is_empty())
+}
+
 /// Whether another Build of `tenant` already has `name`: the rule a Build
 /// rename and Accept's header copy share (`duplicate_build_name`).
 pub(crate) fn name_taken(
@@ -123,9 +130,7 @@ pub(super) fn update(
                 });
             }
             SpecialRequest::Clear => None,
-            SpecialRequest::Text(text) => {
-                Some(trim_ecmascript(text)).filter(|text| !text.is_empty())
-            }
+            SpecialRequest::Text(text) => normalized_special_request(text),
         };
         tx.execute(
             "UPDATE build_profiles SET special_request=?1 WHERE tenant_id=?2 AND id=?3",

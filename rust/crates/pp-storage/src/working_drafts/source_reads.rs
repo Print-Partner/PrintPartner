@@ -90,16 +90,18 @@ impl SourceReads {
     /// the resolved path whether or not it exists, and `.` and `..` segments are
     /// resolved as Node's `path.resolve` resolves them.
     pub(crate) fn node_root(&self, source: i64, stored: Option<&str>) -> Option<PathBuf> {
-        let candidate = node_resolve(Path::new(stored.filter(|path| !path.is_empty())?));
+        let stored = Path::new(stored.filter(|path| !path.is_empty())?);
         if self.filesystem == SourceFilesystemPolicy::TrustedSingleUser {
-            return Some(candidate);
+            return Some(node_resolve(stored));
         }
-        let workspace = node_resolve(&self.repos).join(source.to_string());
-        let configured = fs::canonicalize(&self.repos).ok()?.join(source.to_string());
-        let shown = pp_os::display_path(&candidate);
-        if !shown.starts_with(pp_os::display_path(&workspace))
-            && !shown.starts_with(pp_os::display_path(&configured))
-        {
+        // Stored Node paths can mix separators with a Windows verbatim prefix.
+        // Drop that prefix before resolving, so Windows treats both separators alike.
+        let candidate = node_resolve(&pp_os::display_path(stored));
+        let repos = node_resolve(&pp_os::display_path(&self.repos));
+        let workspace = repos.join(source.to_string());
+        let configured =
+            pp_os::display_path(&fs::canonicalize(&repos).ok()?).join(source.to_string());
+        if !candidate.starts_with(&workspace) && !candidate.starts_with(&configured) {
             return None;
         }
         let meta = fs::symlink_metadata(&workspace).ok()?;
@@ -439,3 +441,6 @@ impl StlInventory for Inventory {
         })
     }
 }
+
+mod mcp_documents;
+pub(crate) use mcp_documents::load as mcp_documents;

@@ -127,6 +127,7 @@ A downgrade refuses the live schema before restore cleanup. It preserves the dat
 - `pp-storage` owns the SQLite connection, migrations, the bounded settings writer, the read-only pool, the storage lease and safe backups.
 - The Node server still runs the application SQL, startup migrations and jobs.
 - The desktop rebuild slices move these operations into `pp-storage` behind `desktop_rebuild`. See [Desktop rebuild flag](desktop-rebuild.md).
+- `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. Today it holds the dry run and the conversion inventory. See [Node import](node-import.md).
 
 ## Synthetic installations
 

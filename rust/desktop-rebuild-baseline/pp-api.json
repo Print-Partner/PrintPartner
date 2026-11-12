@@ -1,7 +1,10 @@
 {
-  "pp-api": {
-    "module": 59,
-    "item": 165,
-    "statement": 23
+  "version": 2,
+  "crates": {
+    "pp-api": {
+      "module": 59,
+      "item": 165,
+      "statement": 23
+    }
   }
 }

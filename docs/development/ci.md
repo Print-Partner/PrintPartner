@@ -9,20 +9,41 @@ merge groups, schedules and manual runs keep their existing behavior.
 
 On ready PRs, the jobs are selected as follows:
 
-- `rust (linux)` runs when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip it while keeping its check report present. `rust (windows)` has its own selection, the [Windows tier](#windows-tier) below, and does not depend on this list.
-- `rust (macos)` uses the same path selection. It runs only when relevant inputs change and the PR has the exact `macos` or `ci:full` label and is not a draft. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
+- `rust (linux)` runs when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip it while keeping its check report present. `rust (windows)` follows the [cross-OS PR label](#cross-os-pr-label) below.
+- `rust (windows)` and `rust (macos)` run only on ready PRs with the exact `ci:cross-os` label, regardless of paths. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
 - When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (for example, a change only to a crate that a job's `CARGO_SCOPE` leaves out) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
 
-The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped`: the required `rust (linux)` check and the advisory `rust (windows)` check never stay pending. The rest of this paragraph is about `rust (linux)`; `rust (windows)` follows the [Windows tier](#windows-tier). A PR that changes only docs, other workflows or other non-Rust files skips `rust (linux)`: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` as skipped (a workflow change now selects `rust (windows)`), and a PR that touches a path above, such as this filter, runs it. Markdown is not a Rust input and does not select it, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects `rust (linux)` on purpose, and does not select `rust (windows)`: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
+The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped`: the required `rust (linux)` check and the advisory `rust (windows)` check never stay pending. The rest of this paragraph is about `rust (linux)`; `rust (windows)` follows the [cross-OS PR label](#cross-os-pr-label). A PR that changes only docs, other workflows or other non-Rust files skips `rust (linux)`: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` as skipped (Windows now requires `ci:cross-os`), and a PR that touches a path above, such as this filter, runs it. Markdown is not a Rust input and does not select it, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects `rust (linux)` on purpose, and does not select `rust (windows)`: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
 
-#### Windows tier
+#### Cross-OS PR label
 
-`rust (windows)` takes up to 120 minutes (the `timeout-minutes` limit), so a PR runs it per push only when it is selected. Main pushes, merge groups, the nightly schedule and manual runs always run it. A PR selects it in two ways, both decided in the `changes` job by `scripts/ci-path-filter.py windows`:
+Windows, Rust macOS and native arm64 jobs run on a ready PR only with
+`ci:cross-os`. Changed paths alone never select these jobs. The older `macos`,
+`ci:windows` and `ci:full` labels no longer select them. Adding or removing
+`ci:cross-os` starts a new run. Without it, jobs report skipped checks rather
+than leaving missing contexts. Draft PRs skip every PR CI job as before.
 
-- **Label.** `ci:windows` selects the Windows job. `ci:full` selects it and `rust (macos)`; the existing `macos` label still selects macOS alone. The labels are read from the PR event, and the job re-evaluates when one is added or removed.
-- **Path.** The PR changes `.gitattributes` (its `eol=lf` rules only affect Windows checkouts), `rust/crates/pp-os/`, `rust/Cargo.lock`, `rust-toolchain.toml`, `web/package.json`, `web/package-lock.json`, each workspace's `web/apps/*/package.json` and `web/packages/*/package.json` (the Windows job builds every workspace), `web/scripts/atomic-package-build.mjs`, `rust/scripts/build-desktop-manifest.py`, `rust/scripts/desktop_workspaces.py`, `rust/scripts/fetch-historical-schema-commits.sh`, `rust/crates/pp-desktop/tauri.conf.json`, `rust/crates/pp-desktop/icons/` (the Windows build embeds `icon.ico` as a resource), `.github/workflows/`, `.github/actions/`, `.github/actionlint.yaml`, the selector or its test, or any Rust or Cargo file under `rust/`, or TypeScript file under `web/apps/server/src/` or `web/packages/` (the Node child the Windows runtime tests launch, and the shared packages it imports), whose head or base content mentions `windows`, `win32`, `named pipe`, a `\\.\pipe` path, the text `unix` anywhere (as in `os::unix`, `cfg(unix)`, `cfg(any(unix, …))` or `UnixStream`, and also `UNIX_EPOCH`, which selects more than needed), `os::fd`, `target_family`, `target_os` or `libc` (a Windows module or dependency, or Unix-only code that must have a Windows counterpart), `linux`, `process.platform` or `/proc/` (Linux-only code whose fallback runs on Windows), or `sep` (as `path.sep` or destructured from `node:path`), `path.win32`, a backslash string literal (`"\\"` or `'\\'`) or a backslash regex (`/\\/`) (path-separator handling). A deleted file is judged on its base content, and a file neither side can read selects it. These path and label rules apply even when the Rust inputs for Linux did not change, so a workflow-only PR runs Windows. A Windows-port PR therefore selects it without a label.
+`rust (linux)` keeps its existing path selection. Merge groups, main pushes,
+schedules and manual runs still run all cross-OS jobs. Windows and macOS remain
+advisory; the required-check set stays `actionlint`, `zizmor`, `rust (linux)`,
+`Lint Evidence block` and `review-gate`. The ruleset snapshot is unchanged.
 
-A PR that changes only other Rust, web or docs files skips the Windows job and keeps Linux. The skipped job still reports `rust (windows)`. The owner removed `rust (windows)` from the required checks on 2026-11-08, so it is advisory and a failure does not block a merge; `rust (linux)` uses the same selector and is still required, and GitHub counts a skipped required job as passing, which is the reason the decision must not be loosened casually. The selector and its test are in CODEOWNERS, so changing what skips a check requests Chad's review (CODEOWNERS does not make it a merge requirement), and the full set (Windows, macOS, packaged smoke, native macOS) runs on `main` pushes and nightly regardless of PR labels. A skipped PR is first tested on Windows on `main` after it merges, or on its merge group when it goes through the [merge queue](#merge-queue); because `rust (windows)` is advisory, a Windows failure on a merge group does not eject the PR, and a Windows-only break on `main` raises no alert. A PR whose Windows job did not run has not been tested on Windows: add `ci:windows` when in doubt.
+| Event (ready PRs) | Before: Windows / Rust macOS / native arm64 | After: Windows / Rust macOS / native arm64 |
+| --- | --- | --- |
+| PR without `ci:cross-os` | Windows path or old label tier / `macos` or `ci:full` plus Rust inputs / `macos` plus native inputs | skip / skip / skip |
+| PR with `ci:cross-os` only | Windows path tier / skip / skip | run / run / run |
+| `merge_group` | run / run / run (+ Intel) | run / run / run (+ Intel) |
+| `push` to main | run / run / run (+ Intel) | run / run / run (+ Intel) |
+
+Native jobs still require a successful Linux precheck; fork PRs still skip the
+native storage gate. Intel stays off on PRs. Scheduled/manual events retain full
+coverage. macOS remains hosted on every event.
+
+The persistent Mac runner needs a restricted runner group that permits only
+selected workflows pinned to main and excludes forks before it can run CI.
+Editable PR YAML and selectors cannot enforce that boundary. Chad configures
+that restriction; enabling the Mac runner belongs in a follow-up. This change
+adds no Mac runner selection, mount cleanup or cache policy.
 
 Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
@@ -280,7 +301,7 @@ Steps 4 to 10 run even when an earlier one of them fails, so one run reports eve
 
 Each job declares its runner in `runs-on`, its package scope in `CARGO_SCOPE`, and its test filter in `NEXTEST_FILTER` (from the `changes` job output, defaulting to `all()`). The three jobs share the same anchored steps. They have no matrix, so GitHub reports their exact required names both when running and when skipped. The Linux rebuild partitions always use `all()` because they only run on non-PR events.
 
-`rust (linux)` is a required check on `main`; `rust (windows)` and `rust (macos)` are advisory (the owner removed `rust (windows)` from the required checks on 2026-11-08). A PR that the [Windows tier](#windows-tier) does not select reports `rust (windows)` as skipped. [Settings for Chad](ci-controls.md#settings-for-chad) lists the full ruleset.
+`rust (linux)` is a required check on `main`; `rust (windows)` and `rust (macos)` are advisory (the owner removed `rust (windows)` from the required checks on 2026-11-08). A PR that the [cross-OS PR label](#cross-os-pr-label) does not select reports `rust (windows)` as skipped. [Settings for Chad](ci-controls.md#settings-for-chad) lists the full ruleset.
 
 ## Run the required checks with one command
 
@@ -322,7 +343,7 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | Step | What it runs | CI source |
 |------|--------------|-----------|
 | `local-ci-self-test` | `scripts/test_local_ci.py` | None. This test fails when a copied command no longer matches its workflow step. |
-| `selector-tests` | The path-filter and macOS-alert unit tests | `rust-cross-os.yml` `changes` |
+| `selector-tests` | The path-filter, macOS-alert and stale merge-group canceller unit tests | `rust-cross-os.yml` and `actionlint.yml` `changes` |
 | `perf-baseline-tests` | The unit tests of the Node-versus-Rust baseline harness in `scripts/perf-baseline` | None yet. A local-only line; see [Performance](performance.md). |
 | `actionlint` | `actionlint -color` | `actionlint` (required) |
 | `agent-guidance` | `test_agent_guidance.py` and `check-agent-guidance.py`: local links and anchors in every tracked Markdown page, and the guidance title and skill rules | `agent-guidance` in `actionlint.yml` |
@@ -373,7 +394,7 @@ step runs in both `just ci --fast` and the full `just ci`.
 
 Regenerate the placement files with
 `python3 rust/scripts/check-ast-grep.py --write-placement-baseline`. The command
-writes one map entry per crate, removes stale crate files and the old shared
+writes one version 2 file per crate, removes stale crate files and the old shared
 file, then runs the checks. It cannot authorize a statement-count increase.
 Identical files keep identical contents, so updates in different crates merge
 without editing a shared inventory or manifest.
@@ -383,11 +404,24 @@ the layout migration, when main has no per-crate baseline files yet, the checker
 uses that crate's entry in main's shared `desktop-rebuild-baseline.json`.
 Once main uses per-crate files, a missing crate file means a zero cap; it never
 borrows an allowance from a leftover shared file. A missing or extra local
-crate file fails the exact inventory check, including zero-count crates.
+crate file fails the exact inventory check, including zero-count crates. Every
+per-crate file, local or on main, must use version 2.
 
-`cfg!(feature = "desktop_rebuild")` expressions are excluded from these counts
-(17 uses at the review baseline). Child [GRE-1397](https://linear.app/greetz/issue/GRE-1397/count-desktop-rebuild-cfg-expressions-in-the-placement-ratchet)
-tracks counting them later.
+`cfg!(feature = "desktop_rebuild")` expressions count as statements, including
+raw names, raw feature strings and escaped feature values. Lexical `cfg` and
+`cfg_attr` metas in macro call arguments also count as statements. The scanner
+does not expand macros: it conservatively counts that text even if a particular
+macro does not apply the meta as an attribute. Nested conditional metas count
+once. For actual `#[...]` attributes, documentation metadata such as
+`#[cfg_attr(docsrs, doc(cfg(feature = "desktop_rebuild")))]` does not count.
+Opaque input `m!(cfg_attr(docsrs, doc(cfg(feature = "desktop_rebuild"))))`
+counts as one statement: the scanner cannot determine what `m!` applies.
+
+The version 2 placement baseline includes the 17 existing `cfg!` expressions:
+pp-compat 2, pp-core 5, pp-desktop 1, pp-storage 9. When comparing with an
+unversioned shared baseline on `origin/main`, the checker adds only the `cfg!`
+inventory in main's source to its statement cap. Version 2 grants no further
+allowance.
 
 Except where noted below, each step runs the command lines of its workflow step without changes. The script sets the same environment that CI sets: `NEXTEST_FILTER`, `PP_TEST_NODE`, `VITE_PRINT_PARTNER_DESKTOP`, and `RUNNER_TEMP`. The cargo steps also get `INSTA_UPDATE=no`, so a snapshot mismatch fails the step instead of writing a `.snap.new` file. `RUNNER_TEMP` is under `$CARGO_TARGET_DIR/local-ci`, or under `rust/target/local-ci` if `CARGO_TARGET_DIR` is not set. The local command differs from CI in these ways:
 
@@ -618,11 +652,11 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
 ## Other Rust workflows
 
 - **Desktop Rust (hosted)** (`desktop-fleet-rust.yml`) runs only the ast-grep ratchet, in the `ast-grep ratchet` job. It runs on pull requests and pushes to `main` that change `rust/**`. Every push to `main` gets its own run, so a merge of two individually green pull requests is still checked. Like the duplication check, it does not cancel superseded runs: a cancelled run would skip the ratchet for that push's diff, and the job is short. On a push, the ratchet compares against the `main` commit that push replaced. It does not build or test Rust; `rust (linux)` does that once per push.
-- **Native macOS bundle** (`desktop-native-macos.yml`) builds the unsigned macOS app and runs the macOS storage tests. Its `changes` job selects them by event and changed paths:
-  - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `macos` label, is not a draft, and changes desktop inputs. The selector includes the Rust inputs above, the native workflow, its cleanup tests and the Rust verification helper directory. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
+- **Native macOS bundle** (`desktop-native-macos.yml`) builds the unsigned macOS app and runs the macOS storage tests. Its `changes` job selects them by event and label:
+  - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `ci:cross-os` label and is not a draft. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups, nightly and manual runs each have their own group, and a rerun keeps its run's group: a rerun of a push, merge group, schedule or manual run shares that run's group without cancelling anything, and a rerun of a pull request run stays in the PR group.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups share their queue ref and head SHA and cancel older runs of that same pair. Nightly and manual runs keep their own group. The scheduled canceller below handles refs that disappear.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -764,7 +798,7 @@ Pull requests restore only. Each install logs
 
 ### Superseded runs
 
-Only pull request runs cancel superseded runs. Every CI workflow
+Pull requests cancel superseded runs. Rust cross-OS and Native macOS bundle also cancel older runs with the same merge-group ref and head SHA. Every CI workflow
 groups a pull request by workflow and ref (or PR number) with
 `cancel-in-progress: true`, so a new push replaces the older run, except `linear-pr-sync.yml`, which must not be cancelled. A run that is already running on `main` is never
 cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
@@ -786,7 +820,7 @@ commit it replaced: the duplication check and the ast-grep ratchet in
 compares a push with `github.event.before`; it is bounded like the rest, and the
 merge-group run of the same commit and the PR runs compare against current `main`.
 Tag pushes, other branches, merge groups, the schedule and manual runs keep their
-own `run_id` group, so a merge-group run is never replaced. A rerun (attempt 2 and
+own `run_id` group, except Rust cross-OS and Native macOS bundle merge groups, which use the queue ref and merge-group head SHA. Queue refs change when entries are superseded, so concurrency does not cancel dropped or superseded entries by itself. A rerun (attempt 2 and
 later, which `main-red` starts for failed `main` runs) also keeps its `run_id` group, so it
 never replaces the pending run and, because the original has finished, does not wait.
 
@@ -795,9 +829,37 @@ never replaces the pending run and, because the original has finished, does not 
 | `pull_request` (except `linear-pr-sync.yml`) | workflow and ref (or PR number) | `true` |
 | first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
 | `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
-| `push` of a tag or another branch, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
-| rerun of a non-PR run | the original run's `run_id` | `false` |
+| `push` of a tag or another branch, other `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
+| Rust cross-OS / Native macOS bundle `merge_group`, including reruns | workflow, queue ref and merge-group head SHA | `true` |
+| rerun of another non-PR run | the original run's `run_id` | `false` |
 | rerun of a `pull_request` run | same as the PR group | `true` |
+
+The head SHA isolates different groups if GitHub reuses a queue ref name. A
+rerun with the same ref and merge-group head SHA still shares the original group
+and cancels an older run of that same pair. This concurrency behavior does not
+determine whether a disappeared queue entry merged; the canceller uses PR state.
+
+`cancel-stale-merge-groups.yml` runs every ten minutes and supports manual
+dispatch on main. It downloads only main's public Python script, checks out
+nothing, and receives only `GITHUB_TOKEN` with the minimum permissions:
+`actions: write` for cancellation, `contents: read` for refs, and
+`pull-requests: read` to distinguish merged PRs from dropped or superseded groups.
+Startup requires a successful read of the expected `refs/heads/main`; even a
+main-ref 404 aborts. It paginates queued/in-progress runs of the two cross-OS
+workflows and accepts only `merge_group` runs on
+`gh-readonly-queue/main/pr-<number>-<40-character-sha>` branches.
+For a missing queue ref (404), it reads `pulls/<number>`. A PR with `merged_at`
+is preserved: squash merges do not preserve queue-commit ancestry, so there is
+no commit comparison. Open or closed-unmerged PRs qualify only when the run is
+more than ten minutes old. Younger runs and live queue refs are preserved.
+Unparseable refs, unexpected PR states, and read errors abort preflight before
+any cancellation. All preflight reads finish before writes. Immediately before
+each cancellation it rechecks the queue ref and skips a reappeared ref. A failure
+at this final probe stops further writes; prior cancellations cannot be undone.
+A cancel 409 skips the finished run and continues; other cancel errors stop writes.
+Other workflows and PR/main runs are never selected.
+GitHub schedules can be delayed, so ten minutes is an interval, not a guarantee.
+The workflow and main script must land before the scheduled job can run.
 
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.

@@ -20,6 +20,10 @@ CHECKER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECKER)
 
 
+def crate_file(crate, values):
+    return json.dumps({"version": 2, "crates": {crate: values}})
+
+
 class TextGateTests(unittest.TestCase):
     def test_only_cfg_attr_predicate_counts(self):
         for text, expected in (
@@ -88,7 +92,7 @@ class RatchetTests(unittest.TestCase):
         directory = self.root / "desktop-rebuild-baseline"
         directory.mkdir(exist_ok=True)
         for crate, values in counts.items():
-            (directory / f"{crate}.json").write_text(json.dumps({crate: values}))
+            (directory / f"{crate}.json").write_text(crate_file(crate, values))
         (self.root / "desktop-rebuild-baseline.json").unlink(missing_ok=True)
 
     def baseline(self, unwrap=0, command=0):
@@ -133,6 +137,97 @@ class RatchetTests(unittest.TestCase):
             capture_output=True,
             env=environment,
         )
+
+    def test_cfg_macro_additions_fail(self):
+        for expression in (
+            'cfg!(feature="desktop_rebuild")',
+            r'r#cfg!(r#feature="desktop\x5frebuild")',
+            'cfg!(any(test, feature=r###"desktop_rebuild"###))',
+            'cfg! { feature="desktop_rebuild" }',
+            'cfg![feature="desktop_rebuild"]',
+        ):
+            with self.subTest(expression=expression):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ let x = {expression}; }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("statement=1", result.stdout)
+
+    def test_cfg_macro_baseline_migrates_once_from_main_inventory(self):
+        self.source("pp-source/src/lib.rs", 'fn f() { let x=cfg!(feature="desktop_rebuild"); }')
+        self.publish_main()
+        # Simulate main before cfg! entered the statement inventory.
+        self.publish_shared_placements({"pp-source": {"module": 0, "item": 0, "statement": 0}})
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Adding a second cfg! cannot enlarge the main-derived allowance.
+        self.source("pp-source/src/lib.rs", 'fn f() { let x=cfg!(feature="desktop_rebuild");'
+                    ' let y=cfg!(feature="desktop_rebuild"); }')
+        self.placements["pp-source"]["statement"] = 2
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+        # Once v2 lands, existing cfg! gates grant no further allowance.
+        self.publish_main()
+        self.placements["pp-source"]["statement"] = 3
+        self.source("pp-source/src/lib.rs", 'fn f() { let x=cfg!(feature="desktop_rebuild");'
+                    ' let y=cfg!(feature="desktop_rebuild"); let z=cfg!(feature="desktop_rebuild"); }')
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+
+    def test_macro_comments_and_literals_are_ignored(self):
+        code = r'''fn f() { other!("cfg!(feature=desktop_rebuild)",
+            r###"cfg(feature="desktop_rebuild")"###,
+            /* cfg!(feature="desktop_rebuild") */
+            other_feature); }'''
+        self.source("pp-source/src/lib.rs", code)
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 classified = 0 text gates", result.stdout)
+
+    def test_docsrs_metadata_is_not_a_gate(self):
+        for attr in (
+            '#[cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))]',
+            '#[cfg_attr(docsrs, doc /* gap */ (cfg(feature="desktop_rebuild")))]',
+            '#[cfg_attr(test, all(feature="desktop_rebuild"))]',
+            '#[cfg_attr(test, cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild"))))]',
+        ):
+            with self.subTest(attr=attr):
+                self.source("pp-source/src/lib.rs", f"{attr} struct S; fn f() {{ {attr} let x=1; }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("0 classified = 0 text gates", result.stdout)
+
+    def test_opaque_macro_doc_metadata_is_conservatively_frozen(self):
+        for meta, count in (
+            ('cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))', 1),
+            ('#[cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))] struct S;', 0),
+        ):
+            with self.subTest(meta=meta):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ m!({meta}); }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, count, result.stdout + result.stderr)
+                self.assertIn(f"{count} classified = {count} text gates", result.stdout)
+                self.assertIn(f"statement={count}", result.stdout)
+
+    def test_macro_argument_meta_counts_as_statement(self):
+        for meta in ('cfg(feature="desktop_rebuild")',
+                     'cfg_attr(all(), cfg(feature="desktop_rebuild"))',
+                     r'r#cfg(r#feature="desktop\u{5f}rebuild")'):
+            with self.subTest(meta=meta):
+                self.source("pp-source/src/lib.rs",
+                            'macro_rules! gate { ($m:meta) => { #[cfg_attr(all(), $m)] let x=1; } }'
+                            f'fn f() {{ gate!({meta}); }}')
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("1 classified = 1 text gates", result.stdout)
+                self.assertIn("statement=1", result.stdout)
 
     def test_statement_gate_addition_fails(self):
         self.source("pp-source/src/lib.rs",
@@ -355,7 +450,7 @@ class RatchetTests(unittest.TestCase):
 
     def test_baseline_for_absent_crate_fails(self):
         path = self.root / "desktop-rebuild-baseline/pp-absent.json"
-        path.write_text(json.dumps({"pp-absent": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)}))
+        path.write_text(crate_file("pp-absent", dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)))
         result = self.check(write_placement=False)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("pp-absent: counts differ", result.stdout)
@@ -371,7 +466,7 @@ class RatchetTests(unittest.TestCase):
         for invalid in (True, -1, "0"):
             with self.subTest(invalid=invalid):
                 path = self.root / "desktop-rebuild-baseline/pp-source.json"
-                path.write_text(json.dumps({"pp-source": {"module": 0, "item": 0, "statement": invalid}}))
+                path.write_text(crate_file("pp-source", {"module": 0, "item": 0, "statement": invalid}))
                 result = self.check(write_placement=False)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn("nonnegative module/item/statement counts", result.stderr)
@@ -389,13 +484,14 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual([p.name for p in directory.iterdir()], ["pp-source.json"])
         self.assertFalse((self.root / "desktop-rebuild-baseline.json").exists())
         before = (directory / "pp-source.json").read_bytes()
+        self.assertEqual(json.loads(before)["version"], 2)
         result = self.check(write_placement=False, arguments=("--write-placement-baseline",))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((directory / "pp-source.json").read_bytes(), before)
 
     def test_generator_removes_stale_crate_files(self):
         path = self.root / "desktop-rebuild-baseline/pp-absent.json"
-        path.write_text(json.dumps({"pp-absent": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)}))
+        path.write_text(crate_file("pp-absent", dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)))
         result = self.check(write_placement=False, arguments=("--write-placement-baseline",))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(path.exists())
@@ -469,7 +565,18 @@ class RatchetTests(unittest.TestCase):
         with patch.object(CHECKER.subprocess, "run", side_effect=advance_main):
             baseline = CHECKER.main_placements(self.root)
         self.assertTrue(moved)
-        self.assertEqual(baseline, counts)
+        self.assertEqual(baseline, {"pp-source": 0})
+
+    def test_unversioned_crate_file_fails_locally_and_on_main(self):
+        path = self.root / "desktop-rebuild-baseline/pp-source.json"
+        path.write_text(json.dumps({"pp-source": dict.fromkeys(CHECKER.PLACEMENT_CLASSES, 0)}))
+        result = self.check(write_placement=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("must use version 2", result.stderr)
+        self.commit_main()
+        result = self.check()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("must use version 2", result.stderr)
 
     def test_matching_baseline_passes(self):
         result = self.check()

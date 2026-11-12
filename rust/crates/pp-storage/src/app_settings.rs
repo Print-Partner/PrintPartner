@@ -1,8 +1,8 @@
-//! The date format, build tracking and default Spoolman settings, stored in
+//! Fixed application settings, including PAT and Discord configuration, stored in
 //! `app_settings` as Node's `routes/settings.ts` stores them (GRE-1357).
 //!
 //! Every command runs on the writer thread and resolves the caller's tenant
-//! from its credential in the same transaction. Commands name one of three
+//! from its credential in the same transaction. Commands name only the supported
 //! fixed keys, so this client cannot read or write any other setting.
 
 use crate::{Envelope, SettingSnapshot, Shared, WriterOwner, auth, read_model::Credential};
@@ -22,6 +22,8 @@ pub enum Key {
     DateFormat,
     BuildTracking,
     SpoolmanDefault,
+    GithubPat,
+    DiscordNotify,
 }
 
 impl Key {
@@ -30,11 +32,13 @@ impl Key {
             Self::DateFormat => "date_format",
             Self::BuildTracking => "build_tracking_assembly",
             Self::SpoolmanDefault => "default_spoolman_integration_id",
+            Self::GithubPat => "github_pat",
+            Self::DiscordNotify => "discord_notify_webhook_url",
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Write {
     /// A date format id the caller has checked against Node's presets.
     DateFormat(String),
@@ -43,16 +47,45 @@ pub enum Write {
     /// A trimmed id. An empty id clears the default; any other id must name
     /// a stored Spoolman integration.
     SpoolmanDefault(String),
+    GithubPat(String),
+    DiscordNotify([Option<String>; 4]),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// The stored value; `None` when the row is missing or empty, as Node's
     /// `getSetting` reads it.
     Value(Option<String>),
     Written,
+    DiscordNotify([Option<String>; 4]),
     /// The Spoolman id names no integration, or one of another type.
     NotSpoolman,
+}
+
+// Secret-bearing commands and outcomes must never reveal their payload in errors.
+impl std::fmt::Debug for Write {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Write([REDACTED])")
+    }
+}
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Outcome([REDACTED])")
+    }
+}
+const DISCORD_KEYS: [&str; 4] = [
+    "discord_notify_webhook_url",
+    "discord_notify_on_update",
+    "discord_notify_on_sync",
+    "discord_auto_sync_updates",
+];
+
+fn discord(tx: &Transaction<'_>, tenant: &str) -> Result<Outcome> {
+    let mut values = [None, None, None, None];
+    for (value, key) in values.iter_mut().zip(DISCORD_KEYS) {
+        *value = read(tx, tenant, key)?;
+    }
+    Ok(Outcome::DiscordNotify(values))
 }
 
 #[derive(Clone)]
@@ -142,15 +175,19 @@ pub(super) fn execute(
         Request::Write(_) => crate::writer_admission::begin_immediate(connection, admission)?,
         Request::Read(_) => connection.transaction_with_behavior(TransactionBehavior::Deferred)?,
     };
-    let tenant = match command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, &secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, &routed_tenant, &secret)?,
-    };
+    let tenant = crate::read_model::read_tenant(&tx, &command.credential, command.policy)?;
     let outcome = match command.request {
+        Request::Read(Key::DiscordNotify) => discord(&tx, &tenant)?,
         Request::Read(key) => Outcome::Value(read(&tx, &tenant, key.name())?),
+        Request::Write(Write::GithubPat(token)) => store(&tx, &tenant, Key::GithubPat, &token)?,
+        Request::Write(Write::DiscordNotify(values)) => {
+            for (value, key) in values.iter().zip(DISCORD_KEYS) {
+                if let Some(value) = value {
+                    tx.execute("INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value", params![tenant, key, value])?;
+                }
+            }
+            discord(&tx, &tenant)?
+        }
         Request::Write(Write::DateFormat(format)) => store(&tx, &tenant, Key::DateFormat, &format)?,
         Request::Write(Write::BuildTracking(on)) => {
             store(&tx, &tenant, Key::BuildTracking, if on { "1" } else { "0" })?

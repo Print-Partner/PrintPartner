@@ -1,7 +1,10 @@
 {
-  "pp-source": {
-    "module": 7,
-    "item": 5,
-    "statement": 3
+  "version": 2,
+  "crates": {
+    "pp-source": {
+      "module": 7,
+      "item": 5,
+      "statement": 3
+    }
   }
 }

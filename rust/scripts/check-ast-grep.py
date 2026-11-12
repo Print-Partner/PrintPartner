@@ -78,17 +78,18 @@ def feature_string(token):
     return RUST_ESCAPE.sub(unescape, token[1:-1])
 
 
-def attribute_gate(tokens, start, end, pairs):
+def attribute_gate(tokens, start, end, pairs, macro=False):
     """Inspect a cfg predicate and recursively applied cfg/cfg_attr attributes."""
     name = tokens[start][0].removeprefix(b"r#")
-    if (name not in (b"cfg", b"cfg_attr") or start + 1 >= end
-            or tokens[start + 1][0] != b"("):
+    opening = start + 1 + int(macro)
+    if (name not in (b"cfg", b"cfg_attr") or opening >= end
+            or tokens[opening][0] not in ((b"(", b"[", b"{") if macro else (b"(",))):
         return False
-    close = pairs.get(start + 1)
+    close = pairs.get(opening)
     if close is None or close >= end:
         return False
     arguments = []
-    first = cursor = start + 2
+    first = cursor = opening + 1
     while cursor < close:
         if tokens[cursor][0] == b",":
             arguments.append((first, cursor))
@@ -97,7 +98,7 @@ def attribute_gate(tokens, start, end, pairs):
     arguments.append((first, close))
     predicate_end = close if name == b"cfg" else arguments[0][1]
     if any(feature_string(tokens[i][0]) == b"desktop_rebuild"
-           for i in range(start + 2, predicate_end)):
+           for i in range(opening + 1, predicate_end)):
         return True
     return name == b"cfg_attr" and any(
         first < last and attribute_gate(tokens, first, last, pairs)
@@ -105,7 +106,7 @@ def attribute_gate(tokens, start, end, pairs):
     )
 
 
-def text_gates(data):
+def text_gates(data, *, cfg_macros_only=False):
     """Count each outer attachment once, including nested conditional gates."""
     tokens = rust_tokens(data)
     pairs = {}
@@ -115,17 +116,36 @@ def text_gates(data):
             stack.append(i)
         elif token in (b")", b"]", b"}") and stack:
             pairs[stack.pop()] = i
+    # Independently recognize lexical macro regions; the AST pass must still
+    # confirm that every fallback offset belongs to a real macro node.
+    macro_regions = [
+        (i + 2, pairs[i + 2]) for i in range(len(tokens) - 2)
+        if tokens[i + 1][0] == b"!" and i + 2 in pairs
+        and re.fullmatch(rb"(?:r#)?[A-Za-z_][A-Za-z_0-9]*", tokens[i][0])
+    ]
     gates = set()
+    skip_until = -1
     for i, (value, offset) in enumerate(tokens):
-        if value != b"#":
+        if i <= skip_until:
             continue
-        bracket = i + 1
-        if bracket < len(tokens) and tokens[bracket][0] == b"!":
-            bracket += 1
-        if bracket not in pairs or tokens[bracket][0] != b"[":
+        if value == b"#":
+            bracket = i + 1
+            if bracket < len(tokens) and tokens[bracket][0] == b"!":
+                bracket += 1
+            if bracket in pairs and tokens[bracket][0] == b"[":
+                skip_until = pairs[bracket]
+                if not cfg_macros_only and attribute_gate(tokens, bracket + 1, skip_until, pairs):
+                    gates.add(offset)
             continue
-        if attribute_gate(tokens, bracket + 1, pairs[bracket], pairs):
+        name = value.removeprefix(b"r#")
+        macro = i + 1 < len(tokens) and tokens[i + 1][0] == b"!"
+        if name not in (b"cfg", b"cfg_attr") or (macro and name != b"cfg"):
+            continue
+        if not macro and (cfg_macros_only or not any(a < i < b for a, b in macro_regions)):
+            continue
+        if attribute_gate(tokens, i, len(tokens), pairs, macro=macro):
             gates.add(offset)
+            skip_until = pairs[i + 1 + int(macro)]
     return gates
 
 
@@ -196,6 +216,11 @@ def placement_counts(root, hits):
 
 def parse_placement(text):
     baseline = json.loads(text)
+    if isinstance(baseline, dict) and "version" in baseline:
+        if (baseline.keys() != {"version", "crates"}
+                or type(baseline["version"]) is not int or baseline["version"] != 2):
+            raise ValueError("unsupported placement baseline version")
+        baseline = baseline["crates"]
     if not isinstance(baseline, dict):
         raise ValueError("placement baseline must map crates to class counts")
     for counts in baseline.values():
@@ -206,6 +231,9 @@ def parse_placement(text):
 
 
 def parse_crate_placement(text, path):
+    data = json.loads(text)
+    if not isinstance(data, dict) or data.get("version") != 2:
+        raise ValueError(f"{path}: placement baseline must use version 2; regenerate it")
     baseline = parse_placement(text)
     if path.parent != Path(PLACEMENT_DIR) or path.suffix != ".json" or baseline.keys() != {path.stem}:
         raise ValueError(f"{path}: placement baseline must contain only its named crate")
@@ -221,7 +249,25 @@ def local_placements(root):
     return baseline
 
 
+def cfg_macro_allowance(root, reference):
+    """Only the unversioned shared format excluded cfg!. Inventory main, never
+    the working tree, so a new cfg! cannot enlarge this one-time allowance."""
+    allowance = Counter()
+    files = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", reference, "--", "crates"],
+        cwd=root, text=True, capture_output=True, check=True,
+    )
+    for file in files.stdout.splitlines():
+        if file.endswith(".rs"):
+            source = subprocess.run(["git", "show", f"{reference}:./{file}"],
+                                    cwd=root, capture_output=True, check=True)
+            allowance[Path(file).parts[1]] += len(text_gates(source.stdout, cfg_macros_only=True))
+    print(f"desktop-rebuild cfg! migration allowance from {BASE_REF}: {dict(allowance)}")
+    return allowance
+
+
 def main_placements(root):
+    """Return main's statement caps per crate, or None on first landing."""
     reference = subprocess.run(
         ["git", "rev-parse", "--verify", BASE_REF + "^{commit}"],
         cwd=root, text=True, capture_output=True, check=True,
@@ -239,9 +285,8 @@ def main_placements(root):
             shown = subprocess.run(["git", "show", f"{reference}:./{file.as_posix()}"],
                                    cwd=root, text=True, capture_output=True, check=True)
             baseline.update(parse_crate_placement(shown.stdout, file))
-        return baseline
+        return {crate: values["statement"] for crate, values in baseline.items()}
     # Until the split lands, the shared file still owns each crate's cap.
-    spec = f"{reference}:./{PLACEMENT_FILE}"
     legacy = subprocess.run(
         ["git", "ls-tree", "--name-only", reference, "--", PLACEMENT_FILE],
         cwd=root, text=True, capture_output=True, check=True,
@@ -249,9 +294,15 @@ def main_placements(root):
     if not legacy.stdout:
         print(f"desktop-rebuild raise check skipped (first landing): {BASE_REF} has no {PLACEMENT_FILE}")
         return None
-    previous = subprocess.run(["git", "show", spec], cwd=root, text=True, capture_output=True, check=True)
+    previous = subprocess.run(["git", "show", f"{reference}:./{PLACEMENT_FILE}"],
+                              cwd=root, text=True, capture_output=True, check=True)
     print(f"desktop-rebuild layout migration: comparing with {BASE_REF}'s shared {PLACEMENT_FILE}")
-    return parse_placement(previous.stdout)
+    shared = parse_placement(previous.stdout)
+    allowance = Counter()
+    if "version" not in json.loads(previous.stdout):
+        allowance = cfg_macro_allowance(root, reference)
+    return {crate: shared.get(crate, {}).get("statement", 0) + allowance[crate]
+            for crate in shared.keys() | allowance.keys()}
 
 
 def write_placements(root, hits):
@@ -259,7 +310,8 @@ def write_placements(root, hits):
     directory.mkdir(exist_ok=True)
     counts = placement_counts(root, hits)
     for crate, values in counts.items():
-        (directory / f"{crate}.json").write_text(json.dumps({crate: values}, indent=2) + "\n")
+        (directory / f"{crate}.json").write_text(
+            json.dumps({"version": 2, "crates": {crate: values}}, indent=2) + "\n")
     for path in directory.glob("*.json"):
         if path.stem not in counts:
             path.unlink()
@@ -277,7 +329,7 @@ def check_placement(root, hits):
         if counts.get(crate) != baseline.get(crate):
             print(f"desktop-rebuild {crate}: counts differ from {PLACEMENT_DIR}/{crate}.json")
             status = 1
-        before = (main or {}).get(crate, {}).get("statement", 0)
+        before = (main or {}).get(crate, 0)
         if main is not None and baseline.get(crate, {}).get("statement", 0) > before:
             print(f"desktop-rebuild {crate}: statement baseline raised over {BASE_REF} ({before} -> {baseline[crate]['statement']})")
             status = 1

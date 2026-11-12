@@ -1,7 +1,10 @@
 {
-  "pp-domain": {
-    "module": 6,
-    "item": 0,
-    "statement": 0
+  "version": 2,
+  "crates": {
+    "pp-domain": {
+      "module": 6,
+      "item": 0,
+      "statement": 0
+    }
   }
 }

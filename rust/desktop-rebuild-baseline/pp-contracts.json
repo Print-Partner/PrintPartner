@@ -1,7 +1,10 @@
 {
-  "pp-contracts": {
-    "module": 7,
-    "item": 0,
-    "statement": 0
+  "version": 2,
+  "crates": {
+    "pp-contracts": {
+      "module": 7,
+      "item": 0,
+      "statement": 0
+    }
   }
 }

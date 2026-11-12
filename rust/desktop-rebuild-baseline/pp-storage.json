@@ -1,7 +1,10 @@
 {
-  "pp-storage": {
-    "module": 128,
-    "item": 403,
-    "statement": 362
+  "version": 2,
+  "crates": {
+    "pp-storage": {
+      "module": 130,
+      "item": 405,
+      "statement": 370
+    }
   }
 }

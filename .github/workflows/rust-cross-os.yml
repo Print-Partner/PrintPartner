@@ -1,8 +1,8 @@
 name: Rust cross-OS
 
 # Relevant PRs test Rust on Linux. Windows runs on main, merge groups, nightly and manual
-# runs, and on a PR only when the Windows tier selects it (ci:windows or ci:full label, or a
-# Windows-relevant path). Ready PRs with the macos or ci:full label also test macOS. PR gate keeps clippy + doctests for both feature states (macOS PRs
+# runs. Ready PRs test Windows and macOS only with ci:cross-os.
+# PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
 # desktop_rebuild on; macOS PRs skip it.
 # On PRs, nextest uses rdeps(=crate) for changed rust/crates/* (see
@@ -29,8 +29,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && format('queue-{0}', github.event.merge_group.head_sha) || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 defaults:
   run:
@@ -57,6 +57,7 @@ jobs:
     outputs:
       relevant: ${{ steps.select.outputs.relevant }}
       windows: ${{ steps.windows.outputs.windows }}
+      macos: ${{ steps.macos.outputs.macos }}
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
       linux_kind: ${{ steps.runner.outputs.linux_kind }}
@@ -77,7 +78,7 @@ jobs:
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py
           python3 scripts/ci-path-filter.py rust
           python3 scripts/ci-affected-nextest-filter.py
-      - name: Select the Windows tier
+      - name: Select Windows PR coverage
         id: windows
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -85,6 +86,14 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: python3 scripts/ci-path-filter.py windows
+      - name: Select macOS PR coverage
+        id: macos
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 scripts/ci-path-filter.py macos
       - name: Select the Linux Rust runner
         id: runner
         env:
@@ -493,8 +502,8 @@ jobs:
   rust-macos:
     name: rust (macos)
     needs: changes
-    # macOS is opt-in on ready PRs (macos or ci:full label), and always selected on non-PR events.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false') && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && (contains(github.event.pull_request.labels.*.name, 'macos') || contains(github.event.pull_request.labels.*.name, 'ci:full')))))
+    # Only ci:cross-os selects PRs; non-PR events always run.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false'))
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -509,9 +518,9 @@ jobs:
   rust-windows:
     name: rust (windows)
     needs: changes
-    # Explicit jobs keep each required check present when selection skips it. Main, merge groups,
-    # the nightly run and manual runs always select Windows; a PR selects it by label or path.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
+    # Explicit jobs preserve skipped check reports. Main, merge groups, nightly and manual
+    # runs always select Windows; a ready PR selects it only with the ci:cross-os label.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
     runs-on: windows-latest
     env:
       RUST_OS: windows

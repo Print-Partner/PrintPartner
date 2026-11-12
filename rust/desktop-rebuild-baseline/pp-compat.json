@@ -1,7 +1,10 @@
 {
-  "pp-compat": {
-    "module": 1,
-    "item": 6,
-    "statement": 1
+  "version": 2,
+  "crates": {
+    "pp-compat": {
+      "module": 1,
+      "item": 6,
+      "statement": 3
+    }
   }
 }

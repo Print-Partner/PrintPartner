@@ -1,7 +1,10 @@
 {
-  "pp-net": {
-    "module": 0,
-    "item": 0,
-    "statement": 0
+  "version": 2,
+  "crates": {
+    "pp-net": {
+      "module": 0,
+      "item": 0,
+      "statement": 0
+    }
   }
 }

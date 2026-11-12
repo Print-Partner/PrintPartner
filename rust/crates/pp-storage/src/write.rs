@@ -109,4 +109,7 @@ fn run<T, E>(
 }
 
 #[cfg(test)]
+#[path = "write/tests/support.rs"]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;

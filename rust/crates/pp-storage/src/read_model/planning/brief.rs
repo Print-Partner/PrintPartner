@@ -2,6 +2,10 @@
 //! Node's `services/build-planning.ts` derives from it for
 //! `GET /plans/:id/build-planning`: hydration against the tenant's Sources,
 //! the planning phase and readiness.
+//!
+//! [`BuildPlanningBrief`] is the stored document type for readers and
+//! writers. A writer builds or changes the typed value and stores
+//! [`BuildPlanningBrief::stored_text`], the one canonical stored form.
 
 use super::super::views::{folder_compare, js_trim};
 use crate::working_drafts::source_reads::SourceReads;
@@ -440,6 +444,43 @@ fn date(text: &str) -> bool {
 }
 
 impl BuildPlanningBrief {
+    /// A new brief for `build`: the normalised request, every list
+    /// empty, no selected draft, and both stamps `now`. Rust does not guess
+    /// requirements from the request; the assistant records them with
+    /// `propose_update_build_brief`.
+    pub(crate) fn new(build: i64, request: String, now: String) -> Self {
+        Self {
+            version: 1,
+            build_id: build,
+            special_request: request,
+            requirements: Vec::new(),
+            evidence: Vec::new(),
+            contributions: Vec::new(),
+            compatibility_findings: Some(Vec::new()),
+            differences: Vec::new(),
+            resolutions: BTreeMap::new(),
+            role_filaments: Vec::new(),
+            checklist_items: Some(Vec::new()),
+            managed_source_ids: Some(Vec::new()),
+            draft_source_revisions: Some(BTreeMap::new()),
+            draft_id: None,
+            draft_review_blockers: Vec::new(),
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    /// The text to store under `build_planning.v1.<id>`: one canonical stored
+    /// form for this document. An absent optional field is left out rather
+    /// than stored as `null`; responses still serve it as `null`.
+    pub(crate) fn stored_text(&self) -> Result<String> {
+        let mut value = serde_json::to_value(self)?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.retain(|_, field| !field.is_null());
+        }
+        Ok(serde_json::to_string(&value)?)
+    }
+
     /// Node's `readBuildPlanningBrief`: parse, validate as
     /// `isBuildPlanningBrief` does, and require the brief to name `build`.
     pub(crate) fn parse(raw: &str, build: i64) -> Result<Self> {

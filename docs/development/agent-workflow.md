@@ -21,6 +21,22 @@ A brief needs these fields:
 | Status | What is done and the next action |
 | Open decisions | Unresolved questions and who decides each one |
 
+### Ticket spec
+
+A Linear ticket a lane can start from has these sections, in this order. A ticket missing one goes back to the coordinator before work starts.
+
+| Section | Contents |
+| --- | --- |
+| Context | One or two sentences: which step of [the daily loop](../product/daily-loop.md) or which bug this serves, and what exists in the code today, with paths |
+| What | The change, as a short list of behaviours |
+| Acceptance | Conditions a person or a test can observe at the operation's interface: a route, an MCP tool, a screen, a command. Name the state before and after |
+| Not in this ticket | Nearby work that is left out, and where it lives |
+| Interfaces | The routes, MCP tools, tables or files the change adds or alters, and the crate that owns each ([Architecture](../architecture.md#operation-families-and-write-ownership)) |
+| Merge class | Normal, sensitive or owner-merged, with the reason ([merge gate](definition-of-done.md#merge-gate)) |
+| Prerequisites | Tickets that must merge first |
+
+Acceptance describes what the owner or a caller can observe. It does not name test functions or require matching Node's output; [Parity scope](definition-of-done.md#parity-scope) says when Node's behaviour counts.
+
 The owner copies only what the task needs. Tokens, cookies, pairing secrets, customer files, personal data, and unrelated private pages stay out of the brief. Exports are made by hand and reviewed; nothing syncs Notion into the repository.
 
 A brief is a snapshot. Stop and ask the owner before you continue when:
@@ -201,7 +217,7 @@ Only the coordinator records a review. It runs an independent model review on a 
 
 ### Design calls
 
-Design decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (SQLite formats, immutable IDs, autosave, restart recovery, operation ownership) are pre-approved: the coordinator makes them and logs each one on the ticket with its reason. Lanes ask the coordinator instead of stopping for the owner. Anything else goes to the owner in one daily list: scope, cutover, defaults, data formats, and security posture. Work that depends on such a decision waits for the answer; pick other work meanwhile. See [Design calls](definition-of-done.md#design-calls).
+Design decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (history, immutable IDs, autosave, restart recovery, operation ownership) are pre-approved: the coordinator makes them and logs each one on the ticket with its reason. Lanes ask the coordinator instead of stopping for the owner. Anything else goes to the owner in one daily list: scope, cutover, defaults, data formats, and security posture. Work that depends on such a decision waits for the answer; pick other work meanwhile. See [Design calls](definition-of-done.md#design-calls).
 
 ## Verify in a running app
 

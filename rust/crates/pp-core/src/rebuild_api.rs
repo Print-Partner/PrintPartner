@@ -12,6 +12,7 @@ use pp_api::{
     events::{StreamLimits, events_router},
     file_assignments::file_assignments_router,
     history::history_router,
+    integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpClients, McpHttpConfig, mcp_router},
     modules::modules_router,
@@ -227,6 +228,7 @@ pub fn read_router(
         planning_client,
         workflow_client,
         (admin_files, app_settings, features, filament_client),
+        printer_setup,
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -249,6 +251,7 @@ pub fn read_router(
                 guard.features_with_policy(policy)?,
                 guard.filaments_with_policy(policy)?,
             ),
+            guard.printer_setup(policy)?,
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
@@ -275,6 +278,7 @@ pub fn read_router(
     let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = modules_router(config.clone(), features);
+    let integrations = integrations_router(config.clone(), printer_setup);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
@@ -307,6 +311,7 @@ pub fn read_router(
             .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(modules)
+            .merge(integrations)
             .merge(filaments)
             .merge(settings_routes)
             .merge(probe)
@@ -707,6 +712,9 @@ mod tests {
                 json!({"kind":"unsupported", "address":"http://fixture.invalid"})
             }
             "SetModuleRequest" => json!({"on": true}),
+            "CreateIntegrationRequest" => {
+                json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
+            }
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,
@@ -782,7 +790,8 @@ mod tests {
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
     /// print, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 3] = [
+        const CODES: [&str; 4] = [
+            "integration_not_found",
             "draft_not_found",
             "snapshot_not_found",
             "farm_log_entry_not_found",

@@ -2,8 +2,8 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`] or
-//! [`crate::auth`]. `pp-core`'s
+//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`],
+//! [`crate::integrations`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -352,6 +352,23 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "ModuleList",
         )
     },
+    route(
+        "createIntegration",
+        "POST",
+        "/api/v2/integrations",
+        Some("CreateIntegrationRequest"),
+        "IntegrationView",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "deleteIntegration",
+            "DELETE",
+            "/api/v2/integrations/{id}",
+            None,
+            "IntegrationView",
+        )
+    },
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -504,6 +521,14 @@ mod codegen {
         schema(
             "ModuleList",
             schemars::schema_for!(crate::modules::ModuleList),
+        )?;
+        schema(
+            "CreateIntegrationRequest",
+            schemars::schema_for!(crate::integrations::CreateIntegrationRequest),
+        )?;
+        schema(
+            "IntegrationView",
+            schemars::schema_for!(crate::integrations::IntegrationView),
         )?;
         schema(
             "FilamentShortfalls",
@@ -1744,6 +1769,55 @@ mod codegen {
         ])
     }
 
+    fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::integrations::{CreateIntegrationRequest, IntegrationView};
+        use pp_storage::printer_setup::ServiceKind;
+        let view = |kind, filled: bool| IntegrationView {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            kind,
+            name: UNICODE.into(),
+            enabled: filled,
+            base_url: filled.then(|| "http://fixture.invalid:7125".into()),
+            username: filled.then(|| "maker".into()),
+            has_api_key: false,
+            has_password: filled,
+        };
+        let mut cases = vec![
+            served(
+                "IntegrationView",
+                "prusalink",
+                view(ServiceKind::Prusalink, true),
+            )?,
+            served(
+                "IntegrationView",
+                "kept-kind",
+                view(ServiceKind::Bambu, false),
+            )?,
+        ];
+        let moonraker = json!({"kind": "moonraker", "name": "Voron", "base_url": "http://fixture.invalid:7125"});
+        let with = |key: &str, value: Value| {
+            let mut body = moonraker.clone();
+            body[key] = value;
+            body
+        };
+        for (name, value) in [
+            ("minimal", moonraker.clone()),
+            ("api-key", with("api_key", json!("fixture-key"))),
+            ("nulls", with("username", Value::Null)),
+            ("unknown-kind", with("kind", json!("octoprint"))),
+            ("extra-key", with("token", json!("fixture-key"))),
+            ("enabled-not-boolean", with("enabled", json!("yes"))),
+            (
+                "missing-name",
+                json!({"kind": "spoolman", "base_url": "http://fixture.invalid"}),
+            ),
+        ] {
+            let dto = "CreateIntegrationRequest";
+            cases.push(request::<CreateIntegrationRequest>(dto, name, value));
+        }
+        Ok(cases)
+    }
+
     fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let summaries = summaries();
         let workspaces = workspaces();
@@ -1817,6 +1891,7 @@ mod codegen {
                 value,
             ));
         }
+        cases.extend(integration_cases()?);
         for (index, value) in shortfalls().into_iter().enumerate() {
             cases.push(served(
                 "FilamentShortfalls",

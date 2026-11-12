@@ -98,6 +98,9 @@ pub type HeadPlates = (
 #[derive(Clone)]
 pub struct ReadClient {
     shared: Arc<Shared>,
+    /// The reader pool [`ReadClient::read_plan`] reads on.
+    #[cfg(feature = "desktop_rebuild")]
+    readers: crate::SettingsClient,
     repos: PathBuf,
     policy: auth::AuthPolicy,
 }
@@ -133,6 +136,8 @@ impl WriterOwner {
         Ok(ReadClient {
             policy,
             shared: self.client.shared.clone(),
+            #[cfg(feature = "desktop_rebuild")]
+            readers: self.client.clone(),
             repos: self
                 .lease
                 .as_ref()
@@ -210,6 +215,59 @@ impl ReadClient {
     ) -> Result<Batch> {
         let target = Target::CheckoffUnits(plan_id(profile_id)?);
         self.submit(credential, target, cancelled, wait)
+    }
+
+    /// Reads one Accepted Plan on the reader pool, never through the writer
+    /// thread. `None` names no Build: the credential is still checked, and
+    /// the answer is [`AcceptedRead::Missing`], as for a Build the caller's
+    /// tenant does not have. Builds on `SettingsClient::reader` until
+    /// `Shared::read` lands (GRE-1448).
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn read_plan(
+        &self,
+        credential: Credential,
+        profile_id: Option<i64>,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<AcceptedRead, crate::WriterFailure> {
+        use crate::WriterFailure;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WriterFailure::Cancelled);
+        }
+        let ids = match profile_id {
+            Some(id) => vec![plan_id(id).map_err(WriterFailure::Internal)?],
+            None => Vec::new(),
+        };
+        // `reader` fails with these two messages; anything else is internal.
+        let mut reader =
+            self.readers
+                .reader(wait)
+                .map_err(|error| match error.to_string().as_str() {
+                    "Storage stopped" => WriterFailure::Stopped,
+                    "Reader pool full" => WriterFailure::QueueFull,
+                    _ => WriterFailure::Internal(error),
+                })?;
+        let command = Command {
+            credential,
+            target: Target::Profiles(ids),
+            repos: self.repos.clone(),
+            policy: self.policy,
+        };
+        let batch = execute(reader.connection_mut(), command).map_err(|error| {
+            match error.downcast::<auth::AuthFailure>() {
+                Ok(failure) => WriterFailure::Auth(failure),
+                // An API key that proves no tenant fails with this message.
+                Err(error) if error.to_string() == "Authentication required" => {
+                    WriterFailure::Auth(auth::AuthFailure::InvalidCredentials)
+                }
+                Err(error) => WriterFailure::Internal(error),
+            }
+        })?;
+        Ok(batch
+            .builds
+            .into_iter()
+            .next()
+            .map_or(AcceptedRead::Missing, |build| build.accepted))
     }
 
     fn submit(

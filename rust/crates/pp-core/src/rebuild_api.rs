@@ -10,6 +10,7 @@ use pp_api::{
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
+    exports::exports_router,
     file_assignments::file_assignments_router,
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
@@ -195,7 +196,7 @@ fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Rou
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
+/// Plan Checkoff and Spoolman shortfalls, the HTML checklist export, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
 /// the domain event stream and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
@@ -298,6 +299,7 @@ fn read_router_with_updates(
     let admin_config = admin_config.with_server_update_checks(server_updates);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
+    let exports = exports_router(config.clone(), accepted_client.clone());
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
@@ -322,6 +324,7 @@ fn read_router_with_updates(
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
+            .merge(exports)
             .merge(history)
             .merge(planning)
             .merge(workflow)

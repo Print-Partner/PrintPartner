@@ -18,6 +18,7 @@ use pp_api::{
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
+    printers::printers_router,
     settings::settings_router,
     workflow::workflow_router,
 };
@@ -225,8 +226,8 @@ pub fn read_router(
     )
 }
 
-/// The Settings screen's write routes outside `/settings`: the Module
-/// switches and the integration writes, from the same owner.
+/// The Settings screen's routes outside `/settings`: the Module switches,
+/// the integration writes and the printer read, from the same owner.
 fn setup_routes(
     owner: &Mutex<WriterOwner>,
     policy: AuthPolicy,
@@ -236,8 +237,12 @@ fn setup_routes(
     let guard = owner
         .lock()
         .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
-    let integrations = integrations_router(config.clone(), guard.printer_setup(policy)?);
-    Ok(modules_router(config, features).merge(integrations))
+    let setup = guard.printer_setup(policy)?;
+    let integrations = integrations_router(config.clone(), setup.clone());
+    let printers = printers_router(config.clone(), setup);
+    Ok(modules_router(config, features)
+        .merge(integrations)
+        .merge(printers))
 }
 
 fn read_router_with_updates(
@@ -890,8 +895,9 @@ mod tests {
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
     /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 4] = [
+        const CODES: [&str; 5] = [
             "integration_not_found",
+            "printer_not_found",
             "draft_not_found",
             "snapshot_not_found",
             "farm_log_entry_not_found",

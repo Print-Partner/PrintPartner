@@ -98,6 +98,8 @@ async fn release(writer: WriterOwner) {
 }
 
 /// Select a replacement only when installed; a linked root is never absence.
+/// It prints nothing: the caller reports the legacy fallback only after the
+/// data directory is admitted, so a refused start prints only its refusal.
 pub(crate) fn select_frontend(
     bundle: &pp_compat::Bundle,
     legacy: PathBuf,
@@ -114,13 +116,8 @@ pub(crate) fn select_frontend(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
     };
-    let assets = if present {
-        replacement
-    } else {
-        eprintln!("Replacement UI bundle absent");
-        legacy
-    }
-    .canonicalize()
-    .context("React assets unavailable")?;
+    let assets = if present { replacement } else { legacy }
+        .canonicalize()
+        .context("React assets unavailable")?;
     Ok((assets, present))
 }

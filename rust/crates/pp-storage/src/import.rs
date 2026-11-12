@@ -8,7 +8,10 @@
 //! in the source for writing, and SQLite never opens the source database, so
 //! no `-shm` or `-wal` file appears there.
 
+mod copy;
 pub mod inventory;
+
+pub use copy::{ImportReport, REPORT_FILE, import};
 
 use crate::{archive, ownership_marker, schema, versions};
 use inventory::{Row, Shape};
@@ -51,6 +54,12 @@ pub enum ImportError {
     Database(String),
     /// Builds or Sources belong to more than one tenant.
     SplitTenants(Vec<String>),
+    /// The destination holds data or is a Rust installation already.
+    Destination(Destination),
+    /// Stored JSON that the inventory does not name, as the dry run lists it.
+    Unnamed(Vec<String>),
+    /// The data is under an installation value the Rust runtime cannot read.
+    Installation(String),
     /// The staging directory has too little free space.
     NoSpace {
         directory: PathBuf,
@@ -103,6 +112,22 @@ impl fmt::Display for ImportError {
                 f,
                 "Builds or Sources belong to more than one tenant ({}); the import does not merge tenants",
                 tenants.join(", ")
+            ),
+            Self::Destination(Destination::Marked) => {
+                f.write_str("The destination is a Rust installation already")
+            }
+            Self::Destination(found) => write!(
+                f,
+                "The destination must be absent or empty; found {found:?}. Empty it or choose another folder"
+            ),
+            Self::Unnamed(shapes) => write!(
+                f,
+                "The inventory does not name this stored JSON: {}. Report it; the import runs once the inventory names it",
+                shapes.join(", ")
+            ),
+            Self::Installation(value) => write!(
+                f,
+                "The data is under the installation value {value:?}, and Rust reads only \"default\""
             ),
             Self::NoSpace {
                 directory,
@@ -392,9 +417,16 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
     } else {
         return Err(anyhow::anyhow!("The import source is neither a folder nor a file").into());
     };
+    let (connection, ready) = upgrade(&scratch.0)?;
+    measure(&connection, kind, &ready, &files)
+}
+
+/// Checks the staged database as startup checks a live one and upgrades it
+/// in place to the current Rust schema, without rollback copies.
+fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportError> {
     // A failed check can hide the version: a Rust database stamped 35 or
     // later fails the job-table check first. Refuse by version when one was read.
-    let admitted = crate::restore::admit_schema(&scratch.0);
+    let admitted = crate::restore::admit_schema(stage);
     let found = admitted
         .as_ref()
         .ok()
@@ -410,13 +442,12 @@ fn dry_run_in(source: &Path, temporary: &Path) -> Result<DryRunReport, ImportErr
         }));
     }
     let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
-    let (connection, ready) = schema::initialize_with(
-        &scratch.0.join(archive::DATABASE_FILE),
+    Ok(schema::initialize_with(
+        &stage.join(archive::DATABASE_FILE),
         version,
         &crate::auth::catalog_timestamp(),
         false,
-    )?;
-    measure(&connection, kind, &ready, &files)
+    )?)
 }
 
 /// A read failure that names the source entry it happened on.
@@ -478,8 +509,16 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if stamps() != before {
         return Err(ImportError::Changed);
     }
+    Ok(Files {
+        documents: source.to_owned(),
+        repo_files: repo_files(source)?,
+    })
+}
+
+/// The name of every file under `root/repos`.
+fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
     let mut repo_files = Vec::new();
-    let repos = source.join("repos");
+    let repos = root.join("repos");
     // Neither check follows a link, so the walk stays in the folder.
     let mut pending = Vec::from_iter(
         repos
@@ -498,10 +537,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
             }
         }
     }
-    Ok(Files {
-        documents: source.to_owned(),
-        repo_files,
-    })
+    Ok(repo_files)
 }
 
 /// Validates a backup archive and extracts its database and single-file

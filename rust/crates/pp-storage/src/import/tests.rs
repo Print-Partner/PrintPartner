@@ -3,6 +3,8 @@ use inventory::Status;
 use pp_testkit::{Fixture, Installation, node_installation as synthetic, node_schema};
 use std::time::SystemTime;
 
+mod copy;
+
 fn node_folder() -> Installation {
     let installation = Installation::create(Fixture::NodeSchema34).unwrap();
     synthetic::populate(installation.path()).unwrap();

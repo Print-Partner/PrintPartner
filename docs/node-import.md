@@ -2,12 +2,13 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats, and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Only step 1 exists today.
+The import lands in six steps. Step 1 and the first half of step 2 exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
 | 1 | The dry run and this inventory | in this release |
-| 2 | The import: copy, schema upgrade, `projects.local_path` rebase, verification, report, ownership marker | not written |
+| 2 | The import: copy, schema upgrade, report, ownership marker | in this release, see [Import](#import) |
+| 2 | `projects.local_path` rebase and verification against the source | not written |
 | 3 | Printers and integrations | not written; needs the typed fleet and integrations documents |
 | 4 | Checkoff links, unmatched prints and the send queue | not written |
 | 5 | Sources | not written |
@@ -78,6 +79,28 @@ Each refusal exits 1 and writes nothing to the source.
 | Too little free space in the temporary directory | The message gives the bytes needed and the bytes free. |
 
 A single value other than `default` is reported by the dry run, not refused. See [Installation value and accounts](#installation-value-and-accounts). Whether the import moves that data to `default` or refuses it is an open decision.
+
+## Import
+
+```sh
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive> --data <destination>
+```
+
+`--data` must be absent, or empty by the ownership-marker rule. Run the dry run first: the import refuses everything the dry run refuses, and also a source that holds stored JSON the inventory does not name, and data under an installation value other than `default`.
+
+What it does:
+
+1. Creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
+2. From a folder, copies the database files and every backup root: regular files and directories, no links. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. From an archive, validates and extracts it as a restore does.
+3. Checks and upgrades the staged database as the dry run does, then deletes the rows of `sessions` and `password_reset_tokens`. Lease files and `backups/` are not copied. Users and password hashes are.
+4. Moves the database and the roots into the destination, saves the report as `import-report.json`, removes the stage, and writes `.pp-rust-owned.json` last.
+
+An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
+
+The report holds keys, names and counts, never a stored value. It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. Two limits apply to a copy made today:
+
+- `projects.local_path` still holds the Node folder's absolute paths, so the copy reads Source files from the original folder until the rebase lands.
+- Node's send queue arrives as stored. The Rust runtime turns `sending` items into `error` when it opens the folder and never starts an upload on its own, so nothing prints without a Send action. Step 4 will turn `queued` items into `error` too.
 
 ## Conversion inventory
 

@@ -48,8 +48,8 @@ fn import_arguments_are_checked_before_the_source_is_read() {
     rejected(&["import", "--dry-run"], "--from is required");
     rejected(&["import", "--from"], "--from needs a value");
     rejected(
-        &["import", "--from", "s", "--data", "d"],
-        "Only --dry-run is available",
+        &["import", "--from", "s"],
+        "--data is required without --dry-run",
     );
     rejected(
         &["import", "--from", "s", "--dry-run", "--force"],
@@ -92,6 +92,25 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
         !std::path::Path::new("unused").exists(),
         "a dry run creates no destination"
     );
+
+    // Without --dry-run the same folder imports into a new one.
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let output = child_process::command(binary())
+        .env("PP_DESKTOP_REBUILD", "1")
+        .args(["import", "--from"])
+        .arg(node.path())
+        .arg("--data")
+        .arg(&destination)
+        .output()
+        .expect("run pp-server import");
+    let summary = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success() && summary.contains("complete: false."),
+        "{summary}"
+    );
+    assert!(destination.join(".pp-rust-owned.json").is_file());
+    assert!(destination.join("import-report.json").is_file());
 
     let (code, report, error) = import_dry_run("0", node.path());
     assert_eq!((code, report.as_str()), (Some(1), ""));

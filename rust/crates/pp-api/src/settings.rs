@@ -51,6 +51,8 @@ pub fn settings_router(
     client: ReadClient,
     settings: AppSettingsClient,
 ) -> Router {
+    let support =
+        crate::settings_support::support_router(config.clone(), client.clone(), settings.clone());
     let wait = config.wait;
     let Some(gate) = Gate::new(config, client) else {
         return Router::new();
@@ -76,6 +78,7 @@ pub fn settings_router(
             .layer(DefaultBodyLimit::max(BODY_LIMIT)),
     )
     .with_state(App { settings, wait })
+    .merge(support)
 }
 
 async fn get_date_format(
@@ -175,7 +178,7 @@ async fn put_spoolman_default(
 /// refuses an empty or unparsable JSON body, reads `text/plain` as a string,
 /// and leaves the body `undefined` without a content type. Rust refuses a
 /// `null` or absent body as malformed before admitting a write.
-fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Response>> {
+pub(crate) fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Response>> {
     match body_value(headers, body)? {
         Value::Object(members) => Ok(members.get(name).cloned().unwrap_or(Value::Null)),
         _ => Ok(Value::Null),
@@ -283,7 +286,7 @@ async fn write(
 
 /// A full queue or stopped writer, or a write lock past its admission
 /// deadline, answers 503; credential failures keep `read_error`'s mapping.
-fn settled(
+pub(crate) fn settled(
     outcome: Result<anyhow::Result<Outcome>, tokio::task::JoinError>,
 ) -> Result<Outcome, Box<Response>> {
     const BUSY: &str = "Service temporarily unavailable";

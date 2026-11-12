@@ -401,6 +401,20 @@ mod with_feature {
     }
 
     #[tokio::test]
+    async fn desktop_update_check_is_disabled_in_default_composition() {
+        let fixture = Fixture::start("1").await;
+        let session = fixture.register().await;
+        let (status, body) = fixture
+            .get("/settings/update-check?refresh=1", Some(&session))
+            .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["enabled"], false);
+        assert!(body["checked_at"].is_null());
+        assert!(body["latest_version"].is_null());
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
     async fn slice0_mount_routes_answer_through_the_gateway() {
         let mut runs = Vec::new();
         for value in ["1", "true"] {

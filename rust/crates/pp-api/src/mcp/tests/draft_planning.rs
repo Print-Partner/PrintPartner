@@ -111,9 +111,10 @@ async fn mcp_draft_planning_revalidates_and_rolls_back_without_publication() {
     for (tool, args, sql, detail) in [
         (
             "propose_edit_plan_draft_parts",
-            json!({"plan_id":1,"draft_id":2,"parts":[{"part_id":4,"included":false}]}),
-            "UPDATE plan_drafts SET snapshot_digest=printf('%064d',0) WHERE id=2",
-            "Plan draft edit failed: conflict",
+            // A stale expected digest is a concurrent edit; stored data stays valid.
+            json!({"plan_id":1,"draft_id":2,"expected_snapshot_digest":"0".repeat(64),"parts":[{"part_id":4,"included":false}]}),
+            "",
+            "conflict",
         ),
         (
             "propose_rebuild_plan",
@@ -137,16 +138,15 @@ async fn mcp_draft_planning_revalidates_and_rolls_back_without_publication() {
         let (server, headers) = fixture().await;
         let id = propose(&server, &headers, tool, args).await;
         pp_testkit::mcp_planning::edit(&server._directory.join("print-partner.db"), sql).unwrap();
-        if detail.ends_with("conflict") {
+        if detail == "conflict" {
             let database = server._directory.join("print-partner.db");
             let before = pp_testkit::mcp_planning::state(&database).unwrap();
             let (text, failed) =
                 call(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
             assert!(failed, "{text}");
-            assert_eq!(
-                serde_json::from_str::<Value>(&text).unwrap()["detail"],
-                detail
-            );
+            let refused = serde_json::from_str::<Value>(&text).unwrap();
+            assert_eq!(refused["ok"], false, "{text}");
+            assert!(refused["result"]["draft"].is_object(), "{text}");
             assert_eq!(before, pp_testkit::mcp_planning::state(&database).unwrap());
             let (pending, _) = call(&server, &headers, "list_pending_actions", json!({})).await;
             assert!(pending.contains(&id));

@@ -405,12 +405,11 @@ fn edit_refusal(outcome: &EditOutcome) -> Refusal {
 ///   edit was never admitted, so `refusal`, and the proposal stays pending;
 /// - otherwise `outcome_unknown`.
 fn after_failed_edit(refusal: Refusal, current: Option<&str>, expected: Option<&str>) -> Refusal {
-    match current {
-        Some(digest) if Some(digest) == expected => refusal,
-        Some(_) => OUTCOME_UNKNOWN,
-        None if matches!(refusal.code, Code::Unauthorized | Code::Unavailable) => refusal,
-        None => OUTCOME_UNKNOWN,
-    }
+    let unwritten = match current {
+        Some(digest) => Some(digest) == expected,
+        None => matches!(refusal.code, Code::Unauthorized | Code::Unavailable),
+    };
+    if unwritten { refusal } else { OUTCOME_UNKNOWN }
 }
 
 /// The refusal for a storage error, mapped as the Plan tab's HTTP handler

@@ -21,7 +21,8 @@ These apply to new operations and new modules. Code that predates them changes w
 - **Typed errors.** An operation returns its family's error enum, and callers branch on its variants.
   - The enum names every failure a caller can act on: not found, conflict, busy, refused, changed, no space.
   - Storage failures no caller handles go in `WriterFailure::Internal`, which the family's enum wraps. It is the one public variant that carries an opaque `anyhow::Error`. A crate-private error type may carry one too.
-  - Never write `impl From<anyhow::Error>` for an error enum, and never match on an error's text.
+  - A family's error enum never implements `From<anyhow::Error>`: with it, any `?` falls into the opaque variant unnoticed. `WriterFailure` has the one such conversion, and it sorts an error by type into `Auth`, `Busy` or `Internal`. Where a family calls an older helper that returns `anyhow`, convert at that call with `WriterFailure::from`.
+  - Never match on an error's text.
   - A handle constructor that only validates startup configuration may return `anyhow::Result`.
 - **One way in to storage.** A write runs through the crate-private `write` helper (`crates/pp-storage/src/write.rs`), on the writer thread, in one transaction. A read runs through the crate-private `read` helper (`crates/pp-storage/src/read.rs`), on the reader pool, in one read transaction. Both check the credential inside the transaction and report failure as `WriterFailure`. The older read families that run on the writer thread are not a model for new reads.
 - **Transport shapes live in `pp-api`.** Storage and services return domain results and typed errors. `pp-api` turns them into status codes, response bodies and MCP results, once, for HTTP and MCP alike.

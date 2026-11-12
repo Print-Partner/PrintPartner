@@ -36,6 +36,16 @@ pub trait FarmObservations: Send + Sync + 'static {
     }
 }
 
+/// No printer is watched: every integration reads as `NotWatched`. For
+/// compositions without status watchers, and for tests.
+pub struct Unwatched;
+
+impl FarmObservations for Unwatched {
+    fn observe(&self, _: &PrinterIntegration) -> Observation {
+        Observation::NotWatched
+    }
+}
+
 #[derive(Clone)]
 struct App {
     gate: Gate,

@@ -235,16 +235,7 @@ pub(crate) fn test_router(
     config: McpHttpConfig,
     policy: auth::AuthPolicy,
 ) -> (Router, RebuildAuthClient) {
-    struct Unwatched;
-    impl crate::farm::FarmObservations for Unwatched {
-        fn observe(
-            &self,
-            _: &pp_storage::read_model::farm::PrinterIntegration,
-        ) -> pp_storage::read_model::farm::Observation {
-            pp_storage::read_model::farm::Observation::NotWatched
-        }
-    }
-    test_router_watching(owner, config, policy, Arc::new(Unwatched))
+    test_router_watching(owner, config, policy, Arc::new(crate::farm::Unwatched))
 }
 
 /// [`test_router`] with the printer watchers' `observations`.

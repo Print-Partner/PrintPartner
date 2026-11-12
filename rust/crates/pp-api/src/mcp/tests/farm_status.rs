@@ -122,30 +122,32 @@ async fn http_printers(server: &McpServer, watchers: Arc<Watchers>) -> FarmPrint
     farm.printers(|integration| watchers.observe(integration))
 }
 
+/// A server over `seed(farm, …)` with a keyed MCP session, and the
+/// listener its printers name.
+async fn keyed(
+    farm: bool,
+    watched: Arc<Watchers>,
+) -> (McpServer, Vec<(String, String)>, std::net::TcpListener) {
+    let (host, url) = printer_host();
+    let server = McpServer::watching(&seed(farm, &url), watched).await;
+    let bearer = format!("Bearer {}", server.create_key().await.1);
+    let headers = session(&server, &bearer).await;
+    (server, headers, host)
+}
+
 async fn tool_names(server: &McpServer, headers: &[(String, String)]) -> Vec<String> {
     let headers: Vec<(&str, &str)> = headers
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    let request = json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list" });
-    let (status, body, _) = server.post("/api/v1/mcp", &headers, &request).await;
-    assert_eq!(status, 200, "{body}");
-    mcp_rpc::rpc(&body)["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap().to_owned())
-        .collect()
+    server.tool_names(&headers).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_farm_status_reports_what_the_watchers_saw() {
-    let (host, url) = printer_host();
     let idle_entered = SystemTime::now() - Duration::from_secs(2 * 3600 + 5 * 60);
     let watched = watchers(idle_entered);
-    let server = McpServer::watching(&seed(true, &url), watched.clone()).await;
-    let bearer = format!("Bearer {}", server.create_key().await.1);
-    let headers = session(&server, &bearer).await;
+    let (server, headers, host) = keyed(true, watched.clone()).await;
     let database = server._directory.join("print-partner.db");
     let before = pp_testkit::mcp_planning::state(&database).unwrap();
 
@@ -249,10 +251,7 @@ async fn mcp_farm_status_reports_what_the_watchers_saw() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_farm_tools_are_hidden_and_refused_while_the_farm_module_is_off() {
-    let (_host, url) = printer_host();
-    let server = McpServer::watching(&seed(false, &url), watchers(SystemTime::now())).await;
-    let bearer = format!("Bearer {}", server.create_key().await.1);
-    let headers = session(&server, &bearer).await;
+    let (server, headers, _host) = keyed(false, watchers(SystemTime::now())).await;
     let names = tool_names(&server, &headers).await;
     assert!(names.iter().any(|name| name == "list_plans"), "{names:?}");
     for tool in ["get_farm_status", "get_print_stats"] {
@@ -297,10 +296,7 @@ async fn mcp_farm_tools_are_hidden_and_refused_while_the_farm_module_is_off() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_farm_status_needs_a_key() {
-    let (_host, url) = printer_host();
-    let server = McpServer::watching(&seed(true, &url), watchers(SystemTime::now())).await;
-    let bearer = format!("Bearer {}", server.create_key().await.1);
-    let headers = session(&server, &bearer).await;
+    let (server, headers, _host) = keyed(true, watchers(SystemTime::now())).await;
     let status = server
         .unkeyed_call_status(&headers, "get_farm_status", json!({}))
         .await;

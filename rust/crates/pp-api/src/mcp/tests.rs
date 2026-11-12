@@ -203,6 +203,19 @@ impl McpServer {
         self.post("/api/v1/mcp", &unkeyed, &request).await.0
     }
 
+    /// The names `tools/list` answers on the session in `headers`.
+    async fn tool_names(&self, headers: &[(&str, &str)]) -> Vec<String> {
+        let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let (status, body, _) = self.post("/api/v1/mcp", headers, &list).await;
+        assert_eq!(status, 200, "{body}");
+        rpc(&body)["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
     /// POSTs `body` to `path`; returns status, body text and any MCP session id.
     async fn post(
         &self,
@@ -376,15 +389,7 @@ async fn ticket_t_16_mcp_lists_tools_and_write_tools_only_propose() {
     let (status, body, _) = server.post("/api/v1/mcp", &headers, &notified).await;
     assert_eq!(status, 202, "{body}");
 
-    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
-    let (status, body, _) = server.post("/api/v1/mcp", &headers, &list).await;
-    assert_eq!(status, 200, "{body}");
-    let names: Vec<String> = rpc(&body)["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap().to_owned())
-        .collect();
+    let names = server.tool_names(&headers).await;
     for expected in ["confirm_apply", "list_pending_actions", "start_sync"] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -421,6 +426,7 @@ async fn ticket_t_16_mcp_lists_tools_and_write_tools_only_propose() {
         ("mcp-protocol-version", "2025-06-18"),
         ("origin", SELF),
     ];
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
     let (status, _, _) = server.post("/api/v1/mcp", &keyless, &list).await;
     assert_eq!(status, 401);
 }

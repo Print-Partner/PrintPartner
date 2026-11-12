@@ -32,18 +32,6 @@ mod mcp_rpc;
 
 const UNKNOWN_ACTION: &str = "Unknown, in-flight, or already applied/dismissed action_id";
 
-/// No printer is watched: these tests read no farm.
-struct Unwatched;
-
-impl pp_api::farm::FarmObservations for Unwatched {
-    fn observe(
-        &self,
-        _: &pp_storage::read_model::farm::PrinterIntegration,
-    ) -> pp_storage::read_model::farm::Observation {
-        pp_storage::read_model::farm::Observation::NotWatched
-    }
-}
-
 /// The Checkoff routes and MCP from one owner on a loopback listener.
 struct Served {
     origin: String,
@@ -93,7 +81,7 @@ impl Served {
                 accepted: owner.accepted_reads_with_policy(mcp_rpc::policy()).unwrap(),
                 farm: pp_api::mcp::McpFarm {
                     reads: owner.farm_reads(mcp_rpc::policy()).unwrap(),
-                    observations: Arc::new(Unwatched),
+                    observations: Arc::new(pp_api::farm::Unwatched),
                     modules: owner.client(),
                 },
             },

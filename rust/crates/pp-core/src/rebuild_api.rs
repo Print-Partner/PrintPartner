@@ -245,6 +245,26 @@ impl RuntimeInputs {
     }
 }
 
+/// The admin routes: admin files, the printer probe, filaments and
+/// `/settings`, whose update checks run only when `server_updates`.
+fn admin_routes(
+    config: AdminHttpConfig,
+    reads: &pp_storage::read_model::ReadClient,
+    files: pp_storage::admin::AdminFiles,
+    (filament_client, app_settings): (
+        pp_storage::filaments::FilamentClient,
+        pp_storage::app_settings::AppSettingsClient,
+    ),
+    server_updates: bool,
+) -> Result<Router> {
+    let admin = admin_router(config.clone(), reads.clone(), files);
+    let probe = crate::printer_host::probe::router(config.clone(), reads.clone())?;
+    let filaments = filaments(config.clone(), reads, filament_client)?;
+    let config = config.with_server_update_checks(server_updates);
+    let settings = settings_router(config, reads.clone(), app_settings);
+    Ok(admin.merge(probe).merge(filaments).merge(settings))
+}
+
 /// The Settings screen's routes outside `/settings`: the Module switches,
 /// the integration writes and the printer read, from the same owner.
 fn setup_routes(
@@ -276,10 +296,6 @@ fn read_router_with_updates(
     if !rebuild.enabled() {
         return Ok(None);
     }
-    let RuntimeInputs {
-        server_updates,
-        farm,
-    } = runtime;
     let policy = auth.policy;
     let (
         RebuildHttpClients {
@@ -333,24 +349,19 @@ fn read_router_with_updates(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
         Arc::clone(&owner),
     );
-    let admin_config = AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
-    let admin = admin_router(
-        admin_config.clone(),
-        accepted_client.clone(),
+    let admin = admin_routes(
+        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        &accepted_client,
         admin_files.clone(),
-    );
-    let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
-    let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
+        (filament_client, app_settings),
+        runtime.server_updates,
+    )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
-    let admin_config = admin_config.with_server_update_checks(server_updates);
-    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
-    let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
     let events = events_router(config.clone(), events_client, StreamLimits::default());
     let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings.clone())?;
-    let plates = plates_router(config.clone(), plates_client);
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
@@ -363,29 +374,25 @@ fn read_router_with_updates(
             accepted: accepted_client,
             farm: McpFarm {
                 reads: farm_client,
-                observations: farm,
+                observations: runtime.farm,
                 modules: settings,
             },
         },
     );
-    let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(
-        auth_routes
+        auth_router(auth.http, auth_client, auth.providers, auth.mail)
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
-            .merge(history)
+            .merge(history_router(config.clone(), history_client))
             .merge(planning)
             .merge(workflow)
             .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(modules)
-            .merge(filaments)
-            .merge(settings_routes)
-            .merge(probe)
             .merge(events)
             .merge(checkoff)
-            .merge(plates)
+            .merge(plates_router(config.clone(), plates_client))
             .merge(mcp),
     ))
 }

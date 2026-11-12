@@ -313,6 +313,17 @@ fn first_non_empty_entry_in(dir: &Dir, directory: &Path) -> std::io::Result<Opti
     Ok(None)
 }
 
+/// The first entry that makes `directory` non-empty by the marker rule, read
+/// without writing or locking. `None` when it is absent or empty.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn first_non_empty_entry(directory: &Path) -> std::io::Result<Option<String>> {
+    match Dir::open(directory) {
+        Ok(dir) => first_non_empty_entry_in(&dir, directory),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// A process lease record names a running process when its pid is alive and
 /// its recorded identity, if any, still matches. An unreadable record, or an
 /// identity that cannot be looked up, counts as live.

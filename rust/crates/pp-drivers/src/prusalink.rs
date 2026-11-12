@@ -528,6 +528,12 @@ impl Driver {
         Ok(objects_info(&windows_1252(&prefix)).unwrap_or_default())
     }
 
+    pub(crate) async fn probe_reply(&self) -> Result<(u16, Vec<u8>)> {
+        let url = self.url("/api/v1/info")?;
+        let reply = self.guard.get(url.as_str(), None).await?;
+        Ok((reply.status, reply.body))
+    }
+
     pub async fn test_connection(&self) -> TestResult {
         let result = async {
             self.base()?;

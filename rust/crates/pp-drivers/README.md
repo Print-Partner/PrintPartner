@@ -47,6 +47,7 @@ Cargo features:
 
 ## Tests
 
+- Moonraker lifecycle checks retain each worker task’s handle across replacement, removal and shutdown and assert that it has finished. They do not infer task completion from the recorded printer’s request counter: an in-flight request may reach that counter after the worker has been joined (GRE-1269).
 - `tests/ticket_t_4_watcher_proof.rs`, `tests/ticket_t_4_watcher_proof_parity.rs`: Moonraker pollers and the shared status corpus in `fixtures/drivers/moonraker`.
 - `tests/ticket_t_21_moonraker_driver.rs`, `tests/ticket_t_21_moonraker_upload.rs`: replay `fixtures/drivers/moonraker/driver`, including lost-connection uploads.
 - `tests/ticket_t_22_prusalink.rs`, `tests/ticket_t_22_prusalink_reads.rs`: replay `fixtures/drivers/prusalink` through a loopback simulator. The reads file also covers downloads, snapshots, 8 MiB listings and the `object_list` prefix (GRE-1044).

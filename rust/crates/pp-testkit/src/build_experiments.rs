@@ -21,6 +21,7 @@ pub fn prepare_parent(db: &Connection) -> Result<ExperimentBaseline> {
     db.execute_batch(r##"INSERT INTO app_settings(tenant_id,key,value) VALUES
         ('default','role_filaments_1','{"primary":{"filament_color_id":"role-default","custom_hex":"#123456"}}'),
         ('default','production_setup:1','{"printerId":"parent-printer"}');"##)?;
+    db.execute("INSERT INTO app_settings(tenant_id,key,value) VALUES('default','kit_manifest_1','{}') ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value", [])?;
     Ok(ExperimentBaseline { parent, original })
 }
 
@@ -135,4 +136,38 @@ pub fn assert_restricted_and_archive(db: &Connection, build: i64) -> Result<()> 
 
 pub fn prepare_order_claim(db: &Connection) -> Result<()> {
     db.execute_batch("INSERT INTO build_profiles(id,tenant_id,name) VALUES(99,'default','Parent'); INSERT INTO build_experiments(build_id,parent_build_id) VALUES(1,99); INSERT INTO plan_draft_headers(draft_id,tenant_id,name,order_number,header_version,updated_at) VALUES(2,'default','Experiment','PO-9',1,'2026-11-10');")
+}
+
+pub fn manifest_count(db: &Connection, build: i64) -> Result<i64> {
+    db.query_row(
+        "SELECT count(*) FROM app_settings WHERE tenant_id='default' AND key=?1",
+        [format!("kit_manifest_{build}")],
+        |r| r.get(0),
+    )
+}
+
+pub fn set_experiment_order(db: &Connection, order: Option<&str>) -> Result<()> {
+    db.execute(
+        "UPDATE plan_draft_headers SET order_number=?1 WHERE draft_id=2",
+        [order],
+    )?;
+    Ok(())
+}
+
+pub fn unaccepted_parent(db: &Connection) -> Result<()> {
+    db.execute(
+        "INSERT INTO build_profiles(id,tenant_id,name) VALUES(99,'default','Unaccepted')",
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn assert_experiment_accepted(db: &Connection, revision: i64) -> Result<()> {
+    let actual = db.query_row(
+        "SELECT order_number,accepted_plan_revision_id FROM build_profiles WHERE id=1",
+        [],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
+    )?;
+    assert_eq!(actual, (None, revision));
+    Ok(())
 }

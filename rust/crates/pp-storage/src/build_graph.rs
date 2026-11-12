@@ -3,12 +3,14 @@ mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 mod experiments;
+pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
 pub use variants::{VariantCommand, VariantOutcome};
 mod decisions;
+pub mod mcp;
 pub use decisions::DecisionOutcome;
 pub(crate) mod projection;
 use crate::{Envelope, Shared, WriterOwner, auth, read_model};
@@ -45,16 +47,11 @@ pub enum Failure {
     OutcomeUnknown,
 }
 
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{self:?}")
-    }
-}
-
-impl std::error::Error for Failure {}
+crate::impl_debug_error!(Failure);
 
 #[derive(Clone)]
 pub enum BuildCommand {
+    Mcp(mcp::Request),
     Manifest(ManifestOptionsCommand),
     Variants(VariantCommand),
     /// Node's GET or PATCH /plans/{id}/features; read-only without a patch.
@@ -111,6 +108,7 @@ pub enum BuildCommand {
 }
 #[derive(Debug)]
 pub enum BuildOutcome {
+    Mcp(serde_json::Value),
     Manifest(ManifestOptionsOutcome),
     Variants(VariantOutcome),
     PlanFeatures(crate::features::PlanFeatureOutcome),
@@ -233,6 +231,9 @@ impl BuildGraphClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<BuildOutcome> {
+        if let BuildCommand::Mcp(request) = command {
+            return self.execute_mcp(credential, request, cancelled, wait);
+        }
         if let BuildCommand::Variants(command) = command {
             return self.execute_variants(credential, command, cancelled, wait);
         }
@@ -397,6 +398,9 @@ fn mutation(
 ) -> Result<BuildOutcome> {
     let mut budget = read_model::graph::Budget::default();
     match command {
+        BuildCommand::Mcp(request) => {
+            mcp::execute(tx, tenant, request, repos, cancelled).map(BuildOutcome::Mcp)
+        }
         BuildCommand::Create { name, base_source } => {
             let duplicate: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND name=?2)",
@@ -585,12 +589,13 @@ fn mutation(
             }
             tx.pragma_update(None, "defer_foreign_keys", "ON")?;
             tx.execute(
-                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4)",
+                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4,?5)",
                 params![
                     tenant,
                     format!("production_setup:{build}"),
                     format!("role_filaments_{build}"),
-                    format!("feature_toggles:plan:{build}")
+                    format!("feature_toggles:plan:{build}"),
+                    format!("kit_manifest_{build}")
                 ],
             )?;
             ensure!(
@@ -623,12 +628,13 @@ fn read(
     repos: &std::path::Path,
     cancelled: &AtomicBool,
 ) -> Result<BuildOutcome> {
-    let mut budget = read_model::graph::Budget::default();
     match command {
+        BuildCommand::Mcp(_) => mutation(tx, tenant, command, repos, cancelled),
         BuildCommand::Manifest(command) => Ok(BuildOutcome::Manifest(manifest_options::read(
             tx, tenant, command,
         )?)),
         BuildCommand::List => {
+            let mut budget = read_model::graph::Budget::default();
             let ids = {
                 let mut statement = tx.prepare(
                     "SELECT id FROM build_profiles WHERE tenant_id=?1 ORDER BY name,id LIMIT 65",
@@ -648,6 +654,7 @@ fn read(
             Ok(BuildOutcome::Listed { profiles })
         }
         BuildCommand::Read { build } => {
+            let mut budget = read_model::graph::Budget::default();
             let Some(profile) = read_model::graph::build_summary(
                 tx,
                 tenant,
@@ -691,7 +698,8 @@ pub(super) fn execute(
     let read_only = matches!(
         command.command,
         BuildCommand::List | BuildCommand::Read { .. } | BuildCommand::ListLayers { .. }
-    ) || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read())
+    ) || matches!(&command.command, BuildCommand::Mcp(request) if !request.apply)
+        || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read())
         || matches!(&command.command, BuildCommand::PlanFeatures(request) if request.patch.is_none());
     let tx = if read_only {
         connection.transaction()?

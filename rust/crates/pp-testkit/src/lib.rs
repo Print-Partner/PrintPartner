@@ -19,6 +19,7 @@
 
 pub mod bambu;
 pub mod build_experiments;
+pub mod mcp_planning;
 pub mod moonraker;
 pub mod node_path;
 pub mod node_schema;
@@ -380,6 +381,16 @@ impl Installation {
             tempfile::Builder::new().prefix("pp-testkit-").tempdir()?,
             spec.into(),
         )
+    }
+
+    /// Copies the required-unit database with its recorded authenticated session.
+    pub fn with_authenticated_fixture() -> io::Result<Self> {
+        let installation = Self::create(Fixture::Empty)?;
+        fs::write(
+            installation.database_path(),
+            include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db"),
+        )?;
+        Ok(installation)
     }
 
     /// Creates the installation in a new directory under `parent`, for tests

@@ -52,9 +52,16 @@ pub struct AdminHttpConfig {
     api_key_tenant: String,
     enabled: bool,
     pub(crate) wait: Duration,
+    pub(crate) server_updates: bool,
 }
 
 impl AdminHttpConfig {
+    /// Only the standalone server opts into process-environment update checks.
+    pub fn with_server_update_checks(mut self, enabled: bool) -> Self {
+        self.server_updates = enabled;
+        self
+    }
+
     /// `flag` is the process `PP_DESKTOP_REBUILD` value captured at startup.
     pub fn from_startup(origin: &str, api_key_tenant: &str, flag: Option<&str>) -> Result<Self> {
         let listener = LoopbackOrigin::parse(origin)?;
@@ -65,6 +72,7 @@ impl AdminHttpConfig {
             api_key_tenant: api_key_tenant.into(),
             enabled: rebuild_flag_enabled(flag),
             wait: Duration::from_millis(100),
+            server_updates: false,
         })
     }
 }
@@ -76,6 +84,7 @@ pub(crate) struct Gate {
     config: AdminHttpConfig,
     client: ReadClient,
     admission: Arc<tokio::sync::Semaphore>,
+    release_after_auth: bool,
 }
 
 impl Gate {
@@ -85,7 +94,13 @@ impl Gate {
             config,
             client,
             admission: Arc::new(tokio::sync::Semaphore::new(64)),
+            release_after_auth: false,
         })
+    }
+
+    pub(crate) fn authentication_only(mut self) -> Self {
+        self.release_after_auth = true;
+        self
     }
 
     /// Run `routes` behind this gate, with problem responses for refusals.
@@ -149,6 +164,9 @@ async fn guard(
     };
     if let Some(refused) = authenticate(&app, presented.clone()).await {
         return refused;
+    }
+    if app.release_after_auth {
+        drop(_permit);
     }
     request.extensions_mut().insert(presented);
     next.run(request).await

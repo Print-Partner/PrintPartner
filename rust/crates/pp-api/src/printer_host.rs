@@ -24,6 +24,8 @@
 //! drivers. Admission and
 //! the credential proof are the admin routes' (`AdminHttpConfig`).
 
+pub mod probe;
+
 use crate::accepted::failure;
 use crate::admin::{AdminHttpConfig, Gate};
 use axum::{

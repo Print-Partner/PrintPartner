@@ -53,8 +53,8 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
 `/` and `/api/v1` under the same flag and credential check, and
 `read_router` mounts them beside the admin reads. Each request reads or writes
 one `app_settings` row on the writer thread, in the tenant its credential
-resolves to in the same transaction. The `pp_storage::app_settings` client
-names only these three keys.
+resolves to in the same transaction. The `pp_storage::app_settings` client names fixed supported keys; this group
+uses the three rows below.
 
 | Route | Row | `GET` body | `PUT` |
 | --- | --- | --- | --- |
@@ -200,6 +200,46 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
 
+## GitHub PAT and Discord notification settings (GRE-1360)
+
+The settings router mounts `/settings/github-pat`, `/settings/discord-notify`
+(`GET`, `HEAD`, `PUT`) at `/` and
+`/api/v1`. The default-off rebuild gates and the existing credential and Origin
+checks apply. Rust owns these operations only in the Rust-only runtime.
+
+Following the coordinator's 2026-11-11 decision, storage uses Node's existing
+`app_settings` keys and text formats. `github_pat` holds the trimmed token;
+`discord_notify_webhook_url` holds the trimmed URL. Empty strings clear them.
+Discord flags use `"1"` and `"0"` in `discord_notify_on_update`,
+`discord_notify_on_sync`, and `discord_auto_sync_updates`; missing defaults are
+true, false, true. A Discord partial update and its readback share one writer
+transaction. PAT replies expose only `configured` and `masked`, matching Node.
+Native secret storage and migration remain later work under GRE-1330.
+
+Differences by design:
+
+- Discord GET and PUT return `https://<host>/[REDACTED]` for a configured webhook,
+  preserving scheme and host but masking the entire path, query and fragment.
+  Invalid legacy text returns `[REDACTED]`. Node returns the complete URL.
+  A masked response is not a valid replacement URL; omit `webhook_url` to keep
+  the stored value. These settings routes never return the stored secret.
+- Errors use the Rust problem envelope, with Node validation detail where applicable.
+- Null Discord JSON bodies and non-string webhook values answer 400 rather than
+  Node's TypeError. PAT null or absent bodies use the Rust malformed-request
+  detail instead of Node's `Token must be a string`.
+  Backslashes and control characters in webhook tokens are rejected.
+
+Explicit test delivery moves to GRE-1403; external-access settings and their
+admission policy move to GRE-1404. Each child quotes the unmet parent items.
+They start from main after this settings change merges. Neither operation is
+mounted by this change. Sharing, listener binding and MCP authentication stay
+unchanged.
+
+`fixtures/admin/secret-settings-cases.json` contains 32 requests using obviously
+fake values. The Node oracle records exact stored bytes; Rust checks them,
+asserts the stricter response redaction, refuses unauthorized/cross-site writes,
+and reopens the database to check restart persistence.
+
 ## Custom filament mutations and catalog (GRE-1358)
 
 In Rust-only mode, authenticated `POST /filaments/custom` adds a trimmed name,
@@ -244,3 +284,57 @@ Path-hints remains read-only here. Missing custom hints use the shipped rules;
 partial or corrupt documents refuse preparation instead of publishing changed
 Plan state. A valid replacement can be read again after recovery. GRE-1394 tracks
 the Rust publisher and its separate live-format ownership decision.
+
+## Update checks, printer bindings, help and OpenAPI
+
+`pp_api::settings_support` mounts under the same compile-time and runtime
+rebuild gates. Settings and help use the existing credential and Origin gate
+at `/` and `/api/v1`.
+
+- Desktop and launcher startup fix update checks off and ignore the repository,
+  version override and cache environment variables, matching Node desktop.
+  Only `pp-server`/Docker opts into Node server environment settings. Disabled
+  desktop checks have no HTTP client and make no outbound request.
+- `GET /settings/update-check` on the server follows Node's enabled flag, version override,
+  release response cap (1 MiB), version comparison, cache interval and
+  `refresh=1`. Upstream failures return no latest release and expose no
+  upstream error text. The client uses no proxy, matching Node undici defaults.
+  Redirects are deliberately disabled by coordinator decision, unlike Node's
+  default fetch behavior. A renamed or transferred `GITHUB_REPO` can therefore
+  yield no latest release; configure its current canonical name. Fetches run
+  outside the cache lock and auth admission permit. Tests use a loopback fake,
+  never GitHub.
+- `GET`/`PUT /settings/printer-plan-bindings` and
+  `DELETE /settings/printer-plan-bindings/{integration_id}` read or update
+  `printer.plan_bindings`. Credential proof and each read-modify-write run
+  in one writer transaction. Replacement preserves position; deletion removes
+  all matching entries. Timestamps use UTC milliseconds, as Node does.
+- `GET /help/workflow` returns Node's text. The API tip follows the stored
+  `external_access_mode`, including Node's default for an unknown value.
+- `/openapi.json` redirects with `302` to `/api/v1/openapi.json`.
+  That document and `/api/v2/openapi.json` are public, as in Node: Node exempts
+  `.json` paths from the session hook and explicitly exempts OpenAPI from
+  API-key authentication. Help and settings remain authenticated. Sharing
+  defaults and MCP authentication stay unchanged.
+
+The OpenAPI document contains route and schema shapes only: no credentials,
+user data, data-directory paths or hostnames. A test checks string values for
+`token`, `secret`, `password`, absolute filesystem paths and URLs. The sole
+structural exception is a path parameter whose `name` is `token`; it contains
+no token value. The document is generated from Node, with repeated route
+shapes grouped in `fixtures/admin/settings-support.json`. The Node oracle
+checks its freshness; Rust expands the groups without consulting stored data.
+
+The binding fixtures compare replies and persisted values after each request
+and after reopening storage. As on the other settings routes, malformed JSON
+and null request bodies use Rust's redacted problem responses. Numeric ids and
+numeric strings written by the UI preserve Node's coercion. Exotic JavaScript
+coercions and unpaired UTF-16 surrogates remain outside the supported parity
+scope. Source update-check is deferred to GRE-1400 after GRE-1360 because it
+shares Discord auto-sync state.
+
+```sh
+npm --prefix web run test -w @print-partner/server -- src/routes/settings-support.oracle.test.ts src/routes/admin-routes.oracle.test.ts
+# Regenerate the Node snapshot only when its contract changes:
+UPDATE_ADMIN_ORACLE=1 npm --prefix web run test -w @print-partner/server -- src/routes/settings-support.oracle.test.ts
+```

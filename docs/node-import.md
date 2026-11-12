@@ -43,7 +43,16 @@ It exits 0 with the report on stdout. It exits 1 with `import refused: <reason>`
 
 ### Dry-running a large installation from a snapshot
 
-A backup archive is refused when its entries expand to more than 20 GiB (`Invalid backup archive: Backup archive decompressed byte limit exceeded (21474836480)`). A larger installation is dry-run from a folder instead: a filesystem snapshot of the data folder, or a copy of it. The folder path reads the database files and lists `repos/` in place, and no size cap applies to it.
+A backup archive is refused with `Invalid backup archive: <reason>` when it breaks any of the archive limits:
+
+| Limit | Reason in the message |
+| --- | --- |
+| More than 20 GiB expanded in total | `Backup archive decompressed byte limit exceeded (21474836480)` |
+| One entry over 8 GiB, for example a large `print-partner.db` | `Backup entry exceeds decompressed size limit` |
+| More than 100,000 entries | `Backup archive entry limit exceeded (100000)` |
+| Expanded size over 200 times the archive's size | `Backup archive exceeds the decompression ratio limit (200)` |
+
+An installation that breaks any of them is dry-run from a folder instead: a filesystem snapshot of the data folder, or a copy of it. The folder path reads the database files and lists `repos/` in place, and none of these limits applies to it.
 
 ```sh
 PP_DESKTOP_REBUILD=1 pp-server import --from <copy> --dry-run

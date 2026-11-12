@@ -14,7 +14,7 @@ use pp_api::{
     history::history_router,
     integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpClients, McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router},
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
@@ -222,8 +222,27 @@ pub fn read_router(
         origin,
         api_key_tenant,
         community_manifests,
-        false,
+        RuntimeInputs::detached(),
     )
+}
+
+/// What only a running runtime gives the product routes: whether update
+/// checks may run, and the printer watchers' observations for MCP's
+/// `get_farm_status`, bound once the gateway starts its watchers.
+pub(crate) struct RuntimeInputs {
+    pub(crate) server_updates: bool,
+    pub(crate) farm: Arc<dyn pp_api::farm::FarmObservations>,
+}
+
+impl RuntimeInputs {
+    /// No update checks and no watchers: what tests and compositions
+    /// without a gateway use.
+    pub(crate) fn detached() -> Self {
+        Self {
+            server_updates: false,
+            farm: Arc::new(crate::printer_status::LateFarm::default()),
+        }
+    }
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
@@ -252,11 +271,15 @@ fn read_router_with_updates(
     origin: &str,
     api_key_tenant: &str,
     community_manifests: Option<&Path>,
-    server_updates: bool,
+    runtime: RuntimeInputs,
 ) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
     }
+    let RuntimeInputs {
+        server_updates,
+        farm,
+    } = runtime;
     let policy = auth.policy;
     let (
         RebuildHttpClients {
@@ -272,6 +295,7 @@ fn read_router_with_updates(
         events_client,
         (checkoff_client, settings),
         plates_client,
+        farm_client,
     ) = {
         let guard = owner
             .lock()
@@ -294,6 +318,7 @@ fn read_router_with_updates(
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
+            guard.farm_reads(policy)?,
         )
     };
     let endpoint = (origin, api_key_tenant);
@@ -324,7 +349,7 @@ fn read_router_with_updates(
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
     let events = events_router(config.clone(), events_client, StreamLimits::default());
-    let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings)?;
+    let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings.clone())?;
     let plates = plates_router(config.clone(), plates_client);
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
@@ -336,6 +361,11 @@ fn read_router_with_updates(
             planning: planning_client,
             progress: checkoff_client,
             accepted: accepted_client,
+            farm: McpFarm {
+                reads: farm_client,
+                observations: farm,
+                modules: settings,
+            },
         },
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
@@ -437,7 +467,13 @@ pub fn product_router(
     origin: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
-    product_router_with_updates(rebuild, owner, origin, community_manifests, false)
+    product_router_with_updates(
+        rebuild,
+        owner,
+        origin,
+        community_manifests,
+        RuntimeInputs::detached(),
+    )
 }
 
 pub(crate) fn product_router_with_updates(
@@ -445,7 +481,7 @@ pub(crate) fn product_router_with_updates(
     owner: Arc<Mutex<WriterOwner>>,
     origin: &str,
     community_manifests: Option<&Path>,
-    server_updates: bool,
+    runtime: RuntimeInputs,
 ) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
@@ -489,7 +525,7 @@ pub(crate) fn product_router_with_updates(
         origin,
         DESKTOP_TENANT,
         community_manifests,
-        server_updates,
+        runtime,
     )?;
     Ok(reads
         .zip(drafts)

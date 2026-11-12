@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 
 #[path = "tests/create_build.rs"]
 mod create_build;
+#[path = "tests/farm_status.rs"]
+mod farm_status;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]
@@ -68,6 +70,29 @@ impl McpServer {
         seed: &str,
         configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
     ) -> Self {
+        Self::open_watching(flag, tenant, seed, configure, None).await
+    }
+
+    /// The flag on for `default`, `seed` run first, printers observed
+    /// through `observations`.
+    async fn watching(seed: &str, observations: Arc<dyn crate::farm::FarmObservations>) -> Self {
+        Self::open_watching(
+            Some("1"),
+            "default",
+            seed,
+            |config| config,
+            Some(observations),
+        )
+        .await
+    }
+
+    async fn open_watching(
+        flag: Option<&str>,
+        tenant: &str,
+        seed: &str,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+        observations: Option<Arc<dyn crate::farm::FarmObservations>>,
+    ) -> Self {
         let directory = crate::scratch::Scratch::new("pp-mcp-http-");
         let database = directory.join("print-partner.db");
         std::fs::write(
@@ -87,7 +112,10 @@ impl McpServer {
             .0;
         let (listener, origin) = mcp_rpc::listen().await;
         let config = configure(McpHttpConfig::from_startup(&origin, tenant, flag).unwrap());
-        let (router, _) = test_router(&owner, config, policy());
+        let (router, _) = match observations {
+            Some(observations) => test_router_watching(&owner, config, policy(), observations),
+            None => test_router(&owner, config, policy()),
+        };
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -150,6 +178,29 @@ impl McpServer {
             revoked,
             auth::Outcome::KeyChanged { changed: true, .. }
         ));
+    }
+
+    /// The status of a same-origin `tools/call` on the session in `headers`,
+    /// sent without its API key, so only the key check can refuse it.
+    async fn unkeyed_call_status(
+        &self,
+        headers: &[(String, String)],
+        tool: &str,
+        arguments: Value,
+    ) -> u16 {
+        let session_id = headers
+            .iter()
+            .find(|(name, _)| name == "mcp-session-id")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        let request = json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments } });
+        let unkeyed = [
+            ("mcp-session-id", session_id),
+            ("mcp-protocol-version", "2025-06-18"),
+            ("origin", SELF),
+        ];
+        self.post("/api/v1/mcp", &unkeyed, &request).await.0
     }
 
     /// POSTs `body` to `path`; returns status, body text and any MCP session id.

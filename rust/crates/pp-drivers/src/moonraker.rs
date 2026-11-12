@@ -80,6 +80,11 @@ struct Spell {
     state: State,
     since: SystemTime,
     unanswered: Option<SystemTime>,
+    /// This process saw the host change into `state`: it answered a
+    /// different state just before, with no outage between. False for the
+    /// first state a host answers (after a restart, say) and after a long
+    /// outage, when the change happened unseen.
+    seen: bool,
 }
 /// Status changes kept for a reader that falls behind `PrinterObservations::transitions`.
 pub const TRANSITION_CAPACITY: usize = 1024;
@@ -132,6 +137,15 @@ impl PrinterObservations {
     /// new job. A longer outage could hide one, so it starts the state afresh.
     pub fn state_since(&self, id: &str) -> Option<SystemTime> {
         lock(&self.entered).get(id).map(|spell| spell.since)
+    }
+    /// [`Self::state_since`] only when this process saw the host change
+    /// into its current state; `None` when it first answered in that state
+    /// or an outage hid the change.
+    pub fn seen_entering(&self, id: &str) -> Option<SystemTime> {
+        lock(&self.entered)
+            .get(id)
+            .filter(|spell| spell.seen)
+            .map(|spell| spell.since)
     }
     /// Every status change in publish order, including ones the newest-only
     /// map coalesced away. A reader more than [`TRANSITION_CAPACITY`] changes
@@ -564,13 +578,19 @@ fn enter(entered: &Entered, id: &str, state: State, now: SystemTime) {
         {
             spell.unanswered = None;
         }
-        _ => {
+        previous => {
+            // Seen only when the host answered another state right before.
+            let seen = previous.is_some_and(|spell| {
+                spell.unanswered.is_none()
+                    && !matches!(spell.state, State::Offline | State::Unknown)
+            });
             entered.insert(
                 id.to_owned(),
                 Spell {
                     state,
                     since: now,
                     unanswered: None,
+                    seen,
                 },
             );
         }
@@ -1138,6 +1158,31 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[test]
+    fn farm_reads_seen_entering_needs_a_change_this_process_watched() {
+        let entered = Entered::default();
+        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let seen = || {
+            lock(&entered)
+                .get("host")
+                .filter(|spell| spell.seen)
+                .map(|spell| spell.since)
+        };
+        enter(&entered, "host", State::Idle, at(1));
+        assert_eq!(seen(), None, "the first answer is not a seen change");
+        enter(&entered, "host", State::Printing, at(2));
+        enter(&entered, "host", State::Idle, at(3));
+        assert_eq!(seen(), Some(at(3)), "printing then idle was watched");
+        enter(&entered, "host", State::Offline, at(4));
+        enter(&entered, "host", State::Idle, at(5));
+        assert_eq!(seen(), Some(at(3)), "a missed poll keeps the spell");
+        enter(&entered, "host", State::Offline, at(10));
+        enter(&entered, "host", State::Idle, at(400));
+        assert_eq!(seen(), None, "a long outage hides when it went idle");
+        enter(&entered, "host", State::Offline, at(500));
+        enter(&entered, "host", State::Printing, at(501));
+        assert_eq!(seen(), None, "a change across an outage was not watched");
     }
     #[test]
     fn farm_reads_state_since_survives_a_missed_poll_but_not_a_new_state() {

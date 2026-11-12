@@ -573,16 +573,25 @@ async fn start_rust_resources(
     )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
+    // MCP is composed before the gateway starts the watchers; it reads them
+    // through this slot, bound when the gateway hands out its status port.
+    let farm = printer_status::LateFarm::default();
     let product = rebuild_api::product_router_with_updates(
         desktop_rebuild,
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        server_updates,
+        rebuild_api::RuntimeInputs {
+            server_updates,
+            farm: Arc::new(farm.clone()),
+        },
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let product = move |status| product.merge(status_routes.mount(status));
+    let product = move |status: pp_gateway::MoonrakerStatus| {
+        farm.bind(status.clone());
+        product.merge(status_routes.mount(status))
+    };
     let gateway = match snapshot {
         Some(files) => {
             Gateway::start_rust_only_with_assets(listener, assets, files, product, receiver, hosts)

@@ -32,6 +32,8 @@ pub(super) enum Code {
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
+    // farm tools
+    FarmModuleOff,
 }
 
 impl Code {
@@ -50,6 +52,7 @@ impl Code {
             Self::OrdersModuleOff => "orders_module_off",
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
+            Self::FarmModuleOff => "farm_module_off",
         }
     }
 }
@@ -79,6 +82,18 @@ impl Refusal {
         }
         result
     }
+}
+
+/// The refusal for a failed read through a client that reports a full or
+/// stopped writer queue as a plain message: `problem::writer_admission`
+/// classifies it, as the HTTP routes do, so it answers `unavailable`.
+pub(super) fn read_failure(error: anyhow::Error) -> Refusal {
+    use crate::problem::{Admission, writer_admission};
+    writer_failure(&match writer_admission(&error) {
+        Some(Admission::Full) => WriterFailure::QueueFull,
+        Some(Admission::Stopped) => WriterFailure::Stopped,
+        None => WriterFailure::from(error),
+    })
 }
 
 /// The refusal for a failure every write through the write seam shares.

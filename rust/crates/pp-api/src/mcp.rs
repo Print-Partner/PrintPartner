@@ -31,6 +31,7 @@ use checkoff::CheckoffDomain;
 use pp_services::mcp_domain::{McpSession, ToolResult, server_info};
 use pp_storage::build_graph::{BuildGraphClient, PositiveId};
 use pp_storage::checkoff_progress::ProgressClient;
+use pp_storage::read_model::farm::FarmClient;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
     read_model::{
@@ -140,6 +141,7 @@ struct Reads {
     planning: PlanningClient,
     progress: ProgressClient,
     accepted: ReadClient,
+    farm: McpFarm,
     wait: Duration,
     #[cfg(test)]
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
@@ -154,6 +156,17 @@ pub struct McpClients {
     pub planning: PlanningClient,
     pub progress: ProgressClient,
     pub accepted: ReadClient,
+    pub farm: McpFarm,
+}
+
+/// What `get_farm_status` and the farm tools' Module gate read: the farm
+/// projection `GET /api/v2/printers` serves, the printer watchers'
+/// observations, and the Module settings.
+#[derive(Clone)]
+pub struct McpFarm {
+    pub reads: FarmClient,
+    pub observations: Arc<dyn crate::farm::FarmObservations>,
+    pub modules: pp_storage::SettingsClient,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
@@ -177,6 +190,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         planning,
         progress,
         accepted,
+        farm,
     } = clients;
     let reads = Reads {
         builds,
@@ -185,6 +199,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         planning,
         progress,
         accepted,
+        farm,
         wait: config.wait,
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
@@ -212,12 +227,33 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
 }
 
 /// The router over every client MCP reads, each opened on `owner` with
-/// `policy`, and the auth client that issues its keys.
+/// `policy`, and the auth client that issues its keys. No printer is
+/// watched.
 #[cfg(test)]
 pub(crate) fn test_router(
     owner: &pp_storage::WriterOwner,
     config: McpHttpConfig,
     policy: auth::AuthPolicy,
+) -> (Router, RebuildAuthClient) {
+    struct Unwatched;
+    impl crate::farm::FarmObservations for Unwatched {
+        fn observe(
+            &self,
+            _: &pp_storage::read_model::farm::PrinterIntegration,
+        ) -> pp_storage::read_model::farm::Observation {
+            pp_storage::read_model::farm::Observation::NotWatched
+        }
+    }
+    test_router_watching(owner, config, policy, Arc::new(Unwatched))
+}
+
+/// [`test_router`] with the printer watchers' `observations`.
+#[cfg(test)]
+pub(crate) fn test_router_watching(
+    owner: &pp_storage::WriterOwner,
+    config: McpHttpConfig,
+    policy: auth::AuthPolicy,
+    observations: Arc<dyn crate::farm::FarmObservations>,
 ) -> (Router, RebuildAuthClient) {
     let auth = owner
         .rebuild_auth_with_policy(policy, Default::default())
@@ -254,6 +290,11 @@ pub(crate) fn test_router(
             planning,
             progress,
             accepted,
+            farm: McpFarm {
+                reads: owner.farm_reads(policy).unwrap(),
+                observations,
+                modules: owner.client(),
+            },
         },
     );
     (router, auth)
@@ -367,7 +408,12 @@ impl ProductMcp {
     fn new(reads: Reads) -> Self {
         Self {
             session: Arc::new(McpSession::new(
-                CheckoffDomain::new(reads.progress.clone(), reads.builds.clone(), reads.wait),
+                CheckoffDomain::new(
+                    reads.progress.clone(),
+                    reads.builds.clone(),
+                    reads.farm.clone(),
+                    reads.wait,
+                ),
                 None,
             )),
             turn: Arc::new(tokio::sync::Mutex::new(())),
@@ -382,17 +428,31 @@ impl ProductMcp {
         arguments: Value,
         presented: Option<PresentedCredential>,
     ) -> Result<ToolResult, ErrorData> {
+        self.in_session(presented, move |session| {
+            session.call_tool(&name, &arguments)
+        })
+        .await?
+        .map_err(|error| internal(error.0))
+    }
+
+    /// Runs `work` on the session, on a blocking thread, with the caller's
+    /// key set on the domain for its duration.
+    async fn in_session<T: Send + 'static>(
+        &self,
+        presented: Option<PresentedCredential>,
+        work: impl FnOnce(&McpSession<CheckoffDomain>) -> T + Send + 'static,
+    ) -> Result<T, ErrorData> {
         let turn = self.turn.clone().lock_owned().await;
         let session = self.session.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let _turn = turn;
             session.port().set_caller(presented);
-            let result = session.call_tool(&name, &arguments);
+            let result = work(&session);
             session.port().set_caller(None);
             result
         })
-        .await;
-        result.map_err(internal)?.map_err(|error| internal(error.0))
+        .await
+        .map_err(internal)
     }
 
     /// `get_build_workflow`: the Build's workflow, read with the caller's key
@@ -471,11 +531,17 @@ impl ServerHandler for ProductMcp {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        // The farm tools are listed only while the caller's Farm Module is on.
+        let presented = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<PresentedCredential>())
+            .cloned();
         let tools = self
-            .session
-            .list_tools()
+            .in_session(presented, |session| session.list_tools())
+            .await?
             .map_err(|error| internal(error.0))?;
         serde_json::from_value(tools).map_err(internal)
     }
@@ -542,6 +608,8 @@ impl ServerHandler for ProductMcp {
 mod checkoff;
 #[path = "mcp/create_build.rs"]
 mod create_build;
+#[path = "mcp/farm_status.rs"]
+mod farm_status;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]

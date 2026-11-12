@@ -41,7 +41,7 @@ fn fixture(name: &str) -> Vec<u8> {
 
 /// The recorded Moonraker from `routes.json`, and the Node adapter's results
 /// for the same traffic from `node-oracle.json`.
-fn recorded() -> (RoutedPrinter, Value) {
+pub(super) fn recorded() -> (RoutedPrinter, Value) {
     let routes: Value = serde_json::from_slice(&fixture("routes.json")).unwrap();
     let mut routes: Vec<_> = routes["routes"]
         .as_object()

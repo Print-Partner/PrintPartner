@@ -124,6 +124,16 @@ impl fmt::Display for ImportReport {
 /// archive, into `destination`, which must be absent or empty by the
 /// ownership-marker rule. The source is never opened for writing.
 pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportError> {
+    import_with(source, destination, archive::Limits::default())
+}
+
+/// [`import`] with the caps an archive must stay under. A folder has none:
+/// the only size refusal for one is free space at the destination.
+pub(super) fn import_with(
+    source: &Path,
+    destination: &Path,
+    limits: archive::Limits,
+) -> Result<ImportReport, ImportError> {
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
     match inspect_destination(destination) {
         Destination::Free => {}
@@ -137,7 +147,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
         let copied = copy_roots(source, &stage.0)?;
         (SourceKind::Directory, files, copied)
     } else {
-        let (files, copied) = extract_archive(source, metadata.len(), &stage.0)?;
+        let (files, copied) = extract_archive(source, metadata.len(), &stage.0, limits)?;
         (SourceKind::Archive, files, copied)
     };
     let (connection, ready) = upgrade(&stage.0)?;
@@ -174,10 +184,10 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
 
 /// Copies every root of a Node data folder into `stage` and returns the
 /// number of files and their bytes. Like a backup, it takes regular files
-/// and directories and follows no link.
+/// and directories and follows no link. Unlike a backup, it has no cap on
+/// the number of entries or on their size.
 fn copy_roots(source: &Path, stage: &Path) -> Result<(u64, u64), ImportError> {
-    let limit = archive::Limits::default().max_entries;
-    let items = archive::plan(source, archive::Scope::Full, limit)
+    let items = archive::plan(source, archive::Scope::Full, u64::MAX)
         .map_err(|error| ImportError::Roots(format!("{error:#}")))?;
     let sizes = items.iter().map(|item| match item {
         archive::Item::File(_, _, bytes) => *bytes,
@@ -245,24 +255,23 @@ fn extract_archive(
     source: &Path,
     compressed: u64,
     stage: &Path,
+    limits: archive::Limits,
 ) -> Result<(Files, (u64, u64)), ImportError> {
     // The extracted size is unknown until the archive is read; it is at
     // least the archive's own size.
     ensure_room(stage, compressed.saturating_add(STAGE_RESERVE))?;
-    let metadata =
-        archive::extract(source, archive::Limits::default(), stage).map_err(|error| {
-            match error.downcast_ref::<std::io::Error>() {
-                Some(io) if io.kind() == std::io::ErrorKind::StorageFull => {
-                    io_error(stage, io.kind().into())
-                }
-                _ => ImportError::InvalidArchive(format!("{error:#}")),
-            }
-        })?;
+    let extracted = archive::extract(source, limits, stage);
+    let metadata = extracted.map_err(|error| match error.downcast_ref::<std::io::Error>() {
+        Some(io) if io.kind() == std::io::ErrorKind::StorageFull => {
+            io_error(stage, io.kind().into())
+        }
+        _ => ImportError::InvalidArchive(format!("{error:#}")),
+    })?;
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
-    let limit = archive::Limits::default().max_entries;
-    let extracted = archive::plan(stage, archive::Scope::Full, limit)
+    // The archive passed its caps; listing what it wrote needs none.
+    let extracted = archive::plan(stage, archive::Scope::Full, u64::MAX)
         .map_err(|error| ImportError::Roots(format!("{error:#}")))?;
     let sizes = extracted.iter().filter_map(|item| match item {
         archive::Item::File(_, _, bytes) => Some(*bytes),

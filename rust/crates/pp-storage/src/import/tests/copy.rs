@@ -1,5 +1,5 @@
 use super::*;
-use crate::import::copy::{confirm_copy, copy_verified, ensure_room};
+use crate::import::copy::{confirm_copy, copy_verified, ensure_room, import_with};
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
 
@@ -125,6 +125,41 @@ fn a_full_archive_imports_the_same_data() {
         entries(&parent.path().join("a")),
         entries(&parent.path().join("b"))
     );
+}
+
+/// A folder is copied whatever its size: the caps on total bytes, entry
+/// bytes and entry count apply to an archive only (owner decision,
+/// 2026-11-12). Lowered caps stand in for an installation above them.
+#[test]
+fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
+    let source = node_folder();
+    let database = std::fs::metadata(source.database_path()).unwrap().len();
+    let parent = tempfile::tempdir().unwrap();
+    let caps = [
+        archive::Limits {
+            max_total_bytes: database / 2,
+            ..archive::Limits::default()
+        },
+        archive::Limits {
+            max_entry_bytes: database / 2,
+            ..archive::Limits::default()
+        },
+        archive::Limits {
+            max_entries: 4,
+            ..archive::Limits::default()
+        },
+    ];
+    let archive = archive_of(source.path(), 2, "full");
+    let uncapped = import(source.path(), &parent.path().join("uncapped")).unwrap();
+    for (index, limits) in caps.into_iter().enumerate() {
+        let refused = parent.path().join(format!("archive-{index}"));
+        let error = import_with(archive.path(), &refused, limits).unwrap_err();
+        assert!(matches!(error, ImportError::InvalidArchive(_)), "{error:?}");
+        assert_eq!(entries(&refused), [] as [String; 0], "{error}");
+        let destination = parent.path().join(format!("folder-{index}"));
+        let report = import_with(source.path(), &destination, limits).unwrap();
+        assert_eq!(report, uncapped);
+    }
 }
 
 #[test]

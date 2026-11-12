@@ -7,7 +7,8 @@ Checks, in order: no Node, npm, npx or Python in the runtime; the image user is
 1000:1000; `pp-server healthcheck --help`; a hardened start (read-only root,
 bounded /tmp, all capabilities dropped, no-new-privileges) on a fresh named
 volume; liveness and readiness; sign-in through `pp-server bootstrap-url`, whose
-URL works once and never appears in the container logs; an account written to
+URL works once and never appears in the container logs; `GET /` serves the
+image's replacement UI index.html, not the old UI; an account written to
 SQLite and read back after a restart; SIGTERM drains with a complete shutdown
 receipt and leaves no process behind. The container uses host networking so
 this script can reach pp-server's loopback origin; pp-server still binds
@@ -17,6 +18,7 @@ volume it creates is removed on exit.
 
 import http.client
 import json
+import re
 import subprocess
 import sys
 import time
@@ -25,6 +27,9 @@ import uuid
 
 STATUS = "/tmp/pp-server.status.json"
 CREDENTIAL = "/tmp/pp-smoke-credential.json"
+REPLACEMENT_INDEX = "/app/web/apps/ui/dist/index.html"
+# The gateway adds this element to the replacement UI's documents (GRE-1117 CSP).
+NONCE_ELEMENT = re.compile(r'<meta name="pp-style-nonce" nonce="[0-9a-f]{32}">')
 
 
 def docker(*args, check=True):
@@ -38,12 +43,14 @@ def log(message):
     print(f"[docker-smoke] {message}", flush=True)
 
 
-def request(origin, method, path, cookie="", body=None):
+def request(origin, method, path, cookie="", body=None, accept=None):
     url = urllib.parse.urlsplit(origin)
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
     headers = {"Host": url.netloc, "Origin": origin}
     if cookie:
         headers["Cookie"] = cookie
+    if accept:
+        headers["Accept"] = accept
     if body is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(body)
@@ -129,6 +136,21 @@ def start(image, name, volume):
     return origin, cookies[0]
 
 
+def check_replacement_ui(name, origin, desktop):
+    """GET / must be the image's replacement UI index.html, plus the gateway's style nonce."""
+    built = docker("exec", name, "cat", REPLACEMENT_INDEX, check=False)
+    if built.returncode != 0:
+        raise SystemExit(f"the image has no {REPLACEMENT_INDEX}")
+    status, body, _ = request(origin, "GET", "/", desktop, accept="text/html")
+    served, nonces = NONCE_ELEMENT.subn("", body.decode(errors="replace"), count=1)
+    if status != 200 or nonces != 1 or served != built.stdout:
+        raise SystemExit(f"GET / did not serve the replacement UI (status {status}): {body[:200]!r}")
+    logs = docker("logs", name)
+    if "Replacement UI bundle absent" in logs.stdout + logs.stderr:
+        raise SystemExit("pp-server fell back to the old UI")
+    log(f"GET / serves {REPLACEMENT_INDEX} with one style nonce; no fallback line in the logs")
+
+
 def wait_health(name):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -171,6 +193,7 @@ def main():
         account = {"email": "smoke@example.test", "password": "smoke-password-1234"}
 
         origin, desktop = start(image, names[0], volume)
+        check_replacement_ui(names[0], origin, desktop)
         status, body, _ = request(origin, "GET", "/health", desktop)
         if status != 200 or b'"modules"' not in body:
             raise SystemExit(f"/health answered {status}")

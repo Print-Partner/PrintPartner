@@ -30,16 +30,22 @@ fn js_trim(s: &str) -> &str {
 /// Product tools on storage; every other tool still has no Rust port.
 pub(super) struct CheckoffDomain {
     progress: ProgressClient,
-    wait: Duration,
+    pub(super) wait: Duration,
+    pub(super) builds: pp_storage::build_graph::BuildGraphClient,
     /// The API key of the tool call in progress. `ProductMcp` sets it around
     /// each call and runs one call per session at a time.
     caller: Mutex<Option<PresentedCredential>>,
 }
 
 impl CheckoffDomain {
-    pub(super) fn new(progress: ProgressClient, wait: Duration) -> Self {
+    pub(super) fn new(
+        progress: ProgressClient,
+        builds: pp_storage::build_graph::BuildGraphClient,
+        wait: Duration,
+    ) -> Self {
         Self {
             progress,
+            builds,
             wait,
             caller: Mutex::new(None),
         }
@@ -47,6 +53,14 @@ impl CheckoffDomain {
 
     pub(super) fn set_caller(&self, caller: Option<PresentedCredential>) {
         *self.caller.lock().unwrap_or_else(PoisonError::into_inner) = caller;
+    }
+
+    pub(super) fn caller(&self) -> Result<PresentedCredential, String> {
+        self.caller
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "MCP request has no resolved API key".into())
     }
 
     fn run(&self, request: Request) -> Result<Response, String> {
@@ -123,6 +137,9 @@ impl DomainPort for CheckoffDomain {
     }
 
     fn invoke_tool(&self, name: &str, args: &Map<String, Value>) -> Result<ToolInvocation, String> {
+        if super::planning::TOOLS.contains(&name) {
+            return self.planning_propose(name, args);
+        }
         if name == VERIFY {
             return self.propose(args);
         }
@@ -130,6 +147,9 @@ impl DomainPort for CheckoffDomain {
     }
 
     fn apply_action(&self, action: &ProposedAction) -> Result<Value, String> {
+        if super::planning::TOOLS.contains(&action.action_type.as_str()) {
+            return self.planning_apply(action);
+        }
         if action.action_type != VERIFY {
             return Ok(
                 json!({ "ok": false, "detail": format!("Unknown action type: {}", action.action_type) }),

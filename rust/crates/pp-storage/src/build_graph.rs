@@ -5,6 +5,8 @@ pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 mod experiments;
 pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
+pub mod create_with_brief;
+pub use create_with_brief::{CreateBuildError, CreatedBuild, InvalidNewBuild, NewBuild};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;

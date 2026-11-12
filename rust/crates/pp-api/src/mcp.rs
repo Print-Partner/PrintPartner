@@ -11,7 +11,9 @@
 //! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
 //! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
 //! and so do `get_remaining` and `get_printer_checkoff`
-//! (`mcp/progress_reads.rs`).
+//! (`mcp/progress_reads.rs`). `propose_create_build` creates a Build with
+//! its planning brief (`mcp/create_build.rs`); write refusals carry a code
+//! from `mcp/write_result.rs`.
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -538,6 +540,8 @@ impl ServerHandler for ProductMcp {
 
 #[path = "mcp/checkoff.rs"]
 mod checkoff;
+#[path = "mcp/create_build.rs"]
+mod create_build;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]
@@ -548,6 +552,8 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
+#[path = "mcp/write_result.rs"]
+mod write_result;
 
 #[cfg(test)]
 #[path = "mcp/tests.rs"]

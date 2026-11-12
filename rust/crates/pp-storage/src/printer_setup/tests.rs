@@ -1,9 +1,10 @@
 use super::*;
 use crate::{
-    Limits, Setting, SettingCommand,
+    Limits,
     app_settings::{Key, Outcome as SettingOutcome, Write},
-    auth::{FirstUserTenant, Outcome, RegistrationPolicy, Request, Secret, SessionTenantPolicy},
+    auth::{FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
     printer_hosts,
+    write::test_support::{first_session, seed_setting},
 };
 use serde_json::{Value, json};
 
@@ -27,19 +28,10 @@ impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
-        let register = Request::Register {
-            email: "setup@example.com".into(),
-            display_name: "Setup".into(),
-            password: Secret::new("correct-horse".into()),
-        };
-        let auth = owner.auth(FirstUserTenant::NewUser);
-        let registered = auth.submit(register, Arc::default(), WAIT).unwrap();
-        let Outcome::Session { token, .. } = registered.recv().unwrap().unwrap() else {
-            panic!("registration returns a session")
-        };
+        let token = first_session(&owner);
         Self {
             client: owner.printer_setup(POLICY).unwrap(),
-            token: token.expose().to_owned(),
+            token,
             owner,
             _directory: directory,
         }
@@ -69,16 +61,7 @@ impl Fixture {
     }
 
     fn seed(&self, text: &str) {
-        let setting = Setting {
-            tenant: "default".into(),
-            key: INTEGRATIONS_KEY.into(),
-            value: text.into(),
-        };
-        let reply = self
-            .owner
-            .client()
-            .submit(SettingCommand::Set(setting), &IDLE, WAIT);
-        assert!(reply.unwrap().recv().unwrap().unwrap());
+        seed_setting(&self.owner, INTEGRATIONS_KEY, text);
     }
 }
 

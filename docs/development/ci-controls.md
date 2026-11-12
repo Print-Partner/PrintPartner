@@ -58,7 +58,9 @@ Its default pin policy requires every external action, including `actions/*`, to
 Web CI also uses job selection rather than workflow path filters. Its `changes`
 job publishes separate `web` and `ui` outputs. `web`, `web-build`, `sidecar` and
 `docker` use `web`; all four skip on merge groups, while the Rust, action,
-Windows, macOS and UI kinds stay selected. Pushes and manual/call events
+Windows, macOS and UI kinds stay selected. Rust cross-OS skips its Windows and
+macOS jobs on merge groups in their job conditions, whatever the selector says
+([Merge queue](ci.md#merge-queue)). Pushes and manual/call events
 select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
 and commands retained. This adds no required check and does not edit the
 ruleset snapshot. The independent `release-audit` job runs without path selection
@@ -85,7 +87,8 @@ CI-control changes and merges after two scorer seats score the head 9 or more.
 
 Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
 labels do not select them. Job-level skips preserve check reports. Main pushes,
-merge groups, schedules and manual runs keep full coverage; Linux PR selection
+schedules and manual runs keep full coverage; a merge group runs the short Linux
+Rust set ([Merge queue](ci.md#merge-queue)); Linux PR selection
 and the required contexts remain unchanged. See the
 [event table](ci.md#cross-os-pr-label).
 

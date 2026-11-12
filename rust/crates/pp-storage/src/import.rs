@@ -67,6 +67,8 @@ pub enum ImportError {
     SourcePath(i64),
     /// Rows of these tables differ from the source after the upgrade.
     RowsChanged(Vec<String>),
+    /// A copied file read back differently from its source.
+    CopyMismatch(PathBuf),
     /// The staging directory has too little free space.
     NoSpace {
         directory: PathBuf,
@@ -147,6 +149,11 @@ impl fmt::Display for ImportError {
                 f,
                 "Rows changed during the import in {}; they must arrive as the source stored them",
                 tables.join(", ")
+            ),
+            Self::CopyMismatch(copy) => write!(
+                f,
+                "The copy {} does not match its source. Check the disk, empty the destination and retry",
+                copy.display()
             ),
             Self::NoSpace {
                 directory,

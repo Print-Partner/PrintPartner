@@ -23,15 +23,15 @@ Without `PP_COMMIT`, the build records the all-zero commit. That is an unversion
 
 The build has three stages:
 
-1. `web` (Node 24.21.0): `npm ci`, then the desktop web build (`VITE_PRINT_PARTNER_DESKTOP=1 npm run build`). `rust/scripts/build-desktop-manifest.py` then writes the measured release manifest.
+1. `web` (Node 24.21.0): `npm ci`, then the desktop web build (`VITE_PRINT_PARTNER_DESKTOP=1 npm run build`). `rust/scripts/build-desktop-manifest.py` then builds the replacement UI (`@print-partner/ui`) and writes the measured release manifest, which lists `apps/ui/dist` as `replacement_frontend`. The stage fails if `web/apps/ui/dist/index.html` is missing.
 2. `rust` (Rust 1.99.0): `cargo build --release -p pp-server --features desktop_rebuild`, with that manifest embedded through `PP_DESKTOP_RELEASE_MANIFEST`.
-3. `runtime` (Debian bookworm-slim): the `pp-server` binary, the measured frontend (`apps/web/dist`), the community manifests (`apps/server/dist/current/data/manifests`), `web/package.json` for the version, `ca-certificates`, `tini`, and the license and notice files in `/usr/share/doc/print-partner/`.
+3. `runtime` (Debian bookworm-slim): the `pp-server` binary, the measured replacement UI (`apps/ui/dist`, which it serves), the measured old frontend (`apps/web/dist`, still shipped), the community manifests (`apps/server/dist/current/data/manifests`), `web/package.json` for the version, `ca-certificates`, `tini`, and the license and notice files in `/usr/share/doc/print-partner/`.
 
 The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-rust-smoke.py` checks this. Every base image is pinned by tag and digest. Release builds of the Node image pass `PP_APP_VERSION` and `PP_BUILD_DATE` the same way, and the Rust-only image takes the same build arguments for its OCI labels.
 
 ### Release check without Node
 
-A Rust-only start checks the release without Node. When `web/apps/ui/dist` is installed, `pp-core` calls `pp_compat::snapshot_rust_only_release`, which checks the `replacement_frontend` inventory and keeps the verified bytes for serving. When it is absent, as in the Docker image today, `pp-core` calls `pp_compat::verify_rust_only_legacy_release`, which checks the `frontend` inventory instead. Both check:
+A Rust-only start checks the release without Node. When `web/apps/ui/dist` is installed, `pp-core` calls `pp_compat::snapshot_rust_only_release`, which checks the `replacement_frontend` inventory and keeps the verified bytes for serving. When it is absent, as in an image built before GRE-1387, `pp-core` calls `pp_compat::verify_rust_only_legacy_release`, which checks the `frontend` inventory instead, and writes `Replacement UI bundle absent` to stderr once the data directory is admitted. A refused start writes only its refusal. Both check:
 
 - The runtime version and commit match the manifest embedded in the binary.
 - The selected frontend's file list and digests match exactly.
@@ -127,7 +127,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 
 - **No access from other machines.** The Rust-only gateway listens on `127.0.0.1` only, and the Rust routes refuse a non-loopback peer. `-p` port publishing does not reach it. On Linux, `--network host` puts the listener on the host's loopback, so a browser on the same host can reach it. LAN access and LAN sign-in wait for [Network sharing](network-sharing.md).
 - **MCP is off.** The gateway answers 403 to `/mcp` and `/api/v1/mcp` in Rust-only mode, whatever key a client sends.
-- **UI packaging.** Today's image includes only the measured `apps/web` build. The Rust-only runtime serves it with its existing SPA routes and policy and, when `apps/ui/dist` is absent, writes `Replacement UI bundle absent` to stderr once the data directory is admitted. A refused start writes only its refusal. An installed replacement bundle must pass its separate inventory check before it is served with the GRE-1117 CSP. Docker replacement UI packaging follows in [GRE-1387](https://linear.app/greetz/issue/GRE-1387).
+- **No sign-in screen.** The image serves the replacement UI with the GRE-1117 CSP, and the replacement UI has no sign-in or setup screen yet ([GRE-1429](https://linear.app/greetz/issue/GRE-1429)). The bootstrap URL admits the browser and the UI loads, but product routes answer 401 until an account session exists: `POST /auth/register` once, then `POST /auth/login`.
 - **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test
@@ -136,7 +136,7 @@ Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the deskto
 python3 scripts/docker-rust-smoke.py pp-server:test
 ```
 
-The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches the loopback origin through host networking. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
+The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. With that sign-in, `GET /` must return the image's `apps/ui/dist/index.html` with one style nonce element added, and `docker logs` must not contain `Replacement UI bundle absent`. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches the loopback origin through host networking. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
 
 ## Importing Node data
 

@@ -194,10 +194,13 @@ impl ImportError {
     fn fmt_write_step(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Destination(found) => {
-                write!(
-                    f,
-                    "The destination {found}. Empty it or choose another folder"
-                )
+                // Only a folder that merely holds something may be emptied.
+                // Never say so of the source or of a Rust installation.
+                let advice = match found {
+                    Destination::NotEmpty(_) => "Empty it or choose another folder",
+                    _ => "Choose another folder",
+                };
+                write!(f, "The destination {found}. {advice}")
             }
             Self::Unnamed(shapes) => write!(
                 f,

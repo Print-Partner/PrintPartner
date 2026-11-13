@@ -399,6 +399,12 @@ fn fingerprint(folder: &Path) -> BTreeMap<PathBuf, String> {
 fn refused_for_its_place(source: &Installation, destination: &Path) -> Destination {
     let before = fingerprint(source.path());
     let error = import(source.path(), destination).unwrap_err();
+    // The advice must never be to empty a folder that may be the source.
+    let text = error.to_string();
+    assert!(
+        text.ends_with("Choose another folder") && !text.contains("Empty it"),
+        "{text}"
+    );
     assert!(
         before == fingerprint(source.path()),
         "the refused import changed its source: {error}"

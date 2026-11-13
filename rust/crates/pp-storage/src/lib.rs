@@ -1195,6 +1195,7 @@ impl WriterOwner {
             data_dir,
             metadata: metadata.clone(),
             request,
+            free_space: archive::free_space,
         })))?;
         Ok(metadata)
     }

@@ -574,7 +574,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
 /// Validates a backup archive and extracts its database and single-file
 /// roots into `scratch`.
 fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
-    let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
+    let (metadata, paths) = archive::extract_documents(source, archive::Limits::node(), scratch)
         .map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
             Some(io) if io.kind() == ErrorKind::StorageFull => ImportError::Failed(error),

@@ -1,7 +1,8 @@
 //! Whole-installation backup export and restore staging for the Rust runtime.
 //!
-//! Backup export ([`InstallationClient::backup_to_temporary`]) writes a full
-//! archive to a private temporary directory outside managed storage.
+//! Backup export ([`InstallationClient::export_backup`]) writes a full
+//! archive under `<data>/backups/`. Free disk space bounds a backup and a
+//! stage; no fixed size limit applies.
 //!
 //! Staging writes an uploaded app backup archive (Node's format 2, see
 //! [`crate::archive`]) under `<data>/.pp-restore/`, validates and extracts it
@@ -16,7 +17,7 @@
 
 use crate::{SettingsClient, WriterFailure, WriterOwner, archive, ownership_marker, schema};
 use anyhow::{Context, Result, anyhow, bail, ensure};
-pub use backup::BackupFile;
+pub use backup::{BackupFile, BackupWarning};
 use std::{
     fmt,
     fs::File,
@@ -31,9 +32,6 @@ mod backup;
 const WORK_DIR: &str = ".pp-restore";
 const INCOMING_PREFIX: &str = "incoming-";
 const INCOMING_SUFFIX: &str = ".tar.gz";
-/// The most any upload may hold, whatever limit the caller asks for. It
-/// matches the default decompressed limit in [`archive::Limits`].
-pub const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const STAGED_PREFIX: &str = "staged-";
 
 /// A restore refused before any live file changed.
@@ -43,6 +41,12 @@ pub enum Refusal {
     Unmarked,
     /// The upload exceeded this many bytes.
     TooLarge(u64),
+    /// The upload or the extracted stage would leave less than the reserve
+    /// free. Nothing was written or extracted.
+    NoSpace(archive::NoSpace),
+    /// Extraction stopped before writing more than this many bytes, the
+    /// total the archive's headers declared. The stage was removed.
+    LargerThanDeclared(u64),
     InvalidArchive(String),
     UnsupportedSchema(String),
 }
@@ -54,6 +58,11 @@ impl fmt::Display for Refusal {
                 f.write_str("Restore needs a Rust-owned installation (.pp-rust-owned.json)")
             }
             Self::TooLarge(limit) => write!(f, "Backup archive exceeds {limit} bytes"),
+            Self::NoSpace(no_space) => no_space.fmt(f),
+            Self::LargerThanDeclared(declared) => write!(
+                f,
+                "Backup archive holds more than the {declared} bytes its headers declare"
+            ),
             Self::InvalidArchive(detail) => write!(f, "Invalid backup archive: {detail}"),
             Self::UnsupportedSchema(detail) => write!(f, "Unsupported backup schema: {detail}"),
         }
@@ -83,8 +92,40 @@ pub struct Staged {
 /// it and still returns `anyhow` errors that carry a [`Refusal`].
 #[derive(Debug, thiserror::Error)]
 pub enum RestoreError {
+    /// The backup would leave less than the reserve free. Nothing was kept.
+    #[error(transparent)]
+    NoSpace(#[from] archive::NoSpace),
     #[error(transparent)]
     Writer(#[from] WriterFailure),
+}
+
+/// The sizes and disk readings backup and staging decide by. Tests replace
+/// them, so no test needs real gigabytes.
+#[derive(Clone, Copy)]
+pub(crate) struct Sizing {
+    pub reserve: u64,
+    pub warn_over: u64,
+    pub free_space: archive::FreeSpace,
+    pub declared_bytes: fn(&Path, archive::Limits) -> Result<u64>,
+}
+
+impl Sizing {
+    const MACHINE: Self = Self {
+        reserve: archive::RESERVE_BYTES,
+        // A backup archive over 20 GiB carries a warning. It is not refused.
+        warn_over: 20 * 1024 * 1024 * 1024,
+        free_space: archive::free_space,
+        declared_bytes: archive::declared_bytes,
+    };
+
+    /// Refuses with [`Refusal::NoSpace`] when writing `bytes` under `path`
+    /// would leave less than the reserve free.
+    fn require(&self, path: &Path, bytes: u64) -> Result<()> {
+        match archive::shortfall(self.free_space, path, bytes, self.reserve)? {
+            Some(no_space) => Err(Refusal::NoSpace(no_space).into()),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Restore work in flight for one [`WriterOwner`].
@@ -152,6 +193,7 @@ pub struct InstallationClient {
     client: SettingsClient,
     data_dir: PathBuf,
     activity: Arc<Activity>,
+    sizing: Sizing,
 }
 
 impl WriterOwner {
@@ -164,6 +206,7 @@ impl WriterOwner {
             client: self.client.clone(),
             data_dir: lease.data_dir().to_owned(),
             activity: self.restore.clone(),
+            sizing: Sizing::MACHINE,
         })
     }
 }
@@ -211,14 +254,16 @@ impl Drop for Upload {
 }
 
 impl InstallationClient {
-    /// Starts an upload of at most `limit` bytes, capped at
-    /// [`MAX_UPLOAD_BYTES`].
+    /// Starts an upload of at most `limit` bytes, the size the caller
+    /// declares. Refuses with [`Refusal::NoSpace`] when that many bytes would
+    /// leave less than the reserve free.
     pub fn begin_upload(&self, limit: u64) -> Result<Upload> {
         let _active = self.activity.enter()?;
         require_marker(&self.data_dir)?;
         let work = work_dir(&self.data_dir)?;
         #[cfg(all(test, unix))]
         tests::after_work_dir(&self.data_dir);
+        self.sizing.require(&work, limit)?;
         let path = work.join(format!("{INCOMING_PREFIX}{}{INCOMING_SUFFIX}", random_id()));
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -228,19 +273,22 @@ impl InstallationClient {
             file,
             path,
             written: 0,
-            limit: limit.min(MAX_UPLOAD_BYTES),
+            limit,
             failed: false,
             activity: self.activity.clone(),
         })
     }
 
-    /// Validates and extracts `upload` and admits its schema. Live files are
-    /// not touched and the upload is removed either way. A refusal removes
-    /// only its own stage. Earlier stages are removed only after the new one
-    /// is complete; if that fails, the new stage is still returned, with
-    /// [`Staged::cleanup_error`] set, and the next open removes the leftover.
-    /// `.pp-restore` itself stays until the next open, so a concurrent
-    /// [`Self::begin_upload`] never loses its directory.
+    /// Validates and extracts `upload` and admits its schema. A first pass
+    /// totals the sizes the archive's tar headers declare and refuses with
+    /// [`Refusal::NoSpace`] before extracting anything. Extraction then stops
+    /// with [`Refusal::LargerThanDeclared`] before it writes more than that
+    /// total. Live files are not touched and the upload is removed either
+    /// way. A refusal removes only its own stage. Earlier stages are removed
+    /// only after the new one is complete; if that fails, the new stage is
+    /// still returned, with [`Staged::cleanup_error`] set, and the next open
+    /// removes the leftover. `.pp-restore` itself stays until the next open,
+    /// so a concurrent [`Self::begin_upload`] never loses its directory.
     pub fn stage(&self, upload: Upload) -> Result<Staged> {
         ensure!(
             Arc::ptr_eq(&upload.activity, &self.activity),
@@ -260,8 +308,20 @@ impl InstallationClient {
         let staged = work.join(format!("{STAGED_PREFIX}{restore_id}"));
         pp_os::create_private_dir(&staged)?;
         let result = (|| {
-            let metadata = archive::extract(&upload.path, archive::Limits::default(), &staged)
+            let limits = archive::Limits::default();
+            let declared = (self.sizing.declared_bytes)(&upload.path, limits)
                 .map_err(|error| Refusal::InvalidArchive(format!("{error:#}")))?;
+            self.sizing.require(&work, declared)?;
+            let limits = archive::Limits {
+                max_total_bytes: declared,
+                ..limits
+            };
+            let metadata = archive::extract(&upload.path, limits, &staged).map_err(|error| {
+                match error.downcast::<archive::TotalExceeded>() {
+                    Ok(exceeded) => Refusal::LargerThanDeclared(exceeded.limit),
+                    Err(error) => Refusal::InvalidArchive(format!("{error:#}")),
+                }
+            })?;
             ensure!(
                 metadata.scope == archive::MetadataScope::Full,
                 Refusal::InvalidArchive("restore needs a full backup".into())
@@ -422,14 +482,16 @@ fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
     }
 }
 
-/// Clears an interrupted stage. Runs at open, under the directory lock and
-/// after the ownership marker and both read-only schema preflights were admitted.
+/// Clears an interrupted backup export and an interrupted stage. Runs at
+/// open, under the directory lock and after the ownership marker and both
+/// read-only schema preflights were admitted, before any client exists.
 /// Every entry is checked before anything is removed: only a regular file
 /// `incoming-<id>.tar.gz` and a real directory `staged-<id>` are removed. Any
 /// other entry, a link, a wrong type, or a `.pp-restore` that is not a real
 /// directory refuses the open without removing anything, because this build
 /// cannot tell whether it holds the only copy of an installation.
 pub(crate) fn recover(data_dir: &Path) -> Result<()> {
+    backup::sweep(data_dir);
     let work = data_dir.join(WORK_DIR);
     let Ok(metadata) = work.symlink_metadata() else {
         return Ok(());

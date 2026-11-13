@@ -306,7 +306,7 @@ fn ticket_t_8_archive_refuses_unsafe_roots_space_and_destinations() {
 
     let mut no_space = Request::new("3.9.0", Scope::Full);
     no_space.reserve_bytes = u64::MAX / 2;
-    assert!(refuse(&out.join("a.tar.gz"), no_space).contains("Insufficient disk space for backup"));
+    assert!(refuse(&out.join("a.tar.gz"), no_space).contains("Insufficient disk space"));
 
     let mut tiny = Request::new("3.9.0", Scope::Full);
     tiny.limits.max_total_bytes = 1024;

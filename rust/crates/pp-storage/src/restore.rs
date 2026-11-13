@@ -45,6 +45,9 @@ pub enum Refusal {
     TooLarge(u64),
     InvalidArchive(String),
     UnsupportedSchema(String),
+    /// Too little free disk on the data volume for the schema check's
+    /// working copy of the staged database. The stage was removed.
+    InsufficientSpace(schema::InsufficientSpace),
 }
 
 impl fmt::Display for Refusal {
@@ -56,6 +59,7 @@ impl fmt::Display for Refusal {
             Self::TooLarge(limit) => write!(f, "Backup archive exceeds {limit} bytes"),
             Self::InvalidArchive(detail) => write!(f, "Invalid backup archive: {detail}"),
             Self::UnsupportedSchema(detail) => write!(f, "Unsupported backup schema: {detail}"),
+            Self::InsufficientSpace(space) => space.fmt(f),
         }
     }
 }
@@ -267,6 +271,15 @@ impl InstallationClient {
                 Refusal::InvalidArchive("restore needs a full backup".into())
             );
             let schema_version = admit_schema(&staged).map_err(|error| {
+                // The schema check's working copy goes in the stage, on the
+                // data volume, so a full volume is a space refusal, not a
+                // schema one.
+                if let Some(space) = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<schema::InsufficientSpace>())
+                {
+                    return Refusal::InsufficientSpace(*space);
+                }
                 let detail = match error
                     .chain()
                     .find_map(|cause| cause.downcast_ref::<crate::versions::IncompatibleSchema>())

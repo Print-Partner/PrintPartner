@@ -99,7 +99,7 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | Destination that holds data, a `.desktop-lease` entry or a Rust installation | The import writes only into a new folder. |
 | Destination given with a `.` or `..` component | Such a path can name one folder before the import creates it and another after. Give the folder's own path. |
 | Destination that is the source folder, lies inside it, or holds it | The paths are compared with links resolved, before anything is created. The import never writes into its source. |
-| `TMPDIR` that is the source folder or the destination, or lies inside one | The startup check copies the database there. Set `TMPDIR` to a directory outside both. |
+| `TMPDIR` that is the source folder or the destination, or lies inside one | The dry run stages its copy of the database there. The import refuses the same setting, although its startup check copies into `<destination>/.pp-import/.pp-preflight-*`. Set `TMPDIR` to a directory outside both. |
 | Backup roots that hold a symbolic link, a FIFO, a socket or a device | The import copies files and folders and skips nothing. The message gives the number of each kind under each root, never a file name. Find them with `find <folder> ! -type f ! -type d`, then remove or replace them. |
 | Destination that gains a database, a root, a report or a marker while the import runs | The import replaces nothing. Nothing is moved in. |
 | Stored JSON the inventory does not name | Every shape must be named as converted, copied unchanged, kept unused or dropped. The message lists the shapes as the dry run does. |

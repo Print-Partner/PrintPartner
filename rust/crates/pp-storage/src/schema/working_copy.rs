@@ -34,6 +34,13 @@ thread_local! {
     static AVAILABLE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
+/// Reports `bytes` free instead of the filesystem's on this thread, or the
+/// real figure again with `None`.
+#[cfg(all(test, unix, feature = "desktop_rebuild"))]
+pub(crate) fn override_available(bytes: Option<u64>) {
+    AVAILABLE.set(bytes);
+}
+
 /// Too little free disk for the preflight's working copy. Nothing was created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(

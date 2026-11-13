@@ -75,6 +75,29 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 
 It also answers the four shared codes above.
 
+### `propose_import_build_inputs`
+
+`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id, kind?, title?, filenames?, derived_from_evidence_id? }] }` attaches existing Library Sources to the Build's planning brief as evidence (GRE-1300 part 2, GRE-1521). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A `url` input is refused until GRE-1300 part 3.
+
+- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing.
+- **Confirm** runs the same checks and then one transaction: one evidence item per Source goes in the brief, the selected draft is cleared, and the brief is stored. The item's `url` is `printpartner:source:<id>` and its `id` is the first 20 hex digits of that URL's SHA-256, as Node makes them. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files. Importing a Source the brief already holds updates that one item in place and keeps its `source_role`; Node drops the role there. It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required": false }], "created_source_ids": [] } }`, one item per input in input order.
+
+A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
+| `invalid_inputs` | `inputs` is missing, not a list, or empty. |
+| `invalid_input` | An input is not an object, or its `source_id` is not a positive whole number. |
+| `url_inputs_not_supported` | An input has a `url`. |
+| `invalid_evidence_kind` | A `kind` is not `canonical_design`, `vendor_overlay`, `mod`, `component`, `model_source` or `informational_evidence`. |
+| `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
+| `planning_brief_invalid` | The stored brief does not parse. |
+| `source_not_found` | A `source_id` names no Library Source. A refused confirm names it in `source_id`. |
+| `derived_evidence_not_found` | A `derived_from_evidence_id` names no evidence already in the brief. A refused confirm names it in `evidence_id`. |
+
+It also answers the four shared codes above.
+
 ### `get_build_planning_state` and `get_plan_draft`
 
 These two reads give an assistant the ids the Build planning write tools take: evidence and contribution ids for `propose_update_build_brief` and `propose_set_build_source_roles`, and the draft id, snapshot digest and Part ids for `propose_edit_plan_draft_parts` (GRE-1442). Both read with the request's API key through the same storage reads as `GET /plans/{id}/build-planning` and `GET /plans/{id}/drafts/{draft_id}`. Like those routes, they run on the storage writer queue today. Neither writes. `get_plan_draft` reads the brief and the draft in two transactions, so a write between them can pair a phase with a newer draft.
@@ -123,7 +146,7 @@ It answers:
 
 Like `get_farm_status`, it is listed and callable only while the Farm Module is on. Storage failures answer the shared codes `unauthorized`, `unavailable` and `internal`.
 
-These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
+These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` and `propose_import_build_inputs` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
 ### `propose_edit_plan_draft_parts`
 

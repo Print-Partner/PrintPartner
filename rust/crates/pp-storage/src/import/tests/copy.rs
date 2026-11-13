@@ -1093,11 +1093,8 @@ fn a_source_with_an_unfinished_transaction_imports_as_it_was_before_it() {
         std::fs::metadata(&journal).is_ok_and(|file| file.len() > 0),
         "the test did not produce a rollback journal"
     );
-    let parent = tempfile::tempdir().unwrap();
-    let destination = parent.path().join("rust");
-    let report = import(folder.path(), &destination).unwrap();
-    assert!(destination.join(ownership_marker::MARKER_FILE).is_file());
-    let imported = Connection::open(destination.join("print-partner.db")).unwrap();
+    let (report, _paths, parent) = imported_with(&folder, &[]);
+    let imported = Connection::open(parent.path().join("rust/print-partner.db")).unwrap();
     assert_eq!(events(&imported), committed);
     assert_eq!(report.tables["app_events"], committed.unsigned_abs());
     drop(writer);

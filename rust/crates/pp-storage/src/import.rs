@@ -371,12 +371,23 @@ pub struct RootCount {
     pub bytes: Option<u64>,
 }
 
+/// What one walk of the backup roots found.
+struct Scan {
+    roots: Vec<RootCount>,
+    /// Per root and kind, the entries that are neither files nor folders.
+    unsupported: Vec<Unsupported>,
+    /// The name of every regular file under `repos/`. An entry of any other
+    /// kind is not copied, so it is not listed here.
+    repo_files: Vec<String>,
+}
+
 /// Walks every backup root of a Node data folder once. It counts each
-/// root's files, folders and bytes, and, per root and kind, the entries that
-/// are neither regular files nor folders. No link is followed.
-fn scan_roots(source: &Path) -> Result<(Vec<RootCount>, Vec<Unsupported>), ImportError> {
+/// root's files, folders and bytes, lists the files under `repos/`, and
+/// counts the entries that are neither regular files nor folders. No link
+/// is followed, so the walk stays in the folder.
+fn scan_roots(source: &Path) -> Result<Scan, ImportError> {
     let mut found: BTreeMap<(&'static str, EntryKind), u64> = BTreeMap::new();
-    let mut roots = Vec::new();
+    let (mut roots, mut repo_files) = (Vec::new(), Vec::new());
     for (root, _) in archive::FULL_ROOTS {
         let path = source.join(root);
         let Ok(metadata) = path.symlink_metadata() else {
@@ -404,6 +415,9 @@ fn scan_roots(source: &Path) -> Result<(Vec<RootCount>, Vec<Unsupported>), Impor
                 } else if kind.is_file() {
                     entries += 1;
                     bytes += entry.metadata().map_err(failed)?.len();
+                    if root == "repos" {
+                        repo_files.push(entry.file_name().to_string_lossy().into_owned());
+                    }
                 } else {
                     *found.entry((root, EntryKind::of(kind))).or_insert(0) += 1;
                 }
@@ -420,7 +434,11 @@ fn scan_roots(source: &Path) -> Result<(Vec<RootCount>, Vec<Unsupported>), Impor
         kind,
         entries,
     };
-    Ok((roots, found.into_iter().map(counted).collect()))
+    Ok(Scan {
+        roots,
+        unsupported: found.into_iter().map(counted).collect(),
+        repo_files,
+    })
 }
 
 /// The database files in `stage`, with their bytes.
@@ -1050,13 +1068,13 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if stamps() != before {
         return Err(ImportError::Changed);
     }
-    let (roots, unsupported) = scan_roots(source)?;
+    let scan = scan_roots(source)?;
     let sized = |(name, stamp): (&'static str, &Option<(u64, _)>)| Some((name, stamp.as_ref()?.0));
     Ok(Files {
         documents: source.to_owned(),
-        repo_files: repo_files(source)?,
-        unsupported,
-        roots,
+        repo_files: scan.repo_files,
+        unsupported: scan.unsupported,
+        roots: scan.roots,
         database: DATABASE_FILES
             .into_iter()
             .zip(&before)
@@ -1064,33 +1082,6 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
             .collect(),
         root: Some(source.to_owned()),
     })
-}
-
-/// The name of every regular file under `root/repos`. An entry of any other
-/// kind is not copied, so it is not counted here; [`scan_roots`] counts it.
-fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
-    let mut repo_files = Vec::new();
-    let repos = root.join("repos");
-    // Neither check follows a link, so the walk stays in the folder.
-    let mut pending = Vec::from_iter(
-        repos
-            .symlink_metadata()
-            .is_ok_and(|m| m.is_dir())
-            .then_some(repos),
-    );
-    while let Some(directory) = pending.pop() {
-        let failed = |error| io_error(&directory, error);
-        for entry in std::fs::read_dir(&directory).map_err(failed)? {
-            let entry = entry.map_err(failed)?;
-            let kind = entry.file_type().map_err(failed)?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                repo_files.push(entry.file_name().to_string_lossy().into_owned());
-            }
-        }
-    }
-    Ok(repo_files)
 }
 
 /// Validates a backup archive and extracts its database and single-file

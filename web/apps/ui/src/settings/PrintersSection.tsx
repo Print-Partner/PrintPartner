@@ -155,7 +155,7 @@ function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name:
           ))}
         </div>
         {write.error && <p role="alert" className="pp-field-error">{write.error}</p>}
-        <div className="pp-actions">
+        <div className="pp-dialog-actions">
           <button type="button" className="pp-button" onClick={() => void (saved ? discard() : onClose())}>
             {saved ? "Discard" : "Cancel"}
           </button>
@@ -201,7 +201,7 @@ function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Print
       </p>
       <p>Builds, history and finished work stay in place. Nothing is sent to the printer.</p>
       {write.error && <p role="alert" className="pp-field-error">{write.error}</p>}
-      <div className="pp-actions">
+      <div className="pp-dialog-actions">
         <button type="button" className="pp-button" onClick={onClose}>{printerGone ? "Close" : "Cancel"}</button>
         <button type="button" className="pp-button pp-button-primary" aria-disabled={write.busy || undefined} onClick={() => void remove()}>
           {printerGone ? "Delete connection" : "Delete printer"}

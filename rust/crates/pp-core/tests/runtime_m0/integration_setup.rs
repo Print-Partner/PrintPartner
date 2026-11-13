@@ -2,7 +2,8 @@
 //! `POST /api/v2/integrations` passes its connection test and reports live
 //! status with no restart, still does after a restart on the same data
 //! directory, is listed by `GET /api/v2/integrations` without its key, and is
-//! gone everywhere after `DELETE`. A printer added through
+//! gone everywhere after `DELETE`. One `PATCH` moves an integration saved at a
+//! dead address to the printer. A printer added through
 //! `POST /api/v2/printers` shows live in the Farm list the same way, and is
 //! read, edited and deleted. The printer is the recorded loopback Moonraker;
 //! nothing is uploaded or started.
@@ -77,6 +78,41 @@ async fn tested_and_polled(origin: &str, cookie: &str, id: &str) {
     let passed = (code, &body["ok"]);
     assert_eq!(passed, (StatusCode::OK, &json!(true)), "{body}");
     printing(origin, cookie, id).await;
+}
+
+/// An integration saved at a dead address fails its test. A `PATCH` that
+/// moves it without its API key is refused. One `PATCH` with the key then
+/// moves it to the printer and renames it: with no restart the test passes
+/// and it is polled.
+async fn moved_to_the_printer(origin: &str, cookie: &str, moonraker: &Value) {
+    let mut down = moonraker.clone();
+    down["base_url"] = json!("http://127.0.0.1:9");
+    let (code, view, _) = call(origin, cookie, "POST", CREATED, Some(down)).await;
+    assert_eq!(code, StatusCode::OK, "{view}");
+    let id = view["id"].as_str().unwrap();
+    let test = format!("/api/v1/integrations/{id}/test");
+    let (code, body, _) = call(origin, cookie, "POST", &test, None).await;
+    let failed = (code, &body["ok"]);
+    assert_eq!(failed, (StatusCode::OK, &json!(false)), "{body}");
+
+    let path = format!("{CREATED}/{id}");
+    // A new address without the stored key would send that key to it.
+    let refused = json!({"base_url": moonraker["base_url"]});
+    let (code, problem, _) = call(origin, cookie, "PATCH", &path, Some(refused)).await;
+    let named = (code, &problem["errors"][0]["pointer"]);
+    assert_eq!(named, (StatusCode::BAD_REQUEST, &json!("/api_key")));
+    let mut patch = moonraker.clone();
+    patch["name"] = json!("Moved");
+    patch.as_object_mut().unwrap().remove("kind");
+    let (code, moved, text) = call(origin, cookie, "PATCH", &path, Some(patch)).await;
+    let mut expected = view.clone();
+    expected["name"] = json!("Moved");
+    expected["base_url"] = moonraker["base_url"].clone();
+    assert_eq!((code, &moved), (StatusCode::OK, &expected), "{text}");
+    assert!(!text.contains(SECRET), "{text}");
+    tested_and_polled(origin, cookie, id).await;
+    let (code, _, _) = call(origin, cookie, "DELETE", &path, None).await;
+    assert_eq!(code, StatusCode::OK);
 }
 
 /// Delete answers what it removed. Then the test and status routes do not
@@ -196,10 +232,12 @@ async fn integration_setup_in_child() {
     let (runtime, origin, desktop) = start_rust_only(&data).await;
     let moonraker = json!({"kind": "moonraker", "name": "Voron",
         "base_url": printer.url(), "api_key": SECRET});
+    let any = "/api/v2/integrations/any";
     let anonymous = [
         ("GET", CREATED),
         ("POST", CREATED),
-        ("DELETE", "/api/v2/integrations/any"),
+        ("PATCH", any),
+        ("DELETE", any),
     ];
     for (method, path) in anonymous {
         let body = (method == "POST").then(|| moonraker.clone());
@@ -214,6 +252,7 @@ async fn integration_setup_in_child() {
     assert_eq!(code, StatusCode::UNAUTHORIZED);
     let cookie = signed_in(&origin, &desktop, 1).await;
     refuses_invalid_requests(&origin, &cookie, &moonraker).await;
+    moved_to_the_printer(&origin, &cookie, &moonraker).await;
 
     let (code, view, text) = call(&origin, &cookie, "POST", CREATED, Some(moonraker)).await;
     assert_eq!(code, StatusCode::OK, "{text}");

@@ -53,12 +53,23 @@ const PINNED = { pinned: true, sha256_prefix: "ab12cd34ef56", pinned_at: "2026-1
 
 type Answer = (path: string, init?: RequestInit) => Response | Promise<Response>;
 
-/** A fake core: /health and the list as given, the Bambu pin from `pin`; records every call. */
-function core({ list = (): Response => json(LIST), pin = (): Response => json(PINNED), reset = (): Response => json({ reset: true }) } = {}) {
+/**
+ * A fake core: /health and the list as given, the Bambu pin from `pin`, no printers unless
+ * `other` answers them; records every call.
+ */
+function core({
+  list = (): Response => json(LIST),
+  pin = (): Response => json(PINNED),
+  reset = (): Response => json({ reset: true }),
+  other = (_path: string, _init?: RequestInit): Response | undefined => undefined,
+} = {}) {
   let down = false;
   const answer: Answer = (path, init) => {
     if (down) return Promise.reject(new TypeError("Failed to fetch"));
+    const answered = other(path, init);
+    if (answered) return answered;
     if (path === "/health") return json(HEALTH);
+    if (path === "/api/v2/printers") return json({ printers: [] });
     if (path === "/api/v2/integrations") return list();
     if (path === "/api/v1/integrations/b1/tls-pin") return pin();
     if (path === "/api/v1/integrations/b1/tls-pin/reset" && init?.method === "POST") return reset();
@@ -106,6 +117,41 @@ describe("SET-02 integration settings never display secrets", () => {
   it("says when there are no integrations", async () => {
     renderSettings(core({ list: () => json({ integrations: [] }) }).fetchMock);
     expect(await within(await section()).findByText("No integrations yet.")).toBeTruthy();
+  });
+});
+
+describe("the list follows the Printers section", () => {
+  it("reads the integrations again after a printer and its connection are deleted", async () => {
+    let deleted = false;
+    const voron = {
+      id: "printer-1",
+      name: "Voron",
+      model: "Voron 2.4",
+      integration: { id: "m1", kind: "moonraker" },
+      state: { execution: "idle", bed_clear: "clear", display: "ready" },
+      reason: null,
+      last_heard_at: null,
+      progress_percent: null,
+      loaded_filaments: [],
+    };
+    const config = { id: "printer-1", name: "Voron", model: "Voron 2.4", bed_width_mm: 350, bed_depth_mm: 350, bed_height_mm: 340, margin_mm: 4, max_filament_slots: 1, integration_id: "m1" };
+    const fake = core({
+      list: () => json(deleted ? { integrations: LIST.integrations.slice(1) } : LIST),
+      other: (path, init) => {
+        if (path === "/api/v2/printers") return json({ printers: deleted ? [] : [voron] });
+        if (init?.method === "DELETE" && path === "/api/v2/printers/printer-1") return json(config);
+        if (init?.method === "DELETE" && path === "/api/v2/integrations/m1") return (deleted = true), json(LIST.integrations[0]);
+        return undefined;
+      },
+    });
+    renderSettings(fake.fetchMock);
+    const integrations = await section();
+    await within(integrations).findByText("Voron", { selector: "dt" });
+    const printers = screen.getByRole("region", { name: "Printers" });
+    fireEvent.click(await within(printers).findByRole("button", { name: "Delete Voron" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete printer" }));
+    await waitFor(() => expect(within(integrations).queryByText("Voron", { selector: "dt" })).toBeNull());
+    expect(within(integrations).getByText("MK4", { selector: "dt" })).toBeTruthy();
   });
 });
 

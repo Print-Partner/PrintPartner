@@ -33,12 +33,17 @@ const health = (modules: Health["modules"] = MODULES): Health => ({
 });
 
 /**
- * A fake core that answers every request with `answer`, and records the paths. The
- * Integrations section's own read answers an empty list; Integrations.test.tsx covers it.
+ * A fake core that answers every request with `answer`, and records the paths. The Printers
+ * and Integrations sections' own reads answer empty lists; Printers.test.tsx and
+ * Integrations.test.tsx cover those sections.
  */
+const EMPTY_SECTIONS: Record<string, unknown> = {
+  "/api/v2/printers": { printers: [] },
+  "/api/v2/integrations": { integrations: [] },
+};
 function core(answer: (path: string, init?: RequestInit) => Response | Promise<Response>) {
   return vi.fn((path: string, init?: RequestInit) =>
-    Promise.resolve().then(() => (path === "/api/v2/integrations" ? json({ integrations: [] }) : answer(path, init))),
+    Promise.resolve().then(() => (path in EMPTY_SECTIONS ? json(EMPTY_SECTIONS[path]) : answer(path, init))),
   );
 }
 
@@ -82,8 +87,10 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     ).toBeTruthy();
     expect(within(modules).getAllByRole("button")).toHaveLength(5);
     expect(screen.getByRole("button", { name: "Turn Bambu on" }).getAttribute("aria-disabled")).toBe("true");
-    // Only the core's /health and the Integrations section's list are read.
-    expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(new Set(["/health", "/api/v2/integrations"]));
+    // Only the core's /health and the Printers and Integrations sections' lists are read.
+    expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(
+      new Set(["/health", "/api/v2/printers", "/api/v2/integrations"]),
+    );
   });
 
   it("names the sections in a list of in-page links, keyboard reachable", async () => {
@@ -93,6 +100,7 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     const links = within(nav).getAllByRole("link");
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
       ["Modules", "#modules"],
+      ["Printers", "#printers"],
       ["Integrations", "#integrations"],
       ["Sharing and devices", "#sharing"],
       ["Backups", "#backups"],

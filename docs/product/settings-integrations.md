@@ -7,7 +7,9 @@ address when the core has one, the username when one is set, and whether an API
 key or password is saved. The list route answers only `has_api_key` and
 `has_password`, never the key or password, so the section cannot show a secret.
 Its tests feed a list that carries a secret anyway and check it never reaches
-the page. Adding and editing integrations are separate changes.
+the page. Adding and editing integrations are separate changes. Adding or
+deleting a printer in the Printers section also writes its connection, so it
+reads this list again.
 
 The Spoolman row says that Spoolman alone owns filament counts and that stock
 it cannot read shows as unknown, never as zero. Settings has no stock read; the

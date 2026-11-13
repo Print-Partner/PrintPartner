@@ -4,13 +4,15 @@ import { useId, type ReactNode } from "react";
 import { healthQuery } from "../core/modules";
 import { IntegrationsSection } from "./IntegrationsSection";
 import { ModuleList } from "./ModulesSection";
+import { PrintersSection } from "./PrintersSection";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 
-/** The Settings sections, in page order. Modules are editable and integrations listed; the other sections name their availability. */
+/** The Settings sections, in page order. Modules and Printers are editable and integrations listed; the other sections name their availability. */
 const SECTIONS = [
   { id: "modules", label: "Modules" },
+  { id: "printers", label: "Printers" },
   { id: "integrations", label: "Integrations" },
   { id: "sharing", label: "Sharing and devices" },
   { id: "backups", label: "Backups" },
@@ -35,7 +37,10 @@ function Sections({ modules }: { modules: Modules }) {
         <p>Module state comes from the core. Changing a Module keeps saved Builds and history.</p>
         <ModuleList modules={modules} />
       </Section>
-      {SECTIONS.slice(1).map((s) => (
+      <Section id="printers" label="Printers">
+        <PrintersSection />
+      </Section>
+      {SECTIONS.slice(2).map((s) => (
         <Section key={s.id} id={s.id} label={s.label}>
           {s.id === "integrations" ? <IntegrationsSection /> : s.id === "sharing" ? (
             <>
@@ -71,8 +76,8 @@ const hasData = (state: ScreenState<Modules>) =>
   ((state.kind === "error" || state.kind === "offline") && state.lastData !== undefined);
 
 /**
- * `/settings`: Modules, integrations, sharing and devices, and backups. Module state is read
- * from GET /health and written through setModule. Other sections land as their Rust
+ * `/settings`: Modules, printers, integrations, sharing and devices, and backups. Module state is
+ * read from GET /health and written through setModule. Printers are read and written by their section. Other sections land as their Rust
  * contracts arrive. Settings stays reachable when a Module is off.
  */
 export function SettingsScreen() {

@@ -1,4 +1,7 @@
-//! Whole-installation restore for the Rust runtime: staging.
+//! Whole-installation backup export and restore staging for the Rust runtime.
+//!
+//! Backup export ([`InstallationClient::backup_to_temporary`]) writes a full
+//! archive to a private temporary directory outside managed storage.
 //!
 //! Staging writes an uploaded app backup archive (Node's format 2, see
 //! [`crate::archive`]) under `<data>/.pp-restore/`, validates and extracts it
@@ -11,8 +14,9 @@
 //! work is still running, so the next owner's [`recover`] never removes an
 //! upload or stage in use.
 
-use crate::{WriterOwner, archive, ownership_marker, schema};
+use crate::{SettingsClient, WriterFailure, WriterOwner, archive, ownership_marker, schema};
 use anyhow::{Context, Result, anyhow, bail, ensure};
+pub use backup::BackupFile;
 use std::{
     fmt,
     fs::File,
@@ -21,6 +25,8 @@ use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
     time::Instant,
 };
+
+mod backup;
 
 const WORK_DIR: &str = ".pp-restore";
 const INCOMING_PREFIX: &str = "incoming-";
@@ -71,6 +77,14 @@ pub struct Staged {
     /// Why an earlier stage could not be removed, if one could not. The new
     /// stage is complete either way; the next open removes the leftover.
     pub cleanup_error: Option<String>,
+}
+
+/// Why a typed operation of this family did not complete. Staging predates
+/// it and still returns `anyhow` errors that carry a [`Refusal`].
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error(transparent)]
+    Writer(#[from] WriterFailure),
 }
 
 /// Restore work in flight for one [`WriterOwner`].
@@ -131,9 +145,11 @@ impl Activity {
     }
 }
 
-/// Restore staging for the data directory of one open [`WriterOwner`].
+/// Backup export and restore staging for the data directory of one open
+/// [`WriterOwner`].
 #[derive(Clone)]
 pub struct InstallationClient {
+    client: SettingsClient,
     data_dir: PathBuf,
     activity: Arc<Activity>,
 }
@@ -145,6 +161,7 @@ impl WriterOwner {
             .as_ref()
             .ok_or_else(|| anyhow!("Storage owner is closed"))?;
         Ok(InstallationClient {
+            client: self.client.clone(),
             data_dir: lease.data_dir().to_owned(),
             activity: self.restore.clone(),
         })

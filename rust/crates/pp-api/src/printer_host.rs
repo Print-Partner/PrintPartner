@@ -109,6 +109,29 @@ pub struct HostFile {
     pub identity: Value,
 }
 
+/// `GET /api/v1/integrations/{id}/tls-pin` body: the certificate pin a Bambu
+/// Test connection took. The two other members are sent only when a pin is
+/// stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct TlsPin {
+    pub pinned: bool,
+    /// The first 6 bytes of the pinned certificate's SHA-256, as hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256_prefix: Option<String>,
+    /// When the pin was taken, as UTC ISO-8601 text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
+}
+
+/// `POST /api/v1/integrations/{id}/tls-pin/reset` body: whether a pin was
+/// stored and is now gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct TlsPinReset {
+    pub reset: bool,
+}
+
 pub trait PrinterHostPort: Send + Sync + 'static {
     fn capabilities(&self, printer: String) -> Answer<Capabilities>;
     /// `path` is already a safe storage path, or empty for the root.
@@ -127,11 +150,10 @@ pub trait PrinterHostPort: Send + Sync + 'static {
     fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>>;
     /// `Ok` holds Node's `{ok, message}` test result.
     fn test(&self, integration: String) -> Answer<Value>;
-    /// `Ok` holds `{pinned, sha256_prefix, pinned_at}` for the integration.
-    fn tls_pin(&self, integration: String) -> Answer<Value>;
-    /// Deletes the integration's pin; `Ok` holds `{reset}`, whether one was
-    /// stored.
-    fn reset_tls_pin(&self, integration: String) -> Answer<Value>;
+    /// The integration's stored pin, if any.
+    fn tls_pin(&self, integration: String) -> Answer<TlsPin>;
+    /// Deletes the integration's pin; `Ok` says whether one was stored.
+    fn reset_tls_pin(&self, integration: String) -> Answer<TlsPinReset>;
 }
 
 /// Node's per-route `rateLimit` budgets, one window per route. Node keys them
@@ -619,11 +641,16 @@ async fn test(State(app): State<App>, Path(id): Path<String>) -> Response {
     integration_answer(app.port.test(id).await)
 }
 
-/// An integration's answer, or Node's 404 for an unknown integration.
-fn integration_answer(answer: HostAnswer<Value>) -> Response {
+/// An integration's answer, or a 404 for an unknown integration with the
+/// `integration_not_found` code the `/api/v2` integration routes use.
+fn integration_answer<T: Serialize>(answer: HostAnswer<T>) -> Response {
     match answer {
         HostAnswer::Ok(result) => axum::Json(result).into_response(),
-        HostAnswer::NotFound => failure(StatusCode::NOT_FOUND, "Integration not found"),
+        HostAnswer::NotFound => crate::problem::coded(
+            StatusCode::NOT_FOUND,
+            "Integration not found",
+            crate::integrations::code::INTEGRATION_NOT_FOUND,
+        ),
         other => refusal(other, || {
             failure(
                 StatusCode::NOT_IMPLEMENTED,

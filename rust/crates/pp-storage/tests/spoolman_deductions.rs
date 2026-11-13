@@ -24,15 +24,10 @@ mod js_json;
 
 const SPOOLMAN: &str = r#"[{"id":"sm-1","type":"spoolman","name":"Spoolman","config":{"base_url":"http://127.0.0.1:7912","enabled":true},"created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"}]"#;
 
+/// Replaces the `default` installation's setting `key`.
 fn put(fixture: &Fixture, key: &str, value: &str) {
-    fixture
-        .sql()
-        .execute(
-            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', ?1, ?2)
-             ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value",
-            [key, value],
-        )
-        .unwrap();
+    let sql = "REPLACE INTO app_settings (tenant_id, key, value) VALUES ('default', ?1, ?2)";
+    fixture.sql().execute(sql, [key, value]).unwrap();
 }
 
 /// The Module on, Spoolman `sm-1`, Part 1 pinned to spool 7, and 40 g over

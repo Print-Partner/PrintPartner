@@ -324,10 +324,11 @@ is still the Farm list, which adds the live state.
 - A new or relinked printer needs no restart: the Farm list reads the stored
   printers on each request.
 - Delete removes the printer only. Its integration stays.
-- A stored printer or integration row can hold keys its typed shape does not
-  name; only the [Node import](node-import.md#printers-and-integrations)
-  writes them. No route reads or returns such a key, an edit stores it back
-  unchanged, and a request cannot add one.
+- A stored printer or integration row, and an integration's `config`, can
+  hold keys the typed shape does not name. Only the [Node import](node-import.md#printers-and-integrations)
+  writes them. No route, MCP tool or log line reads or returns
+  such a key, an edit stores it back unchanged, and a request cannot add one.
+  A row without such keys reads and writes as before.
 - The three writes run through the write seam. The read runs through the read
   seam (`pp-storage/src/read.rs`) on the read-only pool, so it does not wait in
   the writer queue.

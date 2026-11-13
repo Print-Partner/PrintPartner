@@ -353,7 +353,7 @@ fn a_fleet_document_that_is_not_the_typed_shape_refuses_every_operation_untouche
     }
 }
 
-/// A row the import wrote with keys the shape does not name. Rust made
+/// A stored row with keys the shape does not name. Rust made
 /// neither key, reads neither, and shows neither; an edit stores both back.
 #[test]
 fn keys_the_shape_does_not_name_are_never_shown_and_an_edit_keeps_them_byte_for_byte() {

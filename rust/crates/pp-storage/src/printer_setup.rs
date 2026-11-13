@@ -9,9 +9,9 @@
 //! as it is.
 //!
 //! A stored row may hold keys its typed shape does not name. Only the Node
-//! import writes such a row. The keys ride along in [`Unread`]: no code reads
-//! them, no answer or log carries them, and an edit stores them back as they
-//! were.
+//! import writes such a row (`import/setup.rs`). The keys ride along in
+//! [`Unread`]: no code reads them, no answer or log carries them, and an edit
+//! stores them back as they were.
 //!
 //! Errors are [`PrinterSetupError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.

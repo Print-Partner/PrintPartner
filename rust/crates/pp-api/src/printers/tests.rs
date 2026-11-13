@@ -87,7 +87,7 @@ fn a_printer_answers_as_its_configuration() {
     let answer = json!({"id": "p-1", "name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
         "bed_depth_mm": 300, "bed_height_mm": null, "margin_mm": 4,
         "max_filament_slots": 2, "integration_id": "moon-1"});
-    // A row the import wrote also carries keys the shape does not name. The
+    // A stored row can also carry keys the shape does not name. The
     // answer is the same without a trace of them.
     let mut imported = serde_json::to_value(&stored).unwrap();
     imported["nozzle_mm"] = json!(0.4);

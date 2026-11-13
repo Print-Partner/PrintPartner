@@ -20,10 +20,13 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not edit them; change the Rust types or the metadata consumed by `export-rust-client` and regenerate.
 
 The exporter composes the base `CLIENT_ROUTES` and `document()` in
-`rust/crates/pp-api/src/client_contract.rs` with the first-run probe's
+`rust/crates/pp-api/src/client_contract.rs` with three module extensions: the
+send queue's `CLIENT_ROUTES` and `client_document()` in
+`rust/crates/pp-api/src/send_queue.rs`, the first-run probe's
 `CLIENT_ROUTE` and `client_document()` in
-`rust/crates/pp-api/src/printer_host/probe.rs`. The probe module adds its DTO
-schemas and Rust-serialized fixtures. `document()` and `document_bytes()` return
+`rust/crates/pp-api/src/printer_host/probe.rs`, and Library's `CLIENT_ROUTES`
+and `client_document()` in `rust/crates/pp-api/src/catalog/contract.rs`. Each
+module adds its DTO schemas and fixtures. `document()` and `document_bytes()` return
 the base contract only; use the export binary for the complete generator input.
 
 | File | Contents |
@@ -56,6 +59,8 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v2/plans/{id}/decisions` | | `PlanDecisionList` |
 | `GET /api/v2/printers` | | `FarmPrinterList` |
 | `POST /api/v2/printers/probe` | `PrinterProbeRequest` | `PrinterProbeResult` |
+| `POST /api/v1/sources` (`createSource`) | `CreateSourceRequest` | `SourceSummary` |
+| `GET /api/v1/jobs/{id}` (`readJob`, text `id`) | | `JobSnapshot` (`status` one of `pending`, `running`, `done`, `error`, `cancelled`; `result` untyped JSON or null) |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
@@ -64,6 +69,10 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /api/v2/printer-checkoff/unattributed/{id}/claim` | `ClaimUnattributedRequest` | `ClaimUnattributedReceipt` |
 | `POST /api/v2/printer-checkoff/unattributed/{id}/dismiss` | `DismissUnattributedRequest` | `DismissUnattributedReceipt` |
 | `GET /api/v2/printer-send-queue` | | `SendQueue` |
+| `POST /api/v2/printer-send-queue` (`multipart/form-data`) | | `QueuedSendReceipt` |
+| `POST /api/v2/printer-send-queue/{id}/dispatch` | | `SendNowReceipt` |
+| `POST /api/v2/printer-send-queue/{id}/reconcile` | `ReconcileSendRequest` | `QueuedSendReceipt` |
+| `DELETE /api/v2/printer-send-queue/{id}` | | `QueuedSendReceipt` |
 | `GET /api/v2/farm-log` (query `cursor`, `limit`) | | `FarmLogPage` |
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `POST /api/v2/integrations` | `CreateIntegrationRequest` | `IntegrationView` |
@@ -83,7 +92,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /auth/register` | `RegisterRequest` | `SignedIn` |
 | `POST /auth/logout` | | `SignedOut` |
 
-`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).
+`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md). `addQueuedSend` lists no request schema because its body is a form: post a `FormData` and parse the answer with the route's response schema. The send routes are documented in [Send queue storage](../../../docs/send-queue.md#routes-gre-365).
 
 The Checkoff burst types (`pp_storage::checkoff_progress::wire`) are the subset the replacement UI sends and reads. The routes parse a JSON value and accept more (imported-extra `additional_decisions`, JavaScript-style coercion), and a receipt carries more fields, such as each bed's stored link, which the generated schema strips. A `UnitDecision` with `result: "rejected"` needs `reason` (one of the ten `RejectReason` values) or the route answers 400; `reason` and `note` may be omitted on a confirmed unit. `checkoff_bursts_http` parses the served receipts into these types and records a rejection with its reason through the mounted route.
 
@@ -126,7 +135,7 @@ The emitter (`web/scripts/rust-contracts/client.mjs`, `rust-client-zod/1`) refus
 ## Add a route
 
 1. Make sure the request and response types derive `schemars::JsonSchema` under the `codegen` feature, and that the handler serializes that type rather than a `json!` literal.
-2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. The base uses `CLIENT_ROUTES` and `document()` in `rust/crates/pp-api/src/client_contract.rs`; the probe module supplies an extension composed by the binary. Include module metadata in `pp-core`'s mounted-route contract test as well.
+2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. The base uses `CLIENT_ROUTES` and `document()` in `rust/crates/pp-api/src/client_contract.rs`; the probe, send queue and catalog modules supply extensions composed by the binary. Include module metadata in `pp-core`'s mounted-route contract test as well.
 3. Run `generate`, then `check`.
 
 ## Add a descriptor table

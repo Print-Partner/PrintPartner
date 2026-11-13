@@ -439,6 +439,31 @@ applies to every file in this package. It fails:
 `test/boundary.test.ts` plants each of those imports and expects the rule to
 fail it. Do not add `paths` or Vite aliases that point outside this package.
 
+### Layers inside `src` (GRE-1537)
+
+The same rule keeps three layers apart inside `src`:
+
+- **Screens:** `auth`, `builds`, `farm`, `library`, `settings` and `today`. A
+  screen folder may not import another screen folder.
+- **Shared layers:** `core`, `frame`, `screen`, `status`, `theme`, `type` and
+  `fonts`. A shared layer may not import a screen. Any other new folder under
+  `src` counts as a screen until it is added to `SHARED_LAYERS` in the rule.
+- **Composition:** the files directly in `src`: `App.tsx`, `routes.tsx`,
+  `main.tsx`, `csp.ts`, `index.css`, `typography.css` and the test setup
+  (`testSetup.ts`, `testSockets.ts`). An import of a folder, such as
+  `../builds`, counts as that folder. Only composition may import it.
+  Test files (`*.test.*`, `*.test-utils.*`) may too, because a screen test
+  renders the composed app through `../App` and `../routes`; the two screen
+  rules still apply to them.
+
+A helper that two screens need goes in a shared layer, never in one of the
+screens. The 16 cross-layer imports that existed when the rule landed are
+recorded in `web/eslint-suppressions.json`, a count per file. When you remove
+one, run `npx eslint . --prune-suppressions` from `web/` and commit the lower
+count. A new one fails lint. `npm run lint` in this package runs ESLint from
+`web/` (`cd ../.. && eslint apps/ui`), because ESLint looks for the suppressions
+file, and matches its paths, from the directory it runs in.
+
 ## Choices
 
 - **Router:** React Router 7 (`react-router`), the library `apps/web` already

@@ -262,7 +262,7 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
     }
 }
 
-/// A row the import wrote with keys the shape does not name, on the row and
+/// A stored row with keys the shape does not name, on the row and
 /// in its config. No answer shows them and an edit stores them back.
 #[test]
 fn keys_the_shape_does_not_name_are_never_shown_and_an_edit_keeps_them_byte_for_byte() {

@@ -243,7 +243,7 @@ A killed process leaves its export folder, with a full copy of the database, beh
 
 ### Size: free disk space, not fixed limits
 
-The backups Rust writes and restores have no fixed limit on total size or on one entry. `archive::Limits` has two named cases and no default, so every caller says which it means. `Limits::free_disk()`, for these backups, keeps the 200:1 expansion ratio and bounds the entry count at 5,000,000, a guard against damaged metadata and not a product limit. `Limits::node()`, for the Node archives the import reads, keeps Node's limits: 100,000 entries, 20 GiB in total, 8 GiB for one entry.
+The backups Rust writes and restores have no fixed limit on total size or on one entry. `archive::Limits` has two named cases and no default, so every caller says which it means. `Limits::backup()`, for these backups, keeps the 200:1 expansion ratio and bounds the entry count at 5,000,000, a guard against damaged metadata and not a product limit. `Limits::node()`, for the Node archives the import reads, keeps Node's limits: 100,000 entries, 20 GiB in total, 8 GiB for one entry.
 
 Each operation checks the free space on the data volume first and keeps a reserve of 1 GiB free (`archive::RESERVE_BYTES`, until the reserve setting of GRE-1445 replaces it). Too little space is a typed refusal that carries the bytes needed, reserve included, and the bytes available: `RestoreError::NoSpace` from `export_backup`, `Refusal::NoSpace` from `begin_upload` and `stage`. Nothing is written or extracted.
 

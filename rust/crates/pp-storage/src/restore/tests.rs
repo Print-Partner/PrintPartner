@@ -713,7 +713,7 @@ fn ticket_t_8_restore_a_corrupt_gzip_trailer_refuses_and_keeps_the_earlier_stage
             .path()
             .join(format!("corrupt-{trailer_byte}.tar.gz"));
         std::fs::write(&corrupt, bytes).unwrap();
-        assert!(archive::validate(&corrupt, archive::Limits::free_disk()).is_err());
+        assert!(archive::validate(&corrupt, archive::Limits::backup()).is_err());
         let error = stage(&client, &corrupt).unwrap_err();
         assert!(
             matches!(refusal(&error), Some(Refusal::InvalidArchive(detail)) if detail.contains("gzip")),
@@ -789,7 +789,7 @@ fn ticket_t_8_restore_data_after_the_gzip_member_refuses_and_keeps_the_earlier_s
         let path = scratch.path().join(format!("{}.tar.gz", random_id()));
         std::fs::write(&path, bytes).unwrap();
         assert!(
-            archive::validate(&path, archive::Limits::free_disk()).is_err(),
+            archive::validate(&path, archive::Limits::backup()).is_err(),
             "{case}"
         );
         let error = stage(&client, &path).unwrap_err();

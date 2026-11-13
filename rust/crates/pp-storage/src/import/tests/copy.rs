@@ -167,6 +167,38 @@ fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
     }
 }
 
+/// `import` itself reads an archive with Node's limits. A tar header
+/// declares its entry's size, so one header with no payload shows the
+/// refusal: the reader stops at the header and writes nothing.
+#[test]
+fn import_refuses_an_archive_whose_headers_declare_over_20_gib() {
+    const NODE_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
+    let parent = tempfile::tempdir().unwrap();
+    let source = parent.path().join("over.tar.gz");
+    let mut header = tar::Header::new_gnu();
+    header.set_path(archive::DATABASE_FILE).unwrap();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_mode(0o600);
+    header.set_size(NODE_TOTAL + 1);
+    header.set_cksum();
+    let file = std::fs::File::create(&source).unwrap();
+    let mut gzip = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    std::io::Write::write_all(&mut gzip, header.as_bytes()).unwrap();
+    gzip.finish().unwrap();
+    assert!(std::fs::metadata(&source).unwrap().len() < 1024);
+
+    let destination = parent.path().join("rust");
+    let error = import(&source, &destination).unwrap_err();
+    let ImportError::InvalidArchive(detail) = &error else {
+        panic!("an archive over Node's limit was not refused as invalid: {error:?}");
+    };
+    assert!(
+        detail.contains(&format!("byte limit exceeded ({NODE_TOTAL})")),
+        "{detail}"
+    );
+    assert_eq!(entries(&destination), [] as [String; 0]);
+}
+
 /// The marker is written only after the staged files were flushed. A flush
 /// that fails ends the import with its own error and leaves a folder the
 /// next import accepts.

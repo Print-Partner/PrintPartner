@@ -228,7 +228,7 @@ impl Limits {
     /// For the backups Rust writes and restores. Free disk space bounds their
     /// size, so no byte limit applies. The entry count guards against damaged
     /// metadata; it is not a product limit.
-    pub fn free_disk() -> Self {
+    pub fn backup() -> Self {
         Self {
             max_entries: 5_000_000,
             max_total_bytes: u64::MAX,
@@ -251,7 +251,7 @@ impl Limits {
 
     /// Creation never accepts limits looser than the ones restore enforces.
     fn tightened(self) -> Self {
-        let defaults = Self::free_disk();
+        let defaults = Self::backup();
         Self {
             max_entries: self.max_entries.min(defaults.max_entries),
             max_total_bytes: self.max_total_bytes.min(defaults.max_total_bytes),
@@ -314,7 +314,7 @@ impl Request {
         Self {
             app_version: app_version.to_owned(),
             scope,
-            limits: Limits::free_disk(),
+            limits: Limits::backup(),
             reserve_bytes: RESERVE_BYTES,
         }
     }
@@ -701,16 +701,16 @@ impl Tally {
             "Backup archive entry limit exceeded ({})",
             limits.max_entries
         );
-        ensure!(
-            size <= limits.max_entry_bytes,
-            "Backup entry exceeds decompressed size limit"
-        );
         self.total = self.total.saturating_add(size);
         ensure!(
             self.total <= limits.max_total_bytes,
             TotalExceeded {
                 limit: limits.max_total_bytes
             }
+        );
+        ensure!(
+            size <= limits.max_entry_bytes,
+            "Backup entry exceeds decompressed size limit"
         );
         ensure!(
             self.total

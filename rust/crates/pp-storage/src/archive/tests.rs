@@ -167,9 +167,11 @@ fn ticket_t_8_archive_publish_reserves_then_renames() {
     assert!(!other.exists());
 }
 
-/// The import reads Node's archives with [`Limits::node`]. A test cannot
-/// build an archive over 20 GiB, so this pins the values and the check the
-/// reader runs on every entry header.
+/// The import reads Node's archives with [`Limits::node`]. Entries of at
+/// most 8 GiB each cannot reach 20 GiB in a test archive without their
+/// payloads, so this pins the values and the check the reader runs on every
+/// entry header. `import_refuses_an_archive_whose_headers_declare_over_20_gib`
+/// shows the refusal through the import itself.
 #[cfg(feature = "desktop_rebuild")]
 #[test]
 fn node_archive_limits_refuse_over_20_gib_in_total_and_8_gib_in_one_entry() {
@@ -195,6 +197,6 @@ fn node_archive_limits_refuse_over_20_gib_in_total_and_8_gib_in_one_entry() {
     // The same headers pass the rule for backups Rust writes and restores.
     let mut tally = Tally::default();
     for size in [8 * GIB + 1, 8 * GIB, 8 * GIB] {
-        tally.add(size, compressed, Limits::free_disk()).unwrap();
+        tally.add(size, compressed, Limits::backup()).unwrap();
     }
 }

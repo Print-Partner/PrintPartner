@@ -32,9 +32,14 @@ const health = (modules: Health["modules"] = MODULES): Health => ({
   modules,
 });
 
-/** A fake core that answers every request with `answer`, and records the paths. */
+/**
+ * A fake core that answers every request with `answer`, and records the paths. The
+ * Integrations section's own read answers an empty list; Integrations.test.tsx covers it.
+ */
 function core(answer: (path: string, init?: RequestInit) => Response | Promise<Response>) {
-  return vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => answer(path, init)));
+  return vi.fn((path: string, init?: RequestInit) =>
+    Promise.resolve().then(() => (path === "/api/v2/integrations" ? json({ integrations: [] }) : answer(path, init))),
+  );
 }
 
 function renderSettings(fetchImpl: ReturnType<typeof core>) {
@@ -77,8 +82,8 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     ).toBeTruthy();
     expect(within(modules).getAllByRole("button")).toHaveLength(5);
     expect(screen.getByRole("button", { name: "Turn Bambu on" }).getAttribute("aria-disabled")).toBe("true");
-    // Only the core's /health is read; nothing else is called.
-    expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(new Set(["/health"]));
+    // Only the core's /health and the Integrations section's list are read.
+    expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(new Set(["/health", "/api/v2/integrations"]));
   });
 
   it("names the sections in a list of in-page links, keyboard reachable", async () => {
@@ -95,10 +100,8 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     const sharing = screen.getByRole("region", { name: "Sharing and devices" });
     expect(within(sharing).getByText("This screen cannot show sharing status or paired devices yet.")).toBeTruthy();
     expect(within(sharing).queryByRole("button")).toBeNull();
-    for (const label of ["Integrations", "Backups"]) {
-      const region = screen.getByRole("region", { name: label });
-      expect(within(region).getByText("Not available yet.")).toBeTruthy();
-    }
+    const backups = screen.getByRole("region", { name: "Backups" });
+    expect(within(backups).getByText("Not available yet.")).toBeTruthy();
   });
 });
 

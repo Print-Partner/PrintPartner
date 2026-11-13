@@ -2,12 +2,13 @@ import type { Health } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
 import { healthQuery } from "../core/modules";
+import { IntegrationsSection } from "./IntegrationsSection";
 import { ModuleList } from "./ModulesSection";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 
-/** The Settings sections, in page order. Modules are editable; the other sections name their availability. */
+/** The Settings sections, in page order. Modules are editable and integrations listed; the other sections name their availability. */
 const SECTIONS = [
   { id: "modules", label: "Modules" },
   { id: "integrations", label: "Integrations" },
@@ -36,7 +37,7 @@ function Sections({ modules }: { modules: Modules }) {
       </Section>
       {SECTIONS.slice(1).map((s) => (
         <Section key={s.id} id={s.id} label={s.label}>
-          {s.id === "sharing" ? (
+          {s.id === "integrations" ? <IntegrationsSection /> : s.id === "sharing" ? (
             <>
               <p>This screen cannot show sharing status or paired devices yet.</p>
               <p>Share on network is off by default. Pairing, device revocation and HTTPS trust

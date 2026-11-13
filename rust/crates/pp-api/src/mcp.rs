@@ -426,6 +426,7 @@ impl ProductMcp {
                 CheckoffDomain::new(
                     reads.progress.clone(),
                     reads.builds.clone(),
+                    reads.drafts.clone(),
                     reads.farm.clone(),
                     reads.wait,
                 ),
@@ -627,6 +628,8 @@ impl ServerHandler for ProductMcp {
 mod checkoff;
 #[path = "mcp/create_build.rs"]
 mod create_build;
+#[path = "mcp/draft_parts.rs"]
+mod draft_parts;
 #[path = "mcp/farm_status.rs"]
 mod farm_status;
 #[path = "mcp/plan_accept.rs"]

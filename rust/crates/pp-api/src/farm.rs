@@ -26,6 +26,24 @@ use std::sync::Arc;
 /// implements it over the gateway's observation port.
 pub trait FarmObservations: Send + Sync + 'static {
     fn observe(&self, integration: &PrinterIntegration) -> Observation;
+
+    /// When this process saw the integration's host change into its current
+    /// state. `None` when it did not see the change: the host first answered
+    /// in that state (after a restart, say), or an outage hid it. MCP
+    /// `get_farm_status` reads it as `idle_since`.
+    fn seen_entering(&self, _integration: &PrinterIntegration) -> Option<std::time::SystemTime> {
+        None
+    }
+}
+
+/// No printer is watched: every integration reads as `NotWatched`. For
+/// compositions without status watchers, and for tests.
+pub struct Unwatched;
+
+impl FarmObservations for Unwatched {
+    fn observe(&self, _: &PrinterIntegration) -> Observation {
+        Observation::NotWatched
+    }
 }
 
 #[derive(Clone)]

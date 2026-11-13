@@ -3560,6 +3560,7 @@ dependencies = [
  "pp-net",
  "pp-os",
  "pp-perf",
+ "pp-services",
  "pp-source",
  "pp-storage",
  "pp-testkit",
@@ -3705,6 +3706,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

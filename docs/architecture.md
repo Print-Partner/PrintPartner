@@ -244,7 +244,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |
 | Workflow, readiness, Today tasks, History | `pp-storage::read_model` owns consistent projections; task feed extends the GRE-415 workflow projection, not a second ranking engine (served by `read_model::build_workflow`, [Build workflow](build-workflow.md)); History includes legacy assistant decisions |
-| Exports and production setup | Pure encoding/packing modules in `pp-domain` or existing `pp-services`, storage owns revision-bound artifact/job metadata, core runs workers and publishes staged files |
+| Exports and production setup | Exports are on-request downloads: one authenticated GET reads the accepted Plan once on the reader pool and answers the file, with no job, stored file or table (owner decision 2026-11-12, GRE-423). `pp-services::exports` renders as pure functions; `pp-api::exports` owns the routes, status codes and problems. Today `GET /api/v2/plans/{id}/exports/checklist` serves the HTML checklist ([HTTP API](api.md#plates-and-exports)); the STL pack follows |
 | Printers, queue, discovery, Bambu | Storage owns admitted queue/effect records; `pp-drivers` owns protocols through `pp-net`; core owns watchers; Bambu remains status-only. Farm reads join stored printers, results and queue (`pp-storage::read_model::farm`) with the watchers' observation port, read-only ([Farm reads](farm-reads.md)); `GET /ws/printers` streams the same projection from the watchers' ordered transitions ([Printer stream](printer-stream.md)); Moonraker connection test, capabilities, file browse and camera list are on-demand driver reads through the gateway ([Printer-host reads](printer-host-reads.md)); first-run `POST /api/v2/printers/probe` checks a typed Moonraker or PrusaLink address without saving, through the same guarded drivers (GRE-1127; LAN discovery remains GRE-1370) |
 | Stock and Spoolman shortfalls | `pp-drivers` provides Spoolman reads/effects; storage projects readiness/tasks and owns deduction intent/reconciliation. Spoolman alone owns stock counts. Today `pp-storage::read_model::stock` computes shortfalls (the workflow input for Today, Build Overview and the task feed) and `pp-core::spoolman` reads inventory through `pp_net` checked connections, injected into `pp-api` because `pp-core` may not depend on `pp-drivers` |
 | Native slicers and profiles | `pp-services` owns discovery/profile/handoff operations; storage binds artifacts to accepted revisions; shell/core invokes native adapters |
@@ -305,14 +305,10 @@ may have happened. An unknown printer send becomes reconciliation work, never a
 second send. An outbox is suitable for at-least-once notifications, not automatic
 printer resend. Spoolman deductions need their own duplicate/reconciliation rules.
 
-A printer send starts only from a signed-in request to the send queue routes
-(`pp_api::send_queue`): Add to queue stages the file and sends nothing, and
-Send now or Send ready is each one explicit user action. Reconcile only
-records the user's answer about an unknown send and never sends. No MCP tool
-and no watcher calls `SendQueueClient`, and there is no separate send
-capability type (GRE-1103 design call 4). Adding an MCP send tool needs an
-owner decision. Upload-only and upload-and-start are separate confirmed
-effects; upload-only is the default.
+Require a send capability constructible only from an authenticated, explicitly
+confirmed user action. A freely constructible `Actor::User` enum alone is not
+authorization. MCP/background watchers cannot mint the capability. Upload-only
+and upload-and-start are separate confirmed effects; upload-only is the default.
 Shutdown stops admission, signals cancellation, settles permitted writes and
 joins workers before releasing the directory lock.
 

@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 
 #[path = "tests/create_build.rs"]
 mod create_build;
+#[path = "tests/draft_parts.rs"]
+mod draft_parts;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]
@@ -14,6 +16,8 @@ mod planning_reads;
 mod progress_reads;
 #[path = "tests/reads.rs"]
 mod reads;
+#[path = "tests/source_roles.rs"]
+mod source_roles;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";

@@ -1,4 +1,44 @@
 pub mod auth;
+
+/// Validated external HTTP authority supplied by the headless composition layer.
+/// This extension never substitutes for a session or API key.
+#[derive(Clone, Debug)]
+pub struct NetworkAdmission {
+    pub origin: String,
+    pub host: String,
+}
+
+impl NetworkAdmission {
+    pub(crate) fn authority<'a, B>(
+        request: &'a axum::http::Request<B>,
+        origin: &'a str,
+        host: &'a str,
+    ) -> (&'a str, &'a str) {
+        match request.extensions().get::<Self>() {
+            Some(admission) => (&admission.origin, &admission.host),
+            None => (origin, host),
+        }
+    }
+
+    /// Keep the socket identity for rate limits, including in explicit listener mode.
+    pub(crate) fn peer<B>(
+        request: &axum::http::Request<B>,
+    ) -> Result<std::net::SocketAddr, (axum::http::StatusCode, &'static str)> {
+        use axum::{extract::ConnectInfo, http::StatusCode};
+        let ConnectInfo(peer) = request
+            .extensions()
+            .get::<ConnectInfo<std::net::SocketAddr>>()
+            .ok_or((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Transport identity unavailable",
+            ))?;
+        if !peer.ip().is_loopback() && request.extensions().get::<Self>().is_none() {
+            return Err((StatusCode::FORBIDDEN, "Loopback transport required"));
+        }
+        Ok(*peer)
+    }
+}
+
 #[cfg(feature = "desktop_rebuild")]
 pub mod diagnostics;
 #[cfg(feature = "desktop_rebuild")]
@@ -29,6 +69,8 @@ pub mod client_contract;
 pub mod drafts;
 #[cfg(feature = "desktop_rebuild")]
 pub mod events;
+#[cfg(feature = "desktop_rebuild")]
+pub mod exports;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm;
 #[cfg(feature = "desktop_rebuild")]
@@ -69,6 +111,8 @@ pub mod send_queue;
 pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings_support;
+#[cfg(feature = "desktop_rebuild")]
+pub mod sources_github;
 #[cfg(feature = "desktop_rebuild")]
 mod update_check;
 #[cfg(feature = "desktop_rebuild")]

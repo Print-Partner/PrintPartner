@@ -40,6 +40,7 @@ web/test-results/
 
 # Local design / scratch (never commit)
 Do Not Push/
+web/packages/rust-client/.client-typecheck-*/
 
 # Git worktrees (local isolation)
 .worktrees/

@@ -35,6 +35,30 @@ fn unknown_argument_is_rejected_before_startup() {
     rejected(&["--unknown", "value"], "Unknown argument");
 }
 
+#[test]
+fn malformed_listener_is_rejected_before_opening_paths() {
+    let binary = binary();
+    for address in [
+        "",
+        "localhost:8080",
+        "0.0.0.0",
+        "0.0.0.0:99999",
+        "[::ffff:0.0.0.0]:8080",
+        "[::ffff:224.0.0.1]:8080",
+        "224.0.0.1:8080",
+        "[ff02::1]:8080",
+    ] {
+        let output = child_process::command(&binary)
+            .env("PP_LISTEN_ADDR", address)
+            .args(["--web", "/path-that-must-not-be-opened"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid PP_LISTEN_ADDR"));
+    }
+}
+
 #[cfg(not(feature = "desktop_rebuild"))]
 #[test]
 fn import_needs_a_rebuild_build() {
@@ -48,8 +72,8 @@ fn import_arguments_are_checked_before_the_source_is_read() {
     rejected(&["import", "--dry-run"], "--from is required");
     rejected(&["import", "--from"], "--from needs a value");
     rejected(
-        &["import", "--from", "s", "--data", "d"],
-        "Only --dry-run is available",
+        &["import", "--from", "s"],
+        "--data is required without --dry-run",
     );
     rejected(
         &["import", "--from", "s", "--dry-run", "--force"],
@@ -93,6 +117,25 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
         "a dry run creates no destination"
     );
 
+    // Without --dry-run the same folder imports into a new one.
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let output = child_process::command(binary())
+        .env("PP_DESKTOP_REBUILD", "1")
+        .args(["import", "--from"])
+        .arg(node.path())
+        .arg("--data")
+        .arg(&destination)
+        .output()
+        .expect("run pp-server import");
+    let summary = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success() && summary.contains("complete: false."),
+        "{summary}"
+    );
+    assert!(destination.join(".pp-rust-owned.json").is_file());
+    assert!(destination.join("import-report.json").is_file());
+
     let (code, report, error) = import_dry_run("0", node.path());
     assert_eq!((code, report.as_str()), (Some(1), ""));
     assert!(error.contains("needs PP_DESKTOP_REBUILD=1"), "{error}");
@@ -106,5 +149,8 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
     );
     let (code, _, error) = import_dry_run("1", &rust.path().join("missing"));
     assert_eq!(code, Some(1));
-    assert!(error.starts_with("import failed: Read "), "{error}");
+    assert!(
+        error.starts_with("import failed: ") && error.contains("missing: "),
+        "{error}"
+    );
 }

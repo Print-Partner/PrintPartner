@@ -13,6 +13,7 @@ desktop_rebuild = ["pp-core/desktop_rebuild"]
 anyhow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 pp-core = { path = "../pp-core" }
 
 [target.'cfg(unix)'.dependencies]

@@ -31,6 +31,17 @@ const GATE = `
   while (![...document.querySelectorAll("button")].some((b) => b.textContent === "Review and accept")) await sleep(50);
   [...document.querySelectorAll("button")].find((b) => b.textContent === "Review and accept").click();
   while (!document.querySelector(".pp-gate-snapshot")) await sleep(50);`;
+// Opens the Settings edit form for the first printer, changes its address so the form asks
+// for the stored key again, and waits for that sentence.
+const EDIT_PRINTER = `
+  const named = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  while (!named("Edit Voron 2.4") || named("Edit Voron 2.4").getAttribute("aria-disabled")) await sleep(50);
+  named("Edit Voron 2.4").click();
+  while (!document.querySelector('.pp-dialog input[name="address"]')) await sleep(50);
+  const address = document.querySelector('.pp-dialog input[name="address"]');
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(address, "http://moved.fixture.invalid");
+  address.dispatchEvent(new Event("input", { bubbles: true }));
+  while (!document.querySelector(".pp-dialog fieldset [role=status]")) await sleep(50);`;
 const STATES = ["loading", "empty", "error", "module-off", "offline", "ready"];
 // [name, path, setup]. "?core=down" makes /health fail for that page, so the frame is offline.
 const PAGES = [
@@ -47,6 +58,7 @@ const PAGES = [
   ["build-plan", "/builds/3/plan", ""],
   ["build-plan-gate", "/builds/3/plan", GATE],
   ["printer-states", "/states/printers", ""],
+  ["settings-printer-edit", "/settings", EDIT_PRINTER],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],
   ["shortcuts", "/today", key({ key: "?" })],
   ["sign-in", "/login", ""],
@@ -140,7 +152,7 @@ const problems = outcome.results.flatMap(({ result }, i) => [
   ...result.violations.map((v) => `${list[i].label}: ${v}`),
   ...(result.overflow > 0 ? [`${list[i].label}: scrolls sideways by ${result.overflow}px`] : []),
   // The dialog jobs must measure an open dialog, or the overflow check proves nothing.
-  ...(/^(palette|shortcuts)/.test(list[i].label) && result.dialogs !== 1
+  ...(/^(palette|shortcuts|settings-printer-edit)/.test(list[i].label) && result.dialogs !== 1
     ? [`${list[i].label}: expected one open dialog, found ${result.dialogs}`]
     : []),
 ]);

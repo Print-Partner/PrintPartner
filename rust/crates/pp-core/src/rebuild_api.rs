@@ -10,6 +10,7 @@ use pp_api::{
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
+    exports::exports_router,
     file_assignments::file_assignments_router,
     history::history_router,
     integrations::integrations_router,
@@ -20,6 +21,7 @@ use pp_api::{
     plates::plates_router,
     printers::printers_router,
     settings::settings_router,
+    sources_github::github_router,
     workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
@@ -189,17 +191,21 @@ fn checkoff_routes(
     Ok(checkoff_router(config, client).merge(files))
 }
 
+/// Accepted Plan reads and the exports built from them, on one `ReadClient`.
 fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
+    let exports = exports_router(config.clone(), client.clone());
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     Ok(accepted_router(
         config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         client,
-    ))
+    )
+    .merge(exports))
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
+/// Plan Checkoff and Spoolman shortfalls, the HTML checklist export, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
+/// GitHub branch and tag listings,
 /// the domain event stream and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
@@ -222,8 +228,38 @@ pub fn read_router(
         origin,
         api_key_tenant,
         community_manifests,
-        false,
+        ServerOptions::default(),
     )
+}
+
+/// What only the headless server turns on in the product routes.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ServerOptions {
+    /// Settings may check for server updates.
+    pub update_checks: bool,
+    /// The routes serve an explicit `PP_LISTEN_ADDR` listener, so MCP takes its
+    /// Host and Origin from the listener's validated authority.
+    pub explicit_listener: bool,
+}
+
+/// MCP's config for the rebuild listener `origin`, or the explicit listener.
+fn mcp_config(origin: &str, api_key_tenant: &str, server: ServerOptions) -> Result<McpHttpConfig> {
+    Ok(
+        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+            .explicit_listener(server.explicit_listener),
+    )
+}
+
+/// The settings routes and the GitHub branch and tag listings, which read
+/// the stored GitHub token through the same settings client.
+fn settings_routes(
+    config: AdminHttpConfig,
+    reads: ReadClient,
+    settings: pp_storage::app_settings::AppSettingsClient,
+) -> Result<Router> {
+    let github = crate::github::GithubTransport::new()?;
+    let listings = github_router(config.clone(), reads.clone(), settings.clone(), github);
+    Ok(settings_router(config, reads, settings).merge(listings))
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
@@ -252,7 +288,7 @@ fn read_router_with_updates(
     origin: &str,
     api_key_tenant: &str,
     community_manifests: Option<&Path>,
-    server_updates: bool,
+    server: ServerOptions,
 ) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
@@ -317,8 +353,8 @@ fn read_router_with_updates(
     let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
-    let admin_config = admin_config.with_server_update_checks(server_updates);
-    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
+    let admin_config = admin_config.with_server_update_checks(server.update_checks);
+    let settings_routes = settings_routes(admin_config, accepted_client.clone(), app_settings)?;
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
@@ -327,7 +363,7 @@ fn read_router_with_updates(
     let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings)?;
     let plates = plates_router(config.clone(), plates_client);
     let mcp = mcp_router(
-        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        mcp_config(origin, api_key_tenant, server)?,
         auth_client.clone(),
         McpClients {
             builds: builds_client,
@@ -437,7 +473,13 @@ pub fn product_router(
     origin: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
-    product_router_with_updates(rebuild, owner, origin, community_manifests, false)
+    product_router_with_updates(
+        rebuild,
+        owner,
+        origin,
+        community_manifests,
+        ServerOptions::default(),
+    )
 }
 
 pub(crate) fn product_router_with_updates(
@@ -445,7 +487,7 @@ pub(crate) fn product_router_with_updates(
     owner: Arc<Mutex<WriterOwner>>,
     origin: &str,
     community_manifests: Option<&Path>,
-    server_updates: bool,
+    server: ServerOptions,
 ) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
@@ -489,7 +531,7 @@ pub(crate) fn product_router_with_updates(
         origin,
         DESKTOP_TENANT,
         community_manifests,
-        server_updates,
+        server,
     )?;
     Ok(reads
         .zip(drafts)
@@ -789,7 +831,9 @@ mod tests {
             }
             "CreatePrinterRequest" => json!({"name": "Client contract", "model": "fixture",
                 "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220}),
-            "UpdatePrinterRequest" => json!({"name": "Client contract"}),
+            "UpdateIntegrationRequest" | "UpdatePrinterRequest" => {
+                json!({"name": "Client contract"})
+            }
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,
@@ -885,28 +929,36 @@ mod tests {
         fn discard(&self, _: &Value) {}
     }
 
-    /// The farm reads and the send queue writes, as the Rust-only runtime
-    /// mounts them, over checks that never observe or send.
-    fn farm_routes(
-        owner: &std::sync::Mutex<pp_storage::WriterOwner>,
-        origin: &str,
-        policy: pp_storage::auth::AuthPolicy,
-    ) -> axum::Router {
-        let config = || {
-            pp_api::accepted::AcceptedHttpConfig::from_startup(origin, "default", Some("1"))
-                .unwrap()
-        };
-        let owner = owner.lock().unwrap();
-        pp_api::farm::farm_router(
-            config(),
+    /// The farm read, the printer-host routes and the send queue writes, which
+    /// the runtime mounts beside the status watchers; the TLS pin routes are
+    /// among them. The send checks never observe or send.
+    fn farm_and_host_routes(owner: &WriterOwner, origin: &str) -> Router {
+        let (settings, policy) = (owner.client(), desktop_policy());
+        let accepted = AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+        let farm = pp_api::farm::farm_router(
+            accepted,
             owner.farm_reads(policy).unwrap(),
             Arc::new(NoObservations),
-        )
-        .merge(pp_api::send_queue::send_queue_router(
-            config(),
+        );
+        let reads = owner.accepted_reads_with_policy(policy).unwrap();
+        let config = AdminHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+        let hosts = crate::printer_host::StoredPrinterHosts::new(
+            settings.clone(),
+            HostReads::new().unwrap(),
+        );
+        let snapshots = settings.print_file_snapshots();
+        let sends = pp_api::send_queue::send_queue_router(
+            AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap(),
             owner.send_queue(policy).unwrap(),
             Arc::new(NoTargets),
-        ))
+        );
+        farm.merge(sends)
+            .merge(pp_api::printer_host::printer_host_router(
+                config,
+                reads,
+                Arc::new(hosts),
+                snapshots,
+            ))
     }
 
     /// Whether an anonymous request got the answer the route's stated auth predicts.
@@ -983,7 +1035,7 @@ mod tests {
             "default",
             None,
         );
-        let farm = farm_routes(&owner, &origin, policy);
+        let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
         let mut server = serve(
             listener,
             reads

@@ -156,6 +156,10 @@ const plans: Handler = (path) => {
   if (path === "/api/v2/tasks") return json(TASKS);
   const flow = /^\/api\/v2\/plans\/(\d+)\/workflow$/.exec(path);
   if (flow) return json(workflow(Number(flow[1])));
+  // The Filament section's cases are in Filament.test.tsx.
+  if (path.endsWith("/filament-shortfalls")) {
+    return json({ kind: "module_off", module: "spoolman", reason: "default_off" });
+  }
   const match = /^\/api\/v2\/plans\/(\d+)(\/layers)?$/.exec(path);
   const build = BUILDS.find((b) => b.id === Number(match?.[1]));
   if (!build)

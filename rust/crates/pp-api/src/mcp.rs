@@ -652,6 +652,8 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
+#[path = "mcp/rebuild_plan.rs"]
+mod rebuild_plan;
 #[path = "mcp/source_roles.rs"]
 mod source_roles;
 #[path = "mcp/write_result.rs"]

@@ -7,12 +7,15 @@ address when the core has one, the username when one is set, and whether an API
 key or password is saved. The list route answers only `has_api_key` and
 `has_password`, never the key or password, so the section cannot show a secret.
 Its tests feed a list that carries a secret anyway and check it never reaches
-the page. The address is shown without any user name, password, query or
-fragment, with "Sign-in details stored in this address are hidden." when it
-had any; text that is not a URL shows "The stored address can't be shown."
-The core already leaves those parts out of the list (GRE-1342), and an address
-with sign-in details is never connected to; the screen does it again as a
-second line of defence. Adding and editing integrations are separate changes. Adding or
+the page. The Rust core already leaves any user name, password, query or
+fragment out of the list's `base_url`, and answers `null` for stored text that
+is not a URL (GRE-1342); an address with sign-in details is never connected
+to. So from a Rust-only core a row shows the address as stored, or no address
+at all when the stored text is not a URL, the same as a kind with no address.
+As a second line of defence the screen strips those parts again before
+showing any address it is given. Its notes, "Sign-in details stored in this
+address are hidden." and "The stored address can't be shown.", appear only if
+a core ever answers such text, which the Rust core does not. Adding and editing integrations are separate changes. Adding or
 deleting a printer in the Printers section also writes its connection, so it
 reads this list again.
 

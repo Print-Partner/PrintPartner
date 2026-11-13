@@ -50,11 +50,13 @@ connection, its address and credentials. The connection is read from
 `GET /api/v2/integrations` when the form opens. A key or password is write-only:
 the form says whether one is set and never shows it. Leaving the field empty
 keeps the stored one; "Remove the stored API key" (or password) clears it.
-The address field starts from the stored address without any user name,
-password, query or fragment, with "Sign-in details stored in this address are
-hidden." when there were any (`shownAddress` in `settings/connections.ts`). An
-address that is not a URL starts empty, and the form says it can't be shown.
-Saving the address unchanged sends no address, so the stored one stays.
+The address field starts from the stored address the list answers. The Rust
+core already leaves out any user name, password, query or fragment, and answers
+`null` for text that is not a URL, so the field starts empty then. The form
+strips those parts again (`shownAddress` in `settings/connections.ts`) and its
+notes about hidden sign-in details or an address that can't be shown appear
+only if a core ever answers such text. Saving the address unchanged sends no
+address, so the stored one stays.
 
 Saving sends only what changed: `updateIntegration` first, then `updatePrinter`
 for the name. A refused connection change therefore leaves the name as it was.

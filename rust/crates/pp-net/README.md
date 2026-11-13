@@ -1,6 +1,6 @@
 # pp-net
 
-Checked outbound HTTP to printers, and canonical parsing of inbound request paths. It has no `pp-*` dependencies.
+Checked outbound HTTP to printers, and canonical parsing of inbound request paths and literal-IP HTTP authorities. It has no `pp-*` dependencies.
 
 Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
 
@@ -15,7 +15,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 - Printer protocols, auth schemes and upload bodies: `pp-drivers`.
 - Deciding to send anything to a printer: an explicit user action, admitted outside `pp-net`.
-- Listeners and inbound admission: `pp-gateway`.
+- Listeners, sessions and inbound admission decisions: `pp-gateway`.
 - Other HTTP clients. `pp-core` runs its own `reqwest` fetches and reuses `permitted` and `Resolver` for their address checks. GitHub reads go through `pp-services::sync::GithubPort`, which has no workspace implementation yet.
 
 ## Interface
@@ -25,6 +25,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `outbound` | `HttpGuard::new(resolver, deadline, max_body)`; `get(url, api_key)`, `request(method, url, headers, body, deadline)` for one GET or PUT, `post(url, api_key, body, deadline)` for one POST. `HttpReply`, `PostBody`, `PostError` (`Unsent`, `Unknown`, `SourceFailed`). |
 | `outbound` | `stream(url, headers, deadline, body)`: one GET whose body is read as it arrives under a `BodyDeadline` (`Total` or `Idle`) (`StreamReply`, `ReplyBody::chunk`, `ReplyBody::prefix`, `IdleTimeout`). `with_body_limit(max_body)` up to `MAX_LISTING_BODY` (8 MiB); `MAX_BODY` (2 MiB). |
 | `outbound` | `permitted(ip)`: the address policy. `Resolver` trait and `SystemResolver`. `MAX_POST_DEADLINE` (120 s). |
+| `inbound` | `origin(request)` validates a literal-IP Host, matching browser Origin, and the absence of forwarded authority or cross-site requests. `authority(request)` applies the same checks except that an unsafe request may omit Origin; the gateway uses it only for MCP, whose key guard decides. Both return the validated origin and Host without changing the peer identity or authenticating the caller. |
 | `target` | `CanonicalTarget::parse(uri)` and `decode_segment(segment)`. They refuse encoded `/`, `\` or `%`, control characters, `.` and `..` segments, and `//`. |
 
 `HttpGuard::new` accepts a deadline up to 30 s and `max_body` up to 2 MiB; `with_body_limit` allows 8 MiB. URLs must be `http://` with no credentials. Users: `pp-drivers`, `pp-gateway`, and `pp-core` with `desktop_rebuild`. No binaries.

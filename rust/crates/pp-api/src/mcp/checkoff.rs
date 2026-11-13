@@ -32,6 +32,7 @@ pub(super) struct CheckoffDomain {
     progress: ProgressClient,
     pub(super) wait: Duration,
     pub(super) builds: pp_storage::build_graph::BuildGraphClient,
+    pub(super) farm: super::McpFarm,
     /// The API key of the tool call in progress. `ProductMcp` sets it around
     /// each call and runs one call per session at a time.
     caller: Mutex<Option<PresentedCredential>>,
@@ -41,11 +42,13 @@ impl CheckoffDomain {
     pub(super) fn new(
         progress: ProgressClient,
         builds: pp_storage::build_graph::BuildGraphClient,
+        farm: super::McpFarm,
         wait: Duration,
     ) -> Self {
         Self {
             progress,
             builds,
+            farm,
             wait,
             caller: Mutex::new(None),
         }
@@ -133,7 +136,7 @@ impl CheckoffDomain {
 
 impl DomainPort for CheckoffDomain {
     fn farm_access(&self) -> FarmAccess {
-        FarmAccess::Allowed
+        self.farm_module()
     }
 
     fn invoke_tool(&self, name: &str, args: &Map<String, Value>) -> Result<ToolInvocation, String> {
@@ -145,6 +148,9 @@ impl DomainPort for CheckoffDomain {
         }
         if name == super::create_build::PROPOSE {
             return self.create_build_propose(args);
+        }
+        if name == super::farm_status::TOOL {
+            return Ok(self.farm_status());
         }
         Err(format!("{name} has no Rust port yet"))
     }

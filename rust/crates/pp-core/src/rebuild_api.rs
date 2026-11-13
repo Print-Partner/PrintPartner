@@ -14,7 +14,7 @@ use pp_api::{
     history::history_router,
     integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpClients, McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router},
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
@@ -222,8 +222,65 @@ pub fn read_router(
         origin,
         api_key_tenant,
         community_manifests,
-        false,
+        RuntimeInputs::detached(),
     )
+}
+
+/// What only the headless server turns on in the product routes.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ServerOptions {
+    /// Settings may check for server updates.
+    pub update_checks: bool,
+    /// The routes serve an explicit `PP_LISTEN_ADDR` listener, so MCP takes its
+    /// Host and Origin from the listener's validated authority.
+    pub explicit_listener: bool,
+}
+
+/// MCP's config for the rebuild listener `origin`, or the explicit listener.
+fn mcp_config(origin: &str, api_key_tenant: &str, server: ServerOptions) -> Result<McpHttpConfig> {
+    Ok(
+        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+            .explicit_listener(server.explicit_listener),
+    )
+}
+
+/// What only a running runtime gives the product routes: the server
+/// options, and the printer watchers' observations for MCP's
+/// `get_farm_status`, bound once the gateway starts its watchers.
+pub(crate) struct RuntimeInputs {
+    pub(crate) server: ServerOptions,
+    pub(crate) farm: Arc<dyn pp_api::farm::FarmObservations>,
+}
+
+impl RuntimeInputs {
+    /// Default server options and no watchers: what tests and compositions
+    /// without a gateway use.
+    pub(crate) fn detached() -> Self {
+        Self {
+            server: ServerOptions::default(),
+            farm: Arc::new(crate::printer_status::LateFarm::default()),
+        }
+    }
+}
+
+/// The admin routes: admin files, the printer probe, filaments and
+/// `/settings`, whose update checks run only when `server_updates`.
+fn admin_routes(
+    config: AdminHttpConfig,
+    reads: &pp_storage::read_model::ReadClient,
+    files: pp_storage::admin::AdminFiles,
+    (filament_client, app_settings): (
+        pp_storage::filaments::FilamentClient,
+        pp_storage::app_settings::AppSettingsClient,
+    ),
+    server_updates: bool,
+) -> Result<Router> {
+    let admin = admin_router(config.clone(), reads.clone(), files);
+    let probe = crate::printer_host::probe::router(config.clone(), reads.clone())?;
+    let filaments = filaments(config.clone(), reads, filament_client)?;
+    let config = config.with_server_update_checks(server_updates);
+    let settings = settings_router(config, reads.clone(), app_settings);
+    Ok(admin.merge(probe).merge(filaments).merge(settings))
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
@@ -252,7 +309,7 @@ fn read_router_with_updates(
     origin: &str,
     api_key_tenant: &str,
     community_manifests: Option<&Path>,
-    server_updates: bool,
+    runtime: RuntimeInputs,
 ) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
@@ -272,6 +329,7 @@ fn read_router_with_updates(
         events_client,
         (checkoff_client, settings),
         plates_client,
+        farm_client,
     ) = {
         let guard = owner
             .lock()
@@ -294,6 +352,7 @@ fn read_router_with_updates(
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
+            guard.farm_reads(policy)?,
         )
     };
     let endpoint = (origin, api_key_tenant);
@@ -308,26 +367,21 @@ fn read_router_with_updates(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
         Arc::clone(&owner),
     );
-    let admin_config = AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
-    let admin = admin_router(
-        admin_config.clone(),
-        accepted_client.clone(),
+    let admin = admin_routes(
+        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        &accepted_client,
         admin_files.clone(),
-    );
-    let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
-    let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
+        (filament_client, app_settings),
+        runtime.server.update_checks,
+    )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
-    let admin_config = admin_config.with_server_update_checks(server_updates);
-    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
-    let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
     let events = events_router(config.clone(), events_client, StreamLimits::default());
-    let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings)?;
-    let plates = plates_router(config.clone(), plates_client);
+    let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings.clone())?;
     let mcp = mcp_router(
-        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        mcp_config(origin, api_key_tenant, runtime.server)?,
         auth_client.clone(),
         McpClients {
             builds: builds_client,
@@ -336,26 +390,27 @@ fn read_router_with_updates(
             planning: planning_client,
             progress: checkoff_client,
             accepted: accepted_client,
+            farm: McpFarm {
+                reads: farm_client,
+                observations: runtime.farm,
+                modules: settings,
+            },
         },
     );
-    let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(
-        auth_routes
+        auth_router(auth.http, auth_client, auth.providers, auth.mail)
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
-            .merge(history)
+            .merge(history_router(config.clone(), history_client))
             .merge(planning)
             .merge(workflow)
             .merge(diagnostics::router(&owner, policy, admin_files, endpoint)?)
             .merge(admin)
             .merge(modules)
-            .merge(filaments)
-            .merge(settings_routes)
-            .merge(probe)
             .merge(events)
             .merge(checkoff)
-            .merge(plates)
+            .merge(plates_router(config.clone(), plates_client))
             .merge(mcp),
     ))
 }
@@ -437,7 +492,13 @@ pub fn product_router(
     origin: &str,
     community_manifests: Option<&Path>,
 ) -> Result<Option<Router>> {
-    product_router_with_updates(rebuild, owner, origin, community_manifests, false)
+    product_router_with_updates(
+        rebuild,
+        owner,
+        origin,
+        community_manifests,
+        RuntimeInputs::detached(),
+    )
 }
 
 pub(crate) fn product_router_with_updates(
@@ -445,7 +506,7 @@ pub(crate) fn product_router_with_updates(
     owner: Arc<Mutex<WriterOwner>>,
     origin: &str,
     community_manifests: Option<&Path>,
-    server_updates: bool,
+    runtime: RuntimeInputs,
 ) -> Result<Option<Router>> {
     if !rebuild.enabled() {
         return Ok(None);
@@ -489,7 +550,7 @@ pub(crate) fn product_router_with_updates(
         origin,
         DESKTOP_TENANT,
         community_manifests,
-        server_updates,
+        runtime,
     )?;
     Ok(reads
         .zip(drafts)

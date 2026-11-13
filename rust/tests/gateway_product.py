@@ -26,6 +26,19 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def without_log_rows(stderr):
+    """pp-server's stderr minus its structured tracing rows: JSON objects with a target (GRE-1457)."""
+    kept = []
+    for line in stderr.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if not (isinstance(row, dict) and "target" in row):
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def main():
     fixture = Path(tempfile.mkdtemp(prefix="pp-gateway-product-"))
     credentials = fixture / "credentials.json"
@@ -249,7 +262,7 @@ def main():
             shutdown_stderr = process.stderr.read()
             shutdown_receipt = json.loads(process.stdout.read())
             assert process.returncode == expected_exit, (process.returncode, shutdown_stderr, shutdown_receipt)
-            assert shutdown_stderr.strip() == "Error: Desktop shutdown incomplete", shutdown_stderr
+            assert without_log_rows(shutdown_stderr).strip() == "Error: Desktop shutdown incomplete", shutdown_stderr
             assert shutdown_receipt == {
                 "proof_class": "headless_unsigned", "tracked_idle": True, "gateway_idle": False,
                 "compat_exit": "graceful", "compat_reaped": True, "storage_released": True,

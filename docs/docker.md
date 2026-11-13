@@ -74,6 +74,7 @@ docker logs print-partner    # bound address and local probe origin
 
 - **Container networks.** Other containers on the same Docker bridge or Compose network can reach port 8080 without any `-p` mapping. A loopback host mapping does not isolate those containers. `-P` publishes exposed ports on all host interfaces; use the explicit loopback mapping above instead.
 - **Rate limits.** When docker-proxy forwards connections, every client appears as the proxy's IP address and shares one rate-limit bucket. Forwarded headers do not restore client identities; this listener refuses them.
+- **Logs.** Stdout carries the origin and, at shutdown, the receipt. Stderr carries `pp-server`'s events at INFO and above, one JSON row each (`time` in epoch seconds, `level` as a pino number, `target`, `message` and fields), with secrets scrubbed as in `core.log`. Each start logs `pp_server_ready` with the origin. Both reach `docker logs`. This destination and format are provisional ([GRE-1457](https://linear.app/greetz/issue/GRE-1457)). The desktop app writes the same rows to `core.log` instead.
 
 ## Sign in
 
@@ -166,7 +167,7 @@ The image's `HEALTHCHECK` runs `readiness` every 30 s, with a 5 s timeout, a 120
 
 `pp-server` registers its signal handlers after startup finishes. A SIGTERM during startup (lease, preflight, migrations) ends the process at once with exit 143 and no drain; SQLite transactions keep the database consistent, and the next start recovers.
 
-Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the desktop runtime. The container then exits 0. `--restart unless-stopped` starts it again.
+Signing out (`POST /auth/logout`) revokes the account session and clears its cookie; `pp-server` keeps serving. The browser keeps its admission from the sign-in link, so signing in again (`POST /auth/login`) needs no restart and no new `pp-server bootstrap-url`. The old session authorizes no new request; an event or printer stream it opened ends at its next session check, within about 15 seconds. On the desktop app, signing out still ends the runtime.
 
 ## What the Rust-only image cannot do yet
 
@@ -185,7 +186,7 @@ The script needs Linux and Docker. It checks that the runtime has no Node, npm, 
 
 ## Importing Node data
 
-Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. No tool imports a Node volume into this image yet. `pp-server import --from <folder or archive> --dry-run` reads a stopped Node data folder or a full backup archive, writes nothing, and reports what an import would convert; see [Node import](node-import.md).
+Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. `pp-server import --from <folder or archive> --data <new folder>` copies a stopped Node data folder or a full backup archive into a new Rust-owned folder, and `--dry-run` reports first what it would convert. The import is not complete yet: its report says `complete: false`, and such a copy is disposable. See [Node import](node-import.md).
 
 ## To be written
 

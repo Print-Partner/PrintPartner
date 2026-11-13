@@ -123,8 +123,11 @@ const optionalMembers = {
   BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope", "entry.restorable"]),
   // Accept's serde defaults: no remap, and no header version for a draft without a header row.
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
-  // Create takes `enabled` (default true) and only the credential fields its kind uses.
+  // Create takes `enabled` (default true) and only the credential fields its kind uses; an edit sends only the fields it changes.
   CreateIntegrationRequest: new Set(["enabled", "username", "api_key", "password"]),
+  // Source create needs only a name; the core stores defaults for the rest (GRE-1490).
+  CreateSourceRequest: new Set(["url", "branch", "tag", "source_kind", "role", "metadata"]),
+  UpdateIntegrationRequest: new Set(["name", "base_url", "enabled", "username", "api_key", "password"]),
   // Create defaults the margin and slot count; an edit sends only the fields it changes.
   CreatePrinterRequest: new Set(["margin_mm", "max_filament_slots", "integration_id"]),
   UpdatePrinterRequest: new Set(["name", "model", "bed_width_mm", "bed_depth_mm", "bed_height_mm", "margin_mm", "max_filament_slots", "integration_id"]),

@@ -17,6 +17,8 @@ const POLICY: AuthPolicy = AuthPolicy {
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
+type Changed = Result<IntegrationSummary, PrinterSetupError>;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     owner: WriterOwner,
@@ -44,6 +46,12 @@ impl Fixture {
     fn create(&self, new: NewIntegration) -> Result<IntegrationSummary, PrinterSetupError> {
         self.client
             .create_integration(self.session(), new, &IDLE, WAIT)
+    }
+
+    fn change(&self, id: &str, patch: IntegrationPatch) -> Changed {
+        let (session, id) = (self.session(), id.into());
+        self.client
+            .update_integration(session, id, patch, &IDLE, WAIT)
     }
 
     fn delete(&self, id: &str) -> Result<IntegrationSummary, PrinterSetupError> {
@@ -239,6 +247,7 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
         };
         for refused in [
             fixture.create(new(ServiceKind::Moonraker, "http://moon.test")),
+            fixture.change("moon-1", IntegrationPatch::default()),
             fixture.delete("moon-1"),
         ] {
             // The refusal names the entry and holds none of its text.
@@ -251,6 +260,45 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
         }
         assert_eq!(fixture.stored().as_deref(), Some(text.as_str()));
     }
+}
+
+/// A stored row with keys the shape does not name, on the row and
+/// in its config. No answer shows them and an edit stores them back.
+#[test]
+fn keys_the_shape_does_not_name_are_never_shown_and_an_edit_keeps_them_byte_for_byte() {
+    let fixture = Fixture::new();
+    let in_config = r#""port":7125,"legacy":{"token":"unread-canary","list":[1,2.5,null]}"#;
+    let on_row = r#""capabilities":{"files":true,"note":"unread-canary"}"#;
+    let stamp = "2026-11-12T03:04:05.678Z";
+    let stored = format!(
+        r#"[{{"id":"moon-1","type":"moonraker","name":"Voron","config":{{"base_url":"http://moon.test","enabled":true,"api_key":"moon-key",{in_config}}},"created_at":"{stamp}","updated_at":"{stamp}",{on_row}}}]"#
+    );
+    fixture.seed(&stored);
+    let patch = IntegrationPatch {
+        name: Some("Renamed".into()),
+        enabled: Some(false),
+        ..IntegrationPatch::default()
+    };
+    let changed = fixture.change("moon-1", patch).unwrap();
+    assert_eq!((changed.name.as_str(), changed.enabled), ("Renamed", false));
+    let shown = format!("{changed:?}");
+    for trace in ["canary", "port", "7125", "legacy", "capabilities"] {
+        assert!(!shown.contains(trace), "{trace} is in {shown}");
+    }
+    // The stored row differs only in what the edit set and its time.
+    let after = fixture.stored().unwrap();
+    let expected = stored
+        .replace("Voron", "Renamed")
+        .replace(r#""enabled":true"#, r#""enabled":false"#);
+    let updated = after.find(r#""updated_at":""#).unwrap();
+    assert_eq!(after[..updated], expected[..updated]);
+    assert!(after.ends_with(&format!(r#"",{on_row}}}]"#)), "{after}");
+    // The hosts the watchers read are the typed fields alone.
+    let hosts = format!("{:?}", printer_hosts::project(Some(&after)));
+    assert!(
+        hosts.contains("moon-key") && !hosts.contains("canary"),
+        "{hosts}"
+    );
 }
 
 #[test]
@@ -389,4 +437,5 @@ fn the_list_names_every_integration_and_no_secret() {
     ));
 }
 
+mod edits;
 mod printers;

@@ -7,6 +7,10 @@ pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod create_with_brief;
 pub use create_with_brief::{CreateBuildError, CreatedBuild, InvalidNewBuild, NewBuild};
+pub mod source_roles;
+pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
+pub mod import_inputs;
+pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, Target};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
@@ -391,7 +395,7 @@ fn mark_modified(tx: &Transaction<'_>, tenant: &str, build: i64, now: &str) -> R
     Ok(())
 }
 
-fn mutation(
+pub(crate) fn mutation(
     tx: &Transaction<'_>,
     tenant: &str,
     command: &BuildCommand,

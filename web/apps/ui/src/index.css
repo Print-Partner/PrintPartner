@@ -187,6 +187,14 @@ body {
   gap: 8px 16px;
 }
 
+/* A send row's actions: separate buttons, none styled as the default. */
+.pp-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .pp-link {
   color: var(--interaction-text);
 }
@@ -475,6 +483,42 @@ body {
   padding-left: 24px;
 }
 
+.pp-filament-section {
+  margin: 0 0 24px;
+}
+
+.pp-filament-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pp-filaments {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-filaments h3 {
+  margin: 0 0 8px;
+}
+
+.pp-filament-facts {
+  margin: 0 0 8px;
+}
+
+.pp-filament-parts {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.pp-tag.pp-tag-flush {
+  margin-left: 0;
+}
+
 .printer-states {
   display: flex;
   flex-wrap: wrap;
@@ -637,6 +681,7 @@ body {
 }
 
 .pp-field input,
+.pp-field select,
 .pp-quantity {
   box-sizing: border-box;
   min-height: var(--touch-target-min);
@@ -718,6 +763,10 @@ body {
   padding: 8px 12px;
   border-left: 4px solid var(--interaction-accent);
   background: var(--surface-raised);
+}
+
+.pp-screen-actions {
+  margin: 0 0 16px;
 }
 
 .pp-dialog-actions {

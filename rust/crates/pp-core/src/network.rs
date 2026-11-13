@@ -87,9 +87,12 @@ mod tests {
             owner.clone(),
             &origin,
             None,
-            crate::rebuild_api::ServerOptions {
-                explicit_listener: listen.is_some(),
-                ..Default::default()
+            crate::rebuild_api::RuntimeInputs {
+                server: crate::rebuild_api::ServerOptions {
+                    explicit_listener: listen.is_some(),
+                    ..Default::default()
+                },
+                ..crate::rebuild_api::RuntimeInputs::detached()
             },
         )
         .unwrap()
@@ -100,7 +103,10 @@ mod tests {
         let (_, status) = tokio::sync::watch::channel(RustStatus::Ready);
         let gateway = Gateway::start_rust_only_with_network(
             listener,
-            listen.is_some(),
+            pp_gateway::RustOnlyMode {
+                network: listen.is_some(),
+                sign_out: pp_gateway::SignOut::EndsRuntime,
+            },
             root.path().to_path_buf(),
             (ServedUi::Legacy, None),
             move |_| for_listener(routes, listen),

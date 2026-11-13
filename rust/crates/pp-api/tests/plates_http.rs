@@ -381,6 +381,83 @@ async fn plates_http_initializes_then_arranges_within_node_body_limits() {
     owner.shutdown().unwrap();
 }
 
+/// Initialize's status and body on a fresh copy of the `no_head` fixture,
+/// with its STL removed first when `removed`.
+async fn initialize_once(removed: bool) -> (StatusCode, Value) {
+    let dir = data_dir();
+    let root = dir.path();
+    let body = initialize_fixture(root);
+    if removed {
+        std::fs::remove_file(root.join("repos/1/revisions/accepted/included.stl")).unwrap();
+    }
+    let (owner, router) = open(root, "1");
+    let answer = send(
+        &router,
+        "POST",
+        "/api/v2/plans/1/plates/initialize",
+        &body,
+        true,
+    )
+    .await;
+    owner.shutdown().unwrap();
+    answer
+}
+
+/// GRE-1519, GRE-1532: initialize through the public, typed verified open.
+/// With the accepted STL in place it answers 200 `ready`: a new Plate
+/// revision of Build 1 whose plates hold the Build's unit. With the STL
+/// removed it refuses with a 409 `conflict` problem, code `missing`, naming
+/// that unit's token. The fixture is only the input; no recorded answer is
+/// compared.
+#[tokio::test]
+async fn plates_http_initialize_is_ready_with_intact_stls_and_refuses_a_missing_one() {
+    let (status, ready) = initialize_once(false).await;
+    assert_eq!(status, StatusCode::OK, "{ready}");
+    assert_eq!(
+        (
+            &ready["kind"],
+            &ready["basis"]["profile_id"],
+            &ready["arrange_undo_revision_id"]
+        ),
+        (&json!("ready"), &json!(1), &Value::Null),
+        "{ready}"
+    );
+    for field in ["plate_revision_id", "plate_revision_number"] {
+        let id = ready[field].as_i64();
+        assert!(id.is_some_and(|id| id > 0), "{field}: {ready}");
+    }
+    let plates = ready["plates"].as_array().expect("plates");
+    let units: Vec<&Value> = plates
+        .iter()
+        .flat_map(|plate| plate["units"].as_array().expect("units"))
+        .collect();
+    let unit = units
+        .iter()
+        .find(|unit| unit["filename"] == "included.stl")
+        .expect("the Build's unit is on a plate");
+    assert_eq!(unit["part_id"], 2, "{unit}");
+    let token = unit["token"].as_str().expect("token");
+    assert!(token.starts_with("ppu_"), "{token}");
+
+    let (status, refused) = initialize_once(true).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(
+        (
+            &refused["type"],
+            &refused["status"],
+            &refused["code"],
+            &refused["token"]
+        ),
+        (
+            &json!("urn:print-partner:problem:conflict"),
+            &json!(409),
+            &json!("missing"),
+            &json!(token)
+        ),
+        "{refused}"
+    );
+}
+
 #[tokio::test]
 async fn plates_http_serves_production_setup_at_the_root_only() {
     let dir = data_dir();

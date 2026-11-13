@@ -426,7 +426,7 @@ attributes across every crate, including tests. It recursively inspects
 conditional attributes applied by `cfg_attr`, so
 `#[cfg_attr(all(), cfg(feature = "desktop_rebuild"))]` counts too. Each outer
 attachment counts once, even if it contains several matching predicates.
-`rust/desktop-rebuild-baseline.json` records three classes: `module` (mod/use),
+`rust/desktop-rebuild-baseline/<crate>.json` records three classes per crate: `module` (mod/use),
 `item` (including variants and fields), and `statement` (statements,
 expressions, match arms and ambiguous attachments). Stacked attributes,
 comments, raw attribute names such as `r#cfg`, and escaped feature strings do
@@ -452,6 +452,21 @@ module and item counts may grow. Statement counts may not rise per crate over
 establishes the placement baseline and reports the skipped raise check. This
 step runs in both `just ci --fast` and the full `just ci`.
 
+Regenerate the placement files with
+`python3 rust/scripts/check-ast-grep.py --write-placement-baseline`. The command
+writes one version 2 file per crate, removes stale crate files and the old shared
+file, then runs the checks. It cannot authorize a statement-count increase.
+Identical files keep identical contents, so updates in different crates merge
+without editing a shared inventory or manifest.
+
+Each statement cap comes from the same crate's file on `origin/main`. During
+the layout migration, when main has no per-crate baseline files yet, the checker
+uses that crate's entry in main's shared `desktop-rebuild-baseline.json`.
+Once main uses per-crate files, a missing crate file means a zero cap; it never
+borrows an allowance from a leftover shared file. A missing or extra local
+crate file fails the exact inventory check, including zero-count crates. Every
+per-crate file, local or on main, must use version 2.
+
 `cfg!(feature = "desktop_rebuild")` expressions count as statements, including
 raw names, raw feature strings and escaped feature values. Lexical `cfg` and
 `cfg_attr` metas in macro call arguments also count as statements. The scanner
@@ -464,10 +479,9 @@ counts as one statement: the scanner cannot determine what `m!` applies.
 
 The version 2 placement baseline includes the 17 existing `cfg!` expressions:
 pp-compat 2, pp-core 5, pp-desktop 1, pp-storage 9. When comparing with an
-unversioned baseline on `origin/main`, the checker adds only the `cfg!` inventory
-in main's source to its statement cap. Version 2 grants no further allowance.
-Regenerate with `python3 rust/scripts/check-ast-grep.py --write-placement-baseline`;
-the command writes the inventory and still fails if the statement cap rises.
+unversioned shared baseline on `origin/main`, the checker adds only the `cfg!`
+inventory in main's source to its statement cap. Version 2 grants no further
+allowance.
 
 Except where noted below, each step runs the command lines of its workflow step without changes. The script sets the same environment that CI sets: `NEXTEST_FILTER`, `PP_TEST_NODE`, `VITE_PRINT_PARTNER_DESKTOP`, and `RUNNER_TEMP`. The cargo steps also get `INSTA_UPDATE=no`, so a snapshot mismatch fails the step instead of writing a `.snap.new` file. `RUNNER_TEMP` is under `$CARGO_TARGET_DIR/local-ci`, or under `rust/target/local-ci` if `CARGO_TARGET_DIR` is not set. The local command differs from CI in these ways:
 

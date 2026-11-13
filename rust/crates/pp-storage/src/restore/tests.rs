@@ -841,3 +841,36 @@ fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_li
     std::fs::remove_file(&work).unwrap();
     owner.shutdown().unwrap();
 }
+
+#[test]
+fn backup_export_reports_size_and_hash_stages_and_removes_itself() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let live = state(&root);
+    let database = pp_testkit::node_schema::database_files(&root);
+    let backup = client.backup_to_temporary("test").unwrap();
+    assert!(pp_testkit::node_schema::database_files(&root) == database);
+    let bytes = std::fs::read(&backup.path).unwrap();
+    assert_eq!(backup.size_bytes, bytes.len() as u64);
+    assert_eq!(
+        backup.sha256,
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    );
+    assert_eq!(backup.metadata.scope, archive::MetadataScope::Full);
+    assert!(!backup.path.starts_with(&root));
+    let staged = stage(&client, &backup.path).unwrap();
+    let staged_dir = root
+        .join(WORK_DIR)
+        .join(format!("{STAGED_PREFIX}{}", staged.restore_id));
+    assert_eq!(state(&staged_dir), live);
+    assert_eq!(state(&root), live);
+    let directory = backup.path.parent().unwrap().to_owned();
+    drop(backup);
+    assert!(!directory.exists());
+    owner.shutdown().unwrap();
+    assert!(matches!(
+        client.backup_to_temporary("closed"),
+        Err(RestoreError::Writer(WriterFailure::Stopped))
+    ));
+}

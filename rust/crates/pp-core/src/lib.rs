@@ -41,6 +41,10 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 pub mod layout;
 
 #[cfg(feature = "desktop_rebuild")]
+mod checked_dns;
+#[cfg(feature = "desktop_rebuild")]
+pub mod github;
+#[cfg(feature = "desktop_rebuild")]
 mod measured_grams;
 #[cfg(feature = "desktop_rebuild")]
 mod printer_host;
@@ -523,6 +527,9 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 /// gateway answers admitted requests from the `pp-api` routers. The marker
 /// decision runs first; release verification, cutover recovery and source-sync
 /// admission run only on an accepted directory (`rust_startup::admit`).
+/// `server_updates` is set only for the headless `pp-server`: it checks for
+/// server updates, and sign-out keeps it serving. The desktop launcher does
+/// neither.
 #[cfg(feature = "desktop_rebuild")]
 async fn start_rust_resources(
     input: DesktopLaunch,
@@ -576,32 +583,37 @@ async fn start_rust_resources(
     )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
+    // MCP is composed before the gateway starts the watchers; it reads them
+    // through this slot, bound when the gateway hands out its status port.
+    let farm = printer_status::LateFarm::default();
     let product = rebuild_api::product_router_with_updates(
         desktop_rebuild,
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        rebuild_api::ServerOptions {
-            update_checks: server_updates,
-            explicit_listener: listen.is_some(),
-        },
+        rebuild_api::RuntimeInputs::running(server_updates, listen.is_some(), &farm),
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let product =
-        move |status| network::for_listener(product.merge(status_routes.mount(status)), listen);
+    let product = move |status: pp_gateway::MoonrakerStatus| {
+        farm.bind(status.clone());
+        network::for_listener(product.merge(status_routes.mount(status)), listen)
+    };
     let served = match snapshot {
         Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
         None => (pp_gateway::ServedUi::Legacy, None),
     };
+    let sign_out = if server_updates {
+        pp_gateway::SignOut::KeepsServing
+    } else {
+        pp_gateway::SignOut::EndsRuntime
+    };
+    let mode = pp_gateway::RustOnlyMode {
+        network: listen.is_some(),
+        sign_out,
+    };
     let gateway = Gateway::start_rust_only_with_network(
-        listener,
-        listen.is_some(),
-        assets,
-        served,
-        product,
-        receiver,
-        hosts,
+        listener, mode, assets, served, product, receiver, hosts,
     )?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);

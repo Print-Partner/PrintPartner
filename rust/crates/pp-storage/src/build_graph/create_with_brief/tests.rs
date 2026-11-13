@@ -7,23 +7,23 @@ use crate::{
     write::test_support::{WAIT, first_session, seed_setting},
 };
 
-static IDLE: AtomicBool = AtomicBool::new(false);
+pub(in crate::build_graph) static IDLE: AtomicBool = AtomicBool::new(false);
 const POLICY: AuthPolicy = AuthPolicy {
     registration: RegistrationPolicy::FirstAccountOnly,
     first_user: FirstUserTenant::NewUser,
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
-struct Fixture {
+pub(in crate::build_graph) struct Fixture {
     _directory: tempfile::TempDir,
-    owner: WriterOwner,
-    client: BuildGraphClient,
+    pub(in crate::build_graph) owner: WriterOwner,
+    pub(in crate::build_graph) client: BuildGraphClient,
     token: String,
 }
 
 impl Fixture {
     /// A fresh installation with the Orders Module on.
-    fn new() -> Self {
+    pub(in crate::build_graph) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
         let token = first_session(&owner);
@@ -36,11 +36,20 @@ impl Fixture {
         }
     }
 
-    fn session(&self) -> Credential {
+    /// A connection of its own to the installation's database, for seeding
+    /// rows no client writes in these tests.
+    pub(in crate::build_graph) fn database(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self._directory.path().join("print-partner.db")).unwrap()
+    }
+
+    pub(in crate::build_graph) fn session(&self) -> Credential {
         Credential::Session(Secret::new(self.token.clone()))
     }
 
-    fn create(&self, new: NewBuild) -> Result<CreatedBuild, CreateBuildError> {
+    pub(in crate::build_graph) fn create(
+        &self,
+        new: NewBuild,
+    ) -> Result<CreatedBuild, CreateBuildError> {
         self.client
             .create_with_brief(self.session(), new, &IDLE, WAIT)
     }

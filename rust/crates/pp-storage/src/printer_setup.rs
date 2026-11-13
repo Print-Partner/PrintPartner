@@ -1,5 +1,5 @@
-//! Printer setup: adding and removing integrations, and adding, reading,
-//! editing and removing printers.
+//! Printer setup: adding, editing and removing integrations, and adding,
+//! reading, editing and removing printers.
 //!
 //! Each kind lives in one `app_settings` document with one typed shape
 //! ([`integrations`], [`printers`]). A write runs through the write seam: it
@@ -8,14 +8,16 @@
 //! document that is not the typed shape refuses every operation and is left
 //! as it is.
 //!
+//! A stored row may hold keys its typed shape does not name. Only the Node
+//! import is to write such a row (GRE-1523). The keys ride along in
+//! [`Unread`]: no code reads them, no answer or log carries them, and an edit
+//! stores them back as they were.
+//!
 //! Errors are [`PrinterSetupError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.
 
 pub(crate) mod integrations;
 pub(crate) mod printers;
-
-pub use integrations::{IntegrationSummary, NewIntegration, ServiceKind};
-pub use printers::{LoadedFilament, NewPrinter, Printer, PrinterPatch};
 
 use crate::{
     SettingsClient, Shared, WriterFailure, WriterOwner,
@@ -25,8 +27,12 @@ use crate::{
     write::{Installation, authorize},
 };
 use integrations::{Entry, Integration};
+pub use integrations::{IntegrationPatch, IntegrationSummary, NewIntegration, ServiceKind};
+pub use printers::{LoadedFilament, NewPrinter, Printer, PrinterPatch};
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use std::{
+    fmt,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -36,6 +42,21 @@ const SPOOLMAN_DEFAULT_KEY: &str = "default_spoolman_integration_id";
 /// Rows of every kind count. One person's farm stays far below this.
 pub const MAX_INTEGRATIONS: usize = 64;
 pub const MAX_PRINTERS: usize = 64;
+
+/// The keys of a stored row, or of an integration's `config`, that the typed
+/// shape does not name, each with its stored value. They may hold a secret,
+/// so there is no accessor and `Debug` prints only how many keys there are.
+/// Serializing a stored row writes them back, which is how an edit keeps
+/// them; an answer is built field by field and never from a serialized row.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Unread(Box<serde_json::Map<String, serde_json::Value>>);
+
+impl fmt::Debug for Unread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Unread({} keys)", self.0.len())
+    }
+}
 
 /// A request field with a value this module refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +88,8 @@ pub enum Reason {
     NotCreatable,
     /// The kind does not sign in with this field.
     NotUsedByKind,
+    /// A stored secret an address change must send again, or clear.
+    NotResent,
     /// A number outside what its field takes; `printers` has the ranges.
     OutOfRange,
     /// No stored Moonraker, PrusaLink or Bambu integration has that id.
@@ -116,6 +139,9 @@ pub enum PrinterSetupError {
     NotFound,
     #[error("the installation already has as many of these as it may hold")]
     LimitReached,
+    /// The integration is a kind Rust keeps but cannot edit.
+    #[error("the stored integration is a kind that cannot be edited")]
+    NotEditable,
     /// A filament slot the edit would remove still holds filament.
     #[error("a filament slot the edit removes holds filament")]
     SlotHoldsFilament,
@@ -172,6 +198,34 @@ impl PrinterSetupClient {
             }
             let summary = row.summary();
             entries.push(Entry::Host(row));
+            save(tx, &installation, &entries)?;
+            Ok(summary)
+        })?
+    }
+
+    /// Changes what `patch` sends on the integration with `id`, in one
+    /// write, and answers it without its secrets. A kind Rust keeps but
+    /// cannot create is [`PrinterSetupError::NotEditable`].
+    pub fn update_integration(
+        &self,
+        credential: Credential,
+        id: String,
+        patch: IntegrationPatch,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<IntegrationSummary, PrinterSetupError> {
+        let policy = self.policy;
+        let name = "printer_setup.update_integration";
+        self.shared.write(name, cancelled, wait, move |tx, _| {
+            let installation = authorize(tx, &credential, policy)?;
+            let mut entries = load(tx, &installation)?;
+            let entry = entries.iter_mut().find(|entry| entry.id() == id);
+            let Entry::Host(row) = entry.ok_or(PrinterSetupError::NotFound)? else {
+                return Err(PrinterSetupError::NotEditable);
+            };
+            row.apply(patch, now(tx)?)
+                .map_err(PrinterSetupError::Invalid)?;
+            let summary = row.summary();
             save(tx, &installation, &entries)?;
             Ok(summary)
         })?

@@ -264,7 +264,7 @@ fn recorded(
     }))
 }
 
-fn brief_key(build: PositiveId) -> String {
+pub(crate) fn brief_key(build: PositiveId) -> String {
     format!("build_planning.v1.{}", build.get())
 }
 
@@ -272,7 +272,12 @@ fn record_key(key: &str) -> String {
     format!("build_planning.create.{key}")
 }
 
-fn save(tx: &Transaction<'_>, tenant: &str, key: &str, value: &str) -> rusqlite::Result<()> {
+pub(crate) fn save(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    key: &str,
+    value: &str,
+) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
         params![tenant, key, value],
@@ -280,5 +285,47 @@ fn save(tx: &Transaction<'_>, tenant: &str, key: &str, value: &str) -> rusqlite:
     Ok(())
 }
 
+/// The two ways a Build's stored planning brief is unusable, as each brief
+/// writer's own error enum names them.
+pub(crate) trait BriefError: From<rusqlite::Error> {
+    fn no_brief() -> Self;
+    /// The stored brief does not parse or names another Build.
+    fn invalid() -> Self;
+}
+
+/// `build`'s stored planning brief, read in `tx`.
+pub(crate) fn stored_brief<E: BriefError>(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: PositiveId,
+) -> Result<BuildPlanningBrief, E> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+            params![tenant, brief_key(build)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let raw = raw.ok_or_else(E::no_brief)?;
+    let id = i64::try_from(build.get()).map_err(|_| E::invalid())?;
+    BuildPlanningBrief::parse(&raw, id).map_err(|_| E::invalid())
+}
+
+/// Stores `brief` as a brief writer's change: clears its selected draft,
+/// which the change may no longer match, and stamps `updated_at`.
+pub(super) fn store_changed_brief(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: PositiveId,
+    mut brief: BuildPlanningBrief,
+) -> Result<(), WriterFailure> {
+    brief.draft_id = None;
+    brief.updated_at = auth::catalog_timestamp();
+    let text = brief.stored_text().map_err(WriterFailure::from)?;
+    save(tx, tenant, &brief_key(build), &text)?;
+    Ok(())
+}
+
+/// Shared with the brief writers' tests, which start from a created brief.
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

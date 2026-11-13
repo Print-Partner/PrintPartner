@@ -75,6 +75,11 @@ export default tseslint.config(
     rules: { "print-partner/ui-boundary": "error" },
   },
   {
+    // A screen test renders the composed app through ../App and ../routes (GRE-1537).
+    files: ["apps/ui/src/**/*.{test,test-utils}.*"],
+    rules: { "print-partner/ui-boundary": ["error", { compositionImports: "allow" }] },
+  },
+  {
     files: ["apps/web/public/sw.js"],
     languageOptions: {
       globals: {

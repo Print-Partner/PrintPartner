@@ -149,7 +149,7 @@ Served only by the Rust core with both rebuild gates on, behind a session or API
 GET /api/v2/spoolman/deductions?state=&link_id=
 ```
 
-Served only by the Rust core with both rebuild gates on, behind a session or API key. Answers `{ "deductions": [...] }`, newest first, at most 100. Each row has `id`, `state` (`pending`, `sending`, `applied`, `unknown`, `failed`, `skipped` or `dismissed`), `reason` (set only on `skipped`), `link_id`, `profile_id` (the Build), `units`, and `integration_id`, `spool_id`, `grams` (whole grams, rounded) and `grams_basis` (`estimated` or `measured`), which are null on `skipped` rows. `state` must be one of those states and `link_id` 1 to 200 characters; any other query is refused with 400 `invalid_deduction_filter`. Checkoff writes the rows; see [Spoolman](integrations/SPOOLMAN.md#on-the-rust-core). Errors are [problem responses](problem-responses.md).
+Served only by the Rust core with both rebuild gates on, behind a session or API key. Answers `{ "deductions": [...] }`, newest first, at most 100. Each row has `id`, `state` (`pending`, `sending`, `applied`, `unknown`, `failed`, `skipped` or `dismissed`), `reason` (set only on `skipped`), `link_id`, `profile_id` (the Build), `units`, and `integration_id`, `spool_id`, `grams` (whole grams, rounded up) and `grams_basis` (`estimated` or `measured`), which are null on `skipped` rows. `state` must be one of those states and `link_id` 1 to 200 characters; any other query is refused with 400 `invalid_deduction_filter`. Checkoff writes the rows; see [Spoolman](integrations/SPOOLMAN.md#on-the-rust-core). Errors are [problem responses](problem-responses.md).
 
 ### History
 

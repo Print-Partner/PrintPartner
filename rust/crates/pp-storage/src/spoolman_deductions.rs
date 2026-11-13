@@ -52,6 +52,9 @@ pub enum SkipReason {
     IntegrationDisabled,
     /// The stored integrations document is not the typed shape.
     IntegrationsUnreadable,
+    /// The stored Module setting, the user's or the Build's, is not the typed
+    /// shape, so whether the Spoolman Module is on is unknown.
+    ModuleSettingUnreadable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +76,7 @@ macro_rules! text_enum {
     };
 }
 text_enum!(State { Pending => "pending", Sending => "sending", Applied => "applied", Unknown => "unknown", Failed => "failed", Skipped => "skipped", Dismissed => "dismissed" });
-text_enum!(SkipReason { NoGrams => "no_grams", NoPinnedSpool => "no_pinned_spool", IntegrationMissing => "integration_missing", IntegrationDisabled => "integration_disabled", IntegrationsUnreadable => "integrations_unreadable" });
+text_enum!(SkipReason { NoGrams => "no_grams", NoPinnedSpool => "no_pinned_spool", IntegrationMissing => "integration_missing", IntegrationDisabled => "integration_disabled", IntegrationsUnreadable => "integrations_unreadable", ModuleSettingUnreadable => "module_setting_unreadable" });
 text_enum!(GramsBasis { Estimated => "estimated", Measured => "measured" });
 
 /// What a row deducts: present on every row except a `skipped` one.
@@ -141,7 +144,7 @@ pub(crate) fn record_burst(
     let mut hosts: Option<Result<BTreeMap<String, bool>, ()>> = None;
     for bed in beds {
         let units = unclaimed(tx, tenant, bed)?;
-        if units.is_empty() || !module_on(tx, tenant, bed.profile_id)? {
+        if units.is_empty() {
             continue;
         }
         let row =
@@ -154,6 +157,15 @@ pub(crate) fn record_burst(
                     target,
                 )
             };
+        match module_on(tx, tenant, bed.profile_id)? {
+            Some(true) => {}
+            Some(false) => continue,
+            None => {
+                let reason = Some(SkipReason::ModuleSettingUnreadable);
+                row(State::Skipped, reason, units.len(), None)?;
+                continue;
+            }
+        }
         let Some((grams, link_units, basis)) = link_grams(tx, tenant, &bed.link_id)? else {
             row(State::Skipped, Some(SkipReason::NoGrams), units.len(), None)?;
             continue;
@@ -240,13 +252,27 @@ fn unclaimed(
     Ok(units)
 }
 
-fn module_on(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<bool, DeductionError> {
+/// Whether the Spoolman Module is on for the Build, or `None` when a stored
+/// Module setting is not the typed shape. Checkoff must not fail on that.
+fn module_on(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+) -> Result<Option<bool>, DeductionError> {
     let plan = u64::try_from(profile)
         .ok()
         .and_then(|id| PositiveId::new(id).ok());
-    let view =
-        crate::features::resolve_for_send(tx, tenant, plan).map_err(WriterFailure::Internal)?;
-    Ok(view.effective().enabled(Feature::Spoolman))
+    match crate::features::resolve_for_send(tx, tenant, plan) {
+        Ok(view) => Ok(Some(view.effective().enabled(Feature::Spoolman))),
+        Err(error)
+            if error
+                .downcast_ref::<crate::features::InvalidLayer>()
+                .is_some() =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(WriterFailure::Internal(error).into()),
+    }
 }
 
 /// The link's grams, its units and their basis.
@@ -262,19 +288,19 @@ fn link_grams(
             |row| {
                 Ok((
                     row.get::<_, f64>(0)?,
-                    row.get::<_, u32>(1)?,
+                    row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(grams, units, basis)| match GramsBasis::parse(&basis) {
-        Some(basis) => Ok((grams, units, basis)),
-        None => {
-            Err(WriterFailure::Internal(anyhow::anyhow!("print grams basis is unknown")).into())
-        }
-    })
-    .transpose()
+    // The schema keeps grams and units positive and the basis known; a row
+    // outside that reads as no grams rather than failing Checkoff.
+    Ok(row.and_then(|(grams, units, basis)| {
+        let units = u32::try_from(units).ok().filter(|units| *units > 0)?;
+        (grams > 0.0 && grams.is_finite()).then_some(())?;
+        Some((grams, units, GramsBasis::parse(&basis)?))
+    }))
 }
 
 /// The `(integration, spool)` the Accepted Part pins, if any.
@@ -283,11 +309,12 @@ fn pinned_spool(
     tenant: &str,
     part: i64,
 ) -> rusqlite::Result<Option<(String, i64)>> {
+    // A pin that is not text reads as no pin rather than failing Checkoff.
     let pin: Option<Option<String>> = tx
         .query_row(
             "SELECT spoolman_spool_id FROM parts WHERE tenant_id=?1 AND id=?2",
             params![tenant, part],
-            |row| row.get(0),
+            |row| Ok(row.get_ref(0)?.as_str().ok().map(str::to_owned)),
         )
         .optional()?;
     Ok(pin.flatten().as_deref().and_then(spool_pin))

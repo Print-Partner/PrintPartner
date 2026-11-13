@@ -181,6 +181,22 @@ fn units_that_cannot_be_deducted_give_one_skipped_row_per_reason() {
 }
 
 #[test]
+fn an_unreadable_module_setting_skips_the_units_and_the_burst_succeeds() {
+    let (fixture, owner) = prepared();
+    put(&fixture, "feature_toggles", r#"{"spoolman":"yes"}"#);
+    burst(&owner, "k1", vec![confirm(1, 1), confirm(1, 2)]);
+    assert_eq!(
+        summary(&deductions(&owner)),
+        [(
+            State::Skipped,
+            Some(SkipReason::ModuleSettingUnreadable),
+            2,
+            None
+        )]
+    );
+}
+
+#[test]
 fn with_the_module_off_the_burst_succeeds_and_writes_no_row() {
     let (fixture, owner) = prepared();
     put(&fixture, "feature_toggles", r#"{"spoolman":false}"#);

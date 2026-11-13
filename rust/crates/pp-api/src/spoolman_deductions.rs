@@ -46,7 +46,8 @@ pub struct DeductionView {
     /// `dismissed`.
     pub state: &'static str,
     /// `no_grams`, `no_pinned_spool`, `integration_missing`,
-    /// `integration_disabled` or `integrations_unreadable`.
+    /// `integration_disabled`, `integrations_unreadable` or
+    /// `module_setting_unreadable`.
     pub reason: Option<&'static str>,
     pub link_id: String,
     /// The Build.
@@ -55,8 +56,8 @@ pub struct DeductionView {
     pub units: u32,
     pub integration_id: Option<String>,
     pub spool_id: Option<i64>,
-    /// Grams to deduct, rounded to the nearest gram, as every grams field
-    /// of this API is. The deduction itself uses the exact value.
+    /// Grams to deduct, rounded up to a whole gram, as every grams field
+    /// of this API is whole. The deduction itself uses the exact value.
     pub grams: Option<u64>,
     /// `estimated` (slicer) or `measured` (at print finish).
     pub grams_basis: Option<&'static str>,
@@ -76,7 +77,7 @@ impl From<Deduction> for DeductionView {
             units: row.units,
             integration_id: target.as_ref().map(|t| t.integration_id.clone()),
             spool_id: target.as_ref().map(|t| t.spool_id),
-            grams: target.as_ref().map(|t| t.grams.round() as u64),
+            grams: target.as_ref().map(|t| t.grams.ceil() as u64),
             grams_basis: target.as_ref().map(|t| GramsBasis::as_str(t.basis)),
             created_at: row.created_at,
             updated_at: row.updated_at,

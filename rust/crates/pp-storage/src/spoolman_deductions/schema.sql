@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS spoolman_deductions (
   link_id TEXT NOT NULL CHECK (length(link_id) >= 1),
   profile_id INTEGER NOT NULL CHECK (profile_id > 0),
   state TEXT NOT NULL CHECK (state IN ('pending', 'sending', 'applied', 'unknown', 'failed', 'skipped', 'dismissed')),
-  reason TEXT CHECK (reason IN ('no_grams', 'no_pinned_spool', 'integration_missing', 'integration_disabled', 'integrations_unreadable')),
+  reason TEXT CHECK (reason IN ('no_grams', 'no_pinned_spool', 'integration_missing', 'integration_disabled', 'integrations_unreadable', 'module_setting_unreadable')),
   units INTEGER NOT NULL CHECK (units > 0),
   integration_id TEXT,
   spool_id INTEGER CHECK (spool_id IS NULL OR spool_id > 0),

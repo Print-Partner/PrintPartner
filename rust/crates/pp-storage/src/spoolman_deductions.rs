@@ -334,10 +334,8 @@ fn pinned_spool(
 
 /// `(integration, spool)` for `spoolman:{integration}:spool:{n}`.
 fn spool_pin(id: &str) -> Option<(String, i64)> {
-    let (integration, number) = id.trim().strip_prefix("spoolman:")?.split_once(":spool:")?;
-    let number = number.parse::<i64>().ok().filter(|n| *n > 0)?;
-    (!integration.is_empty() && !integration.contains(':'))
-        .then(|| (integration.to_owned(), number))
+    crate::read_model::stock::spoolman_ref(id.trim(), ":spool:")
+        .map(|(integration, spool)| (integration.to_owned(), spool))
 }
 
 /// Every stored Spoolman integration and whether it is enabled; `Err` when

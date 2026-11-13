@@ -2,7 +2,7 @@
   "version": 2,
   "crates": {
     "pp-api": {
-      "module": 63,
+      "module": 65,
       "item": 165,
       "statement": 23
     },
@@ -22,7 +22,7 @@
       "statement": 0
     },
     "pp-core": {
-      "module": 48,
+      "module": 49,
       "item": 40,
       "statement": 12
     },

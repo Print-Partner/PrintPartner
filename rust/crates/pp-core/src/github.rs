@@ -347,5 +347,4 @@ impl reqwest::dns::Resolve for PublicDns {
 }
 
 #[cfg(test)]
-#[path = "github_tests.rs"]
 mod tests;

@@ -98,7 +98,7 @@ will autosave into a draft and require an explicit Accept.
 | [Network sharing](network-sharing.md) | "Share on network" in the desktop app. |
 | [Desktop app](desktop.md) | The Tauri app, its tray, and its data. |
 | [Docker image](docker.md) | The single-user headless image. |
-| [Node import](node-import.md) | The one-time import of a Node installation: the dry run and the conversion inventory. |
+| [Node import](node-import.md) | The one-time import of a Node installation: the dry run, the import into a new Rust-owned folder, and the conversion inventory. |
 | [Release](release.md) | How releases are built, signed, and published. |
 | [Domain](domain/README.md) | The core model and one page per product area. |
 | [Desktop rebuild flag and slice plan](desktop-rebuild.md) | The `desktop_rebuild` feature and its slices. |

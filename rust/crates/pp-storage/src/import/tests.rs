@@ -184,10 +184,44 @@ fn a_full_archive_gives_the_same_counts() {
     let archive = archive_of(folder.path(), 2, "full");
     let from_archive = run(archive.path()).unwrap();
     assert_eq!(from_archive.source, SourceKind::Archive);
+    // Both count the same entries under each root. Only a folder has the
+    // bytes: an archive is listed, not read.
+    assert!(from_folder.roots.iter().all(|count| count.bytes.is_some()));
+    let listed = |report: &DryRunReport| -> Vec<(&'static str, u64)> {
+        (report.roots.iter().map(|count| (count.root, count.entries))).collect()
+    };
+    assert_eq!(listed(&from_archive), listed(&from_folder));
+    // The synthetic `repos/` is itself, three folders and the snapshot's two
+    // files; `custom_filaments.json` is one file.
+    let expected = [("repos", 6), ("custom_filaments.json", 1)];
+    assert_eq!(listed(&from_folder), expected);
+    let text = from_folder.to_string();
+    let lines = "\nBackup roots (files and folders, then bytes of the files):\n  repos 6 38\n  custom_filaments.json 1 52\n  all roots: 7 entries\n";
+    assert!(text.contains(lines), "{text}");
+    let lines = "\n  repos 6\n  custom_filaments.json 1\n  all roots: 7 entries\n";
+    assert!(from_archive.to_string().contains(lines));
+    // The size of each database file the source holds, from its own bytes.
+    let database = std::fs::metadata(folder.database_path()).unwrap().len();
+    assert_eq!(
+        from_folder.database_files[0],
+        ("print-partner.db", database)
+    );
+    assert_eq!(from_archive.database_files[0].0, "print-partner.db");
+    let lines = format!("\nDatabase files (bytes):\n  print-partner.db {database}\n");
+    assert!(from_folder.to_string().contains(&lines));
+    let total: u64 = from_folder
+        .database_files
+        .iter()
+        .map(|(_, bytes)| bytes)
+        .sum();
+    let line = format!("  all database files: {total} bytes\n");
+    assert!(from_folder.to_string().contains(&line));
     let source = SourceKind::Directory;
     assert_eq!(
         DryRunReport {
             source,
+            roots: from_folder.roots.clone(),
+            database_files: from_folder.database_files.clone(),
             ..from_archive
         },
         from_folder
@@ -511,6 +545,67 @@ fn only_a_full_format_2_archive_is_read() {
     assert!(
         matches!(error, ImportError::Schema(refusal) if refusal.found == 48),
         "{error:?}"
+    );
+}
+
+#[test]
+fn a_destination_that_cannot_be_resolved_is_reported_and_the_dry_run_goes_on() {
+    let folder = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let file = parent.path().join("file");
+    std::fs::write(&file, "synthetic").unwrap();
+    let below = file.join("child");
+    let temporary = tempfile::tempdir().unwrap();
+    let report = dry_run_in(folder.path(), Some(&below), temporary.path()).unwrap();
+    let found = report.destination.as_ref().unwrap();
+    assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
+    assert!(report.to_string().contains("cannot be read ("), "{report}");
+}
+
+#[test]
+fn a_disk_or_filesystem_failure_in_the_upgrade_is_a_failed_run_not_a_refused_database() {
+    use rusqlite::ffi;
+    let database = Path::new("print-partner.db");
+    let sorted = |cause: &(dyn std::error::Error + 'static)| {
+        upgrade_failure(database, "synthetic detail".into(), [cause].into_iter())
+    };
+    let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+    for code in [
+        ffi::SQLITE_FULL,
+        ffi::SQLITE_IOERR,
+        ffi::SQLITE_READONLY,
+        ffi::SQLITE_CANTOPEN,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(matches!(error, ImportError::Io { .. }), "{code}: {error:?}");
+        assert_eq!(error.to_string(), "print-partner.db: synthetic detail");
+    }
+    let full = std::io::Error::from(ErrorKind::StorageFull);
+    let error = sorted(&full);
+    assert!(
+        matches!(&error, ImportError::Io { source, .. } if source.kind() == ErrorKind::StorageFull),
+        "{error:?}"
+    );
+    // A damaged or unexpected database is still a refusal.
+    for code in [
+        ffi::SQLITE_CORRUPT,
+        ffi::SQLITE_CONSTRAINT,
+        ffi::SQLITE_NOTADB,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(
+            matches!(error, ImportError::Database(_)),
+            "{code}: {error:?}"
+        );
+    }
+    let none = upgrade_failure(
+        database,
+        "Invalid database schema version".into(),
+        [].into_iter(),
+    );
+    assert_eq!(
+        none.to_string(),
+        "The database failed its checks: Invalid database schema version"
     );
 }
 

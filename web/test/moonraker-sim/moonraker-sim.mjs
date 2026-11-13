@@ -32,15 +32,19 @@ const json = (response, status, body) => {
 };
 const failure = (response, status, message) => json(response, status, { error: { code: status, message } });
 
+/**
+ * The whole body, or null when it is longer than `limit`. A body over the limit is still
+ * read to its end: leaving the loop early would destroy the socket, and the client would
+ * see a reset instead of the refusal.
+ */
 async function readBody(request, limit) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > limit) return null;
-    chunks.push(chunk);
+    if (size <= limit) chunks.push(chunk);
   }
-  return Buffer.concat(chunks);
+  return size > limit ? null : Buffer.concat(chunks);
 }
 
 /** The `file` part of a multipart body: its file name and bytes, or null. */
@@ -106,7 +110,7 @@ function takeFault(printer, path, kinds) {
 }
 
 async function upload(printer, request, response) {
-  const body = await readBody(request, MAX_UPLOAD);
+  const body = await readBody(request, printer.maxUpload);
   if (!body) return failure(response, 413, "Upload too large");
   const part = filePart(body, request.headers["content-type"]);
   if (!part || !part.name) return failure(response, 400, "No file part in the upload");
@@ -198,9 +202,10 @@ const listen = (server, port, host) =>
  * Starts the printer and control servers. `apiKey` null accepts every request. Returns
  * the two origins and `close()`. Nothing here connects out.
  */
-export async function startSimulator({ apiKey = null, host = "127.0.0.1", port = 0, controlHost = "127.0.0.1", controlPort = 0 } = {}) {
+export async function startSimulator({ apiKey = null, host = "127.0.0.1", port = 0, controlHost = "127.0.0.1", controlPort = 0, maxUpload = MAX_UPLOAD } = {}) {
   const printer = {
     apiKey,
+    maxUpload,
     state: "standby",
     progress: 0,
     filename: null,

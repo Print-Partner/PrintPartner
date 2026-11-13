@@ -133,6 +133,22 @@ describe("moonraker simulator", () => {
   });
 });
 
+describe("moonraker simulator upload limit", () => {
+  it("refuses an upload over the limit with 413, not a reset, and stores nothing", async () => {
+    const small = await startSimulator({ apiKey: KEY, maxUpload: 64 });
+    try {
+      const { body, type } = multipart("big.gcode", Buffer.alloc(8 * 1024 * 1024, 71));
+      const answer = await call(small.printerPort, "POST", "/server/files/upload", { key: KEY, body, type });
+      assert.equal(answer.status, 413);
+      const log = (await call(small.controlPort, "GET", "/_sim/log")).body;
+      assert.deepEqual(log.files, []);
+      assert.equal(log.counts.uploads, 0);
+    } finally {
+      await small.close();
+    }
+  });
+});
+
 describe("filePart", () => {
   it("finds the file part and ignores the other fields", () => {
     const { body, type } = multipart("a b.gcode", GCODE);

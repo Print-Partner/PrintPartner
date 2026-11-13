@@ -274,7 +274,7 @@ pub(crate) struct Job {
     pub request: Request,
 }
 
-enum Item {
+pub(crate) enum Item {
     Directory(String),
     File(String, PathBuf, u64),
 }
@@ -299,7 +299,7 @@ fn push(items: &mut Vec<Item>, item: Item, max_entries: u64) -> Result<()> {
 /// directories, never following a symlink. A root itself must not be a
 /// symlink or the wrong type; a missing root is omitted. The walk stops as
 /// soon as the archive would exceed `max_entries`.
-fn plan(data_dir: &Path, scope: Scope, max_entries: u64) -> Result<Vec<Item>> {
+pub(crate) fn plan(data_dir: &Path, scope: Scope, max_entries: u64) -> Result<Vec<Item>> {
     let mut items = Vec::new();
     ensure!(
         CORE_ENTRIES <= max_entries,

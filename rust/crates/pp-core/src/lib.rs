@@ -585,7 +585,10 @@ async fn start_rust_resources(
         &origin,
         community_manifests.as_deref(),
         rebuild_api::RuntimeInputs {
-            server_updates,
+            server: rebuild_api::ServerOptions {
+                update_checks: server_updates,
+                explicit_listener: listen.is_some(),
+            },
             farm: Arc::new(farm.clone()),
         },
     )?

@@ -226,20 +226,38 @@ pub fn read_router(
     )
 }
 
-/// What only a running runtime gives the product routes: whether update
-/// checks may run, and the printer watchers' observations for MCP's
+/// What only the headless server turns on in the product routes.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ServerOptions {
+    /// Settings may check for server updates.
+    pub update_checks: bool,
+    /// The routes serve an explicit `PP_LISTEN_ADDR` listener, so MCP takes its
+    /// Host and Origin from the listener's validated authority.
+    pub explicit_listener: bool,
+}
+
+/// MCP's config for the rebuild listener `origin`, or the explicit listener.
+fn mcp_config(origin: &str, api_key_tenant: &str, server: ServerOptions) -> Result<McpHttpConfig> {
+    Ok(
+        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+            .explicit_listener(server.explicit_listener),
+    )
+}
+
+/// What only a running runtime gives the product routes: the server
+/// options, and the printer watchers' observations for MCP's
 /// `get_farm_status`, bound once the gateway starts its watchers.
 pub(crate) struct RuntimeInputs {
-    pub(crate) server_updates: bool,
+    pub(crate) server: ServerOptions,
     pub(crate) farm: Arc<dyn pp_api::farm::FarmObservations>,
 }
 
 impl RuntimeInputs {
-    /// No update checks and no watchers: what tests and compositions
+    /// Default server options and no watchers: what tests and compositions
     /// without a gateway use.
     pub(crate) fn detached() -> Self {
         Self {
-            server_updates: false,
+            server: ServerOptions::default(),
             farm: Arc::new(crate::printer_status::LateFarm::default()),
         }
     }
@@ -354,7 +372,7 @@ fn read_router_with_updates(
         &accepted_client,
         admin_files.clone(),
         (filament_client, app_settings),
-        runtime.server_updates,
+        runtime.server.update_checks,
     )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
@@ -363,7 +381,7 @@ fn read_router_with_updates(
     let events = events_router(config.clone(), events_client, StreamLimits::default());
     let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings.clone())?;
     let mcp = mcp_router(
-        McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        mcp_config(origin, api_key_tenant, runtime.server)?,
         auth_client.clone(),
         McpClients {
             builds: builds_client,

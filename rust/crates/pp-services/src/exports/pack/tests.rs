@@ -58,13 +58,14 @@ fn remaining_leaves_out_printed_units() {
 }
 
 #[test]
-fn a_repeated_name_in_one_folder_gains_a_suffix() {
-    // Two Sources can hold the same path; the folder is the same, so the
-    // second Part's names collide with the first's.
+fn a_name_used_in_any_case_gains_a_suffix() {
+    // Two Sources can hold the same path, and names or folders differing only
+    // in case would overwrite each other on a case-insensitive file system.
     let parts = [
         part("primary", "parts/arm.stl", &[(1, false), (2, false)]),
         part("primary", "parts/arm.stl", &[(1, false)]),
-        part("primary", "parts/ARM.stl", &[(1, false)]),
+        part("primary", "parts/ARM.STL", &[(1, false)]),
+        part("primary", "Parts/arm.stl", &[(2, false)]),
     ];
     let entries = layout(&parts, Scope::All, LIMITS).unwrap();
     assert_eq!(
@@ -73,7 +74,8 @@ fn a_repeated_name_in_one_folder_gains_a_suffix() {
             "primary/parts/arm_01.stl",
             "primary/parts/arm_02.stl",
             "primary/parts/arm_01_2.stl",
-            "primary/parts/ARM_01.stl",
+            "primary/parts/ARM_01_3.stl",
+            "primary/Parts/arm_02_2.stl",
         ]
     );
 }

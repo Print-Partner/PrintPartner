@@ -4,7 +4,7 @@
 //! and writes the archive to any `Write`.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     io::{self, Read, Write},
 };
 
@@ -70,11 +70,13 @@ pub enum PackRefusal {
 
 /// The entries of the pack, in Part order then unit order. Names are
 /// `<role>/<folder>/<stem>_<NN>.stl`, with `_root` for a file at the top of
-/// its Source; a name already used in a folder gains `_2`, `_3` and so on.
+/// its Source; a name already used, ignoring ASCII case so that no entry
+/// overwrites another on a case-insensitive file system, gains `_2`, `_3`
+/// and so on.
 /// Each of the three segments is cleaned with [`safe_segment`], so no entry
 /// name can leave the folder it is extracted into.
 pub fn layout(parts: &[PackPart], scope: Scope, limits: Limits) -> Result<Vec<Entry>, PackRefusal> {
-    let mut used: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut used: HashSet<String> = HashSet::new();
     let mut entries = Vec::new();
     let mut bytes = END_RECORD;
     for (index, part) in parts.iter().enumerate() {
@@ -83,21 +85,18 @@ pub fn layout(parts: &[PackPart], scope: Scope, limits: Limits) -> Result<Vec<En
             safe_segment(&part.role, "_root"),
             safe_segment(source_folder(&part.relative_path), "_root")
         );
-        let stem = part.filename.strip_suffix(".stl").unwrap_or(&part.filename);
-        let stem = safe_segment(stem, "_");
-        let names = used.entry(folder.clone()).or_default();
+        let stem = safe_segment(without_stl(&part.filename), "_");
         for unit in &part.units {
             if scope == Scope::Remaining && unit.printed {
                 continue;
             }
             let base = format!("{stem}_{:02}", unit.number);
-            let mut name = format!("{base}.stl");
+            let mut name = format!("{folder}/{base}.stl");
             let mut suffix = 2;
-            while !names.insert(name.clone()) {
-                name = format!("{base}_{suffix}.stl");
+            while !used.insert(name.to_ascii_lowercase()) {
+                name = format!("{folder}/{base}_{suffix}.stl");
                 suffix += 1;
             }
-            let name = format!("{folder}/{name}");
             bytes = bytes.saturating_add(entry_bytes(&name, part.size));
             entries.push(Entry { name, part: index });
         }
@@ -123,6 +122,20 @@ pub fn layout(parts: &[PackPart], scope: Scope, limits: Limits) -> Result<Vec<En
 /// The download's file name: `<build-slug>-v<plan version>-stl.zip`.
 pub fn filename(build_name: &str, plan_version: i64) -> String {
     format!("{}-v{plan_version}-stl.zip", super::slug(build_name))
+}
+
+/// `filename` without a final `.stl` in any case.
+fn without_stl(filename: &str) -> &str {
+    match filename.len().checked_sub(4) {
+        Some(cut)
+            if filename
+                .get(cut..)
+                .is_some_and(|end| end.eq_ignore_ascii_case(".stl")) =>
+        {
+            &filename[..cut]
+        }
+        _ => filename,
+    }
 }
 
 /// The folder part of a Source-relative path.

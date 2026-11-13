@@ -22,6 +22,8 @@ mod print_stats;
 mod progress_reads;
 #[path = "tests/reads.rs"]
 mod reads;
+#[path = "tests/rebuild_plan.rs"]
+mod rebuild_plan;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
 use mcp_rpc::{policy, rpc};

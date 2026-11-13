@@ -171,7 +171,7 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 | `not_found` | The key's account has no such Build or draft. |
 | `not_open` | The draft is not open. |
 | `parts_required` | `parts` is missing or empty. |
-| `invalid_edit` | An edit has a wrong field type or a negative or fractional quantity, or lists a Part twice. |
+| `invalid_edit` | An edit has a wrong field type, a `quantity_override` that isn't a whole number from 1 to 10,000, or lists a Part twice. `parts` is not a list or has more than 10,000 edits. |
 | `part_not_found` | A `part_id` is not in the draft. |
 | `edit_empty` | An edit sets neither `included` nor `quantity_override`. |
 | `invalid_digest` | `expected_snapshot_digest` is not 64 lowercase hex characters. |
@@ -181,6 +181,35 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 | `edit_refused` | Confirm: the edit refused for another reason. |
 
 `unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
+
+### `propose_rebuild_plan`
+
+`propose_rebuild_plan` `{ plan_id, idempotency_key? }` prepares the Build's Working Plan from the Source roles in its planning brief (GRE-1539; the storage operation is GRE-1518).
+
+- **Propose** checks `plan_id` and `idempotency_key`, proves the API key and finds the brief. It writes nothing. The brief is read again at confirm, so a role set in between is used.
+- **Confirm** runs one transaction. It requires exactly one evidence item with role `structural_base` and makes its Source the base layer, then attaches each `overlay` and `addon` Source as an addon layer. Layers that already hold those Sources stay as they are. It prepares a draft from the layers the way `POST /plans/{id}/drafts/recompute` does, stores it, and records `draft_id`, `managed_source_ids` and `draft_source_revisions` in the brief. It never accepts or publishes a Plan.
+- It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "recompute", "sources": [{ "source_id", "role", "revision" }] } }`. `recompute` is `created`, or `existing` when the same key and the same Sources and revisions found the draft an earlier rebuild made. The key is `idempotency_key`, or else the action id. Read the draft's Parts with `get_plan_draft`. The result lists no Parts (provisional).
+- Path choices are not applied yet: a brief that resolves a difference or scopes a confirmed contribution to paths is refused. Removing layers an earlier rebuild attached also comes later (GRE-1434 PR 2).
+
+Refusals have the shape described for `propose_create_build`. Every refusal leaves layers, drafts and brief unchanged, and confirm keeps the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is not a positive whole number. |
+| `invalid_idempotency_key` | `idempotency_key` is not a non-blank string of at most 143 characters. |
+| `no_planning_brief` | The Build has no planning brief. |
+| `planning_brief_invalid` | The stored brief does not parse. |
+| `no_structural_base` | No evidence item has role `structural_base`. |
+| `multiple_structural_bases` | More than one evidence item has role `structural_base`. |
+| `source_choices_unsupported` | The brief resolves a difference or scopes a confirmed contribution to paths. |
+| `source_not_found` | A role Source does not exist. The result adds `source_id`. |
+| `layer_conflict` | The structural base Source is already attached as an addon layer. The result adds `source_id`. |
+| `accepted_baseline_required` | The Build needs an Accepted Plan first. |
+| `no_stls` | The Sources have no printable files. |
+| `would_wipe` | The draft would have no Parts left. |
+| `idempotency_conflict` | The key already made a draft that is not this rebuild, or one a later recompute abandoned. Use another key. |
+
+`unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`. Preparation reads the Source files inside the write transaction, so other writes wait while it runs.
 
 Every other product tool still answers that it has no Rust port.
 

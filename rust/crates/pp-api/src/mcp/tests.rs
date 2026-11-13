@@ -16,6 +16,8 @@ mod mcp_rpc;
 mod planning;
 #[path = "tests/planning_reads.rs"]
 mod planning_reads;
+#[path = "tests/print_stats.rs"]
+mod print_stats;
 #[path = "tests/progress_reads.rs"]
 mod progress_reads;
 #[path = "tests/reads.rs"]

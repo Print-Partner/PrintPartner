@@ -158,6 +158,9 @@ impl DomainPort for CheckoffDomain {
         if name == super::farm_status::TOOL {
             return Ok(self.farm_status());
         }
+        if name == super::print_stats::TOOL {
+            return Ok(self.print_stats(args));
+        }
         if name == super::source_roles::PROPOSE {
             return self.source_roles_propose(args);
         }

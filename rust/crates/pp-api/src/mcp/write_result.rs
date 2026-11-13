@@ -67,6 +67,8 @@ pub(super) enum Code {
     InvalidEvidenceKind,
     SourceNotFound,
     DerivedEvidenceNotFound,
+    // get_print_stats
+    InvalidHours,
 }
 
 impl Code {
@@ -113,6 +115,7 @@ impl Code {
             Self::InvalidEvidenceKind => "invalid_evidence_kind",
             Self::SourceNotFound => "source_not_found",
             Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
+            Self::InvalidHours => "invalid_hours",
         }
     }
 }

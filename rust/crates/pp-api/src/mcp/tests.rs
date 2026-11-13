@@ -8,12 +8,16 @@ mod create_build;
 mod draft_parts;
 #[path = "tests/farm_status.rs"]
 mod farm_status;
+#[path = "tests/import_inputs.rs"]
+mod import_inputs;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]
 mod planning;
 #[path = "tests/planning_reads.rs"]
 mod planning_reads;
+#[path = "tests/print_stats.rs"]
+mod print_stats;
 #[path = "tests/progress_reads.rs"]
 mod progress_reads;
 #[path = "tests/reads.rs"]

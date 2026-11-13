@@ -4,6 +4,7 @@ import { dateText } from "../builds/format";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
+import { AddSource } from "./AddSourceDialog";
 import {
   ACTIVITY_LIMIT,
   eventText,
@@ -125,7 +126,7 @@ function RecentActivity({ events }: { events: SourceEvent[] }) {
   );
 }
 
-/** Library: every Source with its current revision, sync state and latest activity. Read only. */
+/** Library: every Source with its current revision, sync state and latest activity, and Add Source. */
 export function LibraryScreen() {
   const connection = useConnection();
   const sources = useQuery(sourcesQuery);
@@ -135,6 +136,13 @@ export function LibraryScreen() {
   return (
     <ScreenTemplate
       title="Library"
+      // Under the heading in every state, so an open dialog survives the screen going
+      // empty, offline or back.
+      subnav={
+        <p className="pp-screen-actions">
+          <AddSource />
+        </p>
+      }
       state={state}
       renderData={(data) => (
         <>

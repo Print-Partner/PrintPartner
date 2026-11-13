@@ -9,6 +9,8 @@ pub mod create_with_brief;
 pub use create_with_brief::{CreateBuildError, CreatedBuild, InvalidNewBuild, NewBuild};
 pub mod source_roles;
 pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
+pub mod import_inputs;
+pub use import_inputs::{ImportInputsError, Imported, SourceInput};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;

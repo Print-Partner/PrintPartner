@@ -187,6 +187,14 @@ body {
   gap: 8px 16px;
 }
 
+/* A send row's actions: separate buttons, none styled as the default. */
+.pp-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .pp-link {
   color: var(--interaction-text);
 }
@@ -755,6 +763,10 @@ body {
   padding: 8px 12px;
   border-left: 4px solid var(--interaction-accent);
   background: var(--surface-raised);
+}
+
+.pp-screen-actions {
+  margin: 0 0 16px;
 }
 
 .pp-dialog-actions {

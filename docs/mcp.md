@@ -132,6 +132,20 @@ It answers `{ printer_count, printers, state_counts, needs_filament_swap }`.
 
 The farm tools, `get_farm_status` and `get_print_stats`, are listed and callable only while the caller's Farm Module is on. Otherwise `tools/list` leaves them out, and calling one answers `{ "error", "code" }` with `isError`: `farm_module_off`, `module_settings_invalid` when the stored Module settings don't parse, or the shared storage codes `unavailable` and `internal`.
 
+### `get_print_stats`
+
+`get_print_stats` `{ hours? }` reports what was printed in the last `hours` (GRE-1352), read with the request's API key. `hours` defaults to 8 and must be a JSON number above 0 and at most 2160 (90 days); anything else, including a numeric string, answers `invalid_hours`. It writes nothing.
+
+It answers:
+
+- `window_hours` and `since`, the window's start in RFC 3339.
+- `plates_sent`, `plates_completed`, `plates_failed`, `completion_rate` and `filament_consumed_g`, counted from every Checkoff burst job (`print_jobs`) in the window, and `by_printer` with the same counts per printer, its `printer_id` and `printer_name`. `completion_rate` is completed over completed plus failed, to three places, or `null` when none finished. Node counted only the newest 100 jobs; Rust counts them all, in one grouped read on the reader pool.
+- `prints_seen_on_printers` `{ total, attached_to_plan, not_attached_to_plan, by_printer }`: prints the printers reported in the window. A Checkoff result with a reported outcome is attached to a Plan; an open unmatched print is not. Claimed and dismissed unmatched prints are not open and are not counted.
+- `empty_window`: `true` when no plate was sent and no print was seen.
+- `active_plans`: `{ "kind": "listed", "plans" }` with every Build that is not archived, by name, with `plan_id`, `plan_name`, `part_count` and `accepted_progress`. When the Build list cannot be read, it is `{ "kind": "unavailable", "reason" }`, with `too_many_builds` (more than 64 Builds, archived ones included) or `read_failed`, and the plate and print counts are still answered. A refused key refuses the whole call. Progress is `{ "kind": "ready", total_units, remaining_units, printed_units }`, the numbers `get_remaining` reports, `{ "kind": "empty" }` with no Accepted Plan, or `{ "kind": "unavailable", reason }`.
+
+Like `get_farm_status`, it is listed and callable only while the Farm Module is on. Storage failures answer the shared codes `unauthorized`, `unavailable` and `internal`.
+
 These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` and `propose_import_build_inputs` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
 ### `propose_edit_plan_draft_parts`
@@ -160,7 +174,7 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 
 `unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
 
-Every other product tool still answers that it has no Rust port. `get_print_stats` has no Rust port yet; while the Farm Module is on it answers that.
+Every other product tool still answers that it has no Rust port.
 
 ## To be written
 

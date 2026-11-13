@@ -63,7 +63,7 @@ fn stats_count_the_window_and_list_active_plans() {
             sent: 2,
             completed: 1,
             failed: 1,
-            filament_consumed_g: 120,
+            filament_consumed_g: 119.5,
         }],
         results: &[],
         unmatched: &[],
@@ -97,7 +97,7 @@ fn stats_count_the_window_and_list_active_plans() {
         (&json!(2), &json!(1), &json!(1))
     );
     assert_eq!(stats["completion_rate"], json!(0.5));
-    assert_eq!(stats["filament_consumed_g"], json!(120));
+    assert_eq!(stats["filament_consumed_g"], json!(119.5));
     assert_eq!(stats["empty_window"], json!(false));
     assert_eq!(stats["by_printer"][0]["printer_name"], "Printer A");
     assert_eq!(

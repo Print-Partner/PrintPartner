@@ -82,7 +82,9 @@ pub(super) struct PrintStats {
     /// Completed over completed plus failed, to 3 places; `null` when none
     /// finished. Plates still printing do not count against it.
     completion_rate: Option<f64>,
-    filament_consumed_g: i64,
+    /// Grams every job in the window recorded; `120`, not `120.0`, when whole.
+    #[serde(serialize_with = "grams")]
+    filament_consumed_g: f64,
     by_printer: Vec<PrinterStats>,
     prints_seen_on_printers: PrintsSeen,
     active_plans: Vec<ActivePlan>,
@@ -97,7 +99,8 @@ struct PrinterStats {
     plates_completed: u64,
     plates_failed: u64,
     completion_rate: Option<f64>,
-    filament_consumed_g: i64,
+    #[serde(serialize_with = "grams")]
+    filament_consumed_g: f64,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -358,13 +361,17 @@ fn progress(progress: &AcceptedProgress) -> Progress {
     }
 }
 
-/// `hours` as JSON: `8`, not `8.0`, when it is whole.
-fn whole(hours: f64) -> Number {
-    if hours.fract() == 0.0 {
-        Number::from(hours as u64)
+/// A non-negative amount as JSON: `8`, not `8.0`, when it is whole.
+fn whole(amount: f64) -> Number {
+    if amount.fract() == 0.0 && amount >= 0.0 && amount <= u64::MAX as f64 {
+        Number::from(amount as u64)
     } else {
-        Number::from_f64(hours).unwrap_or_else(|| Number::from(0))
+        Number::from_f64(amount).unwrap_or_else(|| Number::from(0))
     }
+}
+
+fn grams<S: serde::Serializer>(grams: &f64, out: S) -> Result<S::Ok, S::Error> {
+    whole(*grams).serialize(out)
 }
 
 #[cfg(test)]

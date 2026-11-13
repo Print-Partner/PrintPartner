@@ -54,7 +54,7 @@ fn seed() -> String {
         ),
         job("job-1", "completed", "120", &ago(2)),
         job("job-2", "failed", "NULL", &ago(1)),
-        job("job-3", "completed", "40", &ago(20)),
+        job("job-3", "completed", "40.5", &ago(20)),
     ]
     .concat()
 }
@@ -138,7 +138,11 @@ async fn mcp_print_stats_counts_the_window() {
     let stats_24h = stats(&server, &headers, json!({ "hours": 24 })).await;
     assert_eq!(stats_24h["window_hours"], json!(24));
     assert_eq!(stats_24h["plates_sent"], json!(3));
-    assert_eq!(stats_24h["filament_consumed_g"], json!(160));
+    assert_eq!(
+        stats_24h["filament_consumed_g"],
+        json!(160.5),
+        "fractional grams add up"
+    );
     assert_eq!(stats_24h["prints_seen_on_printers"]["total"], json!(2));
     assert_eq!(
         stats_24h["prints_seen_on_printers"]["attached_to_plan"],

@@ -20,15 +20,16 @@ use std::{sync::atomic::AtomicBool, time::Duration};
 
 /// One printer's plates in the window. `printer_id` is `None` for jobs that
 /// name no printer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PrinterActivity {
     pub printer_id: Option<String>,
     /// Every job in the window, whatever its status.
     pub sent: u32,
     pub completed: u32,
     pub failed: u32,
-    /// Grams the completed jobs recorded; jobs with no figure add nothing.
-    pub filament_consumed_g: i64,
+    /// Grams every job in the window recorded, whatever its status; jobs
+    /// with no figure add nothing. Stored grams can be fractional.
+    pub filament_consumed_g: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,7 +87,7 @@ fn count(
     let mut statement = tx.prepare(
         "SELECT NULLIF(TRIM(printer_id),''), COUNT(*), \
                 COALESCE(SUM(status='completed'),0), COALESCE(SUM(status='failed'),0), \
-                COALESCE(SUM(filament_consumed_g),0) \
+                TOTAL(filament_consumed_g) \
          FROM print_jobs WHERE tenant_id=?1 AND at>=?2 \
          GROUP BY NULLIF(TRIM(printer_id),'') ORDER BY 1",
     )?;

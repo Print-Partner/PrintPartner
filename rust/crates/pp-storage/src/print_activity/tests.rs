@@ -13,7 +13,7 @@ const POLICY: AuthPolicy = AuthPolicy {
 static IDLE: AtomicBool = AtomicBool::new(false);
 
 /// One Build and its jobs: `(tenant, printer_id, status, grams, at)`.
-fn seed(directory: &std::path::Path, jobs: &[(&str, &str, &str, Option<i64>, &str)]) {
+fn seed(directory: &std::path::Path, jobs: &[(&str, &str, &str, Option<f64>, &str)]) {
     let database = directory.join(crate::archive::DATABASE_FILE);
     let connection = rusqlite::Connection::open(database).unwrap();
     connection.busy_timeout(WAIT).unwrap();
@@ -45,15 +45,21 @@ fn counts_each_printers_jobs_in_the_window() {
                 "default",
                 "p-a",
                 "completed",
-                Some(120),
+                Some(119.5),
                 "2026-11-12T08:00:00.000Z",
             ),
-            ("default", "p-a", "failed", None, "2026-11-12T09:00:00.000Z"),
+            (
+                "default",
+                "p-a",
+                "failed",
+                Some(0.5),
+                "2026-11-12T09:00:00.000Z",
+            ),
             (
                 "default",
                 "p-a",
                 "completed",
-                Some(50),
+                Some(50.0),
                 "2026-11-11T08:00:00.000Z",
             ),
             ("default", " ", "sent", None, "2026-11-12T10:00:00.000Z"),
@@ -61,7 +67,7 @@ fn counts_each_printers_jobs_in_the_window() {
                 "foreign",
                 "p-a",
                 "completed",
-                Some(999),
+                Some(999.0),
                 "2026-11-12T10:00:00.000Z",
             ),
         ],
@@ -79,14 +85,14 @@ fn counts_each_printers_jobs_in_the_window() {
                 sent: 1,
                 completed: 0,
                 failed: 0,
-                filament_consumed_g: 0,
+                filament_consumed_g: 0.0,
             },
             PrinterActivity {
                 printer_id: Some("p-a".into()),
                 sent: 2,
                 completed: 1,
                 failed: 1,
-                filament_consumed_g: 120,
+                filament_consumed_g: 120.0,
             },
         ]
     );

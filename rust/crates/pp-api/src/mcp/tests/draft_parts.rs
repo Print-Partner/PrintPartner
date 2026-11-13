@@ -266,3 +266,30 @@ async fn mcp_draft_part_edit_takes_the_ids_get_plan_draft_returns() {
     let edited = stored.iter().find(|row| json!(row.0) == part_id).unwrap();
     assert_eq!(edited.1, !part["included"].as_bool().unwrap());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_draft_part_edit_refused_after_it_committed_is_outcome_unknown() {
+    let (server, headers, database) = fixture().await;
+    // Without the accepted revision's Required-unit set, the Part edit still
+    // commits, then the automatic Required-unit selection is refused. The
+    // disposable database drops the delete guards only to remove that set.
+    pp_testkit::mcp_planning::edit(
+        &database,
+        "PRAGMA foreign_keys=OFF;
+         DROP TRIGGER trg_required_units_immutable_delete;
+         DROP TRIGGER trg_plan_revision_required_units_immutable_delete;
+         DROP TRIGGER trg_plan_revision_required_unit_sets_immutable_delete;
+         DELETE FROM plan_revision_required_units WHERE revision_id=1;
+         DELETE FROM plan_revision_required_unit_sets WHERE revision_id=1;
+         DELETE FROM required_units WHERE profile_id=1 AND created_in_revision_id=1;",
+    )
+    .unwrap();
+    let id = propose(&server, &headers, json!([{"part_id":4,"included":false}])).await;
+    let (refused, failed) = tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+    assert!(failed, "{refused}");
+    assert_eq!(refused["code"], "outcome_unknown", "{refused}");
+    assert_eq!(refused["outcome_unknown"], true);
+    let (part, included, _) = parts(&database)[0];
+    assert_eq!((part, included), (4, false), "the edit committed");
+    assert!(pending(&server, &headers).await.is_empty());
+}

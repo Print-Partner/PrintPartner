@@ -142,43 +142,42 @@ impl CheckoffDomain {
             self.wait,
         );
         let workspace = match edited {
-            Ok(EditOutcome::Ready { workspace }) => workspace,
-            Ok(outcome) => return Ok(edit_refusal(&outcome).confirmation()),
-            Err(error) => {
-                return Ok(self
-                    .failed_edit(plan, draft, action, &error)?
-                    .confirmation());
-            }
+            Ok(EditOutcome::Ready { workspace }) => Ok(workspace),
+            Ok(outcome) => Err(edit_refusal(&outcome)),
+            Err(error) => Err(storage_refusal(&error)),
+        };
+        let workspace = match workspace {
+            Ok(workspace) => workspace,
+            Err(refusal) => return Ok(self.settle(plan, draft, action, refusal)?.confirmation()),
         };
         let result = applied(&workspace, &action.params);
         self.log(plan, action, &result)?;
         Ok(json!({ "ok": true, "result": result }))
     }
 
-    /// The refusal for an edit that returned an error. The edit commits the
-    /// Part changes before it selects Required units in a second transaction,
-    /// so an error can follow a committed edit. The draft is re-read to tell
-    /// the cases apart; see [`after_failed_edit`].
-    fn failed_edit(
+    /// The answer for an edit that did not end `Ready`. The edit commits the
+    /// Part changes, then selects Required units in a second transaction, so
+    /// an error or a refusal can follow a committed edit. The draft is re-read
+    /// to tell the cases apart; see [`after_failed_edit`].
+    fn settle(
         &self,
         plan: PositiveId,
         draft: PositiveId,
         action: &ProposedAction,
-        error: &anyhow::Error,
+        refusal: Refusal,
     ) -> Result<Refusal, String> {
-        let refusal = storage_refusal(error);
         if refusal.code == Code::OutcomeUnknown {
             return Ok(refusal);
         }
-        let expected = action
-            .params
-            .get("expected_snapshot_digest")
-            .and_then(Value::as_str);
-        let current = self
-            .workspace(plan, draft)?
-            .ok()
-            .map(|workspace| workspace.draft.snapshot_digest);
-        Ok(after_failed_edit(refusal, current.as_deref(), expected))
+        let current = self.workspace(plan, draft)?.ok().map(|workspace| Current {
+            digest: workspace.draft.snapshot_digest,
+            parts: workspace
+                .parts
+                .iter()
+                .map(|part| (part.draft_part_id, part.included, part.quantity_override))
+                .collect(),
+        });
+        Ok(after_failed_edit(refusal, current.as_ref(), &action.params))
     }
 
     /// The draft as the Plan tab reads it, or the refusal for its absence.
@@ -396,20 +395,55 @@ fn edit_refusal(outcome: &EditOutcome) -> Refusal {
     }
 }
 
-/// What confirm answers after the edit returned `refusal`, given the draft's
-/// digest from a re-read (`None` when the re-read failed) and the digest the
-/// proposal expected:
-/// - the draft still has the expected digest: nothing was written, so `refusal`;
-/// - the draft has another digest: the edit may have committed, so `outcome_unknown`;
-/// - the re-read failed and `refusal` is `unauthorized` or `unavailable`: the
-///   edit was never admitted, so `refusal`, and the proposal stays pending;
-/// - otherwise `outcome_unknown`.
-fn after_failed_edit(refusal: Refusal, current: Option<&str>, expected: Option<&str>) -> Refusal {
+/// The draft as a re-read after a failed edit finds it: its digest and each
+/// Part's `(id, included, quantity_override)`.
+struct Current {
+    digest: String,
+    parts: Vec<(i64, bool, Option<i64>)>,
+}
+
+/// What confirm answers after the edit ended with `refusal`, given the
+/// re-read draft (`None` when the re-read failed) and the proposal's params.
+/// The Part edit writes all its values in one transaction or none.
+/// - The draft still has the expected digest: nothing was written, so `refusal`.
+/// - The draft holds every proposed value under a new digest: the edit
+///   committed, then the Required-unit selection failed, so `outcome_unknown`.
+/// - The draft lacks a proposed value: this edit did not commit (another
+///   change did), so `refusal`, and the proposal stays pending.
+/// - The re-read failed: `refusal` when it is `unauthorized` or `unavailable`,
+///   because the edit was never admitted; otherwise `outcome_unknown`.
+fn after_failed_edit(
+    refusal: Refusal,
+    current: Option<&Current>,
+    params: &Map<String, Value>,
+) -> Refusal {
     let unwritten = match current {
-        Some(digest) => Some(digest) == expected,
+        Some(current) => {
+            params
+                .get("expected_snapshot_digest")
+                .and_then(Value::as_str)
+                == Some(current.digest.as_str())
+                || !holds_proposal(current, params)
+        }
         None => matches!(refusal.code, Code::Unauthorized | Code::Unavailable),
     };
     if unwritten { refusal } else { OUTCOME_UNKNOWN }
+}
+
+/// Whether the draft holds every value the proposal sets.
+fn holds_proposal(current: &Current, params: &Map<String, Value>) -> bool {
+    let rows = params.get("parts").and_then(Value::as_array);
+    rows.into_iter().flatten().all(|row| {
+        current.parts.iter().any(|&(id, included, quantity)| {
+            row["part_id"].as_i64() == Some(id)
+                && row
+                    .get("included")
+                    .is_none_or(|v| v.as_bool() == Some(included))
+                && row
+                    .get("quantity_override")
+                    .is_none_or(|v| v.as_i64() == quantity)
+        })
+    })
 }
 
 /// The refusal for a storage error, mapped as the Plan tab's HTTP handler
@@ -436,14 +470,32 @@ mod tests {
     const OTHER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
     #[test]
-    fn a_failed_edit_is_unknown_unless_the_draft_shows_it_did_not_run() {
+    fn a_failed_edit_is_unknown_only_when_the_draft_holds_the_proposal() {
         let unauthorized = storage_refusal(&anyhow::Error::new(AuthFailure::InvalidCredentials));
         let unavailable = storage_refusal(&anyhow::Error::new(Failure::QueueFull));
         let internal = storage_refusal(&anyhow::Error::new(Failure::CorruptOrigin));
-        let after = |refusal, current| after_failed_edit(refusal, current, Some(EXPECTED)).code;
-        for refusal in [unauthorized, unavailable, internal] {
-            assert_eq!(after(refusal, Some(EXPECTED)), refusal.code);
-            assert_eq!(after(refusal, Some(OTHER)), Code::OutcomeUnknown);
+        let changed = edit_refusal(&EditOutcome::DraftChanged { workspace: None });
+        let params = json!({"expected_snapshot_digest": EXPECTED, "parts": [{"part_id": 4, "included": false}]});
+        let Value::Object(params) = params else {
+            unreachable!()
+        };
+        let draft = |digest: &str, included: bool| Current {
+            digest: digest.into(),
+            parts: vec![(4, included, None), (5, true, Some(3))],
+        };
+        let after = |refusal, current: Option<Current>| {
+            after_failed_edit(refusal, current.as_ref(), &params).code
+        };
+        for refusal in [unauthorized, unavailable, internal, changed] {
+            // Unchanged draft: nothing was written.
+            assert_eq!(after(refusal, Some(draft(EXPECTED, true))), refusal.code);
+            // New digest without the proposed value: another change, not this edit.
+            assert_eq!(after(refusal, Some(draft(OTHER, true))), refusal.code);
+            // New digest holding the proposed value: committed, then refused.
+            assert_eq!(
+                after(refusal, Some(draft(OTHER, false))),
+                Code::OutcomeUnknown
+            );
         }
         assert_eq!(after(unauthorized, None), Code::Unauthorized);
         assert_eq!(after(unavailable, None), Code::Unavailable);
@@ -470,7 +522,7 @@ mod tests {
         }
         fn apply_action(&self, _: &ProposedAction) -> Result<Value, String> {
             let refusal = storage_refusal(&(self.0)());
-            Ok(after_failed_edit(refusal, None, Some(EXPECTED)).confirmation())
+            Ok(after_failed_edit(refusal, None, &Map::new()).confirmation())
         }
     }
 

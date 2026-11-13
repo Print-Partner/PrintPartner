@@ -24,3 +24,10 @@ export const NO_DRAFT =
 /** History's empty state. */
 export const HISTORY_EMPTY =
   "Nothing has happened to this Build yet. Accepted Plans, checkoffs and sends appear here, and so do the snapshots Accept saves of the Plans it replaces. Restore as draft can bring a snapshot back.";
+
+/**
+ * The Accept gate's line under the Plates it lists as cleared (GRE-1530). Every Accept starts
+ * the new accepted Plan with no Plate layout, as Node does, even when every unit is kept.
+ */
+export const PLATES_CLEARED =
+  "A new accepted Plan starts with no Plate layout, so Accept clears these Plates even when every unit is kept. Laying Plates out again is not available in this UI yet.";

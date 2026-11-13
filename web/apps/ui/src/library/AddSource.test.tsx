@@ -35,8 +35,9 @@ const created = (id: number, body: CreateSourceRequest): Source => ({
   name: body.name,
   url: body.url ?? "",
   source_kind: body.source_kind ?? "github",
-  source_type: "git",
-  role: "primary",
+  // As Rust stores them: a GitHub Source is `git`, an archive `local`.
+  source_type: body.source_kind === "archive" ? "local" : "git",
+  role: "unassigned",
   category: null,
   branch: body.branch ?? "main",
   tag: null,
@@ -55,7 +56,9 @@ const created = (id: number, body: CreateSourceRequest): Source => ({
 });
 
 /** `answer` replaces the create's reply after the Source is stored, as a lost or failed answer. */
-function scriptedCore({ answer }: { answer?: () => Response } = {}) {
+function scriptedCore({
+  answer,
+}: { answer?: (stored: Source) => Response | Promise<Response> } = {}) {
   const sources: Source[] = [];
   const posts: CreateSourceRequest[] = [];
   let down = false;
@@ -81,7 +84,7 @@ function scriptedCore({ answer }: { answer?: () => Response } = {}) {
       }
       const source = created(sources.length + 1, body);
       sources.push(source);
-      return Promise.resolve(answer ? answer() : json(source));
+      return Promise.resolve(answer ? answer(source) : json(source));
     }
     if (path === "/api/v1/sources") return Promise.resolve(json({ sources }));
     return Promise.resolve(json({}, 404));
@@ -105,6 +108,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+
+/** A create is sent a microtask or more after the click, so "nothing sent" waits first. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 const dialog = () => screen.getByRole("dialog", { name: "Add Source" });
 const create = () => within(dialog()).getByRole("button", { name: "Create" });
@@ -131,6 +137,7 @@ describe("GRE-1365 PR 2: Add Source in Library", () => {
     const row = within(table).getByRole("rowheader", { name: /Rack/ }).closest("tr")!;
     expect(row.textContent).toContain("No revision yet");
     expect(row.textContent).toContain("Never synced");
+    expect(within(row).getByRole("rowheader").textContent).toContain("local");
     expect(core.posts).toEqual([{ name: "Rack", source_kind: "archive" }]);
   });
 
@@ -188,6 +195,7 @@ describe("GRE-1365 PR 2: Add Source in Library", () => {
     fireEvent.click(create());
     fireEvent.click(within(dialog()).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+    await settle();
     expect(core.posts).toEqual([]);
   });
 
@@ -203,8 +211,41 @@ describe("GRE-1365 PR 2: Add Source in Library", () => {
     );
     // The list is read again, and shows the Source the core did store.
     expect(await screen.findByRole("rowheader", { name: /Rack/, hidden: true })).toBeTruthy();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settle();
     expect(core.posts).toHaveLength(1);
+  });
+
+  it("Enter and a click in the same moment send one create", async () => {
+    const core = scriptedCore();
+    renderLibrary(core.fetchMock);
+    await openDialog();
+    type("Name", "Rack");
+    fireEvent.submit(create().closest("form")!);
+    fireEvent.click(create());
+    fireEvent.click(create());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await settle();
+    expect(core.posts).toHaveLength(1);
+  });
+
+  it("a late answer to a closed dialog never closes or writes into the next one", async () => {
+    let release = () => {};
+    const core = scriptedCore({
+      answer: (stored) => new Promise<Response>((r) => (release = () => r(json(stored)))),
+    });
+    renderLibrary(core.fetchMock);
+    await openDialog();
+    type("Name", "Rack");
+    fireEvent.click(create());
+    await waitFor(() => expect(core.posts).toHaveLength(1));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    await openDialog();
+    type("Name", "Toolhead");
+    release();
+    // The list is read again, so the stored "Rack" appears; the new dialog is untouched.
+    expect(await screen.findByRole("rowheader", { name: /Rack/, hidden: true })).toBeTruthy();
+    expect((within(dialog()).getByLabelText("Name") as HTMLInputElement).value).toBe("Toolhead");
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
   });
 
   it("offline: Create is disabled and says why", async () => {
@@ -218,6 +259,7 @@ describe("GRE-1365 PR 2: Add Source in Library", () => {
     await waitFor(() => expect(within(dialog()).getByText(OFFLINE_REASON)).toBeTruthy());
     expect(create().getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(create());
+    await settle();
     expect(core.posts).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@ import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
 import { sourcesQuery } from "./sources";
 
-export type SourceKind = "github" | "archive";
+type SourceKind = "github" | "archive";
 
 export interface SourceForm {
   name: string;
@@ -61,31 +61,39 @@ function AddSourceDialog({ onClose }: { onClose: () => void }) {
     retry: false,
     networkMode: "always",
     mutationFn: (body: CreateSourceRequest) => writeCore("createSource", {}, body),
-    onSuccess: () => onClose(),
-    onError: (error: Error) => {
-      // A 4xx is the core's refusal; anything else may have added the Source.
-      const refused = error instanceof CoreError && error.status < 500;
-      setFailure(
-        refused
-          ? (error.detail ?? error.message)
-          : `Could not confirm the Source was added: ${error.message}. The list is read again; check it before you press Create again.`,
-      );
-    },
+    // Runs even after the dialog closed: the list is read again whatever the answer.
     onSettled: () => {
       sending.current = false;
       void client.invalidateQueries({ queryKey: sourcesQuery.queryKey });
     },
   });
-  const why = offline ? OFFLINE_REASON : missing(form);
+  const why = offline ? OFFLINE_REASON : create.isPending ? "Adding the Source." : missing(form);
   const blocked = why !== null || create.isPending;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (blocked || sending.current) return;
     sending.current = true;
     setFailure("");
-    create.mutate(sourceRequest(form));
+    // Per-call callbacks do not run once the dialog has closed, so a late answer
+    // never closes or writes into a dialog opened after it.
+    create.mutate(sourceRequest(form), {
+      onSuccess: () => onClose(),
+      onError: (error: Error) => {
+        // A 4xx is the core's refusal; anything else may have added the Source.
+        const refused = error instanceof CoreError && error.status < 500;
+        setFailure(
+          refused
+            ? (error.detail ?? error.message)
+            : `Could not confirm the Source was added: ${error.message}. The list is read again; check it before you press Create again.`,
+        );
+      },
+    });
   };
-  const set = (patch: Partial<SourceForm>) => setForm((current) => ({ ...current, ...patch }));
+  const set = (patch: Partial<SourceForm>) => {
+    // A refusal describes the values that were sent; editing makes it stale.
+    setFailure("");
+    setForm((current) => ({ ...current, ...patch }));
+  };
   return (
     <Dialog title="Add Source" onClose={onClose}>
       <form onSubmit={submit} noValidate>
@@ -143,7 +151,6 @@ function AddSourceDialog({ onClose }: { onClose: () => void }) {
             </div>
           </div>
         )}
-        {create.isPending && <p role="status">Adding the Source.</p>}
         {failure && (
           <p role="alert" className="pp-field-error">
             {failure}
@@ -161,11 +168,10 @@ function AddSourceDialog({ onClose }: { onClose: () => void }) {
           >
             Create
           </button>
-          {why && (
-            <span id={`${ids}-why`} className="pp-mutation-reason">
-              {why}
-            </span>
-          )}
+          {/* Mounted while empty, so a screen reader announces each new reason. */}
+          <span id={`${ids}-why`} role="status" className="pp-mutation-reason">
+            {why}
+          </span>
         </div>
       </form>
     </Dialog>

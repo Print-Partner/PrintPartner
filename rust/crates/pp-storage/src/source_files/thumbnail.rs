@@ -13,7 +13,9 @@
 //! without opening the STL. A new file is written under a temporary name and
 //! renamed into place. A corrupt or oversized STL is refused and nothing is
 //! cached. A cache write that fails is logged and the rendered PNG is still
-//! answered.
+//! answered. The cache folders are opened one by one without following a
+//! link: a symbolic link at `thumbs`, `thumbs/sources` or the revision's
+//! folder means no cache, never a write through it.
 
 use super::{SourceFilesClient, SourceFilesError};
 use crate::{
@@ -23,10 +25,11 @@ use crate::{
     },
     read_model::{Credential, graph::safe_path},
 };
+use pp_os::Dir;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::AtomicBool,
     time::Duration,
@@ -68,13 +71,10 @@ impl SourceFilesClient {
         };
         let digest = hex::encode(Sha256::digest(path.as_bytes()));
         let tag = format!("{revision_id}-v{RENDERER_VERSION}-{}", &digest[..16]);
-        let cached = self
-            .thumbnails
-            .join(revision_id.to_string())
-            .join(format!("{digest}-v{RENDERER_VERSION}.png"));
+        let cached = format!("{digest}-v{RENDERER_VERSION}.png");
         // A file that is not a whole PNG, as a crash between write and sync
         // could leave, is rendered again and replaced.
-        if let Ok(png) = fs::read(&cached)
+        if let Ok(png) = read_cached(&self.data, revision_id, &cached)
             && png.starts_with(PNG_SIGNATURE)
         {
             return Ok(SourceThumbnail {
@@ -86,7 +86,7 @@ impl SourceFilesClient {
         let limits = GeometryLimits::default();
         let stl = read_stl(&stl_file(&root, path)?, limits.max_bytes)?;
         let png = render(&stl, limits).map_err(|_| SourceFilesError::Unrenderable)?;
-        if let Err(error) = store(&cached, &png) {
+        if let Err(error) = store(&self.data, revision_id, &cached, &png) {
             tracing::warn!(error = %error, "source_thumbnail_cache_write_failed");
         }
         Ok(SourceThumbnail {
@@ -153,20 +153,55 @@ fn read_stl(file: &Path, max_bytes: usize) -> Result<Vec<u8>, SourceFilesError> 
     Ok(bytes)
 }
 
-/// Writes `png` to `cached` through a temporary file in the same folder,
-/// synced before the rename so a crash leaves the old state or the whole file.
-fn store(cached: &Path, png: &[u8]) -> std::io::Result<()> {
-    let folder = cached.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    fs::create_dir_all(folder)?;
-    let temporary = folder.join(format!(".{:016x}.tmp", rand::random::<u64>()));
-    let written = fs::File::create(&temporary)
+/// `thumbs/sources/<revision id>` under the data folder, each folder opened
+/// relative to the one above without following a link, so a symbolic link or
+/// a file at any of those names fails instead of leading outside. Missing
+/// folders are made only when `create` is set.
+fn cache_folder(data: &Path, revision_id: i64, create: bool) -> io::Result<Dir> {
+    let revision = revision_id.to_string();
+    let mut folder = Dir::open(data)?;
+    // ast-grep-ignore: no-writer-family-literal -- Rust's own thumbnail cache, only inside thumbs/sources, a folder Node never creates; Node writes flat files directly in thumbs/.
+    for name in ["thumbs", "sources", revision.as_str()] {
+        folder = match folder.open_dir_nofollow(name) {
+            Ok(next) => next,
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
+                match folder.create_dir(name) {
+                    Ok(()) => folder.sync()?,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+                folder.open_dir_nofollow(name)?
+            }
+            Err(error) => return Err(error),
+        };
+    }
+    Ok(folder)
+}
+
+/// The cached file `name`, read without following a link.
+fn read_cached(data: &Path, revision_id: i64, name: &str) -> io::Result<Vec<u8>> {
+    let mut file = cache_folder(data, revision_id, false)?.open_read_nofollow(name)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Writes `png` as `name` through a temporary file in the same folder, synced
+/// before the rename so a crash leaves the old state or the whole file. Every
+/// step is relative to the folder handle, so nothing is written through a link.
+fn store(data: &Path, revision_id: i64, name: &str, png: &[u8]) -> io::Result<()> {
+    let folder = cache_folder(data, revision_id, true)?;
+    let temporary = format!(".{:016x}.tmp", rand::random::<u64>());
+    let written = folder
+        .create_new_nofollow(&temporary)
         .and_then(|mut file| {
             file.write_all(png)?;
             file.sync_all()
         })
-        .and_then(|()| fs::rename(&temporary, cached));
+        .and_then(|()| folder.rename_replace(&temporary, name))
+        .and_then(|()| folder.sync());
     if written.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = folder.remove_file(&temporary);
     }
     written
 }

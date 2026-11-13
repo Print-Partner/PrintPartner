@@ -392,3 +392,28 @@ fn a_cached_file_that_is_not_a_whole_png_is_rendered_again() {
         "the cache file was replaced"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_linked_cache_folder_is_never_written_through() {
+    let fixture = Fixture::new();
+    fixture.snapshot("1/revisions/r1", &[("part.stl", &one_triangle_binary())]);
+    fixture.sql(FIRST);
+    let outside = tempfile::tempdir().unwrap();
+    let sources = fixture.directory.path().join("thumbs/sources");
+    let _ = fs::remove_dir_all(&sources);
+    std::os::unix::fs::symlink(outside.path(), &sources).unwrap();
+
+    let thumbnail = fixture.thumbnail("part.stl").unwrap();
+    assert_eq!(png_size(&thumbnail.png), (256, 256));
+    let again = fixture.thumbnail("part.stl").unwrap();
+    assert_eq!(again, thumbnail);
+    let written: Vec<_> = fs::read_dir(outside.path()).unwrap().collect();
+    assert!(written.is_empty(), "wrote through the link: {written:?}");
+    assert!(
+        fs::symlink_metadata(&sources)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}

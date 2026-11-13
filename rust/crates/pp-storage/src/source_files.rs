@@ -108,8 +108,8 @@ pub struct SourceFilesClient {
     readers: SettingsClient,
     policy: AuthPolicy,
     repos: PathBuf,
-    /// The thumbnail cache root, `<data>/thumbs/sources`.
-    thumbnails: PathBuf,
+    /// The data folder; the thumbnail cache is under `thumbs/sources`.
+    data: PathBuf,
     /// Names at a revision's root that belong to the snapshot writer.
     internal: Vec<String>,
 }
@@ -125,8 +125,7 @@ impl WriterOwner {
             readers: self.client(),
             policy,
             repos: lease.data_dir().join("repos"),
-            // ast-grep-ignore: no-writer-family-literal -- Rust's own thumbnail cache, only inside thumbs/sources, a folder Node never creates; Node writes flat files directly in thumbs/.
-            thumbnails: lease.data_dir().join("thumbs/sources"),
+            data: lease.data_dir().to_path_buf(),
             internal: Vec::new(),
         })
     }

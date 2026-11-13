@@ -20,6 +20,7 @@ use pp_api::{
     plates::plates_router,
     printers::printers_router,
     settings::settings_router,
+    sources_github::github_router,
     workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
@@ -200,6 +201,7 @@ fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Rou
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
+/// GitHub branch and tag listings,
 /// the domain event stream and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
@@ -295,8 +297,20 @@ fn admin_routes(
     let probe = crate::printer_host::probe::router(config.clone(), reads.clone())?;
     let filaments = filaments(config.clone(), reads, filament_client)?;
     let config = config.with_server_update_checks(server_updates);
-    let settings = settings_router(config, reads.clone(), app_settings);
+    let settings = settings_routes(config, reads.clone(), app_settings)?;
     Ok(admin.merge(probe).merge(filaments).merge(settings))
+}
+
+/// The settings routes and the GitHub branch and tag listings, which read
+/// the stored GitHub token through the same settings client.
+fn settings_routes(
+    config: AdminHttpConfig,
+    reads: ReadClient,
+    settings: pp_storage::app_settings::AppSettingsClient,
+) -> Result<Router> {
+    let github = crate::github::GithubTransport::new()?;
+    let listings = github_router(config.clone(), reads.clone(), settings.clone(), github);
+    Ok(settings_router(config, reads, settings).merge(listings))
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,

@@ -34,8 +34,7 @@ pub fn filament_router(
     client: FilamentClient,
     reader: Arc<dyn CatalogReader>,
 ) -> Router {
-    let wait = config.wait;
-    let Some(gate) = Gate::new(config, reads) else {
+    let Some((gate, wait)) = Gate::with_wait(config, reads) else {
         return Router::new();
     };
     let routes = Router::new()

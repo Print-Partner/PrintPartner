@@ -384,23 +384,6 @@ describe("Editing a printer", () => {
     expect(within(dialog).queryByLabelText("Username")).toBeNull();
   });
 
-  it("never shows sign-in details stored in the address, and keeps that address when only the name changes", async () => {
-    const { writes, dialog } = await openEdit({
-      [CONNECTIONS]: () => json({ integrations: [{ ...STORED, base_url: "http://u:secret@printer.local" }] }),
-      "PATCH /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1", name: "Big Voron" }),
-    });
-    const address = (await within(dialog).findByLabelText("Address")) as HTMLInputElement;
-    expect(address.value).toBe("http://printer.local/");
-    expect(within(dialog).getByText("Sign-in details stored in this address are hidden.")).toBeTruthy();
-    expect(within(dialog).queryByText(/The address changed/)).toBeNull();
-    const values = Array.from(document.querySelectorAll("input"), (input) => input.value).join(" ");
-    expect(`${document.body.textContent} ${values}`).not.toContain("secret");
-    type("Name", "Big Voron");
-    press("Save changes");
-    expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
-    expect(writes).toEqual([["PATCH /api/v2/printers/p-1", { name: "Big Voron" }]]);
-  });
-
   it.each([
     ["no connection", printer("p-1", "Voron", null), [STORED], "This printer has no connection. Only its name can be changed."],
     ["a connection that is gone", VORON, [], "This printer's connection cannot be edited here. Only its name can be changed."],

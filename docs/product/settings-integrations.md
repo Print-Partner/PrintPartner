@@ -10,9 +10,9 @@ Its tests feed a list that carries a secret anyway and check it never reaches
 the page. The address is shown without any user name, password, query or
 fragment, with "Sign-in details stored in this address are hidden." when it
 had any; text that is not a URL shows "The stored address can't be shown."
-The core leaves those parts out too (GRE-1342, and GRE-1517 for the read
-side); the screen does it again so a password stored before that check never
-reaches the page. Adding and editing integrations are separate changes. Adding or
+The core already leaves those parts out of the list (GRE-1342), and an address
+with sign-in details is never connected to; the screen does it again as a
+second line of defence. Adding and editing integrations are separate changes. Adding or
 deleting a printer in the Printers section also writes its connection, so it
 reads this list again.
 

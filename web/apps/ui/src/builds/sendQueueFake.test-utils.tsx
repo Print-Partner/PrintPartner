@@ -18,7 +18,7 @@ export const problem = (status: number, code: string, detail = `Refused: ${code}
     status,
   );
 
-export const health = (farm: "on" | "off"): Health => ({
+const health = (farm: "on" | "off"): Health => ({
   ok: true,
   authenticated: true,
   authentication_required: true,

@@ -184,10 +184,27 @@ fn a_full_archive_gives_the_same_counts() {
     let archive = archive_of(folder.path(), 2, "full");
     let from_archive = run(archive.path()).unwrap();
     assert_eq!(from_archive.source, SourceKind::Archive);
+    // Both count the same entries under each root. Only a folder has the
+    // bytes: an archive is listed, not read.
+    assert!(from_folder.roots.iter().all(|count| count.bytes.is_some()));
+    let listed = |report: &DryRunReport| -> Vec<(&'static str, u64)> {
+        (report.roots.iter().map(|count| (count.root, count.entries))).collect()
+    };
+    assert_eq!(listed(&from_archive), listed(&from_folder));
+    // The synthetic `repos/` is itself, three folders and the snapshot's two
+    // files; `custom_filaments.json` is one file.
+    let expected = [("repos", 6), ("custom_filaments.json", 1)];
+    assert_eq!(listed(&from_folder), expected);
+    let text = from_folder.to_string();
+    let lines = "\nBackup roots (files and folders, then bytes of the files):\n  repos 6 38\n  custom_filaments.json 1 52\n  all roots: 7 entries\n";
+    assert!(text.contains(lines), "{text}");
+    let lines = "\n  repos 6\n  custom_filaments.json 1\n  all roots: 7 entries\n";
+    assert!(from_archive.to_string().contains(lines));
     let source = SourceKind::Directory;
     assert_eq!(
         DryRunReport {
             source,
+            roots: from_folder.roots.clone(),
             ..from_archive
         },
         from_folder

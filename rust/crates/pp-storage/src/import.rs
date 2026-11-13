@@ -337,44 +337,87 @@ impl fmt::Display for Unsupported {
     }
 }
 
-/// Counts, per backup root and kind, the entries of a Node data folder that
+/// How much one backup root of a source holds. A backup is bounded by its
+/// number of entries, so the dry run reports this for every root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootCount {
+    pub root: &'static str,
+    /// Its regular files and folders, the root itself included, as a backup
+    /// counts them.
+    pub entries: u64,
+    /// The bytes of its files. `None` for an archive, which is only listed.
+    pub bytes: Option<u64>,
+}
+
+/// Walks every backup root of a Node data folder once. It counts each
+/// root's files, folders and bytes, and, per root and kind, the entries that
 /// are neither regular files nor folders. No link is followed.
-fn unsupported(source: &Path) -> Result<Vec<Unsupported>, ImportError> {
+fn scan_roots(source: &Path) -> Result<(Vec<RootCount>, Vec<Unsupported>), ImportError> {
     let mut found: BTreeMap<(&'static str, EntryKind), u64> = BTreeMap::new();
+    let mut roots = Vec::new();
     for (root, _) in archive::FULL_ROOTS {
         let path = source.join(root);
         let Ok(metadata) = path.symlink_metadata() else {
             continue;
         };
-        if metadata.is_file() {
-            continue;
-        }
-        if !metadata.is_dir() {
+        if !metadata.is_dir() && !metadata.is_file() {
             *found
                 .entry((root, EntryKind::of(metadata.file_type())))
                 .or_insert(0) += 1;
             continue;
         }
-        let mut pending = vec![path];
+        let (mut entries, mut bytes) = (1, 0);
+        let mut pending = Vec::from_iter(metadata.is_dir().then_some(path));
+        if metadata.is_file() {
+            bytes = metadata.len();
+        }
         while let Some(directory) = pending.pop() {
             let failed = |error| io_error(&directory, error);
             for entry in std::fs::read_dir(&directory).map_err(failed)? {
                 let entry = entry.map_err(failed)?;
                 let kind = entry.file_type().map_err(failed)?;
                 if kind.is_dir() {
+                    entries += 1;
                     pending.push(entry.path());
-                } else if !kind.is_file() {
+                } else if kind.is_file() {
+                    entries += 1;
+                    bytes += entry.metadata().map_err(failed)?.len();
+                } else {
                     *found.entry((root, EntryKind::of(kind))).or_insert(0) += 1;
                 }
             }
         }
+        roots.push(RootCount {
+            root,
+            entries,
+            bytes: Some(bytes),
+        });
     }
     let counted = |((root, kind), entries)| Unsupported {
         root,
         kind,
         entries,
     };
-    Ok(found.into_iter().map(counted).collect())
+    Ok((roots, found.into_iter().map(counted).collect()))
+}
+
+/// The entries an archive lists under each backup root.
+fn listed_roots(paths: &BTreeSet<String>) -> Vec<RootCount> {
+    let under = |root: &str| {
+        let below = |path: &&String| {
+            path.as_str() == root
+                || path
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        paths.iter().filter(below).count() as u64
+    };
+    let roots = archive::FULL_ROOTS.iter().map(|(root, _)| RootCount {
+        root,
+        entries: under(root),
+        bytes: None,
+    });
+    roots.filter(|count| count.entries > 0).collect()
 }
 
 /// What the import would find at its destination, read without writing.
@@ -573,6 +616,28 @@ pub struct DryRunReport {
     /// Entries of the backup roots that are neither files nor folders. The
     /// import refuses a folder that holds any.
     pub unsupported: Vec<Unsupported>,
+    /// What each backup root holds, in backup order. A root the source
+    /// lacks is left out.
+    pub roots: Vec<RootCount>,
+}
+
+impl DryRunReport {
+    /// The entries, and for a folder the bytes, under each backup root.
+    fn fmt_roots(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "\nBackup roots (files and folders, then bytes of the files):"
+        )?;
+        for count in &self.roots {
+            write!(f, "  {} {}", count.root, count.entries)?;
+            if let Some(bytes) = count.bytes {
+                write!(f, " {bytes}")?;
+            }
+            writeln!(f)?;
+        }
+        let entries: u64 = self.roots.iter().map(|count| count.entries).sum();
+        writeln!(f, "  all roots: {entries} entries")
+    }
 }
 
 impl fmt::Display for DryRunReport {
@@ -627,6 +692,7 @@ impl fmt::Display for DryRunReport {
         if let Some(destination) = &self.destination {
             writeln!(f, "The destination {destination}.")?;
         }
+        self.fmt_roots(f)?;
         writeln!(f, "\nTables with rows (rows, then rows per tenant):")?;
         for table in self.tables.iter().filter(|table| table.rows > 0) {
             write!(f, "  {} {}", table.table, table.rows)?;
@@ -695,6 +761,8 @@ struct Files {
     repo_files: Vec<String>,
     /// Entries of the backup roots that are neither files nor folders.
     unsupported: Vec<Unsupported>,
+    /// What each backup root holds.
+    roots: Vec<RootCount>,
 }
 
 /// Reports what importing `source` would convert. `source` is a stopped Node
@@ -924,15 +992,17 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if stamps() != before {
         return Err(ImportError::Changed);
     }
+    let (roots, unsupported) = scan_roots(source)?;
     Ok(Files {
         documents: source.to_owned(),
         repo_files: repo_files(source)?,
-        unsupported: unsupported(source)?,
+        unsupported,
+        roots,
     })
 }
 
 /// The name of every regular file under `root/repos`. An entry of any other
-/// kind is not copied, so it is not counted here; [`unsupported`] counts it.
+/// kind is not copied, so it is not counted here; [`scan_roots`] counts it.
 fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
     let mut repo_files = Vec::new();
     let repos = root.join("repos");
@@ -985,6 +1055,7 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
             .collect(),
         // Validation refuses an archive entry that is no file or folder.
         unsupported: Vec::new(),
+        roots: listed_roots(&paths),
     })
 }
 
@@ -1225,6 +1296,7 @@ fn measure(
         scalar_settings,
         unnamed,
         unsupported: files.unsupported.clone(),
+        roots: files.roots.clone(),
         tables,
     })
 }

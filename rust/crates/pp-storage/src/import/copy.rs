@@ -8,7 +8,7 @@
 use super::{
     DATABASE_FILES, Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch,
     SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
-    repo_files, stage_directory, unsupported, upgrade, verify,
+    repo_files, scan_roots, stage_directory, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -222,7 +222,7 @@ pub(super) fn import_with(
     // Known before anything is created: the copy takes files and folders
     // only, and it must not leave anything out.
     if metadata.is_dir() {
-        let found = unsupported(source)?;
+        let (_, found) = scan_roots(source)?;
         if !found.is_empty() {
             return Err(ImportError::NotRegular(found));
         }
@@ -428,6 +428,7 @@ fn extract_archive(
         documents: stage.to_owned(),
         repo_files: repo_files(stage)?,
         unsupported: Vec::new(),
+        roots: Vec::new(),
     };
     Ok((files_read, (files, bytes)))
 }

@@ -10,7 +10,8 @@ type Answer = (body: unknown) => Response | Promise<Response>;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const problem = (status: number, detail: string) => json({ status, detail }, status);
+const problem = (status: number, detail: string, errors?: { pointer: string; detail: string }[]) =>
+  json({ status, detail, errors }, status);
 
 const HEALTH: Health = {
   ok: true,
@@ -44,6 +45,9 @@ const VIEW = { id: "i-9", kind: "moonraker", name: "Micron", enabled: true, base
 const CONFIG = { id: "p-9", name: "Micron", model: "Micron+", bed_width_mm: 180, bed_depth_mm: 180, bed_height_mm: 160, margin_mm: 4, max_filament_slots: 1, integration_id: "i-9" };
 const PROBE = { kind: "moonraker", reachable: true, credentials_needed: false, reason: "Printer responded successfully.", capabilities: ["status"] };
 const LIST = "GET /api/v2/printers";
+const CONNECTIONS = "GET /api/v2/integrations";
+// Voron's stored connection: an address and an API key the core never returns.
+const STORED = { ...VIEW, id: "i-1", name: "Voron", base_url: "http://voron.test" };
 
 /** A fake core keyed by "METHOD path". It records every write as `[key, body]`. */
 function renderPrinters(answers: Record<string, Answer>) {
@@ -51,7 +55,7 @@ function renderPrinters(answers: Record<string, Answer>) {
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     const key = `${init?.method ?? "GET"} ${path}`;
     const body: unknown = init?.body ? JSON.parse(init.body as string) : undefined;
-    if (key !== "GET /health" && key !== LIST) writes.push([key, body]);
+    if (!key.startsWith("GET ")) writes.push([key, body]);
     if (key === "GET /health") return json(HEALTH);
     return (answers[key] ?? (() => problem(500, `no answer for ${key}`)))(body);
   });
@@ -254,6 +258,195 @@ describe("A printer write whose answer was lost", () => {
     press("Close");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(sent(writes)).toEqual(ONCE);
+  });
+});
+
+describe("A connection write whose answer was lost", () => {
+  // The first save's createIntegration answers 504. `saved` says whether the core kept it.
+  async function lostCreate(saved: boolean) {
+    let creates = 0;
+    const writes = renderPrinters({
+      [LIST]: () => json({ printers: [] }),
+      [CONNECTIONS]: () => json({ integrations: saved ? [VIEW] : [] }),
+      "POST /api/v2/printers/probe": () => json(PROBE),
+      "POST /api/v2/integrations": () => (creates++ === 0 ? problem(504, "Gateway timeout") : json(VIEW)),
+      "POST /api/v2/printers": () => json(CONFIG),
+      "DELETE /api/v2/integrations/i-9": () => json(VIEW),
+    });
+    await fillAdd("http://micron.test");
+    press("Check address");
+    await screen.findByText("The printer answered.");
+    press("Save printer");
+    expect((await screen.findByRole("alert")).textContent).toContain("The connection may have been saved");
+    return writes;
+  }
+  const sent = (writes: [string, unknown][]) => writes.map(([key]) => key).slice(1);
+
+  it("is found in the integrations list and used, not created twice", async () => {
+    const writes = await lostCreate(true);
+    press("Save printer");
+    expect(await screen.findByText("Added Micron.")).toBeTruthy();
+    expect(sent(writes)).toEqual(["POST /api/v2/integrations", "POST /api/v2/printers"]);
+    expect(writes[2][1]).toMatchObject({ integration_id: "i-9" });
+  });
+
+  it("is found and deleted by Discard", async () => {
+    const writes = await lostCreate(true);
+    press("Discard");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent(writes)).toEqual(["POST /api/v2/integrations", "DELETE /api/v2/integrations/i-9"]);
+  });
+
+  it("is created again only when the list shows it was not saved", async () => {
+    const writes = await lostCreate(false);
+    press("Save printer");
+    expect(await screen.findByText("Added Micron.")).toBeTruthy();
+    expect(sent(writes)).toEqual(["POST /api/v2/integrations", "POST /api/v2/integrations", "POST /api/v2/printers"]);
+  });
+});
+
+describe("Editing a printer", () => {
+  const INVALID = "Request is invalid";
+  const RESEND = [{ pointer: "/api_key", detail: "must be sent again when the address changes" }];
+  const PRUSA = { ...STORED, kind: "prusalink", username: "maker", has_api_key: false, has_password: true };
+  const patched = (body: unknown) => json({ ...STORED, ...(body as object) });
+
+  async function openEdit(answers: Record<string, Answer>, printers = [VORON]) {
+    const writes = renderPrinters({ [LIST]: () => json({ printers }), [CONNECTIONS]: () => json({ integrations: [STORED] }), ...answers });
+    const edit = await screen.findByRole("button", { name: `Edit ${printers[0].name}` });
+    await waitFor(() => expect(edit.getAttribute("aria-disabled")).toBeNull());
+    fireEvent.click(edit);
+    return { writes, edit, dialog: screen.getByRole("dialog", { name: `Edit ${printers[0].name}` }) };
+  }
+
+  it("shows the stored address and whether a key is set, never the key", async () => {
+    const { dialog } = await openEdit({});
+    expect(within(dialog).getByText("Loading the connection.")).toBeTruthy();
+    expect(((await within(dialog).findByLabelText("Address")) as HTMLInputElement).value).toBe("http://voron.test");
+    expect((within(dialog).getByLabelText("Name") as HTMLInputElement).value).toBe("Voron");
+    expect((within(dialog).getByLabelText("New API key") as HTMLInputElement).value).toBe("");
+    expect(within(dialog).getByText("An API key is set. Leave this empty to keep it.")).toBeTruthy();
+    expect(within(dialog).queryByLabelText("Username")).toBeNull();
+  });
+
+  it.each([
+    ["no connection", printer("p-1", "Voron", null), [STORED], "This printer has no connection. Only its name can be changed."],
+    ["a connection that is gone", VORON, [], "This printer's connection cannot be edited here. Only its name can be changed."],
+    ["a Bambu connection", printer("p-1", "Voron", { id: "i-1", kind: "bambu" }), [{ ...STORED, kind: "bambu", base_url: null }], "This printer's connection cannot be edited here. Only its name can be changed."],
+  ])("lets only the name change for %s", async (_case, shown, integrations, note) => {
+    const { writes, dialog } = await openEdit(
+      { [CONNECTIONS]: () => json({ integrations }), "PATCH /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1", name: "Big Voron" }) },
+      [shown],
+    );
+    expect(await within(dialog).findByText(note)).toBeTruthy();
+    expect(within(dialog).queryByLabelText("Address")).toBeNull();
+    type("Name", "Big Voron");
+    press("Save changes");
+    expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
+    expect(writes).toEqual([["PATCH /api/v2/printers/p-1", { name: "Big Voron" }]]);
+  });
+
+  it("names a connection that could not be loaded, reads it again on request, and still saves the name", async () => {
+    let failing = true;
+    const { writes, dialog } = await openEdit({
+      [CONNECTIONS]: () => (failing ? problem(503, "Service unavailable") : json({ integrations: [STORED] })),
+      "PATCH /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1", name: "Big Voron" }),
+    });
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Could not load the connection: Service unavailable");
+    failing = false;
+    press("Reload connection");
+    await within(dialog).findByLabelText("Address");
+    failing = true;
+    type("Name", "Big Voron");
+    press("Save changes");
+    expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
+    expect(writes).toEqual([["PATCH /api/v2/printers/p-1", { name: "Big Voron" }]]);
+  });
+
+  it("sends only what changed: the connection first, then the name", async () => {
+    const { writes, dialog } = await openEdit({
+      "PATCH /api/v2/integrations/i-1": patched,
+      "PATCH /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1", name: "Big Voron" }),
+    });
+    await within(dialog).findByLabelText("Address");
+    type("Name", "Big Voron");
+    type("Address", "http://voron.test:7126");
+    type("New API key", "new-key-canary");
+    // The form says why the key is asked for again.
+    expect(within(dialog).getByRole("status").textContent).toMatch(/^The address changed, so enter the API key again or remove it/);
+    press("Save changes");
+    expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
+    expect(writes).toEqual([
+      ["PATCH /api/v2/integrations/i-1", { base_url: "http://voron.test:7126", api_key: "new-key-canary" }],
+      ["PATCH /api/v2/printers/p-1", { name: "Big Voron" }],
+    ]);
+    expect(document.body.textContent).not.toContain("new-key-canary");
+  });
+
+  it("shows the core's refusal when the address changes without the stored key, and changes nothing", async () => {
+    const { writes, dialog } = await openEdit({
+      "PATCH /api/v2/integrations/i-1": (body) => ("api_key" in (body as object) ? patched(body) : problem(400, INVALID, RESEND)),
+      "PATCH /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1", name: "Big Voron" }),
+    });
+    await within(dialog).findByLabelText("Address");
+    type("Name", "Big Voron");
+    type("Address", "http://moved.test");
+    press("Save changes");
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("API key must be sent again when the address changes");
+    // The name was not sent: a refused connection change leaves everything as it was.
+    expect(writes).toEqual([["PATCH /api/v2/integrations/i-1", { base_url: "http://moved.test" }]]);
+    // Removing the stored key is the other way to move the address.
+    fireEvent.click(within(dialog).getByLabelText("Remove the stored API key"));
+    press("Save changes");
+    expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
+    expect(writes.slice(1)).toEqual([
+      ["PATCH /api/v2/integrations/i-1", { base_url: "http://moved.test", api_key: null }],
+      ["PATCH /api/v2/printers/p-1", { name: "Big Voron" }],
+    ]);
+  });
+
+  it("edits a PrusaLink username and password, and clears a username left empty", async () => {
+    const { writes, dialog } = await openEdit({
+      [CONNECTIONS]: () => json({ integrations: [PRUSA] }),
+      "PATCH /api/v2/integrations/i-1": (body) => json({ ...PRUSA, ...(body as object) }),
+    }, [printer("p-1", "Voron", { id: "i-1", kind: "prusalink" })]);
+    expect(((await within(dialog).findByLabelText("Username")) as HTMLInputElement).value).toBe("maker");
+    type("Username", "");
+    type("New password", "new-password-canary");
+    press("Save changes");
+    expect(await screen.findByText("Saved Voron.")).toBeTruthy();
+    expect(writes).toEqual([["PATCH /api/v2/integrations/i-1", { username: null, password: "new-password-canary" }]]);
+  });
+
+  it("says the connection was saved when the name write fails, and then sends only the name", async () => {
+    let refuse = true;
+    const { writes, dialog } = await openEdit({
+      "PATCH /api/v2/integrations/i-1": patched,
+      "PATCH /api/v2/printers/p-1": () => (refuse ? problem(503, "Service unavailable") : json({ ...CONFIG, id: "p-1", name: "Big Voron" })),
+    });
+    await within(dialog).findByLabelText("Address");
+    type("Name", "Big Voron");
+    type("New API key", "new-key-canary");
+    press("Save changes");
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("The name was not saved: Service unavailable. Any change to the connection was saved.");
+    refuse = false;
+    press("Save changes");
+    expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
+    expect(writes.map(([key]) => key)).toEqual(["PATCH /api/v2/integrations/i-1", "PATCH /api/v2/printers/p-1", "PATCH /api/v2/printers/p-1"]);
+  });
+
+  it("works from the keyboard: the form submits, and Escape closes it and returns focus", async () => {
+    const { writes, edit, dialog } = await openEdit({});
+    await within(dialog).findByLabelText("Address");
+    // Nothing changed, so submitting sends nothing.
+    fireEvent.submit(within(dialog).getByLabelText("Name").closest("form") as HTMLFormElement);
+    expect(await screen.findByText("Saved Voron.")).toBeTruthy();
+    expect(writes).toEqual([]);
+    edit.focus();
+    fireEvent.click(edit);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(edit);
   });
 });
 

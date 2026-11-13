@@ -260,8 +260,8 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
 /** The secret a kind signs in with, and whether one is stored. */
 const secretOf = (stored: Integration) =>
   stored.kind === "prusalink"
-    ? { field: "password" as const, word: "password", held: stored.has_password }
-    : { field: "api_key" as const, word: "API key", held: stored.has_api_key };
+    ? { field: "password" as const, word: "password", one: "A password", held: stored.has_password }
+    : { field: "api_key" as const, word: "API key", one: "An API key", held: stored.has_api_key };
 
 /** What the form changes on the connection: only what the owner touched, never a value it was not given. */
 function connectionPatch(form: FormData, stored: Integration): IntegrationPatch {
@@ -291,7 +291,7 @@ function ConnectionFields({ stored, locked }: { stored: Integration; locked: boo
           name="secret"
           type="password"
           autoComplete="off"
-          hint={secret.held ? `A ${secret.word} is set. Leave this empty to keep it.` : `No ${secret.word} is set.`}
+          hint={secret.held ? `${secret.one} is set. Leave this empty to keep it.` : `No ${secret.word} is set.`}
         />
       </div>
       {secret.held && (

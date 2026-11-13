@@ -1,7 +1,8 @@
 //! Daily-loop step 3 on a Rust-only runtime: an integration added through
 //! `POST /api/v2/integrations` passes its connection test and reports live
 //! status with no restart, still does after a restart on the same data
-//! directory, and is gone everywhere after `DELETE`. A printer added through
+//! directory, is listed by `GET /api/v2/integrations` without its key, and is
+//! gone everywhere after `DELETE`. A printer added through
 //! `POST /api/v2/printers` shows live in the Farm list the same way, and is
 //! read, edited and deleted. The printer is the recorded loopback Moonraker;
 //! nothing is uploaded or started.
@@ -195,7 +196,12 @@ async fn integration_setup_in_child() {
     let (runtime, origin, desktop) = start_rust_only(&data).await;
     let moonraker = json!({"kind": "moonraker", "name": "Voron",
         "base_url": printer.url(), "api_key": SECRET});
-    for (method, path) in [("POST", CREATED), ("DELETE", "/api/v2/integrations/any")] {
+    let anonymous = [
+        ("GET", CREATED),
+        ("POST", CREATED),
+        ("DELETE", "/api/v2/integrations/any"),
+    ];
+    for (method, path) in anonymous {
         let body = (method == "POST").then(|| moonraker.clone());
         let (code, _, _) = call(&origin, &desktop, method, path, body).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{method} {path}");
@@ -227,6 +233,11 @@ async fn integration_setup_in_child() {
     let chosen = json!({"integration_id": spool["id"]});
     let (code, body, _) = call(&origin, &cookie, "PUT", DEFAULT, Some(chosen.clone())).await;
     assert_eq!((code, &body), (StatusCode::OK, &chosen));
+    // The list shows both, in stored order, and never the key.
+    let (code, list, text) = call(&origin, &cookie, "GET", CREATED, None).await;
+    assert_eq!(code, StatusCode::OK, "{text}");
+    assert!(!text.contains(SECRET), "{text}");
+    assert_eq!(list, json!({"integrations": [view, spool]}));
 
     // With no restart the new host passes its test and is polled, and the
     // printer that links it shows live; after a restart on the same data
@@ -249,6 +260,8 @@ async fn integration_setup_in_child() {
     let (code, body, _) = call(&origin, &cookie, "GET", DEFAULT, None).await;
     let cleared = json!({"integration_id": null});
     assert_eq!((code, &body), (StatusCode::OK, &cleared));
+    let (code, list, _) = call(&origin, &cookie, "GET", CREATED, None).await;
+    assert_eq!((code, list), (StatusCode::OK, json!({"integrations": []})));
     shut_down(runtime).await;
     for line in printer.request_lines() {
         assert!(line.starts_with("GET "), "the printer saw {line}");

@@ -68,6 +68,77 @@ def request(origin, method, path, cookie="", body=None, peer_container=None, acc
     return response.status, payload, cookies
 
 
+def mcp(origin, path, headers, message, peer_container=None):
+    """One MCP POST as an MCP client sends it: no Origin and no cookie unless `headers` add them.
+    Returns the status, the issued mcp-session-id, and the JSON-RPC answer or error body."""
+    url = urllib.parse.urlsplit(origin)
+    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    connection.request("POST", path, body=json.dumps(message), headers={
+        "Host": url.netloc,
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        **headers,
+    })
+    response = connection.getresponse()
+    if peer_container is not None:
+        require_non_loopback_peer(peer_container)
+    session = response.getheader("mcp-session-id")
+    answer = None
+    if (response.getheader("content-type") or "").startswith("text/event-stream"):
+        # rmcp may keep the stream open after its answer, so read up to the first JSON event.
+        while answer is None:
+            line = response.fp.readline()
+            if not line:
+                break
+            data = line.decode().removeprefix("data:").strip() if line.startswith(b"data:") else ""
+            if data:
+                answer = json.loads(data)
+    elif response.status != 202:
+        answer = json.loads(response.read() or b"null")
+    connection.close()
+    return response.status, session, answer
+
+
+def check_mcp(name, origin, cookies):
+    """GRE-1459: MCP on the explicit listener admits a valid API key from a non-loopback
+    peer and refuses no key or a wrong key without creating a session."""
+    status, body, _ = request(origin, "POST", "/settings/api-keys", cookies, {})
+    if status != 201:
+        raise SystemExit(f"creating an API key answered {status}")
+    bearer = {"Authorization": f"Bearer {json.loads(body)['key']}"}
+    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "docker-smoke", "version": "0"}}}
+    for path in ["/mcp", "/api/v1/mcp"]:
+        status, session, answer = mcp(origin, path, bearer, initialize, peer_container=name)
+        if status != 200 or not session or "serverInfo" not in (answer or {}).get("result", {}):
+            raise SystemExit(f"{path} initialize with a key answered {status}: {answer}")
+        headers = {**bearer, "Mcp-Session-Id": session, "Mcp-Protocol-Version": "2025-06-18"}
+        status, _, _ = mcp(origin, path, headers, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        if status != 202:
+            raise SystemExit(f"{path} initialized notification answered {status}")
+        status, _, answer = mcp(origin, path, headers, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = [tool["name"] for tool in ((answer or {}).get("result") or {}).get("tools", [])]
+        if status != 200 or "list_plans" not in tools:
+            raise SystemExit(f"{path} tools/list answered {status} with {len(tools)} tools")
+        call = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_plans", "arguments": {}}}
+        status, _, answer = mcp(origin, path, headers, call)
+        result = (answer or {}).get("result") or {}
+        if status != 200 or result.get("isError") or not result.get("content"):
+            raise SystemExit(f"{path} list_plans answered {status}: {answer}")
+        wrong = {"Authorization": "Bearer ppk_0000000000000000000000000000000000000000"}
+        for label, headers, expected in [
+            ("no key", {"Origin": origin}, 401),
+            ("no key, no Origin", {}, 403),
+            ("wrong key", wrong, 401),
+        ]:
+            status, session, _ = mcp(origin, path, headers, initialize)
+            if status != expected or session:
+                raise SystemExit(f"{path} {label} answered {status} (session {bool(session)}), expected {expected}")
+    log(f"MCP over the published port: a key lists {len(tools)} tools and runs list_plans; "
+        "no key or a wrong key gets 401 (403 without Origin) and no session")
+
+
 def require_non_loopback_peer(name):
     # The HTTP connection stays open while we inspect its container-side peer.
     table = docker("exec", name, "cat", "/proc/net/tcp").stdout
@@ -168,9 +239,10 @@ def start(image, name, volume):
         if status != 401:
             raise SystemExit(f"{path} without account login answered {status}, expected 401")
     for path in ["/mcp", "/api/v1/mcp"]:
+        # The desktop cookie is not an MCP key; the key guard answers.
         status, _, _ = request(origin, "POST", path, desktop, {})
-        if status != 403:
-            raise SystemExit(f"MCP without a key answered {status}, expected 403")
+        if status != 401:
+            raise SystemExit(f"MCP without a key answered {status}, expected 401")
     status, page, _ = request(origin, "GET", "/login", desktop)
     if status != 200 or b"<html" not in page.lower():
         raise SystemExit(f"sign-in page through published port answered {status}")
@@ -268,6 +340,7 @@ def main():
         if status != 404:
             raise SystemExit(f"missing-printer status answered {status}, expected 404 after login")
         log("first start: /health 200, account registered, /api/v1/plans 200, missing-printer status 404")
+        check_mcp(names[0], origin, f"{desktop}; {cookies[0]}")
         listing = docker("exec", names[0], "ls", "/data").stdout.split()
         log(f"/data holds: {' '.join(sorted(listing))}")
         second = docker("exec", names[0], "/usr/local/bin/pp-server-start", check=False)

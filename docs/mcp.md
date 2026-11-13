@@ -125,6 +125,32 @@ Like `get_farm_status`, it is listed and callable only while the Farm Module is 
 
 These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
+### `propose_edit_plan_draft_parts`
+
+`propose_edit_plan_draft_parts` `{ plan_id, draft_id, parts: [{ part_id, included?, quantity_override? }], expected_snapshot_digest? }` changes which Parts an open Working Plan includes, and their quantities (GRE-1298).
+
+- **Propose** reads the draft as the Plan tab does, with the request's API key, and writes nothing. The pending action's `params` hold `plan_id`, `draft_id`, the edits and `expected_snapshot_digest`: the given digest, or else the draft's current one. Propose needs no Build planning brief. Node refuses without one, but the edit never reads it.
+- **Confirm** runs the Plan tab's Part edit (`PATCH /plans/{id}/drafts/{draft_id}/parts`, `WorkingDraftClient::edit`) against that digest. It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "parts": [{ "part_id", "included", "quantity_override", "quantity_effective" }] } }` with the new digest and the edited Parts, then adds an `applied_action` entry to the Build's decision log. `quantity_override: null` clears an override. The edit never accepts or publishes a Plan.
+
+Refusals have the shape described for `propose_create_build`, and confirm keeps the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `arguments_required` | `plan_id` or `draft_id` is not a positive whole number. |
+| `not_found` | The key's account has no such Build or draft. |
+| `not_open` | The draft is not open. |
+| `parts_required` | `parts` is missing or empty. |
+| `invalid_edit` | An edit has a wrong field type or a negative or fractional quantity, or lists a Part twice. |
+| `part_not_found` | A `part_id` is not in the draft. |
+| `edit_empty` | An edit sets neither `included` nor `quantity_override`. |
+| `invalid_digest` | `expected_snapshot_digest` is not 64 lowercase hex characters. |
+| `draft_changed` | Confirm: the draft changed after the proposal, for example in the Plan tab. |
+| `base_changed` | Confirm: the Accepted Plan changed after the proposal. |
+| `accepted_baseline_required` | Confirm: the Build has no Accepted Plan to edit against. |
+| `edit_refused` | Confirm: the edit refused for another reason. |
+
+`unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
+
 Every other product tool still answers that it has no Rust port.
 
 ## To be written

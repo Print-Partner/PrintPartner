@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 
 #[path = "tests/create_build.rs"]
 mod create_build;
+#[path = "tests/draft_parts.rs"]
+mod draft_parts;
 #[path = "tests/farm_status.rs"]
 mod farm_status;
 #[path = "../../tests/support/mcp_rpc.rs"]

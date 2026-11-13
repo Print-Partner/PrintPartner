@@ -32,8 +32,19 @@ pub(super) enum Code {
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
-    // get_print_stats
-    InvalidHours,
+    // propose_edit_plan_draft_parts
+    ArgumentsRequired,
+    NotFound,
+    NotOpen,
+    PartsRequired,
+    InvalidEdit,
+    PartNotFound,
+    EditEmpty,
+    InvalidDigest,
+    DraftChanged,
+    BaseChanged,
+    AcceptedBaselineRequired,
+    EditRefused,
     // get_build_planning_state, get_plan_draft, propose_set_build_source_roles
     InvalidPlanId,
     PlanNotFound,
@@ -47,6 +58,8 @@ pub(super) enum Code {
     MultipleStructuralBases,
     // farm tools
     FarmModuleOff,
+    // get_print_stats
+    InvalidHours,
 }
 
 impl Code {
@@ -65,7 +78,18 @@ impl Code {
             Self::OrdersModuleOff => "orders_module_off",
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
-            Self::InvalidHours => "invalid_hours",
+            Self::ArgumentsRequired => "arguments_required",
+            Self::NotFound => "not_found",
+            Self::NotOpen => "not_open",
+            Self::PartsRequired => "parts_required",
+            Self::InvalidEdit => "invalid_edit",
+            Self::PartNotFound => "part_not_found",
+            Self::EditEmpty => "edit_empty",
+            Self::InvalidDigest => "invalid_digest",
+            Self::DraftChanged => "draft_changed",
+            Self::BaseChanged => "base_changed",
+            Self::AcceptedBaselineRequired => "accepted_baseline_required",
+            Self::EditRefused => "edit_refused",
             Self::InvalidPlanId => "invalid_plan_id",
             Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",
@@ -76,6 +100,7 @@ impl Code {
             Self::EvidenceNotFound => "evidence_not_found",
             Self::MultipleStructuralBases => "multiple_structural_bases",
             Self::FarmModuleOff => "farm_module_off",
+            Self::InvalidHours => "invalid_hours",
         }
     }
 }

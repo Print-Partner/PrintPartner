@@ -6,7 +6,13 @@
  * Typed reads go through `readCore` in ./rust.ts, which builds on this function
  * with the generated client's routes and schemas.
  */
+/** One field the core refused: a JSON Pointer into the request body, and the core's reason. */
+export type FieldProblem = { pointer: string; detail: string };
+
 export class CoreError extends Error {
+  /** The problem's `errors` list: each refused field, in the core's order. */
+  errors: readonly FieldProblem[] = [];
+
   constructor(
     readonly status: number,
     path: string,
@@ -20,10 +26,10 @@ export class CoreError extends Error {
   }
 }
 
-/** The problem code, detail and holding Build names, when present. */
+/** The problem code, detail, holding Build names and refused fields, when present. */
 async function problem(
   response: Response,
-): Promise<{ detail?: string; code?: string; conflictingBuilds?: string[] }> {
+): Promise<{ detail?: string; code?: string; conflictingBuilds?: string[]; errors?: FieldProblem[] }> {
   const body: unknown = await response.json().catch(() => undefined);
   if (typeof body !== "object" || body === null) return {};
   const text = (key: string) => {
@@ -37,7 +43,14 @@ async function problem(
         return typeof build.name === "string" && build.name.trim() ? [build.name] : [];
       })
     : [];
-  return { detail: text("detail"), code: text("code"), conflictingBuilds };
+  const listed: unknown = (body as Record<string, unknown>).errors;
+  const errors = Array.isArray(listed)
+    ? listed.flatMap((entry: unknown) => {
+        const { pointer, detail } = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+        return typeof pointer === "string" && typeof detail === "string" ? [{ pointer, detail }] : [];
+      })
+    : [];
+  return { detail: text("detail"), code: text("code"), conflictingBuilds, errors };
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -74,8 +87,10 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
       const write = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
       for (const listener of unauthorized) listener({ write });
     }
-    const { detail, code, conflictingBuilds } = await problem(response);
-    throw new CoreError(response.status, path, detail, code, conflictingBuilds);
+    const { detail, code, conflictingBuilds, errors } = await problem(response);
+    const error = new CoreError(response.status, path, detail, code, conflictingBuilds);
+    error.errors = errors ?? [];
+    throw error;
   }
   return response;
 }

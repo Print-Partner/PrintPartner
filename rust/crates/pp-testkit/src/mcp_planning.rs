@@ -42,3 +42,15 @@ pub fn state(path: &Path) -> rusqlite::Result<Vec<Vec<Vec<String>>>> {
     })
     .collect()
 }
+/// A draft's Parts as `(id, included, quantity_override)`, in id order.
+pub fn draft_parts(path: &Path, draft_id: i64) -> rusqlite::Result<Vec<(i64, bool, Option<i64>)>> {
+    let db = Connection::open(path)?;
+    let mut query = db.prepare(
+        "SELECT id,included,quantity_override FROM plan_draft_parts WHERE draft_id=?1 ORDER BY id",
+    )?;
+    query
+        .query_map([draft_id], |row| {
+            Ok((row.get(0)?, row.get::<_, i64>(1)? != 0, row.get(2)?))
+        })?
+        .collect()
+}

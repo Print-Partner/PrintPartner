@@ -136,11 +136,6 @@ const REFUSED: [(&str, &str, Option<&str>); 3] = [
     ("POST", "/api/v2/printers", Some(PRINTER)),
 ];
 
-fn problem(kind: &str, title: &str, status: u16, detail: &str, code: &str) -> Value {
-    json!({"type": format!("urn:print-partner:problem:{kind}"), "title": title,
-        "status": status, "detail": detail, "code": code})
-}
-
 #[tokio::test]
 async fn each_family_answers_its_refusal_and_a_busy_storage_the_same_way() {
     let root = tempfile::tempdir().unwrap();
@@ -167,9 +162,12 @@ async fn each_family_answers_its_refusal_and_a_busy_storage_the_same_way() {
 
     #[rustfmt::skip]
     let refusals = [
-        problem("not-found", "Not Found", 404, "Source not found", "source_not_found"),
-        problem("conflict", "Conflict", 409, "This kind of integration cannot be edited here", "integration_not_editable"),
-        problem("conflict", "Conflict", 409, "The printer limit is reached. Delete one first.", "printer_limit"),
+        json!({"type": "urn:print-partner:problem:not-found", "title": "Not Found", "status": 404,
+            "detail": "Source not found", "code": "source_not_found"}),
+        json!({"type": "urn:print-partner:problem:conflict", "title": "Conflict", "status": 409,
+            "detail": "This kind of integration cannot be edited here", "code": "integration_not_editable"}),
+        json!({"type": "urn:print-partner:problem:conflict", "title": "Conflict", "status": 409,
+            "detail": "The printer limit is reached. Delete one first.", "code": "printer_limit"}),
     ];
     for (request, expected) in REFUSED.into_iter().zip(&refusals) {
         let (status, answered) = send(request).await;
@@ -180,8 +178,9 @@ async fn each_family_answers_its_refusal_and_a_busy_storage_the_same_way() {
     // Another connection holds the write lock, and this test the one reader.
     sql.execute_batch("BEGIN IMMEDIATE").unwrap();
     let reader = owner.client().reader(Duration::from_secs(5)).unwrap();
-    #[rustfmt::skip]
-    let busy = problem("unavailable", "Service Unavailable", 503, "Service temporarily unavailable", "transaction_unavailable");
+    let busy = json!({"type": "urn:print-partner:problem:unavailable",
+        "title": "Service Unavailable", "status": 503,
+        "detail": "Service temporarily unavailable", "code": "transaction_unavailable"});
     for request in REFUSED {
         let (status, answered) = send(request).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{request:?}");

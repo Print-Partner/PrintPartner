@@ -9,7 +9,7 @@ use pp_storage::{
     Limits, WriterOwner,
     auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy},
     catalog::CreateSource,
-    jobs::Credential,
+    jobs::{Credential, JobRecord},
     uploads::{AdmissionLimits, CapturedPayloadV1, State, Target},
 };
 use std::{
@@ -35,6 +35,17 @@ fn zipped(entries: &[(&str, &[u8])]) -> Vec<u8> {
         zip.write_all(bytes).unwrap();
     }
     zip.finish().unwrap().into_inner()
+}
+
+/// A one-entry ZIP whose headers declare `inflated` unpacked bytes, as an
+/// archive that large would.
+fn declaring(inflated: u32) -> Vec<u8> {
+    let mut bytes = zipped(&[("big.stl", b"solid big\nendsolid big\n")]);
+    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    for at in [22, central + 24] {
+        bytes[at..at + 4].copy_from_slice(&inflated.to_le_bytes());
+    }
+    bytes
 }
 
 /// A 3MF with one triangle in an object named `part`.
@@ -99,6 +110,21 @@ impl Imports {
             Ok(operation) => operation.state,
             Err(_) => State::Failed,
         }
+    }
+
+    /// The newest import job's `error`, as the job routes answer it.
+    fn last_error(&self) -> Option<String> {
+        let document: String = rusqlite::Connection::open(self.data.join("print-partner.db"))
+            .unwrap()
+            .query_row(
+                "SELECT document FROM durable_jobs WHERE kind = 'supplied-source-import' \
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let job: JobRecord = serde_json::from_str(&document).unwrap();
+        job.snapshot().error
     }
 
     /// The Source's current revision, read from storage.
@@ -203,16 +229,23 @@ fn a_refused_zip_fails_its_job_and_keeps_the_previous_revision() {
             .map(|name| (name.as_str(), b"x".as_slice()))
             .collect::<Vec<_>>(),
     );
-    for (key, bytes) in [
-        ("escaping", escaping),
-        ("many", many),
-        ("not-a-zip", b"this is not a zip archive".to_vec()),
-    ] {
-        assert_eq!(
-            imports.import(key, existing(), "upload.zip", bytes),
-            State::Failed,
-            "{key}"
-        );
-        assert_eq!(imports.current_revision(), revision, "{key}");
+    let refused = [
+        (
+            escaping,
+            "A ZIP entry has a path that is not allowed, such as one that leaves its folder (../)",
+        ),
+        (many, "The ZIP holds more than 10,000 entries"),
+        (
+            declaring((1 << 30) + 1),
+            "The ZIP unpacks to more than 1 GiB",
+        ),
+        (b"not a zip".to_vec(), "The file is not a readable ZIP"),
+    ];
+    for (index, (bytes, reason)) in refused.into_iter().enumerate() {
+        let key = format!("refused-{index}");
+        let state = imports.import(&key, existing(), "upload.zip", bytes);
+        assert_eq!(state, State::Failed, "{reason}");
+        assert_eq!(imports.last_error().as_deref(), Some(reason));
+        assert_eq!(imports.current_revision(), revision, "{reason}");
     }
 }

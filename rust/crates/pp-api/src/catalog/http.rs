@@ -97,8 +97,8 @@ struct App {
 /// Source activity, Source category settings, Source naming get/put, global STL
 /// naming get/put, and STL naming preview at `/` and `/api/v1` when
 /// `PP_DESKTOP_REBUILD` was exactly `1` or `true` at startup. Otherwise nothing
-/// is mounted. Loose-file upload is [`upload::admit_upload_routes`]; sync, ZIP
-/// upload, and location stay unregistered.
+/// is mounted. Loose-file and ZIP upload are [`upload::admit_upload_routes`];
+/// sync and location stay unregistered.
 pub fn admit_catalog_routes(config: CatalogHttpConfig, owner: Arc<Mutex<WriterOwner>>) -> Router {
     if !config.enabled {
         return Router::new();

@@ -61,6 +61,8 @@ pub enum Error {
     #[cfg(feature = "desktop_rebuild")]
     CaptureCollisionLimit,
     InvalidIdentity,
+    /// A selection or upload with no files in it.
+    EmptySelection,
     DuplicatePath,
     Limit,
     /// The file's absolute published path would reach `PATH_MAX`, so readers
@@ -120,6 +122,7 @@ impl Error {
             #[cfg(feature = "desktop_rebuild")]
             Self::CaptureCollisionLimit => "capture-collision-limit",
             Self::InvalidIdentity => "invalid-identity",
+            Self::EmptySelection => "empty-selection",
             Self::DuplicatePath => "duplicate-path",
             Self::Limit => "limit",
             Self::StoredPathTooLong { .. } => "stored-path-too-long",

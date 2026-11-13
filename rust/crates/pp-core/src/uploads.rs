@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, ensure};
 use pp_source::{
     ArtifactBudget, ContentFile, LocalFiles, MAX_ENTRIES, Selection, SnapshotRequest, SourcePath,
     TenantRepos,
-    archive::{ArchiveLabelPolicy, ArchiveLimits, ZipInput},
+    archive::{ArchiveError, ArchiveLabelPolicy, ArchiveLimits, ZipInput},
     local_selection::{self, InputFile},
     media::MediaLimits,
     retained_capture::{FrozenCapture, RetainedInputTransfer},
@@ -589,26 +589,65 @@ impl SourceImports {
 /// Says in words why an import failed, for its job's `error`. The Source
 /// engine's refusals name the rule; other causes give their top message.
 fn failure_reason(error: &anyhow::Error) -> String {
-    let refusal = error
+    error
         .chain()
-        .find_map(|cause| cause.downcast_ref::<pp_source::Error>());
-    match refusal {
-        Some(pp_source::Error::UnsafePath | pp_source::Error::UnsafeAncestor) => {
-            "A file path is not allowed in a Source".into()
+        .find_map(|cause| {
+            cause
+                .downcast_ref::<ArchiveError>()
+                .and_then(archive_reason)
+                .or_else(|| {
+                    cause
+                        .downcast_ref::<pp_source::Error>()
+                        .and_then(source_reason)
+                })
+        })
+        .unwrap_or_else(|| error.to_string())
+}
+
+/// Why a captured ZIP was refused, naming the rule it broke. The limits are
+/// `ArchiveLimits::default()`'s.
+fn archive_reason(error: &ArchiveError) -> Option<String> {
+    let reason = match error {
+        ArchiveError::Source(error) => return source_reason(error),
+        ArchiveError::Cleanup { operation, .. } => return archive_reason(operation),
+        ArchiveError::UnsafeEntry => {
+            "A ZIP entry has a path that is not allowed, such as one that leaves its folder (../)"
         }
-        Some(pp_source::Error::DuplicatePath) => "Two files have the same path".into(),
-        Some(pp_source::Error::Limit) => "The import is over its size or file-count limit".into(),
-        Some(pp_source::Error::CorruptSnapshot) => "The import's stored files are damaged".into(),
-        // Until GRE-428 PR 2 keeps other files as artifacts.
-        Some(pp_source::Error::InvalidIdentity) => {
-            "A file has a type the import does not accept".into()
+        ArchiveError::DuplicateEntry => "Two ZIP entries have the same path",
+        ArchiveError::TooManyEntries => "The ZIP holds more than 10,000 entries",
+        ArchiveError::TooLarge => "The ZIP unpacks to more than 1 GiB",
+        ArchiveError::Limit => "The ZIP is larger than 256 MiB, or its file list is too long",
+        ArchiveError::CompressionRatio => "A ZIP entry is compressed more than the import allows",
+        ArchiveError::Unsupported => {
+            "The ZIP uses a feature the import does not support, such as encryption"
         }
-        Some(
-            refusal @ (pp_source::Error::StoredPathTooLong { .. }
-            | pp_source::Error::AmbiguousRevision(_)),
-        ) => refusal.to_string(),
-        _ => error.to_string(),
-    }
+        ArchiveError::InvalidArchive
+        | ArchiveError::Zip(_)
+        | ArchiveError::MalformedExtraField
+        | ArchiveError::ReaderMismatch(_) => "The file is not a readable ZIP",
+        ArchiveError::Cancelled | ArchiveError::Busy => return None,
+    };
+    Some(reason.into())
+}
+
+/// Why `pp_source` refused an import, in words.
+fn source_reason(error: &pp_source::Error) -> Option<String> {
+    let reason = match error {
+        pp_source::Error::UnsafePath | pp_source::Error::UnsafeAncestor => {
+            "A file path is not allowed in a Source"
+        }
+        pp_source::Error::DuplicatePath => "Two files have the same path",
+        pp_source::Error::Limit => "The import is over its size or file-count limit",
+        pp_source::Error::CorruptSnapshot => "The import's stored files are damaged",
+        pp_source::Error::EmptySelection => "The upload holds no files",
+        // A leftover working folder or an invalid ID; never the files' types.
+        pp_source::Error::InvalidIdentity => "The import could not set up its working files",
+        pp_source::Error::StoredPathTooLong { .. } | pp_source::Error::AmbiguousRevision(_) => {
+            return Some(error.to_string());
+        }
+        _ => return None,
+    };
+    Some(reason.into())
 }
 
 /// The one worker admission a storage owner accepts, shared by the printer

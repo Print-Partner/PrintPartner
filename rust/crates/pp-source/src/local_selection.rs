@@ -205,7 +205,7 @@ impl LocalFiles {
             });
         }
         if files.is_empty() {
-            return Err(Error::InvalidIdentity);
+            return Err(Error::EmptySelection);
         }
         Ok((hex::encode(hash.finalize()), files))
     }
@@ -354,6 +354,15 @@ mod tests {
             .local_snapshot_selection(limits(500, 4 * 1024 * 1024))
             .unwrap();
         assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_selection_has_its_own_error() {
+        let (_dir, local) = open_local(&[]);
+        assert!(matches!(
+            local.local_snapshot_selection(limits(500, 1024 * 1024)),
+            Err(Error::EmptySelection)
+        ));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The upload route's port onto [`SourceAcquisitions`] (GRE-428).
 
 use crate::source_acquisition::{AcquisitionError, SourceAcquisitions, StreamedRequest};
-use pp_api::catalog::{SourceUploads, UploadFailure, UploadParts};
+use pp_api::catalog::{SourceUploads, UploadFailure, UploadKind, UploadParts};
 use pp_storage::{
     WriterFailure,
     catalog::Credentials,
@@ -25,8 +25,8 @@ pub const IMPORT_QUOTA: u64 = 64 * 1024 * MIB;
 
 /// Imports that may hold a slot at once: one, as the worker admission runs
 /// one Source import at a time and one job per Source. A second upload while
-/// one runs is refused as busy (409) before any byte is read, never answered
-/// 202 for work no worker could claim.
+/// one runs is refused as busy (409) before anything is stored, never
+/// answered 202 for work no worker could claim.
 pub const IMPORT_SLOTS: usize = 1;
 
 /// Free space an upload must leave on the data volume.
@@ -72,6 +72,7 @@ impl SourceUploads for SourceUploadService {
         &self,
         credentials: Credentials,
         source_id: i64,
+        kind: UploadKind,
         files: UploadParts,
     ) -> Result<String, UploadFailure> {
         let reply = self
@@ -86,6 +87,7 @@ impl SourceUploads for SourceUploadService {
                 },
                 operation_key: format!("upload-{}", hex::encode(rand::random::<[u8; 16]>())),
                 target: Target::Existing { source_id },
+                kind,
                 limits: UPLOAD_LIMITS,
                 files,
             })

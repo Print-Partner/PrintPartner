@@ -1,5 +1,6 @@
 use crate::uploads::{SourceImports, Through};
 use anyhow::{Context, Result, anyhow, ensure};
+use pp_api::catalog::UploadKind;
 use pp_source::{
     SourcePath,
     retained_capture::{
@@ -47,11 +48,13 @@ pub struct CaptureRequest {
 
 /// A captured import whose files arrive one at a time, such as the parts of
 /// an upload. Each item names the file's path inside the Source; an `Err`
-/// item means the stream broke, and nothing is admitted.
+/// item means the stream broke, and nothing is admitted. A ZIP takes exactly
+/// one item, and the import unpacks it.
 pub struct StreamedRequest<F> {
     pub credential: Credential,
     pub operation_key: String,
     pub target: Target,
+    pub kind: UploadKind,
     pub limits: AdmissionLimits,
     pub files: F,
 }
@@ -608,6 +611,7 @@ impl SourceAcquisitions {
             credential,
             operation_key,
             target,
+            kind,
             limits,
             files,
         } = request;
@@ -617,6 +621,10 @@ impl SourceAcquisitions {
         let mut candidate = self.allocate()?;
         let mut paths = Vec::new();
         for file in files {
+            if kind == UploadKind::Zip && !paths.is_empty() {
+                let second = AcquisitionError::Input("A ZIP upload takes one file".into());
+                return Err(self.abort(candidate, second));
+            }
             let written = file
                 .map_err(|_| AcquisitionError::Input("The upload body could not be read".into()))
                 .and_then(|(path, input)| {
@@ -633,7 +641,10 @@ impl SourceAcquisitions {
         if paths.is_empty() {
             return Err(self.abort(candidate, AcquisitionError::NoFiles));
         }
-        let payload = CapturedPayloadV1::files(paths);
+        let payload = match kind {
+            UploadKind::Files => CapturedPayloadV1::files(paths),
+            UploadKind::Zip => CapturedPayloadV1::zip(paths.swap_remove(0)),
+        };
         let preflight = self
             .imports
             .preflight_capture(

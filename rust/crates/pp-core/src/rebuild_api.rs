@@ -329,7 +329,7 @@ fn read_router_with_updates(
         events_client,
         (checkoff_client, settings),
         plates_client,
-        farm_client,
+        (farm_client, activity_client),
     ) = {
         let guard = owner
             .lock()
@@ -352,7 +352,7 @@ fn read_router_with_updates(
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
-            guard.farm_reads(policy)?,
+            (guard.farm_reads(policy)?, guard.print_activity(policy)?),
         )
     };
     let endpoint = (origin, api_key_tenant);
@@ -394,6 +394,7 @@ fn read_router_with_updates(
                 reads: farm_client,
                 observations: runtime.farm,
                 modules: settings,
+                activity: activity_client,
             },
         },
     );

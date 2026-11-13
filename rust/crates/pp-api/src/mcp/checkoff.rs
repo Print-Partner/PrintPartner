@@ -152,6 +152,9 @@ impl DomainPort for CheckoffDomain {
         if name == super::farm_status::TOOL {
             return Ok(self.farm_status());
         }
+        if name == super::print_stats::TOOL {
+            return Ok(self.print_stats(args));
+        }
         Err(format!("{name} has no Rust port yet"))
     }
 

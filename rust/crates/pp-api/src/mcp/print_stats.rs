@@ -11,16 +11,24 @@
 //! - Active plans: every Build that is not archived, with its Accepted Plan
 //!   progress as `list_plans` reads it.
 
-use super::write_result::{Code, Refusal};
+use super::{
+    checkoff::CheckoffDomain,
+    farm_status::INTERNAL,
+    write_result::{Code, Refusal, read_failure, writer_failure},
+};
+use pp_services::mcp_domain::ToolInvocation;
 use pp_storage::{
-    build_graph::{AcceptedProgress, AcceptedProgressUnavailable, ProfileSummary},
-    print_activity::PrinterActivity,
-    read_model::farm::{CheckoffResult, HostOutcome, UnmatchedPrint, iso_time},
+    build_graph::{
+        AcceptedProgress, AcceptedProgressUnavailable, BuildCommand, BuildOutcome, ProfileSummary,
+    },
+    print_activity::{PrintActivityError, PrinterActivity},
+    read_model::farm::{CheckoffResult, HostOutcome, Observation, UnmatchedPrint, iso_time},
 };
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
 use std::{
     collections::{BTreeMap, HashMap},
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, SystemTime},
 };
 
@@ -139,6 +147,67 @@ enum Unavailable {
     CompatibilityDirty,
     Uninitialized,
     Integrity,
+}
+
+impl CheckoffDomain {
+    /// `get_print_stats`, called only while the Farm Module is on.
+    pub(super) fn print_stats(&self, args: &Map<String, Value>) -> ToolInvocation {
+        let content = match self.read_print_stats(args) {
+            Ok(stats) => serde_json::to_string(&stats).unwrap_or_else(|_| INTERNAL.proposal()),
+            Err(refusal) => refusal.proposal(),
+        };
+        ToolInvocation {
+            content,
+            proposed_action: None,
+        }
+    }
+
+    fn read_print_stats(&self, args: &Map<String, Value>) -> Result<PrintStats, Refusal> {
+        let window = Window::parse(args)?;
+        let now = SystemTime::now();
+        let caller = self.caller().map_err(|_| INTERNAL)?;
+        let since = iso_time(window.since(now));
+        let jobs = self
+            .farm
+            .activity
+            .since(
+                caller.clone().into_credential(),
+                &since,
+                &AtomicBool::new(false),
+                self.wait,
+            )
+            .map_err(|PrintActivityError::Reader(failure)| writer_failure(&failure))?;
+        let farm = self.read_farm()?;
+        let names = farm
+            .printers(|_| Observation::NotWatched)
+            .printers
+            .into_iter()
+            .map(|printer| (printer.id, printer.name))
+            .collect();
+        let listed = self.builds.execute(
+            caller.into_credential(),
+            BuildCommand::List,
+            Arc::new(AtomicBool::new(false)),
+            self.wait,
+        );
+        let builds = match listed {
+            Ok(BuildOutcome::Listed { profiles }) => profiles,
+            Ok(_) => return Err(INTERNAL),
+            Err(error) => return Err(read_failure(error)),
+        };
+        let (checkoff, unmatched) = (farm.checkoff(), farm.unmatched());
+        Ok(stats(
+            window,
+            now,
+            Inputs {
+                jobs,
+                results: &checkoff.results,
+                unmatched: &unmatched.prints,
+                names,
+                builds,
+            },
+        ))
+    }
 }
 
 /// What the tool reads, each from its own storage read.

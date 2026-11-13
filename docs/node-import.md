@@ -35,6 +35,8 @@ What it does:
 
 The dry run refuses before it creates anything when `TMPDIR` is the source folder or the destination, or lies inside one: it must write nothing there.
 
+The check in step 3 holds the database files in memory: it reads `print-partner.db`, its `-wal` and its `-journal` whole, and reads them a second time to confirm they did not change. So beside the disk space below, the run needs free memory of about twice the size of `print-partner.db` plus its `-wal`. Nothing checks memory before the run starts. The size of `repos/` does not count. A run that is killed during that check can also leave `pp-preflight-*` under `TMPDIR`; delete it.
+
 It checks free space in the temporary directory once and refuses with the bytes needed and the bytes free. For a folder the check comes before the copy and needs twice the database files plus 64 MB: the copy, and beside it the larger of the startup check's short-lived copy and the upgrade's write-ahead log. For an archive the check comes after extraction. The dry run extracts only the database and the single-file roots, so the archive's own size does not count; once they are extracted, it needs the database's size plus 64 MB more for the same two things. Nothing checks space before extraction, so an archive whose database does not fit fails during extraction with `import failed:`, not with a refusal. The temporary copy is removed and the archive is not touched. The documented Docker run mounts `/tmp` as a 1 GB tmpfs ([Docker image](docker.md#run)), enough for a database of about 450 MB. To stage elsewhere, set `TMPDIR` to a directory on a disk, for example `docker run -e TMPDIR=/stage -v <volume>:/stage ...`.
 
 The counts describe the upgraded copy, not the source file. The upgrade adds again any starter slicer profile that was deleted, and applies Node's Source revision repair.
@@ -60,6 +62,7 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <copy> --dry-run
 
 - Point `--from` at the snapshot or copy, never at the live `/data` while Node runs. The dry run writes nothing to its source, but it refuses a folder whose database files change during the read, and a copy taken while Node runs keeps any `.desktop-lease`, which is refused under [Refusals](#refusals).
 - `TMPDIR` needs twice the size of the database files plus 64 MB free, and must lie outside the copy (see the free-space rule above). The size of `repos/` does not count: it is listed, not copied.
+- The host needs free memory of about twice the size of `print-partner.db` plus its `-wal`, because the run holds the database files in memory while it checks them (see the memory rule above). The size of `repos/` does not count here either. Check the size first with `ls -l <copy>/print-partner.db*`.
 
 The test `a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused` in `rust/crates/pp-storage/src/import/tests.rs` checks both paths with a lowered cap.
 

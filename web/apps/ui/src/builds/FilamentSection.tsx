@@ -13,7 +13,7 @@ type Available = Filament["grams_available"];
  * `GET /api/v2/plans/{id}/filament-shortfalls`. Every read asks Spoolman, so it runs when
  * the Overview opens and when the owner presses Refresh, never on a timer or on focus.
  */
-export const filamentShortfallsQuery = (id: number) => ({
+const filamentShortfallsQuery = (id: number) => ({
   queryKey: ["core", "filament-shortfalls", id],
   queryFn: ({ signal }: { signal: AbortSignal }) =>
     readCore("readFilamentShortfalls", { id }, signal),

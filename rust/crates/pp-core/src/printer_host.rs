@@ -8,7 +8,7 @@
 pub(crate) mod probe;
 
 use pp_api::printer_host::{
-    Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort,
+    Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort, TlsPin, TlsPinReset,
 };
 use pp_gateway::printer_host::{BambuPin, HostReads, HostTarget, Opened, OpenedFile};
 use pp_storage::{
@@ -304,7 +304,7 @@ impl PrinterHostPort for StoredPrinterHosts {
         })
     }
 
-    fn tls_pin(&self, integration: String) -> Answer<Value> {
+    fn tls_pin(&self, integration: String) -> Answer<TlsPin> {
         let settings = self.settings.clone();
         Box::pin(async move {
             let read = tokio::task::spawn_blocking(move || {
@@ -317,12 +317,16 @@ impl PrinterHostPort for StoredPrinterHosts {
             .await;
             match read {
                 Ok(Ok(Some(pin))) => HostAnswer::Ok(match pin {
-                    Some(pin) => json!({
-                        "pinned": true,
-                        "sha256_prefix": hex::encode(&pin.sha256[..6]),
-                        "pinned_at": pin.pinned_at,
-                    }),
-                    None => json!({ "pinned": false }),
+                    Some(pin) => TlsPin {
+                        pinned: true,
+                        sha256_prefix: Some(hex::encode(&pin.sha256[..6])),
+                        pinned_at: Some(pin.pinned_at),
+                    },
+                    None => TlsPin {
+                        pinned: false,
+                        sha256_prefix: None,
+                        pinned_at: None,
+                    },
                 }),
                 Ok(Ok(None)) => HostAnswer::NotFound,
                 Ok(Err(_)) | Err(_) => HostAnswer::Busy,
@@ -330,7 +334,7 @@ impl PrinterHostPort for StoredPrinterHosts {
         })
     }
 
-    fn reset_tls_pin(&self, integration: String) -> Answer<Value> {
+    fn reset_tls_pin(&self, integration: String) -> Answer<TlsPinReset> {
         let settings = self.settings.clone();
         Box::pin(async move {
             // Waits out a Test connection in flight, so a first-use pin it
@@ -356,7 +360,7 @@ impl PrinterHostPort for StoredPrinterHosts {
             )
             .await;
             match reset {
-                Some(Ok(Some(reset))) => HostAnswer::Ok(json!({ "reset": reset })),
+                Some(Ok(Some(reset))) => HostAnswer::Ok(TlsPinReset { reset }),
                 Some(Ok(None)) => HostAnswer::NotFound,
                 Some(Err(_)) | None => HostAnswer::Busy,
             }

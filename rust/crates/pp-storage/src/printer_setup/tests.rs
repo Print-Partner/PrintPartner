@@ -17,6 +17,8 @@ const POLICY: AuthPolicy = AuthPolicy {
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
+type Changed = Result<IntegrationSummary, PrinterSetupError>;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     owner: WriterOwner,
@@ -46,13 +48,10 @@ impl Fixture {
             .create_integration(self.session(), new, &IDLE, WAIT)
     }
 
-    fn change(
-        &self,
-        id: &str,
-        patch: IntegrationPatch,
-    ) -> Result<IntegrationSummary, PrinterSetupError> {
+    fn change(&self, id: &str, patch: IntegrationPatch) -> Changed {
+        let (session, id) = (self.session(), id.into());
         self.client
-            .update_integration(self.session(), id.into(), patch, &IDLE, WAIT)
+            .update_integration(session, id, patch, &IDLE, WAIT)
     }
 
     fn delete(&self, id: &str) -> Result<IntegrationSummary, PrinterSetupError> {

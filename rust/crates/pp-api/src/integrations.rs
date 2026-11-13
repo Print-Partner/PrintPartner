@@ -87,7 +87,8 @@ pub struct CreateIntegrationRequest {
 /// `PATCH /api/v2/integrations/{id}` body. A field that is absent keeps its
 /// stored value. For `name`, `base_url` and `enabled`, null keeps it too; for
 /// `username`, `api_key` and `password`, null clears it. The kind never
-/// changes.
+/// changes. A new `base_url` must come with each stored `api_key` and
+/// `password`, as a value or as null, so no stored secret follows it.
 #[derive(Deserialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -342,6 +343,7 @@ fn field_error(invalid: &InvalidField) -> FieldError {
         (Reason::HasCredentials, _) => "must not contain a username or password",
         (Reason::NotCreatable, _) => "cannot be created here",
         (Reason::NotUsedByKind, _) => "is not used by this kind",
+        (Reason::NotResent, _) => "must be sent again when the address changes",
         (Reason::NotAPrinterHost, _) => {
             "must name a stored Moonraker, PrusaLink or Bambu integration"
         }

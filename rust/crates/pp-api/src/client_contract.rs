@@ -1987,19 +1987,10 @@ pub(crate) mod codegen {
         }
         for (name, value) in [
             ("empty", json!({})),
-            (
-                "address",
-                json!({"base_url": "http://fixture.invalid:7126"}),
-            ),
+            ("address", json!({"base_url": "http://fixture.invalid"})),
             ("pause", json!({"name": "Voron", "enabled": false})),
-            (
-                "set-password",
-                json!({"username": "maker", "password": "fixture-password"}),
-            ),
-            (
-                "clear-credentials",
-                json!({"api_key": null, "password": null}),
-            ),
+            ("password", json!({"password": "fixture-password"})),
+            ("clear", json!({"api_key": null, "password": null})),
             ("kind", json!({"kind": "prusalink"})),
             ("enabled-not-boolean", json!({"enabled": "no"})),
             ("password-not-text", json!({"password": 1})),

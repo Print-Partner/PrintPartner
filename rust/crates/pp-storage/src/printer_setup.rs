@@ -67,6 +67,8 @@ pub enum Reason {
     NotCreatable,
     /// The kind does not sign in with this field.
     NotUsedByKind,
+    /// A stored secret an address change must send again, or clear.
+    NotResent,
     /// A number outside what its field takes; `printers` has the ranges.
     OutOfRange,
     /// No stored Moonraker, PrusaLink or Bambu integration has that id.

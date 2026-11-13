@@ -81,7 +81,7 @@ async fn an_invalid_request_names_every_field_and_no_value() {
         invalid(Field::BaseUrl, Reason::HasCredentials),
         invalid(Field::Username, Reason::NotUsedByKind),
         invalid(Field::ApiKey, Reason::TooLong),
-        invalid(Field::Password, Reason::NotUsedByKind),
+        invalid(Field::Password, Reason::NotResent),
     ]))
     .await;
     assert_eq!(status, 400);
@@ -95,7 +95,7 @@ async fn an_invalid_request_names_every_field_and_no_value() {
             {"pointer": "/base_url", "detail": "must not contain a username or password"},
             {"pointer": "/username", "detail": "is not used by this kind"},
             {"pointer": "/api_key", "detail": "is too long"},
-            {"pointer": "/password", "detail": "is not used by this kind"},
+            {"pointer": "/password", "detail": "must be sent again when the address changes"},
         ])
     );
 }

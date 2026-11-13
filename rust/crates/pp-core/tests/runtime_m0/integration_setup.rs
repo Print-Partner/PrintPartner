@@ -79,9 +79,10 @@ async fn tested_and_polled(origin: &str, cookie: &str, id: &str) {
     printing(origin, cookie, id).await;
 }
 
-/// An integration saved at a dead address fails its test. A refused `PATCH`
-/// changes nothing. One `PATCH` then moves it to the printer and renames it:
-/// with no restart the test passes and it is polled, and its API key is kept.
+/// An integration saved at a dead address fails its test. A `PATCH` that
+/// moves it without its API key is refused. One `PATCH` with the key then
+/// moves it to the printer and renames it: with no restart the test passes
+/// and it is polled.
 async fn moved_to_the_printer(origin: &str, cookie: &str, moonraker: &Value) {
     let mut down = moonraker.clone();
     down["base_url"] = json!("http://127.0.0.1:9");
@@ -94,11 +95,14 @@ async fn moved_to_the_printer(origin: &str, cookie: &str, moonraker: &Value) {
     assert_eq!(failed, (StatusCode::OK, &json!(false)), "{body}");
 
     let path = format!("{CREATED}/{id}");
-    let refused = json!({"base_url": "ftp://printer.invalid", "api_key": null});
+    // A new address without the stored key would send that key to it.
+    let refused = json!({"base_url": moonraker["base_url"]});
     let (code, problem, _) = call(origin, cookie, "PATCH", &path, Some(refused)).await;
     let named = (code, &problem["errors"][0]["pointer"]);
-    assert_eq!(named, (StatusCode::BAD_REQUEST, &json!("/base_url")));
-    let patch = json!({"name": "Moved", "base_url": moonraker["base_url"]});
+    assert_eq!(named, (StatusCode::BAD_REQUEST, &json!("/api_key")));
+    let mut patch = moonraker.clone();
+    patch["name"] = json!("Moved");
+    patch.as_object_mut().unwrap().remove("kind");
     let (code, moved, text) = call(origin, cookie, "PATCH", &path, Some(patch)).await;
     let mut expected = view.clone();
     expected["name"] = json!("Moved");

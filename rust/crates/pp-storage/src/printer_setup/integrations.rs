@@ -302,11 +302,18 @@ impl Checks {
             self.fail(field, Reason::TooLong);
         }
     }
-}
 
-/// The secret a patch sets, if it sets one.
-fn exposed(secret: &Option<Option<Secret>>) -> Option<&str> {
-    secret.as_ref()?.as_ref().map(Secret::expose)
+    /// An API key or password a patch may set or clear. `moved` is true when
+    /// the patch changes the address of a row that stores this secret: the
+    /// patch must then send it again, as a value or as null. Otherwise the
+    /// stored secret would go to whatever host the caller named.
+    fn secret(&mut self, field: Field, sent: &Option<Option<Secret>>, moved: bool) {
+        match sent {
+            Some(value) => self.credential(field, value.as_ref().map(Secret::expose)),
+            None if moved => self.fail(field, Reason::NotResent),
+            None => {}
+        }
+    }
 }
 
 impl Integration {
@@ -354,7 +361,8 @@ impl Integration {
     }
 
     /// Sets what `patch` sends, at `now`. Only those values are checked, and
-    /// every invalid field is collected; a refused patch changes nothing.
+    /// every invalid field is collected; a refused patch changes nothing. A
+    /// new address never keeps a stored secret the patch did not send.
     pub(crate) fn apply(
         &mut self,
         patch: IntegrationPatch,
@@ -368,10 +376,16 @@ impl Integration {
         if let Some(base_url) = &patch.base_url {
             checks.base_url(base_url);
         }
+        let stored = &self.config;
+        let moved = patch
+            .base_url
+            .as_ref()
+            .is_some_and(|url| *url != stored.base_url);
         let username = patch.username.as_ref().and_then(Option::as_deref);
         checks.credential(Field::Username, username);
-        checks.credential(Field::ApiKey, exposed(&patch.api_key));
-        checks.credential(Field::Password, exposed(&patch.password));
+        let held = |secret: &Option<Secret>| moved && secret.is_some();
+        checks.secret(Field::ApiKey, &patch.api_key, held(&stored.api_key));
+        checks.secret(Field::Password, &patch.password, held(&stored.password));
         if !checks.invalid.is_empty() {
             return Err(checks.invalid);
         }

@@ -202,14 +202,13 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
 
 ## Integration create, edit and delete routes (GRE-1439, GRE-1481)
 
-`POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman
-integration, `PATCH /api/v2/integrations/{id}` edits one, and
-`DELETE /api/v2/integrations/{id}` removes one of any kind, for the
-replacement Settings screen. They are `createIntegration`, `updateIntegration`
-and `deleteIntegration` in the generated `@print-partner/rust-client`. All
-answer `200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`,
-`base_url`, `username`, `has_api_key` and `has_password`. Delete answers the
-view it removed. No response or problem carries an API key or a password.
+`POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman integration
+and `DELETE /api/v2/integrations/{id}` removes one of any kind, for the
+replacement Settings screen. They are `createIntegration` and
+`deleteIntegration` in the generated `@print-partner/rust-client`. Both answer
+`200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`, `base_url`,
+`username`, `has_api_key` and `has_password`. Delete answers the view it
+removed. No response or problem carries an API key or a password.
 
 - They mount only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
   `true`, so only the Rust-only runtime serves them. The accepted gate admits
@@ -219,13 +218,19 @@ view it removed. No response or problem carries an API key or a password.
 - The create body is `kind`, `name` and `base_url`, plus optional `enabled`
   (default `true`), `api_key` (Moonraker and Spoolman) and `username` and
   `password` (PrusaLink). Unknown keys are refused.
-- The edit body takes `name`, `base_url`, `enabled`, `username`, `api_key` and
-  `password`, all optional, and applies what it is sent in one write, so an
-  address and its credentials change together. A field that is absent keeps
+- `PATCH /api/v2/integrations/{id}` (`updateIntegration`) edits one and
+  answers the same view. Its body takes `name`, `base_url`, `enabled`,
+  `username`, `api_key` and `password`, all optional, and applies what it is
+  sent in one write, so an address and its credentials change together. A field that is absent keeps
   its stored value. For `username`, `api_key` and `password`, null clears the
   stored value; for the other three, null keeps it. `kind` is not a field: an
   integration's kind never changes. Only the fields a request sends are
   checked, so a row that predates a check can still be edited.
+- An edit that changes `base_url` must also send each stored `api_key` and
+  `password`, as the value to use at the new address or as null. Without that
+  the stored secret would be sent to whatever host the caller named, so the
+  edit is refused and names the field. The view's `has_api_key` and
+  `has_password` say which are stored.
 - Bambu, Home Assistant, AI assistant and slicer integrations cannot be edited
   here. They are kept as stored and can only be deleted.
 - A new or edited host needs no restart: the status watchers re-read the
@@ -255,6 +260,8 @@ Invalid values:
   longer than 2,048 bytes, or has whitespace or a control character in it.
 - `api_key`, `username`, `password`: an empty string (omit the field or send
   `null` for none), longer than 4,096 bytes, or a field the kind does not use.
+  On an edit, also a stored `api_key` or `password` left out of a body that
+  changes `base_url`.
 - `kind`, on create: anything but `moonraker`, `prusalink` or `spoolman`.
 
 ```sh

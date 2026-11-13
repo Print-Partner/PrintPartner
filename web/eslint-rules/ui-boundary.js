@@ -9,6 +9,7 @@
 //   The `compositionImports: "allow"` option turns off this third check only; the config
 //   sets it for test files, which render the composed app.
 // A shared helper two screens need goes in a shared layer, never in one of the screens.
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,12 +22,21 @@ const SRC_ROOT = path.join(UI_ROOT, "src");
 // so a new folder is held to the screen rules until it is listed here.
 const SHARED_LAYERS = new Set(["core", "frame", "screen", "status", "theme", "type", "fonts"]);
 
+function isFolder(file) {
+  try {
+    return fs.statSync(file).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Where a file under src sits: composition, a shared layer or a screen; null outside src. */
 function layerOf(file) {
   const relative = path.relative(SRC_ROOT, file);
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return null;
   const [top, ...rest] = relative.split(path.sep);
-  if (rest.length === 0) return { kind: "composition", name: "src" };
+  // A file directly in src is composition; a folder directly in src ("../builds") is that folder.
+  if (rest.length === 0 && !isFolder(file)) return { kind: "composition", name: "src" };
   return { kind: SHARED_LAYERS.has(top) ? "shared" : "screen", name: top };
 }
 

@@ -88,6 +88,17 @@ describe("apps/ui import boundary", { timeout: 30_000 }, () => {
         "apps/ui/src/farm/planted.test.tsx",
         "screen to screen in a test",
       ],
+      ['import * as builds from "../builds";', "apps/ui/src/today/planted.ts", "a screen folder"],
+      [
+        'import * as builds from "../builds";',
+        "apps/ui/src/today/planted.test.ts",
+        "a screen folder in a test",
+      ],
+      [
+        'export const load = () => import("../farm/FarmLog");',
+        "apps/ui/src/library/planted.ts",
+        "dynamic import",
+      ],
     ])("fails a planted import: %s in %s (%s)", async (code, file) => {
       expect(await boundaryErrors(planted(code), file)).toHaveLength(1);
     });
@@ -122,6 +133,12 @@ describe("apps/ui import boundary", { timeout: 30_000 }, () => {
         'import { routes } from "../routes";',
         "apps/ui/src/builds/planted.test-utils.tsx",
         "test utilities render the app",
+      ],
+      ['import * as here from ".";', "apps/ui/src/today/planted.ts", "its own folder"],
+      [
+        'import { dateText } from "../src/builds/format";',
+        "apps/ui/test/planted.ts",
+        "a file outside src",
       ],
     ])("allows a planted import: %s in %s (%s)", async (code, file) => {
       expect(await boundaryErrors(planted(code), file)).toEqual([]);

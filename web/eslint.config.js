@@ -76,7 +76,7 @@ export default tseslint.config(
   },
   {
     // A screen test renders the composed app through ../App and ../routes (GRE-1537).
-    files: ["apps/ui/src/**/*.{test,test-utils}.*"],
+    files: ["apps/ui/src/**/*.{test,test-utils}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
     rules: { "print-partner/ui-boundary": ["error", { compositionImports: "allow" }] },
   },
   {

@@ -37,7 +37,7 @@ names, module paths and command references.
 
 ## Complexity limits
 
-The web ESLint config limits `complexity` to 20, nesting depth to 5 and parameters to 5 in every TypeScript and JavaScript file. Existing violations are recorded in `web/eslint-suppressions.json` with the naming violations, as a count per file and rule. A new violation, or one more in a file that already has some, fails `npm run lint`. When you simplify code, run `npx eslint . --prune-suppressions` from `web/` and commit the lower counts. The replacement UI's layer rule (`print-partner/ui-boundary`, [UI layers](../../web/apps/ui/README.md#layers-inside-src-gre-1537)) records its 16 existing cross-layer imports there the same way; a new one fails lint, and a removed one is pruned. Function and file length limits come after the Prettier rollout, because reformatting changes line counts.
+The web ESLint config limits `complexity` to 20, nesting depth to 5 and parameters to 5 in every TypeScript and JavaScript file. Existing violations are recorded in `web/eslint-suppressions.json` with the naming violations, as a count per file and rule. A new violation, or one more in a file that already has some, fails `npm run lint`. When you simplify code, run `npx eslint . --prune-suppressions` from `web/` and commit the lower counts. The replacement UI's layer rule (`print-partner/ui-boundary`, [UI layers](../../web/apps/ui/README.md#layers-inside-src-gre-1537)) records its 16 existing cross-layer imports there the same way; a new one fails lint, and when you remove one you must prune its count the same way. Function and file length limits come after the Prettier rollout, because reformatting changes line counts.
 
 ## Open the pull request
 

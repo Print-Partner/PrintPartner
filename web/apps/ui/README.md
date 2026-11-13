@@ -448,8 +448,10 @@ The same rule keeps three layers apart inside `src`:
 - **Shared layers:** `core`, `frame`, `screen`, `status`, `theme`, `type` and
   `fonts`. A shared layer may not import a screen. Any other new folder under
   `src` counts as a screen until it is added to `SHARED_LAYERS` in the rule.
-- **Composition:** the files directly in `src` (`App.tsx`, `routes.tsx`,
-  `main.tsx`, `csp.ts` and the test setup). Only composition may import it.
+- **Composition:** the files directly in `src`: `App.tsx`, `routes.tsx`,
+  `main.tsx`, `csp.ts`, `index.css`, `typography.css` and the test setup
+  (`testSetup.ts`, `testSockets.ts`). An import of a folder, such as
+  `../builds`, counts as that folder. Only composition may import it.
   Test files (`*.test.*`, `*.test-utils.*`) may too, because a screen test
   renders the composed app through `../App` and `../routes`; the two screen
   rules still apply to them.

@@ -1667,7 +1667,6 @@ fn recompute(
 
 /// Prepares a draft snapshot from the Build's layers, or the recompute
 /// outcome a preparation refusal answers.
-#[allow(clippy::too_many_arguments)]
 fn prepare_draft(
     connection: &mut impl preparation::PreparationSql,
     tenant: &str,

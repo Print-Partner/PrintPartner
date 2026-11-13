@@ -114,7 +114,7 @@ fn filter(query: &HashMap<String, String>) -> Option<Filter> {
         None => None,
     };
     let link_id = match query.get("link_id") {
-        Some(id) if id.is_empty() || id.len() > MAX_LINK_ID => return None,
+        Some(id) if id.is_empty() || id.chars().count() > MAX_LINK_ID => return None,
         other => other.cloned(),
     };
     Some(Filter { state, link_id })
@@ -177,6 +177,9 @@ mod tests {
             (Some(State::Pending), Some("link-1"))
         );
         assert_eq!(filter(&query(&[])).unwrap(), Default::default());
+        // The bound counts characters: 200 three-byte characters pass.
+        let wide = "€".repeat(200);
+        assert!(filter(&query(&[("link_id", wide.as_str())])).is_some());
         let long = "x".repeat(201);
         for refused in [
             query(&[("state", "done")]),

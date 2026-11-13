@@ -210,11 +210,7 @@ async fn slice0_mount_product_routes_answer_without_the_proxy() {
     assert_eq!(gateway.compat_forwards(), 0);
 
     // Logout reaches the Rust routes before the gateway ends the desktop session.
-    let mut logout = get(&gateway, "/auth/logout", Some(&cookie), Some("127.0.0.1:9"));
-    *logout.method_mut() = axum::http::Method::POST;
-    let response = handle(state(), logout).await;
-    assert_eq!(response.headers()["set-cookie"], "pp_session=; Max-Age=0");
-    assert_eq!(text(response).await, (StatusCode::OK, "revoked".to_owned()));
+    sign_out_through(&gateway, &cookie).await;
     let (status, _) = text(
         handle(
             state(),
@@ -378,21 +374,41 @@ async fn slice0_mount_mcp_reaches_the_product_routes_without_the_desktop_cookie(
     gateway.stop().await.unwrap();
 }
 
-#[tokio::test]
-async fn slice0_mount_rust_only_runtime_reports_rust_status() {
+/// A Rust-only gateway over `stub()`, with a desktop cookie.
+async fn started_rust_only(
+    status: tokio::sync::watch::Receiver<RustStatus>,
+    sign_out: SignOut,
+) -> (Gateway, String, Scratch) {
     let root = Scratch::new("pp-slice0-mount-");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
     let mut gateway = Gateway::start_rust_only(
         listener,
         root.to_path_buf(),
         ServedUi::Legacy,
         |_| stub(),
-        receiver,
+        status,
         Arc::new(NoHosts),
+        sign_out,
     )
     .unwrap();
     let cookie = gateway.test_session().await;
+    (gateway, cookie, root)
+}
+
+/// `POST /auth/logout` through the gateway; the stub's Rust logout answers
+/// first and clears `pp_session`.
+async fn sign_out_through(gateway: &Gateway, cookie: &str) {
+    let mut logout = get(gateway, "/auth/logout", Some(cookie), Some("127.0.0.1:9"));
+    *logout.method_mut() = axum::http::Method::POST;
+    let response = handle(State(gateway.state.clone()), logout).await;
+    assert_eq!(response.headers()["set-cookie"], "pp_session=; Max-Age=0");
+    assert_eq!(text(response).await, (StatusCode::OK, "revoked".to_owned()));
+}
+
+#[tokio::test]
+async fn slice0_mount_rust_only_runtime_reports_rust_status() {
+    let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
+    let (gateway, cookie, _root) = started_rust_only(receiver, SignOut::EndsRuntime).await;
     let runtime = || async {
         let (code, body) = text(
             handle(
@@ -419,6 +435,38 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
         })
     );
     gateway.stop().await.unwrap();
+}
+
+/// The headless server's sign-out revokes the account session and keeps
+/// serving; the desktop's ends every desktop session and the runtime.
+#[tokio::test]
+async fn slice0_mount_headless_sign_out_keeps_serving() {
+    for sign_out in [SignOut::KeepsServing, SignOut::EndsRuntime] {
+        let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
+        let (gateway, cookie, _root) = started_rust_only(receiver, sign_out).await;
+        sign_out_through(&gateway, &cookie).await;
+        let keeps = sign_out == SignOut::KeepsServing;
+        assert_eq!(gateway.state.shutdown_requested.is_cancelled(), !keeps);
+        assert_eq!(gateway.state.cancelled.is_cancelled(), !keeps);
+        assert_eq!(gateway.state.watcher_cancelled.is_cancelled(), !keeps);
+        // The stub revokes nothing, so this shows the gateway admission only:
+        // kept when serving on, cleared when the runtime ends. pp-server's
+        // binary test proves the Rust session is revoked.
+        let plans = get(
+            &gateway,
+            "/api/v1/plans",
+            Some(&cookie),
+            Some("127.0.0.1:9"),
+        );
+        let (status, body) = text(handle(State(gateway.state.clone()), plans).await).await;
+        let expected = if keeps {
+            StatusCode::OK
+        } else {
+            StatusCode::UNAUTHORIZED
+        };
+        assert_eq!(status, expected, "{sign_out:?}: {body}");
+        gateway.stop().await.unwrap();
+    }
 }
 
 #[tokio::test]

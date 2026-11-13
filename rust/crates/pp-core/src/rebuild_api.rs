@@ -286,10 +286,14 @@ impl RuntimeInputs {
     }
 }
 
-/// What MCP's farm tools read: the farm projection, the printer watchers'
-/// observations and the Module settings.
+/// What MCP's farm tools read: the farm projection with the print activity
+/// `get_print_stats` counts, the printer watchers' observations and the
+/// Module settings.
 fn mcp_farm(
-    reads: pp_storage::read_model::farm::FarmClient,
+    (reads, activity): (
+        pp_storage::read_model::farm::FarmClient,
+        pp_storage::print_activity::PrintActivityClient,
+    ),
     observations: Arc<dyn pp_api::farm::FarmObservations>,
     modules: SettingsClient,
 ) -> McpFarm {
@@ -297,6 +301,7 @@ fn mcp_farm(
         reads,
         observations,
         modules,
+        activity,
     }
 }
 
@@ -395,7 +400,7 @@ fn read_router_with_updates(
         events_client,
         (checkoff_client, settings),
         plates_client,
-        farm_client,
+        farm_clients,
     ) = {
         let guard = owner
             .lock()
@@ -418,7 +423,7 @@ fn read_router_with_updates(
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
-            guard.farm_reads(policy)?,
+            (guard.farm_reads(policy)?, guard.print_activity(policy)?),
         )
     };
     let endpoint = (origin, api_key_tenant);
@@ -461,7 +466,7 @@ fn read_router_with_updates(
             planning: planning_client,
             progress: checkoff_client,
             accepted: accepted_client,
-            farm: mcp_farm(farm_client, runtime.farm, settings),
+            farm: mcp_farm(farm_clients, runtime.farm, settings),
         },
     );
     Ok(Some(

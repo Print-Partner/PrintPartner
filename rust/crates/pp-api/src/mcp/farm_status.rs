@@ -19,7 +19,9 @@ use crate::loopback::PresentedCredential;
 use pp_services::mcp_domain::{FarmAccess, ToolInvocation};
 use pp_storage::{
     features::modules::{Module, ModuleOffReason, ModuleStatus},
-    read_model::farm::{FarmPrinter, HostState, Observation, PrinterReason, TooLarge, iso_time},
+    read_model::farm::{
+        Farm, FarmPrinter, HostState, Observation, PrinterReason, TooLarge, iso_time,
+    },
 };
 use serde::Serialize;
 use std::{
@@ -39,7 +41,8 @@ const MODULES_INVALID: Refusal = Refusal::new(
     Code::ModuleSettingsInvalid,
     "The stored Module settings are invalid. Repair them in Settings.",
 );
-const INTERNAL: Refusal = Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
+pub(super) const INTERNAL: Refusal =
+    Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
 const UNAVAILABLE: Refusal = Refusal::new(
     Code::Unavailable,
     "Storage is busy. Nothing was written; try again.",
@@ -196,10 +199,10 @@ impl CheckoffDomain {
         }
     }
 
-    fn read_farm_status(&self) -> Result<FarmStatus, Refusal> {
+    /// The caller's farm settings, as `GET /api/v2/printers` reads them.
+    pub(super) fn read_farm(&self) -> Result<Farm, Refusal> {
         let credential = self.caller().map_err(|_| INTERNAL)?.into_credential();
-        let farm = self
-            .farm
+        self.farm
             .reads
             .read(
                 credential,
@@ -209,7 +212,11 @@ impl CheckoffDomain {
             .map_err(|error| match error.downcast_ref::<TooLarge>() {
                 Some(_) => INTERNAL,
                 None => read_failure(error),
-            })?;
+            })
+    }
+
+    fn read_farm_status(&self) -> Result<FarmStatus, Refusal> {
+        let farm = self.read_farm()?;
         // Keep each observation the projection used, so the state, the file
         // and the idle time below come from the same reading.
         let watchers = &self.farm.observations;

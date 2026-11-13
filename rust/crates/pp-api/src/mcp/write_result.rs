@@ -65,6 +65,7 @@ pub(super) enum Code {
     InvalidInput,
     UrlInputsNotSupported,
     InvalidEvidenceKind,
+    InvalidUrl,
     SourceNotFound,
     DerivedEvidenceNotFound,
 }
@@ -111,6 +112,7 @@ impl Code {
             Self::InvalidInput => "invalid_input",
             Self::UrlInputsNotSupported => "url_inputs_not_supported",
             Self::InvalidEvidenceKind => "invalid_evidence_kind",
+            Self::InvalidUrl => "invalid_url",
             Self::SourceNotFound => "source_not_found",
             Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
         }

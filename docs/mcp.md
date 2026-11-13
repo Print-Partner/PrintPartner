@@ -77,10 +77,17 @@ It also answers the four shared codes above.
 
 ### `propose_import_build_inputs`
 
-`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id, kind?, title?, filenames?, derived_from_evidence_id? }] }` attaches existing Library Sources to the Build's planning brief as evidence (GRE-1300 part 2, GRE-1521). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A `url` input is refused until GRE-1300 part 3.
+`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), and model pages and other links by `url` (part 3a, GRE-1526). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A git repository URL is refused until GRE-1300 part 3b.
 
-- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing.
-- **Confirm** runs the same checks and then one transaction: one evidence item per Source goes in the brief, the selected draft is cleared, and the brief is stored. The item's `url` is `printpartner:source:<id>` and its `id` is the first 20 hex digits of that URL's SHA-256, as Node makes them. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files. Importing a Source the brief already holds updates that one item in place and keeps its `source_role`; Node drops the role there. It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required": false }], "created_source_ids": [] } }`, one item per input in input order.
+- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing and makes no network call.
+- **Confirm** runs the same checks and then one transaction: one evidence item per input goes in the brief, the selected draft is cleared, and the brief is stored. The inputs of one confirm are attached together or not at all. Each item's `id` is the first 20 hex digits of the SHA-256 of its normalized URL, as Node makes it. Importing an input the brief already holds, by that URL, updates its one item in place and keeps its `source_role`; Node drops the role there.
+  - **A Source** gets the URL `printpartner:source:<id>`. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files.
+  - **A URL** is classified as Node's `classifyBuildUrl` does (`pp_services::build_url`). It must be http or https. The normalized URL is the trimmed URL without its fragment and without trailing slashes on its path; `url` keeps the value as sent.
+    - A page on Printables, MakerWorld, Thingiverse, Thangs, Cults3D or MyMiniFactory, or one of their subdomains, is a model page: `kind` defaults to `model_source`, `input_kind` is `model_page`, and `upload_required` is `true`. Upload its files into a Source, then attach that Source by `source_id`.
+    - Any other non-git URL is a link: `kind` defaults to `informational_evidence` and `input_kind` is `url`.
+    - `title` is stored when given. `derived_from_evidence_id` is checked but, as in Node, not stored on a URL's item.
+  - **`extract`**, on any input, is stored trimmed with its SHA-256 as `content_hash` and the time as `retrieved_at`.
+- It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required" }], "created_source_ids": [] } }`, one item per input in input order. `source_id` is `null` for a URL.
 
 A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
 
@@ -88,8 +95,9 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 | --- | --- |
 | `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
 | `invalid_inputs` | `inputs` is missing, not a list, or empty. |
-| `invalid_input` | An input is not an object, or its `source_id` is not a positive whole number. |
-| `url_inputs_not_supported` | An input has a `url`. |
+| `invalid_input` | An input is not an object, has both or neither of `source_id` and `url`, or its `source_id` is not a positive whole number. |
+| `invalid_url` | A `url` is not an http or https URL. |
+| `url_inputs_not_supported` | A `url` is a git repository: a `github.com` URL or a path ending `.git` (until GRE-1300 part 3b). |
 | `invalid_evidence_kind` | A `kind` is not `canonical_design`, `vendor_overlay`, `mod`, `component`, `model_source` or `informational_evidence`. |
 | `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
 | `planning_brief_invalid` | The stored brief does not parse. |

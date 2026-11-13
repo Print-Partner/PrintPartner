@@ -10,6 +10,7 @@ use pp_api::{
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
+    exports::exports_router,
     file_assignments::file_assignments_router,
     history::history_router,
     integrations::integrations_router,
@@ -191,16 +192,19 @@ fn checkoff_routes(
     Ok(checkoff_router(config, client).merge(files))
 }
 
+/// Accepted Plan reads and the exports built from them, on one `ReadClient`.
 fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
+    let exports = exports_router(config.clone(), client.clone());
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     Ok(accepted_router(
         config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         client,
-    ))
+    )
+    .merge(exports))
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
+/// Plan Checkoff and Spoolman shortfalls, the HTML checklist export, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
 /// GitHub branch and tag listings,
 /// the domain event stream and key-only MCP) from one

@@ -585,6 +585,7 @@ async fn start_rust_resources(
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let (imports, uploads) = start_imports(&writer).await?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
+    let uploads = rebuild_api::upload_router(Arc::clone(&writer), &origin, uploads)?;
     let product = rebuild_api::product_router_with_updates(
         desktop_rebuild,
         Arc::clone(&writer),
@@ -596,11 +597,7 @@ async fn start_rust_resources(
         },
     )?
     .context("Rust product routes need the rebuild setting")?
-    .merge(rebuild_api::upload_router(
-        Arc::clone(&writer),
-        &origin,
-        uploads,
-    )?);
+    .merge(uploads);
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
     let product =
         move |status| network::for_listener(product.merge(status_routes.mount(status)), listen);

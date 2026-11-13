@@ -61,15 +61,16 @@ function StartConfirm({
   onCancel: () => void;
   onStart: () => void;
 }) {
-  const bed = printer.state.bed_clear;
+  // The core shows Bed to clear for an idle printer whose bed needs clearing or is not
+  // confirmed clear, so the operator confirms it first.
+  const clearFirst = printer.state.display === "bed_to_clear";
   return (
     <Dialog title="Start this print?" onClose={onCancel}>
-      {bed === "needs_clearing" && (
+      {clearFirst && (
         <p className="pp-banner" data-kind="attention" role="note">
           The bed needs clearing. Clear it before you start this print.
         </p>
       )}
-      {bed === "unknown" && <p role="note">The bed is not confirmed clear.</p>}
       <p>
         Print Partner uploads <strong>{file}</strong> to <strong>{printer.name}</strong> and starts
         the print.

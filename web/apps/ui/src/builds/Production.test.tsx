@@ -260,15 +260,24 @@ describe("Production tab", () => {
     );
   });
 
-  it("a finished print whose bed needs clearing can start, and the dialog says so first", async () => {
-    renderAt(fakeCore({ printers: [printer("p1", "Micron", BED)] }).fetchMock);
-    const sheet = await openSheet();
-    fireEvent.click(within(sheet).getByRole("radio", { name: "Upload and start print" }));
-    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
-    const confirm = await screen.findByRole("dialog", { name: "Start this print?" });
-    const lines = within(confirm).getAllByText(/./, { selector: "p" });
-    expect(lines[0]!.textContent).toMatch(/bed needs clearing/);
-  });
+  it.each([
+    ["needs clearing", BED],
+    [
+      "is not confirmed clear",
+      { execution: "idle", bed_clear: "unknown", display: "bed_to_clear" } as State,
+    ],
+  ])(
+    "an idle printer whose bed %s can start, and the dialog says it needs clearing first",
+    async (_, state) => {
+      renderAt(fakeCore({ printers: [printer("p1", "Micron", state)] }).fetchMock);
+      const sheet = await openSheet();
+      fireEvent.click(within(sheet).getByRole("radio", { name: "Upload and start print" }));
+      fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+      const confirm = await screen.findByRole("dialog", { name: "Start this print?" });
+      const lines = within(confirm).getAllByText(/./, { selector: "p" });
+      expect(lines[0]!.textContent).toMatch(/bed needs clearing/);
+    },
+  );
 
   it("a printer busy by Start print leaves a Not sent row and shows the core's reason", async () => {
     const detail = "Printer is printing — wait for Idle or force dispatch";

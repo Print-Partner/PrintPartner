@@ -140,15 +140,15 @@ fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
     let caps = [
         archive::Limits {
             max_total_bytes: database / 2,
-            ..archive::Limits::default()
+            ..archive::Limits::node()
         },
         archive::Limits {
             max_entry_bytes: database / 2,
-            ..archive::Limits::default()
+            ..archive::Limits::node()
         },
         archive::Limits {
             max_entries: 4,
-            ..archive::Limits::default()
+            ..archive::Limits::node()
         },
     ];
     let archive = archive_of(source.path(), 2, "full");
@@ -175,7 +175,7 @@ fn a_failed_flush_leaves_no_marker_and_is_reported() {
     let source = node_folder();
     let parent = tempfile::tempdir().unwrap();
     let destination = parent.path().join("rust");
-    let limits = archive::Limits::default();
+    let limits = archive::Limits::node();
     let failing = |_: &Path| Err(std::io::Error::other("synthetic flush failure"));
     let error =
         import_with(source.path(), &destination, parent.path(), limits, failing).unwrap_err();
@@ -508,7 +508,7 @@ fn the_import_keeps_the_startup_copy_out_of_the_source() {
     let parent = tempfile::tempdir().unwrap();
     let destination = parent.path().join("rust");
     let before = fingerprint(source.path());
-    let (limits, flush) = (archive::Limits::default(), pp_os::sync_filesystem);
+    let (limits, flush) = (archive::Limits::node(), pp_os::sync_filesystem);
     for temporary in [source.path(), inside.as_path()] {
         let error = import_with(source.path(), &destination, temporary, limits, flush).unwrap_err();
         assert!(

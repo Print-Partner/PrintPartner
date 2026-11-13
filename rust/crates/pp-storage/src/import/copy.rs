@@ -124,7 +124,7 @@ impl fmt::Display for ImportReport {
 /// archive, into `destination`, which must be absent or empty by the
 /// ownership-marker rule. The source is never opened for writing.
 pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportError> {
-    let limits = archive::Limits::default();
+    let limits = archive::Limits::node();
     let temporary = std::env::temp_dir();
     import_with(source, destination, &temporary, limits, flush_destination)
 }

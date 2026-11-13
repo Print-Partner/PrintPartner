@@ -2,7 +2,7 @@ import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-q
 import { useId, useState } from "react";
 import { CoreError } from "../core/client";
 import { writeCore } from "../core/rust";
-import { lostSend, reason } from "../core/writes";
+import { reason } from "../core/writes";
 import { useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
 import { MutationButton } from "../screen/ScreenTemplate";
@@ -14,6 +14,7 @@ import {
   sendQueueQuery,
   SLICED,
   startRefusal,
+  uncertain,
   type SendPrinter,
 } from "./sends";
 
@@ -22,14 +23,6 @@ export type SendOutcome =
   { kind: "sent" } | { kind: "not-sent"; reason: string } | { kind: "lost" };
 
 type Mode = "upload" | "start";
-
-/**
- * Whether a failed write's effect is unknown: no answer reached the UI, or the core answered
- * 5xx, which it can do after the write committed. Only a 4xx is a refusal that wrote nothing.
- */
-const uncertain = (error: unknown) =>
-  error instanceof Error &&
-  (lostSend(error) || (error instanceof CoreError && error.status >= 500));
 
 /**
  * Add, then Send now, for one file. A refusal or an uncertain answer is reported, never
@@ -58,29 +51,42 @@ async function send(
   }
 }
 
-function StartConfirm({
+/**
+ * The explicit step before any print start, from the sheet or a row. `bedToClear` is true when
+ * the printer shows Bed to clear: the core shows that for an idle printer whose bed needs
+ * clearing or is not confirmed clear, so the operator confirms it first.
+ */
+export function StartConfirm({
   file,
-  printer,
+  printerName,
+  bedToClear,
+  stateUnknown = false,
   onCancel,
   onStart,
 }: {
   file: string;
-  printer: SendPrinter;
+  printerName: string;
+  bedToClear: boolean;
+  /** The printer's current state could not be read, so the bed may need clearing. */
+  stateUnknown?: boolean;
   onCancel: () => void;
   onStart: () => void;
 }) {
-  // The core shows Bed to clear for an idle printer whose bed needs clearing or is not
-  // confirmed clear, so the operator confirms it first.
-  const clearFirst = printer.state.display === "bed_to_clear";
   return (
     <Dialog title="Start this print?" onClose={onCancel}>
-      {clearFirst && (
+      {bedToClear && (
         <p className="pp-banner" data-kind="attention" role="note">
           The bed needs clearing. Clear it before you start this print.
         </p>
       )}
+      {stateUnknown && (
+        <p className="pp-banner" data-kind="attention" role="note">
+          Print Partner could not read this printer's current state. Check that the bed is clear
+          before you start this print.
+        </p>
+      )}
       <p>
-        Print Partner uploads <strong>{file}</strong> to <strong>{printer.name}</strong> and starts
+        Print Partner uploads <strong>{file}</strong> to <strong>{printerName}</strong> and starts
         the print.
       </p>
       <div className="pp-dialog-actions">
@@ -223,7 +229,8 @@ export function SendSheet({
     return (
       <StartConfirm
         file={file.name}
-        printer={printer}
+        printerName={printer.name}
+        bedToClear={printer.state.display === "bed_to_clear"}
         onCancel={() => setConfirming(false)}
         onStart={() => void run(true)}
       />

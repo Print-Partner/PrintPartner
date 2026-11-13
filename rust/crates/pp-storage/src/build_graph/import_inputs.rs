@@ -1,18 +1,19 @@
-//! Attach Library Sources to a Build's planning brief as evidence (GRE-1300
-//! part 2), the operation behind MCP `propose_import_build_inputs` for
-//! `source_id` inputs.
+//! Attach evidence to a Build's planning brief (GRE-1300 parts 2 and 3a),
+//! the operation behind MCP `propose_import_build_inputs`: Library Sources
+//! by id, and model pages and other links by URL.
 //!
 //! [`BuildGraphClient::import_inputs`] runs in one write transaction on the
 //! write seam: prove the credential, read the Build's planning brief, check
-//! every input, put one evidence item per Source in the brief, clear its
+//! every input, put one evidence item per input in the brief, clear its
 //! selected draft and store it. A Source is only read. The Build's layers,
 //! drafts and Accepted Plan are not touched.
 //! [`BuildGraphClient::check_import_inputs`] runs the same checks on the read
 //! seam and writes nothing.
 //!
-//! An item is keyed by its normalized URL, `printpartner:source:<id>`, as
-//! Node keys it, so importing a Source again updates its one item in place.
-//! Unlike Node, that update keeps the item's `source_role`.
+//! An item is keyed by its normalized URL, as Node keys it: the link's, or
+//! `printpartner:source:<id>` for a Source. Importing the same input again
+//! updates its one item in place. Unlike Node, that update keeps the item's
+//! `source_role`. The caller normalizes a URL; this module stores it.
 //!
 //! Errors are [`ImportInputsError`]. This module holds no status codes and
 //! no response text; `pp-api` maps the variants.
@@ -22,7 +23,7 @@ use super::{
     create_with_brief::{BriefError, store_changed_brief, stored_brief},
 };
 use crate::{
-    WriterFailure, catalog,
+    WriterFailure, auth, catalog,
     read_model::{
         Credential,
         planning::{
@@ -36,19 +37,47 @@ use rusqlite::Transaction;
 use sha2::{Digest, Sha256};
 use std::{sync::atomic::AtomicBool, time::Duration};
 
-/// One Library Source to attach.
+/// One piece of evidence to attach.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceInput {
-    pub source_id: PositiveId,
-    /// `model_source` when absent.
+pub struct ImportInput {
+    pub target: Target,
+    /// `model_source` for a Source or model page, `informational_evidence`
+    /// for a link, when absent.
     pub kind: Option<EvidenceKind>,
-    /// The Source's name when absent.
+    /// The Source's name, or none for a URL, when absent.
     pub title: Option<String>,
-    /// Stored trimmed, without blanks or repeats.
-    pub filenames: Vec<String>,
-    /// Evidence already in the brief, for example the model page the files
-    /// came from. Trimmed; blank means none.
+    /// Text the assistant read from the page. Stored trimmed with its
+    /// SHA-256 and the time it was stored; blank means none.
+    pub extract: Option<String>,
+    /// Evidence already in the brief, for example the model page a Source's
+    /// files came from. Trimmed; blank means none. Stored on a Source's item
+    /// only, as Node stores it.
     pub derived_from_evidence_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// A Library Source. `filenames` are stored trimmed, without blanks or
+    /// repeats.
+    Source {
+        id: PositiveId,
+        filenames: Vec<String>,
+    },
+    /// A page by URL: `url` as sent and `normalized` as the caller's URL
+    /// rules give it.
+    Url {
+        url: String,
+        normalized: String,
+        page: Page,
+    },
+}
+
+/// The URL pages this module attaches. A git repository is not one yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    /// A model library page: its files must be uploaded into a Source.
+    Model,
+    Link,
 }
 
 /// An evidence item an input put in the brief, as stored.
@@ -56,8 +85,9 @@ pub struct SourceInput {
 pub struct Imported {
     pub evidence_id: String,
     pub kind: EvidenceKind,
-    pub source_id: i64,
+    pub source_id: Option<i64>,
     pub url: String,
+    pub upload_required: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,7 +128,7 @@ impl BuildGraphClient {
         &self,
         credential: Credential,
         build: PositiveId,
-        inputs: Vec<SourceInput>,
+        inputs: Vec<ImportInput>,
         wait: Duration,
     ) -> Result<(), ImportInputsError> {
         let policy = self.policy;
@@ -116,7 +146,7 @@ impl BuildGraphClient {
         &self,
         credential: Credential,
         build: PositiveId,
-        inputs: Vec<SourceInput>,
+        inputs: Vec<ImportInput>,
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Vec<Imported>, ImportInputsError> {
@@ -141,8 +171,9 @@ impl Imported {
         Self {
             evidence_id: item.id.clone(),
             kind: item.kind,
-            source_id: item.source_id.unwrap_or_default(),
+            source_id: item.source_id,
             url: item.url.clone(),
+            upload_required: item.upload_required == Some(true),
         }
     }
 }
@@ -153,18 +184,11 @@ fn prepare(
     tx: &Transaction<'_>,
     tenant: &str,
     build: PositiveId,
-    inputs: &[SourceInput],
+    inputs: &[ImportInput],
 ) -> Result<(BuildPlanningBrief, Vec<BuildEvidence>), ImportInputsError> {
     let brief = stored_brief::<ImportInputsError>(tx, tenant, build)?;
     let mut items = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let missing = ImportInputsError::SourceNotFound(input.source_id.get());
-        let Ok(id) = i64::try_from(input.source_id.get()) else {
-            return Err(missing);
-        };
-        let source = catalog::get(tx, tenant, id)
-            .map_err(WriterFailure::from)?
-            .ok_or(missing)?;
         let derived = input
             .derived_from_evidence_id
             .as_deref()
@@ -175,33 +199,98 @@ fn prepare(
         {
             return Err(ImportInputsError::DerivedEvidenceNotFound(derived.into()));
         }
-        items.push(evidence(id, &source.name, input, derived));
+        let mut item = match &input.target {
+            Target::Source { id, filenames } => {
+                let missing = ImportInputsError::SourceNotFound(id.get());
+                let Ok(id) = i64::try_from(id.get()) else {
+                    return Err(missing);
+                };
+                let source = catalog::get(tx, tenant, id)
+                    .map_err(WriterFailure::from)?
+                    .ok_or(missing)?;
+                source_item(id, &source.name, filenames, derived)
+            }
+            Target::Url {
+                url,
+                normalized,
+                page,
+            } => url_item(url, normalized, *page),
+        };
+        if let Some(kind) = input.kind {
+            item.kind = kind;
+        }
+        if let Some(title) = &input.title {
+            item.title = Some(title.clone());
+        }
+        let extract = input
+            .extract
+            .as_deref()
+            .map(trim_js)
+            .filter(|text| !text.is_empty());
+        if let Some(extract) = extract {
+            item.content_hash = Some(hex::encode(Sha256::digest(extract.as_bytes())));
+            item.extract = Some(extract.to_owned());
+            item.retrieved_at = Some(auth::catalog_timestamp());
+        }
+        items.push(item);
     }
     Ok((brief, items))
 }
 
+/// The item Node's `classifyBuildUrl` makes for a model page or link.
+fn url_item(url: &str, normalized: &str, page: Page) -> BuildEvidence {
+    let model = page == Page::Model;
+    BuildEvidence {
+        id: evidence_id(normalized),
+        url: url.to_owned(),
+        normalized_url: normalized.to_owned(),
+        kind: if model {
+            EvidenceKind::ModelSource
+        } else {
+            EvidenceKind::InformationalEvidence
+        },
+        input_kind: Some(if model {
+            EvidenceInputKind::ModelPage
+        } else {
+            EvidenceInputKind::Url
+        }),
+        filenames: None,
+        artifacts: None,
+        upload_required: model.then_some(true),
+        derived_from_evidence_id: None,
+        source_id: None,
+        source_role: None,
+        title: None,
+        extract: None,
+        retrieved_at: None,
+        content_hash: None,
+        sync_status: None,
+        pinned_revision: None,
+    }
+}
+
 /// The item Node's `buildEvidenceFromUploadedSource` makes for Source `id`.
-fn evidence(id: i64, name: &str, input: &SourceInput, derived: Option<&str>) -> BuildEvidence {
+fn source_item(id: i64, name: &str, filenames: &[String], derived: Option<&str>) -> BuildEvidence {
     let url = format!("printpartner:source:{id}");
-    let mut filenames: Vec<String> = Vec::new();
-    for name in input.filenames.iter().map(|name| trim_js(name)) {
-        if !name.is_empty() && !filenames.iter().any(|kept| kept == name) {
-            filenames.push(name.to_owned());
+    let mut kept: Vec<String> = Vec::new();
+    for name in filenames.iter().map(|name| trim_js(name)) {
+        if !name.is_empty() && !kept.iter().any(|kept| kept == name) {
+            kept.push(name.to_owned());
         }
     }
     BuildEvidence {
         id: evidence_id(&url),
         normalized_url: url.clone(),
         url,
-        kind: input.kind.unwrap_or(EvidenceKind::ModelSource),
+        kind: EvidenceKind::ModelSource,
         input_kind: Some(EvidenceInputKind::Upload),
-        filenames: Some(filenames),
+        filenames: Some(kept),
         artifacts: None,
         upload_required: None,
         derived_from_evidence_id: derived.map(str::to_owned),
         source_id: Some(id),
         source_role: None,
-        title: Some(input.title.clone().unwrap_or_else(|| name.to_owned())),
+        title: Some(name.to_owned()),
         extract: None,
         retrieved_at: None,
         content_hash: None,

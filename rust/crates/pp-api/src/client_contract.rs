@@ -327,6 +327,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "DismissUnattributedReceipt",
         )
     },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "undoDismissUnattributedPrint",
+            "POST",
+            "/api/v2/printer-checkoff/unattributed/{id}/dismiss/undo",
+            Some("DismissUnattributedRequest"),
+            "UndoDismissUnattributedReceipt",
+        )
+    },
     route(
         "readSendQueue",
         "GET",
@@ -743,6 +753,10 @@ pub(crate) mod codegen {
         schema(
             "DismissUnattributedReceipt",
             schemars::schema_for!(DismissUnattributedReceipt),
+        )?;
+        schema(
+            "UndoDismissUnattributedReceipt",
+            schemars::schema_for!(crate::checkoff::UndoDismissUnattributedReceipt),
         )?;
         schema(
             "PrinterDisplayDescriptor",
@@ -2614,7 +2628,7 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
-    /// Unattributed claim and dismiss bodies and the receipts their routes serve.
+    /// Unattributed claim, dismiss and undo bodies and the receipts their routes serve.
     fn unattributed_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let mut cases = vec![
             served(
@@ -2635,6 +2649,22 @@ pub(crate) mod codegen {
                 "DismissUnattributedReceipt",
                 "dismissed",
                 DismissUnattributedReceipt { ok: true },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "restored",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: true,
+                },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "not-dismissed",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: false,
+                },
             )?,
         ];
         for (name, value) in [

@@ -50,13 +50,18 @@ pub fn github_router<C: GithubConnector>(
     settings: AppSettingsClient,
     github: C,
 ) -> Router {
-    let wait = config.wait;
-    let Some(gate) = Gate::new(config, reads) else {
+    let Some((gate, wait)) = Gate::with_wait(config, reads) else {
         return Router::new();
     };
     let routes = Router::new()
-        .route("/sources/github-branches", get(branches::<C>))
-        .route("/sources/github-tags", get(tags::<C>));
+        .route(
+            "/sources/github-branches",
+            get(|state, presented, query| list::<C>(state, presented, query, Listing::Branches)),
+        )
+        .route(
+            "/sources/github-tags",
+            get(|state, presented, query| list::<C>(state, presented, query, Listing::Tags)),
+        );
     gate.authentication_only()
         .guard(Router::new().merge(routes.clone()).nest("/api/v1", routes))
         .with_state(App {
@@ -66,28 +71,26 @@ pub fn github_router<C: GithubConnector>(
         })
 }
 
-async fn branches<C: GithubConnector>(
-    State(app): State<App<C>>,
-    Extension(presented): Extension<PresentedCredential>,
-    Query(query): Query<RepoQuery>,
-) -> Response {
-    let (port, url) = match connect(&app, presented, query).await {
-        Ok(ready) => ready,
-        Err(refused) => return *refused,
-    };
-    answer(sync::list_branches(&port, &url)).await
+#[derive(Clone, Copy)]
+enum Listing {
+    Branches,
+    Tags,
 }
 
-async fn tags<C: GithubConnector>(
+async fn list<C: GithubConnector>(
     State(app): State<App<C>>,
     Extension(presented): Extension<PresentedCredential>,
     Query(query): Query<RepoQuery>,
+    listing: Listing,
 ) -> Response {
     let (port, url) = match connect(&app, presented, query).await {
         Ok(ready) => ready,
         Err(refused) => return *refused,
     };
-    answer(sync::list_tags(&port, &url)).await
+    match listing {
+        Listing::Branches => answer(sync::list_branches(&port, &url)).await,
+        Listing::Tags => answer(sync::list_tags(&port, &url)).await,
+    }
 }
 
 /// The `url` query value and a port carrying the stored token.

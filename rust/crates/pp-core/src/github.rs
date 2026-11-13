@@ -7,6 +7,7 @@
 //! and a size cap; list reads stop at [`MAX_PAGES`]. The stored token, when
 //! set, goes only to these two hosts.
 
+use crate::checked_dns::CheckedDns;
 use pp_api::sources_github::GithubConnector;
 use pp_net::outbound::{Resolver, SystemResolver, permitted};
 use pp_services::sync::{GithubPort, PortError, RawTree};
@@ -74,7 +75,7 @@ fn client(resolver: Option<Arc<dyn Resolver>>) -> reqwest::Result<reqwest::Clien
     match resolver {
         Some(resolver) => builder
             .https_only(true)
-            .dns_resolver(Arc::new(PublicDns(resolver)))
+            .dns_resolver(Arc::new(github_dns(resolver)))
             .build(),
         None => builder.build(),
     }
@@ -323,27 +324,9 @@ fn public(ip: IpAddr) -> bool {
         }
 }
 
-/// Refuses a DNS answer unless every address is [`public`].
-struct PublicDns(Arc<dyn Resolver>);
-
-impl reqwest::dns::Resolve for PublicDns {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let future = self.0.resolve(name.as_str().into());
-        Box::pin(async move {
-            let addresses = future.await?;
-            if addresses.is_empty()
-                || addresses.len() > 32
-                || !addresses.iter().all(|ip| public(*ip))
-            {
-                return Err("Prohibited GitHub DNS answer".into());
-            }
-            Ok(Box::new(
-                addresses
-                    .into_iter()
-                    .map(|ip| std::net::SocketAddr::new(ip, 0)),
-            ) as reqwest::dns::Addrs)
-        })
-    }
+/// GitHub DNS: every address must be [`public`].
+fn github_dns(resolver: Arc<dyn Resolver>) -> CheckedDns {
+    CheckedDns::new(resolver, public, "Prohibited GitHub DNS answer")
 }
 
 #[cfg(test)]

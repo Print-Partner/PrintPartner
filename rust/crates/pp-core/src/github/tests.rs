@@ -40,6 +40,10 @@ fn hidden(owner: &str, headers: &HeaderMap) -> bool {
             != Some(&format!("Bearer {TOKEN}"))
 }
 
+fn branch(n: usize) -> String {
+    format!("branch-{n:03}")
+}
+
 fn page(names: impl Iterator<Item = String>, query: &HashMap<String, String>) -> Response {
     let per_page: usize = query["per_page"].parse().unwrap();
     let page: usize = query["page"].parse().unwrap();
@@ -80,33 +84,23 @@ async fn stand_in() -> SocketAddr {
             }),
         )
         .route(
-            "/repos/{owner}/{repo}/branches",
+            "/repos/{owner}/{repo}/{list}",
             get(
-                |Path((owner, _)): Path<(String, String)>,
+                |Path((owner, _, list)): Path<(String, String, String)>,
                  Query(query): Query<HashMap<String, String>>,
                  headers: HeaderMap| async move {
                     if hidden(&owner, &headers) {
                         return StatusCode::NOT_FOUND.into_response();
                     }
-                    let count = match owner.as_str() {
-                        "even" => 200,
-                        "endless" => usize::MAX,
-                        _ => 250,
+                    let names: Vec<String> = match (list.as_str(), owner.as_str()) {
+                        ("tags", _) => vec!["v1.0".into(), "v1.1".into()],
+                        ("branches", "even") => (0..200).map(branch).collect(),
+                        // Every page is full, so only the page cap stops it.
+                        ("branches", "endless") => (0..MAX_PAGES * 100 + 1).map(branch).collect(),
+                        ("branches", _) => (0..250).map(branch).collect(),
+                        _ => return StatusCode::NOT_FOUND.into_response(),
                     };
-                    page((0..count).map(|n| format!("branch-{n:03}")), &query)
-                },
-            ),
-        )
-        .route(
-            "/repos/{owner}/{repo}/tags",
-            get(
-                |Path((owner, _)): Path<(String, String)>,
-                 Query(query): Query<HashMap<String, String>>,
-                 headers: HeaderMap| async move {
-                    if hidden(&owner, &headers) {
-                        return StatusCode::NOT_FOUND.into_response();
-                    }
-                    page(["v1.0", "v1.1"].into_iter().map(String::from), &query)
+                    page(names.into_iter(), &query)
                 },
             ),
         )
@@ -365,14 +359,14 @@ impl Resolver for Fixed {
 async fn a_dns_answer_with_any_private_address_is_refused() {
     use reqwest::dns::Resolve;
     let name = || "api.github.com".parse::<reqwest::dns::Name>().unwrap();
-    let mixed = PublicDns(Arc::new(Fixed(vec![
+    let mixed = github_dns(Arc::new(Fixed(vec![
         "140.82.112.6".parse().unwrap(),
         "10.0.0.1".parse().unwrap(),
     ])));
     assert!(mixed.resolve(name()).await.is_err());
-    let empty = PublicDns(Arc::new(Fixed(vec![])));
+    let empty = github_dns(Arc::new(Fixed(vec![])));
     assert!(empty.resolve(name()).await.is_err());
-    let good = PublicDns(Arc::new(Fixed(vec!["140.82.112.6".parse().unwrap()])));
+    let good = github_dns(Arc::new(Fixed(vec!["140.82.112.6".parse().unwrap()])));
     assert_eq!(good.resolve(name()).await.unwrap().count(), 1);
 }
 

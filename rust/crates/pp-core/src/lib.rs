@@ -41,6 +41,8 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 pub mod layout;
 
 #[cfg(feature = "desktop_rebuild")]
+mod checked_dns;
+#[cfg(feature = "desktop_rebuild")]
 pub mod github;
 #[cfg(feature = "desktop_rebuild")]
 mod measured_grams;

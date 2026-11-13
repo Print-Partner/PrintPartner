@@ -4,30 +4,22 @@
 #![cfg(feature = "desktop_rebuild")]
 
 use pp_api::{
-    admin::AdminHttpConfig,
     serving::Serving,
     settings::settings_router,
     sources_github::{GithubConnector, github_router},
 };
 use pp_services::sync::{GithubPort, PortError, RawTree};
-use pp_storage::{
-    Limits, WriterOwner,
-    auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy},
-};
+use pp_storage::WriterOwner;
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::path::Path;
 
+#[path = "support/settings_server.rs"]
+mod settings_server;
+use settings_server::SettingsServer;
+
 const COOKIE: (&str, &str) = ("cookie", "pp_session=read-fixture-secret");
 const TOKEN: &str = "stand-in-token";
-
-fn policy() -> AuthPolicy {
-    AuthPolicy {
-        registration: RegistrationPolicy::Open,
-        session_tenant: SessionTenantPolicy::AccountTenant,
-        first_user: FirstUserTenant::NewUser,
-    }
-}
 
 /// Answers by owner: `gone` is GitHub's 404, `down` no answer, `limited`
 /// GitHub's 403, `revoked` its 401, and `private` a 404 without the token.
@@ -95,11 +87,14 @@ impl Server {
             include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
         )
         .unwrap();
-        let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
-        let (listener, origin) = pp_testkit::http_listener().await.unwrap();
-        let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
-        let settings = owner.app_settings_with_policy(policy()).unwrap();
-        let reads = owner.accepted_reads().unwrap();
+        let SettingsServer {
+            owner,
+            listener,
+            origin,
+            config,
+            reads,
+            settings,
+        } = SettingsServer::open(directory, flag).await;
         let router = github_router(config.clone(), reads.clone(), settings.clone(), StandIn)
             .merge(settings_router(config, reads, settings));
         Self {

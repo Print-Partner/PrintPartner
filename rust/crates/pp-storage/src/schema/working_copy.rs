@@ -27,6 +27,13 @@ pub(crate) const PREFIX: &str = ".pp-preflight-";
 /// Read and write size for the streamed copy and compare.
 const CHUNK: usize = 1 << 20;
 
+#[cfg(test)]
+thread_local! {
+    /// Free bytes to report instead of the filesystem's, so a test can stand
+    /// in for a nearly full volume.
+    static AVAILABLE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// Too little free disk for the preflight's working copy. Nothing was created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
@@ -61,6 +68,8 @@ impl<'a> WorkingCopy<'a> {
                 root_path.display()
             )
         })?;
+        #[cfg(test)]
+        let available = AVAILABLE.get().unwrap_or(available);
         if available < needed {
             return Err(InsufficientSpace { needed, available }.into());
         }
@@ -246,6 +255,69 @@ mod tests {
         assert_eq!(refusal.needed, u64::MAX);
         assert!(refusal.available < u64::MAX);
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    /// A fresh installation, opened once and shut down, so the next open
+    /// preflights a real database.
+    fn installation() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let (owner, _) = crate::WriterOwner::open(root.path(), crate::Limits::default()).unwrap();
+        owner.shutdown().unwrap();
+        root
+    }
+
+    fn entries(path: &Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<_> = std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn start_with_too_little_free_disk_is_refused_and_creates_nothing() {
+        let root = installation();
+        let before = entries(root.path());
+        AVAILABLE.set(Some(10));
+        let result = crate::WriterOwner::open(root.path(), crate::Limits::default());
+        AVAILABLE.set(None);
+        let error = result.err().expect("a start without room for the copy");
+        let refusal = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<InsufficientSpace>())
+            .unwrap_or_else(|| panic!("not InsufficientSpace: {error:#}"));
+        assert_eq!(refusal.available, 10);
+        assert!(refusal.needed > 10, "{refusal:?}");
+        assert_eq!(entries(root.path()), before);
+        // With room again, the same installation starts.
+        let (owner, _) = crate::WriterOwner::open(root.path(), crate::Limits::default()).unwrap();
+        owner.shutdown().unwrap();
+    }
+
+    #[test]
+    fn the_next_start_removes_a_killed_starts_working_folder_and_nothing_else() {
+        let root = installation();
+        let path = root.path();
+        let leftover = format!("{PREFIX}{}", hex::encode([9u8; 16]));
+        std::fs::create_dir(path.join(&leftover)).unwrap();
+        std::fs::write(
+            path.join(&leftover).join("print-partner.db"),
+            b"half a copy",
+        )
+        .unwrap();
+        std::fs::write(path.join(&leftover).join("print-partner.db-shm"), b"shm").unwrap();
+        let file_named_like_one = format!("{PREFIX}{}", hex::encode([8u8; 16]));
+        std::fs::write(path.join(&file_named_like_one), b"not a folder").unwrap();
+        std::fs::create_dir_all(path.join("backups").join(&leftover)).unwrap();
+        let before = entries(path);
+        let (owner, _) = crate::WriterOwner::open(path, crate::Limits::default()).unwrap();
+        owner.shutdown().unwrap();
+        let mut expected = before;
+        expected.retain(|name| name.to_str() != Some(leftover.as_str()));
+        assert_eq!(entries(path), expected);
+        assert!(path.join(&file_named_like_one).is_file());
+        assert!(path.join("backups").join(&leftover).is_dir());
     }
 
     #[test]

@@ -18,9 +18,11 @@ pub enum JobKind {
     #[serde(rename = "export-direct-3mf")]
     ExportDirect3mf,
     PrinterUpload,
-    // Owned by the upload journal and hidden from the public job API. A plain
-    // comment: a doc comment would split the generated client's string enum.
+    // Owned by the upload journal and hidden from the public job API, so the
+    // generated client leaves it out. A plain comment: a doc comment would split
+    // the client's string enum.
     #[cfg(feature = "desktop_rebuild")]
+    #[cfg_attr(feature = "codegen", schemars(skip))]
     SuppliedSourceImport,
 }
 impl JobKind {

@@ -262,6 +262,12 @@ async fn create(
     if let Some(response) = refused_local_path(&body) {
         return response;
     }
+    // A missing or null name reaches storage, which answers Node's "Source name
+    // is required"; a name of another type is refused here.
+    let mut body = body;
+    if body.get("name").is_none_or(serde_json::Value::is_null) {
+        body["name"] = "".into();
+    }
     let source = match serde_json::from_value::<wire::CreateSourceRequest>(body) {
         Ok(request) => request.into(),
         Err(error) => return reject(StatusCode::BAD_REQUEST, format!("Invalid Source: {error}")),

@@ -49,6 +49,13 @@ pub fn client_document(
     ] {
         document["dtos"][name] = to_value(schema)?;
     }
+    // The JobSnapshot fixtures below are written out, so each must carry
+    // exactly the schema's fields; a field renamed or removed in Rust fails here.
+    let job_fields: std::collections::BTreeSet<String> =
+        document["dtos"]["JobSnapshot"]["properties"]
+            .as_object()
+            .map(|fields| fields.keys().cloned().collect())
+            .unwrap_or_default();
     if let Some(routes) = document["routes"].as_array_mut() {
         for route in CLIENT_ROUTES {
             routes.push(to_value(route)?);
@@ -158,6 +165,11 @@ pub fn client_document(
             "created_at": "2026-11-13T00:00:00.000Z",
             "finished_at": finished.then_some("2026-11-13T00:01:00.000Z"),
         });
+        let fields: std::collections::BTreeSet<String> = value
+            .as_object()
+            .map(|fields| fields.keys().cloned().collect())
+            .unwrap_or_default();
+        assert_eq!(fields, job_fields, "JobSnapshot fixture {status}");
         fixtures.push(json!({"dto": "JobSnapshot", "name": status, "value": value,
             "rust_accepts": true}));
     }

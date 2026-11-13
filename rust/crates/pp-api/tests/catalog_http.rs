@@ -901,12 +901,9 @@ async fn catalog_create_reads_a_typed_body() {
     assert_eq!(created["current_source_revision_id"], Value::Null);
     assert_eq!(names(&owner), ["Rack"]);
     let (status, refused) = post(rack).await;
-    assert_eq!(status, 400, "{refused}");
-    assert!(
-        refused["detail"]
-            .as_str()
-            .is_some_and(|detail| !detail.is_empty()),
-        "{refused}"
+    assert_eq!(
+        (status, refused["detail"].as_str()),
+        (400, Some("Source already exists: Rack"))
     );
     assert_eq!(names(&owner), ["Rack"]);
     for body in [
@@ -914,13 +911,23 @@ async fn catalog_create_reads_a_typed_body() {
         json!({"name": "X", "local_path": "/tmp"}),
         json!({"name": "X", "metadata": "note"}),
         json!({"name": "X", "branch": false}),
-        json!({"source_kind": "archive"}),
+        json!({"name": "X", "metadata": ["note"]}),
         json!(["Rack"]),
     ] {
         let (status, refused) = post(body.clone()).await;
         assert_eq!(status, 400, "{body}: {refused}");
         assert_eq!(names(&owner), ["Rack"], "{body}");
     }
+    // A missing or null name gets storage's reason, as Node answered it.
+    for body in [json!({"source_kind": "archive"}), json!({"name": null})] {
+        let (status, refused) = post(body.clone()).await;
+        assert_eq!(
+            (status, refused["detail"].as_str()),
+            (400, Some("Source name is required")),
+            "{body}"
+        );
+    }
+    assert_eq!(names(&owner), ["Rack"]);
     let (status, created) =
         post(json!({"name": "Shelf", "url": null, "tag": null, "colour": "red"})).await;
     assert_eq!(status, 200, "{created}");

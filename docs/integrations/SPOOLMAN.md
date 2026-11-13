@@ -76,6 +76,14 @@ Moonraker reports `print_stats.filament_used`. PrusaLink reports its consumed ma
 
 If Spoolman is unavailable or the required mapping is missing, Checkoff still completes and reports the deduction problem separately.
 
+### On the Rust core
+
+The Rust core records each deduction when you confirm a Checkoff burst, in the same transaction, and does not call Spoolman then. It records one `pending` row per pinned spool, with the grams to deduct: the link's grams (the slicer estimate, or the measured grams once the print finished) divided by the link's units, times the confirmed units whose Part pins that spool (`spoolman:{integration}:spool:{n}`). Units it cannot deduct give one `skipped` row with the reason: `no_grams`, `no_pinned_spool`, `integration_missing`, `integration_disabled` or `integrations_unreadable`. With the Spoolman Module off for the Build, nothing is recorded. Repeating a burst records nothing new, and undoing it removes its `pending` and `skipped` rows. `GET /api/v2/spoolman/deductions` lists the rows.
+
+Deduction runs whenever the Spoolman Module is on; there is no per-printer setting. Do not also set `[spoolman]` in a printer's `moonraker.conf`, or the printer's own usage reports and these deductions would both count.
+
+Sending each `pending` row to Spoolman once, and reconciling an uncertain result, follow in later parts of GRE-411.
+
 ## Security
 
 Store the Spoolman API key in the integration secret field. Print Partner redacts integration secrets from normal API responses and logs.

@@ -1,6 +1,7 @@
 use super::*;
 use crate::import::copy::{
-    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, recheck, sync_tree,
+    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, recheck, room_needed,
+    sync_tree,
 };
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
@@ -20,52 +21,45 @@ fn entries(folder: &Path) -> Vec<String> {
     names
 }
 
-#[test]
-fn a_folder_imports_into_a_new_rust_owned_folder() {
+/// A synthetic folder with one account and a live session, imported into a
+/// new folder. Checks on the way that the import left its source alone.
+fn imported() -> (Installation, tempfile::TempDir, ImportReport) {
     let source = node_folder();
     let before = state(source.path());
     let parent = tempfile::tempdir().unwrap();
-    let destination = parent.path().join("rust");
-    let report = import(source.path(), &destination).unwrap();
+    let report = import(source.path(), &parent.path().join("rust")).unwrap();
     assert!(
         before == state(source.path()),
         "the import changed its source"
     );
+    (source, parent, report)
+}
 
-    assert!(!report.complete, "no converter exists yet");
-    assert_eq!(
-        (report.source_schema, report.schema),
-        (34, versions::RUST_SCHEMA)
-    );
-    assert_eq!(
-        (report.builds, report.sources),
-        (synthetic::BUILDS, synthetic::SOURCES)
-    );
-    // The Source snapshot's two files and the custom filament list.
-    assert_eq!(report.files, 3);
-    assert_eq!(report.rows.len(), inventory::ROWS.len());
-    assert!(report.rows.iter().all(|row| row.status == "pending"));
-
+#[test]
+fn a_folder_imports_into_a_new_rust_owned_folder() {
+    let (source, parent, _) = imported();
+    let destination = parent.path().join("rust");
+    let marker = ownership_marker::MARKER_FILE;
     let names = [
         "custom_filaments.json",
         REPORT_FILE,
         "print-partner.db",
         "repos",
-        ownership_marker::MARKER_FILE,
+        marker,
     ];
     let mut expected = names.map(str::to_owned).to_vec();
     expected.sort();
     assert_eq!(entries(&destination), expected);
-    assert!(matches!(
-        ownership_marker::inspect(&destination),
-        ownership_marker::MarkerState::Valid(_)
-    ));
-    let database = destination.join("print-partner.db");
-    let stored = |sql| setting(&database, sql);
-    assert_eq!(
-        stored("SELECT value FROM app_settings WHERE key = 'schema_version'"),
-        versions::RUST_SCHEMA.to_string()
+    let marked = ownership_marker::inspect(&destination);
+    assert!(
+        matches!(marked, ownership_marker::MarkerState::Valid(_)),
+        "{marked:?}"
     );
+
+    let database = destination.join("print-partner.db");
+    let stored = |sql: &str| setting(&database, sql);
+    let version = stored("SELECT value FROM app_settings WHERE key = 'schema_version'");
+    assert_eq!(version, versions::RUST_SCHEMA.to_string());
     assert_eq!(
         stored("SELECT COUNT(*) FROM build_profiles"),
         synthetic::BUILDS.to_string()
@@ -81,38 +75,75 @@ fn a_folder_imports_into_a_new_rust_owned_folder() {
         "sessions are not carried"
     );
     let manifest = "repos/1/revisions/synthetic-a/.printpartner-source-snapshot.json";
-    assert_eq!(
-        std::fs::read(destination.join(manifest)).unwrap(),
-        std::fs::read(source.path().join(manifest)).unwrap()
-    );
+    let copied = std::fs::read(destination.join(manifest)).unwrap();
+    assert_eq!(copied, std::fs::read(source.path().join(manifest)).unwrap());
 
-    let saved: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(destination.join(REPORT_FILE)).unwrap()).unwrap();
-    assert_eq!(saved["complete"], false);
-    assert_eq!(saved["builds"], synthetic::BUILDS);
-    assert_eq!(
-        saved["rows"][0]["shapes"][0]["shape"],
-        "projects.local_path"
-    );
-    let text = std::fs::read_to_string(destination.join(REPORT_FILE)).unwrap();
-    assert!(
-        !text.contains(synthetic::INTEGRATION_SECRET),
-        "the saved report holds a stored value"
-    );
-    assert!(
-        report
-            .to_string()
-            .contains("complete: false. 16 inventory rows are not converted yet.")
-    );
+    // Every Source path now leads into the new folder, to files that are there.
+    for source in 1..=synthetic::SOURCES {
+        let path = stored(&format!(
+            "SELECT local_path FROM projects WHERE id = {source}"
+        ));
+        assert!(
+            Path::new(&path).starts_with(destination.join("repos")),
+            "{path}"
+        );
+        assert!(
+            Path::new(&path).join("synthetic-part.stl").is_file(),
+            "{path}"
+        );
+    }
 
     // A second import refuses the folder it just wrote, and changes nothing in it.
-    let imported = state(&destination);
+    let written = state(&destination);
     let again = import(source.path(), &destination).unwrap_err();
     assert!(
         matches!(again, ImportError::Destination(Destination::Marked)),
         "{again:?}"
     );
-    assert!(imported == state(&destination));
+    assert!(written == state(&destination));
+}
+
+#[test]
+fn the_import_report_is_saved_without_stored_values() {
+    let (_source, parent, report) = imported();
+    assert!(!report.complete, "most converters do not exist yet");
+    assert_eq!(
+        (report.source_schema, report.schema),
+        (34, versions::RUST_SCHEMA)
+    );
+    assert_eq!(
+        (report.builds, report.sources),
+        (synthetic::BUILDS, synthetic::SOURCES)
+    );
+    // The Source snapshot's two files and the custom filament list.
+    assert_eq!(
+        (report.files, report.rebased_sources),
+        (3, synthetic::SOURCES)
+    );
+    assert_eq!(report.rows.len(), inventory::ROWS.len());
+    let statuses: Vec<&str> = report.rows.iter().map(|row| row.status.as_str()).collect();
+    assert_eq!(statuses[0], "converted");
+    assert!(statuses[1..].iter().all(|status| *status == "pending"));
+    let summary = report.to_string();
+    assert!(
+        summary.contains("complete: false. 15 inventory rows are not converted yet."),
+        "{summary}"
+    );
+
+    let text = std::fs::read_to_string(parent.path().join("rust").join(REPORT_FILE)).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (&saved["complete"], &saved["builds"]),
+        (&false.into(), &synthetic::BUILDS.into())
+    );
+    assert_eq!(
+        saved["rows"][0]["shapes"][0]["shape"],
+        "projects.local_path"
+    );
+    assert!(
+        !text.contains(synthetic::INTEGRATION_SECRET),
+        "the saved report holds a stored value"
+    );
 }
 
 #[test]
@@ -273,6 +304,136 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
 }
 
 #[test]
+fn a_source_whose_files_cannot_be_placed_stops_the_import() {
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let revision = |locator: &str| {
+        format!(
+            "INSERT INTO source_revisions (project_id, upstream_revision_key, manifest_digest, snapshot_locator, synced_at)
+               VALUES (1, 'synthetic-a', 'synthetic-digest', '{locator}', '2026-10-02T00:00:00.000Z');
+             UPDATE projects SET current_source_revision_id = last_insert_rowid() WHERE id = 1;"
+        )
+    };
+    let missing = node_folder();
+    execute(&missing, &revision("1/revisions/synthetic-gone"));
+    let error = import(missing.path(), &destination).unwrap_err();
+    assert!(
+        matches!(error, ImportError::MissingRevision(1)),
+        "{error:?}"
+    );
+    assert_eq!(entries(&destination), Vec::<String>::new());
+
+    let elsewhere = node_folder();
+    execute(
+        &elsewhere,
+        "UPDATE projects SET local_path = '/synthetic/elsewhere' WHERE id = 2",
+    );
+    let error = import(elsewhere.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::SourcePath(2)), "{error:?}");
+
+    // A current revision decides the path, whatever Node stored beside it.
+    let current = node_folder();
+    execute(&current, &revision("1/revisions/synthetic-a"));
+    execute(
+        &current,
+        "UPDATE projects SET local_path = 'C:\\node\\repos\\old' WHERE id = 1",
+    );
+    import(current.path(), &destination).unwrap();
+    let stored = setting(
+        &destination.join("print-partner.db"),
+        "SELECT local_path FROM projects WHERE id = 1",
+    );
+    assert_eq!(
+        Path::new(&stored),
+        destination.join("repos/1/revisions/synthetic-a")
+    );
+}
+
+#[test]
+fn a_changed_row_in_any_table_is_named() {
+    let folder = node_folder_33();
+    let connection = Connection::open(folder.database_path()).unwrap();
+    let stored = verify::digests(&connection, None).unwrap();
+    let changed = || {
+        let found = verify::digests(&connection, Some(&stored)).unwrap();
+        verify::changed(&stored, &found)
+    };
+    assert!(changed().is_empty());
+    // Every table of the source is compared, less the two the import empties.
+    let tables = rows(folder.path());
+    assert_eq!(stored.len(), tables.len() - 2);
+    assert!(!stored.contains_key("sessions") && !stored.contains_key("password_reset_tokens"));
+    let compared: usize = stored.values().map(|(_, rows)| rows.len()).sum();
+    let held: i64 = (tables.iter())
+        .filter(|(table, _)| stored.contains_key(*table))
+        .map(|(_, count)| count)
+        .sum();
+    // All rows but the schema number, which the upgrade writes.
+    assert_eq!(compared as i64, held - 1);
+
+    // What the upgrade does on purpose changes nothing: a new column, a new
+    // table, the schema number and a rebased Source path.
+    connection
+        .execute_batch(
+            "ALTER TABLE source_notes ADD COLUMN synthetic_added TEXT DEFAULT 'x';
+             CREATE TABLE synthetic_added (id INTEGER);
+             INSERT INTO synthetic_added VALUES (1);
+             UPDATE app_settings SET value = '48' WHERE key = 'schema_version';
+             UPDATE projects SET local_path = '/synthetic/elsewhere';",
+        )
+        .unwrap();
+    assert!(changed().is_empty());
+
+    // A changed value, a missing row, an added row and a dropped column are
+    // each named, in tables no list holds.
+    connection
+        .execute_batch(
+            "UPDATE source_notes SET updated_at = '2026-10-03';
+             DELETE FROM app_events;
+             INSERT INTO source_docs (project_id, path, kind, updated_at) VALUES (1, 'ADDED.md', 'markdown', '2026-10-02');
+             UPDATE app_settings SET value = 'synthetic' WHERE key = 'filename_grouping:1';
+             ALTER TABLE plan_snapshots DROP COLUMN name;",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        changed(),
+        [
+            "app_events",
+            "app_settings",
+            "plan_snapshots",
+            "source_docs",
+            "source_notes"
+        ]
+    );
+}
+
+#[test]
+fn starter_rows_may_be_added_and_stored_profiles_may_not_change() {
+    let row = |byte: u8| [byte; 32];
+    let table = |name: &str, rows: &[u8]| {
+        let rows = rows.iter().copied().map(row).collect();
+        (name.to_owned(), (vec!["name".to_owned()], rows))
+    };
+    let stored = verify::Digests::from([table("filament_profiles", &[2, 2, 5])]);
+    let found = |rows: &[u8]| verify::Digests::from([table("filament_profiles", rows)]);
+    assert!(verify::changed(&stored, &found(&[1, 2, 2, 3, 5, 9])).is_empty());
+    for lost in [&[1, 2, 3, 5][..], &[2, 2], &[]] {
+        assert_eq!(
+            verify::changed(&stored, &found(lost)),
+            ["filament_profiles"]
+        );
+    }
+    // Any other table must hold exactly its stored rows.
+    let stored = verify::Digests::from([table("plan_revisions", &[2, 5])]);
+    let added = verify::Digests::from([table("plan_revisions", &[1, 2, 5])]);
+    assert_eq!(verify::changed(&stored, &added), ["plan_revisions"]);
+    assert_eq!(
+        verify::changed(&stored, &verify::Digests::new()),
+        ["plan_revisions"]
+    );
+}
+
+#[test]
 fn a_copy_that_reads_back_differently_stops_the_import() {
     let folder = tempfile::tempdir().unwrap();
     let (from, to) = (
@@ -295,6 +456,13 @@ fn a_copy_that_reads_back_differently_stops_the_import() {
 
 #[test]
 fn the_write_step_refuses_a_destination_without_room() {
+    // The files still to copy, the database again for the upgrade's
+    // write-ahead log, and the reserve. Nothing caps the size.
+    let reserve = 64 * 1024 * 1024;
+    assert_eq!(room_needed(0, 0), reserve);
+    let (roots, database) = (50_000_000_000, 1_000_000_000);
+    assert_eq!(room_needed(roots, database), roots + database + reserve);
+    assert_eq!(room_needed(u64::MAX, database), u64::MAX);
     let folder = tempfile::tempdir().unwrap();
     ensure_room(folder.path(), 1).expect("one byte fits");
     let error = ensure_room(folder.path(), u64::MAX).unwrap_err();
@@ -370,6 +538,12 @@ fn a_schema_33_folder_imports_with_every_table_it_holds() {
             "{table} in the report"
         );
     }
+    // Verification covered every source table but the two emptied ones.
+    assert_eq!(report.verified_tables as usize, stored.len() - 2);
+    assert!(report.to_string().contains(&format!(
+        "{} rows in {} tables arrived as the source stored them.",
+        report.verified_rows, report.verified_tables
+    )));
 }
 
 /// Every entry of `folder`, with the SHA-256 of each file: what a refused

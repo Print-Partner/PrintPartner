@@ -10,6 +10,7 @@
 
 mod copy;
 pub mod inventory;
+mod verify;
 
 pub use copy::{ImportReport, REPORT_FILE, import};
 
@@ -69,6 +70,12 @@ pub enum ImportError {
     },
     /// More than one account is stored; the Rust runtime signs in with one.
     Accounts(u64),
+    /// The Source with this id has a current revision with no files under `repos/`.
+    MissingRevision(i64),
+    /// The Source with this id stores a path the import cannot place under `repos/`.
+    SourcePath(i64),
+    /// Rows of these tables differ from the source after the upgrade.
+    RowsChanged(Vec<String>),
     /// Backup roots hold entries that are neither regular files nor folders.
     /// The import skips nothing, so it copies none of the installation.
     NotRegular(Vec<Unsupported>),
@@ -161,6 +168,9 @@ impl fmt::Display for ImportError {
             | Self::Installation { .. }
             | Self::Accounts(_)
             | Self::NotRegular(_)
+            | Self::MissingRevision(_)
+            | Self::SourcePath(_)
+            | Self::RowsChanged(_)
             | Self::CopyMismatch(_)
             | Self::Flush { .. } => self.fmt_write_step(f),
             Self::NoSpace {
@@ -220,6 +230,19 @@ impl ImportError {
                 f,
                 "The folder holds entries that are neither files nor folders: {}. The import copies files and folders and skips nothing. Remove or replace them, then retry",
                 listed(found)
+            ),
+            Self::MissingRevision(source) => write!(
+                f,
+                "Source {source} has a current revision whose files are not under repos/"
+            ),
+            Self::SourcePath(source) => write!(
+                f,
+                "Source {source} stores a path that does not lead below a repos folder"
+            ),
+            Self::RowsChanged(tables) => write!(
+                f,
+                "Rows changed during the import in {}; they must arrive as the source stored them",
+                tables.join(", ")
             ),
             Self::CopyMismatch(copy) => write!(
                 f,
@@ -851,7 +874,7 @@ fn dry_run_in(
         let kind = std::io::Error::new(ErrorKind::InvalidInput, "neither a folder nor a file");
         return Err(io_error(source, kind));
     };
-    let (connection, ready) = upgrade(&scratch.0)?;
+    let (connection, ready, ()) = upgrade(&scratch.0, |_| Ok(()))?;
     let report = measure(&connection, kind, &ready, &files)?;
     Ok(DryRunReport {
         destination,
@@ -860,8 +883,12 @@ fn dry_run_in(
 }
 
 /// Checks the staged database as startup checks a live one and upgrades it
-/// in place to the current Rust schema, without rollback copies.
-fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportError> {
+/// in place to the current Rust schema, without rollback copies. `before`
+/// reads the checked database while it is still as the source stored it.
+fn upgrade<T>(
+    stage: &Path,
+    before: impl FnOnce(&Path) -> Result<T, ImportError>,
+) -> Result<(Connection, schema::SchemaReady, T), ImportError> {
     // A failed check can hide the version: a Rust database stamped 35 or
     // later fails the job-table check first. Refuse by version when one was read.
     let admitted = crate::restore::admit_schema(stage);
@@ -878,9 +905,11 @@ fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportErro
     let database = stage.join(archive::DATABASE_FILE);
     let version = admitted
         .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))?;
+    let read = before(&database)?;
     let now = crate::auth::catalog_timestamp();
-    schema::initialize_with(&database, version, &now, false)
-        .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))
+    let (connection, ready) = schema::initialize_with(&database, version, &now, false)
+        .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))?;
+    Ok((connection, ready, read))
 }
 
 /// Sorts a failed check or upgrade of the staged database by its causes. A

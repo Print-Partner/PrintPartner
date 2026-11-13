@@ -128,7 +128,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status, Status::Pending))
+        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 2))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
@@ -409,7 +409,7 @@ fn the_staged_upgrade_keeps_no_rollback_copies() {
     // The import's own upgrade of a staged folder writes no copy beside it.
     let (folder, stage) = (node_folder(), tempfile::tempdir().unwrap());
     stage_directory(folder.path(), stage.path()).unwrap();
-    let (connection, ready) = upgrade(stage.path()).unwrap();
+    let (connection, ready, ()) = upgrade(stage.path(), |_| Ok(())).unwrap();
     drop(connection);
     assert_eq!(
         (ready.previous_version, ready.version),
@@ -545,6 +545,29 @@ fn only_a_full_format_2_archive_is_read() {
     assert!(
         matches!(error, ImportError::Schema(refusal) if refusal.found == 48),
         "{error:?}"
+    );
+}
+
+#[test]
+fn the_two_credentials_are_copied_unchanged_and_reported_by_key_only() {
+    let folder = node_folder();
+    execute(
+        &folder,
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES
+           ('default', 'github_pat', 'synthetic-token-value'),
+           ('default', 'discord_notify_webhook_url', 'https://synthetic.invalid/hook-value');",
+    );
+    let report = run(folder.path()).unwrap();
+    for key in ["github_pat", "discord_notify_webhook_url"] {
+        assert!(report.copied.contains(&(Shape::Setting(key), 1)), "{key}");
+        assert!(!report.scalar_settings.contains(key), "{key}");
+    }
+    assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
+    let text = report.to_string();
+    assert!(text.contains("  setting github_pat = 1"), "{text}");
+    assert!(
+        !text.contains("token-value") && !text.contains("hook-value"),
+        "{text}"
     );
 }
 

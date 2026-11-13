@@ -6,9 +6,9 @@
 //! folder without a marker, which no Rust runtime opens.
 
 use super::{
-    Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch, SourceKind,
-    ensure_outside, inventory, io_error, measure, open_regular, place_destination, repo_files,
-    scan_roots, stage_directory, upgrade,
+    DATABASE_FILES, Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch,
+    SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
+    repo_files, scan_roots, stage_directory, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -52,6 +52,11 @@ pub struct ImportReport {
     pub sources: u64,
     pub printers: u64,
     pub unmatched_prints: u64,
+    /// Sources whose path now leads into the destination's `repos/`.
+    pub rebased_sources: u64,
+    /// Source tables, and their rows, that arrived as the source stored them.
+    pub verified_tables: u64,
+    pub verified_rows: u64,
     /// Files copied or extracted under the roots, and their bytes.
     pub files: u64,
     pub bytes: u64,
@@ -61,7 +66,12 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    fn new(counts: &DryRunReport, files: u64, bytes: u64) -> Self {
+    fn new(
+        counts: &DryRunReport,
+        rebased_sources: u64,
+        stored: &verify::Digests,
+        (files, bytes): (u64, u64),
+    ) -> Self {
         let rows = counts.rows.iter().map(|(row, shapes)| RowReport {
             step: row.step,
             status: row.status.to_string(),
@@ -80,6 +90,9 @@ impl ImportReport {
             sources: counts.sources,
             printers: counts.printers,
             unmatched_prints: counts.unmatched_prints,
+            rebased_sources,
+            verified_tables: stored.len() as u64,
+            verified_rows: stored.values().map(|(_, rows)| rows.len() as u64).sum(),
             files,
             bytes,
             rows: rows.collect(),
@@ -103,15 +116,18 @@ impl fmt::Display for ImportReport {
             self.unmatched_prints,
             self.files
         )?;
-        let pending = self
-            .rows
-            .iter()
+        let pending = (self.rows.iter())
             .filter(|row| row.status == "pending")
             .count();
         writeln!(
             f,
-            "complete: {}. {pending} inventory rows are not converted yet.",
-            self.complete
+            "complete: {}. {pending} inventory rows are not converted yet. {} Source paths now lead into the destination.",
+            self.complete, self.rebased_sources
+        )?;
+        writeln!(
+            f,
+            "{} rows in {} tables arrived as the source stored them.",
+            self.verified_rows, self.verified_tables
         )?;
         writeln!(
             f,
@@ -230,7 +246,11 @@ pub(super) fn import_with(
         let (files, copied) = extract_archive(source, metadata.len(), &stage.0, limits)?;
         (SourceKind::Archive, files, copied)
     };
-    let (connection, ready) = upgrade(&stage.0)?;
+    let (connection, ready, stored) = upgrade(&stage.0, |database| {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let source = rusqlite::Connection::open_with_flags(database, flags)?;
+        Ok(verify::digests(&source, None)?)
+    })?;
     // Sign-in state is not carried: every Node session ends with the import.
     // It goes before the count, so the report describes what was imported.
     connection.execute_batch("DELETE FROM sessions; DELETE FROM password_reset_tokens;")?;
@@ -248,6 +268,12 @@ pub(super) fn import_with(
     }
     if counts.users > 1 {
         return Err(ImportError::Accounts(counts.users));
+    }
+    let repos = root.join("repos");
+    let rebased = verify::rebase_sources(&connection, &stage.0.join("repos"), &repos)?;
+    let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
+    if !changed.is_empty() {
+        return Err(ImportError::RowsChanged(changed));
     }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
@@ -269,7 +295,7 @@ pub(super) fn import_with(
         path: destination.to_owned(),
         source,
     })?;
-    let report = ImportReport::new(&counts, copied.0, copied.1);
+    let report = ImportReport::new(&counts, rebased, &stored, copied);
     publish(&stage.0, &root, &report)?;
     drop(stage);
     // The marker goes into the folder this run filled, and only while the
@@ -279,6 +305,20 @@ pub(super) fn import_with(
     }
     ownership_marker::mark_imported(&root).map_err(|error| io_error(destination, error))?;
     Ok(report)
+}
+
+/// The free bytes the destination needs once the database is staged: the
+/// files still to be copied, working space for the schema upgrade, whose
+/// write-ahead log can grow as large as the database, and the reserve. No
+/// size cap applies: an import is bounded by free disk space alone.
+pub(super) fn room_needed(files: u64, database: u64) -> u64 {
+    files.saturating_add(database).saturating_add(STAGE_RESERVE)
+}
+
+/// The bytes of the database files staged in `stage`.
+fn staged_database(stage: &Path) -> u64 {
+    let staged = |name| stage.join(name).metadata().map_or(0, |file| file.len());
+    DATABASE_FILES.map(staged).iter().sum()
 }
 
 /// Copies every root of a Node data folder into `stage` and returns the
@@ -292,7 +332,8 @@ fn copy_roots(source: &Path, stage: &Path) -> Result<(u64, u64), ImportError> {
         archive::Item::File(_, _, bytes) => *bytes,
         archive::Item::Directory(_) => 0,
     });
-    ensure_room(stage, sizes.fold(STAGE_RESERVE, u64::saturating_add))?;
+    let roots = sizes.fold(0, u64::saturating_add);
+    ensure_room(stage, room_needed(roots, staged_database(stage)))?;
     let (mut files, mut bytes) = (0, 0);
     for item in &items {
         match item {
@@ -373,6 +414,8 @@ fn extract_archive(
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
+    // Everything is extracted; the upgrade still needs its working space.
+    ensure_room(stage, room_needed(0, staged_database(stage)))?;
     // The archive passed its caps; listing what it wrote needs none.
     let extracted = archive::plan(stage, archive::Scope::Full, u64::MAX)
         .map_err(|error| ImportError::Roots(format!("{error:#}")))?;

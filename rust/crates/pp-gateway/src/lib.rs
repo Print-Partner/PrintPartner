@@ -32,6 +32,7 @@ mod assets;
 pub mod ownership;
 pub mod printer_host;
 mod rate_limit;
+mod rust_only;
 mod stall;
 
 use ownership::{Owner, cutover::OperationOwners};
@@ -287,6 +288,7 @@ struct GatewayState {
     monitoring_suspended: tokio::sync::watch::Sender<bool>,
     origin: String,
     host: String,
+    network: bool,
     cookie_name: String,
     assets: PathBuf,
     /// The replacement policy only on a Rust-only runtime serving `ServedUi::Replacement`.
@@ -366,31 +368,6 @@ impl Gateway {
         )
     }
 
-    /// Start a runtime with no Node child: `product` answers admitted
-    /// requests, nothing is forwarded, and `/__runtime` reports `status`.
-    /// Moonraker watchers poll the hosts `hosts` reads; `product` receives
-    /// the status lookup so an authenticated route can answer from them.
-    /// Use [`Self::start_rust_only_with_assets`] for a verified replacement
-    /// bundle; this entry point serves the legacy build from disk.
-    pub fn start_rust_only(
-        listener: TcpListener,
-        assets: PathBuf,
-        ui: ServedUi,
-        product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
-        status: tokio::sync::watch::Receiver<RustStatus>,
-        hosts: Arc<dyn MoonrakerHosts>,
-    ) -> Result<Self> {
-        Self::start_inner(
-            listener,
-            assets,
-            (ui, None),
-            CompatHandle::unpublished(),
-            &OperationOwners::node_only(),
-            Some(Box::new(product)),
-            Some((status, hosts)),
-        )
-    }
-
     fn start_inner(
         listener: TcpListener,
         assets: PathBuf,
@@ -401,14 +378,26 @@ impl Gateway {
         rust_only: Option<(
             tokio::sync::watch::Receiver<RustStatus>,
             Arc<dyn MoonrakerHosts>,
+            bool,
         )>,
     ) -> Result<Self> {
-        let (rust_status, hosts) = rust_only.unzip();
-        let address = listener.local_addr()?;
+        let (rust_status, hosts, network) = match rust_only {
+            Some((status, hosts, network)) => (Some(status), Some(hosts), network),
+            None => (None, None, false),
+        };
+        let mut address = listener.local_addr()?;
         anyhow::ensure!(
-            address.ip().is_loopback(),
+            network || address.ip().is_loopback(),
             "Desktop gateway requires a loopback listener"
         );
+        if network {
+            eprintln!("Listening on {address}");
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
         let host = address.to_string();
         let origin = format!("http://{host}");
         let mut manifest: Manifest = serde_json::from_str(include_str!("../operations.json"))?;
@@ -455,10 +444,9 @@ impl Gateway {
         };
         let observations = watchers.observations();
         let asset_policy = if rust_status.is_some() && ui == ServedUi::Replacement {
-            assets::Policy::replacement(
-                &origin,
-                replacement_assets.context("Replacement UI requires verified bytes")?,
-            )
+            assets::Policy::Replacement {
+                files: replacement_assets.context("Replacement UI requires verified bytes")?,
+            }
         } else {
             assets::Policy::Legacy
         };
@@ -474,6 +462,7 @@ impl Gateway {
             monitoring_suspended: tokio::sync::watch::channel(false).0,
             origin,
             host,
+            network,
             cookie_name: format!("pp_desktop_{}", address.port()),
             assets,
             asset_policy,
@@ -923,6 +912,11 @@ fn is_spa_client_path(path: &str) -> bool {
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+/// The two MCP endpoints, matched exactly.
+fn is_mcp(path: &str) -> bool {
+    matches!(path, "/mcp" | "/api/v1/mcp")
+}
+
 fn legal_summary_cors(response: &mut Response<Body>, origin: Option<&HeaderValue>) {
     let headers = response.headers_mut();
     headers.append("vary", HeaderValue::from_static("Origin"));
@@ -939,8 +933,12 @@ async fn handle(
     State(state): State<Arc<GatewayState>>,
     mut request: Request<Body>,
 ) -> Response<Body> {
+    let (expected_origin, expected_host) = match rust_only::authority(&state, &request) {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::FORBIDDEN, "Invalid network authority"),
+    };
     let mut hosts = request.headers().get_all("host").iter();
-    if hosts.next().map(HeaderValue::as_bytes) != Some(state.host.as_bytes())
+    if hosts.next().map(HeaderValue::as_bytes) != Some(expected_host.as_bytes())
         || hosts.next().is_some()
     {
         return error(StatusCode::BAD_REQUEST, "Invalid Host");
@@ -966,9 +964,11 @@ async fn handle(
         };
     }
     // With the Rust product routes mounted, MCP answers from their key-only
-    // guard. MCP clients are not browsers and send no Origin; the guard
-    // refuses an unsafe request without one unless it carries an API key.
-    let mcp = if path == "/mcp" || path == "/api/v1/mcp" {
+    // guard, on loopback and on an explicit network listener alike. MCP
+    // clients are not browsers and send no Origin; the guard refuses an unsafe
+    // request without one unless it carries an API key, and refuses any
+    // request without a valid key. No peer is trusted for MCP by its address.
+    let mcp = if is_mcp(&path) {
         product_router(&state)
     } else {
         None
@@ -978,15 +978,15 @@ async fn handle(
     let upgrade = request.headers().contains_key("upgrade");
     let unsafe_method = !matches!(request.method().as_str(), "GET" | "HEAD" | "OPTIONS");
     if origins.next().is_some()
-        || origin.is_some_and(|value| value.as_bytes() != state.origin.as_bytes())
+        || origin.is_some_and(|value| value.as_bytes() != expected_origin.as_bytes())
         || (((unsafe_method && mcp.is_none()) || upgrade) && origin.is_none())
     {
         return error(StatusCode::FORBIDDEN, "Invalid Origin");
     }
     if let Some(product) = mcp {
         // The desktop cookie is not MCP authorization: the request is only
-        // counted for the drain, and the guard checks loopback, Host, Origin,
-        // the MCP rate limit and the API key. A POST answers as an event
+        // counted for the drain, and the guard checks the transport, Host,
+        // Origin, the MCP rate limit and the API key. A POST answers as an event
         // stream while its tool runs, so only the GET notification stream
         // stops counting when the drain begins.
         let Ok(admission) = Admission::keyed(&state.access) else {
@@ -1072,8 +1072,8 @@ async fn handle(
         return revoked
             .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }
-    // Without the Rust product routes nothing here serves MCP.
-    if path == "/mcp" || path == "/api/v1/mcp" {
+    // Without the Rust product routes, nothing here serves MCP.
+    if is_mcp(&path) {
         return error(
             StatusCode::FORBIDDEN,
             "MCP is disabled in this foundation; API-key authorization is required before enabling it",
@@ -1100,7 +1100,7 @@ async fn handle(
             &state.assets,
             relative,
             document && spa,
-            &state.asset_policy,
+            (&state.asset_policy, &expected_host),
             request.method(),
             request.headers(),
         )
@@ -2056,10 +2056,10 @@ enum Streams {
 }
 
 /// Answer from the Rust product routes. They see the peer as `ConnectInfo`
-/// and refuse a non-loopback one themselves. With `Streams::Release`, a
-/// `text/event-stream` body stops counting as active when draining begins
-/// and ends at its next poll, even if its client has stopped reading; other
-/// bodies end when the drain finishes.
+/// and apply the composed transport and credential gates. With
+/// `Streams::Release`, a `text/event-stream` body stops counting as active when
+/// draining begins and ends at its next poll, even if its client has stopped
+/// reading; other bodies end when the drain finishes.
 async fn product_response(
     state: &GatewayState,
     product: axum::Router,
@@ -2572,13 +2572,7 @@ impl Gateway {
             .unwrap();
         let response = handle(State(self.state.clone()), bootstrap).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        response.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned()
+        pp_testkit::session_cookie(response.headers()["set-cookie"].to_str().unwrap())
     }
 }
 

@@ -361,3 +361,57 @@ async fn replacement_assets_remain_pinned_after_startup() {
     let script = fixture.get("GET", "/assets/app.js", None).await;
     assert_eq!(body(script).await, "export default 1;");
 }
+
+/// An explicit listener names the WebSocket origin of the Host the browser
+/// used, not the loopback origin the gateway reports.
+#[tokio::test]
+async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
+    let scratch = Scratch::new("pp-csp-");
+    let status = tokio::sync::watch::channel(RustStatus::Ready);
+    let mut gateway = Gateway::start_rust_only_with_network(
+        TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        true,
+        scratch.to_path_buf(),
+        (
+            ServedUi::Replacement,
+            Some(Arc::new(std::collections::BTreeMap::from([(
+                "index.html".into(),
+                Arc::<[u8]>::from(INDEX.as_bytes()),
+            )]))),
+        ),
+        |_| axum::Router::new(),
+        status.1,
+        Arc::new(NoHosts),
+    )
+    .unwrap();
+    let lan = |path: &str, cookie: Option<&str>| {
+        let mut request = Request::builder()
+            .uri(path)
+            .header("host", "192.0.2.20:8080")
+            .header("origin", "http://192.0.2.20:8080")
+            .header("accept", "text/html");
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        let mut request = request.body(Body::empty()).unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "192.0.2.10:40000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        request
+    };
+    let launch = gateway.take_launch_target().unwrap().into_url();
+    let bootstrap = launch.strip_prefix(gateway.origin()).unwrap().to_owned();
+    let response = handle(State(gateway.state.clone()), lan(&bootstrap, None)).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookie = pp_testkit::session_cookie(response.headers()["set-cookie"].to_str().unwrap());
+    let response = handle(State(gateway.state.clone()), lan("/", Some(&cookie))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = policy(&response);
+    assert!(
+        csp.contains("connect-src 'self' ws://192.0.2.20:8080/ws/printers;"),
+        "{csp}"
+    );
+    assert!(!csp.contains("127.0.0.1"), "{csp}");
+    drop(response);
+    gateway.stop().await.unwrap();
+}

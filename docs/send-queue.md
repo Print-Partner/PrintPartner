@@ -336,7 +336,7 @@ Checkoff units creates no link and records nothing.
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(ticket_t_26) | test(remapped_queue_rows_match_literal_node_results)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core --features pp-api/desktop_rebuild,pp-core/desktop_rebuild -E 'test(ticket_t_26) | test(add_to_queue)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(the_form)'
-cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage -E 'test(outcome_unknown) | test(farm_lists_skip)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(outcome_unknown) | test(farm_lists_skip)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild -E 'test(send_queue_rust_only_runtime) | test(client_routes_match_registrations)'
 ```
 

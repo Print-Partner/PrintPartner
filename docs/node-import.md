@@ -30,7 +30,7 @@ What it does:
 
 1. Refuses the source for any reason under [Refusals](#refusals).
 2. Copies `print-partner.db`, its `-wal` and its `-journal` into a private directory under the system temporary directory (`TMPDIR`). From an archive it extracts the database and the single-file roots there, and only lists the other entries. SQLite never opens the source database, so no `-shm` or `-wal` file appears in the source. It does not follow links: a database file or `custom_filaments.json` that is a link fails the run, and a linked `repos` is not walked.
-3. Checks the copy as startup checks a live database (schema version, `PRAGMA integrity_check`, table shapes), which makes a second short-lived copy under `TMPDIR`, and upgrades it to the current Rust schema. The upgrade keeps no rollback copies: the staged copy is discarded whole when a step fails.
+3. Checks the copy as startup checks a live database (schema version, `PRAGMA integrity_check`, table shapes), which makes a second short-lived copy in a `.pp-preflight-*` folder inside that private directory, and upgrades it to the current Rust schema. The upgrade keeps no rollback copies: the staged copy is discarded whole when a step fails.
 4. Counts on the upgraded copy, prints the report, and removes the temporary directory. A run that is killed leaves `pp-import-dry-run-*` under `TMPDIR`; delete it.
 
 The dry run refuses before it creates anything when `TMPDIR` is the source folder or the destination, or lies inside one: it must write nothing there.

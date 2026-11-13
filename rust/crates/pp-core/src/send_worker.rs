@@ -149,7 +149,16 @@ impl SendWorker {
     /// Claims one waiting printer upload and runs it, or returns `None`.
     pub async fn run_next(&self) -> Result<Option<Sent>> {
         let worker = self.worker.clone();
-        let claimed = tokio::task::spawn_blocking(move || worker.claim()).await??;
+        let claimed = tokio::task::spawn_blocking(move || {
+            worker
+                .claim_pending_kind(
+                    JobKind::PrinterUpload,
+                    &AtomicBool::new(false),
+                    Duration::from_secs(5),
+                )?
+                .receive()
+        })
+        .await??;
         match claimed {
             Some(claimed) => self.run(claimed, &AtomicBool::new(false)).await.map(Some),
             None => Ok(None),

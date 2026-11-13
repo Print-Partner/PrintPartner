@@ -145,7 +145,7 @@ impl std::error::Error for AcquisitionError {
 /// The result of an accepted acquisition, delivered once its operation is
 /// recorded.
 pub struct AcquisitionReply {
-    admitted: mpsc::Receiver<Result<Operation>>,
+    admitted: mpsc::Receiver<Result<Operation, AcquisitionError>>,
     result: mpsc::Receiver<Result<Operation>>,
 }
 
@@ -163,10 +163,10 @@ impl AcquisitionReply {
 
     /// Blocks until the acquisition's admission is recorded, and returns the
     /// operation as admitted. The worker goes on to settle it.
-    pub fn admitted(&self) -> Result<Operation> {
+    pub fn admitted(&self) -> Result<Operation, AcquisitionError> {
         self.admitted
             .recv()
-            .map_err(|_| anyhow!("Source acquisition worker stopped"))?
+            .map_err(|_| AcquisitionError::Failed(anyhow!("Source acquisition worker stopped")))?
     }
 
     /// Blocks until the acquisition's operation is recorded.
@@ -528,11 +528,9 @@ impl SourceAcquisitions {
                 payload.clone(),
                 limits,
             )
-            .map_err(|error| {
-                AcquisitionError::Refused(WriterFailure::from(
-                    error.context("Source acquisition preflight failed"),
-                ))
-            })?;
+            // Converted before any context, so a busy, full, stopped or
+            // refusing writer keeps its type.
+            .map_err(|error| AcquisitionError::Refused(WriterFailure::from(error)))?;
         if let Some(operation) = authority.replay() {
             return Ok(AcquisitionReply::ready(operation.clone()));
         }
@@ -637,17 +635,14 @@ impl SourceAcquisitions {
                 payload.clone(),
                 limits,
             )
-            .and_then(|authority| {
-                ensure!(authority.replay().is_none(), "Key already recorded");
-                Ok(authority)
-            });
+            .map_err(|error| AcquisitionError::Refused(WriterFailure::from(error)));
         let authority = match preflight {
-            Ok(authority) => authority,
-            Err(error) => {
-                let error = error.context("Source acquisition preflight failed");
-                let refused = AcquisitionError::Refused(WriterFailure::from(error));
-                return Err(self.abort(candidate, refused));
+            Ok(authority) if authority.replay().is_none() => authority,
+            Ok(_) => {
+                let replayed = anyhow!("Source acquisition key already recorded");
+                return Err(self.abort(candidate, AcquisitionError::Failed(replayed)));
             }
+            Err(refused) => return Err(self.abort(candidate, refused)),
         };
         let bound = Bound {
             operation_key,
@@ -779,11 +774,25 @@ impl SourceAcquisitions {
                 } else {
                     Ok(())
                 };
-                let admitted = stabilized.and_then(|()| imports.admit_captured(prepared));
-                let _ = admission.send(match &admitted {
-                    Ok(operation) => Ok(operation.clone()),
-                    Err(error) => Err(anyhow!("{error:#}")),
-                });
+                // The route gets the admission's own typed failure; `wait`
+                // keeps a text copy of it.
+                let admitted = match stabilized {
+                    Ok(()) => imports
+                        .admit_captured(prepared)
+                        .map_err(|error| AcquisitionError::Refused(WriterFailure::from(error))),
+                    Err(error) => Err(AcquisitionError::Failed(error)),
+                };
+                let admitted = match admitted {
+                    Ok(operation) => {
+                        let _ = admission.send(Ok(operation.clone()));
+                        Ok(operation)
+                    }
+                    Err(error) => {
+                        let shown = anyhow!("{error:#}");
+                        let _ = admission.send(Err(error));
+                        Err(shown)
+                    }
+                };
                 let retained = admitted.is_ok();
                 let stopped = || retained && shared.stop.load(Ordering::Acquire);
                 let outcome = if stopped() {

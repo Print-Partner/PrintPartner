@@ -1,4 +1,6 @@
-use crate::{Envelope, SettingsClient, WriterOwner, auth::AuthPolicy, catalog, jobs};
+use crate::{
+    Envelope, SettingsClient, WriterFailure, WriterOwner, auth::AuthPolicy, catalog, jobs,
+};
 use anyhow::{Result, anyhow, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -1196,18 +1198,21 @@ pub(crate) fn submit(
     command: Command,
     cancelled: &AtomicBool,
 ) -> Result<UploadsOutcome> {
+    // Admission failures are typed, so callers sort them with
+    // `WriterFailure::from` rather than by text.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut queue = storage
         .shared
         .queue
         .lock()
-        .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        .map_err(|_| WriterFailure::Stopped)?;
     loop {
-        ensure!(!queue.closed, "Storage stopped");
-        ensure!(
-            !cancelled.load(Ordering::Acquire),
-            "Cancelled before admission"
-        );
+        if queue.closed {
+            return Err(WriterFailure::Stopped.into());
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WriterFailure::Cancelled.into());
+        }
         if queue.pending.len() < storage.shared.capacity {
             let (reply, receiver) = mpsc::channel();
             queue
@@ -1219,12 +1224,14 @@ pub(crate) fn submit(
                 .recv()
                 .map_err(|_| anyhow!("Import commit outcome unknown"))?;
         }
-        ensure!(Instant::now() < deadline, "Writer queue full");
+        if Instant::now() >= deadline {
+            return Err(WriterFailure::QueueFull.into());
+        }
         queue = storage
             .shared
             .changed
             .wait_timeout(queue, Duration::from_millis(5))
-            .map_err(|_| anyhow!("Writer admission poisoned"))?
+            .map_err(|_| WriterFailure::Stopped)?
             .0;
     }
 }

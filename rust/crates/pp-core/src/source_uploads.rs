@@ -93,10 +93,7 @@ impl SourceUploads for SourceUploadService {
         match reply.admitted() {
             Ok(operation) => Ok(operation.job_id),
             Err(_) if self.acquisitions.closing() => Err(UploadFailure::Unavailable),
-            Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "Source upload not admitted");
-                Err(UploadFailure::Failed)
-            }
+            Err(error) => Err(failure(error)),
         }
     }
 }

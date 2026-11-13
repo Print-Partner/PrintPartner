@@ -76,9 +76,14 @@ impl From<ReaderFailure> for WriterFailure {
 }
 
 impl From<anyhow::Error> for WriterFailure {
-    /// An auth refusal keeps its [`AuthFailure`] and SQLite's busy code is
-    /// [`WriterFailure::Busy`]; anything else is `Internal`.
+    /// A `WriterFailure` an older helper wrapped in `anyhow` is returned as
+    /// it was, an auth refusal keeps its [`AuthFailure`], and SQLite's busy
+    /// code is [`WriterFailure::Busy`]; anything else is `Internal`.
     fn from(error: anyhow::Error) -> Self {
+        let error = match error.downcast::<WriterFailure>() {
+            Ok(failure) => return failure,
+            Err(error) => error,
+        };
         let busy = error
             .downcast_ref::<Error>()
             .is_some_and(|error| error.sqlite_error_code() == Some(ErrorCode::DatabaseBusy));

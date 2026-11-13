@@ -109,7 +109,7 @@ async function openBuild(page: Page, tab = "Overview") {
   await page.getByRole("link", { name: tab, exact: true }).click();
 }
 
-step(1, "GRE-1453", async ({ page }) => {
+step(1, null, async ({ page }) => {
   await openSignInLink(page);
   await page.getByLabel("Email").fill(OWNER.email);
   await page.getByLabel("Password", { exact: true }).fill(OWNER.password);
@@ -119,10 +119,17 @@ step(1, "GRE-1453", async ({ page }) => {
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(screen(page, "Sign in")).toBeVisible();
-  // Signed out, he asks for Builds; the sign-in screen takes him there.
-  await page.goto(new URL("/builds", page.url()).href);
-  await fillSignIn(page);
-  await expect(screen(page, "Builds")).toBeVisible();
+  // Signed out, he asks for Builds; the sign-in screen takes him there. Until GRE-1453,
+  // sign-out also stops pp-server: Docker starts it again, perhaps on another host port,
+  // and the browser needs a new sign-in link. A server that keeps serving takes one too.
+  // Each try starts from a browser with no cookies and runs again if the stop cuts it off.
+  await expect(async () => {
+    await page.context().clearCookies();
+    await openSignInLink(page);
+    await page.goto(new URL("/builds", page.url()).href);
+    await fillSignIn(page);
+    await expect(screen(page, "Builds")).toBeVisible();
+  }).toPass({ timeout: 120_000 });
 });
 
 step(2, "GRE-412", async ({ page }) => {

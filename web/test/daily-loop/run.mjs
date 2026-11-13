@@ -43,7 +43,8 @@ async function suite() {
     ["docker", ["volume", "create", name]],
     // The run command from docs/docker.md, except that Docker picks the host port, so
     // two runs on one machine do not collide; the tests read it back with `docker port`.
-    // `--restart unless-stopped` matters: sign-out stops pp-server, and Docker starts it again.
+    // `--restart unless-stopped` matters: until GRE-1453, sign-out stops pp-server, and
+    // Docker starts it again.
     [
       "docker",
       [

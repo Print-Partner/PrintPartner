@@ -587,13 +587,7 @@ async fn start_rust_resources(
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        rebuild_api::RuntimeInputs {
-            server: rebuild_api::ServerOptions {
-                update_checks: server_updates,
-                explicit_listener: listen.is_some(),
-            },
-            farm: Arc::new(farm.clone()),
-        },
+        rebuild_api::RuntimeInputs::running(server_updates, listen.is_some(), &farm),
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);

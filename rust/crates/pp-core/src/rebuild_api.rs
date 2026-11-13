@@ -253,6 +253,22 @@ pub(crate) struct RuntimeInputs {
 }
 
 impl RuntimeInputs {
+    /// A running runtime's inputs: its server options, and the watchers'
+    /// slot the gateway binds when it starts them.
+    pub(crate) fn running(
+        update_checks: bool,
+        explicit_listener: bool,
+        farm: &crate::printer_status::LateFarm,
+    ) -> Self {
+        Self {
+            server: ServerOptions {
+                update_checks,
+                explicit_listener,
+            },
+            farm: Arc::new(farm.clone()),
+        }
+    }
+
     /// Default server options and no watchers: what tests and compositions
     /// without a gateway use.
     pub(crate) fn detached() -> Self {

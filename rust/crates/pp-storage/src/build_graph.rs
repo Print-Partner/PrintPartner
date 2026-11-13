@@ -9,6 +9,8 @@ pub mod create_with_brief;
 pub use create_with_brief::{CreateBuildError, CreatedBuild, InvalidNewBuild, NewBuild};
 pub mod source_roles;
 pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
+pub mod role_filament;
+pub use role_filament::{RoleFilamentDefault, RoleFilamentError, RoleFilaments};
 pub mod import_inputs;
 pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, Target};
 pub mod header;

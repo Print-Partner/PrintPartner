@@ -36,8 +36,16 @@ fn seed() -> String {
             .into(),
         setting("feature_toggles", json!({ "farm": true })),
         setting(
+            "integrations",
+            json!([
+                { "id": "moon-a", "type": "moonraker", "config": { "base_url": "http://127.0.0.1:9" } },
+                { "id": "moon-b", "type": "moonraker", "config": { "base_url": "http://127.0.0.1:9" } },
+            ]),
+        ),
+        setting(
             "printer.fleet",
-            json!([{ "id": "p-a", "name": "Printer A" }, { "id": "p-b", "name": "Printer B" }]),
+            json!([{ "id": "p-a", "name": "Printer A", "integration_id": "moon-a" },
+                   { "id": "p-b", "name": "Printer B", "integration_id": "moon-b" }]),
         ),
         setting(
             "printer.checkoff_links",
@@ -48,7 +56,7 @@ fn seed() -> String {
         ),
         setting(
             "printer.unattributed_prints",
-            json!([{ "id": "print-1", "integration_id": "moon-b", "printer_id": "p-b",
+            json!([{ "id": "print-1", "integration_id": "moon-b", "printer_id": "default",
                      "filename": "stray.gcode", "completed_at": ago(2),
                      "gcode_objects": [], "candidates": [] }]),
         ),

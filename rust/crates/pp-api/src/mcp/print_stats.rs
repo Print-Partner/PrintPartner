@@ -201,12 +201,12 @@ impl CheckoffDomain {
             )
             .map_err(|PrintActivityError::Reader(failure)| writer_failure(&failure))?;
         let farm = self.read_farm()?;
-        let names = farm
-            .printers(|_| Observation::NotWatched)
-            .printers
-            .into_iter()
-            .map(|printer| (printer.id, printer.name))
-            .collect();
+        let fleet = Fleet::new(
+            farm.printers(|_| Observation::NotWatched)
+                .printers
+                .into_iter()
+                .map(|printer| (printer.id, printer.name, printer.integration.map(|i| i.id))),
+        );
         let listed = self.builds.execute(
             caller.into_credential(),
             BuildCommand::List,
@@ -234,10 +234,56 @@ impl CheckoffDomain {
                 jobs,
                 results: &checkoff.results,
                 unmatched: &unmatched.prints,
-                names,
+                fleet,
                 builds,
             },
         ))
+    }
+}
+
+/// The fleet printers, to name the printer a job or a print reports.
+#[derive(Default)]
+pub(super) struct Fleet {
+    names: HashMap<String, String>,
+    /// Each integration's printer, or `None` when several share it.
+    by_integration: HashMap<String, Option<String>>,
+}
+
+impl Fleet {
+    /// From `(id, name, integration id)` for each fleet printer.
+    pub(super) fn new(
+        printers: impl IntoIterator<Item = (String, String, Option<String>)>,
+    ) -> Self {
+        let mut fleet = Self::default();
+        for (id, name, integration) in printers {
+            if let Some(integration) = integration {
+                fleet
+                    .by_integration
+                    .entry(integration.trim().to_owned())
+                    .and_modify(|sole| *sole = None)
+                    .or_insert_with(|| Some(id.clone()));
+            }
+            fleet.names.insert(id, name);
+        }
+        fleet
+    }
+
+    fn name(&self, id: &str) -> Option<String> {
+        self.names.get(id).cloned()
+    }
+
+    /// The printer a report names, and its name: the reported id when it is
+    /// a fleet printer, else the only fleet printer on the reporting
+    /// integration, as Node resolves the `default` placeholder a host poll
+    /// stores. Otherwise the reported id, unnamed.
+    fn resolve(&self, printer_id: &str, integration_id: &str) -> (String, Option<String>) {
+        if let Some(name) = self.names.get(printer_id) {
+            return (printer_id.to_owned(), Some(name.clone()));
+        }
+        match self.by_integration.get(integration_id.trim()) {
+            Some(Some(id)) => (id.clone(), self.name(id)),
+            _ => (printer_id.to_owned(), None),
+        }
     }
 }
 
@@ -246,20 +292,19 @@ pub(super) struct Inputs<'a> {
     pub(super) jobs: Vec<PrinterActivity>,
     pub(super) results: &'a [CheckoffResult],
     pub(super) unmatched: &'a [UnmatchedPrint],
-    /// Fleet printer names by id.
-    pub(super) names: HashMap<String, String>,
+    pub(super) fleet: Fleet,
     pub(super) builds: Result<Vec<ProfileSummary>, PlansUnavailable>,
 }
 
 /// The stats for `window`, ending at `now`.
 pub(super) fn stats(window: Window, now: SystemTime, inputs: Inputs<'_>) -> PrintStats {
     let since = window.since(now);
-    let name = |id: &str| inputs.names.get(id).cloned();
+    let fleet = &inputs.fleet;
     let by_printer: Vec<PrinterStats> = inputs
         .jobs
         .into_iter()
         .map(|row| PrinterStats {
-            printer_name: row.printer_id.as_deref().and_then(name),
+            printer_name: row.printer_id.as_deref().and_then(|id| fleet.name(id)),
             completion_rate: completion_rate(row.completed.into(), row.failed.into()),
             printer_id: row.printer_id,
             plates_sent: row.sent.into(),
@@ -274,7 +319,7 @@ pub(super) fn stats(window: Window, now: SystemTime, inputs: Inputs<'_>) -> Prin
         sum(|row| row.plates_completed),
         sum(|row| row.plates_failed),
     );
-    let seen = prints_seen(inputs.results, inputs.unmatched, since, &name);
+    let seen = prints_seen(inputs.results, inputs.unmatched, since, fleet);
     PrintStats {
         window_hours: whole(window.hours),
         since: iso_time(since),
@@ -315,7 +360,7 @@ fn prints_seen(
     results: &[CheckoffResult],
     unmatched: &[UnmatchedPrint],
     since: SystemTime,
-    name: &impl Fn(&str) -> Option<String>,
+    fleet: &Fleet,
 ) -> PrintsSeen {
     let after = |at: &str| at_or_after(at, since);
     let attached = results.iter().filter_map(|result| {
@@ -326,29 +371,35 @@ fn prints_seen(
             HostOutcome::Unknown => return None,
         };
         let at = result.completed_at.as_deref().unwrap_or(&result.created_at);
-        after(at).then_some((result.printer_id.as_str(), outcome, true))
+        let printer = fleet.resolve(&result.printer_id, &result.integration_id);
+        after(at).then_some((printer, outcome, true))
     });
     let open = unmatched
         .iter()
         .filter(|print| after(&print.completed_at))
-        .map(|print| (print.printer_id.as_str(), Outcome::Completed, false));
+        .map(|print| {
+            let printer = fleet.resolve(&print.printer_id, &print.integration_id);
+            (printer, Outcome::Completed, false)
+        });
     let mut seen = PrintsSeen::default();
-    let mut rows: BTreeMap<&str, SeenOnPrinter> = BTreeMap::new();
-    for (printer, outcome, on_plan) in attached.chain(open) {
+    let mut rows: BTreeMap<String, SeenOnPrinter> = BTreeMap::new();
+    for ((printer, name), outcome, on_plan) in attached.chain(open) {
         seen.total += 1;
         if on_plan {
             seen.attached_to_plan += 1;
         } else {
             seen.not_attached_to_plan += 1;
         }
-        let row = rows.entry(printer).or_insert_with(|| SeenOnPrinter {
-            printer_id: printer.to_owned(),
-            printer_name: name(printer),
-            seen: 0,
-            completed: 0,
-            failed: 0,
-            cancelled: 0,
-        });
+        let row = rows
+            .entry(printer.clone())
+            .or_insert_with(|| SeenOnPrinter {
+                printer_id: printer,
+                printer_name: name,
+                seen: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: 0,
+            });
         row.seen += 1;
         *match outcome {
             Outcome::Completed => &mut row.completed,

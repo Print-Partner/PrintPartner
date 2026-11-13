@@ -67,7 +67,7 @@ fn stats_count_the_window_and_list_active_plans() {
         }],
         results: &[],
         unmatched: &[],
-        names: HashMap::from([("p-a".to_owned(), "Printer A".to_owned())]),
+        fleet: Fleet::new([("p-a".to_owned(), "Printer A".to_owned(), None)]),
         builds: Ok(vec![
             build(
                 1,
@@ -122,7 +122,7 @@ fn an_unreadable_build_list_keeps_the_counts() {
         }],
         results: &[],
         unmatched: &[],
-        names: HashMap::new(),
+        fleet: Fleet::default(),
         builds: Err(PlansUnavailable::TooManyBuilds),
     };
     let window = Window::parse(&args(json!({}))).unwrap();
@@ -141,7 +141,7 @@ fn an_empty_window_counts_zero() {
         jobs: Vec::new(),
         results: &[],
         unmatched: &[],
-        names: HashMap::new(),
+        fleet: Fleet::default(),
         builds: Ok(Vec::new()),
     };
     let window = Window::parse(&args(json!({ "hours": 1.5 }))).unwrap();
@@ -158,4 +158,39 @@ fn completion_rate_rounds_to_three_places() {
     assert_eq!(completion_rate(0, 0), None);
     assert_eq!(completion_rate(2, 1), Some(0.667));
     assert_eq!(completion_rate(1, 0), Some(1.0));
+}
+
+#[test]
+fn a_report_resolves_to_the_only_fleet_printer_on_its_integration() {
+    let fleet = Fleet::new([
+        (
+            "p-a".to_owned(),
+            "Printer A".to_owned(),
+            Some("moon-a".to_owned()),
+        ),
+        (
+            "p-b".to_owned(),
+            "Printer B".to_owned(),
+            Some("shared".to_owned()),
+        ),
+        (
+            "p-c".to_owned(),
+            "Printer C".to_owned(),
+            Some("shared".to_owned()),
+        ),
+    ]);
+    let named = |id: &str, name: &str| (id.to_owned(), Some(name.to_owned()));
+    assert_eq!(fleet.resolve("p-b", "shared"), named("p-b", "Printer B"));
+    assert_eq!(
+        fleet.resolve("default", " moon-a "),
+        named("p-a", "Printer A")
+    );
+    assert_eq!(
+        fleet.resolve("default", "shared"),
+        ("default".to_owned(), None)
+    );
+    assert_eq!(
+        fleet.resolve("default", "gone"),
+        ("default".to_owned(), None)
+    );
 }

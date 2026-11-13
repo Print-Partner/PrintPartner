@@ -109,6 +109,8 @@ What it does:
 5. Moves the database and the roots into the destination, saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
 6. Writes `.pp-rust-owned.json` last, and syncs it and its directory.
 
+Memory: the check in step 3 is the startup check, and it holds the staged database in memory. It reads `print-partner.db`, its `-wal` and its `-journal` whole, and reads them a second time to confirm they did not change. So the import needs free memory of about twice the size of `print-partner.db` plus its `-wal`, beside the disk space at the destination and one short-lived copy of the database under `TMPDIR`. Nothing checks memory before the import starts, and the size of `repos/` does not count. An import that is killed during that check can leave `pp-preflight-*` under `TMPDIR`; delete it.
+
 A destination with a marker is complete and durable; one without a marker is discarded. Two rules enforce the second half: the Rust runtime refuses to open a folder that holds data and no marker (`ownership_marker::admit_writer`), and the import refuses a destination that is not empty (`inspect_destination`).
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.

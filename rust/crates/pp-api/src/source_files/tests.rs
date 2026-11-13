@@ -28,6 +28,16 @@ async fn each_storage_failure_has_one_status_and_code() {
             422,
             Some(code::TOO_MANY_FILES),
         ),
+        (
+            SourceFilesError::FileNotFound,
+            404,
+            Some(code::FILE_NOT_FOUND),
+        ),
+        (
+            SourceFilesError::Unrenderable,
+            422,
+            Some(code::UNRENDERABLE),
+        ),
         (SourceFilesError::Writer(WriterFailure::Stopped), 503, None),
     ];
     for (error, status, code) in cases {

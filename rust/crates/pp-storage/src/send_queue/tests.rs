@@ -115,8 +115,10 @@ fn ticket_t_26_open_moves_a_clean_legacy_queue_into_the_table() {
         "the item reads as Node's parseItem reads it"
     );
     let mut after = sends(items);
-    after["items"][1]["state"] = before["items"][1]["state"].clone();
-    after["items"][1]["updated_at"] = before["items"][1]["updated_at"].clone();
+    assert_eq!(after["items"][1]["error"], INTERRUPTED_ERROR);
+    for key in ["state", "error", "updated_at"] {
+        after["items"][1][key] = before["items"][1][key].clone();
+    }
     assert_eq!(
         after, before,
         "the farm read is unchanged apart from the interruption"
@@ -258,5 +260,109 @@ fn ticket_t_26_a_legacy_setting_wins_over_table_rows() {
             "q1".to_owned(),
             "queued".to_owned()
         )]
+    );
+}
+
+#[test]
+fn an_error_item_reads_outcome_unknown_only_when_send_now_refuses_it() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(include_str!("../jobs/schema.sql"))
+        .unwrap();
+    for (id, tenant, kind, state) in [
+        (
+            "job-held",
+            "default",
+            "printer-upload",
+            "reconciliation_required",
+        ),
+        ("job-failed", "default", "printer-upload", "failed"),
+        (
+            "job-quarantined",
+            "default",
+            "printer-upload",
+            "quarantined",
+        ),
+        (
+            "job-other",
+            "other",
+            "printer-upload",
+            "reconciliation_required",
+        ),
+        ("job-sync", "default", "sync", "reconciliation_required"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO durable_jobs(id,tenant,kind,state,resource,version,generation,created,updated,document) VALUES(?1,?2,?3,?4,'',1,1,0,0,'{}')",
+                params![id, tenant, kind, state],
+            )
+            .unwrap();
+    }
+    let item = |state: &str, job: Option<&str>, error: Option<&str>| json!({"id": "q", "state": state, "upload_job_id": job, "error": error});
+    let cases = [
+        (item("queued", None, None), false),
+        (
+            item("error", Some("job-held"), Some(UNKNOWN_OUTCOME_ERROR)),
+            true,
+        ),
+        (
+            item("error", Some("job-held"), Some(INTERRUPTED_ERROR)),
+            true,
+        ),
+        (
+            item(
+                "error",
+                Some("job-failed"),
+                Some("Upload failed (HTTP 500)"),
+            ),
+            false,
+        ),
+        // Send now and Reconcile cannot resolve a quarantined job, so the
+        // read does not offer its item for reconciliation.
+        (
+            item("error", Some("job-quarantined"), Some("Upload failed")),
+            false,
+        ),
+        // A send Node started has no Rust job: Node's restart text decides.
+        (
+            item("error", Some("node-job"), Some(INTERRUPTED_ERROR)),
+            true,
+        ),
+        (item("error", None, Some(INTERRUPTED_ERROR)), true),
+        (
+            item("error", None, Some("Artifact file missing on disk")),
+            false,
+        ),
+        // Another tenant's or kind's job is no Rust upload of this item.
+        (
+            item("error", Some("job-other"), Some(UNKNOWN_OUTCOME_ERROR)),
+            false,
+        ),
+        (
+            item("error", Some("job-sync"), Some(INTERRUPTED_ERROR)),
+            true,
+        ),
+        (item("done", Some("job-held"), None), false),
+    ];
+    let (mut items, expected): (Vec<_>, Vec<_>) = cases.into_iter().unzip();
+    mark_outcomes(Some(&connection), "default", &mut items).unwrap();
+    let marked: Vec<_> = items
+        .iter()
+        .map(|item| item["outcome_unknown"].clone())
+        .collect();
+    assert_eq!(
+        marked,
+        expected.into_iter().map(Value::Bool).collect::<Vec<_>>()
+    );
+
+    // Items still in Node's setting have no Rust job.
+    let mut legacy = vec![
+        item("error", Some("job-held"), Some("Upload failed")),
+        item("error", Some("job-held"), Some(INTERRUPTED_ERROR)),
+    ];
+    mark_outcomes(None, "default", &mut legacy).unwrap();
+    assert_eq!(
+        (&legacy[0]["outcome_unknown"], &legacy[1]["outcome_unknown"]),
+        (&json!(false), &json!(true))
     );
 }

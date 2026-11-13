@@ -22,6 +22,22 @@ fn unit(n: u8, part: &str) -> String {
     format!("{part}__{TOKEN}{n}")
 }
 
+/// The time `days` days ago as the RFC 3339 text Node stores. Pruning keeps a
+/// claimed or dismissed print for 7 days after that time, so fixture times
+/// follow the clock rather than a fixed date (GRE-1473).
+fn days_ago(days: i64) -> String {
+    let at = time::OffsetDateTime::now_utc() - time::Duration::days(days);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
+        at.year(),
+        u8::from(at.month()),
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second()
+    )
+}
+
 fn print(id: &str, filename: &str, objects: &[String]) -> Value {
     json!({
         "id": id,
@@ -29,7 +45,7 @@ fn print(id: &str, filename: &str, objects: &[String]) -> Value {
         "printer_id": "sim-1",
         "host_name": "Simulated Voron",
         "filename": filename,
-        "completed_at": "2026-11-05T20:00:00.000Z",
+        "completed_at": days_ago(1),
         "gcode_objects": objects,
         "candidates": [],
     })
@@ -131,7 +147,17 @@ fn claim_binds_required_unit_names_and_claims_every_open_copy_of_the_file() {
     assert_eq!(link["host_outcome"], "success");
     assert_eq!(link["profile_id"], 1);
     assert_eq!(link["filename"], "plate-z.gcode");
-    assert_eq!(link["completed_at"], "2026-11-05T20:00:00.000Z");
+    let stored_print = |id: &str| {
+        fixture
+            .setting("printer.unattributed_prints")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(link["completed_at"], stored_print("p1")["completed_at"]);
     // Unit 0 of the bracket is already completed, so its name stays unlabeled.
     assert_eq!(units(link), [(1, 1), (3, 0)]);
     assert_eq!(link["unlabeled_names"], json!([unit(1, "bracket")]));
@@ -205,12 +231,12 @@ fn claim_matches_plain_file_names_and_honors_the_selected_plate_files() {
 }
 
 #[test]
-#[ignore = "GRE-1473: fails after 2026-11-12 20:00Z, see ticket"]
 fn a_refused_claim_answers_like_node_and_writes_nothing() {
     let mut dismissed = print("dismissed", "d.gcode", &[unit(2, "bracket")]);
     dismissed["dismissed"] = json!(true);
+    dismissed["dismissed_at"] = json!(days_ago(0));
     let mut claimed = print("claimed", "c.gcode", &[unit(2, "bracket")]);
-    claimed["claimed_at"] = json!("2999-01-01T00:00:00.000Z");
+    claimed["claimed_at"] = json!(days_ago(0));
     let fixture = Fixture::with_prints(json!([
         print("open", "open.gcode", &[unit(2, "bracket")]),
         print("assigned", "plate-a.gcode", &[unit(2, "bracket")]),
@@ -329,4 +355,30 @@ fn dismiss_marks_any_stored_print_and_refuses_an_unknown_one() {
             json!({ "dismissed": true }),
         )]
     );
+}
+
+/// The product rule, as in Node: a claimed print is pruned 7 days after its
+/// claim, and an open print stays however old it is.
+#[test]
+fn pruning_drops_a_claim_older_than_7_days_and_keeps_an_old_open_print() {
+    let mut old_claim = print("old-claim", "old.gcode", &[unit(2, "bracket")]);
+    old_claim["claimed_at"] = json!(days_ago(8));
+    let mut old_open = print("old-open", "open.gcode", &[unit(2, "bracket")]);
+    old_open["completed_at"] = json!(days_ago(30));
+    let fixture = Fixture::with_prints(json!([old_claim, old_open]));
+    let owner = fixture.open();
+
+    let gone = claim(&owner, "old-claim", json!({ "profile_id": 1 }));
+    assert_eq!(gone["status"], 404, "{gone}");
+    let kept = claim(&owner, "old-open", json!({ "profile_id": 1 }));
+    assert_eq!(kept["status"], 200, "{kept}");
+    // The claim's save prunes the stored list too.
+    let stored: Vec<Value> = fixture
+        .setting("printer.unattributed_prints")
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].clone())
+        .collect();
+    assert_eq!(stored, [json!("old-open")]);
 }

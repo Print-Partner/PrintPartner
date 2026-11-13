@@ -27,7 +27,10 @@ describe("apps/ui import boundary", { timeout: 30_000 }, () => {
     ['export * from "../../web/src/api/client";', "re-export"],
     ['export const load = () => import("../../server/src/app");', "dynamic import"],
     ['export type Legacy = typeof import("@print-partner/contracts");', "import type expression"],
-    ["export const lazy = () => import(`@print-partner/contracts`);", "template literal dynamic import"],
+    [
+      "export const lazy = () => import(`@print-partner/contracts`);",
+      "template literal dynamic import",
+    ],
   ])("fails a planted import: %s (%s)", async (code) => {
     expect(await boundaryErrors(`${code}\nexport {};\n`)).toHaveLength(1);
   });
@@ -49,6 +52,97 @@ describe("apps/ui import boundary", { timeout: 30_000 }, () => {
       "export { fetchCore, routes, useQuery, printerDisplayDescriptors };",
     ].join("\n");
     expect(await boundaryErrors(code)).toEqual([]);
+  });
+
+  describe("layers inside src (GRE-1537)", () => {
+    const planted = (code: string) => `${code}\nexport {};\n`;
+
+    it.each([
+      [
+        'import { dateText } from "../builds/format";',
+        "apps/ui/src/today/planted.ts",
+        "screen to screen",
+      ],
+      [
+        'import { beds } from "../today/beds";',
+        "apps/ui/src/frame/planted.ts",
+        "shared layer to screen",
+      ],
+      [
+        'import { routes } from "../routes";',
+        "apps/ui/src/farm/planted.ts",
+        "screen to composition",
+      ],
+      [
+        'import { App } from "../App";',
+        "apps/ui/src/core/planted.ts",
+        "shared layer to composition",
+      ],
+      [
+        'export { dateText } from "../builds/format";',
+        "apps/ui/src/library/planted.ts",
+        "re-export",
+      ],
+      [
+        'import { dateText } from "../builds/format";',
+        "apps/ui/src/farm/planted.test.tsx",
+        "screen to screen in a test",
+      ],
+      ['import * as builds from "../builds";', "apps/ui/src/today/planted.ts", "a screen folder"],
+      [
+        'import * as builds from "../builds";',
+        "apps/ui/src/today/planted.test.ts",
+        "a screen folder in a test",
+      ],
+      [
+        'export const load = () => import("../farm/FarmLog");',
+        "apps/ui/src/library/planted.ts",
+        "dynamic import",
+      ],
+    ])("fails a planted import: %s in %s (%s)", async (code, file) => {
+      expect(await boundaryErrors(planted(code), file)).toHaveLength(1);
+    });
+
+    it.each([
+      [
+        'import { queryScreenState } from "../screen/queryState";',
+        "apps/ui/src/today/planted.ts",
+        "screen to shared layer",
+      ],
+      [
+        'import { fetchCore } from "../core/client";',
+        "apps/ui/src/frame/planted.ts",
+        "shared layer to shared layer",
+      ],
+      [
+        'import { dateText } from "./format";',
+        "apps/ui/src/builds/planted.ts",
+        "inside one screen",
+      ],
+      [
+        'import { BuildWorkspace } from "./builds/BuildWorkspace";',
+        "apps/ui/src/planted.ts",
+        "composition to a screen",
+      ],
+      [
+        'import { App } from "../App";',
+        "apps/ui/src/farm/planted.test.tsx",
+        "a test renders the app",
+      ],
+      [
+        'import { routes } from "../routes";',
+        "apps/ui/src/builds/planted.test-utils.tsx",
+        "test utilities render the app",
+      ],
+      ['import * as here from ".";', "apps/ui/src/today/planted.ts", "its own folder"],
+      [
+        'import { dateText } from "../src/builds/format";',
+        "apps/ui/test/planted.ts",
+        "a file outside src",
+      ],
+    ])("allows a planted import: %s in %s (%s)", async (code, file) => {
+      expect(await boundaryErrors(planted(code), file)).toEqual([]);
+    });
   });
 
   it("leaves the legacy app's imports alone", async () => {

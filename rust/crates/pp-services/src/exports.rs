@@ -3,6 +3,9 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "desktop_rebuild")]
+pub mod pack;
+
 /// The accepted Plan a checklist describes.
 pub struct ChecklistPlan {
     pub build_name: String,

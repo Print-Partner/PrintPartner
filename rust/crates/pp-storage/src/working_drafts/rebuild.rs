@@ -14,8 +14,8 @@ use super::{
 use crate::{
     WriterFailure, auth,
     build_graph::{
-        self, BuildCommand, BuildOutcome, SourceRolesError,
-        create_with_brief::{brief_key, save},
+        self, BuildCommand, BuildOutcome,
+        create_with_brief::{BriefError, brief_key, save, stored_brief},
     },
     read_model::{
         Credential,
@@ -143,7 +143,7 @@ impl WorkingDraftClient {
                 auth::authority::queries::reconciliation_actor_ref(tx, &credential, policy)
                     .map_err(internal)?;
             let profile = i64::try_from(build.get()).map_err(|_| RebuildError::BriefInvalid)?;
-            let mut brief = stored_brief(tx, tenant, build)?;
+            let mut brief = stored_brief::<RebuildError>(tx, tenant, build)?;
             let sources = role_sources(tx, tenant, &brief)?;
             configure_layers(tx, tenant, build, &sources, &observations.repos)?;
             let key = format!("{}:{}", request.key, inputs_digest(&sources));
@@ -199,17 +199,13 @@ impl WorkingDraftClient {
     }
 }
 
-/// The stored brief, through the read Source roles uses.
-fn stored_brief(
-    tx: &Transaction<'_>,
-    tenant: &str,
-    build: PositiveId,
-) -> Result<BuildPlanningBrief, RebuildError> {
-    build_graph::source_roles::stored_brief(tx, tenant, build).map_err(|error| match error {
-        SourceRolesError::NoBrief => RebuildError::NoBrief,
-        SourceRolesError::Writer(failure) => RebuildError::Writer(failure),
-        _ => RebuildError::BriefInvalid,
-    })
+impl BriefError for RebuildError {
+    fn no_brief() -> Self {
+        Self::NoBrief
+    }
+    fn invalid() -> Self {
+        Self::BriefInvalid
+    }
 }
 
 /// The brief's role Sources with their synced revisions: the structural base

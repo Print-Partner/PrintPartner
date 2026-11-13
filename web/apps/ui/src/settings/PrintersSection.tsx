@@ -6,6 +6,7 @@ import { readCore, writeCore } from "../core/rust";
 import { reason, resendable } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
+import { HIDDEN_NOTE, integrationsQuery, shownAddress, UNSHOWN_ADDRESS } from "./connections";
 
 type Printer = RouteResponse<"listPrinters">["printers"][number];
 type Integration = RouteResponse<"createIntegration">;
@@ -25,12 +26,6 @@ const printersQuery = {
 /** The printers the core lists now, never the cached list. */
 const freshPrinters = (client: QueryClient) =>
   client.fetchQuery({ ...printersQuery, staleTime: 0 }).then((list) => list.printers);
-
-/** `GET /api/v2/integrations`: every connection, without its secrets. */
-const integrationsQuery = {
-  queryKey: ["core", "integrations"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listIntegrations", {}, signal),
-} as const;
 
 /** The forms' names for request fields, by the JSON Pointer the core answers. */
 const FIELD_NAMES: Record<string, string> = {
@@ -282,24 +277,33 @@ function connectionPatch(form: FormData, stored: Integration): IntegrationPatch 
   const text = (name: string) => String(form.get(name) ?? "").trim();
   const secret = secretOf(stored);
   const patch: IntegrationPatch = {};
-  if (text("address") !== (stored.base_url ?? "")) patch.base_url = text("address");
+  if (text("address") !== formAddress(stored)) patch.base_url = text("address");
   if (form.get("remove_secret")) patch[secret.field] = null;
   else if (text("secret")) patch[secret.field] = text("secret");
   if (stored.kind === "prusalink" && text("username") !== (stored.username ?? "")) patch.username = text("username") || null;
   return patch;
 }
 
+/**
+ * The address the edit form starts from: the stored one without any sign-in details. Saving
+ * it unchanged sends no address, so the stored one stays as it is.
+ */
+const formAddress = (stored: Integration) => shownAddress(stored.base_url)?.text ?? "";
+
 /** The address and credentials of a Moonraker or PrusaLink connection. A secret is write-only. */
 function ConnectionFields({ stored, locked }: { stored: Integration; locked: boolean }) {
-  const [address, setAddress] = useState(stored.base_url ?? "");
+  const [address, setAddress] = useState(formAddress(stored));
   const noteId = useId();
   const secret = secretOf(stored);
-  const moved = address.trim() !== (stored.base_url ?? "");
+  const shown = shownAddress(stored.base_url);
+  const moved = address.trim() !== formAddress(stored);
   return (
     <fieldset disabled={locked}>
       <legend>Connection</legend>
       <div className="pp-fields">
         <Field label="Address" name="address" type="url" required value={address} onChange={(event) => setAddress(event.target.value)} />
+        {shown?.hidden && <p>{HIDDEN_NOTE}</p>}
+        {shown?.text === null && <p>{UNSHOWN_ADDRESS} Enter it again to save.</p>}
         {stored.kind === "prusalink" && <Field label="Username" name="username" autoComplete="off" defaultValue={stored.username ?? ""} />}
         <Field label={`New ${secret.word}`} name="secret" type="password" autoComplete="off" aria-describedby={noteId} />
       </div>

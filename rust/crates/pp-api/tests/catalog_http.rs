@@ -591,6 +591,18 @@ fn node_fixture() -> Value {
     .unwrap()
 }
 
+/// Node's create body from the parity fixture with each value as the string
+/// Node's `String()` made of it. Rust's typed create refuses Node's original
+/// body (GRE-1490) and stores Node's Source from this one. `source_type` is
+/// not a create field and stays ignored.
+#[cfg(feature = "desktop_rebuild")]
+fn typed_create_body(fixture: &Value) -> Value {
+    let body = &fixture["create"]["body"];
+    json!({"name": "12", "url": body["url"], "branch": "false", "tag": " v1 ,",
+        "source_kind": "GitHub", "role": "[object Object]", "metadata": body["metadata"],
+        "source_type": 5})
+}
+
 #[cfg(feature = "desktop_rebuild")]
 fn assert_source(actual: &Value, expected: &Value, directory: &Path) {
     for (key, value) in expected.as_object().unwrap() {
@@ -661,12 +673,27 @@ async fn serve(account_tenant: bool) -> (Scratch, Arc<Mutex<WriterOwner>>, Serve
 async fn catalog_create_patch_match_node_coercions() {
     let fixture = node_fixture();
     let (directory, owner, mut server, cookie) = serve(false).await;
-    let (status, created) = server
+    // GRE-1490: create reads a typed body, so Node's coerced wrong types are
+    // refused and store nothing.
+    let (status, _) = server
         .exchange(
             Method::POST,
             "/sources",
             &[("Cookie", &cookie)],
             Some(&fixture["create"]["body"]),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(list(&owner.lock().unwrap()).is_empty());
+    // The same values as the strings Node's `String()` made of them store the
+    // Source Node stored. `source_type` is not a create field and stays ignored.
+    let typed = typed_create_body(&fixture);
+    let (status, created) = server
+        .exchange(
+            Method::POST,
+            "/sources",
+            &[("Cookie", &cookie)],
+            Some(&typed),
         )
         .await;
     assert_eq!(status, 200);
@@ -846,6 +873,75 @@ async fn catalog_delete_wrong_owner_is_refused() {
     );
     assert_eq!(files(&directory), snapshot);
     assert_eq!(list(&owner.lock().unwrap()), seeded);
+    server.stop().await;
+    shutdown(owner, directory);
+}
+
+/// GRE-1490: `POST /api/v1/sources` reads `CreateSourceRequest`. Unknown
+/// fields and `null` optional fields are ignored; a wrong type, a missing name
+/// and `local_path` are refused with 400 and add no Source.
+#[cfg(feature = "desktop_rebuild")]
+#[tokio::test]
+async fn catalog_create_reads_a_typed_body() {
+    let (directory, owner, mut server, cookie) = serve(false).await;
+    let names = |owner: &Mutex<WriterOwner>| -> Vec<String> {
+        list(&owner.lock().unwrap())
+            .into_iter()
+            .map(|row| row.name)
+            .collect()
+    };
+    assert!(!names(&owner).contains(&"Rack".to_owned()));
+    let post = |body: Value| {
+        let (server, cookie) = (&server, &cookie);
+        async move {
+            server
+                .exchange(
+                    Method::POST,
+                    "/api/v1/sources",
+                    &[("Cookie", cookie)],
+                    Some(&body),
+                )
+                .await
+        }
+    };
+    let rack = json!({"name": "Rack", "source_kind": "archive"});
+    let (status, created) = post(rack.clone()).await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["name"], "Rack");
+    assert_eq!(created["current_source_revision_id"], Value::Null);
+    assert_eq!(names(&owner), ["Rack"]);
+    let (status, refused) = post(rack).await;
+    assert_eq!(
+        (status, refused["detail"].as_str()),
+        (400, Some("Source already exists: Rack"))
+    );
+    assert_eq!(names(&owner), ["Rack"]);
+    for body in [
+        json!({"name": 7}),
+        json!({"name": "X", "local_path": "/tmp"}),
+        json!({"name": "X", "metadata": "note"}),
+        json!({"name": "X", "branch": false}),
+        json!({"name": "X", "metadata": ["note"]}),
+        json!(["Rack"]),
+    ] {
+        let (status, refused) = post(body.clone()).await;
+        assert_eq!(status, 400, "{body}: {refused}");
+        assert_eq!(names(&owner), ["Rack"], "{body}");
+    }
+    // A missing or null name gets storage's reason, as Node answered it.
+    for body in [json!({"source_kind": "archive"}), json!({"name": null})] {
+        let (status, refused) = post(body.clone()).await;
+        assert_eq!(
+            (status, refused["detail"].as_str()),
+            (400, Some("Source name is required")),
+            "{body}"
+        );
+    }
+    assert_eq!(names(&owner), ["Rack"]);
+    let (status, created) =
+        post(json!({"name": "Shelf", "url": null, "tag": null, "colour": "red"})).await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(names(&owner), ["Rack", "Shelf"]);
     server.stop().await;
     shutdown(owner, directory);
 }
@@ -1820,7 +1916,7 @@ async fn catalog_patch_stale_metadata_is_conflict() {
             Method::POST,
             "/sources",
             &[("Cookie", &cookie)],
-            Some(&fixture["create"]["body"]),
+            Some(&typed_create_body(&fixture)),
         )
         .await;
     assert_eq!(status, 200);
@@ -1895,7 +1991,7 @@ async fn catalog_patch_non_integer_metadata_version_is_rejected() {
             Method::POST,
             "/sources",
             &[("Cookie", &cookie)],
-            Some(&fixture["create"]["body"]),
+            Some(&typed_create_body(&fixture)),
         )
         .await;
     assert_eq!(status, 200);

@@ -370,8 +370,13 @@ describe("Editing a printer", () => {
   }
 
   it("shows the stored address and whether a key is set, never the key", async () => {
-    const { dialog } = await openEdit({});
+    // The Integrations section on the same page reads the connections too; hold the answer so
+    // the dialog opens before it arrives.
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    const { dialog } = await openEdit({ [CONNECTIONS]: () => held.then(() => json({ integrations: [STORED] })) });
     expect(within(dialog).getByText("Loading the connection.")).toBeTruthy();
+    answer();
     expect(((await within(dialog).findByLabelText("Address")) as HTMLInputElement).value).toBe("http://voron.test");
     expect((within(dialog).getByLabelText("Name") as HTMLInputElement).value).toBe("Voron");
     expect((within(dialog).getByLabelText("New API key") as HTMLInputElement).value).toBe("");

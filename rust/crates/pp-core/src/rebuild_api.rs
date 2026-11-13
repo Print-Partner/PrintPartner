@@ -844,6 +844,7 @@ mod tests {
                 json!({"kind":"unsupported", "address":"http://fixture.invalid"})
             }
             "SetModuleRequest" => json!({"on": true}),
+            "CreateSourceRequest" => json!({"name": "Client contract", "source_kind": "archive"}),
             "CreateIntegrationRequest" => {
                 json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
             }
@@ -1025,11 +1026,12 @@ mod tests {
             "snapshot_not_found",
             "farm_log_entry_not_found",
         ];
-        const DETAILS: [&str; 5] = [
+        const DETAILS: [&str; 6] = [
             "beds[0]: Checkoff link not found",
             "Checkoff burst not found",
             "History entry not found",
             "Unattributed print not found",
+            "Job not found",
             "Queue item not found",
         ];
         status == 404
@@ -1044,6 +1046,7 @@ mod tests {
         let rebuild = DesktopRebuild::from_value(Some("1"));
         let (policy, lifetimes) = (desktop_policy(), lifetimes());
         let drafts = draft_router(rebuild, &owner, policy, lifetimes, &origin, "default", None);
+        let jobs = job_router(rebuild, &owner, policy, &origin, "default");
         let owner = Arc::new(std::sync::Mutex::new(owner));
         let reads = read_router(
             rebuild,
@@ -1060,6 +1063,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .merge(drafts.unwrap().unwrap())
+                .merge(jobs.unwrap().unwrap())
                 .merge(farm),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -1096,6 +1100,7 @@ mod tests {
         for route in CLIENT_ROUTES
             .iter()
             .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
+            .chain(&pp_api::catalog::contract::CLIENT_ROUTES)
             .chain(&pp_api::send_queue::CLIENT_ROUTES)
         {
             let path = route

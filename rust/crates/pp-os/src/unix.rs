@@ -117,6 +117,16 @@ pub(crate) fn publish_rename(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
 
+pub(crate) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    Ok(rfs::renameat_with(
+        rfs::CWD,
+        from,
+        rfs::CWD,
+        to,
+        RenameFlags::NOREPLACE,
+    )?)
+}
+
 pub(crate) fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::hard_link(from, to)?;
     std::fs::remove_file(from)

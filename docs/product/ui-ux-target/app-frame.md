@@ -10,7 +10,7 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | Need | Contract | Status |
 | --- | --- | --- |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
-| Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists. The replacement Settings screen (`/settings`, GRE-1336) lists each Module, on or off, with its off reason. Module changes use `PUT /api/v2/modules/{module}` with confirmation and refresh the shared core reads. Integrations and Backups remain unavailable; Sharing and devices explains the missing Rust read contract. See [Settings Modules](../settings-modules.md) |
+| Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists. The replacement Settings screen (`/settings`, GRE-1336) lists each Module, on or off, with its off reason. Module changes use `PUT /api/v2/modules/{module}` with confirmation and refresh the shared core reads. The Printers section lists, adds and deletes printers. Integrations and Backups remain unavailable; Sharing and devices explains the missing Rust read contract. See [Settings Modules](../settings-modules.md) and [Settings Printers](../settings-printers.md) |
 | Domain events | one authenticated, resumable stream | New |
 
 ## Delivery slices

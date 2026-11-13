@@ -231,6 +231,16 @@ Threat model for `.pp-restore`: staging checks the work directory with `symlink_
 
 Tests: `pp-storage/src/restore/tests.rs` (`ticket_t_8_restore_*`, on pp-testkit installations with a copied schema-34 database).
 
+## Whole-installation backup export
+
+With the `desktop_rebuild` feature, `InstallationClient::backup_to_temporary(app_version)` writes a full backup archive (format 2, every root in `archive::FULL_ROOTS`) for the `WriterOwner` that made the client. The caller names no path. The archive is written on the writer thread, as `WriterOwner::create_archive` writes one, so the database snapshot and the files are read while no other write runs.
+
+The returned `BackupFile` holds the archive path, its metadata, its size in bytes and its SHA-256. The archive is in a new private directory under the system temporary directory, outside managed storage, and dropping the `BackupFile` removes that directory. Moving it to a bounded disk location, and removing copies a crash leaves behind, is GRE-1383.
+
+The operation returns `restore::RestoreError`, which wraps the shared `WriterFailure`: `Stopped` once the owner is closing, `QueueFull` when the writer queue stayed full for 5 s, and `Internal` for a file or SQLite failure. The HTTP routes are GRE-1371.
+
+Test: `backup_export_reports_size_and_hash_stages_and_removes_itself` in `pp-storage/src/restore/tests.rs`.
+
 ## To be written
 
 The storage milestone fills in these sections:

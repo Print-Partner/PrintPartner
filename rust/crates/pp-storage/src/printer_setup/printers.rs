@@ -2,8 +2,10 @@
 //! stored order, and the four printer operations.
 //!
 //! The shape uses the field names Farm, Accept, Checkoff and the host lookup
-//! already read. It is strict and has no version field, like
-//! [`super::integrations`]: it changes only through a numbered schema step.
+//! already read. It has no version field, like [`super::integrations`]: it
+//! changes only through a numbered schema step. Every named field is typed
+//! strictly. A key the shape does not name is kept in [`Unread`] and never
+//! read; a loaded-filament row takes no such key.
 //!
 //! Lengths are whole millimetres, as integers. A fractional value is not this
 //! shape, and Node accepted one. The import (GRE-412) is to normalise such a
@@ -26,7 +28,7 @@
 
 use super::{
     DocumentFault, Field, InvalidDocument, InvalidField, MAX_PRINTERS, PrinterSetupClient,
-    PrinterSetupError, Reason, ServiceKind, SetupDocument, integrations::MAX_NAME_BYTES,
+    PrinterSetupError, Reason, ServiceKind, SetupDocument, Unread, integrations::MAX_NAME_BYTES,
 };
 use crate::{
     read_model::Credential,
@@ -43,7 +45,6 @@ pub const MAX_FILAMENT_SLOTS: u8 = 4;
 /// One stored printer. `bed_width_mm`, `bed_depth_mm`, `bed_height_mm` and
 /// `margin_mm` are whole millimetres.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Printer {
     pub id: String,
     pub name: String,
@@ -65,6 +66,9 @@ pub struct Printer {
     pub preset_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_slicer: Option<String>,
+    /// Stored keys this shape does not name. Empty for a printer Rust made.
+    #[serde(flatten)]
+    pub unread: Unread,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -297,6 +301,7 @@ impl PrinterSetupClient {
                 device_id: None,
                 preset_id: None,
                 preferred_slicer: None,
+                unread: Unread::default(),
             };
             let values = PrinterPatch {
                 name: Some(new.name),

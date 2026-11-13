@@ -3769,7 +3769,6 @@ dependencies = [
  "pp-contracts",
  "pp-domain",
  "pp-os",
- "pp-source",
  "pp-storage",
  "pp-testkit",
  "rand 0.9.5",

@@ -6,6 +6,10 @@ use crate::{
 };
 
 const WAIT: Duration = Duration::from_secs(5);
+/// The snapshot writer's root entry: the value of `pp_source::MANIFEST`,
+/// which `pp-core` passes in production. `pp-storage` may not depend on
+/// `pp-source`, not even for tests (`check-boundaries.py`).
+const WRITER_ENTRY: &str = ".printpartner-source-snapshot.json";
 static IDLE: AtomicBool = AtomicBool::new(false);
 const POLICY: AuthPolicy = AuthPolicy {
     registration: RegistrationPolicy::FirstAccountOnly,
@@ -27,7 +31,7 @@ impl Fixture {
         let token = first_session(&owner);
         let client = owner.source_files(POLICY).unwrap();
         let fixture = Self {
-            client: client.skipping_at_root(pp_source::MANIFEST),
+            client: client.skipping_at_root(WRITER_ENTRY),
             token,
             owner,
             directory,
@@ -199,13 +203,13 @@ fn the_snapshot_writers_manifest_is_not_one_of_the_owners_files() {
         ("docs/.printpartner-source-snapshot.json", b"{}"),
     ];
     let root = fixture.snapshot("1/revisions/r1", &owner_files);
-    fs::write(root.join(pp_source::MANIFEST), b"{\"schema\":1}").unwrap();
+    fs::write(root.join(WRITER_ENTRY), b"{\"schema\":1}").unwrap();
     fixture.sql(FIRST);
 
     let listed = fixture.list(1).unwrap().files;
 
     assert_eq!(listed.len(), owner_files.len());
-    assert!(!listed.iter().any(|file| file.path == pp_source::MANIFEST));
+    assert!(!listed.iter().any(|file| file.path == WRITER_ENTRY));
     let mut paths: Vec<&str> = owner_files.iter().map(|(path, _)| *path).collect();
     paths.sort_unstable();
     let listed_paths: Vec<&str> = listed.iter().map(|file| file.path.as_str()).collect();

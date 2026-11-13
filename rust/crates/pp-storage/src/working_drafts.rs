@@ -34,6 +34,7 @@ mod preparation;
 #[cfg(test)]
 mod preparation_tests;
 mod rebase;
+pub mod rebuild;
 pub mod restore;
 pub mod save;
 pub use rebase::{

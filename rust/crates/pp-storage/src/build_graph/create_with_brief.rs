@@ -264,7 +264,7 @@ fn recorded(
     }))
 }
 
-pub(super) fn brief_key(build: PositiveId) -> String {
+pub(crate) fn brief_key(build: PositiveId) -> String {
     format!("build_planning.v1.{}", build.get())
 }
 
@@ -272,7 +272,7 @@ fn record_key(key: &str) -> String {
     format!("build_planning.create.{key}")
 }
 
-pub(super) fn save(
+pub(crate) fn save(
     tx: &Transaction<'_>,
     tenant: &str,
     key: &str,

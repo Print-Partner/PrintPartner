@@ -56,6 +56,14 @@ pub(super) enum Code {
     InvalidSourceRole,
     EvidenceNotFound,
     MultipleStructuralBases,
+    // propose_rebuild_plan
+    NoStructuralBase,
+    SourceChoicesUnsupported,
+    SourceNotFound,
+    LayerConflict,
+    NoStls,
+    WouldWipe,
+    IdempotencyConflict,
 }
 
 impl Code {
@@ -95,6 +103,13 @@ impl Code {
             Self::InvalidSourceRole => "invalid_source_role",
             Self::EvidenceNotFound => "evidence_not_found",
             Self::MultipleStructuralBases => "multiple_structural_bases",
+            Self::NoStructuralBase => "no_structural_base",
+            Self::SourceChoicesUnsupported => "source_choices_unsupported",
+            Self::SourceNotFound => "source_not_found",
+            Self::LayerConflict => "layer_conflict",
+            Self::NoStls => "no_stls",
+            Self::WouldWipe => "would_wipe",
+            Self::IdempotencyConflict => "idempotency_conflict",
         }
     }
 }

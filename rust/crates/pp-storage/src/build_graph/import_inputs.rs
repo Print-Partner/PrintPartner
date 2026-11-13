@@ -19,10 +19,10 @@
 
 use super::{
     BuildGraphClient,
-    create_with_brief::{BriefError, brief_key, save, stored_brief},
+    create_with_brief::{BriefError, store_changed_brief, stored_brief},
 };
 use crate::{
-    WriterFailure, auth, catalog,
+    WriterFailure, catalog,
     read_model::{
         Credential,
         planning::{
@@ -130,10 +130,7 @@ impl BuildGraphClient {
             for item in items {
                 upsert(&mut brief, item);
             }
-            brief.draft_id = None;
-            brief.updated_at = auth::catalog_timestamp();
-            let text = brief.stored_text().map_err(WriterFailure::from)?;
-            save(tx, tenant, &brief_key(build), &text)?;
+            store_changed_brief(tx, tenant, build, brief)?;
             Ok(imported)
         })?
     }

@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 mod create_build;
 #[path = "tests/draft_parts.rs"]
 mod draft_parts;
+#[path = "tests/import_inputs.rs"]
+mod import_inputs;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]

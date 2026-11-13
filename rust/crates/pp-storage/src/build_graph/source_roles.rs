@@ -14,10 +14,10 @@
 
 use super::{
     BuildGraphClient,
-    create_with_brief::{BriefError, brief_key, save, stored_brief},
+    create_with_brief::{BriefError, store_changed_brief, stored_brief},
 };
 use crate::{
-    WriterFailure, auth,
+    WriterFailure,
     read_model::{
         Credential,
         planning::{BuildPlanningBrief, SourceRole},
@@ -119,10 +119,7 @@ impl BuildGraphClient {
             let tenant = installation.id();
             let mut brief = stored_brief::<SourceRolesError>(tx, tenant, build)?;
             let set = apply(&mut brief, &changes)?;
-            brief.draft_id = None;
-            brief.updated_at = auth::catalog_timestamp();
-            let text = brief.stored_text().map_err(WriterFailure::from)?;
-            save(tx, tenant, &brief_key(build), &text)?;
+            store_changed_brief(tx, tenant, build, brief)?;
             Ok(set)
         })?
     }

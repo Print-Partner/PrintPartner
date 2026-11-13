@@ -8,14 +8,16 @@
 //! document that is not the typed shape refuses every operation and is left
 //! as it is.
 //!
+//! A stored row may hold keys its typed shape does not name. Only the Node
+//! import is to write such a row (GRE-1523). The keys ride along in
+//! [`Unread`]: no code reads them, no answer or log carries them, and an edit
+//! stores them back as they were.
+//!
 //! Errors are [`PrinterSetupError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.
 
 pub(crate) mod integrations;
 pub(crate) mod printers;
-
-pub use integrations::{IntegrationPatch, IntegrationSummary, NewIntegration, ServiceKind};
-pub use printers::{LoadedFilament, NewPrinter, Printer, PrinterPatch};
 
 use crate::{
     SettingsClient, Shared, WriterFailure, WriterOwner,
@@ -25,8 +27,12 @@ use crate::{
     write::{Installation, authorize},
 };
 use integrations::{Entry, Integration};
+pub use integrations::{IntegrationPatch, IntegrationSummary, NewIntegration, ServiceKind};
+pub use printers::{LoadedFilament, NewPrinter, Printer, PrinterPatch};
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use std::{
+    fmt,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -36,6 +42,21 @@ const SPOOLMAN_DEFAULT_KEY: &str = "default_spoolman_integration_id";
 /// Rows of every kind count. One person's farm stays far below this.
 pub const MAX_INTEGRATIONS: usize = 64;
 pub const MAX_PRINTERS: usize = 64;
+
+/// The keys of a stored row, or of an integration's `config`, that the typed
+/// shape does not name, each with its stored value. They may hold a secret,
+/// so there is no accessor and `Debug` prints only how many keys there are.
+/// Serializing a stored row writes them back, which is how an edit keeps
+/// them; an answer is built field by field and never from a serialized row.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Unread(Box<serde_json::Map<String, serde_json::Value>>);
+
+impl fmt::Debug for Unread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Unread({} keys)", self.0.len())
+    }
+}
 
 /// A request field with a value this module refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

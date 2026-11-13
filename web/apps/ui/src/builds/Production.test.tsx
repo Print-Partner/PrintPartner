@@ -310,9 +310,42 @@ describe("Production tab", () => {
     renderAt(fetchMock);
     const sheet = await openSheet();
     fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
-    expect(await screen.findByText(/answer was lost/)).toBeTruthy();
+    expect(await screen.findByText(/could not confirm what the core did/)).toBeTruthy();
     expect(writes(fetchMock)).toHaveLength(2);
   });
+
+  it.each([
+    ["Add", "add"],
+    ["Send now", "dispatch"],
+  ])(
+    "a 5xx from %s is uncertain: no Not sent claim, the queue is re-read, nothing repeats",
+    async (_, which) => {
+      const failure = () =>
+        json(
+          {
+            type: "urn:print-partner:problem:internal",
+            title: "Internal Server Error",
+            status: 500,
+          },
+          500,
+        );
+      const { fetchMock } = fakeCore(which === "dispatch" ? { dispatch: failure } : {});
+      if (which === "add") {
+        const answer = fetchMock.getMockImplementation()!;
+        fetchMock.mockImplementation((path: string, init?: RequestInit) =>
+          path === "/api/v2/printer-send-queue" && init?.method === "POST"
+            ? Promise.resolve(failure())
+            : answer(path, init),
+        );
+      }
+      renderAt(fetchMock);
+      const sheet = await openSheet();
+      fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+      expect(await screen.findByText(/could not confirm what the core did/)).toBeTruthy();
+      expect(screen.queryByText(/^Not sent:/)).toBeNull();
+      expect(writes(fetchMock)).toHaveLength(which === "dispatch" ? 2 : 1);
+    },
+  );
 
   it("refuses a .stl file in the sheet without a request", async () => {
     const { fetchMock } = fakeCore();

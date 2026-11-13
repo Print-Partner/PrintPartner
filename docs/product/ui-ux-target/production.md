@@ -30,4 +30,4 @@ Numbers preserve the [product build order](../ui-ux-target.md#build-order); Line
 - **Upload only:** Send runs Add with `start` and `wait_for_idle` off, then Send now.
 - **Upload and start print:** offered only when the printer's execution state is idle (Ready, or Bed to clear after a finished print), which is what the route accepts for a start. Otherwise it is disabled and says why. Send opens a confirmation naming the file and the printer, whose first line says when the bed needs clearing. Only its Start print runs Add with `start` and `wait_for_idle` on, then Send now.
 
-The UI never sends `force`. Nothing is sent when the tab or sheet opens, when a file is chosen, on reload or on reconnect. A refusal from Send now leaves a Not sent row and shows the core's reason. A lost answer re-reads the queue and repeats nothing.
+The UI never sends `force`. Nothing is sent when the tab or sheet opens, when a file is chosen, on reload or on reconnect. A refusal from Send now leaves a Not sent row and shows the core's reason. A lost answer, or a 5xx from Add or Send now (the write may have committed), re-reads the queue and repeats nothing.

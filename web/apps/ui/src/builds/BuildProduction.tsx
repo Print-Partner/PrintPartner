@@ -71,8 +71,8 @@ function OutcomeNotice({ outcome }: { outcome: SendOutcome | null }) {
     >
       {outcome.kind === "lost" ? (
         <p>
-          The core's answer was lost, so the list below shows what the core has. Nothing was sent
-          again.
+          Print Partner could not confirm what the core did, so the list below shows what the core
+          has. Nothing was sent again.
         </p>
       ) : (
         <p>Not sent: {outcome.reason}</p>

@@ -24,8 +24,16 @@ export type SendOutcome =
 type Mode = "upload" | "start";
 
 /**
- * Add, then Send now, for one file. A refusal or a lost answer is reported, never retried:
- * the queue is read again and the user decides.
+ * Whether a failed write's effect is unknown: no answer reached the UI, or the core answered
+ * 5xx, which it can do after the write committed. Only a 4xx is a refusal that wrote nothing.
+ */
+const uncertain = (error: unknown) =>
+  error instanceof Error &&
+  (lostSend(error) || (error instanceof CoreError && error.status >= 500));
+
+/**
+ * Add, then Send now, for one file. A refusal or an uncertain answer is reported, never
+ * retried: the queue is read again and the user decides.
  */
 async function send(
   build: number,
@@ -37,14 +45,14 @@ async function send(
   try {
     id = (await addSend(build, printer, file, start)).item.id;
   } catch (error) {
-    if (error instanceof Error && lostSend(error)) return { kind: "lost" };
+    if (uncertain(error)) return { kind: "lost" };
     throw error;
   }
   try {
     await writeCore("sendQueuedNow", { id });
     return { kind: "sent" };
   } catch (error) {
-    if (error instanceof Error && lostSend(error)) return { kind: "lost" };
+    if (uncertain(error)) return { kind: "lost" };
     if (error instanceof CoreError) return { kind: "not-sent", reason: reason(error) };
     throw error;
   }

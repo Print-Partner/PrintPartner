@@ -393,27 +393,72 @@ fn a_cached_file_that_is_not_a_whole_png_is_rendered_again() {
     );
 }
 
+/// The bytes the renderer makes for `stl`, for comparing answers.
+fn rendered(stl: &[u8]) -> Vec<u8> {
+    crate::production::thumbnail::render(
+        stl,
+        crate::production::geometry::GeometryLimits::default(),
+    )
+    .unwrap()
+}
+
 #[cfg(unix)]
 #[test]
-fn a_linked_cache_folder_is_never_written_through() {
+fn a_link_at_any_cache_folder_is_never_followed() {
+    let stl = one_triangle_binary();
+    for linked in ["thumbs", "thumbs/sources", "thumbs/sources/10"] {
+        let fixture = Fixture::new();
+        fixture.snapshot("1/revisions/r1", &[("part.stl", &stl)]);
+        fixture.sql(FIRST);
+        let outside = tempfile::tempdir().unwrap();
+        let link = fixture.directory.path().join(linked);
+        let _ = fs::remove_dir_all(&link);
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        for _ in 0..2 {
+            let answer = fixture.thumbnail("part.stl").unwrap();
+            assert_eq!(answer.png, rendered(&stl), "{linked}");
+        }
+        let written: Vec<_> = fs::read_dir(outside.path()).unwrap().collect();
+        assert!(
+            written.is_empty(),
+            "{linked}: wrote through the link: {written:?}"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{linked}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_cache_file_is_rendered_not_read() {
+    let stl = one_triangle_binary();
     let fixture = Fixture::new();
-    fixture.snapshot("1/revisions/r1", &[("part.stl", &one_triangle_binary())]);
+    fixture.snapshot("1/revisions/r1", &[("part.stl", &stl)]);
     fixture.sql(FIRST);
     let outside = tempfile::tempdir().unwrap();
-    let sources = fixture.directory.path().join("thumbs/sources");
-    let _ = fs::remove_dir_all(&sources);
-    std::os::unix::fs::symlink(outside.path(), &sources).unwrap();
+    let planted = outside.path().join("planted.png");
+    fs::write(&planted, b"\x89PNG\r\n\x1a\nnot this part").unwrap();
+    let folder = fixture.directory.path().join("thumbs/sources/10");
+    fs::create_dir_all(&folder).unwrap();
+    use sha2::Digest;
+    let digest = hex::encode(sha2::Sha256::digest(b"part.stl"));
+    let name = format!(
+        "{digest}-v{}.png",
+        crate::production::thumbnail::RENDERER_VERSION
+    );
+    std::os::unix::fs::symlink(&planted, folder.join(&name)).unwrap();
 
-    let thumbnail = fixture.thumbnail("part.stl").unwrap();
-    assert_eq!(png_size(&thumbnail.png), (256, 256));
-    let again = fixture.thumbnail("part.stl").unwrap();
-    assert_eq!(again, thumbnail);
-    let written: Vec<_> = fs::read_dir(outside.path()).unwrap().collect();
-    assert!(written.is_empty(), "wrote through the link: {written:?}");
-    assert!(
-        fs::symlink_metadata(&sources)
-            .unwrap()
-            .file_type()
-            .is_symlink()
+    let answer = fixture.thumbnail("part.stl").unwrap();
+    assert_eq!(answer.png, rendered(&stl));
+    assert_eq!(
+        fs::read(&planted).unwrap(),
+        b"\x89PNG\r\n\x1a\nnot this part"
     );
 }

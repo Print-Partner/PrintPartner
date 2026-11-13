@@ -173,7 +173,9 @@ pub(super) fn sync_tree(root: &Path) -> std::io::Result<()> {
 /// Nothing is created until the destination is known to be apart from the
 /// source, and from then on every write goes through `root`, the created
 /// folder with its links resolved, never through the path as given.
-/// `temporary` is where the startup check copies the database.
+/// `temporary` must lie outside the source and the destination, as for a
+/// dry run. Nothing is written there: the startup check copies the database
+/// into a `.pp-preflight-*` folder inside the stage.
 pub(super) fn import_with(
     source: &Path,
     destination: &Path,

@@ -3,10 +3,13 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, ty
 use serde::Deserialize;
 use std::{
     fs::File,
-    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
+
+pub(crate) mod working_copy;
+pub use working_copy::InsufficientSpace;
+pub(crate) use working_copy::sweep as sweep_preflight_leftovers;
 
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) const CURRENT_VERSION: u64 = 48;
@@ -64,22 +67,21 @@ pub struct SchemaReady {
     pub backup_warnings: Vec<String>,
 }
 
-struct PreflightCopy(PathBuf);
-impl Drop for PreflightCopy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(test)]
 thread_local! {
     static PREFLIGHT_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static PREFLIGHT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Reads the schema version of the database `open_file` opens, after checking
+/// a copy of it. The copy is made in a private folder inside `work`, the
+/// checked directory (handle and path), never in the system temporary
+/// directory; [`InsufficientSpace`] refuses before anything is created.
+/// SQLite opens only the copy.
 pub(crate) fn preflight(
     #[cfg(test)] path: &Path,
     #[cfg(test)] owned: bool,
+    work: (&pp_os::Dir, &Path),
     open_file: impl Fn(&str) -> std::io::Result<File>,
     validate_directory: impl Fn() -> Result<()>,
 ) -> Result<u64> {
@@ -106,14 +108,27 @@ pub(crate) fn preflight(
     #[cfg(test)]
     capture_tests::capture_checkpoint(path, 0)?;
     validate_directory()?;
-    match metadata {
+    let database_len = match metadata {
         Ok(metadata) if metadata.len() == 0 => return Ok(0),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        result => {
-            result?;
-        }
+        result => result?.len(),
+    };
+    // The copy needs room for every file it captures.
+    let mut needed = database_len;
+    for suffix in ["-wal", "-journal"] {
+        let name = format!("print-partner.db{suffix}");
+        needed += match open_file(&name).and_then(|file| file.metadata()) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error.into()),
+        };
     }
-    let capture = || -> Result<Vec<(String, Option<Vec<u8>>)>> {
+    let copy = working_copy::WorkingCopy::create(work.0, work.1, needed)?;
+    #[cfg(test)]
+    PREFLIGHT_COPIES.update(|copies| copies + 1);
+    // Each file hashed, and streamed into the copy when `into` is given, so
+    // no file is held in memory.
+    let capture = |into: Option<&working_copy::WorkingCopy<'_>>| -> Result<Vec<(String, working_copy::Captured)>> {
         ["", "-wal", "-journal"]
             .into_iter()
             .map(|suffix| {
@@ -127,15 +142,18 @@ pub(crate) fn preflight(
                 };
                 #[cfg(test)]
                 capture_tests::transient_swap(path, checkpoint, false)?;
+                #[cfg(test)]
+                if into.is_some() {
+                    capture_tests::swap_during_copy(path, checkpoint)?;
+                }
                 let read = open_file(&name).and_then(|mut file| {
-                    let mut bytes = Vec::new();
-                    file.read_to_end(&mut bytes).map_err(|error| {
+                    let mut sink = into.map(|copy| copy.create_file(&name)).transpose()?;
+                    working_copy::stream(&mut file, sink.as_mut()).map_err(|error| {
                         std::io::Error::new(
                             error.kind(),
                             format!("schema::preflight: read {name}: {error}"),
                         )
-                    })?;
-                    Ok(bytes)
+                    })
                 });
                 #[cfg(test)]
                 capture_tests::transient_swap(path, checkpoint, true)?;
@@ -149,44 +167,29 @@ pub(crate) fn preflight(
                     },
                 )?;
                 validate_directory()?;
-                let bytes = match read {
-                    Ok(bytes) => Some(bytes),
+                let digest = match read {
+                    Ok(digest) => Some(digest),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(error.into()),
                 };
-                Ok((suffix.to_owned(), bytes))
+                Ok((suffix.to_owned(), digest))
             })
             .collect()
     };
-    let source = capture()?;
+    // Read 1 copies and hashes each file.
+    let source = capture(Some(&copy))?;
     #[cfg(test)]
     capture_tests::capture_checkpoint(path, 4)?;
     validate_directory()?;
-    let copy = PreflightCopy(std::env::temp_dir().join(format!(
-        "pp-preflight-{}",
-        hex::encode(rand::random::<[u8; 16]>())
-    )));
-    #[cfg(test)]
-    PREFLIGHT_COPIES.update(|copies| copies + 1);
-    pp_os::create_private_dir(&copy.0).with_context(|| {
-        format!(
-            "schema::preflight: create temporary directory {}",
-            copy.0.display()
-        )
-    })?;
-    for (suffix, bytes) in &source {
-        if let Some(bytes) = bytes {
-            std::fs::write(copy.0.join(format!("print-partner.db{suffix}")), bytes).with_context(
-                || format!("schema::preflight: write captured print-partner.db{suffix}"),
-            )?;
-        }
-    }
+    // Read 2 hashes every file again once the whole copy exists, so a file
+    // replaced after its own copy, while a later one was still copying, is
+    // refused too.
     ensure!(
-        source == capture()?,
+        source == capture(None)?,
         "Database changed during preflight capture"
     );
     validate_directory()?;
-    let conn = Connection::open(copy.0.join("print-partner.db"))?;
+    let conn = Connection::open(copy.database())?;
     let has_settings: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings')",
         [],
@@ -1009,6 +1012,10 @@ mod capture_tests {
     pub(super) fn capture_checkpoint(_: &Path, _: u8) -> Result<()> {
         Ok(())
     }
+
+    pub(super) fn swap_during_copy(_: &Path, _: u8) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -1017,9 +1024,61 @@ mod capture_tests {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     thread_local! {
+        /// Replaces `print-partner.db` once, during the copying pass, right
+        /// before the file with this checkpoint is copied.
+        static SWAP_DURING_COPY: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static OWNED_TRANSIENT_SWAP: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static TRANSIENT_SWAP: std::cell::Cell<Option<(u8, bool)>> = const { std::cell::Cell::new(None) };
         static REPLACE_DURING_CAPTURE: std::cell::Cell<Option<(u8, u8)>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn swap_during_copy(database: &Path, checkpoint: u8) -> Result<()> {
+        if SWAP_DURING_COPY.get() != Some(checkpoint) {
+            return Ok(());
+        }
+        SWAP_DURING_COPY.set(None);
+        // A new file renamed over the database, as a writer replacing it would.
+        let mut bytes = std::fs::read(database)?;
+        bytes.extend_from_slice(b"changed after its copy");
+        let replacement = database.with_extension("replacing");
+        std::fs::write(&replacement, bytes)?;
+        std::fs::rename(replacement, database)?;
+        Ok(())
+    }
+
+    /// The database replaced after its own copy finished and before the WAL's
+    /// copy: passes 1 and 2 agree, so only pass 3 sees it.
+    #[test]
+    fn preflight_refuses_a_database_replaced_after_its_copy() {
+        for checkpoint in [2, 3] {
+            let path = std::env::temp_dir().join(format!(
+                "pp-swap-during-copy-{}",
+                hex::encode(rand::random::<[u8; 8]>())
+            ));
+            let (writer, _) = crate::WriterOwner::open(&path, crate::Limits::default()).unwrap();
+            writer.shutdown().unwrap();
+            std::fs::write(path.join("print-partner.db-wal"), b"").unwrap();
+            SWAP_DURING_COPY.set(Some(checkpoint));
+            let result = crate::WriterOwner::open(&path, crate::Limits::default());
+            let armed = SWAP_DURING_COPY.take();
+            assert_eq!(armed, None, "checkpoint {checkpoint}: the swap ran");
+            let error = result.err().map(|error| format!("{error:#}"));
+            assert!(
+                error.as_deref().is_some_and(
+                    |error| error.contains("Database changed during preflight capture")
+                ),
+                "checkpoint {checkpoint}: {error:?}"
+            );
+            let left: Vec<_> = std::fs::read_dir(&path)
+                .unwrap()
+                .filter_map(|entry| {
+                    let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                    name.starts_with(".pp-preflight-").then_some(name)
+                })
+                .collect();
+            assert!(left.is_empty(), "checkpoint {checkpoint}: {left:?}");
+            std::fs::remove_dir_all(&path).unwrap();
+        }
     }
 
     pub(super) fn arm_owned_swap() {
@@ -1391,7 +1450,11 @@ mod capture_tests {
         std::fs::DirBuilder::new().mode(0o700).create(&target)?;
         for entry in std::fs::read_dir(&retired)? {
             let entry = entry?;
-            std::fs::copy(entry.path(), target.join(entry.file_name()))?;
+            // The preflight's working folder exists during the capture; only
+            // the store's files move.
+            if entry.file_type()?.is_file() {
+                std::fs::copy(entry.path(), target.join(entry.file_name()))?;
+            }
         }
         if replacement == 2 {
             std::os::unix::fs::symlink(target, path)?;
@@ -1502,6 +1565,26 @@ mod capture_tests {
         if replacement >= 3 {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
+        // A directory made read-only (mode 0500) keeps the refused start
+        // from removing its emptied working folder; the next start's sweep
+        // removes it. Every other case leaves none.
+        let leftovers = std::fs::read_dir(&path)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".pp-preflight-")
+            })
+            .count();
+        let allowed = usize::from(replacement == 5 && checkpoint > 0);
+        assert!(
+            leftovers <= allowed,
+            "checkpoint {checkpoint}, replacement {replacement}: {leftovers} working folders left"
+        );
+        super::sweep_preflight_leftovers(&pp_os::Dir::open(&path).unwrap()).unwrap();
         assert_eq!(snapshot(&path), before);
         if replacement <= 2 {
             let retired = path.with_extension("retired");
@@ -1514,8 +1597,12 @@ mod capture_tests {
         } else {
             std::fs::remove_dir_all(&path).unwrap();
         }
+        // A replacement before the database is opened is refused before the
+        // copy is created. Later ones are refused while or after it is read,
+        // and the copy is removed: both snapshots above match.
         assert_eq!(
-            copies, 0,
+            copies,
+            usize::from(checkpoint > 0),
             "checkpoint {checkpoint}, replacement {replacement}"
         );
         let expected = if replacement >= 3 {

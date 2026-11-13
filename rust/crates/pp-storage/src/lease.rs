@@ -335,13 +335,17 @@ impl AdmittedDirectory {
         self.preflight_schema(false).map(|_| ())
     }
 
+    /// Runs only under the writer lock: it first removes working folders a
+    /// killed start left, which no live preflight can own.
     fn preflight_schema(&self, _owned: bool) -> Result<u64> {
         self.validate_identity()?;
+        crate::schema::sweep_preflight_leftovers(&self.directory)?;
         crate::schema::preflight(
             #[cfg(test)]
             &self.path.join("print-partner.db"),
             #[cfg(test)]
             _owned,
+            (&self.directory, &self.path),
             |name| self.open_preflight_file(name),
             || self.validate_identity(),
         )

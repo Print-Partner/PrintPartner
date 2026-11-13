@@ -163,6 +163,19 @@ fn rebuild_sets_layers_from_roles_and_selects_a_new_draft() {
     assert!(!again.created);
     assert_eq!(again.draft_id, rebuilt.draft_id);
     assert_eq!(f.state().1, format!("{id}:open"));
+
+    // Another rebuild abandons that draft; replaying the first key must not
+    // select the abandoned draft again.
+    let later = f.rebuild("k2").unwrap();
+    assert!(later.created);
+    let before = f.state();
+    assert!(matches!(
+        f.rebuild("k"),
+        Err(RebuildError::IdempotencyConflict)
+    ));
+    assert_eq!(f.state(), before);
+    let brief: Value = serde_json::from_str(&before.2).unwrap();
+    assert_eq!(brief["draft_id"], later.draft_id.get());
 }
 
 #[test]

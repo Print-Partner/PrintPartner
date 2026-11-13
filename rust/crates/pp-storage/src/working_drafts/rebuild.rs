@@ -102,7 +102,8 @@ pub enum RebuildError {
     NoStls,
     #[error("the rebuild would remove every Part")]
     WouldWipe,
-    /// The key made a draft that was not a rebuild of these inputs.
+    /// The key made a draft that was not a rebuild of these inputs, or one
+    /// that is no longer open.
     #[error("the idempotency key belongs to another draft")]
     IdempotencyConflict,
     #[error(transparent)]
@@ -149,7 +150,13 @@ impl WorkingDraftClient {
             let key = idempotency_key(&key).map_err(|_| RebuildError::InvalidIdempotencyKey)?;
             let (document, created) =
                 match winner(tx, tenant, &actor, profile, &key).map_err(internal)? {
-                    Some(RecomputeOutcome::Existing { draft }) => (draft, false),
+                    // A replay reuses the earlier draft only while it is still
+                    // open; once a later recompute abandoned it, the key is spent.
+                    Some(RecomputeOutcome::Existing { draft })
+                        if draft.identity().state() == pp_domain::DraftState::Open =>
+                    {
+                        (draft, false)
+                    }
                     Some(_) => return Err(RebuildError::IdempotencyConflict),
                     None => {
                         let flag = AtomicBool::new(false);

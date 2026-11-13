@@ -166,3 +166,35 @@ fn ticket_t_8_archive_publish_reserves_then_renames() {
     assert!(error.contains("Publish backup archive"), "{error}");
     assert!(!other.exists());
 }
+
+/// The import reads Node's archives with [`Limits::node`]. A test cannot
+/// build an archive over 20 GiB, so this pins the values and the check the
+/// reader runs on every entry header.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn node_archive_limits_refuse_over_20_gib_in_total_and_8_gib_in_one_entry() {
+    let node = Limits::node();
+    assert_eq!(
+        (node.max_entries, node.max_total_bytes, node.max_entry_bytes),
+        (100_000, 20 * GIB, 8 * GIB)
+    );
+    // Large enough that the 200:1 expansion ratio is not what refuses.
+    let compressed = GIB;
+    let mut tally = Tally::default();
+    for size in [8 * GIB, 8 * GIB, 4 * GIB] {
+        tally.add(size, compressed, node).unwrap();
+    }
+    let error = tally.add(1, compressed, node).unwrap_err();
+    assert_eq!(
+        error.downcast_ref(),
+        Some(&TotalExceeded { limit: 20 * GIB })
+    );
+    let over_one_entry = Tally::default().add(8 * GIB + 1, compressed, node);
+    assert!(over_one_entry.is_err());
+
+    // The same headers pass the rule for backups Rust writes and restores.
+    let mut tally = Tally::default();
+    for size in [8 * GIB + 1, 8 * GIB, 8 * GIB] {
+        tally.add(size, compressed, Limits::free_disk()).unwrap();
+    }
+}

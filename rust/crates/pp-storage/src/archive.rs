@@ -224,11 +224,11 @@ pub struct Limits {
     pub max_decompression_ratio: u64,
 }
 
-impl Default for Limits {
+impl Limits {
     /// For the backups Rust writes and restores. Free disk space bounds their
     /// size, so no byte limit applies. The entry count guards against damaged
     /// metadata; it is not a product limit.
-    fn default() -> Self {
+    pub fn free_disk() -> Self {
         Self {
             max_entries: 5_000_000,
             max_total_bytes: u64::MAX,
@@ -236,11 +236,9 @@ impl Default for Limits {
             max_decompression_ratio: 200,
         }
     }
-}
 
-impl Limits {
-    /// Node's validation limits. Node writes no archive over them, and the
-    /// import reads Node's archives with them.
+    /// For the Node archives the import reads: Node's own validation limits.
+    /// Node writes no archive over them.
     #[cfg(feature = "desktop_rebuild")]
     pub(crate) fn node() -> Self {
         Self {
@@ -251,9 +249,9 @@ impl Limits {
         }
     }
 
-    /// Creation never accepts limits looser than the defaults restore enforces.
+    /// Creation never accepts limits looser than the ones restore enforces.
     fn tightened(self) -> Self {
-        let defaults = Self::default();
+        let defaults = Self::free_disk();
         Self {
             max_entries: self.max_entries.min(defaults.max_entries),
             max_total_bytes: self.max_total_bytes.min(defaults.max_total_bytes),
@@ -316,7 +314,7 @@ impl Request {
         Self {
             app_version: app_version.to_owned(),
             scope,
-            limits: Limits::default(),
+            limits: Limits::free_disk(),
             reserve_bytes: RESERVE_BYTES,
         }
     }

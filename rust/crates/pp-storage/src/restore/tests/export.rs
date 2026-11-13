@@ -131,7 +131,7 @@ fn too_little_free_space_refuses_a_backup_and_a_stage_and_leaves_nothing() {
     assert!(work_entries(&root).is_empty());
 
     let backup = client.export_backup("test").unwrap();
-    let declared = archive::declared_bytes(&backup.path, archive::Limits::default()).unwrap();
+    let declared = archive::declared_bytes(&backup.path, archive::Limits::free_disk()).unwrap();
     assert!(declared > FREE_BYTES);
     let mut upload = client.begin_upload(backup.size_bytes).unwrap();
     upload.write(&std::fs::read(&backup.path).unwrap()).unwrap();
@@ -167,7 +167,7 @@ fn extraction_stops_before_writing_more_than_the_headers_declared() {
     let owner = open(&root).unwrap();
     let mut client = owner.installation().unwrap();
     let backup = client.export_backup("test").unwrap();
-    let declared = archive::declared_bytes(&backup.path, archive::Limits::default()).unwrap();
+    let declared = archive::declared_bytes(&backup.path, archive::Limits::free_disk()).unwrap();
     let live = state(&root);
     client.sizing.declared_bytes = one_byte_short;
     let error = stage(&client, &backup.path).unwrap_err();

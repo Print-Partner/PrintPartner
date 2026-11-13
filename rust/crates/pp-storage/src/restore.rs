@@ -308,7 +308,7 @@ impl InstallationClient {
         let staged = work.join(format!("{STAGED_PREFIX}{restore_id}"));
         pp_os::create_private_dir(&staged)?;
         let result = (|| {
-            let limits = archive::Limits::default();
+            let limits = archive::Limits::free_disk();
             let declared = (self.sizing.declared_bytes)(&upload.path, limits)
                 .map_err(|error| Refusal::InvalidArchive(format!("{error:#}")))?;
             self.sizing.require(&work, declared)?;

@@ -331,10 +331,12 @@ Add method/path/auth/request/response metadata tied to actual Rust registration,
 including the existing `/api/v2` draft routes. `web/packages/rust-client` is
 that package for Builds list and detail, layers, `/api/v2` drafts and health. Its
 exported route table combines `pp_api::client_contract::CLIENT_ROUTES` with
-`pp_api::printer_host::probe::CLIENT_ROUTE`. The `export-rust-client` binary
+`pp_api::printer_host::probe::CLIENT_ROUTE` and
+`pp_api::send_queue::CLIENT_ROUTES`. The `export-rust-client` binary
 composes their metadata, DTO schemas and serialized fixtures; the base
-`document()` and `document_bytes()` omit the probe extension. A `pp-core` test
-checks both route inventories against the composed routers. Its
+`document()` and `document_bytes()` omit the probe and send queue extensions.
+A `pp-core` test checks all three route inventories against the composed
+routers. Its
 [README](../web/packages/rust-client/README.md) lists the coverage and wire rules. REST shape may change for the new
 UI; do not invent `/api/v3` or promise old aliases for screen parity. Preserve
 external MCP paths/tool names and verify the actual inventory before retirement.

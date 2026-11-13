@@ -25,7 +25,8 @@ fn farm(links: Value, unmatched: Value) -> Farm {
         list(json!([
             {"id": "q1", "filename": "a.gcode", "artifact_path": "/data/exports/a.gcode",
              "printer_id": "p-moon", "state": "sending", "start": true, "profile_id": "7",
-             "checkoff_units": [{"part_id": 1, "unit_index": 0}], "error": "secret detail",
+             "checkoff_units": [{"part_id": 1, "unit_index": 0}], "error": "  Upload failed  ",
+             "upload_job_id": "job-1", "outcome_unknown": true,
              "created_at": "2026-11-05T01:00:00.000Z"},
             {"id": "q2", "filename": "b.gcode", "printer_id": "p-moon", "state": "queued"},
             {"id": "q3", "filename": "c.gcode", "artifact_path": "x", "printer_id": "p",
@@ -200,7 +201,7 @@ fn farm_bed_is_clear_only_after_a_verified_result_with_nothing_newer() {
 }
 
 #[test]
-fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
+fn farm_lists_skip_unusable_rows_and_hide_paths() {
     let farm = farm(
         json!([link("applied", None, None), {"id": "bad", "state": "watching"}]),
         json!([
@@ -237,7 +238,8 @@ fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
         queue,
         json!({"items": [{"id": "q1", "filename": "a.gcode", "printer_id": "p-moon",
             "profile_id": 7, "state": "sending", "start": true, "wait_for_idle": true,
-            "unit_count": 1, "created_at": "2026-11-05T01:00:00.000Z", "updated_at": null}]})
+            "unit_count": 1, "created_at": "2026-11-05T01:00:00.000Z", "updated_at": null,
+            "error": "Upload failed", "upload_job_id": "job-1", "outcome_unknown": true}]})
     );
     let many: Vec<_> = (0..300)
         .map(|i| {
@@ -252,7 +254,7 @@ fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
         "active sends are never dropped"
     );
     let text = queue.to_string();
-    assert!(!text.contains("/data/exports") && !text.contains("secret detail"));
+    assert!(!text.contains("/data/exports"));
 }
 
 #[test]

@@ -1,13 +1,16 @@
-import type { RouteResponse } from "@print-partner/rust-client";
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import type { RouteRequest, RouteResponse } from "@print-partner/rust-client";
+import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useId, useState, type ComponentProps, type FormEvent, type ReactNode } from "react";
+import { CoreError } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
-import { reason } from "../core/writes";
+import { reason, resendable } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 
 type Printer = RouteResponse<"listPrinters">["printers"][number];
 type Integration = RouteResponse<"createIntegration">;
+type NewIntegration = RouteRequest<"createIntegration">;
+type IntegrationPatch = RouteRequest<"updateIntegration">;
 type Probe = RouteResponse<"probePrinter">;
 type Kind = "moonraker" | "prusalink";
 
@@ -23,7 +26,27 @@ const printersQuery = {
 const freshPrinters = (client: QueryClient) =>
   client.fetchQuery({ ...printersQuery, staleTime: 0 }).then((list) => list.printers);
 
-const why = (failure: unknown) => reason(failure instanceof Error ? failure : new Error(String(failure)));
+/** `GET /api/v2/integrations`: every connection, without its secrets. */
+const integrationsQuery = {
+  queryKey: ["core", "integrations"],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listIntegrations", {}, signal),
+} as const;
+
+/** The forms' names for request fields, by the JSON Pointer the core answers. */
+const FIELD_NAMES: Record<string, string> = {
+  "/name": "Name",
+  "/base_url": "Address",
+  "/api_key": "API key",
+  "/username": "Username",
+  "/password": "Password",
+  "/model": "Model",
+};
+
+/** The core's own reason. A refusal that names fields gives each field with its reason. */
+const why = (failure: unknown) =>
+  failure instanceof CoreError && failure.errors.length > 0
+    ? failure.errors.map(({ pointer, detail }) => `${FIELD_NAMES[pointer] ?? pointer} ${detail}`).join("; ")
+    : reason(failure instanceof Error ? failure : new Error(String(failure)));
 
 function Field({ label, name, hint, ...input }: { label: string; name: string; hint?: string } & ComponentProps<"input">) {
   const id = useId();
@@ -35,6 +58,9 @@ function Field({ label, name, hint, ...input }: { label: string; name: string; h
     </div>
   );
 }
+
+/** A probe passes when something answered there as the chosen kind of printer. */
+const answered = (result: Probe | null) => result !== null && result.reachable && result.kind !== null;
 
 /** A failure whose message is already a full sentence for the owner. */
 class Said extends Error {}
@@ -65,7 +91,13 @@ function useWrite() {
  * owner chooses "Save printer", which sends only the printer, or "Discard", which deletes
  * that integration. A failed printer write may still have applied, so both choices read
  * the list first: when a printer already links the integration the add is done, and
- * nothing is resent or deleted.
+ * nothing is resent or deleted. The integration write can lose its answer too. The form
+ * reads the integrations list before that write and keeps the ids it saw; a create with no
+ * answer is then kept in `unsure`, and the next save or cancel reads the list again before
+ * anything is sent. An unlinked integration that was not there before, with the same kind,
+ * name and address, is the one this form saved: it is used or discarded instead of
+ * creating a second. One that was already there is never touched, and two new matches
+ * stop the form.
  */
 function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: string) => void }) {
   const client = useQueryClient();
@@ -73,22 +105,65 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
   const [address, setAddress] = useState("");
   const [probe, setProbe] = useState<{ of: string; result: Probe } | null>(null);
   const [saved, setSaved] = useState<Integration | null>(null);
+  const [unsure, setUnsure] = useState<{ sent: NewIntegration; known: string[] } | null>(null);
   // The list could not be read to see what was saved; the form may then be closed.
   const [unchecked, setUnchecked] = useState(false);
   const write = useWrite();
   const kindId = useId();
   const target = `${kind} ${address.trim()}`;
   const checked = probe?.of === target ? probe.result : null;
-  const passed = checked !== null && checked.reachable && checked.kind !== null;
-  const mayAdd = saved !== null || checked !== null;
+  const passed = answered(checked);
+  const held = saved !== null || unsure !== null;
+  const mayAdd = held || checked !== null;
+  const unread = (what: string, failure: unknown) => {
+    setUnchecked(true);
+    return new Said(`Could not check whether the ${what} was saved: ${why(failure)}. Nothing was sent or deleted. Close this form and reopen Settings to see what was saved.`);
+  };
 
   /** The printer that links the saved integration, if one does. A failed read stops the action. */
   const linkedPrinter = async (integration: Integration) => {
     try {
       return (await freshPrinters(client)).find((printer) => printer.integration?.id === integration.id);
     } catch (failure) {
+      throw unread("printer", failure);
+    }
+  };
+  /**
+   * The integration an unanswered create saved, if it did: one that was not listed before
+   * the create. A failed read, or more than one such match, stops the action.
+   */
+  const savedAfterAll = async ({ sent, known }: NonNullable<typeof unsure>) => {
+    const read = Promise.all([client.fetchQuery({ ...integrationsQuery, staleTime: 0 }), freshPrinters(client)]);
+    const [connections, printers] = await read.catch((failure: unknown) => {
+      throw unread("connection", failure);
+    });
+    const matches = connections.integrations.filter(
+      (one) =>
+        !known.includes(one.id) && one.kind === sent.kind && one.name === sent.name && one.base_url === sent.base_url &&
+        !printers.some((printer) => printer.integration?.id === one.id),
+    );
+    if (matches.length > 1) {
       setUnchecked(true);
-      throw new Said(`Could not check whether the printer was saved: ${why(failure)}. Nothing was sent or deleted. Close this form and reopen Settings to see what was saved.`);
+      throw new Said("More than one new connection matches this printer, so this form cannot tell which one it saved. Nothing was sent or deleted. Close this form and reopen Settings.");
+    }
+    return matches[0];
+  };
+  const create = async (body: NewIntegration) => {
+    const found = unsure && (await savedAfterAll(unsure));
+    if (found) return found;
+    // The ids listed before the first send: a lost answer is matched only against newer ones.
+    const known = unsure?.known ?? (await client.fetchQuery({ ...integrationsQuery, staleTime: 0 }).then(
+      (list) => list.integrations.map((one) => one.id),
+      (failure: unknown) => {
+        throw new Said(`Could not read the saved connections, so nothing was sent: ${why(failure)}.`);
+      },
+    ));
+    try {
+      return await writeCore("createIntegration", {}, body);
+    } catch (failure) {
+      if (!(failure instanceof Error && resendable(failure))) throw failure;
+      setUnsure({ sent: body, known });
+      throw new Said(`The connection may have been saved: ${why(failure)}. Save again and this form checks before it sends anything, or cancel to discard it.`);
     }
   };
   const check = () =>
@@ -107,7 +182,7 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
       if (added) return onDone(`${added.name} was saved after all.`);
       const integration =
         saved ??
-        (await writeCore("createIntegration", {}, {
+        (await create(unsure?.sent ?? {
           kind,
           name: text("name"),
           base_url: address.trim(),
@@ -116,6 +191,7 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
             : { username: text("username") || undefined, password: text("password") || undefined }),
         }));
       setSaved(integration);
+      setUnsure(null);
       try {
         await writeCore("createPrinter", {}, {
           name: text("name"),
@@ -133,19 +209,20 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
   };
   const discard = () =>
     write.run(async () => {
-      if (!saved) return onClose();
-      const added = await linkedPrinter(saved);
+      const connection = saved ?? (unsure && (await savedAfterAll(unsure)));
+      if (!connection) return onClose();
+      const added = await linkedPrinter(connection);
       if (added) return onDone(`${added.name} was saved after all, so its connection was kept. Delete the printer if you do not want it.`);
-      await writeCore("deleteIntegration", { id: saved.id });
+      await writeCore("deleteIntegration", { id: connection.id });
       onClose();
     });
 
   return (
-    // With a connection saved and no printer, only "Save printer" or "Discard" closes this,
-    // unless the list could not be read to check what was saved.
-    <Dialog title="Add a printer" onClose={() => (saved === null || unchecked) && onClose()}>
+    // With a connection saved or possibly saved and no printer, only "Save printer" or
+    // "Discard" closes this, unless the lists could not be read to check what was saved.
+    <Dialog title="Add a printer" onClose={() => (!held || unchecked) && onClose()}>
       <form onSubmit={add}>
-        <fieldset disabled={saved !== null}>
+        <fieldset disabled={held}>
           <legend>Connection</legend>
           <div className="pp-fields">
             <div className="pp-field">
@@ -181,14 +258,124 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
         {write.error && <p role="alert" className="pp-field-error">{write.error}</p>}
         <div className="pp-dialog-actions">
           {unchecked && <button type="button" className="pp-button" onClick={onClose}>Close</button>}
-          <button type="button" className="pp-button" onClick={() => void (saved ? discard() : onClose())}>
-            {saved ? "Discard" : "Cancel"}
+          <button type="button" className="pp-button" onClick={() => void (held ? discard() : onClose())}>
+            {held ? "Discard" : "Cancel"}
           </button>
           <button type="submit" className="pp-button pp-button-primary" aria-disabled={!mayAdd || write.busy || undefined}>
-            {saved || passed || !checked ? "Save printer" : "Save anyway"}
+            {held || passed || !checked ? "Save printer" : "Save anyway"}
           </button>
         </div>
         {!mayAdd && <p>Check the address before saving.</p>}
+      </form>
+    </Dialog>
+  );
+}
+
+/** The secret a kind signs in with, and whether one is stored. */
+const secretOf = (stored: Integration) =>
+  stored.kind === "prusalink"
+    ? { field: "password" as const, word: "password", one: "A password", held: stored.has_password }
+    : { field: "api_key" as const, word: "API key", one: "An API key", held: stored.has_api_key };
+
+/** What the form changes on the connection: only what the owner touched, never a value it was not given. */
+function connectionPatch(form: FormData, stored: Integration): IntegrationPatch {
+  const text = (name: string) => String(form.get(name) ?? "").trim();
+  const secret = secretOf(stored);
+  const patch: IntegrationPatch = {};
+  if (text("address") !== (stored.base_url ?? "")) patch.base_url = text("address");
+  if (form.get("remove_secret")) patch[secret.field] = null;
+  else if (text("secret")) patch[secret.field] = text("secret");
+  if (stored.kind === "prusalink" && text("username") !== (stored.username ?? "")) patch.username = text("username") || null;
+  return patch;
+}
+
+/** The address and credentials of a Moonraker or PrusaLink connection. A secret is write-only. */
+function ConnectionFields({ stored, locked }: { stored: Integration; locked: boolean }) {
+  const [address, setAddress] = useState(stored.base_url ?? "");
+  const noteId = useId();
+  const secret = secretOf(stored);
+  const moved = address.trim() !== (stored.base_url ?? "");
+  return (
+    <fieldset disabled={locked}>
+      <legend>Connection</legend>
+      <div className="pp-fields">
+        <Field label="Address" name="address" type="url" required value={address} onChange={(event) => setAddress(event.target.value)} />
+        {stored.kind === "prusalink" && <Field label="Username" name="username" autoComplete="off" defaultValue={stored.username ?? ""} />}
+        <Field label={`New ${secret.word}`} name="secret" type="password" autoComplete="off" aria-describedby={noteId} />
+      </div>
+      <p id={noteId}>{secret.held ? `${secret.one} is set. Leave the field empty to keep it.` : `No ${secret.word} is set.`}</p>
+      {secret.held && (
+        <label>
+          <input type="checkbox" name="remove_secret" /> Remove the stored {secret.word}
+        </label>
+      )}
+      {moved && secret.held && (
+        <p role="status">The address changed, so enter the {secret.word} again or remove it: a stored {secret.word} is never sent to a new address.</p>
+      )}
+    </fieldset>
+  );
+}
+
+/** Why a printer's connection cannot be edited right now. Its name still can. */
+function ConnectionNote({ printer, connections }: { printer: Printer; connections: UseQueryResult<RouteResponse<"listIntegrations">> }) {
+  if (!printer.integration) return <p>This printer has no connection. Only its name can be changed.</p>;
+  if (connections.isPending) return <p role="status">Loading the connection.</p>;
+  if (!connections.isError) return <p>This printer's connection cannot be edited here. Only its name can be changed.</p>;
+  return (
+    <div role="alert" className="pp-banner" data-kind="error">
+      <p>Could not load the connection: {why(connections.error)}. Only the name can be changed.</p>
+      <button type="button" className="pp-button" onClick={() => void connections.refetch()}>Reload connection</button>
+    </div>
+  );
+}
+
+/**
+ * Edit is the connection (address and credentials), then the printer's name. The
+ * connection goes first, so a refused connection change leaves the name as it was. A key
+ * or password is write-only: the form says whether one is stored and never shows it. When
+ * the address changes, the core takes a stored secret only if it is sent again or removed,
+ * so the form asks for it and says why. Saving without it shows the core's refusal.
+ */
+function EditPrinter({ printer, onClose, onDone }: { printer: Printer; onClose: () => void; onDone: (text: string) => void }) {
+  const connections = useQuery(integrationsQuery);
+  const [connectionSaved, setConnectionSaved] = useState(false);
+  const write = useWrite();
+  const stored = connections.data?.integrations.find(
+    (one) => one.id === printer.integration?.id && (one.kind === "moonraker" || one.kind === "prusalink"),
+  );
+  const save = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("name") ?? "").trim();
+    const patch = stored && !connectionSaved ? connectionPatch(form, stored) : {};
+    void write.run(async () => {
+      if (stored && Object.keys(patch).length > 0) {
+        await writeCore("updateIntegration", { id: stored.id }, patch);
+        setConnectionSaved(true);
+      }
+      if (name !== printer.name) {
+        await writeCore("updatePrinter", { id: printer.id }, { name }).catch((failure: unknown) => {
+          throw new Said(`The name was not saved: ${why(failure)}. Any change to the connection was saved.`);
+        });
+      }
+      onDone(`Saved ${name}.`);
+    });
+  };
+  const loading = printer.integration !== null && connections.isPending;
+  return (
+    <Dialog title={`Edit ${printer.name}`} onClose={onClose}>
+      <form onSubmit={save}>
+        <div className="pp-fields">
+          <Field label="Name" name="name" required maxLength={200} defaultValue={printer.name} />
+        </div>
+        {stored ? <ConnectionFields stored={stored} locked={connectionSaved} /> : <ConnectionNote printer={printer} connections={connections} />}
+        {write.error && <p role="alert" className="pp-field-error">{write.error}</p>}
+        <div className="pp-dialog-actions">
+          <button type="button" className="pp-button" onClick={onClose}>{connectionSaved ? "Close" : "Cancel"}</button>
+          <button type="submit" className="pp-button pp-button-primary" aria-disabled={write.busy || loading || undefined}>
+            Save changes
+          </button>
+        </div>
       </form>
     </Dialog>
   );
@@ -246,13 +433,13 @@ function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Print
   );
 }
 
-/** The saved printers, with add and delete. Editing one follows in its own change. */
+/** The saved printers, with add, edit and delete. */
 export function PrintersSection() {
   const client = useQueryClient();
   const connection = useConnection();
   const offline = connection !== "online";
   const printers = useQuery(printersQuery);
-  const [dialog, setDialog] = useState<"add" | Printer | null>(null);
+  const [dialog, setDialog] = useState<"add" | { edit: Printer } | { remove: Printer } | null>(null);
   const [message, setMessage] = useState("");
   const list = printers.data?.printers;
   // A write may have applied even when its answer was lost, so every close reads again.
@@ -260,8 +447,9 @@ export function PrintersSection() {
     setDialog(null);
     setMessage(text);
     void client.invalidateQueries({ queryKey: ["core", "printers"] });
+    void client.invalidateQueries({ queryKey: integrationsQuery.queryKey });
   };
-  const open = (next: "add" | Printer) => {
+  const open = (next: NonNullable<typeof dialog>) => {
     if (offline) return;
     setMessage("");
     setDialog(next);
@@ -280,7 +468,10 @@ export function PrintersSection() {
             <dd>
               {printer.model}
               <span className="pp-fact-detail">{printer.integration ? KIND_NAMES[printer.integration.kind] : "No connection"}</span>
-              <button type="button" className="pp-button" aria-disabled={offline || undefined} onClick={() => open(printer)}>
+              <button type="button" className="pp-button" aria-disabled={offline || undefined} onClick={() => open({ edit: printer })}>
+                Edit {printer.name}
+              </button>
+              <button type="button" className="pp-button" aria-disabled={offline || undefined} onClick={() => open({ remove: printer })}>
                 Delete {printer.name}
               </button>
             </dd>
@@ -306,10 +497,11 @@ export function PrintersSection() {
         </button>
       )}
       {dialog === "add" && <AddPrinter onClose={() => close()} onDone={close} />}
-      {dialog && dialog !== "add" && (
+      {dialog && dialog !== "add" && "edit" in dialog && <EditPrinter printer={dialog.edit} onClose={() => close()} onDone={close} />}
+      {dialog && dialog !== "add" && "remove" in dialog && (
         <RemovePrinter
-          printer={dialog}
-          shared={dialog.integration !== null && (list ?? []).some((other) => other.id !== dialog.id && other.integration?.id === dialog.integration?.id)}
+          printer={dialog.remove}
+          shared={dialog.remove.integration !== null && (list ?? []).some((other) => other.id !== dialog.remove.id && other.integration?.id === dialog.remove.integration?.id)}
           onClose={() => close()}
           onRemoved={close}
         />

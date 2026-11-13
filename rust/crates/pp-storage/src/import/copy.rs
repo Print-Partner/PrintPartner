@@ -6,7 +6,7 @@
 //! folder without a marker, which no Rust runtime opens.
 
 use super::{
-    DATABASE_FILES, Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch,
+    DATABASE_FILES, Destination, DryRunReport, Files, Held, ImportError, STAGE_RESERVE, Scratch,
     SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
     scan_roots, stage_directory, upgrade, verify,
 };
@@ -465,6 +465,7 @@ fn extract_archive(
         roots: Vec::new(),
         database: Vec::new(),
         root: None,
+        held: Held::Folder(stage.to_owned()),
     };
     Ok((files_read, (files, bytes)))
 }

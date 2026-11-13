@@ -707,6 +707,15 @@ impl DryRunReport {
             f,
             "Source paths whose folder is missing in the copy: {}",
             self.source_paths.missing
+        )?;
+        let refused = match self.source_paths.missing_revisions {
+            0 => "",
+            _ => " The import would refuse this installation.",
+        };
+        writeln!(
+            f,
+            "Sources whose current revision is missing in the copy: {}.{refused}",
+            self.source_paths.missing_revisions
         )
     }
 }
@@ -839,6 +848,29 @@ struct Files {
     /// The Node data folder itself, for a folder source. Stored Source
     /// paths are compared with it. An archive has none.
     root: Option<PathBuf>,
+    /// Where to look for a Source's folder below `repos/`.
+    held: Held,
+}
+
+/// What says whether the copy will hold a folder below `repos/`.
+enum Held {
+    /// The folder that holds `repos/`: the source folder, or the stage of
+    /// an extracted archive.
+    Folder(PathBuf),
+    /// The entries of an archive a dry run listed and did not extract.
+    Listed(BTreeSet<String>),
+}
+
+impl Held {
+    fn holds(&self, inside: &str) -> bool {
+        match self {
+            Self::Folder(folder) => folder.join("repos").join(inside).is_dir(),
+            Self::Listed(paths) => {
+                let (folder, below) = (format!("repos/{inside}"), format!("repos/{inside}/"));
+                (paths.iter()).any(|path| *path == folder || path.starts_with(&below))
+            }
+        }
+    }
 }
 
 /// Reports what importing `source` would convert. `source` is a stopped Node
@@ -1081,6 +1113,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
             .filter_map(sized)
             .collect(),
         root: Some(source.to_owned()),
+        held: Held::Folder(source.to_owned()),
     })
 }
 
@@ -1114,6 +1147,7 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
         roots: listed_roots(&paths),
         database: staged_sizes(scratch),
         root: None,
+        held: Held::Listed(paths),
     })
 }
 
@@ -1277,11 +1311,8 @@ fn measure(
 ) -> Result<DryRunReport, ImportError> {
     let named: Vec<&Shape> = inventory::named().collect();
     // What the import would do with each Source's path, judged against the
-    // source folder: its `repos` is what the import copies.
-    let held = |inside: &str| {
-        let repos = files.root.as_ref().map(|root| root.join("repos"));
-        repos.is_some_and(|repos| repos.join(inside).is_dir())
-    };
+    // `repos` the import copies or extracts.
+    let held = |inside: &str| files.held.holds(inside);
     let rows = verify::source_rows(connection)?;
     let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held)?);
     let (tables, mut unnamed) = count_tables(connection, &named)?;

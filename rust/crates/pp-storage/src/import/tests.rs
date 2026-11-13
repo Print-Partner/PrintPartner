@@ -52,6 +52,16 @@ fn run(source: &Path) -> Result<DryRunReport, ImportError> {
     result
 }
 
+/// Gives Source 1 a current revision whose snapshot is at `locator`.
+fn give_revision(folder: &Installation, locator: &str) {
+    let sql = format!(
+        "INSERT INTO source_revisions (project_id, upstream_revision_key, manifest_digest, snapshot_locator, synced_at)
+           VALUES (1, 'synthetic-a', 'synthetic-digest', '{locator}', '2026-10-02T00:00:00.000Z');
+         UPDATE projects SET current_source_revision_id = last_insert_rowid() WHERE id = 1;"
+    );
+    execute(folder, &sql);
+}
+
 fn execute(folder: &Installation, sql: &str) {
     Connection::open(folder.database_path())
         .unwrap()
@@ -643,6 +653,40 @@ fn a_disk_or_filesystem_failure_in_the_upgrade_is_a_failed_run_not_a_refused_dat
         none.to_string(),
         "The database failed its checks: Invalid database schema version"
     );
+}
+
+#[test]
+fn the_dry_run_counts_a_source_with_a_current_revision_as_the_import_treats_it() {
+    // Its snapshot is in the folder and in the archive: the import rewrites
+    // it from either, and the dry run of either says so.
+    let folder = node_folder();
+    give_revision(&folder, "1/revisions/synthetic-a");
+    let from_folder = run(folder.path()).unwrap();
+    assert_eq!(
+        (
+            from_folder.source_paths.rebased,
+            from_folder.source_paths.missing_revisions
+        ),
+        (synthetic::SOURCES, 0)
+    );
+    let archive = archive_of(folder.path(), 2, "full");
+    let from_archive = run(archive.path()).unwrap().source_paths;
+    assert_eq!(
+        (from_archive.rebased, from_archive.missing_revisions),
+        (1, 0)
+    );
+    assert_eq!(from_archive.outside, synthetic::SOURCES - 1);
+
+    // A snapshot the copy would lack: the import refuses, and the dry run
+    // says it would.
+    let gone = node_folder();
+    give_revision(&gone, "1/revisions/synthetic-gone");
+    let report = run(gone.path()).unwrap();
+    assert_eq!(report.source_paths.missing_revisions, 1);
+    let line = "Sources whose current revision is missing in the copy: 1. The import would refuse this installation.\n";
+    assert!(report.to_string().contains(line), "{report}");
+    let line = "Sources whose current revision is missing in the copy: 0.\n";
+    assert!(from_folder.to_string().contains(line), "{from_folder}");
 }
 
 #[test]

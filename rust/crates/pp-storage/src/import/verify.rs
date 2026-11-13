@@ -192,6 +192,9 @@ pub struct SourcePaths {
     /// Paths inside the installation whose folder the copy lacks, kept as
     /// stored.
     pub missing: u64,
+    /// Sources whose current revision names a snapshot the copy lacks. The
+    /// import refuses an installation that has one.
+    pub missing_revisions: u64,
 }
 
 impl SourcePaths {
@@ -207,6 +210,7 @@ impl SourcePaths {
             rebased: count(|decision| matches!(decision, Decision::Rewrite(_))),
             outside: count(|decision| matches!(decision, Decision::Outside)),
             missing: count(|decision| matches!(decision, Decision::Missing)),
+            missing_revisions: count(|decision| matches!(decision, Decision::MissingRevision)),
         }
     }
 }
@@ -337,6 +341,10 @@ pub(super) fn check_sources(
 ) -> Result<(), ImportError> {
     let own = root.and_then(|root| std::path::absolute(root).ok());
     let own = own.map(|root| root.join("repos"));
+    // The paths were stored in this form: on Windows a resolved folder has
+    // a `\\?\` prefix that a stored path does not.
+    let repos = pp_os::display_path(repos);
+    let repos = repos.as_path();
     for row in source_rows(connection)? {
         let wrong = || ImportError::SourceRebase(row.id);
         let stored = before.get(&row.id).ok_or_else(wrong)?;

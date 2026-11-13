@@ -327,15 +327,8 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
 fn a_source_whose_files_cannot_be_placed_stops_the_import() {
     let parent = tempfile::tempdir().unwrap();
     let destination = parent.path().join("rust");
-    let revision = |locator: &str| {
-        format!(
-            "INSERT INTO source_revisions (project_id, upstream_revision_key, manifest_digest, snapshot_locator, synced_at)
-               VALUES (1, 'synthetic-a', 'synthetic-digest', '{locator}', '2026-10-02T00:00:00.000Z');
-             UPDATE projects SET current_source_revision_id = last_insert_rowid() WHERE id = 1;"
-        )
-    };
     let missing = node_folder();
-    execute(&missing, &revision("1/revisions/synthetic-gone"));
+    give_revision(&missing, "1/revisions/synthetic-gone");
     let error = import(missing.path(), &destination).unwrap_err();
     assert!(
         matches!(error, ImportError::MissingRevision(1)),
@@ -345,14 +338,14 @@ fn a_source_whose_files_cannot_be_placed_stops_the_import() {
 
     // A snapshot name that is no plain path below `repos` is refused too.
     let climbing = node_folder();
-    execute(&climbing, &revision("..\\..\\synthetic"));
+    give_revision(&climbing, "..\\..\\synthetic");
     let error = import(climbing.path(), &destination).unwrap_err();
     assert!(matches!(error, ImportError::SourcePath(1)), "{error:?}");
     assert_eq!(entries(&destination), Vec::<String>::new());
 
     // A current revision decides the path, whatever Node stored beside it.
     let current = node_folder();
-    execute(&current, &revision("1/revisions/synthetic-a"));
+    give_revision(&current, "1/revisions/synthetic-a");
     execute(
         &current,
         "UPDATE projects SET local_path = 'C:\\node\\repos\\old' WHERE id = 1",

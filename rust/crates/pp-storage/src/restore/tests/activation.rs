@@ -10,29 +10,24 @@ fn assert_marked(root: &Path) {
 }
 /// A backup copied out of the data folder. Opening storage removes the
 /// export folders under `backups/`, so a test that reopens keeps its own copy.
-struct Kept {
-    _scratch: tempfile::TempDir,
-    path: PathBuf,
-}
-
-fn keep_backup(owner: &WriterOwner) -> Kept {
+fn keep_backup(owner: &WriterOwner) -> tempfile::NamedTempFile {
     let export = owner.installation().unwrap().export_backup("test").unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let path = scratch.path().join("backup.tar.gz");
-    std::fs::copy(&export.path, &path).unwrap();
-    Kept {
-        _scratch: scratch,
-        path,
-    }
+    let kept = tempfile::NamedTempFile::new().unwrap();
+    std::fs::copy(&export.path, kept.path()).unwrap();
+    kept
 }
 
-fn backup_then_modify(owner: &WriterOwner, root: &Path) -> (Kept, BTreeMap<String, String>) {
+fn backup_then_modify(
+    owner: &WriterOwner,
+    root: &Path,
+) -> (tempfile::NamedTempFile, BTreeMap<String, String>) {
     let backed_up = state(root);
     let backup = keep_backup(owner);
     std::fs::remove_file(root.join("repos/source-a/part.stl")).unwrap();
     std::fs::write(root.join("exports/later.3mf"), b"later").unwrap();
     (backup, backed_up)
 }
+
 #[test]
 fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_files() {
     let (_installation, root) = installation();
@@ -88,9 +83,9 @@ fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_fi
         }),
     ));
     let client = owner.installation().unwrap();
-    let staged = stage(&client, &backup.path).unwrap();
+    let staged = stage(&client, backup.path()).unwrap();
     assert_eq!(staged.schema_version, schema::CURRENT_VERSION);
-    let archive = std::fs::read(&backup.path).unwrap();
+    let archive = std::fs::read(backup.path()).unwrap();
     let activated = client.activate(&staged.restore_id, CONFIRMATION).unwrap();
     assert_eq!(activated.schema_version, schema::CURRENT_VERSION);
     assert!(
@@ -106,7 +101,7 @@ fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_fi
             "queue closed: true",
         ]
     );
-    assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+    assert_eq!(std::fs::read(backup.path()).unwrap(), archive);
     let restored = state(&root);
     assert_eq!(restored, backed_up);
     assert_marked(&root);
@@ -125,10 +120,10 @@ fn an_open_reader_refuses_activation_and_keeps_the_installation() {
     let backup = keep_backup(&owner);
     let before = state(&root);
     let client = owner.installation().unwrap();
-    let staged = stage(&client, &backup.path).unwrap();
+    let staged = stage(&client, backup.path()).unwrap();
     let held = owner.client().reader(Duration::from_secs(1)).unwrap();
     let database = pp_testkit::node_schema::database_files(&root);
-    let archive = std::fs::read(&backup.path).unwrap();
+    let archive = std::fs::read(backup.path()).unwrap();
     let settings = owner.client();
     let queued = thread::spawn(move || {
         let (reply, result) = mpsc::channel();
@@ -155,7 +150,7 @@ fn an_open_reader_refuses_activation_and_keeps_the_installation() {
         "refusal failed queued work"
     );
     assert!(pp_testkit::node_schema::database_files(&root) == database);
-    assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+    assert_eq!(std::fs::read(backup.path()).unwrap(), archive);
     drop(held);
     assert_eq!(state(&root), before);
 
@@ -176,7 +171,7 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
         for crash in [false, true] {
             let owner = running.take().unwrap_or_else(|| open(&root).unwrap());
             let client = owner.installation().unwrap();
-            let staged = stage(&client, &backup.path).unwrap();
+            let staged = stage(&client, backup.path()).unwrap();
             let quiesced = Arc::new(Mutex::new(None));
             let before = quiesced.clone();
             let directory = root.clone();
@@ -198,10 +193,10 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
                     );
                 }),
             ));
-            let archive = std::fs::read(&backup.path).unwrap();
+            let archive = std::fs::read(backup.path()).unwrap();
             STEPS.lock().unwrap().push((root.clone(), at, crash));
             let result = client.activate(&staged.restore_id, CONFIRMATION);
-            assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+            assert_eq!(std::fs::read(backup.path()).unwrap(), archive);
             println!("step {at}, crash={crash}: archive bytes unchanged");
             let pending = STEPS.lock().unwrap().iter().any(|(dir, ..)| dir == &root);
             if pending {
@@ -249,9 +244,9 @@ fn refused_restore_operations_preserve_database_and_archive() {
     let owner = open(&root).unwrap();
     let client = owner.installation().unwrap();
     let backup = keep_backup(&owner);
-    let staged = stage(&client, &backup.path).unwrap();
+    let staged = stage(&client, backup.path()).unwrap();
     let database = pp_testkit::node_schema::database_files(&root);
-    let archive = std::fs::read(&backup.path).unwrap();
+    let archive = std::fs::read(backup.path()).unwrap();
     let recovery = pp_testkit::snapshot(&root.join(WORK_DIR)).unwrap();
     for (id, confirmation, expected) in [
         (staged.restore_id.as_str(), "yes", Refusal::Confirmation),
@@ -265,7 +260,7 @@ fn refused_restore_operations_preserve_database_and_archive() {
         assert!(matches!(client.activate(id, confirmation),
             Err(RestoreError::Refused(refused)) if refused == expected));
         assert!(pp_testkit::node_schema::database_files(&root) == database);
-        assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+        assert_eq!(std::fs::read(backup.path()).unwrap(), archive);
         assert_eq!(
             pp_testkit::snapshot(&root.join(WORK_DIR)).unwrap(),
             recovery
@@ -289,10 +284,10 @@ fn refused_restore_operations_preserve_database_and_archive() {
         let error = open(&root).err().expect("invalid journal must refuse");
         assert!(format!("{error:#}").contains("Restore journal"));
         assert!(pp_testkit::node_schema::database_files(&root) == database);
-        assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+        assert_eq!(std::fs::read(backup.path()).unwrap(), archive);
         assert_eq!(pp_testkit::snapshot(&work).unwrap(), recovery);
     }
     assert!(client.export_backup("closed").is_err());
     assert!(pp_testkit::node_schema::database_files(&root) == database);
-    assert_eq!(std::fs::read(&backup.path).unwrap(), archive);
+    assert_eq!(std::fs::read(backup.path()).unwrap(), archive);
 }

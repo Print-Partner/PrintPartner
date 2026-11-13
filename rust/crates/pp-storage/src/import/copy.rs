@@ -7,8 +7,8 @@
 
 use super::{
     Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch, SourceKind,
-    inspect_destination, inventory, io_error, measure, open_regular, repo_files, stage_directory,
-    upgrade,
+    ensure_outside, inventory, io_error, measure, open_regular, place_destination, repo_files,
+    stage_directory, unsupported, upgrade,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -125,7 +125,8 @@ impl fmt::Display for ImportReport {
 /// ownership-marker rule. The source is never opened for writing.
 pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportError> {
     let limits = archive::Limits::default();
-    import_with(source, destination, limits, flush_destination)
+    let temporary = std::env::temp_dir();
+    import_with(source, destination, &temporary, limits, flush_destination)
 }
 
 /// Makes everything the import staged in `destination` durable. Linux
@@ -168,19 +169,45 @@ pub(super) fn sync_tree(root: &Path) -> std::io::Result<()> {
 /// destination directory; the ownership marker last, synced with its
 /// directory. A destination with a marker is complete and durable. One
 /// without is discarded.
+///
+/// Nothing is created until the destination is known to be apart from the
+/// source, and from then on every write goes through `root`, the created
+/// folder with its links resolved, never through the path as given.
+/// `temporary` is where the startup check copies the database.
 pub(super) fn import_with(
     source: &Path,
     destination: &Path,
+    temporary: &Path,
     limits: archive::Limits,
     flush: fn(&Path) -> std::io::Result<()>,
 ) -> Result<ImportReport, ImportError> {
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
-    match inspect_destination(destination) {
+    match place_destination(source, destination) {
         Destination::Free => {}
         found => return Err(ImportError::Destination(found)),
     }
+    // Known before anything is created: the copy takes files and folders
+    // only, and it must not leave anything out.
+    if metadata.is_dir() {
+        let found = unsupported(source)?;
+        if !found.is_empty() {
+            return Err(ImportError::NotRegular(found));
+        }
+    }
+    for folder in [source, destination] {
+        ensure_outside(temporary, folder)?;
+    }
     pp_os::create_private_dir_all(destination).map_err(|error| io_error(destination, error))?;
-    let stage = Scratch(destination.join(STAGE));
+    // The second guard: the folder that now exists, resolved, must still be
+    // empty and apart from the source.
+    let root = destination
+        .canonicalize()
+        .map_err(|error| io_error(destination, error))?;
+    match place_destination(source, &root) {
+        Destination::Free => {}
+        found => return Err(ImportError::Destination(found)),
+    }
+    let stage = Scratch(root.join(STAGE));
     pp_os::create_private_dir(&stage.0).map_err(|error| io_error(&stage.0, error))?;
     let (kind, files, copied) = if metadata.is_dir() {
         let files = stage_directory(source, &stage.0)?;
@@ -223,14 +250,19 @@ pub(super) fn import_with(
     // Everything staged reaches the disk before the folder can become an
     // installation. The stage is a directory the import made inside the
     // destination, so both are one filesystem and one flush covers them.
-    flush(destination).map_err(|source| ImportError::Flush {
+    flush(&root).map_err(|source| ImportError::Flush {
         path: destination.to_owned(),
         source,
     })?;
     let report = ImportReport::new(&counts, copied.0, copied.1);
-    publish(&stage.0, destination, &report)?;
+    publish(&stage.0, &root, &report)?;
     drop(stage);
-    ownership_marker::mark_imported(destination).map_err(|error| io_error(destination, error))?;
+    // The marker goes into the folder this run filled, and only while the
+    // given path still leads there.
+    if destination.canonicalize().ok().as_deref() != Some(root.as_path()) {
+        return Err(ImportError::Destination(Destination::Replaced));
+    }
+    ownership_marker::mark_imported(&root).map_err(|error| io_error(destination, error))?;
     Ok(report)
 }
 
@@ -288,6 +320,8 @@ pub(super) fn copy_verified(from: &Path, to: &Path) -> Result<u64, ImportError> 
         copy.set_modified(modified).map_err(written)?;
     }
     drop(copy);
+    #[cfg(test)]
+    damage::apply(to);
     confirm_copy(to, read.finalize().as_slice())?;
     Ok(bytes)
 }
@@ -335,6 +369,7 @@ fn extract_archive(
     let files_read = Files {
         documents: stage.to_owned(),
         repo_files: repo_files(stage)?,
+        unsupported: Vec::new(),
     };
     Ok((files_read, (files, bytes)))
 }
@@ -350,13 +385,29 @@ pub(super) fn ensure_room(stage: &Path, needed: u64) -> Result<(), ImportError> 
 
 /// Moves the staged database and roots into `destination`, saves the report
 /// beside them and syncs the directory. The staged files are durable before
-/// this runs.
-fn publish(stage: &Path, destination: &Path, report: &ImportReport) -> Result<(), ImportError> {
+/// this runs. It never replaces anything: the folder was empty when the
+/// import began, and if it has since gained any name this would write, or a
+/// marker, nothing is moved.
+pub(super) fn publish(
+    stage: &Path,
+    destination: &Path,
+    report: &ImportReport,
+) -> Result<(), ImportError> {
     let roots = archive::FULL_ROOTS.iter().map(|(root, _)| *root);
-    for name in [archive::DATABASE_FILE].into_iter().chain(roots) {
+    let moved = [archive::DATABASE_FILE].into_iter().chain(roots);
+    let taken = |name: &str| ImportError::Destination(Destination::NotEmpty(name.to_owned()));
+    for name in (moved.clone()).chain([REPORT_FILE, ownership_marker::MARKER_FILE]) {
+        if destination.join(name).symlink_metadata().is_ok() {
+            return Err(taken(name));
+        }
+    }
+    for name in moved {
         let (from, to) = (stage.join(name), destination.join(name));
         if from.symlink_metadata().is_ok() {
-            std::fs::rename(&from, &to).map_err(|error| io_error(&to, error))?;
+            pp_os::rename_new(&from, &to).map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => taken(name),
+                _ => io_error(&to, error),
+            })?;
         }
     }
     let path = destination.join(REPORT_FILE);
@@ -366,4 +417,22 @@ fn publish(stage: &Path, destination: &Path, report: &ImportReport) -> Result<()
     file.write_all(&text).map_err(saved)?;
     file.sync_all().map_err(saved)?;
     pp_os::sync_directory(destination).map_err(|error| io_error(destination, error))
+}
+
+/// Lets a test change one byte of a named copy before it is read back.
+#[cfg(test)]
+pub(super) mod damage {
+    use std::{cell::Cell, path::Path};
+
+    thread_local! {
+        pub(in crate::import) static FILE: Cell<Option<&'static str>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn apply(copy: &Path) {
+        let named = FILE.get().is_some_and(|name| copy.ends_with(name));
+        if named && let Ok(mut bytes) = std::fs::read(copy) {
+            bytes[0] ^= 1;
+            let _ = std::fs::write(copy, bytes);
+        }
+    }
 }

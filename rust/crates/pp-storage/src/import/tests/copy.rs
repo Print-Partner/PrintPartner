@@ -1,5 +1,7 @@
 use super::*;
-use crate::import::copy::{confirm_copy, copy_verified, ensure_room, import_with, sync_tree};
+use crate::import::copy::{
+    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, sync_tree,
+};
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
 
@@ -154,11 +156,13 @@ fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
     for (index, limits) in caps.into_iter().enumerate() {
         let refused = parent.path().join(format!("archive-{index}"));
         let flush = pp_os::sync_filesystem;
-        let error = import_with(archive.path(), &refused, limits, flush).unwrap_err();
+        let error =
+            import_with(archive.path(), &refused, parent.path(), limits, flush).unwrap_err();
         assert!(matches!(error, ImportError::InvalidArchive(_)), "{error:?}");
         assert_eq!(entries(&refused), [] as [String; 0], "{error}");
         let destination = parent.path().join(format!("folder-{index}"));
-        let report = import_with(source.path(), &destination, limits, flush).unwrap();
+        let report =
+            import_with(source.path(), &destination, parent.path(), limits, flush).unwrap();
         assert_eq!(report, uncapped);
     }
 }
@@ -173,7 +177,8 @@ fn a_failed_flush_leaves_no_marker_and_is_reported() {
     let destination = parent.path().join("rust");
     let limits = archive::Limits::default();
     let failing = |_: &Path| Err(std::io::Error::other("synthetic flush failure"));
-    let error = import_with(source.path(), &destination, limits, failing).unwrap_err();
+    let error =
+        import_with(source.path(), &destination, parent.path(), limits, failing).unwrap_err();
     let text = error.to_string();
     let ImportError::Flush { path, .. } = error else {
         panic!("a failed flush was reported as: {text}");
@@ -365,4 +370,239 @@ fn a_schema_33_folder_imports_with_every_table_it_holds() {
             "{table} in the report"
         );
     }
+}
+
+/// Every entry of `folder`, with the SHA-256 of each file: what a refused
+/// import must leave exactly as it found it.
+fn fingerprint(folder: &Path) -> BTreeMap<PathBuf, String> {
+    let (mut found, mut pending) = (BTreeMap::new(), vec![folder.to_owned()]);
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            let kind = path.symlink_metadata().unwrap().file_type();
+            let value = if kind.is_dir() {
+                pending.push(path.clone());
+                "folder".to_owned()
+            } else if kind.is_file() {
+                hex::encode(Sha256::digest(std::fs::read(&path).unwrap()))
+            } else {
+                "other".to_owned()
+            };
+            found.insert(path, value);
+        }
+    }
+    found
+}
+
+/// Imports into `destination`, which must be refused for where it is. The
+/// source keeps every file byte for byte, gains no entry and no marker.
+fn refused_for_its_place(source: &Installation, destination: &Path) -> Destination {
+    let before = fingerprint(source.path());
+    let error = import(source.path(), destination).unwrap_err();
+    assert!(
+        before == fingerprint(source.path()),
+        "the refused import changed its source: {error}"
+    );
+    assert!(!source.path().join(ownership_marker::MARKER_FILE).exists());
+    assert!(!source.path().join(".pp-import").exists());
+    match error {
+        ImportError::Destination(found) => found,
+        other => panic!("refused for another reason: {other}"),
+    }
+}
+
+// The four tests below are the record of the path that let an import write
+// into its own source: `--data <source>/new/..` read as absent, was created
+// as `<source>/new`, and then named the source itself.
+
+#[test]
+fn a_destination_given_through_a_parent_step_is_refused() {
+    let source = node_folder();
+    let stepped = source.path().join("new").join("..");
+    let found = refused_for_its_place(&source, &stepped);
+    assert_eq!(found, Destination::Indirect);
+    assert!(found.to_string().contains("\"..\" component"), "{found}");
+    // A step through a folder that exists, and a `.`, are refused the same.
+    let parent = tempfile::tempdir().unwrap();
+    for stepped in ["a/../rust", "./rust", "rust/."] {
+        let stepped = parent.path().join(stepped);
+        assert_eq!(
+            refused_for_its_place(&source, &stepped),
+            Destination::Indirect
+        );
+    }
+    assert_eq!(entries(parent.path()), Vec::<String>::new());
+}
+
+#[test]
+fn the_source_as_its_own_destination_is_refused() {
+    let source = node_folder();
+    let found = refused_for_its_place(&source, source.path());
+    assert_eq!(found, Destination::Overlaps(Overlap::Same));
+}
+
+#[test]
+fn a_destination_inside_the_source_is_refused() {
+    let source = node_folder();
+    let inside = Destination::Overlaps(Overlap::DestinationInside);
+    for child in ["child", "sources/child", "repos/a/b"] {
+        let child = source.path().join(child);
+        assert_eq!(refused_for_its_place(&source, &child), inside);
+    }
+    // The dry run says so too, and creates nothing.
+    let temporary = tempfile::tempdir().unwrap();
+    let child = source.path().join("child");
+    let report = dry_run_in(source.path(), Some(&child), temporary.path()).unwrap();
+    assert_eq!(report.destination, Some(inside));
+    let text = report.to_string();
+    assert!(text.contains("lies inside the source folder"), "{text}");
+    assert!(!child.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_destination_linked_into_the_source_is_refused() {
+    let source = node_folder();
+    let beside = tempfile::tempdir().unwrap();
+    let link = beside.path().join("link");
+    std::os::unix::fs::symlink(source.path(), &link).unwrap();
+    assert_eq!(
+        refused_for_its_place(&source, &link),
+        Destination::Overlaps(Overlap::Same)
+    );
+    let inside = Destination::Overlaps(Overlap::DestinationInside);
+    assert_eq!(refused_for_its_place(&source, &link.join("child")), inside);
+    let deep = beside.path().join("deep");
+    std::os::unix::fs::symlink(source.path().join("repos"), &deep).unwrap();
+    assert_eq!(refused_for_its_place(&source, &deep), inside);
+}
+
+#[test]
+fn a_destination_that_holds_the_source_is_refused() {
+    let around = tempfile::tempdir().unwrap();
+    let source = around.path().join("node");
+    std::fs::create_dir(&source).unwrap();
+    let before = fingerprint(around.path());
+    let error = import(&source, around.path()).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ImportError::Destination(Destination::Overlaps(Overlap::SourceInside))
+        ),
+        "{error}"
+    );
+    assert!(before == fingerprint(around.path()));
+}
+
+#[test]
+fn the_import_keeps_the_startup_copy_out_of_the_source() {
+    let source = node_folder();
+    let inside = source.path().join("synthetic-tmp");
+    std::fs::create_dir(&inside).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let before = fingerprint(source.path());
+    let (limits, flush) = (archive::Limits::default(), pp_os::sync_filesystem);
+    for temporary in [source.path(), inside.as_path()] {
+        let error = import_with(source.path(), &destination, temporary, limits, flush).unwrap_err();
+        assert!(
+            matches!(error, ImportError::TemporaryInside { .. }),
+            "{error}"
+        );
+        assert!(before == fingerprint(source.path()), "{error}");
+        assert!(!destination.exists(), "the refusal created the destination");
+    }
+}
+
+#[test]
+fn a_changed_byte_in_a_database_copy_stops_the_import() {
+    let source = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    damage::FILE.set(Some(pp_testkit::DATABASE_FILE));
+    let error = import(source.path(), &destination).unwrap_err();
+    damage::FILE.set(None);
+    let text = error.to_string();
+    let ImportError::CopyMismatch(copy) = error else {
+        panic!("a damaged database copy was reported as: {text}");
+    };
+    assert!(copy.ends_with(Path::new(".pp-import").join(pp_testkit::DATABASE_FILE)));
+    // No marker and no stage: the folder is as an import needs it.
+    assert_eq!(entries(&destination), Vec::<String>::new());
+    import(source.path(), &destination).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_that_is_no_file_or_folder_stops_the_import() {
+    let source = node_folder();
+    let repos = source.path().join("repos");
+    std::os::unix::fs::symlink("/synthetic/elsewhere", repos.join("synthetic-link.stl")).unwrap();
+    std::os::unix::fs::symlink(&repos, source.path().join("thumbs")).unwrap();
+    let link = |root| Unsupported {
+        root,
+        kind: EntryKind::Link,
+        entries: 1,
+    };
+    let expected = vec![link("repos"), link("thumbs")];
+
+    // The dry run counts them by root and kind, and leaves them out of the
+    // files it counts.
+    let report = run(source.path()).unwrap();
+    assert_eq!(report.unsupported, expected);
+    let text = report.to_string();
+    let line = "Entries that are neither files nor folders: 1 symbolic links under repos, 1 symbolic links under thumbs.";
+    assert!(text.contains(line), "{text}");
+    assert!(!text.contains("synthetic-link"), "{text}");
+
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let before = fingerprint(source.path());
+    let error = import(source.path(), &destination).unwrap_err();
+    let text = error.to_string();
+    assert!(
+        matches!(&error, ImportError::NotRegular(found) if found == &expected),
+        "{text}"
+    );
+    assert!(!text.contains("synthetic-link"), "{text}");
+    assert!(!destination.exists(), "the refusal created the destination");
+    assert!(before == fingerprint(source.path()));
+}
+
+#[test]
+fn publishing_never_replaces_what_the_destination_holds() {
+    let (source, folder) = (node_folder(), tempfile::tempdir().unwrap());
+    let report = import(source.path(), &folder.path().join("imported")).unwrap();
+    let (stage, destination) = (folder.path().join("stage"), folder.path().join("rust"));
+    for directory in [&stage, &destination] {
+        std::fs::create_dir(directory).unwrap();
+    }
+    let staged = stage.join(pp_testkit::DATABASE_FILE);
+    std::fs::write(&staged, "staged").unwrap();
+    std::fs::create_dir(stage.join("repos")).unwrap();
+    for name in [
+        pp_testkit::DATABASE_FILE,
+        "repos",
+        ownership_marker::MARKER_FILE,
+    ] {
+        let held = destination.join(name);
+        std::fs::write(&held, "held").unwrap();
+        let error = publish(&stage, &destination, &report).unwrap_err();
+        let holds = Destination::NotEmpty(name.to_owned());
+        assert!(
+            matches!(&error, ImportError::Destination(found) if found == &holds),
+            "{error}"
+        );
+        // Nothing was moved in and nothing was replaced.
+        assert_eq!(std::fs::read(&held).unwrap(), b"held");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"staged");
+        assert_eq!(entries(&destination), [name]);
+        std::fs::remove_file(&held).unwrap();
+    }
+    // The rename itself refuses a name that appears after the check.
+    let taken = destination.join("repos");
+    std::fs::write(&taken, "held").unwrap();
+    let error = pp_os::rename_new(&stage.join("repos"), &taken).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&taken).unwrap(), b"held");
 }

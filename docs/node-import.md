@@ -82,6 +82,8 @@ Each refusal exits 1 and writes nothing to the source.
 | Too little free space in the temporary directory | The message gives the bytes needed and the bytes free. For an archive this check runs after extraction; a database that does not fit while it is extracted ends the run with `import failed:` instead. |
 | `TMPDIR` that is the source folder or the destination, or lies inside one | A dry run writes nothing into either. Set `TMPDIR` to a directory outside both. |
 
+With `--data`, the report also says when the destination is given with a `.` or `..` component, or is the source folder, lies inside it or holds it; the import refuses each. A folder whose backup roots hold a symbolic link, a FIFO, a socket or a device is listed by root and kind with a count, and the report says the import would refuse it. Such entries are not counted as files.
+
 A value other than `default` in any table, and more than one account, are reported by the dry run and do not fail it. The import will refuse both. See [Installation value and accounts](#installation-value-and-accounts).
 
 ## Import
@@ -95,6 +97,11 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | Source or destination | Reason |
 | --- | --- |
 | Destination that holds data, a `.desktop-lease` entry or a Rust installation | The import writes only into a new folder. |
+| Destination given with a `.` or `..` component | Such a path can name one folder before the import creates it and another after. Give the folder's own path. |
+| Destination that is the source folder, lies inside it, or holds it | The paths are compared with links resolved, before anything is created. The import never writes into its source. |
+| `TMPDIR` that is the source folder or the destination, or lies inside one | The startup check copies the database there. Set `TMPDIR` to a directory outside both. |
+| Backup roots that hold a symbolic link, a FIFO, a socket or a device | The import copies files and folders and skips nothing. The message gives the number of each kind under each root, never a file name. Find them with `find <folder> ! -type f ! -type d`, then remove or replace them. |
+| Destination that gains a database, a root, a report or a marker while the import runs | The import replaces nothing. Nothing is moved in. |
 | Stored JSON the inventory does not name | Every shape must be named as converted, copied unchanged, kept unused or dropped. The message lists the shapes as the dry run does. |
 | Rows in any table under an installation value other than `default` | The Rust runtime reads only `default`. The message names the value and the number of rows under it. Send the dry-run report back so the case can be added; nothing re-assigns the data today. |
 | More than one account | The Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added. There is no option to pick an account. |
@@ -102,12 +109,12 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 
 What it does:
 
-1. Creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
-2. From a folder, copies the database files and every backup root: regular files and directories, no links. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. The read-back runs before the flush in step 4 and reads the page cache: it catches a wrong copy, and it is not a check of the disk. A folder has no cap on its size, on the size of one file or on the number of entries: the only size refusal for a folder is too little free space at the destination. From an archive, validates and extracts it as a restore does, under the restore caps (100,000 entries, 20 GiB expanded, 8 GiB for one entry). An installation above those caps is imported from a folder: a filesystem snapshot or a copy of the stopped data folder (owner decision, 2026-11-12).
+1. Refuses unless the destination is apart from the source, then creates it, resolves its links, checks it a second time, and from then on writes only through that resolved folder. It creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
+2. From a folder, copies the database files and every backup root: regular files and directories, no links. The database files (`print-partner.db`, its `-wal` and its `-journal`) are read back like every other file, before anything opens the copy. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. The read-back runs before the flush in step 4 and reads the page cache: it catches a wrong copy, and it is not a check of the disk. A folder has no cap on its size, on the size of one file or on the number of entries: the only size refusal for a folder is too little free space at the destination. From an archive, validates and extracts it as a restore does, under the restore caps (100,000 entries, 20 GiB expanded, 8 GiB for one entry). An installation above those caps is imported from a folder: a filesystem snapshot or a copy of the stopped data folder (owner decision, 2026-11-12).
 3. Checks and upgrades the staged database as the dry run does, then deletes the rows of `sessions` and `password_reset_tokens`. Lease files and `backups/` are not copied. Users and password hashes are.
 4. Checkpoints and closes the staged database, so it is one file with no `-wal` or `-shm` beside it. Then it flushes everything it staged to disk in one call: `syncfs` on the destination's filesystem on Linux, which the Docker image runs on. Other platforms have no such call, so there it syncs every staged file and directory. The stage is inside the destination, so one flush covers both. A flush that fails ends the run with `import failed:` and no marker.
-5. Moves the database and the roots into the destination, saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
-6. Writes `.pp-rust-owned.json` last, and syncs it and its directory.
+5. Moves the database and the roots into the destination with a rename that fails if the name exists, so it never replaces a file. It saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
+6. Writes `.pp-rust-owned.json` last, into the folder it resolved in step 1 and only while the given path still leads there, and syncs it and its directory.
 
 Memory: the check in step 3 is the startup check, and it holds the staged database in memory. It reads `print-partner.db`, its `-wal` and its `-journal` whole, and reads them a second time to confirm they did not change. So the import needs free memory of about twice the size of `print-partner.db` plus its `-wal`, beside the disk space at the destination and one short-lived copy of the database under `TMPDIR`. Nothing checks memory before the import starts, and the size of `repos/` does not count. An import that is killed during that check can leave `pp-preflight-*` under `TMPDIR`; delete it.
 

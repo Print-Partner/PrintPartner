@@ -65,6 +65,37 @@ pub fn classify(raw: &str) -> Option<BuildUrl> {
     })
 }
 
+/// The repository a git URL names, for matching Library Sources: two URLs
+/// name the same repository when their keys are equal. `None` for a URL
+/// [`classify`] does not call a git repository.
+///
+/// Wider than [`normalize`], which keeps Node's evidence ids: the key drops
+/// a trailing `.git`, and on `github.com` it is `https://github.com/<owner>/
+/// <repo>` in lower case, since GitHub ignores case there and `POST /sources`
+/// stores that form (a `/tree/<branch>` tail becomes the Source's branch).
+pub fn repository_key(raw: &str) -> Option<String> {
+    let BuildUrl { normalized, class } = classify(raw)?;
+    let UrlClass::Git { github } = class else {
+        return None;
+    };
+    let without_git = |text: &str| {
+        let cut = if text.to_lowercase().ends_with(".git") {
+            4
+        } else {
+            0
+        };
+        text[..text.len() - cut].to_owned()
+    };
+    if !github {
+        return Some(without_git(&normalized));
+    }
+    let url = Url::parse(&normalized).ok()?;
+    let mut segments = url.path_segments()?.filter(|segment| !segment.is_empty());
+    let owner = segments.next()?.to_lowercase();
+    let repo = without_git(&segments.next()?.to_lowercase());
+    Some(format!("https://github.com/{owner}/{repo}"))
+}
+
 fn parse(raw: &str) -> Option<Url> {
     let mut url =
         Url::parse(raw.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')).ok()?;
@@ -182,6 +213,32 @@ mod tests {
             assert_eq!(normalize(raw).as_deref(), Some(normalized), "{raw}");
             let hash = hex::encode(Sha256::digest(normalized.as_bytes()));
             assert_eq!(&hash[..20], id, "{raw}");
+        }
+    }
+
+    #[test]
+    fn repository_keys_match_the_same_repository() {
+        let kit = Some("https://github.com/example/daily-loop-kit".to_owned());
+        for raw in [
+            "https://github.com/example/daily-loop-kit",
+            "https://github.com/Example/Daily-Loop-Kit/",
+            "  HTTPS://GitHub.com/example/daily-loop-kit.git  ",
+            "https://github.com/example/daily-loop-kit.GIT#readme",
+            "https://github.com/example/daily-loop-kit/tree/dev",
+        ] {
+            assert_eq!(repository_key(raw), kit, "{raw}");
+        }
+        assert_eq!(
+            repository_key("https://GitLab.example/Owner/Repo.git/"),
+            Some("https://gitlab.example/Owner/Repo".to_owned())
+        );
+        for raw in [
+            "https://github.com/example",
+            "https://www.printables.com/model/1",
+            "https://example.com/kit",
+            "ftp://github.com/example/kit",
+        ] {
+            assert_eq!(repository_key(raw), None, "{raw}");
         }
     }
 

@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc,
@@ -1100,7 +1100,12 @@ pub(crate) fn run(
         #[cfg(feature = "desktop_rebuild")]
         Request::CreateCatalogSource { source } => {
             let source = rebuild::create(tx, tenant, source)?;
-            Outcome::Source(Some(Box::new(create_source(tx, state, tenant, source)?)))
+            Outcome::Source(Some(Box::new(create_source(
+                tx,
+                &state.directory.join("repos"),
+                tenant,
+                source,
+            )?)))
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::UpdateCatalogSource { id, patch: p } => {
@@ -1113,9 +1118,12 @@ pub(crate) fn run(
         }
         Request::List {} => Outcome::Sources(list(tx, tenant)?),
         Request::Get { id } => Outcome::Source(get(tx, tenant, id)?.map(Box::new)),
-        Request::Create { source: s } => {
-            Outcome::Source(Some(Box::new(create_source(tx, state, tenant, s)?)))
-        }
+        Request::Create { source: s } => Outcome::Source(Some(Box::new(create_source(
+            tx,
+            &state.directory.join("repos"),
+            tenant,
+            s,
+        )?))),
 
         Request::Update { id, patch: p } => {
             Outcome::Source(Some(Box::new(patch(tx, tenant, id, p)?)))
@@ -1211,9 +1219,23 @@ pub(crate) fn run(
         }
     })
 }
+/// `POST /sources`'s create, inside a write transaction another writer
+/// already holds: the planning brief's git URL inputs create their Source in
+/// the same transaction as the brief. `repos` is the data folder's `repos`.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn create_in(
+    tx: &Transaction<'_>,
+    repos: &Path,
+    tenant: &str,
+    source: CreateSource,
+) -> Result<SourceSummary> {
+    let source = rebuild::create(tx, tenant, source)?;
+    create_source(tx, repos, tenant, source)
+}
+
 fn create_source(
     tx: &Transaction<'_>,
-    state: &State,
+    repos: &Path,
     tenant: &str,
     s: CreateSource,
 ) -> Result<SourceSummary> {
@@ -1237,7 +1259,7 @@ fn create_source(
     let metadata_json = stamped_create_metadata(s.metadata)?;
     tx.execute("INSERT INTO projects(tenant_id,name,url,branch,tag,source_kind,source_type,role,metadata_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![tenant,name,s.url.unwrap_or_default(),s.branch.unwrap_or("main".into()),s.tag.as_deref().map(trim).filter(|s|!s.is_empty()),kind,source_type,s.role.unwrap_or("unassigned".into()),metadata_json])?;
     let id = tx.last_insert_rowid();
-    let path = state.directory.join("repos").join(id.to_string());
+    let path = repos.join(id.to_string());
     tx.execute(
         "UPDATE projects SET local_path=?1 WHERE tenant_id=?2 AND id=?3",
         params![pp_os::display_path(&path).to_string_lossy(), tenant, id],

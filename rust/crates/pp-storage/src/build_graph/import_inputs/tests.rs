@@ -51,16 +51,32 @@ fn page(url: &str, normalized: &str, page: Page) -> ImportInput {
     }
 }
 
+/// The repository key for these tests: lower case, without a trailing `.git`
+/// or `/`, for URLs on `github.com`. pp-api passes `pp_services::build_url`'s.
+fn key(url: &str) -> Option<String> {
+    let url = url.to_lowercase();
+    let url = url.trim_end_matches('/');
+    url.contains("github.com/")
+        .then(|| url.strip_suffix(".git").unwrap_or(url).to_owned())
+}
+
 fn import(fixture: &Fixture, inputs: Vec<ImportInput>) -> Result<Vec<Imported>, ImportInputsError> {
+    import_outcome(fixture, inputs).map(|outcome| outcome.evidence)
+}
+
+fn import_outcome(
+    fixture: &Fixture,
+    inputs: Vec<ImportInput>,
+) -> Result<ImportOutcome, ImportInputsError> {
     fixture
         .client
-        .import_inputs(fixture.session(), fixture.build, inputs, &IDLE, WAIT)
+        .import_inputs(fixture.session(), fixture.build, inputs, key, &IDLE, WAIT)
 }
 
 fn check(fixture: &Fixture, inputs: Vec<ImportInput>) -> Result<(), ImportInputsError> {
     fixture
         .client
-        .check_import_inputs(fixture.session(), fixture.build, inputs, WAIT)
+        .check_import_inputs(fixture.session(), fixture.build, inputs, key, WAIT)
 }
 
 /// Every Library Source row, as JSON text.
@@ -184,13 +200,13 @@ fn import_inputs_refuses_and_stores_nothing() {
     let missing =
         fixture
             .client
-            .import_inputs(fixture.session(), other, vec![source(3)], &IDLE, WAIT);
+            .import_inputs(fixture.session(), other, vec![source(3)], key, &IDLE, WAIT);
     assert!(matches!(missing, Err(ImportInputsError::NoBrief)));
     let stranger = Credential::Session(Secret::new("not-a-session".into()));
     let refused =
         fixture
             .client
-            .check_import_inputs(stranger, fixture.build, vec![source(3)], WAIT);
+            .check_import_inputs(stranger, fixture.build, vec![source(3)], key, WAIT);
     assert!(matches!(
         refused,
         Err(ImportInputsError::Writer(WriterFailure::Auth(_)))
@@ -260,4 +276,133 @@ fn import_inputs_attaches_model_pages_and_links_by_url() {
     );
     assert!(!link.contains_key("derived_from_evidence_id"), "{link:?}");
     assert_eq!(library(&fixture), sources, "a page creates no Source");
+}
+
+/// A git URL input, keyed as `key` keys it.
+fn git(url: &str, branch: Option<&str>) -> ImportInput {
+    page(
+        url,
+        url.trim_end_matches('/'),
+        Page::Git {
+            key: key(url).unwrap(),
+            github: true,
+            branch: branch.map(str::to_owned),
+        },
+    )
+}
+
+/// Every Library Source row as `[id, name, url, branch, source_kind,
+/// source_type, role, local_path ends with /repos/<id>]`.
+fn git_sources(fixture: &Fixture) -> Value {
+    let text: String = fixture
+        .database()
+        .query_row(
+            "SELECT json_group_array(json_array(id,name,url,branch,source_kind,source_type,role, \
+             local_path LIKE '%/repos/' || id)) FROM (SELECT * FROM projects ORDER BY id)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn import_inputs_creates_a_git_source_once_and_reuses_it() {
+    let fixture = fixture();
+    let kit = "https://github.com/Example/Kit";
+    check(&fixture, vec![git(kit, None)]).unwrap();
+    assert_eq!(
+        git_sources(&fixture).as_array().unwrap().len(),
+        1,
+        "check creates nothing"
+    );
+
+    // Two inputs naming the same repository create one Source.
+    let outcome = import_outcome(
+        &fixture,
+        vec![git(kit, None), git(&format!("{kit}.git/"), None)],
+    )
+    .unwrap();
+    let created = outcome.created_source_ids.clone();
+    assert_eq!(created.len(), 1, "{outcome:?}");
+    assert_eq!(
+        git_sources(&fixture)[1],
+        json!([
+            created[0],
+            "Example-Kit",
+            kit,
+            "main",
+            "github",
+            "git",
+            "unassigned",
+            1
+        ])
+    );
+    let evidence = fixture.brief()["evidence"].clone();
+    let item = &evidence[2];
+    assert_eq!(item["source_id"], created[0]);
+    assert_eq!(item["kind"], "mod");
+    assert_eq!(item["input_kind"], "url");
+    assert_eq!(item["source_role"], "addon");
+    assert_eq!(item["sync_status"], "pending");
+    assert_eq!(outcome.evidence[1].source_id, Some(created[0]));
+
+    // Another Build reuses it, and so does a case or trailing-slash variant.
+    let other = fixture
+        .create(crate::build_graph::NewBuild::parse("Second", "Kit again", None).unwrap())
+        .unwrap()
+        .id;
+    let again = fixture
+        .client
+        .import_inputs(
+            fixture.session(),
+            other,
+            vec![git("https://github.com/example/kit/", Some("dev"))],
+            key,
+            &IDLE,
+            WAIT,
+        )
+        .unwrap();
+    assert!(again.created_source_ids.is_empty(), "{again:?}");
+    assert_eq!(again.evidence[0].source_id, Some(created[0]));
+    assert_eq!(git_sources(&fixture).as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn import_inputs_names_a_new_git_source_apart_and_creates_nothing_on_refusal() {
+    let fixture = fixture();
+    fixture
+        .database()
+        .execute(
+            "INSERT INTO projects(tenant_id,name,url) VALUES('default','example-kit','')",
+            [],
+        )
+        .unwrap();
+    let before = (fixture.brief(), git_sources(&fixture));
+    // A stale derived-from id refuses the whole confirm: no Source either.
+    let stale = ImportInput {
+        derived_from_evidence_id: Some("e9".into()),
+        ..source(3)
+    };
+    let refused = import(
+        &fixture,
+        vec![git("https://github.com/example/kit", None), stale],
+    );
+    assert!(matches!(
+        refused,
+        Err(ImportInputsError::DerivedEvidenceNotFound(_))
+    ));
+    assert_eq!((fixture.brief(), git_sources(&fixture)), before);
+
+    let outcome = import_outcome(
+        &fixture,
+        vec![git("https://github.com/example/kit", Some("dev"))],
+    )
+    .unwrap();
+    let id = outcome.created_source_ids[0];
+    let row = git_sources(&fixture)[2].clone();
+    // Node's suffix: the first 6 characters of the item's evidence id.
+    let suffix = &outcome.evidence[0].evidence_id[..6];
+    assert_eq!(row[1], format!("example-kit-{suffix}"));
+    assert_eq!((row[0].clone(), row[3].clone()), (json!(id), json!("dev")));
 }

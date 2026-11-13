@@ -1,12 +1,13 @@
-//! Attach evidence to a Build's planning brief (GRE-1300 parts 2 and 3a),
-//! the operation behind MCP `propose_import_build_inputs`: Library Sources
-//! by id, and model pages and other links by URL.
+//! Attach evidence to a Build's planning brief (GRE-1300 parts 2, 3a and
+//! 3b), the operation behind MCP `propose_import_build_inputs`: Library
+//! Sources by id, and git repositories, model pages and other links by URL.
 //!
 //! [`BuildGraphClient::import_inputs`] runs in one write transaction on the
 //! write seam: prove the credential, read the Build's planning brief, check
-//! every input, put one evidence item per input in the brief, clear its
-//! selected draft and store it. A Source is only read. The Build's layers,
-//! drafts and Accepted Plan are not touched.
+//! every input, find or create the Source behind each git URL
+//! (`git_source`), put one evidence item per input in the brief, clear its
+//! selected draft and store it. Nothing is fetched or synced. The Build's
+//! layers, drafts and Accepted Plan are not touched.
 //! [`BuildGraphClient::check_import_inputs`] runs the same checks on the read
 //! seam and writes nothing.
 //!
@@ -27,7 +28,8 @@ use crate::{
     read_model::{
         Credential,
         planning::{
-            BuildEvidence, BuildPlanningBrief, EvidenceInputKind, EvidenceKind, SyncStatus,
+            BuildEvidence, BuildPlanningBrief, EvidenceInputKind, EvidenceKind, SourceRole,
+            SyncStatus,
         },
     },
     write::authorize,
@@ -36,6 +38,13 @@ use pp_domain::{PositiveId, build_identity::trim_js};
 use rusqlite::Transaction;
 use sha2::{Digest, Sha256};
 use std::{sync::atomic::AtomicBool, time::Duration};
+
+mod git_source;
+
+/// The repository a URL names, for matching git Sources; `None` for a URL
+/// that names none. The caller's URL rules (`pp_services::build_url`), so
+/// this crate needs no dependency on them.
+pub type RepositoryKey = fn(&str) -> Option<String>;
 
 /// One piece of evidence to attach.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,12 +81,30 @@ pub enum Target {
     },
 }
 
-/// The URL pages this module attaches. A git repository is not one yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a URL input points at.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
+    /// A git repository, with its [`RepositoryKey`]. Attached through its
+    /// Library Source, which is created when no Source has the repository.
+    Git {
+        key: String,
+        github: bool,
+        /// The branch a created Source tracks; `main` when absent, as for
+        /// `POST /sources`.
+        branch: Option<String>,
+    },
     /// A model library page: its files must be uploaded into a Source.
     Model,
     Link,
+}
+
+/// What a confirm attached and created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportOutcome {
+    /// One item per input, in input order.
+    pub evidence: Vec<Imported>,
+    /// Sources created for git URLs, in input order.
+    pub created_source_ids: Vec<i64>,
 }
 
 /// An evidence item an input put in the brief, as stored.
@@ -102,6 +129,13 @@ pub enum ImportInputsError {
     /// No evidence item in the brief, before this import, has this id.
     #[error("unknown derived-from evidence id")]
     DerivedEvidenceNotFound(String),
+    /// The name for a new git Source, and the name with its suffix, are
+    /// both another Source's.
+    #[error("the new Source's name is taken")]
+    SourceNameTaken,
+    /// The Library refused the git URL as a Source location.
+    #[error("the git URL is not a valid Source location")]
+    InvalidRepository,
     #[error(transparent)]
     Writer(#[from] WriterFailure),
 }
@@ -129,6 +163,7 @@ impl BuildGraphClient {
         credential: Credential,
         build: PositiveId,
         inputs: Vec<ImportInput>,
+        repository_key: RepositoryKey,
         wait: Duration,
     ) -> Result<(), ImportInputsError> {
         let policy = self.policy;
@@ -136,32 +171,45 @@ impl BuildGraphClient {
         self.settings
             .read(name, &AtomicBool::new(false), wait, move |tx| {
                 let installation = authorize(tx, &credential, policy)?;
-                prepare(tx, installation.id(), build, &inputs).map(drop)
+                prepare(tx, installation.id(), build, &inputs, repository_key).map(drop)
             })?
     }
 
-    /// Puts one evidence item per input in `build`'s brief and clears its
-    /// selected draft, in one transaction. Answers the items in input order.
+    /// Creates the Sources new git URLs need, puts one evidence item per
+    /// input in `build`'s brief and clears its selected draft, in one
+    /// transaction.
     pub fn import_inputs(
         &self,
         credential: Credential,
         build: PositiveId,
         inputs: Vec<ImportInput>,
+        repository_key: RepositoryKey,
         cancelled: &AtomicBool,
         wait: Duration,
-    ) -> Result<Vec<Imported>, ImportInputsError> {
+    ) -> Result<ImportOutcome, ImportInputsError> {
         let policy = self.policy;
         let name = "build_graph.import_inputs";
+        let repos = self.repos.clone();
         self.shared.write(name, cancelled, wait, move |tx, _| {
             let installation = authorize(tx, &credential, policy)?;
             let tenant = installation.id();
-            let (mut brief, items) = prepare(tx, tenant, build, &inputs)?;
-            let imported = items.iter().map(Imported::of).collect();
-            for item in items {
+            let (mut brief, mut items) = prepare(tx, tenant, build, &inputs, repository_key)?;
+            let wanted = items.iter().filter_map(|(_, new)| new.clone()).collect();
+            let (ids, created_source_ids) = git_source::create(tx, &repos, tenant, wanted)?;
+            for (item, new) in &mut items {
+                if let Some(new) = new {
+                    item.source_id = ids.get(&new.key).copied();
+                }
+            }
+            let evidence = items.iter().map(|(item, _)| Imported::of(item)).collect();
+            for (item, _) in items {
                 upsert(&mut brief, item);
             }
             store_changed_brief(tx, tenant, build, brief)?;
-            Ok(imported)
+            Ok(ImportOutcome {
+                evidence,
+                created_source_ids,
+            })
         })?
     }
 }
@@ -178,14 +226,19 @@ impl Imported {
     }
 }
 
-/// The brief and the item each input makes, after every check. Derived-from
-/// ids are checked against the brief as stored, before this import.
+/// An input's item, and the Source to create for it when its git URL names a
+/// repository no Source holds.
+type Prepared = (BuildEvidence, Option<git_source::NewSource>);
+
+/// The brief and what each input makes, after every check. Derived-from ids
+/// are checked against the brief as stored, before this import.
 fn prepare(
     tx: &Transaction<'_>,
     tenant: &str,
     build: PositiveId,
     inputs: &[ImportInput],
-) -> Result<(BuildPlanningBrief, Vec<BuildEvidence>), ImportInputsError> {
+    repository_key: RepositoryKey,
+) -> Result<(BuildPlanningBrief, Vec<Prepared>), ImportInputsError> {
     let brief = stored_brief::<ImportInputsError>(tx, tenant, build)?;
     let mut items = Vec::with_capacity(inputs.len());
     for input in inputs {
@@ -214,8 +267,31 @@ fn prepare(
                 url,
                 normalized,
                 page,
-            } => url_item(url, normalized, *page),
+            } => url_item(url, normalized, page),
         };
+        let mut new = None;
+        if let Target::Url {
+            page:
+                Page::Git {
+                    key,
+                    github,
+                    branch,
+                },
+            normalized,
+            ..
+        } = &input.target
+        {
+            item.source_id = git_source::existing(tx, tenant, key, repository_key)?;
+            if item.source_id.is_none() {
+                new = Some(git_source::NewSource {
+                    key: key.clone(),
+                    url: normalized.clone(),
+                    github: *github,
+                    branch: branch.clone(),
+                    evidence_id: item.id.clone(),
+                });
+            }
+        }
         if let Some(kind) = input.kind {
             item.kind = kind;
         }
@@ -232,22 +308,25 @@ fn prepare(
             item.extract = Some(extract.to_owned());
             item.retrieved_at = Some(auth::catalog_timestamp());
         }
-        items.push(item);
+        items.push((item, new));
     }
     Ok((brief, items))
 }
 
-/// The item Node's `classifyBuildUrl` makes for a model page or link.
-fn url_item(url: &str, normalized: &str, page: Page) -> BuildEvidence {
-    let model = page == Page::Model;
+/// The item Node's `classifyBuildUrl` makes for a URL. A git repository's
+/// item is a `mod` and an `addon` until the assistant says otherwise; its
+/// Source is set by the caller.
+fn url_item(url: &str, normalized: &str, page: &Page) -> BuildEvidence {
+    let model = *page == Page::Model;
+    let git = matches!(page, Page::Git { .. });
     BuildEvidence {
         id: evidence_id(normalized),
         url: url.to_owned(),
         normalized_url: normalized.to_owned(),
-        kind: if model {
-            EvidenceKind::ModelSource
-        } else {
-            EvidenceKind::InformationalEvidence
+        kind: match page {
+            Page::Git { .. } => EvidenceKind::Mod,
+            Page::Model => EvidenceKind::ModelSource,
+            Page::Link => EvidenceKind::InformationalEvidence,
         },
         input_kind: Some(if model {
             EvidenceInputKind::ModelPage
@@ -259,12 +338,12 @@ fn url_item(url: &str, normalized: &str, page: Page) -> BuildEvidence {
         upload_required: model.then_some(true),
         derived_from_evidence_id: None,
         source_id: None,
-        source_role: None,
+        source_role: git.then_some(SourceRole::Addon),
         title: None,
         extract: None,
         retrieved_at: None,
         content_hash: None,
-        sync_status: None,
+        sync_status: git.then_some(SyncStatus::Pending),
         pinned_revision: None,
     }
 }
@@ -308,7 +387,7 @@ fn evidence_id(normalized_url: &str) -> String {
 }
 
 /// Replaces the item with `item`'s normalized URL in place, keeping its
-/// `source_role`, or appends `item`.
+/// `source_role` when it has one, or appends `item`.
 fn upsert(brief: &mut BuildPlanningBrief, mut item: BuildEvidence) {
     match brief
         .evidence
@@ -316,7 +395,7 @@ fn upsert(brief: &mut BuildPlanningBrief, mut item: BuildEvidence) {
         .find(|kept| kept.normalized_url == item.normalized_url)
     {
         Some(kept) => {
-            item.source_role = kept.source_role;
+            item.source_role = kept.source_role.or(item.source_role);
             *kept = item;
         }
         None => brief.evidence.push(item),

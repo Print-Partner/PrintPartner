@@ -342,6 +342,8 @@ fn an_unsafe_path_is_refused_before_any_read_or_write() {
         "a/../x.stl",
         "./part.stl",
         "C:/x.stl",
+        "a/C:/x.stl",
+        "a/D:x.stl",
         "a\\x.stl",
         "",
     ] {
@@ -367,4 +369,26 @@ fn a_corrupt_stl_is_unrenderable_and_nothing_is_cached() {
         Err(SourceFilesError::Unrenderable)
     ));
     assert!(fixture.cached().is_empty());
+}
+
+#[test]
+fn a_cached_file_that_is_not_a_whole_png_is_rendered_again() {
+    let fixture = Fixture::new();
+    fixture.snapshot("1/revisions/r1", &[("part.stl", &one_triangle_binary())]);
+    fixture.sql(FIRST);
+    let first = fixture.thumbnail("part.stl").unwrap();
+    let cached = fixture
+        .directory
+        .path()
+        .join("thumbs")
+        .join(&fixture.cached()[0]);
+    fs::write(&cached, b"").unwrap();
+
+    let again = fixture.thumbnail("part.stl").unwrap();
+    assert_eq!(again, first);
+    assert_eq!(
+        fs::read(&cached).unwrap(),
+        first.png,
+        "the cache file was replaced"
+    );
 }

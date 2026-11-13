@@ -1,13 +1,20 @@
 #![cfg(feature = "desktop_rebuild")]
 //! GRE-1182: claiming an unattributed print creates its printer Checkoff link,
 //! marks the print claimed and records the plan binding and a domain event in
-//! one transaction; dismiss drops it. A refused claim writes nothing. Runs on
+//! one transaction; dismiss drops it, and undo (GRE-1549) gives it back. A
+//! refused claim or undo writes nothing. Runs on
 //! a copy of the required-units fixture with synthetic prints.
 use checkoff_apply::apply;
 use checkoff_fixture::Fixture;
-use pp_storage::{WriterOwner, checkoff_progress::Request};
+use pp_storage::{
+    WriterFailure, WriterOwner,
+    auth::Secret,
+    checkoff_progress::{DismissUndo, Request, UndoDismissError},
+    read_model::Credential,
+};
 use rusqlite::params;
 use serde_json::{Value, json};
+use std::{sync::atomic::AtomicBool, time::Duration};
 
 #[path = "common/checkoff_apply.rs"]
 mod checkoff_apply;
@@ -381,4 +388,144 @@ fn pruning_drops_a_claim_older_than_7_days_and_keeps_an_old_open_print() {
         .map(|p| p["id"].clone())
         .collect();
     assert_eq!(stored, [json!("old-open")]);
+}
+
+fn undo(owner: &WriterOwner, id: &str) -> Result<DismissUndo, UndoDismissError> {
+    owner.checkoff_progress().unwrap().undo_dismiss(
+        Credential::Session(Secret::new("required-unit-fixture-secret".into())),
+        id.into(),
+        &AtomicBool::new(false),
+        Duration::from_secs(5),
+    )
+}
+
+fn dismiss(owner: &WriterOwner, id: &str) {
+    let dismissed = apply(owner, Request::DismissUnattributed { id: id.into() });
+    assert_eq!(dismissed["status"], 200, "{dismissed}");
+}
+
+impl Fixture {
+    fn stored_print(&self, id: &str) -> Value {
+        self.setting("printer.unattributed_prints")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+}
+
+/// GRE-1549: undo gives the dismissed print back exactly as it was stored,
+/// once, and the print can then be claimed.
+#[test]
+fn undo_restores_a_dismissed_print_once_and_it_can_be_claimed() {
+    let names = [unit(2, "bracket")];
+    let fixture = Fixture::with_prints(json!([
+        print("benchy", "benchy.gcode", &names),
+        print("clip", "clip.gcode", &[]),
+    ]));
+    let owner = fixture.open();
+    let before = fixture.stored_print("benchy");
+    dismiss(&owner, "benchy");
+    assert_eq!(fixture.stored_print("benchy")["dismissed"], true);
+
+    assert_eq!(undo(&owner, "benchy").unwrap(), DismissUndo::Restored);
+    assert_eq!(fixture.stored_print("benchy"), before);
+    assert_eq!(
+        fixture.events().last().unwrap(),
+        &(
+            "checkoff.unattributed_resolved".to_owned(),
+            "benchy".to_owned(),
+            json!({ "dismissed": false }),
+        )
+    );
+
+    let restored = fixture.state();
+    assert_eq!(undo(&owner, "benchy").unwrap(), DismissUndo::NotDismissed);
+    assert_eq!(fixture.state(), restored, "a repeat writes nothing");
+
+    let claimed = claim(&owner, "benchy", json!({ "profile_id": 1 }));
+    assert_eq!(claimed["status"], 200, "{claimed}");
+}
+
+/// GRE-1549: a print that is not stored, or whose file a Checkoff link
+/// matched since, is refused and nothing is written.
+#[test]
+fn undo_refuses_a_print_not_stored_or_matched_since() {
+    let fixture = Fixture::with_prints(json!([
+        print("benchy", "benchy.gcode", &[]),
+        print("clip", "clip.gcode", &[]),
+    ]));
+    let owner = fixture.open();
+    let before = fixture.state();
+    assert!(matches!(
+        undo(&owner, "nope"),
+        Err(UndoDismissError::NotFound)
+    ));
+    assert_eq!(fixture.state(), before);
+
+    // Matched since: an awaiting-verify link for the same file on the same
+    // integration. The print stays dismissed.
+    dismiss(&owner, "benchy");
+    let link = json!([{
+        "id": "l1", "profile_id": 1, "printer_id": "sim-1",
+        "integration_id": "sim-moonraker", "filename": "jobs/BENCHY.gcode",
+        "state": "awaiting_verify", "units": [], "resolved_units": [],
+        "created_at": "2026-11-13T12:00:00.000Z",
+    }]);
+    fixture
+        .sql()
+        .execute(
+            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'printer.checkoff_links', ?1)
+             ON CONFLICT (tenant_id, key) DO UPDATE SET value=excluded.value",
+            params![link.to_string()],
+        )
+        .unwrap();
+    let matched = fixture.state();
+    assert!(matches!(
+        undo(&owner, "benchy"),
+        Err(UndoDismissError::AlreadyMatched)
+    ));
+    assert_eq!(fixture.state(), matched);
+    assert_eq!(fixture.stored_print("benchy")["dismissed"], true);
+
+    // Pruned: dismissed 8 days back, then another save prunes it.
+    let mut prints = fixture.setting("printer.unattributed_prints");
+    prints[0]["dismissed_at"] = json!(days_ago(8));
+    fixture
+        .sql()
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='printer.unattributed_prints'",
+            params![prints.to_string()],
+        )
+        .unwrap();
+    dismiss(&owner, "clip");
+    assert_eq!(fixture.stored_print("benchy"), Value::Null);
+    assert!(matches!(
+        undo(&owner, "benchy"),
+        Err(UndoDismissError::NotFound)
+    ));
+}
+
+#[test]
+fn undo_with_a_refused_credential_writes_nothing() {
+    let fixture = Fixture::with_prints(json!([print("benchy", "benchy.gcode", &[])]));
+    let owner = fixture.open();
+    dismiss(&owner, "benchy");
+    let before = fixture.state();
+    let refused = owner.checkoff_progress().unwrap().undo_dismiss(
+        Credential::Session(Secret::new("x".repeat(64))),
+        "benchy".into(),
+        &AtomicBool::new(false),
+        Duration::from_secs(5),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(UndoDismissError::Writer(WriterFailure::Auth(_)))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(fixture.state(), before);
 }

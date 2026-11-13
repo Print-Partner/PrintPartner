@@ -120,7 +120,15 @@ fn server_reports_health(listen: Option<&str>) {
     }
     assert_ready_probes(&status);
 
-    let (exit, printed, _) = server.stop();
+    let (exit, printed, logged) = server.stop();
+    // Tracing events reach stderr as scrubbed JSON rows (provisional, GRE-1457).
+    let ready = logged
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|row| row["message"] == "pp_server_ready")
+        .unwrap_or_else(|| panic!("no pp_server_ready row on stderr: {logged}"));
+    assert_eq!(ready["level"], 30, "{ready}");
+    assert_eq!(ready["origin"], origin.as_str(), "{ready}");
     let mut lines = printed.lines();
     assert_eq!(
         lines.next(),

@@ -389,6 +389,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
     ClientRoute {
         text_params: &["id"],
         ..route(
+            "updateIntegration",
+            "PATCH",
+            "/api/v2/integrations/{id}",
+            Some("UpdateIntegrationRequest"),
+            "IntegrationView",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
             "deleteIntegration",
             "DELETE",
             "/api/v2/integrations/{id}",
@@ -633,6 +643,10 @@ pub(crate) mod codegen {
         schema(
             "CreateIntegrationRequest",
             schemars::schema_for!(crate::integrations::CreateIntegrationRequest),
+        )?;
+        schema(
+            "UpdateIntegrationRequest",
+            schemars::schema_for!(crate::integrations::UpdateIntegrationRequest),
         )?;
         schema(
             "IntegrationView",
@@ -1959,7 +1973,9 @@ pub(crate) mod codegen {
     }
 
     fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {
-        use crate::integrations::{CreateIntegrationRequest, IntegrationList, IntegrationView};
+        use crate::integrations::{
+            CreateIntegrationRequest, IntegrationList, IntegrationView, UpdateIntegrationRequest,
+        };
         use crate::printer_host::{TlsPin, TlsPinReset};
         use pp_storage::printer_setup::ServiceKind;
         let view = |kind, filled: bool| IntegrationView {
@@ -2034,6 +2050,19 @@ pub(crate) mod codegen {
         ] {
             let dto = "CreateIntegrationRequest";
             cases.push(request::<CreateIntegrationRequest>(dto, name, value));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            ("address", json!({"base_url": "http://fixture.invalid"})),
+            ("pause", json!({"name": "Voron", "enabled": false})),
+            ("password", json!({"password": "fixture-password"})),
+            ("clear", json!({"api_key": null, "password": null})),
+            ("kind", json!({"kind": "prusalink"})),
+            ("enabled-not-boolean", json!({"enabled": "no"})),
+            ("password-not-text", json!({"password": 1})),
+        ] {
+            let dto = "UpdateIntegrationRequest";
+            cases.push(request::<UpdateIntegrationRequest>(dto, name, value));
         }
         Ok(cases)
     }

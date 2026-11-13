@@ -9,6 +9,7 @@
 //! `outcome_unknown`, which also carries `"outcome_unknown": true` so the
 //! session drops the proposal instead of risking a second apply.
 
+use pp_services::mcp_domain::ToolInvocation;
 use pp_storage::{WriterFailure, auth::AuthFailure};
 use serde_json::{Value, json};
 
@@ -45,7 +46,8 @@ pub(super) enum Code {
     BaseChanged,
     AcceptedBaselineRequired,
     EditRefused,
-    // get_build_planning_state, get_plan_draft, propose_set_build_source_roles
+    // get_build_planning_state, get_plan_draft, propose_set_build_source_roles,
+    // propose_import_build_inputs
     InvalidPlanId,
     PlanNotFound,
     NoPlanningBrief,
@@ -58,6 +60,13 @@ pub(super) enum Code {
     MultipleStructuralBases,
     // farm tools
     FarmModuleOff,
+    // propose_import_build_inputs
+    InvalidInputs,
+    InvalidInput,
+    UrlInputsNotSupported,
+    InvalidEvidenceKind,
+    SourceNotFound,
+    DerivedEvidenceNotFound,
 }
 
 impl Code {
@@ -98,6 +107,12 @@ impl Code {
             Self::EvidenceNotFound => "evidence_not_found",
             Self::MultipleStructuralBases => "multiple_structural_bases",
             Self::FarmModuleOff => "farm_module_off",
+            Self::InvalidInputs => "invalid_inputs",
+            Self::InvalidInput => "invalid_input",
+            Self::UrlInputsNotSupported => "url_inputs_not_supported",
+            Self::InvalidEvidenceKind => "invalid_evidence_kind",
+            Self::SourceNotFound => "source_not_found",
+            Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
         }
     }
 }
@@ -117,6 +132,14 @@ impl Refusal {
     /// The text of a refused propose.
     pub(super) fn proposal(self) -> String {
         json!({ "error": self.detail, "code": self.code.as_str() }).to_string()
+    }
+
+    /// A refused propose, as the tool's invocation.
+    pub(super) fn invocation(self) -> ToolInvocation {
+        ToolInvocation {
+            content: self.proposal(),
+            proposed_action: None,
+        }
     }
 
     /// The result of a refused confirm.

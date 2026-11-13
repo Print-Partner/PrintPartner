@@ -14,7 +14,8 @@
 //! (`mcp/progress_reads.rs`). `propose_create_build` creates a Build with
 //! its planning brief (`mcp/create_build.rs`), and
 //! `propose_set_build_source_roles` sets the Build's own Source roles in that
-//! brief (`mcp/source_roles.rs`). `get_build_planning_state` and
+//! brief (`mcp/source_roles.rs`), and `propose_import_build_inputs` attaches
+//! Library Sources to it (`mcp/import_inputs.rs`). `get_build_planning_state` and
 //! `get_plan_draft` read the brief and draft (`mcp/planning_reads.rs`).
 //! Refusals of these tools carry a code from `mcp/write_result.rs`.
 //! On the headless explicit listener (`PP_LISTEN_ADDR`), the same key guard
@@ -632,6 +633,8 @@ mod create_build;
 mod draft_parts;
 #[path = "mcp/farm_status.rs"]
 mod farm_status;
+#[path = "mcp/import_inputs.rs"]
+mod import_inputs;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]

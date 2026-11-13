@@ -21,6 +21,7 @@ use pp_api::{
     plates::plates_router,
     printers::printers_router,
     settings::settings_router,
+    source_files::source_files_router,
     sources_github::github_router,
     workflow::workflow_router,
 };
@@ -287,6 +288,23 @@ fn setup_routes(
         .merge(deductions))
 }
 
+/// Library's file list of a Source's current revision.
+fn source_file_routes(
+    owner: &Mutex<WriterOwner>,
+    policy: AuthPolicy,
+    config: AcceptedHttpConfig,
+) -> Result<Router> {
+    let guard = owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
+    // A published revision keeps pp-source's snapshot manifest at its root;
+    // it is not one of the owner's files.
+    let client = guard
+        .source_files(policy)?
+        .skipping_at_root(pp_source::MANIFEST);
+    Ok(source_files_router(config, client))
+}
+
 fn read_router_with_updates(
     rebuild: DesktopRebuild,
     owner: Arc<Mutex<WriterOwner>>,
@@ -397,7 +415,7 @@ fn read_router_with_updates(
             .merge(probe)
             .merge(events)
             .merge(checkoff)
-            .merge(plates)
+            .merge(plates.merge(source_file_routes(&owner, policy, config.clone())?))
             .merge(mcp),
     ))
 }

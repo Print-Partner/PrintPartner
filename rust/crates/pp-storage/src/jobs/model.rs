@@ -712,7 +712,7 @@ pub struct JobSnapshot {
     pub kind: JobKind,
     #[cfg_attr(
         all(feature = "codegen", feature = "desktop_rebuild"),
-        schemars(with = "JobStatus")
+        schemars(schema_with = "status_schema")
     )]
     pub status: &'static str,
     pub message: &'static str,
@@ -748,18 +748,21 @@ pub struct JobSnapshot {
     pub updated_at: String,
 }
 
-/// The five `JobSnapshot::status` values `JobRecord::snapshot` answers, for
-/// the generated client's schema.
+/// The five `JobSnapshot::status` values `JobRecord::snapshot` answers, as a
+/// string enum in the generated client's schema.
 #[cfg(all(feature = "codegen", feature = "desktop_rebuild"))]
-#[derive(schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-#[allow(dead_code)]
-enum JobStatus {
-    Pending,
-    Running,
-    Done,
-    Error,
-    Cancelled,
+fn status_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    schemars::schema::SchemaObject {
+        instance_type: Some(schemars::schema::InstanceType::String.into()),
+        enum_values: Some(
+            ["pending", "running", "done", "error", "cancelled"]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        ),
+        ..Default::default()
+    }
+    .into()
 }
 impl JobRecord {
     pub(super) fn validate_state(&self) -> Result<()> {

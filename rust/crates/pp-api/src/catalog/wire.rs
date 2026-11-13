@@ -140,12 +140,12 @@ pub(super) fn category_save(body: &Value) -> Option<CategorySave> {
     Some((categories, replacements))
 }
 
-/// `String(body.name ?? "")`, with null and missing fields omitted on the other columns.
 /// `POST /sources` body, the generated client's `CreateSourceRequest`. Unknown
 /// fields are ignored and a field of the wrong type is refused; `null` is the
 /// same as leaving an optional field out. The handler refuses `local_path`
-/// before this is read. The generated client's schema is strict, so the
-/// replacement UI never sends a field the core would ignore.
+/// before this is read, and sends a missing or null `name` on as empty so
+/// storage answers "Source name is required". The generated client's schema is
+/// strict, so the replacement UI never sends a field the core would ignore.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema, serde::Serialize))]
 #[cfg_attr(feature = "codegen", schemars(deny_unknown_fields))]

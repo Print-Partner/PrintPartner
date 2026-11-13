@@ -51,7 +51,8 @@ Each `FarmPrinter` has `id`, `name`, `model`, `integration` (`{id, kind}` with
 kind `moonraker`, `prusalink` or `bambu`, or `null`), `state`, `reason`,
 `last_heard_at`, `progress_percent` and `loaded_filaments` (one row per slot,
 1 to 4, as Node's `ensureSlots` fills them). Bodies carry no host address, API
-key, file path or printer error text.
+key, file path or printer error text; only a send queue item carries the
+error of its own last send.
 
 `state` is the generated `PrinterStateView`: `execution` and `bed_clear` are
 separate facts and `display` is `pp_domain::printer_display_state`'s summary of
@@ -118,8 +119,19 @@ read as cleared. Otherwise it is
   newest 100, in stored order.
 - `QueuedSend`: `id`, `filename`, `printer_id`, `profile_id`, `state`
   (`queued`, `sending`, `done`, `error`, `cancelled`), `start`,
-  `wait_for_idle`, `unit_count`, `created_at`, `updated_at`. The artifact path
-  and error text stay server-side. Every stored item, in stored order.
+  `wait_for_idle`, `unit_count`, `created_at`, `updated_at`, `error`,
+  `upload_job_id` and `outcome_unknown`. `error` is the stored reason of the
+  last failed send, or null: the printer's refusal (`Upload failed (HTTP
+  500): ...`) or a fixed text, never an API key or password; the one user owns
+  the printer and needs the reason. `upload_job_id` is the last send's durable
+  job, which Reconcile names. `outcome_unknown` is computed on each read, not
+  stored: true for an `error` item whose upload job awaits reconciliation,
+  or, with no Rust job, whose error is Node's restart text. Send now refuses
+  exactly those items with 409 `send_outcome_unknown`. A quarantined upload
+  job reads as `false`: Send now and Reconcile cannot resolve it, and no route
+  does yet. The artifact path and
+  host name stay server-side. Every stored item, in stored order. The send
+  routes answer the same type ([Send queue storage](send-queue.md#routes-gre-365)).
 
 ## Match suggestions
 

@@ -14,6 +14,8 @@ pub mod archive;
 mod auth_scheduler;
 #[cfg(feature = "desktop_rebuild")]
 use auth_scheduler::*;
+#[cfg(feature = "desktop_rebuild")]
+pub mod accepted_artifacts;
 pub mod auth;
 mod backup_retention;
 #[cfg(feature = "desktop_rebuild")]
@@ -63,6 +65,8 @@ pub mod restore;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
+#[cfg(feature = "desktop_rebuild")]
+pub mod source_files;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]

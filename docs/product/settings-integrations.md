@@ -28,10 +28,20 @@ warns that the next Test connection trusts whatever certificate answers, so run
 it only while the printer on the network is this same device. Focus starts on
 Cancel. Only the dialog's own Reset certificate button sends
 `POST /api/v1/integrations/{id}/tls-pin/reset` (`resetTlsPin`), once, from the
-signed-in browser. A refused reset, such as the route's 5-per-minute limit,
-stays in the dialog with the core's reason and is not resent. Closing the dialog
-reads the pin again, since a lost answer may still have applied. The pin read
-has its own 60-per-minute window; the section reads one pin per Bambu row.
+signed-in browser. The reset belongs to the row, not the dialog, so closing the
+dialog while it is in flight loses nothing:
+
+- Confirmed: the row shows "Not pinned" at once, even if the next read fails.
+- Refused (a 4xx such as the route's 5-per-minute limit): "The certificate was
+  not reset" with the core's reason. The pin is unchanged; Reset works again.
+- Unconfirmed (no answer, an unreadable one, or a 5xx): the core may have
+  forgotten the pin. The row says the core didn't confirm the reset and reads
+  the pin again; Reset stays off until that read answers.
+
+Every reset reads the pin again once it settles. A pin read that fails shows
+"Certificate state unavailable", never the old pin, with **Check the
+certificate again**. The pin read has its own 60-per-minute window; the
+section reads one pin per Bambu row.
 
 ## States
 

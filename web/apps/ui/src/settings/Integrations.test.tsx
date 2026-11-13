@@ -195,6 +195,68 @@ describe("Bambu certificate pin", () => {
     expect(fake.resets()).toHaveLength(1);
   });
 
+  it("after a lost reply, sends no second reset and re-reads the pin before Reset works again", async () => {
+    let pinned = true;
+    let held: ((answer: Response) => void) | null = null;
+    const fake = core({
+      // The first read answers; the read after the lost reply waits until the test answers it.
+      pin: () => (fake && fake.resets().length === 0 ? json(PINNED) : (new Promise<Response>((resolve) => (held = resolve)) as never)),
+      reset: () => ((pinned = false), Promise.reject(new TypeError("Failed to fetch")) as never),
+    });
+    renderSettings(fake.fetchMock);
+    await screen.findByText(/^Certificate pinned/);
+    fireEvent.click(within(row("X1C")).getByRole("button", { name: "Reset certificate" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset certificate" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("The core didn't confirm the reset. Checking the current pin.");
+    await waitFor(() => expect(held).not.toBeNull());
+    const again = within(dialog).getByRole("button", { name: "Reset certificate" });
+    expect(again.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(again);
+    expect(fake.resets()).toHaveLength(1);
+    held!(json(pinned ? PINNED : { pinned: false }));
+    expect(await within(dialog).findByText("The core didn't confirm the reset. The certificate is no longer pinned.")).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Reset certificate" })).toBeNull();
+    expect(within(row("X1C")).getByText("Not pinned. Test connection to pin.", { exact: false })).toBeTruthy();
+    expect(fake.resets()).toHaveLength(1);
+  });
+
+  it("ends correct when the dialog is cancelled mid-reset and the core applies it but the answer is lost", async () => {
+    let pinned = true;
+    let lose: (() => void) | null = null;
+    const fake = core({
+      pin: () => json(pinned ? PINNED : { pinned: false }),
+      reset: () => new Promise<Response>((_, reject) => (lose = () => reject(new TypeError("Failed to fetch")))) as never,
+    });
+    renderSettings(fake.fetchMock);
+    await screen.findByText(/^Certificate pinned/);
+    fireEvent.click(within(row("X1C")).getByRole("button", { name: "Reset certificate" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset certificate" }));
+    await waitFor(() => expect(lose).not.toBeNull());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    pinned = false;
+    lose!();
+    expect(await within(row("X1C")).findByText(/^Not pinned\. Test connection to pin\./)).toBeTruthy();
+    expect(within(row("X1C")).getByRole("alert").textContent).toBe("The core didn't confirm the reset. The certificate is no longer pinned.");
+    expect(within(row("X1C")).queryByRole("button", { name: "Reset certificate" })).toBeNull();
+    expect(fake.resets()).toHaveLength(1);
+  });
+
+  it("never shows the old pin after a confirmed reset whose re-read fails", async () => {
+    let reads = 0;
+    const fake = core({ pin: () => (++reads === 1 ? json(PINNED) : problem(503, "The core is busy")) });
+    renderSettings(fake.fetchMock);
+    await screen.findByText(/^Certificate pinned/);
+    fireEvent.click(within(row("X1C")).getByRole("button", { name: "Reset certificate" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Reset certificate" }));
+    expect(await within(row("X1C")).findByText(/^Certificate state unavailable: The core is busy\./)).toBeTruthy();
+    expect(within(row("X1C")).queryByText(/Certificate pinned/)).toBeNull();
+    expect(within(row("X1C")).queryByRole("button", { name: "Reset certificate" })).toBeNull();
+    expect(fake.resets()).toHaveLength(1);
+  });
+
   it("says when the pin cannot be read", async () => {
     renderSettings(core({ pin: () => problem(503, "The core is busy") }).fetchMock);
     expect(await screen.findByText("Certificate state unavailable: The core is busy.")).toBeTruthy();

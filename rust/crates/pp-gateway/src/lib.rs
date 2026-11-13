@@ -71,6 +71,26 @@ impl LaunchTarget {
     }
 }
 
+/// What `POST /auth/logout` does to a Rust-only runtime besides revoking the
+/// account session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignOut {
+    /// The desktop app: sign-out ends every desktop session and the runtime.
+    EndsRuntime,
+    /// The headless server: the core keeps serving, and the browser keeps its
+    /// gateway admission so the sign-in screen loads again without a new
+    /// bootstrap link. The revoked account session authorizes nothing.
+    KeepsServing,
+}
+
+/// How a Rust-only start admits requests and answers sign-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RustOnlyMode {
+    /// An explicit headless listener (`PP_LISTEN_ADDR`) instead of loopback.
+    pub network: bool,
+    pub sign_out: SignOut,
+}
+
 #[derive(Clone)]
 pub struct ShutdownRequested {
     token: CancellationToken,
@@ -301,6 +321,7 @@ struct GatewayState {
     relays: TaskTracker,
     cancelled: CancellationToken,
     shutdown_requested: CancellationToken,
+    sign_out: SignOut,
     /// Routes `pp-core` composed for a Rust-only runtime. When present, every
     /// admitted request that is not a gateway or asset path goes here, and
     /// none reaches the compatibility proxy. Logout goes here first too.
@@ -378,12 +399,19 @@ impl Gateway {
         rust_only: Option<(
             tokio::sync::watch::Receiver<RustStatus>,
             Arc<dyn MoonrakerHosts>,
-            bool,
+            RustOnlyMode,
         )>,
     ) -> Result<Self> {
-        let (rust_status, hosts, network) = match rust_only {
-            Some((status, hosts, network)) => (Some(status), Some(hosts), network),
-            None => (None, None, false),
+        let (rust_status, hosts, RustOnlyMode { network, sign_out }) = match rust_only {
+            Some((status, hosts, mode)) => (Some(status), Some(hosts), mode),
+            None => (
+                None,
+                None,
+                RustOnlyMode {
+                    network: false,
+                    sign_out: SignOut::EndsRuntime,
+                },
+            ),
         };
         let mut address = listener.local_addr()?;
         anyhow::ensure!(
@@ -475,6 +503,7 @@ impl Gateway {
             relays: TaskTracker::new(),
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
+            sign_out,
             product: Mutex::new(None),
             rust_status,
             compat_forwards: AtomicU64::new(0),
@@ -1050,7 +1079,8 @@ async fn handle(
         return axum::Json(body).into_response();
     }
     if path == "/auth/logout" && request.method() == "POST" {
-        // Rust revokes its own session before the gateway ends the desktop one.
+        // Rust revokes its own session first. The desktop then ends every
+        // desktop session and the runtime; the headless server keeps serving.
         let revoked = match product_router(&state) {
             Some(product) => Some(
                 buffered(
@@ -1060,6 +1090,10 @@ async fn handle(
             ),
             None => None,
         };
+        if state.sign_out == SignOut::KeepsServing {
+            return revoked
+                .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
+        }
         state
             .access
             .lock()

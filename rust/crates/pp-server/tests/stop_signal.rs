@@ -7,6 +7,8 @@ mod child_process;
 mod release;
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
+#[path = "support/stop.rs"]
+mod stop;
 
 use std::{
     io::{BufRead, BufReader, Read},
@@ -14,33 +16,7 @@ use std::{
     process::{Child, Stdio},
     time::{Duration, Instant},
 };
-
-/// SIGTERM reaches only the process it names, so Unix needs no group.
-#[cfg(unix)]
-fn own_process_group<T>(_command: &mut T) {}
-
-#[cfg(unix)]
-fn send_stop_signal(child: &Child) {
-    let pid = libc::pid_t::try_from(child.id()).unwrap();
-    // SAFETY: plain FFI call with the child's pid; no memory is shared.
-    let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
-    assert_eq!(sent, 0, "SIGTERM: {}", std::io::Error::last_os_error());
-}
-
-/// Ctrl+Break reaches a process group; a new group keeps it away from the
-/// test itself.
-#[cfg(windows)]
-fn own_process_group(command: &mut impl std::os::windows::process::CommandExt) {
-    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
-}
-
-#[cfg(windows)]
-fn send_stop_signal(child: &Child) {
-    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
-    // SAFETY: plain FFI call with a process group id; no memory is shared.
-    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
-    assert_ne!(sent, 0, "Ctrl+Break: {}", std::io::Error::last_os_error());
-}
+use stop::{own_process_group, send_stop_signal};
 
 fn server_binary() -> PathBuf {
     if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {

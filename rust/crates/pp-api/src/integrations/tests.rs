@@ -39,6 +39,11 @@ async fn each_error_variant_has_one_status_and_code() {
             json!(code::INTEGRATION_LIMIT),
         ),
         (
+            PrinterSetupError::NotEditable,
+            409,
+            json!(code::INTEGRATION_NOT_EDITABLE),
+        ),
+        (
             PrinterSetupError::StoredDocumentInvalid(fault(SetupDocument::Integrations)),
             500,
             json!(code::INTEGRATIONS_UNREADABLE),
@@ -76,7 +81,7 @@ async fn an_invalid_request_names_every_field_and_no_value() {
         invalid(Field::BaseUrl, Reason::HasCredentials),
         invalid(Field::Username, Reason::NotUsedByKind),
         invalid(Field::ApiKey, Reason::TooLong),
-        invalid(Field::Password, Reason::NotUsedByKind),
+        invalid(Field::Password, Reason::NotResent),
     ]))
     .await;
     assert_eq!(status, 400);
@@ -90,7 +95,7 @@ async fn an_invalid_request_names_every_field_and_no_value() {
             {"pointer": "/base_url", "detail": "must not contain a username or password"},
             {"pointer": "/username", "detail": "is not used by this kind"},
             {"pointer": "/api_key", "detail": "is too long"},
-            {"pointer": "/password", "detail": "is not used by this kind"},
+            {"pointer": "/password", "detail": "must be sent again when the address changes"},
         ])
     );
 }
@@ -142,4 +147,23 @@ async fn an_unreadable_body_is_typed_without_echoing_it() {
             (&json!(kind), &errors)
         );
     }
+}
+
+/// Null clears a credential and keeps any other field; the kind is not a
+/// field.
+#[test]
+fn an_update_body_tells_a_null_credential_from_an_absent_one() {
+    let read = |body: Value| {
+        problem::parse_body::<UpdateIntegrationRequest>(body.to_string().as_bytes()).ok()
+    };
+    let kept = read(json!({"name": null, "base_url": null, "enabled": null})).unwrap();
+    assert!(kept.name.is_none() && kept.base_url.is_none() && kept.enabled.is_none());
+    assert!(kept.username.is_none() && kept.api_key.is_none() && kept.password.is_none());
+    let cleared = read(json!({"username": null, "api_key": null, "password": "pw"})).unwrap();
+    assert_eq!(
+        (cleared.username, cleared.api_key),
+        (Some(None), Some(None))
+    );
+    assert_eq!(cleared.password, Some(Some("pw".into())));
+    assert!(read(json!({"kind": "prusalink"})).is_none());
 }

@@ -353,7 +353,6 @@ fn read_router_with_updates(
     let probe = crate::printer_host::probe::router(admin_config.clone(), accepted_client.clone())?;
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
-    let source_files = source_file_routes(&owner, policy, config.clone())?;
     let admin_config = admin_config.with_server_update_checks(server.update_checks);
     let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
@@ -392,8 +391,7 @@ fn read_router_with_updates(
             .merge(probe)
             .merge(events)
             .merge(checkoff)
-            .merge(plates)
-            .merge(source_files)
+            .merge(plates.merge(source_file_routes(&owner, policy, config.clone())?))
             .merge(mcp),
     ))
 }
@@ -833,7 +831,9 @@ mod tests {
             }
             "CreatePrinterRequest" => json!({"name": "Client contract", "model": "fixture",
                 "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220}),
-            "UpdatePrinterRequest" => json!({"name": "Client contract"}),
+            "UpdateIntegrationRequest" | "UpdatePrinterRequest" => {
+                json!({"name": "Client contract"})
+            }
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,

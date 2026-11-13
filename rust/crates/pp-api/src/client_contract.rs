@@ -47,7 +47,7 @@ pub struct ClientRoute {
     pub headers: &'static [&'static str],
 }
 
-const fn route(
+pub(crate) const fn route(
     name: &'static str,
     method: &'static str,
     path: &'static str,
@@ -941,6 +941,9 @@ pub(crate) mod codegen {
                 unit_count: 2,
                 created_at: filled.then(|| "2026-11-05T00:00:00.000Z".into()),
                 updated_at: filled.then(|| "2026-11-05T00:10:00.000Z".into()),
+                error: (state == SendState::Error).then(|| UNICODE.into()),
+                upload_job_id: filled.then(|| format!("job-{index}")),
+                outcome_unknown: state == SendState::Error,
             }
         })
         .collect();

@@ -10,9 +10,11 @@
 
 mod copy;
 pub mod inventory;
+mod setup;
 mod verify;
 
 pub use copy::{ImportReport, REPORT_FILE, import};
+pub use setup::{Counted, CredentialAddress, SetupReport, SizeChange};
 pub use verify::SourcePaths;
 
 use crate::{archive, ownership_marker, schema, versions};
@@ -83,6 +85,17 @@ pub enum ImportError {
     SourceEscapes(i64),
     /// The Source's path in the copy is not what its stored path maps to.
     SourceRebase(i64),
+    /// Stored printers or integrations hold values Rust's documents cannot
+    /// hold: each kind and field with the number of rows, as the dry run
+    /// lists them.
+    SetupValues(Vec<Counted>),
+    /// The converted `printer.fleet` or `integrations` setting failed its
+    /// check. With a fault, Rust's reader refuses the document. Without one,
+    /// the document does not hold every entry and unread key of the source.
+    Setup {
+        setting: &'static str,
+        fault: Option<crate::printer_setup::DocumentFault>,
+    },
     /// Backup roots hold entries that are neither regular files nor folders.
     /// The import skips nothing, so it copies none of the installation.
     NotRegular(Vec<Unsupported>),
@@ -181,6 +194,8 @@ impl fmt::Display for ImportError {
             | Self::SourcesShare(..)
             | Self::SourceEscapes(_)
             | Self::SourceRebase(_)
+            | Self::SetupValues(_)
+            | Self::Setup { .. }
             | Self::CopyMismatch(_)
             | Self::Flush { .. } => self.fmt_write_step(f),
             Self::NoSpace {
@@ -265,6 +280,22 @@ impl ImportError {
             Self::SourceRebase(source) => write!(
                 f,
                 "Source {source}'s path in the copy is not what its stored path maps to, so the import stops"
+            ),
+            Self::SetupValues(refused) => write!(
+                f,
+                "Stored printers or integrations hold values Rust's documents cannot hold (kind, field, rows): {}. Nothing is guessed or dropped, so the import stops. Send the dry-run report back so each field can be decided",
+                (refused.iter())
+                    .map(|one| format!("{} {} = {}", one.kind, one.name, one.count))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Setup { setting, fault } => write!(
+                f,
+                "The converted setting {setting} failed its check ({}), so the import stops. Send the dry-run report back",
+                match fault {
+                    Some(fault) => format!("{fault:?}"),
+                    None => "it does not hold every stored entry and key".to_owned(),
+                }
             ),
             Self::CopyMismatch(copy) => write!(
                 f,
@@ -628,7 +659,8 @@ pub struct Unnamed {
 }
 
 /// What a dry run found. It holds keys, names and counts, and no stored
-/// value but the `tenant_id` values, which its text masks.
+/// value but the `tenant_id` values, which its text masks, and the bed sizes
+/// the import would round.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DryRunReport {
     pub source: SourceKind,
@@ -669,6 +701,8 @@ pub struct DryRunReport {
     /// each the source holds. The startup check copies them under `TMPDIR`
     /// and reads them into memory.
     pub database_files: Vec<(&'static str, u64)>,
+    /// What the conversion of the stored printers and integrations finds.
+    pub setup: SetupReport,
     /// How the Sources' stored paths would come out. A Source whose path is
     /// outside the installation, or whose folder is missing, keeps its
     /// record but its files are not in the copy.
@@ -716,7 +750,8 @@ impl DryRunReport {
             f,
             "Sources whose current revision cannot be placed in the copy: {}.{refused}",
             self.source_paths.missing_revisions
-        )
+        )?;
+        write!(f, "\n{}", self.setup)
     }
 }
 
@@ -1318,6 +1353,7 @@ fn measure(
     let held = |inside: &str| files.held.holds(inside);
     let rows = verify::source_rows(connection)?;
     let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held));
+    let setup = setup::plan(connection)?.report;
     let (tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
     let tenants: BTreeSet<&String> = (["build_profiles", "projects"].into_iter())
@@ -1381,11 +1417,8 @@ fn measure(
         upgraded_schema: ready.version,
         builds: table("build_profiles").map_or(0, |table| table.rows),
         sources: table("projects").map_or(0, |table| table.rows),
-        // Node reads a fleet that is not an array as no printers.
-        printers: (settings.iter())
-            .filter(|(key, _)| key == "printer.fleet")
-            .map(|(_, value)| items(value.as_bytes(), 0))
-            .sum(),
+        // The printers the converted fleet holds.
+        printers: setup.printers,
         unmatched_prints,
         installations,
         users: table("users").map_or(0, |table| table.rows),
@@ -1399,6 +1432,7 @@ fn measure(
         roots: files.roots.clone(),
         database_files: files.database.clone(),
         source_paths,
+        setup,
         tables,
     })
 }

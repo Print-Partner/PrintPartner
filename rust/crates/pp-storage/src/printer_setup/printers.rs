@@ -2,15 +2,16 @@
 //! stored order, and the four printer operations.
 //!
 //! The shape uses the field names Farm, Accept, Checkoff and the host lookup
-//! already read. It is strict and has no version field, like
-//! [`super::integrations`]: it changes only through a numbered schema step.
+//! already read. It has no version field, like [`super::integrations`]: it
+//! changes only through a numbered schema step. Every named field is typed
+//! strictly. A key the shape does not name is kept in [`Unread`] and never
+//! read; a loaded-filament row takes no such key.
 //!
 //! Lengths are whole millimetres, as integers. A fractional value is not this
-//! shape, and Node accepted one. The import (GRE-412) is to normalise such a
-//! row: bed width, depth and height round down, the margin rounds up, and each
-//! change is listed in the import report. That conversion is not built yet
-//! (`import/inventory.rs` lists `printer.fleet` as pending), so until it is, a
-//! document with a fractional length is refused whole.
+//! shape, and Node accepted one. The import (`import/setup.rs`) normalises
+//! such a row: bed width, depth and height round down, the margin rounds up,
+//! and each change is listed in the import report. A document with a
+//! fractional length that reaches this reader some other way is refused whole.
 //!
 //! New values are checked in [`apply`] against what Accept can use: a bed
 //! size is 1 to [`MAX_BED_MM`]; the margin is less than half the bed's width
@@ -26,7 +27,7 @@
 
 use super::{
     DocumentFault, Field, InvalidDocument, InvalidField, MAX_PRINTERS, PrinterSetupClient,
-    PrinterSetupError, Reason, ServiceKind, SetupDocument, integrations::MAX_NAME_BYTES,
+    PrinterSetupError, Reason, ServiceKind, SetupDocument, Unread, integrations::MAX_NAME_BYTES,
 };
 use crate::{
     read_model::Credential,
@@ -43,7 +44,6 @@ pub const MAX_FILAMENT_SLOTS: u8 = 4;
 /// One stored printer. `bed_width_mm`, `bed_depth_mm`, `bed_height_mm` and
 /// `margin_mm` are whole millimetres.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Printer {
     pub id: String,
     pub name: String,
@@ -65,6 +65,9 @@ pub struct Printer {
     pub preset_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_slicer: Option<String>,
+    /// Stored keys this shape does not name. Empty for a printer Rust made.
+    #[serde(flatten)]
+    pub unread: Unread,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -103,7 +106,7 @@ pub struct PrinterPatch {
 }
 
 /// The stored document, or which entry is not the typed shape and why.
-fn parse(text: &str) -> Result<Vec<Printer>, InvalidDocument> {
+pub(crate) fn parse(text: &str) -> Result<Vec<Printer>, InvalidDocument> {
     let fault = |entry, reason| InvalidDocument {
         document: SetupDocument::Printers,
         entry,
@@ -297,6 +300,7 @@ impl PrinterSetupClient {
                 device_id: None,
                 preset_id: None,
                 preferred_slicer: None,
+                unread: Unread::default(),
             };
             let values = PrinterPatch {
                 name: Some(new.name),

@@ -4,6 +4,7 @@ use pp_testkit::{Fixture, Installation, node_installation as synthetic, node_sch
 use std::time::SystemTime;
 
 mod copy;
+mod setup;
 
 fn node_folder() -> Installation {
     let installation = Installation::create(Fixture::NodeSchema34).unwrap();
@@ -138,14 +139,14 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 2))
+        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 3))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
     for (shape, expected) in [
         ("projects.local_path", 2),
         ("setting printer.fleet", 2),
-        ("setting integrations", 1),
+        ("setting integrations", 2),
         ("setting printer.unattributed_prints", 4),
         ("setting printer.send_queue", 0),
         ("projects.metadata_json", 1),
@@ -174,17 +175,19 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let text = report.to_string();
     let holds = |line: &str| assert!(text.contains(line), "{line} is not in:\n{text}");
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
-    holds("step 3 pending: setting printer.fleet = 2");
+    holds("step 3 converted: setting printer.fleet = 2");
     holds("Stored JSON the inventory does not name:\n  none");
     holds("Installation value \"default\"; accounts stored: 1.");
     holds("Kept, not used by Rust:\n  setting filename_grouping:* = 1");
     // No stored value: not the integration's key, a printer name or a free-text key.
     let stored = [
         synthetic::INTEGRATION_SECRET,
+        synthetic::ADDRESS_SECRET,
+        "printer.invalid",
         "Synthetic Printer",
         "synthetic-key",
     ];
-    assert_eq!(stored.map(|value| text.contains(value)), [false; 3]);
+    assert_eq!(stored.map(|value| text.contains(value)), [false; 5]);
 }
 
 #[test]
@@ -293,6 +296,10 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
+    // The fleet is not read as an empty list: the import would refuse it.
+    let refused = &report.setup.refused[0];
+    let found = (refused.kind, refused.name.as_str(), refused.count);
+    assert_eq!(found, ("printer", "(the setting is not a list)", 1));
     // The value is counted as stored and masked when printed: it can hold a
     // sign-in name.
     let solo = vec![("basic-solo".to_owned(), synthetic::SOURCES)];

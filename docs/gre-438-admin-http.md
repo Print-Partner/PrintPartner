@@ -324,6 +324,10 @@ is still the Farm list, which adds the live state.
 - A new or relinked printer needs no restart: the Farm list reads the stored
   printers on each request.
 - Delete removes the printer only. Its integration stays.
+- A stored printer or integration row can hold keys its typed shape does not
+  name; only the [Node import](node-import.md#printers-and-integrations)
+  writes them. No route reads or returns such a key, an edit stores it back
+  unchanged, and a request cannot add one.
 - The three writes run through the write seam. The read runs through the read
   seam (`pp-storage/src/read.rs`) on the read-only pool, so it does not wait in
   the writer queue.
@@ -334,7 +338,7 @@ is still the Farm list, which adds the live state.
 | No stored printer has that id | `404` | `printer_not_found` |
 | The installation already has 64 printers | `409` | `printer_limit` |
 | The edit lowers `max_filament_slots` below a slot that holds filament | `409` | `filament_slot_in_use` |
-| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. Every operation is refused and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
+| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. Every operation is refused and the stored text is left as it is. The [Node import](node-import.md#printers-and-integrations) rounds such lengths, so an imported folder does not hold one. | `500` | `printers_unreadable` |
 | The write could not start before its deadline, or no reader came free in time | `503` | `transaction_unavailable` |
 
 Invalid values:

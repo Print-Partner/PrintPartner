@@ -13,6 +13,8 @@ pub const PRINTERS: u64 = 2;
 pub const UNMATCHED_PRINTS: u64 = 2;
 /// A value stored in the integration's config. No report may contain it.
 pub const INTEGRATION_SECRET: &str = "synthetic-not-a-real-key";
+/// The password inside the Moonraker integration's stored address.
+pub const ADDRESS_SECRET: &str = "synthetic-not-a-real-password";
 /// Tables that a long-lived installation fills and the seeded synthetic
 /// installation leaves empty. [`populate`] writes one row in each.
 pub const LONG_LIVED_TABLES: [&str; 10] = [
@@ -34,7 +36,10 @@ const MANIFEST: &str = ".printpartner-source-snapshot.json";
 /// `node_schema::write_schema_33_database`), with Sources, Builds, settings
 /// and files, and one row in each table a long-lived installation fills. One
 /// printer has a numeric id and a bed size stored as text, as old Node
-/// installations do. Source paths are absolute, under `directory`, and each
+/// installations do; the other has fractional sizes and a key Rust's
+/// printer shape does not name. The integrations are a Moonraker host, whose
+/// address holds a username and password and whose config holds one more
+/// such key, and a Bambu printer. Source paths are absolute, under `directory`, and each
 /// Source has a folder of its own, as Node gives it.
 pub fn populate(directory: &Path) -> io::Result<()> {
     let revision = directory.join("repos/1/revisions/synthetic-a");
@@ -52,8 +57,8 @@ pub fn populate(directory: &Path) -> io::Result<()> {
         r#"[{"name":"Synthetic PLA"},{"name":"Synthetic PETG"}]"#,
     )?;
     let settings = [
-        ("printer.fleet", r#"[{"id":1,"name":"Synthetic Printer 1","bed_width_mm":"250"},{"id":"synthetic-printer-2","name":"Synthetic Printer 2","bed_width_mm":250}]"#.to_owned()),
-        ("integrations", format!(r#"[{{"id":"synthetic-integration","kind":"moonraker","config":{{"host":"printer.invalid","port":"7125","api_key":"{INTEGRATION_SECRET}"}}}}]"#)),
+        ("printer.fleet", r#"[{"id":1,"name":"Synthetic Printer 1","bed_width_mm":"250"},{"id":"synthetic-printer-2","name":"Synthetic Printer 2","bed_width_mm":220.5,"bed_depth_mm":220,"bed_height_mm":250.9,"margin_mm":3.2,"max_filament_slots":2,"loaded_filaments":[{"slot":2,"filament_color_id":null,"label":"Synthetic PLA"}],"integration_id":"synthetic-integration","nozzle_mm":0.4}]"#.to_owned()),
+        ("integrations", format!(r#"[{{"id":"synthetic-integration","type":"moonraker","name":"Synthetic Host","config":{{"base_url":"http://synthetic:{ADDRESS_SECRET}@printer.invalid:7125","enabled":true,"api_key":"{INTEGRATION_SECRET}","poll_seconds":5}},"created_at":"2026-10-01T00:00:00.000Z","updated_at":"2026-10-02T00:00:00.000Z"}},{{"id":"synthetic-bambu","type":"bambu","name":"Synthetic Bambu","config":{{"host":"bambu.invalid","access_code":"{INTEGRATION_SECRET}","serial":"SYNTHETIC0001","enabled":true}},"created_at":"2026-10-01T00:00:00.000Z","updated_at":"2026-10-01T00:00:00.000Z"}}]"#)),
         ("printer.unattributed_prints", r#"[{"id":"a","filename":"a.gcode"},{"id":"b","filename":"b.gcode","claimed_at":null},{"id":"c","filename":"c.gcode","claimed_at":"2026-10-02T00:00:00.000Z"},{"id":"d","filename":"d.gcode","dismissed":true}]"#.to_owned()),
         ("feature_toggles", r#"{"farm":true}"#.to_owned()),
         ("feature_toggles:plan:1", r#"{"bambu":false}"#.to_owned()),

@@ -2,13 +2,13 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)), and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Steps 1 and 2 exist today.
+The import lands in six steps. Steps 1 to 3 exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
 | 1 | The dry run and this inventory | in this release |
 | 2 | The import: copy, schema upgrade, `projects.local_path` rebase, verification, report, ownership marker | in this release, see [Import](#import) |
-| 3 | Printers and integrations | not written; needs the typed fleet and integrations documents |
+| 3 | Printers and integrations | in this release, see [Printers and integrations](#printers-and-integrations) |
 | 4 | Checkoff links, unmatched prints and the send queue | not written |
 | 5 | Sources | not written |
 | 6 | Builds and Plans; the report says `complete: true` | not written |
@@ -43,7 +43,7 @@ It exits 0 with the report on stdout. It exits 1 with `import refused: <reason>`
 
 ### Report
 
-The report holds keys, names and counts, never a stored value. On the synthetic installation (`npm run fixture:synthetic -- --seed 1138`, [Storage](storage.md#synthetic-installations)) it starts:
+The report holds keys, names and counts, and no stored value but the bed sizes the import rounds. On the synthetic installation (`npm run fixture:synthetic -- --seed 1138`, [Storage](storage.md#synthetic-installations)) it starts:
 
 ```text
 Dry run of a Node data folder. Nothing was written.
@@ -55,6 +55,7 @@ Then it lists:
 
 - **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
 - **Database files:** the bytes of `print-partner.db`, its `-wal` and its `-journal`, for each the source holds, and their total. The startup check copies these under `TMPDIR` and holds them in memory, so compare the total with the free space and memory given above; the documented Docker run gives `/tmp` 1 GB.
+- **Printers and integrations:** the bed sizes the import rounds, each as printer, field, stored value and whole value; the keys kept unread, each as kind, key and number of rows; any value Rust's documents cannot hold, each as kind, field and number of rows, with the line that the import would refuse; and the number of integration addresses that hold a username or password. See [Printers and integrations](#printers-and-integrations).
 - **Source paths:** three counts, "Source paths outside the installation", "Source paths whose folder is missing in the copy" and "Sources whose current revision cannot be placed in the copy", by the rule under [Source paths](#source-paths). Paths are never printed.
 - **Backup roots:** for each backup root the source holds, the number of its files and folders, counted as a backup counts entries, and for a folder source the bytes of its files; then the total for all roots. A backup is bounded by its number of entries, so this line says how far an installation is from that bound.
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
@@ -63,7 +64,7 @@ Then it lists:
 - **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.
 - **Stored JSON the inventory does not name:** every other setting or column that holds a JSON object or array, as `setting <key>` or `table.column` with its count. The inventory below was built by reading code and may be incomplete. The dry run lists them and still exits 0. The import itself will refuse while any line is here: every stored JSON shape must be named as converted, copied unchanged, kept unused or dropped. So run the dry run on a copy of the real data, report every line, and import after the inventory names them.
 
-"Unmatched prints" counts entries of `printer.unattributed_prints` with no `claimed_at` time and no `dismissed: true`. "Printers" counts the elements of `printer.fleet`; a value that is not an array counts as none.
+"Unmatched prints" counts entries of `printer.unattributed_prints` with no `claimed_at` time and no `dismissed: true`. "Printers" counts the printers the converted `printer.fleet` holds.
 
 ### Refusals
 
@@ -105,6 +106,7 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | Backup roots that hold a symbolic link, a FIFO, a socket or a device | The import copies files and folders and skips nothing. The message gives the number of each kind under each root, never a file name. Find them with `find <folder> ! -type f ! -type d`, then remove or replace them. |
 | Destination that gains a database, a root, a report or a marker while the import runs | The import replaces nothing. Nothing is moved in. |
 | Stored JSON the inventory does not name | Every shape must be named as converted, copied unchanged, kept unused or dropped. The message lists the shapes as the dry run does. |
+| A stored printer or integration with a value Rust's document cannot hold | Nothing is guessed or dropped. The message lists each kind and field with its number of rows, as the dry run does, and never a value. See [Printers and integrations](#printers-and-integrations). |
 | Rows in any table under an installation value other than `default` | The Rust runtime reads only `default`. The message names the value and the number of rows under it. Send the dry-run report back so the case can be added; nothing re-assigns the data today. |
 | More than one account | The Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added. There is no option to pick an account. |
 | A copied file that reads back differently from its source | The disk or the copy failed. |
@@ -147,6 +149,39 @@ Two cases count as outside although the files may be in the copy, because the im
 
 After writing, the import checks every Source's path in the copy against the path the source stored, without the code that wrote it: the path is either the stored one, or `<destination>/repos/` followed by the snapshot name or by what the stored path holds below the installation's `repos`.
 
+### Printers and integrations
+
+Node read the settings `printer.fleet` and `integrations` leniently on every use. Rust's readers type every field they name (`pp-storage/src/printer_setup`), so the import writes each setting once in Rust's shape. Entries keep their ids and their stored order. Nothing stored is dropped and no value is guessed (architect ruling, 2026-11-13, GRE-1523).
+
+**A field Rust names** converts the way Node read it:
+
+- A printer id that is a number becomes text. A size or slot count stored as text is read as a number.
+- A printer field that holds nothing gets Node's default: name and model `Printer`, the bed 250 by 210 mm, the margin 4 mm, one filament slot, no height. Slots are held to 1 to 4, and the printer gets one loaded-filament row per slot; Node filled a slot without a row with an empty one.
+- Bed width, depth and height round down to whole millimetres and the margin rounds up, so a part is never placed past the real bed. No printer is refused for a fractional size. Every size the import changes is listed in the report: the printer's place in the stored list, the field, the stored value and the whole value. These numbers are the only stored values a report holds.
+- A Moonraker, PrusaLink or Spoolman integration has Rust's field names already when the old web UI wrote it: `base_url`, `enabled`, `username`, `api_key`, `password`, `storage`. Where one of these holds nothing and Node's second spelling of it does (`baseUrl`, `apiKey`, `user`, `storage_path`), the value moves to Rust's name, as Node read it.
+- Bambu, Home Assistant, the assistant and the slicer sidecar are kept byte for byte. Rust does not create these kinds and stores them as they are.
+- An address that holds a username or password (`http://user:pass@host`) is kept as stored. The import does not move the credentials into fields. The dry run gives the number of such addresses; the saved report also gives each one's place in the stored list and its kind, never the address.
+
+**A key Rust does not name** is kept, with its value, in the converted row: at the end of the printer or integration row, or of the integration's `config`, wherever it was stored. A second spelling Node did not read, because Rust's name held a value, is kept the same way.
+
+- Rust never reads such a key. No route, MCP tool or log line returns or prints it, since it may hold a secret.
+- An edit through the Settings routes stores the row back with its keys unchanged. A request cannot add one: the request types take only their own fields.
+- The report names each such key with its kind and the number of rows that hold it, as `printer nozzle_mm = 1` or `moonraker config.port = 2`, and never its value. A key that is not a plain identifier prints as `?`. Kept keys do not make the copy incomplete.
+
+**A value Rust's shape cannot hold** is refused, by kind and field with the number of rows. The dry run lists each as `printer bed_width_mm = 1` and says the import would refuse; the import stops before it writes anything, with the same list. These are:
+
+| Listed as | What it is |
+| --- | --- |
+| a field, such as `name`, `config.base_url` or `loaded_filaments.slot` | A value of another type than the field takes, a field the row cannot do without (an id; for an integration also `name`, `config`, `config.base_url` and both times), a size below 0, a slot count that is no whole number, a slicer Node did not know, or a loaded-filament row for a slot the printer does not have or has twice. |
+| `loaded_filaments.<key>` | A key a loaded-filament row does not name. That row has no place to keep one, and Node discarded it on every read. |
+| `type` | An integration whose `type` no adapter knows. Its kind prints as `integration`. |
+| `(an entry is not an object)`, `(an id is stored twice)` | An entry Node could not use, or used only the first of. |
+| `(the setting is not a list)` | The whole setting. Node read it as no entries; the import does not. |
+
+Each line is a case for a decision, not a fault of the installation: send the dry-run report back. A library kept through the old web UI holds none of them, because Node rewrote the fleet in this shape on every save and the UI wrote only Rust's integration fields.
+
+After writing, the import reads both settings back and checks them without the code that converted them. Rust's own reader must take each document. It must hold the source's entries, one for one and in the source's order, and each entry must still hold every key Rust does not name, with its value. A failed check stops the import before the marker.
+
 ### Verification
 
 Before the upgrade, the import takes a SHA-256 of every row of every table in the staged database. After the upgrade and the rebase it takes them again, over the columns the source had, and refuses the import unless every table holds exactly the rows it held. The tables come from the database, not from a list, so a table this page does not know is compared too. The report gives the number of tables and rows compared.
@@ -157,14 +192,14 @@ It leaves out only what the import or the upgrade changes on purpose:
 | --- | --- |
 | Tables `sessions` and `password_reset_tokens` | The import empties them. |
 | Setting `schema_version` | The upgrade writes Rust's schema number. |
-| Every shape an inventory row marks `converted`, today `projects.local_path` | A converter rewrites it, and that converter's own check covers it; for `projects.local_path` see [Source paths](#source-paths). |
+| Every shape an inventory row marks `converted`, today `projects.local_path` and the settings `printer.fleet` and `integrations` | A converter rewrites it, and that converter's own check covers it: see [Source paths](#source-paths) and [Printers and integrations](#printers-and-integrations). |
 | Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 
-The report holds keys, names and counts, never a stored value. It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. One more limit applies to a copy made today:
+The report holds keys, names and counts, and no stored value but the bed sizes the import rounds. It says `complete: false` while any inventory row is `pending` and while a Source's files are not in the copy. Such a copy is disposable: import again once every converter exists. One more limit applies to a copy made today:
 
 - Node's send queue arrives as stored. The Rust runtime turns `sending` items into `error` when it opens the folder and never starts an upload on its own, so nothing prints without a Send action. Step 4 will turn `queued` items into `error` too.
 
@@ -175,8 +210,8 @@ The report holds keys, names and counts, never a stored value. It says `complete
 | Step | Stored shape | Rust reader today | Typed target | Status |
 | --- | --- | --- | --- | --- |
 | 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>`, or `<data>/repos/` and the stored path below the installation's `repos`; any other path is kept | converted |
-| 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document | pending |
-| 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; unknown kinds kept as they are | pending |
+| 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document; keys Rust does not name kept unread | converted |
+| 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; keys Rust does not name kept unread; kinds Rust does not create kept as they are | converted |
 | 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | pending |
 | 4 | setting `printer.send_queue` | `ps/send_queue.rs` adopts it at every open; `ps/read_model/farm.rs`, `history.rs` | rows in `printer_send_queue`; setting deleted; `artifact_path` rebased | pending |
 | 4 | settings `printer.unattributed_prints`, `printer.plan_bindings` | `ps/checkoff_progress/unattributed.rs` | `Vec<UnattributedPrint>`, `Vec<PlanBinding>` | pending |

@@ -8,7 +8,7 @@
 use super::{
     DATABASE_FILES, Destination, DryRunReport, Files, Held, ImportError, STAGE_RESERVE, Scratch,
     SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
-    scan_roots, stage_directory, upgrade, verify,
+    scan_roots, setup, stage_directory, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -40,7 +40,8 @@ pub struct RowReport {
     pub shapes: Vec<ShapeReport>,
 }
 
-/// What an import wrote. It holds keys, names and counts, never a stored value.
+/// What an import wrote. It holds keys, names and counts, and no stored value
+/// but the bed sizes the import rounded.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ImportReport {
     /// False while any inventory row is still `pending`. Such a copy is
@@ -60,6 +61,9 @@ pub struct ImportReport {
     /// Sources whose stored path is inside the installation but whose folder
     /// the copy lacks. Each keeps its record and its stored path.
     pub sources_missing: u64,
+    /// What the conversion of the stored printers and integrations changed
+    /// and kept.
+    pub setup: setup::SetupReport,
     /// Source tables, and their rows, that arrived as the source stored them.
     pub verified_tables: u64,
     pub verified_rows: u64,
@@ -103,6 +107,7 @@ impl ImportReport {
             rebased_sources: paths.rebased,
             sources_outside: paths.outside,
             sources_missing: paths.missing,
+            setup: counts.setup.clone(),
             verified_tables: stored.len() as u64,
             verified_rows: stored.values().map(|(_, rows)| rows.len() as u64).sum(),
             files,
@@ -146,6 +151,7 @@ impl fmt::Display for ImportReport {
             "Source paths whose folder is missing in the copy: {}",
             self.sources_missing
         )?;
+        write!(f, "{}", self.setup)?;
         writeln!(
             f,
             "{} rows in {} tables arrived as the source stored them.",
@@ -300,11 +306,17 @@ pub(super) fn import_with(
     if counts.users > 1 {
         return Err(ImportError::Accounts(counts.users));
     }
+    if !counts.setup.refused.is_empty() {
+        return Err(ImportError::SetupValues(counts.setup.refused.clone()));
+    }
     let repos = root.join("repos");
     // A folder source is the Node data folder itself; an archive names none.
     let node = metadata.is_dir().then_some(source);
     let rebased = verify::rebase_sources(&connection, node, &stage.0.join("repos"), &repos)?;
     verify::check_sources(&connection, &paths, node, &repos)?;
+    // Printers and integrations become the documents Rust reads. The report
+    // was taken from the same stored text when the staged copy was counted.
+    setup::write(&connection, &setup::plan(&connection)?)?;
     let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
     if !changed.is_empty() {
         return Err(ImportError::RowsChanged(changed));

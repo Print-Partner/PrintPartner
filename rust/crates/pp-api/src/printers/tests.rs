@@ -2,7 +2,7 @@ use super::*;
 use crate::integrations::tests::refusal;
 use pp_storage::printer_setup::{
     DocumentFault, Field, InvalidDocument, InvalidField, LoadedFilament, PrinterSetupError, Reason,
-    SetupDocument,
+    SetupDocument, Unread,
 };
 use serde_json::{Value, json};
 
@@ -82,13 +82,22 @@ fn a_printer_answers_as_its_configuration() {
         device_id: Some("ha-device".into()),
         preset_id: None,
         preferred_slicer: Some("orca".into()),
+        unread: Unread::default(),
     };
-    assert_eq!(
-        serde_json::to_value(PrinterConfig::from(stored)).unwrap(),
-        json!({"id": "p-1", "name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
-            "bed_depth_mm": 300, "bed_height_mm": null, "margin_mm": 4,
-            "max_filament_slots": 2, "integration_id": "moon-1"})
-    );
+    let answer = json!({"id": "p-1", "name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
+        "bed_depth_mm": 300, "bed_height_mm": null, "margin_mm": 4,
+        "max_filament_slots": 2, "integration_id": "moon-1"});
+    // A row the import wrote also carries keys the shape does not name. The
+    // answer is the same without a trace of them.
+    let mut imported = serde_json::to_value(&stored).unwrap();
+    imported["nozzle_mm"] = json!(0.4);
+    imported["notes"] = json!({"token": "unread-canary"});
+    let imported: Printer = serde_json::from_value(imported).unwrap();
+    assert_ne!(imported, stored);
+    for printer in [stored, imported] {
+        let body = serde_json::to_value(PrinterConfig::from(printer)).unwrap();
+        assert_eq!(body, answer);
+    }
 }
 
 /// An edit tells an absent `integration_id` (keep) from a null one (unlink).

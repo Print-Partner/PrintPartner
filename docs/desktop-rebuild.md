@@ -2024,3 +2024,15 @@ never replaces one, and only `POST /api/v1/integrations/{id}/tls-pin/reset`
 deletes one ([Bambu LAN driver](bambu-lan.md#pinning-in-settings)).
 
 See [Filament grams per send (GRE-1165, part a: GRE-1237)](records/filament-grams-per-send.md).
+
+## STL pack differences from Node (GRE-1525)
+
+`GET /api/v2/plans/{id}/exports/stl-pack` replaces Node's `POST /jobs/export-stl-pack` job and its `GET /exports/*` download. These differences are deliberate:
+
+- **On request.** The pack is built when it is downloaded and streamed from the verified Source files. Node runs a job, stages a copy of every file and publishes a stored ZIP under `exports/`. Rust writes no file and starts no job, so nothing is left to clean up after a cancelled download or a restart.
+- **Whole-pack refusal.** A missing or altered Source file refuses the pack with a 409 naming each such file (owner decision, 2026-11-12). Node skips the file, records a warning and packs the rest.
+- **Name collisions.** A name already used, ignoring case, gains `_2`, `_3` and so on, so no unit's STL overwrites another on a case-insensitive file system. Node first prefixes the folder or part key, then numbers, and compares names case-sensitively.
+- **Cleaned file stems.** The file stem is cleaned like the role and folder segments, so a stored name holding `/`, `\` or `..` cannot leave the extraction folder. Node used the stem as stored.
+- **Folders.** Every pack uses `<role>/<folder>/`. Node's colour-only folders, filename grouping and single-unit selection are not ported (GRE-393).
+- **Stored entries.** Every entry is stored uncompressed, so each is byte-identical to its Source file and the archive size is known before it is written.
+

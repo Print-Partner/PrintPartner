@@ -68,6 +68,39 @@ pub(super) async fn call(
     (text, result["isError"] == true)
 }
 
+/// `call`, with the text parsed as JSON.
+pub(super) async fn tool(
+    server: &McpServer,
+    headers: &[(String, String)],
+    name: &str,
+    arguments: Value,
+) -> (Value, bool) {
+    let (text, failed) = call(server, headers, name, arguments).await;
+    (serde_json::from_str(&text).unwrap(), failed)
+}
+
+/// Confirms the action a successful propose answered.
+pub(super) async fn confirm(
+    server: &McpServer,
+    headers: &[(String, String)],
+    proposed: &Value,
+) -> (Value, bool) {
+    assert_eq!(proposed["status"], "proposed", "{proposed}");
+    let id = &proposed["action"]["id"];
+    tool(server, headers, "confirm_apply", json!({ "action_id": id })).await
+}
+
+/// A same-origin `tools/call` without an API key gets 401 and no session.
+pub(super) async fn assert_needs_key(server: &McpServer, name: &str, arguments: Value) {
+    let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": { "name": name, "arguments": arguments } });
+    let (status, body, session) = server
+        .post("/api/v1/mcp", &[("origin", SELF)], &request)
+        .await;
+    assert_eq!(status, 401, "{body}");
+    assert!(session.is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_62_mcp_domain_read_tools_answer_node_text_for_the_callers_tenant() {
     let server = McpServer::seeded(SEED).await;

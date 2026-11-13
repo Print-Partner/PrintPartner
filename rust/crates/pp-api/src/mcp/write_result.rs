@@ -70,6 +70,13 @@ pub(super) enum Code {
     DerivedEvidenceNotFound,
     // get_print_stats
     InvalidHours,
+    // propose_rebuild_plan
+    NoStructuralBase,
+    SourceChoicesUnsupported,
+    LayerConflict,
+    NoStls,
+    WouldWipe,
+    IdempotencyConflict,
 }
 
 impl Code {
@@ -118,6 +125,12 @@ impl Code {
             Self::SourceNotFound => "source_not_found",
             Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
             Self::InvalidHours => "invalid_hours",
+            Self::NoStructuralBase => "no_structural_base",
+            Self::SourceChoicesUnsupported => "source_choices_unsupported",
+            Self::LayerConflict => "layer_conflict",
+            Self::NoStls => "no_stls",
+            Self::WouldWipe => "would_wipe",
+            Self::IdempotencyConflict => "idempotency_conflict",
         }
     }
 }

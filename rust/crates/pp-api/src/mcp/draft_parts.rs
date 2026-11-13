@@ -37,7 +37,7 @@ const PARTS_REQUIRED: Refusal =
     Refusal::new(Code::PartsRequired, "parts must list at least one edit.");
 const INVALID_EDIT: Refusal = Refusal::new(
     Code::InvalidEdit,
-    "Each edit needs a part_id, an optional boolean included, and an optional quantity_override that is null or a whole number. List each Part once.",
+    "Each edit needs a part_id, an optional boolean included, and an optional quantity_override that is null or a whole number from 1 to 10,000. List each Part once.",
 );
 const PART_NOT_FOUND: Refusal = Refusal::new(Code::PartNotFound, "A part_id is not in the draft.");
 const EDIT_EMPTY: Refusal = Refusal::new(
@@ -169,14 +169,19 @@ impl CheckoffDomain {
         if refusal.code == Code::OutcomeUnknown {
             return Ok(refusal);
         }
-        let current = self.workspace(plan, draft)?.ok().map(|workspace| Current {
-            digest: workspace.draft.snapshot_digest,
-            parts: workspace
-                .parts
-                .iter()
-                .map(|part| (part.draft_part_id, part.included, part.quantity_override))
-                .collect(),
-        });
+        let current = match self.workspace(plan, draft)? {
+            Ok(workspace) => Some(Current {
+                digest: workspace.draft.snapshot_digest,
+                parts: workspace
+                    .parts
+                    .iter()
+                    .map(|part| (part.draft_part_id, part.included, part.quantity_override))
+                    .collect(),
+            }),
+            // The Build or draft is gone, so nothing this edit wrote remains.
+            Err(read) if read.code == Code::NotFound => return Ok(refusal),
+            Err(_) => None,
+        };
         Ok(after_failed_edit(refusal, current.as_ref(), &action.params))
     }
 
@@ -405,6 +410,8 @@ struct Current {
 /// What confirm answers after the edit ended with `refusal`, given the
 /// re-read draft (`None` when the re-read failed) and the proposal's params.
 /// The Part edit writes all its values in one transaction or none.
+/// - `draft_changed`, `base_changed` and `not_open` stand as they are: the
+///   edit's own checks give them, and a commit is never inferred from them.
 /// - The draft still has the expected digest: nothing was written, so `refusal`.
 /// - The draft holds every proposed value under a new digest: the edit
 ///   committed, then the Required-unit selection failed, so `outcome_unknown`.
@@ -417,6 +424,12 @@ fn after_failed_edit(
     current: Option<&Current>,
     params: &Map<String, Value>,
 ) -> Refusal {
+    if matches!(
+        refusal.code,
+        Code::DraftChanged | Code::BaseChanged | Code::NotOpen
+    ) {
+        return refusal;
+    }
     let unwritten = match current {
         Some(current) => {
             params
@@ -486,7 +499,7 @@ mod tests {
         let after = |refusal, current: Option<Current>| {
             after_failed_edit(refusal, current.as_ref(), &params).code
         };
-        for refusal in [unauthorized, unavailable, internal, changed] {
+        for refusal in [unauthorized, unavailable, internal] {
             // Unchanged draft: nothing was written.
             assert_eq!(after(refusal, Some(draft(EXPECTED, true))), refusal.code);
             // New digest without the proposed value: another change, not this edit.
@@ -497,6 +510,13 @@ mod tests {
                 Code::OutcomeUnknown
             );
         }
+        // The edit's own refusals never infer a commit.
+        for code in [Code::DraftChanged, Code::BaseChanged, Code::NotOpen] {
+            let refusal = Refusal::new(code, "");
+            assert_eq!(after(refusal, Some(draft(OTHER, false))), code);
+            assert_eq!(after(refusal, None), code);
+        }
+        assert_eq!(changed.code, Code::DraftChanged);
         assert_eq!(after(unauthorized, None), Code::Unauthorized);
         assert_eq!(after(unavailable, None), Code::Unavailable);
         assert_eq!(after(internal, None), Code::OutcomeUnknown);

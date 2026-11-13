@@ -56,14 +56,6 @@ pub(super) enum Code {
     InvalidSourceRole,
     EvidenceNotFound,
     MultipleStructuralBases,
-    // propose_rebuild_plan
-    NoStructuralBase,
-    SourceChoicesUnsupported,
-    SourceNotFound,
-    LayerConflict,
-    NoStls,
-    WouldWipe,
-    IdempotencyConflict,
 }
 
 impl Code {
@@ -103,13 +95,6 @@ impl Code {
             Self::InvalidSourceRole => "invalid_source_role",
             Self::EvidenceNotFound => "evidence_not_found",
             Self::MultipleStructuralBases => "multiple_structural_bases",
-            Self::NoStructuralBase => "no_structural_base",
-            Self::SourceChoicesUnsupported => "source_choices_unsupported",
-            Self::SourceNotFound => "source_not_found",
-            Self::LayerConflict => "layer_conflict",
-            Self::NoStls => "no_stls",
-            Self::WouldWipe => "would_wipe",
-            Self::IdempotencyConflict => "idempotency_conflict",
         }
     }
 }
@@ -129,14 +114,6 @@ impl Refusal {
     /// The text of a refused propose.
     pub(super) fn proposal(self) -> String {
         json!({ "error": self.detail, "code": self.code.as_str() }).to_string()
-    }
-
-    /// A refused propose, as the tool's invocation.
-    pub(super) fn invocation(self) -> pp_services::mcp_domain::ToolInvocation {
-        pp_services::mcp_domain::ToolInvocation {
-            content: self.proposal(),
-            proposed_action: None,
-        }
     }
 
     /// The result of a refused confirm.

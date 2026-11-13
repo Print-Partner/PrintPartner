@@ -469,12 +469,6 @@ impl ProductMcp {
 }
 
 /// `arguments[field]` as a whole number from 1 to 2^53 - 1, as Node reads it.
-/// `plan_id` as every MCP planning tool reads it: a JSON whole number from
-/// 1 up, never a numeric string.
-fn plan_id(args: &serde_json::Map<String, Value>) -> Option<PositiveId> {
-    positive_id(&json!({ "plan_id": args.get("plan_id")? }), "plan_id")
-}
-
 fn positive_id(arguments: &Value, field: &str) -> Option<PositiveId> {
     arguments
         .get(field)
@@ -595,8 +589,6 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
-#[path = "mcp/rebuild_plan.rs"]
-mod rebuild_plan;
 #[path = "mcp/source_roles.rs"]
 mod source_roles;
 #[path = "mcp/write_result.rs"]

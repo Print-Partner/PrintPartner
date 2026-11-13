@@ -395,7 +395,7 @@ fn mark_modified(tx: &Transaction<'_>, tenant: &str, build: i64, now: &str) -> R
     Ok(())
 }
 
-fn mutation(
+pub(crate) fn mutation(
     tx: &Transaction<'_>,
     tenant: &str,
     command: &BuildCommand,

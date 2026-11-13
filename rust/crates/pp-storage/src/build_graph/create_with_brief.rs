@@ -264,7 +264,7 @@ fn recorded(
     }))
 }
 
-pub(super) fn brief_key(build: PositiveId) -> String {
+pub(crate) fn brief_key(build: PositiveId) -> String {
     format!("build_planning.v1.{}", build.get())
 }
 
@@ -272,7 +272,7 @@ fn record_key(key: &str) -> String {
     format!("build_planning.create.{key}")
 }
 
-pub(super) fn save(
+pub(crate) fn save(
     tx: &Transaction<'_>,
     tenant: &str,
     key: &str,
@@ -287,14 +287,14 @@ pub(super) fn save(
 
 /// The two ways a Build's stored planning brief is unusable, as each brief
 /// writer's own error enum names them.
-pub(super) trait BriefError: From<rusqlite::Error> {
+pub(crate) trait BriefError: From<rusqlite::Error> {
     fn no_brief() -> Self;
     /// The stored brief does not parse or names another Build.
     fn invalid() -> Self;
 }
 
 /// `build`'s stored planning brief, read in `tx`.
-pub(super) fn stored_brief<E: BriefError>(
+pub(crate) fn stored_brief<E: BriefError>(
     tx: &Transaction<'_>,
     tenant: &str,
     build: PositiveId,

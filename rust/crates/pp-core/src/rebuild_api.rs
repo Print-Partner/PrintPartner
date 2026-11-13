@@ -813,7 +813,9 @@ mod tests {
             }
             "CreatePrinterRequest" => json!({"name": "Client contract", "model": "fixture",
                 "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220}),
-            "UpdatePrinterRequest" => json!({"name": "Client contract"}),
+            "UpdateIntegrationRequest" | "UpdatePrinterRequest" => {
+                json!({"name": "Client contract"})
+            }
             "SaveDraftHeaderRequest" => {
                 json!({"expected_base": {"revision_id": null, "plan_version": 0},
                 "expected_draft": null, "expected_header_version": null,

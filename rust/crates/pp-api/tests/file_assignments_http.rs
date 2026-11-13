@@ -8,7 +8,10 @@ use axum::{Router, body::Body, http::StatusCode};
 use checkoff_http::{Fixture, post, post_as};
 use pp_api::{
     file_assignments::file_assignments_router,
-    printer_host::{Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort},
+    printer_host::{
+        Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort, TlsPin,
+        TlsPinReset,
+    },
 };
 use pp_storage::{
     SettingsClient,
@@ -163,11 +166,11 @@ impl PrinterHostPort for Host {
         Box::pin(async { HostAnswer::Unsupported })
     }
 
-    fn tls_pin(&self, _: String) -> Answer<Value> {
+    fn tls_pin(&self, _: String) -> Answer<TlsPin> {
         Box::pin(async { HostAnswer::Unsupported })
     }
 
-    fn reset_tls_pin(&self, _: String) -> Answer<Value> {
+    fn reset_tls_pin(&self, _: String) -> Answer<TlsPinReset> {
         Box::pin(async { HostAnswer::Unsupported })
     }
 

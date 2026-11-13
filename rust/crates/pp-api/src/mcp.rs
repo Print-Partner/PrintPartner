@@ -15,7 +15,10 @@
 //! its planning brief (`mcp/create_build.rs`). `get_build_planning_state`
 //! and `get_plan_draft` read the brief and draft (`mcp/planning_reads.rs`).
 //! Refusals of these tools carry a code from `mcp/write_result.rs`.
-//! LAN peers stay out until the T-14 trust classes land.
+//! On the headless explicit listener (`PP_LISTEN_ADDR`), the same key guard
+//! admits any peer the listener admits; Host and Origin are then checked
+//! against the listener's validated authority (`NetworkAdmission`), and no
+//! peer is trusted by its address.
 
 use crate::loopback::{
     LoopbackOrigin, PresentedCredential, admit, principal, rebuild_flag_enabled,
@@ -68,6 +71,7 @@ pub struct McpHttpConfig {
     host: String,
     api_key_tenant: String,
     enabled: bool,
+    explicit_listener: bool,
     wait: Duration,
     limit: u32,
     window: Duration,
@@ -86,6 +90,7 @@ impl McpHttpConfig {
             host: listener.host,
             api_key_tenant: api_key_tenant.into(),
             enabled: rebuild_flag_enabled(flag),
+            explicit_listener: false,
             wait: Duration::from_millis(100),
             limit: rate_limit::LIMIT,
             window: rate_limit::WINDOW,
@@ -94,6 +99,15 @@ impl McpHttpConfig {
             #[cfg(test)]
             clock: None,
         })
+    }
+
+    /// Serve the headless explicit listener. Its Host is whatever literal IP
+    /// and published port the client used, so rmcp's fixed loopback allowlists
+    /// are off and the guard's `admit` checks the validated `NetworkAdmission`
+    /// authority instead. Requests without one stay loopback-only.
+    pub fn explicit_listener(mut self, on: bool) -> Self {
+        self.explicit_listener = on;
+        self
     }
 
     /// A smaller budget on a clock the test advances, so a test can exhaust
@@ -167,10 +181,17 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         return Router::new();
     }
     // `admit` in the guard is the authoritative Host and Origin check. rmcp's
-    // own allowlists repeat the same exact listener values.
-    let transport = StreamableHttpServerConfig::default()
-        .with_allowed_hosts([config.host.clone()])
-        .with_allowed_origins([config.origin.clone()]);
+    // own allowlists repeat the same exact listener values, except on the
+    // explicit listener, whose authority varies with the client's address.
+    let transport = if config.explicit_listener {
+        StreamableHttpServerConfig::default()
+            .disable_allowed_hosts()
+            .disable_allowed_origins()
+    } else {
+        StreamableHttpServerConfig::default()
+            .with_allowed_hosts([config.host.clone()])
+            .with_allowed_origins([config.origin.clone()])
+    };
     let McpClients {
         builds,
         workflow,

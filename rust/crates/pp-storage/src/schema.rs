@@ -3,10 +3,13 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, ty
 use serde::Deserialize;
 use std::{
     fs::File,
-    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
+
+mod working_copy;
+pub use working_copy::InsufficientSpace;
+pub(crate) use working_copy::sweep as sweep_preflight_leftovers;
 
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) const CURRENT_VERSION: u64 = 48;
@@ -64,22 +67,21 @@ pub struct SchemaReady {
     pub backup_warnings: Vec<String>,
 }
 
-struct PreflightCopy(PathBuf);
-impl Drop for PreflightCopy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(test)]
 thread_local! {
     static PREFLIGHT_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static PREFLIGHT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Reads the schema version of the database `open_file` opens, after checking
+/// a copy of it. The copy is made in a private folder inside `work`, the
+/// checked directory (handle and path), never in the system temporary
+/// directory; [`InsufficientSpace`] refuses before anything is created.
+/// SQLite opens only the copy.
 pub(crate) fn preflight(
     #[cfg(test)] path: &Path,
     #[cfg(test)] owned: bool,
+    work: (&pp_os::Dir, &Path),
     open_file: impl Fn(&str) -> std::io::Result<File>,
     validate_directory: impl Fn() -> Result<()>,
 ) -> Result<u64> {
@@ -113,7 +115,11 @@ pub(crate) fn preflight(
             result?;
         }
     }
-    let capture = || -> Result<Vec<(String, Option<Vec<u8>>)>> {
+    // Each file hashed, and streamed into the copy when `into` is given, so
+    // no file is held in memory. The first pass only hashes, so a replaced
+    // store is refused before any copy exists; the second copies and must
+    // read the same bytes.
+    let capture = |into: Option<&working_copy::WorkingCopy<'_>>| -> Result<Vec<(String, working_copy::Captured)>> {
         ["", "-wal", "-journal"]
             .into_iter()
             .map(|suffix| {
@@ -128,14 +134,13 @@ pub(crate) fn preflight(
                 #[cfg(test)]
                 capture_tests::transient_swap(path, checkpoint, false)?;
                 let read = open_file(&name).and_then(|mut file| {
-                    let mut bytes = Vec::new();
-                    file.read_to_end(&mut bytes).map_err(|error| {
+                    let mut sink = into.map(|copy| copy.create_file(&name)).transpose()?;
+                    working_copy::stream(&mut file, sink.as_mut()).map_err(|error| {
                         std::io::Error::new(
                             error.kind(),
                             format!("schema::preflight: read {name}: {error}"),
                         )
-                    })?;
-                    Ok(bytes)
+                    })
                 });
                 #[cfg(test)]
                 capture_tests::transient_swap(path, checkpoint, true)?;
@@ -149,44 +154,32 @@ pub(crate) fn preflight(
                     },
                 )?;
                 validate_directory()?;
-                let bytes = match read {
-                    Ok(bytes) => Some(bytes),
+                let digest = match read {
+                    Ok(digest) => Some(digest),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(error.into()),
                 };
-                Ok((suffix.to_owned(), bytes))
+                Ok((suffix.to_owned(), digest))
             })
             .collect()
     };
-    let source = capture()?;
+    let source = capture(None)?;
     #[cfg(test)]
     capture_tests::capture_checkpoint(path, 4)?;
     validate_directory()?;
-    let copy = PreflightCopy(std::env::temp_dir().join(format!(
-        "pp-preflight-{}",
-        hex::encode(rand::random::<[u8; 16]>())
-    )));
+    let needed = source
+        .iter()
+        .filter_map(|(_, file)| file.map(|(_, len)| len))
+        .sum();
+    let copy = working_copy::WorkingCopy::create(work.0, work.1, needed)?;
     #[cfg(test)]
     PREFLIGHT_COPIES.update(|copies| copies + 1);
-    pp_os::create_private_dir(&copy.0).with_context(|| {
-        format!(
-            "schema::preflight: create temporary directory {}",
-            copy.0.display()
-        )
-    })?;
-    for (suffix, bytes) in &source {
-        if let Some(bytes) = bytes {
-            std::fs::write(copy.0.join(format!("print-partner.db{suffix}")), bytes).with_context(
-                || format!("schema::preflight: write captured print-partner.db{suffix}"),
-            )?;
-        }
-    }
     ensure!(
-        source == capture()?,
+        source == capture(Some(&copy))?,
         "Database changed during preflight capture"
     );
     validate_directory()?;
-    let conn = Connection::open(copy.0.join("print-partner.db"))?;
+    let conn = Connection::open(copy.database())?;
     let has_settings: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings')",
         [],

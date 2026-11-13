@@ -377,13 +377,17 @@ fn is_id(id: &str) -> bool {
 
 /// The schema version of the database in `directory`, refused as startup
 /// refuses a live one: newer than supported, too old to upgrade, missing, or
-/// failing integrity or job-table checks.
+/// failing integrity or job-table checks. The preflight's working copy goes
+/// in a folder inside `directory`, the stage, on the data filesystem.
 pub(crate) fn admit_schema(directory: &Path) -> Result<u64> {
+    let stage = pp_os::Dir::open(directory)
+        .with_context(|| format!("Open stage {}", directory.display()))?;
     let version = schema::preflight(
         #[cfg(test)]
         &directory.join(archive::DATABASE_FILE),
         #[cfg(test)]
         false,
+        (&stage, directory),
         |name| File::open(directory.join(name)),
         || Ok(()),
     )?;

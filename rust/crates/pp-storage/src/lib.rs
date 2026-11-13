@@ -90,7 +90,7 @@ fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
 
 use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-pub use schema::SchemaReady;
+pub use schema::{InsufficientSpace, SchemaReady};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,

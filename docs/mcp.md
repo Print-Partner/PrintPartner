@@ -94,6 +94,21 @@ These two reads give an assistant the ids the Build planning write tools take: e
 | `no_planning_brief` | `get_build_planning_state` only: the Build has no brief. |
 | `unauthorized`, `unavailable`, `internal` | Storage refused the key, was busy, or failed; the same codes as `propose_create_build`. A stored brief that is not valid answers `internal`. |
 
+### `get_farm_status`
+
+`get_farm_status` `{}` reports each configured printer from the farm projection `GET /api/v2/printers` serves ([Farm reads](farm-reads.md)), read with the request's API key, and from what the printer watchers last observed (GRE-1352). It sends no request to a printer: Node asked every printer host on each call, while Rust reports what its watchers know. Like that route, the read runs on the storage writer queue. It writes nothing.
+
+It answers `{ printer_count, printers, state_counts, needs_filament_swap }`.
+
+- Each printer has `id`, `name`, `state`, `not_connected_reason`, `integration_id`, `active_job`, `progress`, `eta_seconds`, `message`, `last_heard_at`, `idle_since`, `idle_for`, `filament_slots`, `filament_remaining_g`, `needs_filament_swap` and `empty_slots`.
+- `state` is the watcher's answer: `idle`, `printing`, `paused`, `complete`, `error` or `offline`. It is `not_connected` when no watcher answered, with a `not_connected_reason`: `not_set_up`, `integration_missing`, `monitoring_disabled`, `monitoring_not_supported`, `awaiting_status`, or `host_state_unknown` when the host answered without a known state. It maps one to one onto the route's execution state, except that the route reads `complete` as idle.
+- `active_job` is the file the printer reports and `progress` its whole percent, both only while printing or paused.
+- `idle_since` is when the watcher saw the printer change into `idle`. It is `null` when this process did not see the change: after a restart, or when the printer missed polls just before it (an outage hides when the change happened). `idle_for` is then `unknown`; otherwise it reads `12m`, `2h 5m` or `3d 4h`. Both are `null` unless the printer is idle.
+- `filament_slots` lists each slot with `slot`, `filament_color_id`, `label`, `empty` and `remaining_g`. Filament grams need Spoolman stock (GRE-1102), so `remaining_g` and `filament_remaining_g` are `null`, and a printer needs a filament swap only for an empty slot, listed in `empty_slots`. The watchers hold no ETA or message, so `eta_seconds` and `message` are `null`.
+- `state_counts` counts each state, and `needs_filament_swap` lists `{ id, name, empty_slots }` for each printer with an empty slot.
+
+The farm tools, `get_farm_status` and `get_print_stats`, are listed and callable only while the caller's Farm Module is on. Otherwise `tools/list` leaves them out, and calling one answers `{ "error", "code" }` with `isError`: `farm_module_off`, `module_settings_invalid` when the stored Module settings don't parse, or the shared storage codes `unavailable` and `internal`.
+
 These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
 ### `propose_edit_plan_draft_parts`
@@ -122,7 +137,7 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 
 `unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
 
-Every other product tool still answers that it has no Rust port. `get_farm_status` and `get_print_stats` have no Rust port yet.
+Every other product tool still answers that it has no Rust port. `get_print_stats` has no Rust port yet; while the Farm Module is on it answers that.
 
 ## To be written
 

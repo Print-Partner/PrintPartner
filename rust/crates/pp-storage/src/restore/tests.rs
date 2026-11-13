@@ -288,9 +288,9 @@ fn ticket_t_8_restore_a_full_data_volume_is_a_space_refusal_not_an_unsupported_s
     let (backup, _) = backup_then_change(&owner, &root, scratch.path());
     let live = state(&root);
     let client = owner.installation().unwrap();
-    schema::override_preflight_space(Some(4096));
+    schema::working_copy::override_available(Some(4096));
     let error = stage(&client, &backup).unwrap_err();
-    schema::override_preflight_space(None);
+    schema::working_copy::override_available(None);
     match refusal(&error) {
         Some(Refusal::InsufficientSpace(space)) => {
             assert_eq!(space.available, 4096);

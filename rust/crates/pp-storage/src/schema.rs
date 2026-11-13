@@ -7,10 +7,8 @@ use std::{
     time::Duration,
 };
 
-mod working_copy;
+pub(crate) mod working_copy;
 pub use working_copy::InsufficientSpace;
-#[cfg(all(test, unix, feature = "desktop_rebuild"))]
-pub(crate) use working_copy::override_available as override_preflight_space;
 pub(crate) use working_copy::sweep as sweep_preflight_leftovers;
 
 #[cfg(feature = "desktop_rebuild")]

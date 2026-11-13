@@ -36,7 +36,7 @@ thread_local! {
 
 /// Reports `bytes` free instead of the filesystem's on this thread, or the
 /// real figure again with `None`.
-#[cfg(all(test, unix, feature = "desktop_rebuild"))]
+#[cfg(test)]
 pub(crate) fn override_available(bytes: Option<u64>) {
     AVAILABLE.set(bytes);
 }
@@ -294,9 +294,9 @@ mod tests {
     fn start_with_too_little_free_disk_is_refused_and_creates_nothing() {
         let root = installation();
         let before = entries(root.path());
-        AVAILABLE.set(Some(10));
+        override_available(Some(10));
         let result = crate::WriterOwner::open(root.path(), crate::Limits::default());
-        AVAILABLE.set(None);
+        override_available(None);
         let error = result.err().expect("a start without room for the copy");
         let refusal = error
             .chain()

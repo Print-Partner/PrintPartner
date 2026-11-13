@@ -182,20 +182,24 @@ pub(crate) fn record_burst(
             let known = hosts
                 .get_or_insert_with(|| spoolman_hosts(tx, tenant))
                 .as_ref();
+            let share = share(grams, link_units, group.len());
             let reason = match known.map(|hosts| hosts.get(&integration_id)) {
                 Err(()) => Some(SkipReason::IntegrationsUnreadable),
                 Ok(None) => Some(SkipReason::IntegrationMissing),
                 Ok(Some(false)) => Some(SkipReason::IntegrationDisabled),
+                Ok(Some(true)) if share.is_none() => Some(SkipReason::NoGrams),
                 Ok(Some(true)) => None,
             };
-            if let Some(reason) = reason {
-                *skipped.entry(reason).or_default() += group.len();
+            let (None, Some(grams)) = (reason, share) else {
+                *skipped
+                    .entry(reason.unwrap_or(SkipReason::NoGrams))
+                    .or_default() += group.len();
                 continue;
-            }
+            };
             let target = Target {
                 integration_id,
                 spool_id,
-                grams: grams / f64::from(link_units) * group.len() as f64,
+                grams,
                 basis,
             };
             let id = row(State::Pending, None, group.len(), Some(&target))?;
@@ -211,6 +215,14 @@ pub(crate) fn record_burst(
         }
     }
     Ok(())
+}
+
+/// The grams `count` of the link's `link_units` use: multiplied before
+/// dividing, so whole grams stay whole. `None` when the result is not a
+/// positive finite number, which then skips as `no_grams`.
+fn share(grams: f64, link_units: u32, count: usize) -> Option<f64> {
+    let share = grams * count as f64 / f64::from(link_units);
+    (share.is_finite() && share > 0.0).then_some(share)
 }
 
 /// Removes the burst's `pending` and `skipped` rows and frees their units.
@@ -478,7 +490,16 @@ impl SpoolmanDeductionsClient {
 
 #[cfg(test)]
 mod tests {
-    use super::spool_pin;
+    use super::{share, spool_pin};
+
+    #[test]
+    fn a_share_multiplies_before_it_divides_and_is_positive_and_finite() {
+        // Dividing first gives 7.000000000000001, which rounds up to 8 g.
+        assert_eq!(share(7.0, 100, 100), Some(7.0));
+        assert_eq!(share(40.0, 4, 2), Some(20.0));
+        assert_eq!(share(f64::from_bits(1), 4, 1), None);
+        assert_eq!(share(f64::MAX, 1, 2), None);
+    }
 
     #[test]
     fn spool_pins_name_one_integration_and_a_positive_spool() {

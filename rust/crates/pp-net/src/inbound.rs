@@ -5,7 +5,25 @@ use std::net::IpAddr;
 
 /// Validate the browser-visible authority, including a published Docker port.
 /// DNS names and forwarded authority are outside this listener's contract.
+/// An unsafe request or an upgrade must carry the matching Origin.
 pub fn origin<B>(request: &Request<B>) -> Result<(String, String)> {
+    let validated = authority(request)?;
+    let reading = matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+    ensure!(
+        (reading && !request.headers().contains_key("upgrade"))
+            || request.headers().contains_key("origin"),
+        "Origin required"
+    );
+    Ok(validated)
+}
+
+/// `origin` without its Origin-required rule, for MCP: MCP clients are not
+/// browsers and send no Origin, so the MCP key guard decides whether an unsafe
+/// request without one may continue. A presented Origin must still match.
+pub fn authority<B>(request: &Request<B>) -> Result<(String, String)> {
     let headers = request.headers();
     ensure!(headers.get_all("host").iter().count() == 1, "Invalid Host");
     let host = headers["host"].to_str()?;
@@ -38,14 +56,6 @@ pub fn origin<B>(request: &Request<B>) -> Result<(String, String)> {
             && presented.is_none_or(|value| value.as_bytes() == origin.as_bytes()),
         "Invalid Origin"
     );
-    let reading = matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    );
-    ensure!(
-        (reading && !headers.contains_key("upgrade")) || presented.is_some(),
-        "Origin required"
-    );
     ensure!(
         !headers
             .get_all("sec-fetch-site")
@@ -69,6 +79,15 @@ mod tests {
             builder = builder.header("origin", origin);
         }
         builder.body(()).unwrap()
+    }
+
+    /// `request` with one more header appended, possibly a second of its name.
+    fn with_header(mut req: Request<()>, name: &str, value: &str) -> Request<()> {
+        req.headers_mut().append(
+            axum::http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
+        req
     }
 
     #[test]
@@ -114,12 +133,8 @@ mod tests {
             ("x-forwarded-host", host),
             ("sec-fetch-site", "cross-site"),
         ] {
-            let mut req = request("POST", host, Some("http://127.0.0.1:18080"));
-            req.headers_mut().append(
-                axum::http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
-                value.parse().unwrap(),
-            );
-            assert!(origin(&req).is_err(), "{name}");
+            let req = request("POST", host, Some("http://127.0.0.1:18080"));
+            assert!(origin(&with_header(req, name, value)).is_err(), "{name}");
         }
         let mut req = request("GET", host, None);
         req.headers_mut()
@@ -128,5 +143,28 @@ mod tests {
         req.headers_mut().remove("upgrade");
         *req.uri_mut() = "http://192.168.1.5:8080/api/v1/plans".parse().unwrap();
         assert!(origin(&req).is_err());
+    }
+
+    #[test]
+    fn authority_drops_only_the_origin_required_rule() {
+        let host = "192.168.1.5:8080";
+        let expected = (format!("http://{host}"), host.to_owned());
+        assert!(origin(&request("POST", host, None)).is_err());
+        assert_eq!(authority(&request("POST", host, None)).unwrap(), expected);
+        assert_eq!(
+            authority(&request("POST", host, Some("http://192.168.1.5:8080"))).unwrap(),
+            expected
+        );
+        assert!(authority(&request("POST", host, Some("http://192.168.1.6:8080"))).is_err());
+        assert!(authority(&request("POST", "attacker.example:8080", None)).is_err());
+        for (name, value) in [
+            ("host", host),
+            ("forwarded", "for=127.0.0.1"),
+            ("x-forwarded-host", host),
+            ("sec-fetch-site", "cross-site"),
+        ] {
+            let req = with_header(request("POST", host, None), name, value);
+            assert!(authority(&req).is_err(), "{name}");
+        }
     }
 }

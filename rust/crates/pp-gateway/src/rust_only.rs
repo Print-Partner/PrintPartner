@@ -72,12 +72,18 @@ impl Gateway {
 
 /// Desktop requests keep the configured authority. Explicit listener requests
 /// use the validated IP authority visible through Docker's published port.
+/// MCP clients send no Origin, so on the MCP paths an unsafe request may omit
+/// it; the MCP key guard then admits it only with an API key.
 pub(super) fn authority<'a, B>(
     state: &'a GatewayState,
     request: &axum::http::Request<B>,
 ) -> Result<(Cow<'a, str>, Cow<'a, str>)> {
     if state.network {
-        let (origin, host) = pp_net::inbound::origin(request)?;
+        let (origin, host) = if super::is_mcp(request.uri().path()) {
+            pp_net::inbound::authority(request)?
+        } else {
+            pp_net::inbound::origin(request)?
+        };
         Ok((Cow::Owned(origin), Cow::Owned(host)))
     } else {
         Ok((Cow::Borrowed(&state.origin), Cow::Borrowed(&state.host)))

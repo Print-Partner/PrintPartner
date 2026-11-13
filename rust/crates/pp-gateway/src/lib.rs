@@ -941,6 +941,11 @@ fn is_spa_client_path(path: &str) -> bool {
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+/// The two MCP endpoints, matched exactly.
+fn is_mcp(path: &str) -> bool {
+    matches!(path, "/mcp" | "/api/v1/mcp")
+}
+
 fn legal_summary_cors(response: &mut Response<Body>, origin: Option<&HeaderValue>) {
     let headers = response.headers_mut();
     headers.append("vary", HeaderValue::from_static("Origin"));
@@ -988,11 +993,11 @@ async fn handle(
         };
     }
     // With the Rust product routes mounted, MCP answers from their key-only
-    // guard. MCP clients are not browsers and send no Origin; the guard
-    // refuses an unsafe request without one unless it carries an API key.
-    // An explicit network listener never routes MCP: LAN peers stay out until
-    // MCP trust classes exist, whatever key they present.
-    let mcp = if (path == "/mcp" || path == "/api/v1/mcp") && !state.network {
+    // guard, on loopback and on an explicit network listener alike. MCP
+    // clients are not browsers and send no Origin; the guard refuses an unsafe
+    // request without one unless it carries an API key, and refuses any
+    // request without a valid key. No peer is trusted for MCP by its address.
+    let mcp = if is_mcp(&path) {
         product_router(&state)
     } else {
         None
@@ -1009,8 +1014,8 @@ async fn handle(
     }
     if let Some(product) = mcp {
         // The desktop cookie is not MCP authorization: the request is only
-        // counted for the drain, and the guard checks loopback, Host, Origin,
-        // the MCP rate limit and the API key. A POST answers as an event
+        // counted for the drain, and the guard checks the transport, Host,
+        // Origin, the MCP rate limit and the API key. A POST answers as an event
         // stream while its tool runs, so only the GET notification stream
         // stops counting when the drain begins.
         let Ok(admission) = Admission::keyed(&state.access) else {
@@ -1101,9 +1106,8 @@ async fn handle(
         return revoked
             .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }
-    // Without the Rust product routes, or on an explicit network listener,
-    // nothing here serves MCP.
-    if path == "/mcp" || path == "/api/v1/mcp" {
+    // Without the Rust product routes, nothing here serves MCP.
+    if is_mcp(&path) {
         return error(
             StatusCode::FORBIDDEN,
             "MCP is disabled in this foundation; API-key authorization is required before enabling it",

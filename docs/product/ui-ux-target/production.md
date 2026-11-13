@@ -47,3 +47,16 @@ Each send row offers actions for its state. Only Send now on an Upload and start
 - **It printed** and **It did not print** are separate, explicitly labelled buttons. Neither is styled or focused as the default, so a mis-tap or Enter never records an answer. Each sends Reconcile with `{printed, job_id}`, where `job_id` is the row's `upload_job_id`. It printed makes the row Sent; It did not print makes it Failed, and Send now sends it again only when pressed.
 - **Answers from the core:** a 4xx, including 409 `send_changed` for an answer about an earlier send, re-reads the queue and shows the problem's detail on the row. A 5xx or no answer re-reads and says Print Partner could not confirm what the core did. Nothing is repeated on its own.
 - **One write at a time:** a row's buttons are off, and say so, from the press until the queue has been read again. Offline, they say why. A row's last notice stays until its next action, so a refusal's reason is still shown after the re-read changes the row.
+
+## Downloads (GRE-1534, GRE-426 part 1)
+
+At the top of the Production tab, above the sends: **Download STL pack**, with **Remaining units only**, and **Download checklist**. They call `GET /api/v2/plans/{id}/exports/stl-pack` (`?scope=remaining` when ticked) and `GET /api/v2/plans/{id}/exports/checklist`. Both answer a file, so neither is in the generated client.
+
+Each download takes two steps, so the page never holds the file:
+
+1. The UI requests the route with `fetchCore` and an `AbortController`. A refusal is shown under the action and nothing is saved; a 401 opens sign-in, as any read does. On success the UI aborts the request without reading the body.
+2. The UI starts a browser download of the same path with an anchor and `download`. The session cookie authenticates the same-origin GET, and the browser saves the file under the server's name (`<build-slug>-vN-stl.zip`, `<build-slug>-vN-checklist.html`) with its own progress.
+
+The action reads "Preparing download" until step 1 answers, and can be used again after a refusal. A refusal shows the problem's `detail`. For `source_files_unavailable` it also lists each file from the problem's `files` member (`CoreError.files`) as "Source: path reason", with the reason in words; an unknown reason reads "is unavailable". Under the STL pack action: "If the download fails part-way, a Source file changed while it was being packed. Download again." A Build with no accepted Plan shows one line instead of the actions.
+
+The core builds the file twice for one download, once for the check and once for the browser. GRE-426 accepts that cost, and its PR 2 measures it.

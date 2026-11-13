@@ -6,6 +6,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { ExportActions } from "./ExportActions";
 import { SendRowActions } from "./SendRowActions";
 import { SendSheet, type SendOutcome } from "./SendSheet";
 import {
@@ -140,7 +141,12 @@ export function BuildProduction() {
     <>
       <ScreenTemplate
         title="Production"
-        subnav={<BuildTabs id={id} />}
+        subnav={
+          <>
+            <BuildTabs id={id} />
+            <ExportActions build={id} />
+          </>
+        }
         state={state}
         renderData={(sends) => (
           <>

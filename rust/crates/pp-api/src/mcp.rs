@@ -12,8 +12,10 @@
 //! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
 //! and so do `get_remaining` and `get_printer_checkoff`
 //! (`mcp/progress_reads.rs`). `propose_create_build` creates a Build with
-//! its planning brief (`mcp/create_build.rs`). `get_build_planning_state`
-//! and `get_plan_draft` read the brief and draft (`mcp/planning_reads.rs`).
+//! its planning brief (`mcp/create_build.rs`), and
+//! `propose_set_build_source_roles` sets the Build's own Source roles in that
+//! brief (`mcp/source_roles.rs`). `get_build_planning_state` and
+//! `get_plan_draft` read the brief and draft (`mcp/planning_reads.rs`).
 //! Refusals of these tools carry a code from `mcp/write_result.rs`.
 //! On the headless explicit listener (`PP_LISTEN_ADDR`), the same key guard
 //! admits any peer the listener admits; Host and Origin are then checked
@@ -580,6 +582,8 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
+#[path = "mcp/source_roles.rs"]
+mod source_roles;
 #[path = "mcp/write_result.rs"]
 mod write_result;
 

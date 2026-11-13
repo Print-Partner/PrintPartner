@@ -56,6 +56,14 @@ pub(super) async fn confirm(
     json_call(server, headers, "confirm_apply", json!({ "action_id": id })).await
 }
 
+/// A connection to the server's database that waits while the server holds it.
+pub(super) fn database(server: &McpServer) -> rusqlite::Connection {
+    let path = server._directory.join("print-partner.db");
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection.busy_timeout(Duration::from_secs(5)).unwrap();
+    connection
+}
+
 /// Runs SQL on the database while the server holds it.
 pub(super) fn execute(server: &McpServer, sql: &str) {
     let connection =

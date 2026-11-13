@@ -1,7 +1,9 @@
 //! `propose_set_build_source_roles` and its `confirm_apply` (GRE-1300 PR 1),
 //! through the MCP router with an API key, on a Build whose planning brief
 //! `propose_create_build` created.
-use super::create_build::{build_planning, confirm, execute, json_call, orders_on, pending};
+use super::create_build::{
+    build_planning, confirm, database, execute, json_call, orders_on, pending,
+};
 use super::*;
 use pp_storage::read_model::planning::{self, BuildPlanningPhase, SourceRole};
 
@@ -59,20 +61,12 @@ impl Seeded {
         seeded
     }
 
-    fn database(&self) -> rusqlite::Connection {
-        let path = self.server._directory.join("print-partner.db");
-        let connection = rusqlite::Connection::open(path).unwrap();
-        connection.busy_timeout(Duration::from_secs(5)).unwrap();
-        connection
-    }
-
     fn key(&self) -> String {
         format!("build_planning.v1.{}", self.build)
     }
 
     fn brief(&self) -> Value {
-        let text: String = self
-            .database()
+        let text: String = database(&self.server)
             .query_row(
                 "SELECT value FROM app_settings WHERE tenant_id='default' AND key=?1",
                 [self.key()],
@@ -83,10 +77,10 @@ impl Seeded {
     }
 
     fn store(&self, brief: &Value) {
-        self.database()
+        database(&self.server)
             .execute(
                 "UPDATE app_settings SET value=?2 WHERE tenant_id='default' AND key=?1",
-                rusqlite::params![self.key(), brief.to_string()],
+                [self.key(), brief.to_string()],
             )
             .unwrap();
     }
@@ -99,7 +93,7 @@ impl Seeded {
     /// The Library role of each Source and B's Plan revision count: the
     /// Accepted Plan is none and stays none.
     fn untouched(&self) -> (Vec<String>, i64) {
-        let database = self.database();
+        let database = database(&self.server);
         let roles = self
             .sources
             .iter()
@@ -139,9 +133,7 @@ impl Seeded {
 }
 
 fn seeded_source(server: &McpServer, name: &str) -> i64 {
-    let path = server._directory.join("print-partner.db");
-    rusqlite::Connection::open(path)
-        .unwrap()
+    database(server)
         .query_row("SELECT id FROM projects WHERE name=?1", [name], |row| {
             row.get(0)
         })
@@ -158,8 +150,7 @@ async fn mcp_source_roles_set_the_roles_and_clear_the_selected_draft() {
     let seeded = Seeded::new().await;
     let library = seeded.untouched();
     let layers = seeded.state()[0].clone();
-    let b_layers: i64 = seeded
-        .database()
+    let b_layers: i64 = database(&seeded.server)
         .query_row(
             "SELECT COUNT(*) FROM profile_layers WHERE profile_id=?1",
             [seeded.build as i64],

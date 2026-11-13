@@ -6,7 +6,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     std::fs::write(
         path,
-        pp_api::printer_host::probe::client_document(pp_api::client_contract::document()?)?,
+        pp_api::printer_host::probe::client_document(pp_api::catalog::contract::client_document(
+            pp_api::client_contract::document()?,
+        )?)?,
     )?;
     Ok(())
 }

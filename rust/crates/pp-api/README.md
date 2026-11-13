@@ -27,7 +27,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `auth` | `auth_router(AuthHttpConfig, impl Into<AuthBackend>, ProviderClient, ResetMailer)`. `AuthBackend` is `Pool(AuthClient)` or, with `desktop_rebuild`, `Rebuild(RebuildAuthClient)`. `ResetMailer::disabled` or `ResetMailer::smtp(SmtpConfig)`; `OAuthCredentials`, `CookieTransport`, `Delivery`. |
 | `builds` | `build_router(BuildHttpConfig, BuildGraphClient)`: Plan list/detail/create/delete, layers, kit manifest. |
 | `drafts` | `draft_router(DraftHttpConfig, WorkingDraftClient, RebuildAuthClient)` and `admit_draft_routes`. |
-| `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
+| `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. Source create reads a typed `CreateSourceRequest`. `catalog::contract` holds `CLIENT_ROUTES` for `createSource` and `readJob` (`JobSnapshot`); with `codegen`, `client_document` adds their schemas and fixtures to the base contract. |
 | `printer_status` | `printer_status_router(AdminHttpConfig, ReadClient, Arc<dyn PrinterStatusPort>)`: `GET`/`HEAD /api/v1/integrations/{id}/status` from the watchers' cached statuses after authentication; 404 for a non-Moonraker id, 503 while monitoring is unavailable. The caller supplies the port. |
 | `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. `AcceptedHttpConfig::with_stock(Arc<dyn InventoryReader>)` adds `/plans/{id}/filament-shortfalls`; the caller supplies the Spoolman reader. |
 | `printer_host` | `printer_host_router(AdminHttpConfig, ReadClient, Arc<dyn PrinterHostPort>, Arc<SnapshotStore>)`: `GET /printers/{id}/capabilities`, `/files`, `/cameras`, the streamed `/files/content` (capturing a Build's snapshot into the store) and `/cameras/view` at the root and under `/api/v1`, and `POST /api/v1/integrations/{id}/test` with Node's errors and per-route budgets ([Printer-host reads](../../../docs/printer-host-reads.md)). The caller supplies the port. |
@@ -49,7 +49,7 @@ Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_star
 
 Binaries:
 
-- `export-rust-client PATH` (needs `--features codegen`): composes `client_contract::document()` with `printer_host::probe::client_document()` and writes the complete generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
+- `export-rust-client PATH` (needs `--features codegen`): composes `client_contract::document()` with `catalog::contract::client_document()` and `printer_host::probe::client_document()` and writes the complete generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
 - `auth-http-fixture DISPOSABLE_DIRECTORY [PORT] [single|open|closed] [dev-reset|production] [CONFIG_JSON]`: serves only `auth_router` over a store in that directory on `127.0.0.1` for manual auth checks. Use a disposable directory.
 
 ## Effects and flags

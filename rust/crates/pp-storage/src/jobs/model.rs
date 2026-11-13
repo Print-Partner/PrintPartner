@@ -3,6 +3,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum JobKind {
     Sync,
@@ -17,7 +18,8 @@ pub enum JobKind {
     #[serde(rename = "export-direct-3mf")]
     ExportDirect3mf,
     PrinterUpload,
-    /// Owned by the upload journal and hidden from the public job API.
+    // Owned by the upload journal and hidden from the public job API. A plain
+    // comment: a doc comment would split the generated client's string enum.
     #[cfg(feature = "desktop_rebuild")]
     SuppliedSourceImport,
 }
@@ -693,25 +695,69 @@ pub struct JobRecord {
     #[serde(skip)]
     pub(crate) worker: Option<String>,
 }
+/// The public job state. Its schema in the generated client describes the
+/// `GET /api/v1/jobs/{id}` answer, which leaves out `updated_at`.
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(
+    all(feature = "codegen", feature = "desktop_rebuild"),
+    derive(schemars::JsonSchema)
+)]
 pub struct JobSnapshot {
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip)]
     pub(crate) version: i64,
     pub job_id: String,
     pub kind: JobKind,
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "JobStatus")
+    )]
     pub status: &'static str,
     pub message: &'static str,
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u8>")
+    )]
     pub progress: Option<u8>,
     #[cfg(not(feature = "desktop_rebuild"))]
     pub result: Option<ResultArtifact>,
+    /// Each kind's own result object; the client reads it as untyped JSON.
     #[cfg(feature = "desktop_rebuild")]
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(
+            with = "pp_contracts::RequiredNullable<serde_json::Map<String, serde_json::Value>>"
+        )
+    )]
     pub result: Option<super::CompletedResult>,
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
     pub error: Option<&'static str>,
     #[cfg(feature = "desktop_rebuild")]
     pub created_at: String,
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
     pub finished_at: Option<String>,
+    #[cfg_attr(all(feature = "codegen", feature = "desktop_rebuild"), schemars(skip))]
     pub updated_at: String,
+}
+
+/// The five `JobSnapshot::status` values `JobRecord::snapshot` answers, for
+/// the generated client's schema.
+#[cfg(all(feature = "codegen", feature = "desktop_rebuild"))]
+#[derive(schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+enum JobStatus {
+    Pending,
+    Running,
+    Done,
+    Error,
+    Cancelled,
 }
 impl JobRecord {
     pub(super) fn validate_state(&self) -> Result<()> {

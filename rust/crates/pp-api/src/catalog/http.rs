@@ -262,12 +262,14 @@ async fn create(
     if let Some(response) = refused_local_path(&body) {
         return response;
     }
+    let source = match serde_json::from_value::<wire::CreateSourceRequest>(body) {
+        Ok(request) => request.into(),
+        Err(error) => return reject(StatusCode::BAD_REQUEST, format!("Invalid Source: {error}")),
+    };
     execute(
         &app,
         credentials(principal),
-        CatalogRequest::CreateCatalogSource {
-            source: wire::source_create(&body),
-        },
+        CatalogRequest::CreateCatalogSource { source },
     )
     .await
 }

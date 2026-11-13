@@ -3,43 +3,16 @@
 //! synced local Sources; the brief gives them their roles.
 use super::reads::{assert_needs_key, confirm, session, tool};
 use super::*;
+use pp_testkit::rebuild_fixture::{
+    SEED, brief, evidence, resolved, roles, two_bases, write_sources,
+};
 use std::path::{Path, PathBuf};
 
 const TOOL: &str = "propose_rebuild_plan";
-const SEED: &str = "INSERT INTO build_profiles(id,tenant_id,name) VALUES(3,'default','Rebuild Fixture');
-INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(4,'default','Base','','local','main','<data-dir>/repos/4','2026-11-01T00:00:00.000Z','rev4');
-INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(5,'default','Addon','','local','main','<data-dir>/repos/5','2026-11-01T00:00:00.000Z','rev5');";
-
-fn evidence(id: &str, source: i64, role: &str) -> Value {
-    json!({"id":id,"url":format!("https://example.test/{id}"),"normalized_url":format!("https://example.test/{id}"),
-        "kind":"canonical_design","title":id,"source_id":source,"source_role":role})
-}
-fn brief(evidence: Value, resolutions: Value) -> Value {
-    json!({"version":1,"build_id":3,"special_request":"Fixture","requirements":[],"evidence":evidence,
-        "contributions":[],"compatibility_findings":[],"differences":[],"resolutions":resolutions,
-        "role_filaments":[],"checklist_items":[],"draft_review_blockers":[],
-        "created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"})
-}
-fn roles() -> Value {
-    json!([
-        evidence("base", 4, "structural_base"),
-        evidence("addon", 5, "addon")
-    ])
-}
 /// A server whose Sources hold printable files, and Build 3's `brief`.
 async fn fixture(brief: Option<Value>, files: bool) -> (McpServer, Vec<(String, String)>, PathBuf) {
     let server = McpServer::seeded(SEED).await;
-    for (source, names) in [(4, &["bracket", "gear"][..]), (5, &["clip"][..])] {
-        let root = server._directory.join(format!("repos/{source}"));
-        std::fs::create_dir_all(&root).unwrap();
-        for name in names.iter().filter(|_| files) {
-            std::fs::write(
-                root.join(format!("{name}.stl")),
-                format!("solid {name}\nendsolid {name}\n"),
-            )
-            .unwrap();
-        }
-    }
+    write_sources(&server._directory, files).unwrap();
     let database = server._directory.join("print-partner.db");
     if let Some(brief) = brief {
         pp_testkit::mcp_planning::save(&database, "build_planning.v1.3", &brief).unwrap();
@@ -132,11 +105,6 @@ async fn mcp_rebuild_sets_layers_from_roles_and_selects_a_new_draft() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
-    let two_bases = json!([
-        evidence("base", 4, "structural_base"),
-        evidence("addon", 5, "structural_base")
-    ]);
-    let resolved = json!({"group-1":{"resolution":"choose_source_a","rationale":"Fixture","custom_resolution":null,"resolved_at":"2026-11-01T00:00:00.000Z"}});
     for (brief, files, code) in [
         (
             brief(json!([evidence("addon", 5, "addon")]), json!({})),
@@ -144,12 +112,16 @@ async fn mcp_rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
             "no_structural_base",
         ),
         (
-            brief(two_bases, json!({})),
+            brief(two_bases(), json!({})),
             true,
             "multiple_structural_bases",
         ),
         (brief(roles(), json!({})), false, "no_stls"),
-        (brief(roles(), resolved), true, "source_choices_unsupported"),
+        (
+            brief(roles(), resolved()),
+            true,
+            "source_choices_unsupported",
+        ),
     ] {
         let (server, headers, database) = fixture(Some(brief), files).await;
         let before = snapshot(&database);

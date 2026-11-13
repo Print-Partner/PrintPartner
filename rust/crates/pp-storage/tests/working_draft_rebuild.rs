@@ -13,6 +13,9 @@ use pp_storage::{
         rebuild::{RebuildError, RebuildRequest, RebuildSource, Rebuilt},
     },
 };
+use pp_testkit::rebuild_fixture::{
+    SEED, brief, evidence, resolved, roles, two_bases, write_sources,
+};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::{
@@ -20,27 +23,6 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
-
-const SEED: &str = "INSERT INTO build_profiles(id,tenant_id,name) VALUES(3,'default','Rebuild Fixture');
-INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(4,'default','Base','','local','main','<data-dir>/repos/4','2026-11-01T00:00:00.000Z','rev4');
-INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(5,'default','Addon','','local','main','<data-dir>/repos/5','2026-11-01T00:00:00.000Z','rev5');";
-
-fn evidence(id: &str, source: i64, role: &str) -> Value {
-    json!({"id":id,"url":format!("https://example.test/{id}"),"normalized_url":format!("https://example.test/{id}"),
-        "kind":"canonical_design","title":id,"source_id":source,"source_role":role})
-}
-fn brief(evidence: Value, resolutions: Value) -> Value {
-    json!({"version":1,"build_id":3,"special_request":"Fixture","requirements":[],"evidence":evidence,
-        "contributions":[],"compatibility_findings":[],"differences":[],"resolutions":resolutions,
-        "role_filaments":[],"checklist_items":[],"draft_review_blockers":[],
-        "created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"})
-}
-fn roles() -> Value {
-    json!([
-        evidence("base", 4, "structural_base"),
-        evidence("addon", 5, "addon")
-    ])
-}
 
 /// Build 3's layers and drafts as `kind:id` lists, and its stored brief text.
 type State = (String, String, String);
@@ -59,17 +41,7 @@ impl Fixture {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/required-units/unchanged.db");
         std::fs::copy(fixture, &database).unwrap();
-        for (source, names) in [(4, &["bracket", "gear"][..]), (5, &["clip"][..])] {
-            let dir = root.path().join(format!("repos/{source}"));
-            std::fs::create_dir_all(&dir).unwrap();
-            for name in names.iter().filter(|_| files) {
-                std::fs::write(
-                    dir.join(format!("{name}.stl")),
-                    format!("solid {name}\nendsolid {name}\n"),
-                )
-                .unwrap();
-            }
-        }
+        write_sources(root.path(), files).unwrap();
         let db = Connection::open(&database).unwrap();
         db.execute_batch(&SEED.replace("<data-dir>", root.path().to_str().unwrap()))
             .unwrap();
@@ -180,20 +152,15 @@ fn rebuild_sets_layers_from_roles_and_selects_a_new_draft() {
 
 #[test]
 fn rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
-    let two_bases = json!([
-        evidence("base", 4, "structural_base"),
-        evidence("addon", 5, "structural_base")
-    ]);
-    let resolved = json!({"group-1":{"resolution":"choose_source_a","rationale":"Fixture","custom_resolution":null,"resolved_at":"2026-11-01T00:00:00.000Z"}});
     let cases = [
         (None, true),
         (
             Some(brief(json!([evidence("addon", 5, "addon")]), json!({}))),
             true,
         ),
-        (Some(brief(two_bases, json!({}))), true),
+        (Some(brief(two_bases(), json!({}))), true),
         (Some(brief(roles(), json!({}))), false),
-        (Some(brief(roles(), resolved)), true),
+        (Some(brief(roles(), resolved())), true),
     ];
     for (index, (brief, files)) in cases.into_iter().enumerate() {
         let f = Fixture::new(brief, files);

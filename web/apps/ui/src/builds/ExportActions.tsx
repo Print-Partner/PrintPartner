@@ -75,10 +75,16 @@ export function ExportActions({ build }: { build: number }) {
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const ids = { remaining: useId(), help: useId() };
 
+  // An accepted Plan is an accepted input set. Freshness can be `untracked` with
+  // `no_accepted_inputs` for a set stored in the older format (`format_version` 1), which the
+  // exports still serve, so only an explicit null set means "no accepted Plan". Freshness
+  // `unavailable` says nothing about the Plan: the actions stay, and the core refuses with
+  // 409 `no_accepted_plan` if there is none.
   const freshness = summary.data?.build.freshness;
   if (
-    freshness?.status === "untracked" &&
-    freshness.reasons.some((r) => r.kind === "no_accepted_inputs")
+    freshness &&
+    "accepted_input_set_id" in freshness &&
+    freshness.accepted_input_set_id === null
   ) {
     return (
       <p className="pp-muted">No Plan has been accepted, so there is nothing to download yet.</p>

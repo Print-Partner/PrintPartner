@@ -256,6 +256,28 @@ describe("Production tab downloads", () => {
     expect(screen.queryByRole("button", { name: "Download checklist" })).toBeNull();
   });
 
+  it("an older-format accepted Plan still offers both downloads", async () => {
+    // The core reports `untracked` / `no_accepted_inputs` for an accepted input set stored
+    // with `format_version` 1, but it sets the set's id and serves both exports.
+    const olderFormat: ProfileSummary["freshness"] = {
+      status: "untracked",
+      accepted_input_set_id: 5,
+      accepted_at: "2026-09-01T00:00:00Z",
+      reasons: [{ kind: "no_accepted_inputs" }],
+    };
+    renderAt(core(() => json({}), olderFormat));
+    const actions = await downloads();
+    expect(actions.getByRole("button", { name: "Download STL pack" })).toBeTruthy();
+    expect(actions.getByRole("button", { name: "Download checklist" })).toBeTruthy();
+    expect(screen.queryByText(/No Plan has been accepted/)).toBeNull();
+  });
+
+  it("unavailable freshness says nothing about the Plan, so the actions stay", async () => {
+    renderAt(core(() => json({}), { status: "unavailable", code: "read_failed" }));
+    const actions = await downloads();
+    expect(actions.getByRole("button", { name: "Download STL pack" })).toBeTruthy();
+  });
+
   it("shows the help line under the STL pack action", async () => {
     renderAt(core(() => json({})));
     const pack = (await downloads()).getByRole("button", { name: "Download STL pack" });

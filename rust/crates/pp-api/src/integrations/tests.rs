@@ -1,5 +1,5 @@
 use super::*;
-use axum::body::to_bytes;
+use axum::{body::to_bytes, http::StatusCode};
 use pp_storage::{
     WriterFailure,
     auth::AuthFailure,
@@ -166,4 +166,76 @@ fn an_update_body_tells_a_null_credential_from_an_absent_one() {
     );
     assert_eq!(cleared.password, Some(Some("pw".into())));
     assert!(read(json!({"kind": "prusalink"})).is_none());
+}
+
+/// The whole body of one answer, built from its literal members.
+pub(crate) fn body(kind: &str, title: &str, status: u16, detail: &str, code: &str) -> Value {
+    json!({"type": format!("urn:print-partner:problem:{kind}"), "title": title,
+        "status": status, "detail": detail, "code": code})
+}
+
+/// The whole body of every answer, so a change to the mapping cannot move a
+/// type, title, detail or code unseen.
+#[tokio::test]
+async fn each_error_answers_one_whole_body() {
+    let fault = |document| InvalidDocument {
+        document,
+        entry: None,
+        reason: DocumentFault::WrongShape,
+    };
+    let unreadable = |document| PrinterSetupError::StoredDocumentInvalid(fault(document));
+    let conflict = |detail, code| body("conflict", "Conflict", 409, detail, code);
+    let internal = |detail, code| body("internal", "Internal Error", 500, detail, code);
+    let mut invalid = body(
+        "validation",
+        "Validation Failed",
+        400,
+        "Request is invalid",
+        "invalid_integration",
+    );
+    invalid["errors"] = json!([{"pointer": "/name", "detail": "must not be empty"}]);
+    let empty_name = InvalidField {
+        field: Field::Name,
+        reason: Reason::Empty,
+    };
+    #[rustfmt::skip]
+    let cases = [
+        (PrinterSetupError::NotFound,
+            body("not-found", "Not Found", 404, "Integration not found", "integration_not_found")),
+        (PrinterSetupError::LimitReached,
+            conflict("The integration limit is reached. Delete one first.", "integration_limit")),
+        (PrinterSetupError::NotEditable,
+            conflict("This kind of integration cannot be edited here", "integration_not_editable")),
+        (PrinterSetupError::SlotHoldsFilament,
+            conflict("A filament slot this removes still holds filament. Unload it first.", "filament_slot_in_use")),
+        (unreadable(SetupDocument::Integrations),
+            internal("Stored integrations are unreadable", "integrations_unreadable")),
+        (unreadable(SetupDocument::Printers),
+            internal("Stored printers are unreadable", "printers_unreadable")),
+        (PrinterSetupError::Invalid(vec![empty_name]), invalid),
+        (PrinterSetupError::Writer(WriterFailure::Busy),
+            body("unavailable", "Service Unavailable", 503, "Service temporarily unavailable", "transaction_unavailable")),
+    ];
+    for (error, expected) in cases {
+        let label = format!("{error:?}");
+        let (status, answered) = answered(error).await;
+        assert_eq!(json!(status), expected["status"], "{label}");
+        assert_eq!(answered, expected, "{label}");
+    }
+    let response = unreadable_body(b"not json");
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        body(
+            "malformed-request",
+            "Malformed Request",
+            400,
+            "Request is invalid",
+            "invalid_integration"
+        )
+    );
+}
+
+fn unreadable_body(bytes: &[u8]) -> Response {
+    unreadable(bytes, Vec::new(), &WORDING)
 }

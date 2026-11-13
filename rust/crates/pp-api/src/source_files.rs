@@ -8,7 +8,7 @@
 
 use crate::accepted::{AcceptedHttpConfig, Gate};
 use crate::loopback::PresentedCredential;
-use crate::problem;
+use crate::problem::{self, Problem, ProblemCode, ProblemType, ToProblem};
 use axum::{
     Extension, Router,
     extract::{Path, State},
@@ -21,10 +21,12 @@ use pp_storage::source_files::{
 };
 use serde::Serialize;
 
+/// Every `code` the route answers, as its [`ProblemCode`]'s wire value.
 pub mod code {
-    pub const SOURCE_NOT_FOUND: &str = "source_not_found";
-    pub const SNAPSHOT_UNAVAILABLE: &str = "source_snapshot_unavailable";
-    pub const TOO_MANY_FILES: &str = "source_too_many_files";
+    use crate::problem::ProblemCode;
+    pub const SOURCE_NOT_FOUND: &str = ProblemCode::SourceNotFound.as_str();
+    pub const SNAPSHOT_UNAVAILABLE: &str = ProblemCode::SourceSnapshotUnavailable.as_str();
+    pub const TOO_MANY_FILES: &str = ProblemCode::SourceTooManyFiles.as_str();
 }
 
 /// The response body. `revision_id` is null, and `files` empty, for a Source
@@ -130,26 +132,31 @@ async fn list(
     }
 }
 
-/// The one mapping from the family's error to a response.
-fn refused(error: &SourceFilesError) -> Response {
-    match error {
-        SourceFilesError::NotFound => problem::coded(
-            StatusCode::NOT_FOUND,
-            "Source not found",
-            code::SOURCE_NOT_FOUND,
-        ),
-        SourceFilesError::SnapshotUnavailable => problem::coded(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "The Source's current revision cannot be read",
-            code::SNAPSHOT_UNAVAILABLE,
-        ),
-        SourceFilesError::TooManyFiles => problem::coded(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("The revision holds more than {MAX_FILES} files"),
-            code::TOO_MANY_FILES,
-        ),
-        SourceFilesError::Writer(failure) => problem::writer_failure(failure),
+/// The one mapping from the family's error to a problem.
+impl ToProblem for SourceFilesError {
+    fn to_problem(&self) -> Problem {
+        match self {
+            Self::NotFound => Problem::new(ProblemType::NotFound, 404, "Source not found")
+                .with_problem_code(ProblemCode::SourceNotFound),
+            Self::SnapshotUnavailable => Problem::new(
+                ProblemType::Internal,
+                500,
+                "The Source's current revision cannot be read",
+            )
+            .with_problem_code(ProblemCode::SourceSnapshotUnavailable),
+            Self::TooManyFiles => Problem::new(
+                ProblemType::Validation,
+                422,
+                &format!("The revision holds more than {MAX_FILES} files"),
+            )
+            .with_problem_code(ProblemCode::SourceTooManyFiles),
+            Self::Writer(failure) => failure.to_problem(),
+        }
     }
+}
+
+fn refused(error: &SourceFilesError) -> Response {
+    problem::refused(error)
 }
 
 #[cfg(test)]

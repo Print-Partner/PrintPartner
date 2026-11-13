@@ -500,7 +500,7 @@ pub use codegen::{document, document_bytes};
 #[cfg(feature = "codegen")]
 pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
-    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
+    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemCode, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
         FarmLogEntry, FarmLogKind, FarmLogPage, FarmLogUndo, FarmUndoReason,
     };
@@ -764,6 +764,7 @@ pub(crate) mod codegen {
         )?;
         schema("Problem", schemars::schema_for!(Problem))?;
         schema("ProblemType", schemars::schema_for!(ProblemType))?;
+        schema("ProblemCode", schemars::schema_for!(ProblemCode))?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -2252,6 +2253,9 @@ pub(crate) mod codegen {
             let name = format!("{kind:?}");
             cases.push(served("Problem", &name, Problem::new(kind, 400, UNICODE))?);
             cases.push(served("ProblemType", &name, kind)?);
+        }
+        for &code in ProblemCode::ALL {
+            cases.push(served("ProblemCode", code.as_str(), code)?);
         }
         let bare = Problem::new(ProblemType::Conflict, 409, "").without_detail();
         cases.push(served("Problem", "no-detail", bare.with_code("not_open"))?);

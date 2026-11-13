@@ -15,7 +15,7 @@ Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop
 - `type` is one of the stable URNs below. Branch on it.
 - `title` is fixed per type.
 - `detail` keeps the text the Node API sent, cut to 512 bytes. It is absent where Node sent none: draft conflicts and the draft 422.
-- `code` keeps Node's machine code where the route has one, cut to 64 bytes.
+- `code` keeps Node's machine code where the route has one, cut to 64 bytes. [Codes](#codes) lists the ones in the closed list.
 - `errors` lists field errors as `{ "pointer": "/decision/value", "detail": "is invalid" }`: at most 16 entries, pointers up to 256 bytes, details up to 128 bytes. A field error names the field but never echoes its value. An overlong pointer is shortened to its longest whole-token ancestor, so an RFC 6901 escape or a UTF-8 character is never split; a field error whose pointer would be the whole document is dropped. Draft edits name the failing member even though their wire shape is untagged.
 - Routes may add extension members, such as a draft conflict's `workspace` or a manifest observation failure's `reason`. An extension never replaces a standard member. `reason` is sent only when it is a closed failure name such as `Io(NotFound)` (letters, digits, `_` and parentheses, at most 64 bytes).
 
@@ -39,7 +39,42 @@ Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop
 | `not-implemented` | 501 | |
 | `internal` | 500 | |
 
-Each URN is `urn:print-partner:problem:<suffix>`. `ProblemType::classify(status, code)` picks the type; a few call sites state it directly (unreadable JSON, full admission semaphores).
+Each URN is `urn:print-partner:problem:<suffix>`. `ProblemType::classify(status, code)` picks the type for the older families; every `ToProblem` impl and a few other call sites state it directly (unreadable JSON, full admission semaphores).
+
+## Codes
+
+`code` is a string on the wire. `ProblemCode` (`rust/crates/pp-api/src/problem/wire.rs`) is the closed list of the codes that have a typed producer in `pp-api` or that the replacement UI branches on. `web/packages/rust-client` exports it as `problemCodeSchema`. It is not every code a route can send: about 45 more come from string literals, storage text and serialized outcome kinds in the older families (drafts, Builds, catalog, accepted, checkoff, plates, filaments, auth, send queue). A client must accept a code outside the list, and no build panics on one. A family's codes join the list when a ticket rewrites that family.
+
+| Codes | Sent by |
+| --- | --- |
+| `draft_changed`, `base_changed`, `header_changed`, `duplicate_build_name`, `duplicate_order`, `build_archived`, `draft_not_found`, `idempotency_conflict`, `outcome_unknown`, `already_applied`, `reconciliation_required`, `snapshot_not_restorable`, `snapshot_not_found`, `inputs_changed`, `printed_units_affected`, `accepted_baseline_required`, `required_unit_set_unavailable`, `invalid_header` | The draft and History routes. These are the 18 codes the replacement UI branches on. |
+| `transaction_unavailable`, `outcome_unknown` | Every write through the write seam (`WriterFailure`): storage was busy past the deadline, or the write may or may not have committed. |
+| `invalid_integration`, `integration_not_found`, `integration_limit`, `integration_not_editable`, `integrations_unreadable`, `invalid_printer`, `printer_not_found`, `printer_limit`, `printers_unreadable`, `filament_slot_in_use` | The integration and printer routes under `/api/v2/integrations` and `/api/v2/printers`. |
+| `source_not_found`, `source_snapshot_unavailable`, `source_too_many_files` | `GET /sources/{id}/files`. |
+
+MCP keeps its own code list, in [MCP](mcp.md). A family served both ways has two mappings from the same typed error, one per surface, both in `pp-api`.
+
+## Map a new family's error
+
+A new family implements `pp_api::problem::ToProblem` for its error enum and serves it with `problem::refused`:
+
+```rust
+impl ToProblem for SourceFilesError {
+    fn to_problem(&self) -> Problem {
+        match self {
+            Self::NotFound => Problem::new(ProblemType::NotFound, 404, "Source not found")
+                .with_problem_code(ProblemCode::SourceNotFound),
+            // one arm per variant
+            Self::Writer(failure) => failure.to_problem(),
+        }
+    }
+}
+```
+
+- Each arm states its `ProblemType`, status and fixed detail, and sets its code with `Problem::with_problem_code`. A new code is a new `ProblemCode` variant, followed by a regenerated `web/packages/rust-client`; `with_code(&str)` is for the older families only.
+- The family's `Writer(WriterFailure)` variant hands the failure to `WriterFailure::to_problem`. `WriterFailure` is sorted once, into the crate-private `WriterFailureKind`; HTTP and MCP (`mcp::write_result::writer_failure`) each answer its seven rows. A new `WriterFailure` variant fails to compile in that one match.
+- An error whose text differs by caller is paired with that text: integrations and printers share `PrinterSetupError`, and `ToProblem` is implemented for `(&PrinterSetupError, &Wording)`.
+- Add a test that pins the status and whole body of every variant.
 
 ## What never appears
 
@@ -47,7 +82,7 @@ Responses never carry SQL, filesystem paths, driver or provider URLs, or error c
 
 ## Code
 
-`ProblemType`, `Problem` and the bounds live in `rust/crates/pp-api/src/problem/wire.rs`. `rust/crates/pp-api/src/problem.rs` is the one builder, plus the `layer` backstop every pp-api router mounts with `route_layer` and `parse_body` for field errors. `writer_failure` maps `pp_storage::WriterFailure`, the failures every write through the write seam shares, so each storage family maps only its own error variants. `web/packages/rust-client` exports the generated `problemSchema`, `Problem` and `ProblemType`. Route misses stay with the gateway.
+`ProblemType`, `ProblemCode`, `Problem` and the bounds live in `rust/crates/pp-api/src/problem/wire.rs`. `rust/crates/pp-api/src/problem.rs` is the one builder, plus the `layer` backstop every pp-api router mounts with `route_layer` and `parse_body` for field errors. `ToProblem` and `refused` turn a family's typed error into a response ([Map a new family's error](#map-a-new-familys-error)). `writer_failure` maps `pp_storage::WriterFailure`, the failures every write through the write seam shares, so each storage family maps only its own error variants. `web/packages/rust-client` exports the generated `problemSchema`, `Problem`, `ProblemType` and `ProblemCode`. Route misses stay with the gateway.
 
 Parity tests compare Rust problem bodies with Node bodies through `pp_api::problem::without_envelope`, which drops `type`, `title` and `status` only when they are consistent.
 

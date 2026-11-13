@@ -12,12 +12,11 @@
 
 use crate::accepted::{AcceptedHttpConfig, Gate, internal, ok_json};
 use crate::loopback::PresentedCredential;
-use crate::problem::{self, FieldError, Problem, ProblemType};
+use crate::problem::{self, FieldError, Problem, ProblemCode, ProblemType, ToProblem};
 use axum::{
     Extension, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, State},
-    http::StatusCode,
     response::Response,
     routing::{get, patch},
 };
@@ -36,34 +35,37 @@ use std::{
 
 const BODY_LIMIT: usize = 16 * 1024;
 
-/// Every `code` the integration and printer routes answer.
+/// Every `code` the integration and printer routes answer, as its
+/// [`ProblemCode`]'s wire value.
 pub mod code {
-    pub const INVALID_INTEGRATION: &str = "invalid_integration";
-    pub const INTEGRATION_NOT_FOUND: &str = "integration_not_found";
-    pub const INTEGRATION_LIMIT: &str = "integration_limit";
-    pub const INTEGRATION_NOT_EDITABLE: &str = "integration_not_editable";
-    pub const INTEGRATIONS_UNREADABLE: &str = "integrations_unreadable";
-    pub const INVALID_PRINTER: &str = "invalid_printer";
-    pub const PRINTER_NOT_FOUND: &str = "printer_not_found";
-    pub const PRINTER_LIMIT: &str = "printer_limit";
-    pub const PRINTERS_UNREADABLE: &str = "printers_unreadable";
-    pub const FILAMENT_SLOT_IN_USE: &str = "filament_slot_in_use";
+    use crate::problem::ProblemCode;
+    pub const INVALID_INTEGRATION: &str = ProblemCode::InvalidIntegration.as_str();
+    pub const INTEGRATION_NOT_FOUND: &str = ProblemCode::IntegrationNotFound.as_str();
+    pub const INTEGRATION_LIMIT: &str = ProblemCode::IntegrationLimit.as_str();
+    pub const INTEGRATION_NOT_EDITABLE: &str = ProblemCode::IntegrationNotEditable.as_str();
+    pub const INTEGRATIONS_UNREADABLE: &str = ProblemCode::IntegrationsUnreadable.as_str();
+    pub const INVALID_PRINTER: &str = ProblemCode::InvalidPrinter.as_str();
+    pub const PRINTER_NOT_FOUND: &str = ProblemCode::PrinterNotFound.as_str();
+    pub const PRINTER_LIMIT: &str = ProblemCode::PrinterLimit.as_str();
+    pub const PRINTERS_UNREADABLE: &str = ProblemCode::PrintersUnreadable.as_str();
+    pub const FILAMENT_SLOT_IN_USE: &str = ProblemCode::FilamentSlotInUse.as_str();
 }
 
 /// The text and codes that differ between integrations and printers. The
-/// mapping itself is [`refused`], once, for both.
+/// mapping itself is [`ToProblem`] for the error with its wording, once, for
+/// both.
 pub(crate) struct Wording {
-    pub(crate) invalid: &'static str,
-    pub(crate) not_found: (&'static str, &'static str),
-    pub(crate) limit: (&'static str, &'static str),
+    pub(crate) invalid: ProblemCode,
+    pub(crate) not_found: (&'static str, ProblemCode),
+    pub(crate) limit: (&'static str, ProblemCode),
 }
 
 const WORDING: Wording = Wording {
-    invalid: code::INVALID_INTEGRATION,
-    not_found: ("Integration not found", code::INTEGRATION_NOT_FOUND),
+    invalid: ProblemCode::InvalidIntegration,
+    not_found: ("Integration not found", ProblemCode::IntegrationNotFound),
     limit: (
         "The integration limit is reached. Delete one first.",
-        code::INTEGRATION_LIMIT,
+        ProblemCode::IntegrationLimit,
     ),
 };
 
@@ -295,64 +297,71 @@ pub(crate) async fn answer<V: Serialize + Send + 'static>(
     }
 }
 
-/// The one mapping from the family's error to a response.
-pub(crate) fn refused(error: &PrinterSetupError, wording: &Wording) -> Response {
-    let coded = |status, (detail, code): (&str, &str)| problem::coded(status, detail, code);
-    match error {
-        PrinterSetupError::Invalid(fields) => {
-            invalid(true, fields.iter().map(field_error), wording)
-        }
-        PrinterSetupError::NotFound => coded(StatusCode::NOT_FOUND, wording.not_found),
-        PrinterSetupError::LimitReached => coded(StatusCode::CONFLICT, wording.limit),
-        PrinterSetupError::NotEditable => coded(
-            StatusCode::CONFLICT,
-            (
+/// The one mapping from the family's error to a problem. Integrations and
+/// printers share the error, so it is paired with the caller's [`Wording`].
+impl ToProblem for (&PrinterSetupError, &Wording) {
+    fn to_problem(&self) -> Problem {
+        let (error, wording) = *self;
+        let coded = |kind, status, (detail, code): (&str, ProblemCode)| {
+            Problem::new(kind, status, detail).with_problem_code(code)
+        };
+        let conflict = |answer| coded(ProblemType::Conflict, 409, answer);
+        match error {
+            PrinterSetupError::Invalid(fields) => {
+                invalid(true, fields.iter().map(field_error), wording)
+            }
+            PrinterSetupError::NotFound => coded(ProblemType::NotFound, 404, wording.not_found),
+            PrinterSetupError::LimitReached => conflict(wording.limit),
+            PrinterSetupError::NotEditable => conflict((
                 "This kind of integration cannot be edited here",
-                code::INTEGRATION_NOT_EDITABLE,
-            ),
-        ),
-        PrinterSetupError::SlotHoldsFilament => coded(
-            StatusCode::CONFLICT,
-            (
+                ProblemCode::IntegrationNotEditable,
+            )),
+            PrinterSetupError::SlotHoldsFilament => conflict((
                 "A filament slot this removes still holds filament. Unload it first.",
-                code::FILAMENT_SLOT_IN_USE,
+                ProblemCode::FilamentSlotInUse,
+            )),
+            PrinterSetupError::StoredDocumentInvalid(fault) => coded(
+                ProblemType::Internal,
+                500,
+                match fault.document {
+                    SetupDocument::Integrations => (
+                        "Stored integrations are unreadable",
+                        ProblemCode::IntegrationsUnreadable,
+                    ),
+                    SetupDocument::Printers => (
+                        "Stored printers are unreadable",
+                        ProblemCode::PrintersUnreadable,
+                    ),
+                },
             ),
-        ),
-        PrinterSetupError::StoredDocumentInvalid(fault) => coded(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            match fault.document {
-                SetupDocument::Integrations => (
-                    "Stored integrations are unreadable",
-                    code::INTEGRATIONS_UNREADABLE,
-                ),
-                SetupDocument::Printers => {
-                    ("Stored printers are unreadable", code::PRINTERS_UNREADABLE)
-                }
-            },
-        ),
-        PrinterSetupError::Writer(failure) => problem::writer_failure(failure),
+            PrinterSetupError::Writer(failure) => failure.to_problem(),
+        }
     }
+}
+
+pub(crate) fn refused(error: &PrinterSetupError, wording: &Wording) -> Response {
+    problem::refused(&(error, wording))
 }
 
 /// 400 for a body serde refused: it names the field, never a value. A body
 /// that is not JSON at all is malformed, not a validation failure.
 pub(crate) fn unreadable(body: &[u8], errors: Vec<FieldError>, wording: &Wording) -> Response {
     let readable = problem::is_json_object(body) || !errors.is_empty();
-    invalid(readable, errors, wording)
+    problem::build(invalid(readable, errors, wording), serde_json::Map::new())
 }
 
 fn invalid(
     readable: bool,
     errors: impl IntoIterator<Item = FieldError>,
     wording: &Wording,
-) -> Response {
+) -> Problem {
     let kind = if readable {
         ProblemType::Validation
     } else {
         ProblemType::MalformedRequest
     };
-    let problem = Problem::new(kind, 400, "Request is invalid").with_code(wording.invalid);
-    problem::build(problem.with_errors(errors), serde_json::Map::new())
+    let problem = Problem::new(kind, 400, "Request is invalid").with_problem_code(wording.invalid);
+    problem.with_errors(errors)
 }
 
 fn field_error(invalid: &InvalidField) -> FieldError {

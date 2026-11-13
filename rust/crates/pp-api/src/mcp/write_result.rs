@@ -10,7 +10,7 @@
 //! session drops the proposal instead of risking a second apply.
 
 use pp_services::mcp_domain::ToolInvocation;
-use pp_storage::{WriterFailure, auth::AuthFailure};
+use pp_storage::WriterFailure;
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,29 +183,22 @@ pub(super) fn read_failure(error: anyhow::Error) -> Refusal {
 }
 
 /// The refusal for a failure every write through the write seam shares.
+/// `problem::WriterFailureKind` sorts the failure, once for HTTP and MCP;
+/// this gives each of its rows the MCP answer.
 pub(super) fn writer_failure(failure: &WriterFailure) -> Refusal {
-    use AuthFailure::{
-        CommitUnknown, CredentialChanged, InvalidCredentials, OwnerMappingRequired, QueueFull,
-        SessionRequired, Stopped, Storage,
-    };
-    match failure {
-        WriterFailure::Auth(
-            SessionRequired | InvalidCredentials | CredentialChanged | OwnerMappingRequired,
-        ) => Refusal::new(Code::Unauthorized, "The API key was not accepted."),
-        WriterFailure::QueueFull
-        | WriterFailure::Busy
-        | WriterFailure::Stopped
-        | WriterFailure::Cancelled
-        | WriterFailure::Auth(QueueFull | Stopped | Storage) => Refusal::new(
+    use crate::problem::WriterFailureKind as Kind;
+    match Kind::of(failure) {
+        Kind::Unauthenticated | Kind::OwnerMappingRequired => {
+            Refusal::new(Code::Unauthorized, "The API key was not accepted.")
+        }
+        Kind::QueueFull | Kind::Busy | Kind::Stopped => Refusal::new(
             Code::Unavailable,
             "Storage is busy. Nothing was written; try again.",
         ),
-        WriterFailure::Auth(CommitUnknown) => Refusal::new(
+        Kind::CommitUnknown => Refusal::new(
             Code::OutcomeUnknown,
             "The result is unknown. Check the Builds before proposing again.",
         ),
-        WriterFailure::Auth(_) | WriterFailure::Internal(_) => {
-            Refusal::new(Code::Internal, "Storage failed. Nothing was written.")
-        }
+        Kind::Internal => Refusal::new(Code::Internal, "Storage failed. Nothing was written."),
     }
 }

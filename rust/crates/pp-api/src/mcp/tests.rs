@@ -26,6 +26,8 @@ mod reads;
 mod rebuild_plan;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
+#[path = "tests/writer_failures.rs"]
+mod writer_failures;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";

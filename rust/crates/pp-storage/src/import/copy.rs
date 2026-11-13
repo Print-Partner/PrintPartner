@@ -269,8 +269,12 @@ pub(super) fn import_with(
         (SourceKind::Archive, files, copied)
     };
     let (connection, ready, (stored, paths)) = upgrade(&stage.0, |database| {
-        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
-        let source = rusqlite::Connection::open_with_flags(database, flags)?;
+        // Opened for writing, and made to take the write lock once: a Node
+        // stopped in the middle of a transaction leaves a rollback journal
+        // that only a writer may replay. The rows read below are then the
+        // ones the upgrade will see.
+        let source = rusqlite::Connection::open(database)?;
+        source.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
         // Each Source's path as the source stored it, for the check that
         // follows the rebase.
         let mut statement = source.prepare("SELECT id, local_path FROM projects")?;

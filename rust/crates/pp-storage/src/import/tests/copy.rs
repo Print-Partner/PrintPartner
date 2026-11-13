@@ -1064,3 +1064,41 @@ fn a_rewritten_source_path_is_checked_against_the_stored_one() {
     let error = verify::check_sources(&connection, &before, None, repos).unwrap_err();
     assert!(matches!(error, ImportError::SourceRebase(1)), "{error:?}");
 }
+
+/// A Node stopped in the middle of a transaction leaves a rollback journal
+/// beside its database. The import copies both, and the first connection to
+/// the copy must be able to replay the journal.
+#[test]
+fn a_source_with_an_unfinished_transaction_imports_as_it_was_before_it() {
+    let folder = node_folder();
+    let writer = Connection::open(folder.database_path()).unwrap();
+    let events = |connection: &Connection| -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM app_events", [], |row| row.get(0))
+            .unwrap()
+    };
+    let committed = events(&writer);
+    // A cache of one page makes the open transaction write to the database
+    // file, which needs the journal on disk first.
+    writer
+        .execute_batch(
+            "PRAGMA journal_mode = DELETE; PRAGMA cache_size = 1; BEGIN;
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000)
+             INSERT INTO app_events (at, kind, payload_json)
+               SELECT '2026-10-02', 'synthetic-unfinished', '{\"source\":1}' FROM n;",
+        )
+        .unwrap();
+    let journal = folder.path().join("print-partner.db-journal");
+    assert!(
+        std::fs::metadata(&journal).is_ok_and(|file| file.len() > 0),
+        "the test did not produce a rollback journal"
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let report = import(folder.path(), &destination).unwrap();
+    assert!(destination.join(ownership_marker::MARKER_FILE).is_file());
+    let imported = Connection::open(destination.join("print-partner.db")).unwrap();
+    assert_eq!(events(&imported), committed);
+    assert_eq!(report.tables["app_events"], committed.unsigned_abs());
+    drop(writer);
+}

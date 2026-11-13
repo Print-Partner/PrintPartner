@@ -512,12 +512,14 @@ pub struct CoreLog {
 
 /// Rows emitted before the data directory is admitted wait in memory, at
 /// most [`PENDING_ROWS`] of them, and reach `core.log` on [`CoreLog::attach`].
+/// The headless server writes every row to its stderr instead.
 enum Sink {
     Pending {
         rows: std::collections::VecDeque<String>,
         dropped: u64,
     },
     File(LogFile),
+    Stderr,
 }
 
 const PENDING_ROWS: usize = 256;
@@ -531,6 +533,16 @@ impl CoreLog {
                 rows: std::collections::VecDeque::new(),
                 dropped: 0,
             })),
+            scrubber: redact::Scrubber::default(),
+        }
+    }
+
+    /// A subscriber that writes each scrubbed row to stderr at once, for the
+    /// headless server, whose container collects stderr. Provisional: the
+    /// headless log destination may change (GRE-1457).
+    pub fn stderr() -> Self {
+        Self {
+            sink: Arc::new(Mutex::new(Sink::Stderr)),
             scrubber: redact::Scrubber::default(),
         }
     }
@@ -634,6 +646,10 @@ impl CoreLog {
         };
         match &mut *sink {
             Sink::File(log) => log.append(row.as_bytes(), now),
+            // A closed stderr loses the row; logging must not fail the server.
+            Sink::Stderr => {
+                let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), row.as_bytes());
+            }
             Sink::Pending { rows, dropped } => {
                 if rows.len() == PENDING_ROWS {
                     rows.pop_front();

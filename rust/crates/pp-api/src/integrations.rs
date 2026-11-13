@@ -1,6 +1,7 @@
-//! `GET` and `POST /api/v2/integrations` and `DELETE /api/v2/integrations/{id}`:
-//! the replacement Settings screen lists every integration, and adds and
-//! removes a Moonraker, PrusaLink or Spoolman integration. Rust-only runtime: the routes mount only when
+//! `GET` and `POST /api/v2/integrations` and `PATCH` and `DELETE
+//! /api/v2/integrations/{id}`: the replacement Settings screen lists every
+//! integration, and adds, edits and removes a Moonraker, PrusaLink or
+//! Spoolman integration. Rust-only runtime: the routes mount only when
 //! `PP_DESKTOP_REBUILD` is on, and Node keeps its own routes in mixed mode.
 //!
 //! Storage owns the rules and answers a typed error
@@ -18,16 +19,16 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::Response,
-    routing::{delete, get},
+    routing::{get, patch},
 };
 use pp_storage::{
     auth::Secret,
     printer_setup::{
-        Field, IntegrationSummary, InvalidField, NewIntegration, PrinterSetupClient,
-        PrinterSetupError, Reason, ServiceKind, SetupDocument,
+        Field, IntegrationPatch, IntegrationSummary, InvalidField, NewIntegration,
+        PrinterSetupClient, PrinterSetupError, Reason, ServiceKind, SetupDocument,
     },
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -40,6 +41,7 @@ pub mod code {
     pub const INVALID_INTEGRATION: &str = "invalid_integration";
     pub const INTEGRATION_NOT_FOUND: &str = "integration_not_found";
     pub const INTEGRATION_LIMIT: &str = "integration_limit";
+    pub const INTEGRATION_NOT_EDITABLE: &str = "integration_not_editable";
     pub const INTEGRATIONS_UNREADABLE: &str = "integrations_unreadable";
     pub const INVALID_PRINTER: &str = "invalid_printer";
     pub const PRINTER_NOT_FOUND: &str = "printer_not_found";
@@ -81,6 +83,34 @@ pub struct CreateIntegrationRequest {
     pub username: Option<String>,
     pub api_key: Option<String>,
     pub password: Option<String>,
+}
+
+/// `PATCH /api/v2/integrations/{id}` body. A field that is absent keeps its
+/// stored value. For `name`, `base_url` and `enabled`, null keeps it too; for
+/// `username`, `api_key` and `password`, null clears it. The kind never
+/// changes. A new `base_url` must come with each stored `api_key` and
+/// `password`, as a value or as null, so no stored secret follows it.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UpdateIntegrationRequest {
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub enabled: Option<bool>,
+    #[serde(default, deserialize_with = "sent")]
+    pub username: Option<Option<String>>,
+    #[serde(default, deserialize_with = "sent")]
+    pub api_key: Option<Option<String>>,
+    #[serde(default, deserialize_with = "sent")]
+    pub password: Option<Option<String>>,
+}
+
+/// `Some(None)` for a key that is present and null, where serde's default
+/// would read it as absent.
+pub(crate) fn sent<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// A stored integration without its secrets.
@@ -151,11 +181,11 @@ pub(crate) fn mounted(
     gate.guard(routes).with_state(App { gate, setup })
 }
 
-/// The integration list, create and delete routes, under [`mounted`]'s guard.
+/// The integration list, create, edit and delete routes, under [`mounted`]'s guard.
 pub fn integrations_router(config: AcceptedHttpConfig, setup: PrinterSetupClient) -> Router {
     let routes = Router::new()
         .route("/api/v2/integrations", get(list).post(create))
-        .route("/api/v2/integrations/{id}", delete(remove))
+        .route("/api/v2/integrations/{id}", patch(update).delete(remove))
         .layer(DefaultBodyLimit::max(BODY_LIMIT));
     mounted(config, setup, routes)
 }
@@ -198,6 +228,33 @@ async fn create(
     answer(&app, &WORDING, move |setup, cancelled, wait| {
         let created = setup.create_integration(presented.into_credential(), new, &cancelled, wait);
         created.map(IntegrationView::from)
+    })
+    .await
+}
+
+async fn update(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let request = match problem::parse_body::<UpdateIntegrationRequest>(&body) {
+        Ok(request) => request,
+        Err(errors) => return unreadable(&body, errors, &WORDING),
+    };
+    let secret = |sent: Option<Option<String>>| sent.map(|value| value.map(Secret::new));
+    let patch = IntegrationPatch {
+        name: request.name,
+        base_url: request.base_url,
+        enabled: request.enabled,
+        username: request.username,
+        api_key: secret(request.api_key),
+        password: secret(request.password),
+    };
+    answer(&app, &WORDING, move |setup, cancelled, wait| {
+        let credential = presented.into_credential();
+        let updated = setup.update_integration(credential, id, patch, &cancelled, wait);
+        updated.map(IntegrationView::from)
     })
     .await
 }
@@ -247,6 +304,13 @@ pub(crate) fn refused(error: &PrinterSetupError, wording: &Wording) -> Response 
         }
         PrinterSetupError::NotFound => coded(StatusCode::NOT_FOUND, wording.not_found),
         PrinterSetupError::LimitReached => coded(StatusCode::CONFLICT, wording.limit),
+        PrinterSetupError::NotEditable => coded(
+            StatusCode::CONFLICT,
+            (
+                "This kind of integration cannot be edited here",
+                code::INTEGRATION_NOT_EDITABLE,
+            ),
+        ),
         PrinterSetupError::SlotHoldsFilament => coded(
             StatusCode::CONFLICT,
             (
@@ -314,6 +378,7 @@ fn field_error(invalid: &InvalidField) -> FieldError {
         (Reason::HasCredentials, _) => "must not contain a username or password",
         (Reason::NotCreatable, _) => "cannot be created here",
         (Reason::NotUsedByKind, _) => "is not used by this kind",
+        (Reason::NotResent, _) => "must be sent again when the address changes",
         (Reason::NotAPrinterHost, _) => {
             "must name a stored Moonraker, PrusaLink or Bambu integration"
         }

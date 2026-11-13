@@ -264,7 +264,7 @@ fn recorded(
     }))
 }
 
-fn brief_key(build: PositiveId) -> String {
+pub(super) fn brief_key(build: PositiveId) -> String {
     format!("build_planning.v1.{}", build.get())
 }
 
@@ -272,7 +272,12 @@ fn record_key(key: &str) -> String {
     format!("build_planning.create.{key}")
 }
 
-fn save(tx: &Transaction<'_>, tenant: &str, key: &str, value: &str) -> rusqlite::Result<()> {
+pub(super) fn save(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    key: &str,
+    value: &str,
+) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
         params![tenant, key, value],
@@ -280,5 +285,6 @@ fn save(tx: &Transaction<'_>, tenant: &str, key: &str, value: &str) -> rusqlite:
     Ok(())
 }
 
+/// Shared with `source_roles` tests, which start from a created brief.
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

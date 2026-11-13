@@ -29,6 +29,10 @@ macro_rules! string_enum {
             pub fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $text),+ }
             }
+            /// The variant whose wire text is `text`, if any.
+            pub fn from_wire(text: &str) -> Option<Self> {
+                match text { $($text => Some(Self::$variant),)+ _ => None }
+            }
         }
     };
 }
@@ -471,13 +475,22 @@ impl BuildPlanningBrief {
     }
 
     /// The text to store under `build_planning.v1.<id>`: one canonical stored
-    /// form for this document. An absent optional field is left out rather
-    /// than stored as `null`; responses still serve it as `null`.
+    /// form for this document. An absent optional field, at any depth, is
+    /// left out rather than stored as `null`; responses still serve it as
+    /// `null`.
     pub(crate) fn stored_text(&self) -> Result<String> {
-        let mut value = serde_json::to_value(self)?;
-        if let Some(fields) = value.as_object_mut() {
-            fields.retain(|_, field| !field.is_null());
+        fn strip_nulls(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    fields.retain(|_, field| !field.is_null());
+                    fields.values_mut().for_each(strip_nulls);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(strip_nulls),
+                _ => {}
+            }
         }
+        let mut value = serde_json::to_value(self)?;
+        strip_nulls(&mut value);
         Ok(serde_json::to_string(&value)?)
     }
 

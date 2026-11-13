@@ -17,6 +17,12 @@ pub const SCHEMA_34_SHA256: &str =
     "f5755e7a045fcb8b638bbeb17321c57ff6737d0d6db6b317518c41a14780d8b1";
 /// The pinned schema 34 `schema.ts` bytes.
 pub const SCHEMA_34_SOURCE: &[u8] = include_bytes!("../../pp-storage/data/historical/schema-34.ts");
+/// SHA-256 of [`SCHEMA_33_SOURCE`], released at commit
+/// `ac0153b682d9565b8b2255b2b2747bee7f9b82d2`.
+pub const SCHEMA_33_SHA256: &str =
+    "3023074597eb6462866892aceaa1433dcb69b0cc68abfa8479cf920e2be0130f";
+/// The pinned schema 33 `schema.ts` bytes.
+pub const SCHEMA_33_SOURCE: &[u8] = include_bytes!("../../pp-storage/data/historical/schema-33.ts");
 
 /// One `schemaMigrations` entry and the `//` comments directly above it.
 #[derive(Clone, Debug)]
@@ -166,18 +172,41 @@ pub fn database_files(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
         .collect()
 }
 
+/// The parsed migration list of a pinned `schema.ts`, after checking its digest.
+fn pinned_statements(source: &[u8], sha256: &str) -> Result<Vec<Statement>, String> {
+    let digest = hex::encode(Sha256::digest(source));
+    if digest != sha256 {
+        return Err(format!("pinned schema source changed: sha256 {digest}"));
+    }
+    parse_schema_migrations(std::str::from_utf8(source).map_err(|e| e.to_string())?)
+}
+
 /// The parsed schema 34 migration list, after checking the pinned digest.
 pub fn schema_34_statements() -> Result<Vec<Statement>, String> {
-    let digest = hex::encode(Sha256::digest(SCHEMA_34_SOURCE));
-    if digest != SCHEMA_34_SHA256 {
-        return Err(format!("pinned schema 34 source changed: sha256 {digest}"));
-    }
-    parse_schema_migrations(std::str::from_utf8(SCHEMA_34_SOURCE).map_err(|e| e.to_string())?)
+    pinned_statements(SCHEMA_34_SOURCE, SCHEMA_34_SHA256)
 }
 
 /// Creates a new schema 34 database at `path` with Node's connection settings
 /// (WAL, foreign keys on). Refuses to replace an existing file.
 pub fn write_schema_34_database(path: &Path) -> std::io::Result<()> {
+    write_database(path, schema_34_statements(), 34)
+}
+
+/// Creates a new schema 33 database at `path`, as Print Partner v3.3.0's
+/// Node server does. Refuses to replace an existing file.
+pub fn write_schema_33_database(path: &Path) -> std::io::Result<()> {
+    write_database(
+        path,
+        pinned_statements(SCHEMA_33_SOURCE, SCHEMA_33_SHA256),
+        33,
+    )
+}
+
+fn write_database(
+    path: &Path,
+    statements: Result<Vec<Statement>, String>,
+    version: u64,
+) -> std::io::Result<()> {
     if path.symlink_metadata().is_ok() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
@@ -188,12 +217,9 @@ pub fn write_schema_34_database(path: &Path) -> std::io::Result<()> {
     connection
         .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .map_err(std::io::Error::other)?;
-    execute(
-        &connection,
-        &schema_34_statements().map_err(std::io::Error::other)?,
-    )
-    .map_err(std::io::Error::other)?;
-    stamp_schema_version(&connection, 34).map_err(std::io::Error::other)?;
+    execute(&connection, &statements.map_err(std::io::Error::other)?)
+        .map_err(std::io::Error::other)?;
+    stamp_schema_version(&connection, version).map_err(std::io::Error::other)?;
     connection
         .close()
         .map_err(|(_, error)| std::io::Error::other(error))

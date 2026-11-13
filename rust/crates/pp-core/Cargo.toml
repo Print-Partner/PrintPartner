@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-desktop_rebuild = ["pp-compat/desktop_rebuild", "pp-storage/desktop_rebuild", "dep:ryu-js", "dep:regress", "dep:pp-source", "pp-source/desktop_rebuild", "dep:reqwest", "dep:pp-net", "dep:pp-api", "pp-api/desktop_rebuild", "dep:axum"]
+desktop_rebuild = ["pp-compat/desktop_rebuild", "pp-storage/desktop_rebuild", "dep:ryu-js", "dep:regress", "dep:pp-source", "pp-source/desktop_rebuild", "dep:reqwest", "dep:pp-net", "dep:pp-api", "pp-api/desktop_rebuild", "dep:axum", "dep:pp-services"]
 
 [dependencies]
 pp-storage = { path = "../pp-storage" }
@@ -32,6 +32,7 @@ regress = { version = "=0.11.1", optional = true }
 pp-api = { path = "../pp-api", optional = true }
 axum = { workspace = true, optional = true }
 pp-net = { path = "../pp-net", optional = true }
+pp-services = { path = "../pp-services", optional = true }
 pp-source = { path = "../pp-source", optional = true }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "stream"], optional = true }
 

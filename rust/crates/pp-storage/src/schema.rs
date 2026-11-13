@@ -9,7 +9,7 @@ use std::{
 };
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 48;
+pub(crate) const CURRENT_VERSION: u64 = 49;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Every step
 /// from 38 does.
 ///
@@ -20,7 +20,7 @@ pub(crate) const CURRENT_VERSION: u64 = 48;
 /// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
 /// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 48;
+pub(crate) const LAST_COPIED_STEP: u64 = 49;
 #[cfg(feature = "desktop_rebuild")]
 const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
 /// The last step a release without the run marker installs. Its interrupted
@@ -588,6 +588,8 @@ fn install_steps(
     let install_experiments: fn(&Connection) -> Result<()> = |connection| {
         Ok(connection.execute_batch(include_str!("build_graph/experiments_schema.sql"))?)
     };
+    let install_deductions: fn(&Connection) -> Result<()> =
+        |connection| Ok(connection.execute_batch(include_str!("spoolman_deductions/schema.sql"))?);
     for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
         (40, install_scan),
         (41, install_sync),
@@ -598,6 +600,7 @@ fn install_steps(
         (crate::print_grams::SCHEMA_STEP, install_print_grams),
         (crate::tls_pins::SCHEMA_STEP, install_tls_pins),
         (crate::build_graph::SCHEMA_STEP, install_experiments),
+        (crate::spoolman_deductions::SCHEMA_STEP, install_deductions),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -628,7 +631,7 @@ fn install_steps(
 /// Rust-only side tables: each step's objects must match its reference SQL
 /// from that step on and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
-const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 7] = [
+const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 8] = [
     (
         crate::domain_events::SCHEMA_STEP,
         "name LIKE 'domain_event%'",
@@ -677,6 +680,13 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 7] = [
         include_str!("build_graph/experiments_schema.sql"),
         "Unexpected experiment schema",
         "Experiment schema mismatch",
+    ),
+    (
+        crate::spoolman_deductions::SCHEMA_STEP,
+        "tbl_name IN ('spoolman_deductions', 'spoolman_deduction_units')",
+        include_str!("spoolman_deductions/schema.sql"),
+        "Unexpected Spoolman deduction schema",
+        "Spoolman deduction schema mismatch",
     ),
 ];
 

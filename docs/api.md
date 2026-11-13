@@ -143,6 +143,14 @@ Served only by the Rust core with both rebuild gates on, behind a session or API
 
 `grams_needed` is `measured` or `estimated` (each with `grams` and the `job_count` used), or `unknown` with a reason. It comes from past sends: each send's grams (the Printer Checkoff link's row in `print_link_grams`) divided by the units that send prints, averaged over the Part's five most recent sends with a checked-off unit for it, times the remaining units, rounded up. A Part with any measured send uses only measured sends. The reason is `grams_not_recorded` when no checked-off unit of the Build belongs to a send with grams, and `part_not_printed` when other Parts have such sends but this one does not. The owner chose the writer's design (GRE-1165): the send queue records the slicer's estimate when a job is uploaded, and the status watcher replaces it with the length the printer measured, converted with the send's grams per millimetre, when the print finishes. `estimated` is the basis while any Part's grams come only from estimates. It carries `reason: "measured_length_not_convertible"` when the printer measured a length but the sent file stated no length to convert it with; otherwise `reason` is `null`. `estimated` and `measured` both decide `status`. `grams_available` is `spoolman` (whole grams over unarchived spools, rounded down) or `unknown` with a reason (`not_spoolman`, `integration_missing`, `integration_disabled` (the integration is `enabled: false` and is not contacted), `unreachable`, `filament_missing`, `spool_weight_missing`). Unknown never reads as zero, and an unknown on either side gives `status: unknown`, never `short`. The read never reserves or deducts stock. Errors are [problem responses](problem-responses.md).
 
+### Spoolman deductions (Rust-only)
+
+```text
+GET /api/v2/spoolman/deductions?state=&link_id=
+```
+
+Served only by the Rust core with both rebuild gates on, behind a session or API key. Answers `{ "deductions": [...] }`, newest first, at most 100. Each row has `id`, `state` (`pending`, `sending`, `applied`, `unknown`, `failed`, `skipped` or `dismissed`), `reason` (set only on `skipped`), `link_id`, `profile_id` (the Build), `units`, and `integration_id`, `spool_id`, `grams` (whole grams, rounded up) and `grams_basis` (`estimated` or `measured`), which are null on `skipped` rows. `state` must be one of those states and `link_id` 1 to 200 characters; any other query is refused with 400 `invalid_deduction_filter`. Checkoff writes the rows; see [Spoolman](integrations/SPOOLMAN.md#on-the-rust-core). Errors are [problem responses](problem-responses.md).
+
 ### History
 
 ```text

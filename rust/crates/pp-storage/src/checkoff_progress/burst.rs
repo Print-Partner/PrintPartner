@@ -295,6 +295,20 @@ struct Decided {
     touched: Vec<(i64, i64, (bool, bool))>,
 }
 
+/// Each decision's unit and whether it confirms it. A decision without a
+/// valid Part ID and unit index is left out.
+fn decisions(bed: &Value) -> Vec<((i64, i64), bool)> {
+    let decisions = field(bed, "decisions").as_array().into_iter().flatten();
+    decisions
+        .filter_map(|d| {
+            let part = links::js_integer(d.get("part_id"), 1.0)?;
+            let index = links::js_integer(d.get("unit_index"), 0.0)?;
+            let confirmed = d.get("result").and_then(Value::as_str) == Some("confirmed");
+            Some(((part, index), confirmed))
+        })
+        .collect()
+}
+
 fn decided(tx: &Transaction<'_>, tenant: &str, beds: &[(String, Value)]) -> Result<Decided> {
     let mut out = Decided {
         units: BTreeSet::new(),
@@ -302,15 +316,9 @@ fn decided(tx: &Transaction<'_>, tenant: &str, beds: &[(String, Value)]) -> Resu
         touched: Vec::new(),
     };
     for (_, bed) in beds {
-        for d in field(bed, "decisions").as_array().into_iter().flatten() {
-            let (Some(part), Some(index)) = (
-                links::js_integer(d.get("part_id"), 1.0),
-                links::js_integer(d.get("unit_index"), 0.0),
-            ) else {
-                continue;
-            };
+        for ((part, index), confirmed) in decisions(bed) {
             out.units.insert((part, index));
-            if d.get("result").and_then(Value::as_str) == Some("confirmed") {
+            if confirmed {
                 out.confirmed.insert((part, index));
             }
             if let Some(row) = progress_row(tx, tenant, part, index)? {
@@ -437,7 +445,22 @@ pub(super) fn verify_batch(
     }));
     save_receipts(tx, tenant, &receipts)?;
     #[cfg(feature = "desktop_rebuild")]
-    super::farm_log::append_burst(tx, tenant, &response)?;
+    {
+        super::farm_log::append_burst(tx, tenant, &response)?;
+        // Each bed's confirmed units, with the Build its verified link names.
+        let beds = burst.beds.iter().zip(&results);
+        let beds: Vec<_> = beds
+            .filter_map(|((id, bed), (link, ..))| {
+                let units = decisions(bed).into_iter().filter(|unit| unit.1);
+                Some(crate::spoolman_deductions::ConfirmedBed {
+                    link_id: id.clone(),
+                    profile_id: link["profile_id"].as_i64()?,
+                    units: units.map(|(unit, _)| unit).collect(),
+                })
+            })
+            .collect();
+        crate::spoolman_deductions::record_burst(tx, tenant, &token, &beds)?;
+    }
     Ok(Ok(Response::ok(Body::Receipt(response))))
 }
 
@@ -703,7 +726,10 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
     }
     let undone_at = mark_undone(tx, tenant, (KEY, RETIRED_KEY), &mut receipts, position)?;
     #[cfg(feature = "desktop_rebuild")]
-    super::farm_log::append_undo(tx, tenant, token, &receipts[position]["response"])?;
+    {
+        super::farm_log::append_undo(tx, tenant, token, &receipts[position]["response"])?;
+        crate::spoolman_deductions::remove_burst(tx, tenant, token)?;
+    }
     let mut body = Map::new();
     body.insert("undo_token".into(), token.into());
     body.insert("undone_at".into(), undone_at.into());

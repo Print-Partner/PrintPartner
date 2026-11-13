@@ -73,6 +73,8 @@ pub mod source_files;
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_sync;
+#[cfg(feature = "desktop_rebuild")]
+pub mod spoolman_deductions;
 pub mod sqlite_uri;
 #[cfg(feature = "desktop_rebuild")]
 pub mod tls_pins;

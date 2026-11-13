@@ -242,6 +242,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "CheckoffResultList",
     ),
     route(
+        "listSpoolmanDeductions",
+        "GET",
+        "/api/v2/spoolman/deductions",
+        None,
+        "DeductionList",
+    ),
+    route(
         "listUnmatchedPrints",
         "GET",
         "/api/v2/printer-checkoff/unattributed",
@@ -673,6 +680,22 @@ pub(crate) mod codegen {
             object.required.extend(nullable.map(String::from));
         }
         schema("PrinterConfig", config)?;
+        // A deduction always serializes its nullable fields, null included.
+        let mut deductions = schemars::schema_for!(crate::spoolman_deductions::DeductionList);
+        if let Some(schemars::schema::Schema::Object(view)) =
+            deductions.definitions.get_mut("DeductionView")
+            && let Some(object) = view.object.as_mut()
+        {
+            let nullable = [
+                "reason",
+                "integration_id",
+                "spool_id",
+                "grams",
+                "grams_basis",
+            ];
+            object.required.extend(nullable.map(String::from));
+        }
+        schema("DeductionList", deductions)?;
         schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),
@@ -1919,6 +1942,31 @@ pub(crate) mod codegen {
         ])
     }
 
+    /// A pending deduction and a skipped one, whose target fields are null.
+    fn deduction_cases() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::spoolman_deductions::{DeductionList, DeductionView};
+        let row = |pending: bool| DeductionView {
+            id: if pending { MAX_SAFE } else { 1 },
+            state: if pending { "pending" } else { "skipped" },
+            reason: (!pending).then_some("no_pinned_spool"),
+            link_id: UNICODE.into(),
+            profile_id: MAX_SAFE,
+            units: 2,
+            integration_id: pending.then(|| "sm-1".into()),
+            spool_id: pending.then_some(7),
+            grams: pending.then_some(20),
+            grams_basis: pending.then_some("estimated"),
+            created_at: "2026-11-12T00:00:00.000Z".into(),
+            updated_at: "2026-11-12T00:00:00.000Z".into(),
+        };
+        let deductions = vec![row(true), row(false)];
+        Ok(vec![served(
+            "DeductionList",
+            "pending-and-skipped",
+            DeductionList { deductions },
+        )?])
+    }
+
     fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {
         let config = |filled: bool| crate::printers::PrinterConfig {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -2146,6 +2194,7 @@ pub(crate) mod codegen {
         }
         cases.extend(integration_cases()?);
         cases.extend(printer_cases()?);
+        cases.extend(deduction_cases()?);
         for (index, value) in shortfalls().into_iter().enumerate() {
             cases.push(served(
                 "FilamentShortfalls",

@@ -98,7 +98,7 @@ impl InstallationClient {
     /// [`RestoreError::NoSpace`], before writing anything, when the backup
     /// would leave less than the reserve free on the data volume.
     pub fn export_backup(&self, app_version: &str) -> Result<BackupFile, RestoreError> {
-        let _active = self.activity.enter().map_err(|_| WriterFailure::Stopped)?;
+        let _active = self.activity.admit()?;
         let directory = export_dir(&self.data_dir).map_err(internal)?;
         let mut backup = BackupFile {
             path: directory.join("print-partner-backup.tar.gz"),

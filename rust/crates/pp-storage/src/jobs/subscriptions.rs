@@ -871,4 +871,14 @@ mod tests {
             Some(&JobAccessFailure::Stopped)
         );
     }
+    #[test]
+    fn stopping_old_job_streams_allows_restored_lower_versions() {
+        let subscriptions = JobSubscriptions::new();
+        let old = subscribe_to(&subscriptions, job("a", 9, PersistentState::Queued), None).unwrap();
+        subscriptions.stop();
+        assert_eq!(drain(&old), (vec![], Some(StreamClose::OwnerStopped)));
+        let restored =
+            subscribe_to(&subscriptions, job("a", 1, PersistentState::Queued), None).unwrap();
+        assert_eq!(drain(&restored), (vec![1], None));
+    }
 }

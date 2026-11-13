@@ -15,6 +15,7 @@ fn ticket_t_59_catalog_private_full_queue_retains_unreleased_work() {
             #[cfg(feature = "desktop_rebuild")]
             next: crate::QueueClass::Normal,
             closed: false,
+            restoring: false,
             pending: VecDeque::from([Envelope::Catalog {
                 command: Command::End(999),
                 reply,
@@ -34,7 +35,7 @@ fn ticket_t_59_catalog_private_full_queue_retains_unreleased_work() {
         #[cfg(feature = "desktop_rebuild")]
         domain_events: crate::domain_events::Feed::new(0),
         #[cfg(feature = "desktop_rebuild")]
-        print_file_snapshots: Arc::default(),
+        restoration: crate::restore::activation::Context::for_test(),
     });
     let readers = Arc::new(ReaderPool {
         state: Mutex::new(ReaderState {
@@ -320,4 +321,30 @@ fn unknown_source_work_lease_is_rejected_without_database_work() {
     };
     assert_eq!(error.root_cause().to_string(), "Unknown work lease");
     connection.execute_batch("ROLLBACK").unwrap();
+}
+
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn leases_from_before_restore_cannot_release_new_source_work() {
+    let mut state = State::default();
+    let old = state.next_token().unwrap();
+    state.activate(old, "default".into(), 1);
+    let incarnation = state.incarnation().to_owned();
+    state.after_restore();
+    assert_ne!(state.incarnation(), incarnation);
+    let current = state.next_token().unwrap();
+    state.activate(current, "default".into(), 1);
+    assert_ne!(current, old);
+    state.reap(vec![old]);
+    assert!(state.source_busy("default", 1));
+    let mut connection = Connection::open_in_memory().unwrap();
+    let reply = execute(
+        &mut connection,
+        &mut state,
+        Command::End(old),
+        crate::writer_admission::Deadline::at_dequeue(),
+    )
+    .unwrap();
+    assert!(matches!(reply, Reply::Released));
+    assert!(state.source_busy("default", 1));
 }

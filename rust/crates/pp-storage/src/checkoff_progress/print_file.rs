@@ -688,6 +688,7 @@ struct Saved {
 
 #[derive(Default)]
 struct Held {
+    generation: u64,
     /// One capture at a time, as Node allows.
     active: bool,
     ready: HashMap<String, Saved>,
@@ -713,6 +714,12 @@ pub const CAPTURE_UNAVAILABLE: &str =
     "File inspection unavailable. Finish the current file, then reopen this file.";
 
 impl SnapshotStore {
+    pub(crate) fn invalidate(&self) {
+        let mut held = self.held();
+        held.generation = held.generation.wrapping_add(1);
+        held.ready.clear();
+    }
+
     fn held(&self) -> MutexGuard<'_, Held> {
         let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
@@ -742,6 +749,7 @@ impl SnapshotStore {
         };
         held.active = true;
         Ok(Capture {
+            generation: held.generation,
             store: Arc::clone(self),
             token: links::uuid(),
             scope,
@@ -777,6 +785,7 @@ impl SnapshotStore {
         }
         held.reserved += 1;
         Some(Reservation {
+            generation: held.generation,
             store: Arc::clone(self),
             token: token.to_owned(),
             saved: held.ready.remove(token),
@@ -786,6 +795,7 @@ impl SnapshotStore {
 
 /// A snapshot one assignment holds while it records the print.
 pub struct Reservation {
+    generation: u64,
     store: Arc<SnapshotStore>,
     token: String,
     saved: Option<Saved>,
@@ -793,6 +803,9 @@ pub struct Reservation {
 
 impl Reservation {
     pub fn inspected(&self) -> Option<&Inspected> {
+        if self.generation != self.store.held().generation {
+            return None;
+        }
         self.saved.as_ref().map(|saved| &saved.inspected)
     }
 
@@ -806,7 +819,11 @@ impl Drop for Reservation {
     fn drop(&mut self) {
         let mut held = self.store.held();
         held.reserved -= 1;
-        if let Some(saved) = self.saved.take() {
+        if let Some(saved) = self
+            .saved
+            .take()
+            .filter(|_| self.generation == held.generation)
+        {
             held.ready.insert(std::mem::take(&mut self.token), saved);
         }
     }
@@ -816,6 +833,7 @@ impl Drop for Reservation {
 /// it is redeemable only after [`Capture::finish`]. Dropping it unfinished
 /// releases the store.
 pub struct Capture {
+    generation: u64,
     store: Arc<SnapshotStore>,
     token: String,
     scope: Scope,
@@ -842,6 +860,9 @@ impl Capture {
 
     /// Classify the whole file at EOF and make the token redeemable.
     pub fn finish(mut self) -> std::result::Result<(), &'static str> {
+        if self.generation != self.store.held().generation {
+            return Err(SNAPSHOT_EXPIRED);
+        }
         let classified =
             classify(&self.bytes).map_err(|_: Rejection| "Printer file could not be inspected")?;
         let identity = identify(std::mem::take(&mut self.identity), &classified);
@@ -855,6 +876,9 @@ impl Capture {
             },
         };
         let mut held = self.store.held();
+        if self.generation != held.generation {
+            return Err(SNAPSHOT_EXPIRED);
+        }
         held.ready.insert(self.token.clone(), saved);
         held.active = false;
         self.done = true;
@@ -1151,6 +1175,47 @@ mod tests {
 
 #[cfg(test)]
 mod snapshot_store_tests {
+    fn begin_capture(
+        store: &std::sync::Arc<super::SnapshotStore>,
+    ) -> (super::Scope, super::Capture) {
+        let scope = super::Scope {
+            profile_id: 1,
+            printer_id: "printer".into(),
+            remote_path: "part.gcode".into(),
+            filename: "part.gcode".into(),
+        };
+        let capture = store
+            .begin(
+                scope.clone(),
+                serde_json::json!({}),
+                Some("source".into()),
+                Some("source"),
+            )
+            .unwrap();
+        (scope, capture)
+    }
+
+    #[test]
+    fn a_reservation_cannot_return_a_preview_from_before_restore() {
+        let store = std::sync::Arc::new(super::SnapshotStore::default());
+        let (scope, mut capture) = begin_capture(&store);
+        let token = capture.token().to_owned();
+        capture.push(b"G1 X1\n").unwrap();
+        capture.finish().unwrap();
+        let reserved = store.reserve(&token, &scope, Some("source")).unwrap();
+        assert!(reserved.inspected().is_some());
+        store.invalidate();
+        assert!(reserved.inspected().is_none());
+        drop(reserved);
+        assert!(store.read(&token, &scope, Some("source")).is_none());
+    }
+    #[test]
+    fn captures_started_before_restore_cannot_publish_a_preview() {
+        let store = std::sync::Arc::new(super::SnapshotStore::default());
+        let (_, capture) = begin_capture(&store);
+        store.invalidate();
+        assert_eq!(capture.finish(), Err(super::SNAPSHOT_EXPIRED));
+    }
     use crate::{Limits, WriterOwner, tests::directory};
     use std::sync::Arc;
 

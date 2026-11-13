@@ -41,12 +41,13 @@ async function suite() {
     [process.execPath, ["--test", resolve(here, "steps.test.mjs")]],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["volume", "create", name]],
-    // The run command from docs/docker.md. `--restart unless-stopped` matters: sign-out
-    // stops pp-server, and Docker starts it again.
+    // The run command from docs/docker.md, except that Docker picks the host port, so
+    // two runs on one machine do not collide; the tests read it back with `docker port`.
+    // `--restart unless-stopped` matters: sign-out stops pp-server, and Docker starts it again.
     [
       "docker",
       [
-        ...["run", "-d", "--name", name, "--network", "host", "--restart", "unless-stopped"],
+        ...["run", "-d", "--name", name, "-p", "127.0.0.1::8080", "--restart", "unless-stopped"],
         ...["--read-only", "--tmpfs", "/tmp:size=1g,mode=1777"],
         ...["--cap-drop", "ALL", "--security-opt", "no-new-privileges"],
         ...["-v", `${name}:/data`, image],

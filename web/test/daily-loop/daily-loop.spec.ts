@@ -36,8 +36,9 @@ function unwritten(rest: string): never {
   throw new Error(`This step's test is not written past here. Still to check: ${rest}.`);
 }
 
-const inContainer = (...command: string[]) =>
-  spawnSync("docker", ["exec", CONTAINER, ...command], { encoding: "utf8", timeout: 30_000 });
+const docker = (...args: string[]) =>
+  spawnSync("docker", args, { encoding: "utf8", timeout: 30_000 });
+const inContainer = (...command: string[]) => docker("exec", CONTAINER, ...command);
 
 /**
  * Marks a failure of the harness itself: the server, the sign-in link or the owner's
@@ -64,8 +65,14 @@ async function openSignInLink(page: Page) {
   await harness("the sign-in link did not open", async () => {
     const link = inContainer("pp-server", "bootstrap-url", "--data", "/data");
     if (link.status !== 0) throw new Error(`bootstrap-url: ${link.stderr.trim()}`);
+    // The link names the port inside the container. Docker publishes it on a host port
+    // that can change when the container restarts (docs/docker.md, Sign in).
+    const published = /-> (\S+)/.exec(docker("port", CONTAINER).stdout)?.[1];
+    if (!published) throw new Error("docker port shows no published address");
+    const url = new URL(link.stdout.trim());
+    url.host = published;
     // The link is a secret, so a failed navigation must not print it.
-    await page.goto(link.stdout.trim()).catch(() => {
+    await page.goto(url.href).catch(() => {
       throw new Error("the browser could not load it");
     });
   });

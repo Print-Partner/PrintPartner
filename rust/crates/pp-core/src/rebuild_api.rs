@@ -246,6 +246,18 @@ fn mcp_config(origin: &str, api_key_tenant: &str, server: ServerOptions) -> Resu
     )
 }
 
+/// The settings routes and the GitHub branch and tag listings, which read
+/// the stored GitHub token through the same settings client.
+fn settings_routes(
+    config: AdminHttpConfig,
+    reads: ReadClient,
+    settings: pp_storage::app_settings::AppSettingsClient,
+) -> Result<Router> {
+    let github = crate::github::GithubTransport::new()?;
+    let listings = github_router(config.clone(), reads.clone(), settings.clone(), github);
+    Ok(settings_router(config, reads, settings).merge(listings))
+}
+
 /// The Settings screen's routes outside `/settings`: the Module switches,
 /// the integration writes and the printer routes, from the same owner.
 fn setup_routes(
@@ -338,13 +350,7 @@ fn read_router_with_updates(
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
     let admin_config = admin_config.with_server_update_checks(server.update_checks);
-    let github = github_router(
-        admin_config.clone(),
-        accepted_client.clone(),
-        app_settings.clone(),
-        crate::github::GithubTransport::new()?,
-    );
-    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
+    let settings_routes = settings_routes(admin_config, accepted_client.clone(), app_settings)?;
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
@@ -378,7 +384,6 @@ fn read_router_with_updates(
             .merge(modules)
             .merge(filaments)
             .merge(settings_routes)
-            .merge(github)
             .merge(probe)
             .merge(events)
             .merge(checkoff)

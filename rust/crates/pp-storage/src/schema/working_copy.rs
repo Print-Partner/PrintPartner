@@ -266,10 +266,18 @@ mod tests {
         root
     }
 
+    /// The folder's entries, without the live database's `-shm` and `-wal`,
+    /// which SQLite creates and checkpoints away on its own schedule.
     fn entries(path: &Path) -> Vec<std::ffi::OsString> {
         let mut names: Vec<_> = std::fs::read_dir(path)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
+            .filter(|name| {
+                !matches!(
+                    name.to_str(),
+                    Some("print-partner.db-shm" | "print-partner.db-wal")
+                )
+            })
             .collect();
         names.sort();
         names

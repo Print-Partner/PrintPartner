@@ -237,7 +237,9 @@ fn hold<'scope>(
     (release, worker)
 }
 
-fn refusal(result: anyhow::Result<AcquisitionReply>) -> String {
+fn refusal(
+    result: Result<AcquisitionReply, pp_core::source_acquisition::AcquisitionError>,
+) -> String {
     match result {
         Ok(reply) => panic!("expected refusal, got {:?}", reply.wait()),
         Err(error) => format!("{error:#}"),

@@ -1,4 +1,6 @@
-use crate::{Envelope, SettingsClient, WriterOwner, auth::AuthPolicy, catalog, jobs};
+use crate::{
+    Envelope, SettingsClient, WriterFailure, WriterOwner, auth::AuthPolicy, catalog, jobs,
+};
 use anyhow::{Result, anyhow, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -722,7 +724,9 @@ pub enum Phase {
     Published(Artifact),
     Activate,
     Cleanup,
-    Fail,
+    /// Ends the import. The reason, in words, becomes the failed job's
+    /// `error`; a cancelled import ignores it.
+    Fail(String),
 }
 
 impl Phase {
@@ -733,7 +737,7 @@ impl Phase {
             Self::Published(_) => Some("published"),
             Self::Activate => Some("activated"),
             Self::Cleanup => Some("cleanup"),
-            Self::Fail => Some("failed"),
+            Self::Fail(_) => Some("failed"),
         }
     }
 }
@@ -1194,18 +1198,21 @@ pub(crate) fn submit(
     command: Command,
     cancelled: &AtomicBool,
 ) -> Result<UploadsOutcome> {
+    // Admission failures are typed, so callers sort them with
+    // `WriterFailure::from` rather than by text.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut queue = storage
         .shared
         .queue
         .lock()
-        .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        .map_err(|_| WriterFailure::Stopped)?;
     loop {
-        ensure!(!queue.closed, "Storage stopped");
-        ensure!(
-            !cancelled.load(Ordering::Acquire),
-            "Cancelled before admission"
-        );
+        if queue.closed {
+            return Err(WriterFailure::Stopped.into());
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WriterFailure::Cancelled.into());
+        }
         if queue.pending.len() < storage.shared.capacity {
             let (reply, receiver) = mpsc::channel();
             queue
@@ -1217,17 +1224,44 @@ pub(crate) fn submit(
                 .recv()
                 .map_err(|_| anyhow!("Import commit outcome unknown"))?;
         }
-        ensure!(Instant::now() < deadline, "Writer queue full");
+        if Instant::now() >= deadline {
+            return Err(WriterFailure::QueueFull.into());
+        }
         queue = storage
             .shared
             .changed
             .wait_timeout(queue, Duration::from_millis(5))
-            .map_err(|_| anyhow!("Writer admission poisoned"))?
+            .map_err(|_| WriterFailure::Stopped)?
             .0;
     }
 }
 
-pub(crate) fn execute(
+/// Runs `command` on the writer thread: advances the import accounting epoch
+/// when it changed what admission counts, and publishes the import job
+/// changes it committed to `/ws/jobs` like a job command's.
+pub(crate) fn run(
+    connection: &mut Connection,
+    catalog_state: &catalog::State,
+    command: Command,
+    admission: crate::writer_admission::Deadline,
+    shared: &crate::Shared,
+) -> Result<UploadsOutcome> {
+    let changes_accounting = command.changes_accounting();
+    let changes_before = connection.total_changes();
+    jobs::begin_job_collection();
+    let result = execute(connection, catalog_state, command, admission);
+    jobs::end_job_collection(
+        &shared.job_subscriptions,
+        result.is_ok(),
+        result.as_ref().err(),
+    );
+    if result.is_ok() && changes_accounting && connection.total_changes() != changes_before {
+        shared.import_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+    result
+}
+
+fn execute(
     connection: &mut Connection,
     catalog_state: &catalog::State,
     command: Command,
@@ -1338,6 +1372,7 @@ pub(crate) fn execute(
                     record_observation(&tx, &mut op, "authority_refused", observed)?;
                     store(&tx, &op)?;
                     tx.commit()?;
+                    jobs::job_collection_committed();
                 }
                 return Err(error);
             }
@@ -1383,7 +1418,7 @@ fn advance(
     phase: Phase,
 ) -> Result<Operation> {
     ensure!(
-        !job.cancel_requested || matches!(phase, Phase::Read | Phase::Fail | Phase::Cleanup),
+        !job.cancel_requested || matches!(phase, Phase::Read | Phase::Fail(_) | Phase::Cleanup),
         "Import cancelled"
     );
     let observation = phase.observation();
@@ -1403,7 +1438,7 @@ fn advance(
             ensure!(op.state == State::Published, "Artifact not published");
             activate(tx, catalog_state, &mut op, lease)?;
         }
-        Phase::Fail => {
+        Phase::Fail(reason) => {
             ensure!(op.receipt.is_none(), "Import already completed");
             if matches!(op.state, State::Failed | State::Cancelled)
                 && repeats_observation(tx, &op, "failed", Observed::fenced(&job, lease, &op))?
@@ -1413,6 +1448,10 @@ fn advance(
             op.state = if job.cancel_requested {
                 State::Cancelled
             } else {
+                // Kept for cleanup, which ends the job; a version bump here
+                // would end this attempt's lease.
+                job.recovery = Some(jobs::bounded_reason(&reason));
+                jobs::keep_recovery(tx, &job)?;
                 State::Failed
             };
         }

@@ -7,7 +7,7 @@ use pp_source::{
     },
 };
 use pp_storage::{
-    WriterOwner,
+    WriterFailure, WriterOwner,
     auth::AuthPolicy,
     jobs::Credential,
     uploads::{
@@ -17,7 +17,8 @@ use pp_storage::{
 };
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    io::Read,
+    fmt,
+    io::{self, Read},
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
@@ -44,17 +45,128 @@ pub struct CaptureRequest {
     pub files: Vec<CapturedFile>,
 }
 
+/// A captured import whose files arrive one at a time, such as the parts of
+/// an upload. Each item names the file's path inside the Source; an `Err`
+/// item means the stream broke, and nothing is admitted.
+pub struct StreamedRequest<F> {
+    pub credential: Credential,
+    pub operation_key: String,
+    pub target: Target,
+    pub limits: AdmissionLimits,
+    pub files: F,
+}
+
+/// Why [`SourceAcquisitions`] refused or failed an acquisition. Only
+/// [`AcquisitionError::Failed`] can follow a write to the journal.
+#[derive(Debug)]
+pub enum AcquisitionError {
+    /// Recovery has not opened ingress, or shutdown has begun.
+    Closed(&'static str),
+    /// Every capacity slot is held.
+    Busy,
+    /// The operation key is already in flight.
+    InProgress,
+    /// The request held no file.
+    NoFiles,
+    /// The files are over the import's input limit.
+    TooLarge,
+    /// A file was refused: an unsafe or repeated path, or a broken stream.
+    /// The text says which, in words.
+    Input(String),
+    /// Storage refused the admission: the Source, the credential, or a
+    /// storage fault, sorted by [`WriterFailure`].
+    Refused(WriterFailure),
+    /// The acquisition gate's lock was poisoned by a panicking thread.
+    GateUnavailable,
+    /// Any other failure, such as the capture vault or freezing the files.
+    Failed(anyhow::Error),
+}
+
+impl AcquisitionError {
+    fn context(self, context: impl fmt::Display + Send + Sync + 'static) -> Self {
+        match self {
+            Self::Failed(error) => Self::Failed(error.context(context)),
+            // A refusal of the request stays as worded; cleanup is the
+            // service's concern.
+            refusal => refusal,
+        }
+    }
+
+    /// Sorts a failure while writing the file at `path`: refusals of the
+    /// input itself are the caller's, everything else is the service's.
+    fn writing(error: pp_source::Error, path: &str) -> Self {
+        match error {
+            pp_source::Error::Limit => Self::TooLarge,
+            pp_source::Error::UnsafePath | pp_source::Error::UnsafeAncestor => {
+                Self::Input(format!("File path {path:?} is not allowed"))
+            }
+            pp_source::Error::DuplicatePath => {
+                Self::Input(format!("File path {path:?} appears twice"))
+            }
+            pp_source::Error::StoredPathTooLong { .. } => {
+                Self::Input(format!("File path {path:?} is too long"))
+            }
+            error => Self::Failed(anyhow::Error::from(error)),
+        }
+    }
+}
+
+impl fmt::Display for AcquisitionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Failed(error) if formatter.alternate() => {
+                return write!(formatter, "{error:#}");
+            }
+            Self::Failed(error) => return write!(formatter, "{error}"),
+            Self::Refused(error) => {
+                return write!(formatter, "Source acquisition refused: {error}");
+            }
+            Self::GateUnavailable => "Source acquisition gate poisoned",
+            Self::Closed(text) => text,
+            Self::Input(text) => text,
+            Self::Busy => "Source acquisition capacity exhausted",
+            Self::InProgress => "Source acquisition already in progress for this key",
+            Self::NoFiles => "Source acquisition has no files",
+            Self::TooLarge => "Source acquisition input is too large",
+        })
+    }
+}
+
+impl std::error::Error for AcquisitionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Failed(error) => error.source(),
+            Self::Refused(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// The result of an accepted acquisition, delivered once its operation is
 /// recorded.
 pub struct AcquisitionReply {
+    admitted: mpsc::Receiver<Result<Operation, AcquisitionError>>,
     result: mpsc::Receiver<Result<Operation>>,
 }
 
 impl AcquisitionReply {
-    fn ready(result: Result<Operation>) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let _ = sender.send(result);
-        Self { result: receiver }
+    fn ready(operation: Operation) -> Self {
+        let (admitted, admitted_receiver) = mpsc::channel();
+        let (result, receiver) = mpsc::channel();
+        let _ = admitted.send(Ok(operation.clone()));
+        let _ = result.send(Ok(operation));
+        Self {
+            admitted: admitted_receiver,
+            result: receiver,
+        }
+    }
+
+    /// Blocks until the acquisition's admission is recorded, and returns the
+    /// operation as admitted. The worker goes on to settle it.
+    pub fn admitted(&self) -> Result<Operation, AcquisitionError> {
+        self.admitted
+            .recv()
+            .map_err(|_| AcquisitionError::Failed(anyhow!("Source acquisition worker stopped")))?
     }
 
     /// Blocks until the acquisition's operation is recorded.
@@ -106,10 +218,26 @@ struct Shared {
 }
 
 impl Shared {
-    fn gate(&self) -> Result<MutexGuard<'_, Gate>> {
+    fn gate(&self) -> Result<MutexGuard<'_, Gate>, AcquisitionError> {
         self.gate
             .lock()
-            .map_err(|_| anyhow!("Source acquisition gate poisoned"))
+            .map_err(|_| AcquisitionError::GateUnavailable)
+    }
+
+    /// Refuses unless ingress is open.
+    fn open_gate(&self) -> Result<MutexGuard<'_, Gate>, AcquisitionError> {
+        let gate = self.gate()?;
+        if gate.shut_down {
+            return Err(AcquisitionError::Closed(
+                "Source acquisition is shutting down",
+            ));
+        }
+        if !gate.open {
+            return Err(AcquisitionError::Closed(
+                "Source acquisition ingress is closed",
+            ));
+        }
+        Ok(gate)
     }
 }
 
@@ -122,14 +250,11 @@ struct Permit {
 }
 
 impl Permit {
-    fn take_slot(&mut self) -> Result<()> {
-        let mut gate = self.shared.gate()?;
-        ensure!(!gate.shut_down, "Source acquisition is shutting down");
-        ensure!(gate.open, "Source acquisition ingress is closed");
-        ensure!(
-            gate.active < gate.capacity,
-            "Source acquisition capacity exhausted"
-        );
+    fn take_slot(&mut self) -> Result<(), AcquisitionError> {
+        let mut gate = self.shared.open_gate()?;
+        if gate.active >= gate.capacity {
+            return Err(AcquisitionError::Busy);
+        }
         gate.active += 1;
         self.slot = true;
         Ok(())
@@ -255,10 +380,11 @@ impl SourceAcquisitions {
         })
     }
 
-    /// Closes ingress, finishes interrupted vault deletions, and drives every
+    /// Closes ingress, finishes interrupted vault deletions, discards
+    /// candidates a stopped process left half-written, and drives every
     /// frozen capture that exactly matches an admitted journal row through
     /// settlement. Captures whose journal row is already owned or later, or
-    /// absent, are removed. Conflicting, candidate, and malformed captures are
+    /// absent, are removed. Conflicting and malformed captures are
     /// left byte-for-byte unchanged; while any remain, ingress stays closed and
     /// this returns an error naming each remaining capture and its cause.
     /// Refuses while an acquisition still holds a slot, leaving ingress as it
@@ -278,6 +404,13 @@ impl SourceAcquisitions {
         let entries = vault.scan()?;
         let mut causes = HashMap::new();
         for entry in &entries {
+            if entry.phase() == RetainedCapturePhase::Candidate {
+                // Admission follows the freeze, so nothing refers to it.
+                if let Err(error) = vault.discard_candidate(entry.capture_id()) {
+                    causes.insert(entry.capture_id().as_str().to_owned(), error.to_string());
+                }
+                continue;
+            }
             if entry.phase() != RetainedCapturePhase::Frozen {
                 continue;
             }
@@ -339,6 +472,40 @@ impl SourceAcquisitions {
         self.imports.admit_captured(prepared)
     }
 
+    /// Settles imports a stopped process left after their capture became owned
+    /// input; opening storage requeued their jobs. Call it after
+    /// [`SourceAcquisitions::recover_before_accepting`], which settles the
+    /// imports still held as retained captures. A failed import is recorded
+    /// as failed on its job and not counted. Returns the number of imports
+    /// settled; a failure to claim ends the call with the count so far.
+    pub fn resume_imports(&self) -> Result<usize> {
+        let mut settled = 0;
+        // Each claim leases its job, so a job that fails is not claimed again
+        // here; the bound only guards against a storage fault.
+        for _ in 0..1024 {
+            // A failure to claim (a busy, full or stopped writer) ends the
+            // loop: nothing was taken, and retrying would only repeat it.
+            let claim = match self.imports.claim_next() {
+                Ok(Some(claim)) => claim,
+                Ok(None) => return Ok(settled),
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "Source imports not claimed");
+                    return Ok(settled);
+                }
+            };
+            match self
+                .imports
+                .work_claim(claim, Through::Settled, &self.shared.stop)
+            {
+                Ok(_) => settled += 1,
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "Source import did not resume");
+                }
+            }
+        }
+        Ok(settled)
+    }
+
     /// Acquires a captured import. A key whose operation is already recorded
     /// replies with that operation as recorded, which may not be settled yet,
     /// and writes nothing. The key is reserved before preflight, so a retry of
@@ -354,7 +521,7 @@ impl SourceAcquisitions {
         &self,
         request: CaptureRequest,
         cancelled: &AtomicBool,
-    ) -> Result<AcquisitionReply> {
+    ) -> Result<AcquisitionReply, AcquisitionError> {
         let CaptureRequest {
             credential,
             operation_key,
@@ -373,59 +540,158 @@ impl SourceAcquisitions {
                 payload.clone(),
                 limits,
             )
-            .context("Source acquisition preflight failed")?;
+            // Converted before any context, so a busy, full, stopped or
+            // refusing writer keeps its type.
+            .map_err(|error| AcquisitionError::Refused(WriterFailure::from(error)))?;
         if let Some(operation) = authority.replay() {
-            return Ok(AcquisitionReply::ready(Ok(operation.clone())));
+            return Ok(AcquisitionReply::ready(operation.clone()));
         }
         permit.take_slot()?;
-        let accepted = self.freeze(
-            authority,
-            permit,
-            Bound {
-                operation_key,
-                payload,
-                limits,
-            },
-            files,
-            cancelled,
-        )?;
+        if files.is_empty() {
+            return Err(AcquisitionError::NoFiles);
+        }
+        let mut candidate = self.allocate()?;
+        for file in files {
+            if let Err(error) = write(&mut candidate, file.path, file.input, limits, cancelled) {
+                return Err(self.abort(candidate, error));
+            }
+        }
+        let bound = Bound {
+            operation_key,
+            payload,
+            limits,
+        };
+        let accepted = self.freeze(authority, permit, bound, candidate, cancelled)?;
         self.spawn(accepted)
     }
 
-    /// Writes the request's files into a new candidate, binds its manifest to
-    /// the preflighted admission, and freezes it. Before the freeze, any
-    /// failure removes the candidate; a candidate that cannot be removed
-    /// closes ingress until recovery repairs it.
+    /// Acquires a captured import whose files arrive one at a time. Unlike
+    /// [`SourceAcquisitions::acquire`], the paths are known only once every
+    /// file is written, so the key and a capacity slot are taken before any
+    /// input is read and preflight runs after. A refusal at any step removes
+    /// the candidate and writes no journal row. Returns once the files are
+    /// frozen and the worker is admitting them.
+    ///
+    /// A failure once shutdown has begun is [`AcquisitionError::Closed`]: the
+    /// stop flag also stops the writes, so the candidate is discarded and the
+    /// key and slot are released.
+    pub fn acquire_streamed<F, R>(
+        &self,
+        request: StreamedRequest<F>,
+    ) -> Result<AcquisitionReply, AcquisitionError>
+    where
+        F: Iterator<Item = io::Result<(String, R)>>,
+        R: Read,
+    {
+        match self.streamed(request) {
+            Err(
+                AcquisitionError::Input(_)
+                | AcquisitionError::Refused(_)
+                | AcquisitionError::Failed(_),
+            ) if self.closing() => Err(AcquisitionError::Closed(
+                "Source acquisition is shutting down",
+            )),
+            result => result,
+        }
+    }
+
+    /// Whether shutdown has begun.
+    pub fn closing(&self) -> bool {
+        self.shared.stop.load(Ordering::Acquire)
+    }
+
+    fn streamed(
+        &self,
+        request: StreamedRequest<impl Iterator<Item = io::Result<(String, impl Read)>>>,
+    ) -> Result<AcquisitionReply, AcquisitionError> {
+        let StreamedRequest {
+            credential,
+            operation_key,
+            target,
+            limits,
+            files,
+        } = request;
+        let mut permit = self.reserve(operation_key.clone())?;
+        permit.take_slot()?;
+        let cancelled = &self.shared.stop;
+        let mut candidate = self.allocate()?;
+        let mut paths = Vec::new();
+        for file in files {
+            let written = file
+                .map_err(|_| AcquisitionError::Input("The upload body could not be read".into()))
+                .and_then(|(path, input)| {
+                    let path = SourcePath::try_from(path.clone()).map_err(|_| {
+                        AcquisitionError::Input(format!("File path {path:?} is not allowed"))
+                    })?;
+                    paths.push(path.as_str().to_owned());
+                    write(&mut candidate, path, input, limits, cancelled)
+                });
+            if let Err(error) = written {
+                return Err(self.abort(candidate, error));
+            }
+        }
+        if paths.is_empty() {
+            return Err(self.abort(candidate, AcquisitionError::NoFiles));
+        }
+        let payload = CapturedPayloadV1::files(paths);
+        let preflight = self
+            .imports
+            .preflight_capture(
+                credential,
+                operation_key.clone(),
+                target,
+                payload.clone(),
+                limits,
+            )
+            .map_err(|error| AcquisitionError::Refused(WriterFailure::from(error)));
+        let authority = match preflight {
+            Ok(authority) if authority.replay().is_none() => authority,
+            Ok(_) => {
+                let replayed = anyhow!("Source acquisition key already recorded");
+                return Err(self.abort(candidate, AcquisitionError::Failed(replayed)));
+            }
+            Err(refused) => return Err(self.abort(candidate, refused)),
+        };
+        let bound = Bound {
+            operation_key,
+            payload,
+            limits,
+        };
+        let accepted = self.freeze(authority, permit, bound, candidate, cancelled)?;
+        self.spawn(accepted)
+    }
+
+    /// Allocates a candidate; one that cannot be cleaned up closes ingress
+    /// until recovery repairs it.
+    fn allocate(&self) -> Result<CaptureCandidate, AcquisitionError> {
+        let vault = RetainedCaptureVault::open(&self.data_dir)
+            .map_err(|error| AcquisitionError::Failed(error.into()))?;
+        vault.allocate_owned().map_err(|error| {
+            if error.retained().is_some() {
+                let _ = self.set_ingress(false);
+            }
+            AcquisitionError::Failed(error.into())
+        })
+    }
+
+    /// Binds the written candidate's manifest to the preflighted admission
+    /// and freezes it. Before the freeze, any failure removes the candidate; a
+    /// candidate that cannot be removed closes ingress until recovery repairs
+    /// it.
     fn freeze(
         &self,
         authority: PreflightedCapture,
         permit: Permit,
         bound: Bound,
-        files: Vec<CapturedFile>,
+        candidate: CaptureCandidate,
         cancelled: &AtomicBool,
-    ) -> Result<Accepted> {
-        ensure!(!files.is_empty(), "Source acquisition has no files");
-        let vault = RetainedCaptureVault::open(&self.data_dir)?;
-        let mut candidate = vault.allocate_owned().map_err(|error| {
-            if error.retained().is_some() {
-                let _ = self.set_ingress(false);
-            }
-            anyhow::Error::from(error)
-        })?;
+    ) -> Result<Accepted, AcquisitionError> {
         let limits = bound.limits;
         let prepared = (|| -> Result<PreparedCapturedAdmission> {
-            for file in files {
-                ensure!(
-                    !cancelled.load(Ordering::Acquire),
-                    "Source acquisition cancelled"
-                );
-                candidate.write_file_from_cancelled(
-                    file.path,
-                    file.input,
-                    limits.max_input_bytes,
-                    cancelled,
-                )?;
-            }
+            ensure!(
+                !cancelled.load(Ordering::Acquire),
+                "Source acquisition cancelled"
+            );
             let inventory = candidate
                 .inventory(limits.max_input_bytes)
                 .context("Source acquisition inventory failed")?
@@ -455,7 +721,7 @@ impl SourceAcquisitions {
         })();
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => return Err(self.abort(candidate, error)),
+            Err(error) => return Err(self.abort(candidate, AcquisitionError::Failed(error))),
         };
         match candidate.freeze_owned(prepared.manifest()) {
             FreezeResult::Frozen(frozen) => Ok(Accepted {
@@ -472,16 +738,19 @@ impl SourceAcquisitions {
             }),
             FreezeResult::CandidateError { candidate, error } => Err(self.abort(
                 candidate,
-                anyhow::Error::from(error).context("Source acquisition freeze failed"),
+                AcquisitionError::Failed(
+                    anyhow::Error::from(error).context("Source acquisition freeze failed"),
+                ),
             )),
         }
     }
 
-    fn abort(&self, candidate: CaptureCandidate, error: anyhow::Error) -> anyhow::Error {
+    fn abort(&self, candidate: CaptureCandidate, error: AcquisitionError) -> AcquisitionError {
         match candidate.abort() {
             Ok(()) => error.context("Owned capture candidate removed"),
             Err(cleanup) => {
                 let _ = self.set_ingress(false);
+                tracing::warn!(%cleanup, "Capture candidate kept; uploads closed until repaired");
                 error.context(format!(
                     "Owned capture cleanup retained repair receipt {:?}: {cleanup}",
                     cleanup.receipt()
@@ -493,11 +762,12 @@ impl SourceAcquisitions {
     /// Admits and settles an accepted capture on its own worker. The slot is
     /// returned once the operation is recorded, before the reply is sent. A
     /// worker that sees shutdown after admission stops before settling.
-    fn spawn(&self, accepted: Accepted) -> Result<AcquisitionReply> {
+    fn spawn(&self, accepted: Accepted) -> Result<AcquisitionReply, AcquisitionError> {
         let receipt = accepted.frozen.receipt();
         let imports = self.imports.clone();
         let shared = self.shared.clone();
         let (sender, result) = mpsc::channel();
+        let (admission, admitted) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("pp-source-acquisition".into())
             .spawn(move || {
@@ -512,7 +782,25 @@ impl SourceAcquisitions {
                 } else {
                     Ok(())
                 };
-                let admitted = stabilized.and_then(|()| imports.admit_captured(prepared));
+                // The route gets the admission's own typed failure; `wait`
+                // keeps a text copy of it.
+                let admitted = match stabilized {
+                    Ok(()) => imports
+                        .admit_captured(prepared)
+                        .map_err(|error| AcquisitionError::Refused(WriterFailure::from(error))),
+                    Err(error) => Err(AcquisitionError::Failed(error)),
+                };
+                let admitted = match admitted {
+                    Ok(operation) => {
+                        let _ = admission.send(Ok(operation.clone()));
+                        Ok(operation)
+                    }
+                    Err(error) => {
+                        let shown = anyhow!("{error:#}");
+                        let _ = admission.send(Err(error));
+                        Err(shown)
+                    }
+                };
                 let retained = admitted.is_ok();
                 let stopped = || retained && shared.stop.load(Ordering::Acquire);
                 let outcome = if stopped() {
@@ -544,20 +832,23 @@ impl SourceAcquisitions {
             });
         if let Err(error) = spawned {
             self.set_ingress(false)?;
-            return Err(anyhow!(
+            return Err(AcquisitionError::Failed(anyhow!(
                 "Source acquisition worker unavailable; retained repair receipt {receipt:?}: {error}"
-            ));
+            )));
         }
-        Ok(AcquisitionReply { result })
+        Ok(AcquisitionReply { admitted, result })
     }
 
-    fn reserve(&self, key: String) -> Result<Permit> {
+    fn reserve(&self, key: String) -> Result<Permit, AcquisitionError> {
         let mut gate = self.gate()?;
-        ensure!(!gate.shut_down, "Source acquisition is shutting down");
-        ensure!(
-            gate.in_flight.insert(key.clone()),
-            "Source acquisition already in progress for this key"
-        );
+        if gate.shut_down {
+            return Err(AcquisitionError::Closed(
+                "Source acquisition is shutting down",
+            ));
+        }
+        if !gate.in_flight.insert(key.clone()) {
+            return Err(AcquisitionError::InProgress);
+        }
         Ok(Permit {
             shared: self.shared.clone(),
             key,
@@ -565,12 +856,38 @@ impl SourceAcquisitions {
         })
     }
 
-    fn set_ingress(&self, open: bool) -> Result<()> {
+    fn set_ingress(&self, open: bool) -> Result<(), AcquisitionError> {
         self.gate()?.open = open;
         Ok(())
     }
 
-    fn gate(&self) -> Result<MutexGuard<'_, Gate>> {
+    fn gate(&self) -> Result<MutexGuard<'_, Gate>, AcquisitionError> {
         self.shared.gate()
     }
+}
+
+/// Writes one file into `candidate`, stopping when `cancelled` is set.
+fn write(
+    candidate: &mut CaptureCandidate,
+    path: SourcePath,
+    input: impl Read,
+    limits: AdmissionLimits,
+    cancelled: &AtomicBool,
+) -> Result<(), AcquisitionError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(AcquisitionError::Failed(anyhow!(
+            "Source acquisition cancelled"
+        )));
+    }
+    let shown = path.as_str().to_owned();
+    candidate
+        .write_file_from_cancelled(path, input, limits.max_input_bytes, cancelled)
+        .map(drop)
+        .map_err(|error| {
+            if cancelled.load(Ordering::Acquire) {
+                AcquisitionError::Failed(anyhow!("Source acquisition cancelled"))
+            } else {
+                AcquisitionError::writing(error, &shown)
+            }
+        })
 }

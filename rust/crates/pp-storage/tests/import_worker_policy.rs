@@ -12,7 +12,7 @@ use pp_storage::{
     uploads::{Admission, File, Input, Operation, OwnedInput, Phase, State, Target},
 };
 use rusqlite::{Connection, OpenFlags, types::Value};
-use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicBool, time::Duration};
 
 const RESERVED: u64 = 20 * 1024 * 1024;
 
@@ -298,4 +298,52 @@ fn policy_worker_persists_owned_input_and_fenced_observation() {
         timestamp.clone(),
     ]);
     assert_eq!(actual, expected);
+}
+
+/// A worker sharing the import owner's admission claims by its own kind, so
+/// it never takes a requeued import past admission; the owner still claims it
+/// by kind (GRE-428).
+#[test]
+fn kind_claim_never_takes_a_requeued_import() {
+    let fixture = Fixture::new(Some(policy()));
+    let (operation, claim) = fixture.admit_and_claim();
+    let source_work = claim.source_work.as_ref().unwrap();
+    let owned = Phase::Owned(owned_input(&operation));
+    fixture
+        .worker
+        .import_phase(&claim.lease, source_work, owned)
+        .unwrap();
+    drop(claim);
+    let Fixture {
+        worker,
+        owner,
+        directory,
+    } = fixture;
+    drop(worker);
+    owner.shutdown().unwrap();
+
+    // Opening storage requeues the stopped attempt.
+    let (owner, _) = WriterOwner::open(&directory.0, Limits::default()).unwrap();
+    let shared = WorkerAdmission {
+        kinds: vec![
+            (JobKind::PrinterUpload, 4),
+            (JobKind::SuppliedSourceImport, 1),
+        ],
+        total: 5,
+        per_resource: 1,
+        lease_seconds: 60,
+    };
+    let worker = owner.job_worker_with_policy(policy(), shared).unwrap();
+    let sends = worker
+        .claim_pending_kind(
+            JobKind::PrinterUpload,
+            &AtomicBool::new(false),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert!(sends.receive().unwrap().is_none());
+    let imported = worker.claim_kind(JobKind::SuppliedSourceImport).unwrap();
+    assert_eq!(imported.expect("owner claims").job.job_id, operation.job_id);
+    drop(worker);
+    owner.shutdown().unwrap();
 }

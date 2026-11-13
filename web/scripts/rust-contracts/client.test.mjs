@@ -169,6 +169,14 @@ for (const fixture of document.fixtures) {
   });
 }
 
+test("readJob parses the job a Source upload answers with", () => {
+  const fixture = document.fixtures.find((entry) => entry.dto === "JobSnapshot" && entry.name === "source-import-failed");
+  assert(fixture);
+  const parsed = routes.readJob.response.safeParse(fixture.value);
+  assert.equal(parsed.success, true, JSON.stringify(parsed.error?.issues));
+  assert.equal(parsed.data.kind, "supplied-source-import");
+});
+
 test("Health decodes Node's captured /health bodies and Rust-only bodies with and without modules", () => {
   const nodeCases = JSON.parse(readFileSync(new URL("../../../fixtures/parity/auth-health/node.json", import.meta.url), "utf8")).cases.filter((entry) => entry.node.status === 200);
   assert(nodeCases.length > 0);

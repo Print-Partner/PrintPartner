@@ -683,10 +683,27 @@ fn the_dry_run_counts_a_source_with_a_current_revision_as_the_import_treats_it()
     give_revision(&gone, "1/revisions/synthetic-gone");
     let report = run(gone.path()).unwrap();
     assert_eq!(report.source_paths.missing_revisions, 1);
-    let line = "Sources whose current revision is missing in the copy: 1. The import would refuse this installation.\n";
+    let line = "Sources whose current revision cannot be placed in the copy: 1. The import would refuse this installation.\n";
     assert!(report.to_string().contains(line), "{report}");
-    let line = "Sources whose current revision is missing in the copy: 0.\n";
+    let line = "Sources whose current revision cannot be placed in the copy: 0.\n";
     assert!(from_folder.to_string().contains(line), "{from_folder}");
+
+    // A snapshot name that is no plain path is counted the same way: the
+    // dry run still gives its report.
+    let climbing = node_folder();
+    give_revision(&climbing, "..\\..\\synthetic");
+    assert_eq!(
+        run(climbing.path()).unwrap().source_paths.missing_revisions,
+        1
+    );
+
+    // A file at the snapshot's place in an archive is no snapshot folder.
+    let file = node_folder();
+    give_revision(&file, "1/revisions/synthetic-a/synthetic-part.stl");
+    let listed = run(archive_of(file.path(), 2, "full").path())
+        .unwrap()
+        .source_paths;
+    assert_eq!((listed.rebased, listed.missing_revisions), (0, 1));
 }
 
 #[test]

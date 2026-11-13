@@ -714,7 +714,7 @@ impl DryRunReport {
         };
         writeln!(
             f,
-            "Sources whose current revision is missing in the copy: {}.{refused}",
+            "Sources whose current revision cannot be placed in the copy: {}.{refused}",
             self.source_paths.missing_revisions
         )
     }
@@ -865,9 +865,12 @@ impl Held {
     fn holds(&self, inside: &str) -> bool {
         match self {
             Self::Folder(folder) => folder.join("repos").join(inside).is_dir(),
+            // The listing does not say whether an entry is a folder, so a
+            // folder is one that has something in it. A snapshot always
+            // holds its manifest.
             Self::Listed(paths) => {
-                let (folder, below) = (format!("repos/{inside}"), format!("repos/{inside}/"));
-                (paths.iter()).any(|path| *path == folder || path.starts_with(&below))
+                let below = format!("repos/{inside}/");
+                paths.iter().any(|path| path.starts_with(&below))
             }
         }
     }
@@ -1314,7 +1317,7 @@ fn measure(
     // `repos` the import copies or extracts.
     let held = |inside: &str| files.held.holds(inside);
     let rows = verify::source_rows(connection)?;
-    let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held)?);
+    let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held));
     let (tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
     let tenants: BTreeSet<&String> = (["build_profiles", "projects"].into_iter())

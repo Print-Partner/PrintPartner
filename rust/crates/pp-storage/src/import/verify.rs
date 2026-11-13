@@ -174,6 +174,8 @@ pub(super) enum Decision {
     Rewrite(String),
     /// Its current revision names a snapshot the copy does not hold.
     MissingRevision,
+    /// Its current revision's snapshot name is no plain path below `repos`.
+    BadRevision,
     /// The stored path is not below the installation's own `repos`. It is
     /// kept byte for byte.
     Outside,
@@ -192,8 +194,9 @@ pub struct SourcePaths {
     /// Paths inside the installation whose folder the copy lacks, kept as
     /// stored.
     pub missing: u64,
-    /// Sources whose current revision names a snapshot the copy lacks. The
-    /// import refuses an installation that has one.
+    /// Sources whose current revision cannot be placed: the copy lacks its
+    /// snapshot, or the snapshot's name is no plain path. The import refuses
+    /// an installation that has one.
     pub missing_revisions: u64,
 }
 
@@ -210,7 +213,9 @@ impl SourcePaths {
             rebased: count(|decision| matches!(decision, Decision::Rewrite(_))),
             outside: count(|decision| matches!(decision, Decision::Outside)),
             missing: count(|decision| matches!(decision, Decision::Missing)),
-            missing_revisions: count(|decision| matches!(decision, Decision::MissingRevision)),
+            missing_revisions: count(|decision| {
+                matches!(decision, Decision::MissingRevision | Decision::BadRevision)
+            }),
         }
     }
 }
@@ -259,7 +264,7 @@ pub(super) fn decide(
     rows: &[SourceRow],
     root: Option<&Path>,
     held: impl Fn(&str) -> bool,
-) -> Result<Vec<(i64, Decision)>, ImportError> {
+) -> Vec<(i64, Decision)> {
     let root = root.and_then(|root| std::path::absolute(root).ok());
     let root = root.as_ref().map(|root| root.to_string_lossy());
     let own: Option<Vec<&str>> = root.as_ref().map(|root| {
@@ -267,26 +272,26 @@ pub(super) fn decide(
         parts.push("repos");
         parts
     });
-    let decided = |row: &SourceRow| -> Result<Decision, ImportError> {
+    let decided = |row: &SourceRow| {
         if let Some(locator) = &row.locator {
-            let inside = below(&segments(locator)).ok_or(ImportError::SourcePath(row.id))?;
-            return Ok(match held(&inside) {
-                true => Decision::Rewrite(inside),
-                false => Decision::MissingRevision,
-            });
+            return match below(&segments(locator)) {
+                Some(inside) if held(&inside) => Decision::Rewrite(inside),
+                Some(_) => Decision::MissingRevision,
+                None => Decision::BadRevision,
+            };
         }
         let Some(stored) = row.stored.as_deref().filter(|path| !path.is_empty()) else {
-            return Ok(Decision::Keep);
+            return Decision::Keep;
         };
         let parts = segments(stored);
         let rest = (own.as_ref()).and_then(|own| parts.strip_prefix(own.as_slice()));
-        Ok(match rest.and_then(below) {
+        match rest.and_then(below) {
             Some(inside) if held(&inside) => Decision::Rewrite(inside),
             Some(_) => Decision::Missing,
             None => Decision::Outside,
-        })
+        }
     };
-    rows.iter().map(|row| Ok((row.id, decided(row)?))).collect()
+    rows.iter().map(|row| (row.id, decided(row))).collect()
 }
 
 /// Writes what [`decide`] decided. A Source whose current revision the copy
@@ -301,13 +306,14 @@ pub(super) fn rebase_sources(
     repos: &Path,
 ) -> Result<SourcePaths, ImportError> {
     let rows = source_rows(connection)?;
-    let decisions = decide(&rows, root, |inside| stage_repos.join(inside).is_dir())?;
+    let decisions = decide(&rows, root, |inside| stage_repos.join(inside).is_dir());
     let staged = stage_repos.canonicalize().ok();
     let mut taken = BTreeMap::new();
     for (source, decision) in &decisions {
         let inside = match decision {
             Decision::Rewrite(inside) => inside,
             Decision::MissingRevision => return Err(ImportError::MissingRevision(*source)),
+            Decision::BadRevision => return Err(ImportError::SourcePath(*source)),
             Decision::Keep | Decision::Outside | Decision::Missing => continue,
         };
         if let Some(first) = taken.insert(inside.as_str(), *source) {
@@ -356,12 +362,18 @@ pub(super) fn check_sources(
         let found = row.stored.as_deref().and_then(under).ok_or_else(wrong)?;
         let found = found.as_path();
         let from_revision = row.locator.as_deref().map(Path::new) == Some(found);
-        let unix = stored.as_deref().map(|path| path.replace('\\', "/"));
+        // Windows reads both separators itself. Elsewhere a backslash is an
+        // ordinary character, so it is turned into a separator first.
+        let native = |path: &String| match cfg!(windows) {
+            true => path.clone(),
+            false => path.replace('\\', "/"),
+        };
+        let native = stored.as_ref().map(native);
         let from_stored = row.locator.is_none()
             && (own.as_deref())
-                .zip(unix.as_deref())
+                .zip(native.as_deref())
                 .is_some_and(|(own, path)| {
-                    !path.contains("//") && Path::new(path).strip_prefix(own) == Ok(found)
+                    !has_empty_part(path) && Path::new(path).strip_prefix(own) == Ok(found)
                 });
         let plain = found.components().next().is_some()
             && found
@@ -372,4 +384,13 @@ pub(super) fn check_sources(
         }
     }
     Ok(())
+}
+
+/// Whether `path` has an empty part: two separators in a row, after the run
+/// that opens it. A network path such as `\\\\server\\share` opens with two.
+pub(super) fn has_empty_part(path: &str) -> bool {
+    let separator = |character: char| character == '/' || character == '\\';
+    let body = path.trim_start_matches(separator);
+    (body.chars().zip(body.chars().skip(1)))
+        .any(|(first, second)| separator(first) && separator(second))
 }

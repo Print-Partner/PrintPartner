@@ -1052,6 +1052,18 @@ fn a_rewritten_source_path_is_checked_against_the_stored_one() {
             "{wrong}: {error:?}"
         );
     }
+    // Two separators in a row are an empty part, except where they open a
+    // network path.
+    for (path, empty) in [
+        ("/data/repos/kit", false),
+        ("\\\\server\\share\\data\\repos\\kit", false),
+        ("//server/share/data/repos/kit", false),
+        ("/data/repos//kit", true),
+        ("\\\\server\\share\\\\data", true),
+        ("C:\\data/\\repos", true),
+    ] {
+        assert_eq!(verify::has_empty_part(path), empty, "{path}");
+    }
     // An archive names no installation folder: nothing may be rewritten.
     set(2, "/synthetic/rust/repos/2");
     let error = verify::check_sources(&connection, &before, None, repos).unwrap_err();

@@ -113,7 +113,7 @@ fn ticket_t_8_archive_snapshots_database_and_roots_in_node_format() {
         .unwrap();
     assert_eq!(metadata.scope, MetadataScope::Full);
     assert_eq!(
-        archive::validate(&target, archive::Limits::default()).unwrap(),
+        archive::validate(&target, archive::Limits::backup()).unwrap(),
         metadata
     );
 
@@ -267,7 +267,7 @@ fn ticket_t_8_archive_database_only_scope_omits_roots() {
     assert_eq!(names, ["print-partner.db", "backup-metadata.json"]);
     assert!(data.join("repos/file").exists());
     assert_eq!(
-        archive::validate(&target, archive::Limits::default())
+        archive::validate(&target, archive::Limits::backup())
             .unwrap()
             .scope,
         MetadataScope::DatabaseOnly
@@ -306,7 +306,7 @@ fn ticket_t_8_archive_refuses_unsafe_roots_space_and_destinations() {
 
     let mut no_space = Request::new("3.9.0", Scope::Full);
     no_space.reserve_bytes = u64::MAX / 2;
-    assert!(refuse(&out.join("a.tar.gz"), no_space).contains("Insufficient disk space for backup"));
+    assert!(refuse(&out.join("a.tar.gz"), no_space).contains("Insufficient disk space"));
 
     let mut tiny = Request::new("3.9.0", Scope::Full);
     tiny.limits.max_total_bytes = 1024;
@@ -436,7 +436,7 @@ fn ticket_t_8_archive_accepts_node_format_one_with_wal_and_pre_update_archives()
         .dir("repos/")
         .file("repos/a.stl", b"x")
         .write(&dir.join("legacy.tar.gz"));
-    let metadata = archive::validate(&path, archive::Limits::default()).unwrap();
+    let metadata = archive::validate(&path, archive::Limits::backup()).unwrap();
     assert_eq!(metadata.scope, MetadataScope::Legacy);
     assert_eq!(metadata.app_version, "3.3.0");
 
@@ -446,7 +446,7 @@ fn ticket_t_8_archive_accepts_node_format_one_with_wal_and_pre_update_archives()
         .file("print-partner.db-wal", &wal)
         .write(&dir.join("print-partner-pre-update-to-3.9.0-schema-34-to-41.tar.gz"));
     assert_eq!(
-        archive::validate(&path, archive::Limits::default())
+        archive::validate(&path, archive::Limits::backup())
             .unwrap()
             .scope,
         MetadataScope::DatabaseOnly
@@ -475,7 +475,7 @@ fn ticket_t_8_archive_validation_rejects_traversal_links_and_bad_metadata() {
         let path = crafted.write(&dir.join(format!("{name}.tar.gz")));
         let error = format!(
             "{:#}",
-            archive::validate(&path, archive::Limits::default()).unwrap_err()
+            archive::validate(&path, archive::Limits::backup()).unwrap_err()
         );
         assert!(error.contains(expected), "{name}: {error}");
     };
@@ -625,7 +625,7 @@ fn ticket_t_8_archive_validation_rejects_traversal_links_and_bad_metadata() {
         let error = archive::validate(&path, limits).unwrap_err().to_string();
         assert!(error.contains(expected), "{name}: {error}");
     };
-    let defaults = archive::Limits::default();
+    let defaults = archive::Limits::backup();
     limited(
         "entries",
         archive::Limits {
@@ -783,7 +783,7 @@ console.log("created");
     .unwrap();
     assert_eq!(run_node(&script, &[&data, &output]), "created\n");
 
-    let metadata = archive::validate(&output, archive::Limits::default()).unwrap();
+    let metadata = archive::validate(&output, archive::Limits::backup()).unwrap();
     assert_eq!(metadata.scope, MetadataScope::Full);
     assert_eq!(metadata.format_version, 2);
     assert_eq!(metadata.app_version, "3.8.0");

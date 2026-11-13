@@ -212,7 +212,10 @@ impl Metadata {
     }
 }
 
-/// Node's validation limits and defaults.
+/// Free bytes a backup or a restore stage leaves on the data volume. The
+/// reserve setting of GRE-1445 replaces this constant.
+pub(crate) const RESERVE_BYTES: u64 = GIB;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub max_entries: u64,
@@ -221,8 +224,23 @@ pub struct Limits {
     pub max_decompression_ratio: u64,
 }
 
-impl Default for Limits {
-    fn default() -> Self {
+impl Limits {
+    /// For the backups Rust writes and restores. Free disk space bounds their
+    /// size, so no byte limit applies. The entry count guards against damaged
+    /// metadata; it is not a product limit.
+    pub fn backup() -> Self {
+        Self {
+            max_entries: 5_000_000,
+            max_total_bytes: u64::MAX,
+            max_entry_bytes: u64::MAX,
+            max_decompression_ratio: 200,
+        }
+    }
+
+    /// For the Node archives the import reads: Node's own validation limits.
+    /// Node writes no archive over them.
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn node() -> Self {
         Self {
             max_entries: 100_000,
             max_total_bytes: 20 * GIB,
@@ -230,12 +248,10 @@ impl Default for Limits {
             max_decompression_ratio: 200,
         }
     }
-}
 
-impl Limits {
-    /// Creation never accepts limits looser than the defaults restore enforces.
+    /// Creation never accepts limits looser than the ones restore enforces.
     fn tightened(self) -> Self {
-        let defaults = Self::default();
+        let defaults = Self::backup();
         Self {
             max_entries: self.max_entries.min(defaults.max_entries),
             max_total_bytes: self.max_total_bytes.min(defaults.max_total_bytes),
@@ -245,6 +261,43 @@ impl Limits {
                 .min(defaults.max_decompression_ratio),
         }
     }
+}
+
+/// Not enough free disk space. Nothing was written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Insufficient disk space: {needed} bytes needed, {available} bytes available")]
+pub struct NoSpace {
+    /// The bytes the operation writes, plus the reserve.
+    pub needed: u64,
+    pub available: u64,
+}
+
+/// An archive holds more bytes than [`Limits::max_total_bytes`], which is the
+/// total its headers declared when staging extracts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Backup archive decompressed byte limit exceeded ({limit})")]
+pub struct TotalExceeded {
+    pub limit: u64,
+}
+
+/// Reads the free bytes on the filesystem that holds a path.
+pub(crate) type FreeSpace = fn(&Path) -> std::io::Result<u64>;
+
+pub(crate) fn free_space(path: &Path) -> std::io::Result<u64> {
+    fs4::available_space(path)
+}
+
+/// The refusal for writing `bytes` at `path`, if that would leave less than
+/// `reserve` free.
+pub(crate) fn shortfall(
+    read: FreeSpace,
+    path: &Path,
+    bytes: u64,
+    reserve: u64,
+) -> std::io::Result<Option<NoSpace>> {
+    let needed = bytes.saturating_add(reserve);
+    let available = read(path)?;
+    Ok((available < needed).then_some(NoSpace { needed, available }))
 }
 
 #[derive(Clone, Debug)]
@@ -261,8 +314,8 @@ impl Request {
         Self {
             app_version: app_version.to_owned(),
             scope,
-            limits: Limits::default(),
-            reserve_bytes: 64 * 1024 * 1024,
+            limits: Limits::backup(),
+            reserve_bytes: RESERVE_BYTES,
         }
     }
 }
@@ -272,6 +325,7 @@ pub(crate) struct Job {
     pub data_dir: PathBuf,
     pub metadata: Metadata,
     pub request: Request,
+    pub free_space: FreeSpace,
 }
 
 pub(crate) enum Item {
@@ -422,18 +476,20 @@ pub(crate) fn write(connection: &Connection, job: &Job) -> Result<()> {
         })
         .sum();
     ensure!(
-        page_bytes + root_bytes <= limits.max_total_bytes,
-        "Backup archive decompressed byte limit exceeded ({})",
-        limits.max_total_bytes
+        page_bytes.saturating_add(root_bytes) <= limits.max_total_bytes,
+        TotalExceeded {
+            limit: limits.max_total_bytes
+        }
     );
-    // The snapshot and an archive no smaller than its inputs coexist at the
-    // destination until publication.
-    let required = (2 * page_bytes + root_bytes).saturating_add(job.request.reserve_bytes);
-    let free = fs4::available_space(parent).context("Read free space at backup destination")?;
-    ensure!(
-        free >= required,
-        "Insufficient disk space for backup: {required} bytes required, {free} bytes free"
-    );
+    // The snapshot, an archive no smaller than its inputs and the database
+    // copy validation extracts coexist at the destination until publication.
+    let writes = page_bytes.saturating_mul(3).saturating_add(root_bytes);
+    let reserve = job.request.reserve_bytes;
+    if let Some(no_space) = shortfall(job.free_space, parent, writes, reserve)
+        .context("Read free space at backup destination")?
+    {
+        return Err(no_space.into());
+    }
 
     let work = parent.join(random_name(&format!(".{name}.work-")));
     let temporary = parent.join(random_name(&format!(".{name}.tmp-")));
@@ -503,7 +559,7 @@ pub(crate) fn write(connection: &Connection, job: &Job) -> Result<()> {
             .sync_all()?;
         #[cfg(all(test, unix))]
         tests::hold_freeze(&job.destination);
-        validate(&temporary, limits)?;
+        validate_in(&temporary, limits, &work.join("validate"))?;
         publish(&temporary, &job.destination)?;
         pp_os::sync_directory(parent)?;
         Ok(())
@@ -589,15 +645,83 @@ fn checked_entry_path(
 /// data. Only the metadata, database and WAL are extracted, to a private
 /// temporary directory.
 pub fn validate(archive: &Path, limits: Limits) -> Result<Metadata> {
+    let scratch = std::env::temp_dir().join(random_name("pp-backup-validate-"));
+    validate_in(archive, limits, &scratch)
+}
+
+/// [`validate`] with its extraction in `scratch`, a new directory this
+/// creates and removes.
+fn validate_in(archive: &Path, limits: Limits, scratch: &Path) -> Result<Metadata> {
     let compressed = archive
         .metadata()
         .with_context(|| format!("Open backup archive {}", archive.display()))?
         .len();
-    let scratch = std::env::temp_dir().join(random_name("pp-backup-validate-"));
-    pp_os::create_private_dir(&scratch)?;
-    let result = validate_into(archive, compressed, limits, &scratch, |_| false);
-    let _ = std::fs::remove_dir_all(&scratch);
+    pp_os::create_private_dir(scratch)?;
+    let result = validate_into(archive, compressed, limits, scratch, |_| false);
+    let _ = std::fs::remove_dir_all(scratch);
     Ok(result?.0)
+}
+
+/// The decompressed bytes an archive's tar headers declare, read without
+/// extracting anything. Staging checks free space against it, then extracts
+/// with it as [`Limits::max_total_bytes`].
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn declared_bytes(archive: &Path, limits: Limits) -> Result<u64> {
+    let compressed = archive
+        .metadata()
+        .with_context(|| format!("Open backup archive {}", archive.display()))?
+        .len();
+    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
+    let mut tally = Tally::default();
+    for entry in reader.entries()? {
+        let entry = entry?;
+        if !extended_header(entry.header().entry_type()) {
+            tally.add(entry.size(), compressed, limits)?;
+        }
+    }
+    Ok(tally.total)
+}
+
+fn extended_header(entry_type: EntryType) -> bool {
+    matches!(entry_type, EntryType::XGlobalHeader | EntryType::XHeader)
+}
+
+/// Entries and declared bytes counted so far, checked against [`Limits`].
+#[derive(Default)]
+struct Tally {
+    entries: u64,
+    total: u64,
+}
+
+impl Tally {
+    fn add(&mut self, size: u64, compressed: u64, limits: Limits) -> Result<()> {
+        self.entries += 1;
+        ensure!(
+            self.entries <= limits.max_entries,
+            "Backup archive entry limit exceeded ({})",
+            limits.max_entries
+        );
+        self.total = self.total.saturating_add(size);
+        ensure!(
+            self.total <= limits.max_total_bytes,
+            TotalExceeded {
+                limit: limits.max_total_bytes
+            }
+        );
+        ensure!(
+            size <= limits.max_entry_bytes,
+            "Backup entry exceeds decompressed size limit"
+        );
+        ensure!(
+            self.total
+                <= compressed
+                    .max(1)
+                    .saturating_mul(limits.max_decompression_ratio),
+            "Backup archive exceeds the decompression ratio limit ({})",
+            limits.max_decompression_ratio
+        );
+        Ok(())
+    }
 }
 
 /// Validates like [`validate`] and writes every entry under `destination`,
@@ -679,39 +803,16 @@ fn validate_into(
     // and leaves anything after it there, so `check_stream_end` can see it.
     let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
     let mut seen = BTreeSet::new();
-    let (mut entries, mut total) = (0u64, 0u64);
+    let mut tally = Tally::default();
     let mut metadata = None;
     for entry in reader.entries()? {
         let mut entry = entry?;
         let entry_type = entry.header().entry_type();
-        if matches!(entry_type, EntryType::XGlobalHeader | EntryType::XHeader) {
+        if extended_header(entry_type) {
             continue;
         }
-        entries += 1;
-        ensure!(
-            entries <= limits.max_entries,
-            "Backup archive entry limit exceeded ({})",
-            limits.max_entries
-        );
         let size = entry.size();
-        ensure!(
-            size <= limits.max_entry_bytes,
-            "Backup entry exceeds decompressed size limit"
-        );
-        total = total.saturating_add(size);
-        ensure!(
-            total <= limits.max_total_bytes,
-            "Backup archive decompressed byte limit exceeded ({})",
-            limits.max_total_bytes
-        );
-        ensure!(
-            total
-                <= compressed
-                    .max(1)
-                    .saturating_mul(limits.max_decompression_ratio),
-            "Backup archive exceeds the decompression ratio limit ({})",
-            limits.max_decompression_ratio
-        );
+        tally.add(size, compressed, limits)?;
         let path = checked_entry_path(&entry.path_bytes(), entry_type, &mut seen)?;
         if path == METADATA_FILE {
             ensure!(

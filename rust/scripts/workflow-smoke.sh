@@ -177,8 +177,16 @@ assert receipt == {
     "gateway_stopped": True, "marker_removed": True, "runtime_removed": True,
     "errors": ["gateway_drain_timed_out"],
 }, receipt
-stderr = pathlib.Path(sys.argv[2]).read_text().strip()
-assert stderr == "Error: Desktop shutdown incomplete", stderr
+def log_row(line):
+    """pp-server's structured tracing rows (GRE-1457): JSON objects with a target."""
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(row, dict) and "target" in row
+logged = pathlib.Path(sys.argv[2]).read_text()
+stderr = "\n".join(line for line in logged.splitlines() if not log_row(line)).strip()
+assert stderr == "Error: Desktop shutdown incomplete", logged
 PY
 wait_exit "$ws_pid" 10 || fail 'websocket client did not exit after shutdown'
 set +e

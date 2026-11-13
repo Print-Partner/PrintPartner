@@ -32,9 +32,14 @@ const health = (modules: Health["modules"] = MODULES): Health => ({
   modules,
 });
 
-/** A fake core that answers every request with `answer`, and records the paths. */
+/**
+ * A fake core that answers every request with `answer`, and records the paths. The Printers
+ * section's own read answers an empty list; Printers.test.tsx covers that section.
+ */
 function core(answer: (path: string, init?: RequestInit) => Response | Promise<Response>) {
-  return vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => answer(path, init)));
+  return vi.fn((path: string, init?: RequestInit) =>
+    Promise.resolve().then(() => (path === "/api/v2/printers" ? json({ printers: [] }) : answer(path, init))),
+  );
 }
 
 function renderSettings(fetchImpl: ReturnType<typeof core>) {
@@ -77,8 +82,8 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     ).toBeTruthy();
     expect(within(modules).getAllByRole("button")).toHaveLength(5);
     expect(screen.getByRole("button", { name: "Turn Bambu on" }).getAttribute("aria-disabled")).toBe("true");
-    // Only the core's /health is read; nothing else is called.
-    expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(new Set(["/health"]));
+    // Only the core's /health and the Printers section's list are read.
+    expect(new Set(fetchMock.mock.calls.map(([path]) => path))).toEqual(new Set(["/health", "/api/v2/printers"]));
   });
 
   it("names the sections in a list of in-page links, keyboard reachable", async () => {
@@ -88,6 +93,7 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     const links = within(nav).getAllByRole("link");
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
       ["Modules", "#modules"],
+      ["Printers", "#printers"],
       ["Integrations", "#integrations"],
       ["Sharing and devices", "#sharing"],
       ["Backups", "#backups"],

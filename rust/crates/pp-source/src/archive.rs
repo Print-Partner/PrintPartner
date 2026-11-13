@@ -38,6 +38,10 @@ pub enum ArchiveError {
     DuplicateEntry,
     Unsupported,
     Limit,
+    /// The archive lists more entries than its limit allows.
+    TooManyEntries,
+    /// The archive unpacks to more bytes than its limit allows.
+    TooLarge,
     CompressionRatio,
     Cancelled,
     Busy,
@@ -60,6 +64,8 @@ impl fmt::Display for ArchiveError {
             Self::DuplicateEntry => write!(f, "duplicate-entry"),
             Self::Unsupported => write!(f, "unsupported-archive"),
             Self::Limit => write!(f, "archive-limit"),
+            Self::TooManyEntries => write!(f, "archive-entry-limit"),
+            Self::TooLarge => write!(f, "archive-inflated-limit"),
             Self::CompressionRatio => write!(f, "compression-ratio"),
             Self::Cancelled => write!(f, "cancelled"),
             Self::Busy => write!(f, "archive-busy"),
@@ -420,6 +426,7 @@ impl SourceRoot {
                     Err(ArchiveError::Limit) if ratio_limit < remaining => {
                         return Err(ArchiveError::CompressionRatio);
                     }
+                    Err(ArchiveError::Limit) => return Err(ArchiveError::TooLarge),
                     result => result?,
                 };
                 if size_bytes != member.size() {
@@ -913,7 +920,10 @@ fn inspect_index_with_label_policy(
         return Err(ArchiveError::InvalidArchive);
     }
     let count = usize::try_from(count).map_err(|_| ArchiveError::InvalidArchive)?;
-    if count > limits.max_entries || central_size > MAX_METADATA_BYTES {
+    if count > limits.max_entries {
+        return Err(ArchiveError::TooManyEntries);
+    }
+    if central_size > MAX_METADATA_BYTES {
         return Err(ArchiveError::Limit);
     }
     file.seek(SeekFrom::Start(central_offset))?;
@@ -979,10 +989,11 @@ fn inspect_index_with_label_policy(
         if resolved.disk != 0 {
             return Err(ArchiveError::Unsupported);
         }
-        if resolved.compressed_bytes > limits.max_compressed_bytes
-            || resolved.uncompressed_bytes > limits.max_inflated_bytes
-        {
+        if resolved.compressed_bytes > limits.max_compressed_bytes {
             return Err(ArchiveError::Limit);
+        }
+        if resolved.uncompressed_bytes > limits.max_inflated_bytes {
+            return Err(ArchiveError::TooLarge);
         }
         if resolved.uncompressed_bytes > ratio_limit(resolved.compressed_bytes) {
             return Err(ArchiveError::CompressionRatio);

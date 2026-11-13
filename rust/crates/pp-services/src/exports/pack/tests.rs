@@ -79,6 +79,41 @@ fn a_repeated_name_in_one_folder_gains_a_suffix() {
 }
 
 #[test]
+fn no_entry_name_leaves_its_folder() {
+    let hostile = |role: &str, path: &str, filename: &str| PackPart {
+        filename: filename.into(),
+        ..part(role, path, &[(1, false)])
+    };
+    let parts = [
+        hostile("primary", "x.stl", r"..\..\Startup\x.stl"),
+        hostile("primary", "a/b.stl", "../../etc/b.stl"),
+        hostile("..", "../c.stl", "..stl"),
+        hostile("primary", "d.stl", "Ärm Ölé.stl"),
+    ];
+    let entries = layout(&parts, Scope::All, LIMITS).unwrap();
+    for name in names(&entries) {
+        let segments: Vec<&str> = name.split('/').collect();
+        assert_eq!(segments.len(), 3, "{name}");
+        assert!(!name.contains('\\'), "{name}");
+        assert!(
+            segments
+                .iter()
+                .all(|s| !s.is_empty() && *s != "." && *s != ".."),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        names(&entries),
+        [
+            "primary/_root/.._.._Startup_x_01.stl",
+            "primary/a/.._.._etc_b_01.stl",
+            "_root/_root/__01.stl",
+            "primary/_root/_rm_l__01.stl",
+        ]
+    );
+}
+
+#[test]
 fn caps_refuse_too_many_entries_and_too_many_bytes() {
     let parts = [part("primary", "arm.stl", &[(1, false), (2, false)])];
     let entries = Limits {

@@ -71,6 +71,8 @@ pub enum PackRefusal {
 /// The entries of the pack, in Part order then unit order. Names are
 /// `<role>/<folder>/<stem>_<NN>.stl`, with `_root` for a file at the top of
 /// its Source; a name already used in a folder gains `_2`, `_3` and so on.
+/// Each of the three segments is cleaned with [`safe_segment`], so no entry
+/// name can leave the folder it is extracted into.
 pub fn layout(parts: &[PackPart], scope: Scope, limits: Limits) -> Result<Vec<Entry>, PackRefusal> {
     let mut used: HashMap<String, HashSet<String>> = HashMap::new();
     let mut entries = Vec::new();
@@ -78,14 +80,11 @@ pub fn layout(parts: &[PackPart], scope: Scope, limits: Limits) -> Result<Vec<En
     for (index, part) in parts.iter().enumerate() {
         let folder = format!(
             "{}/{}",
-            safe_folder(&part.role),
-            safe_folder(source_folder(&part.relative_path))
+            safe_segment(&part.role, "_root"),
+            safe_segment(source_folder(&part.relative_path), "_root")
         );
-        let stem = part
-            .filename
-            .strip_suffix(".stl")
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&part.filename);
+        let stem = part.filename.strip_suffix(".stl").unwrap_or(&part.filename);
+        let stem = safe_segment(stem, "_");
         let names = used.entry(folder.clone()).or_default();
         for unit in &part.units {
             if scope == Scope::Remaining && unit.printed {
@@ -131,9 +130,10 @@ fn source_folder(relative_path: &str) -> &str {
     relative_path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
-/// A folder or role as one archive path segment: word characters, `-` and
-/// `.` kept, anything else `_`, and `_root` when nothing usable is left.
-fn safe_folder(name: &str) -> String {
+/// One archive path segment: ASCII letters and digits, `_`, `-` and `.`
+/// kept, any other run of characters (`/` and `\\` among them) one `_`, and
+/// `empty` when nothing usable is left or the result is `.` or `..`.
+fn safe_segment(name: &str, empty: &str) -> String {
     let mut safe = String::new();
     for c in name.chars() {
         let keep = c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.');
@@ -144,7 +144,7 @@ fn safe_folder(name: &str) -> String {
         }
     }
     if safe.is_empty() || safe == "." || safe == ".." {
-        "_root".into()
+        empty.into()
     } else {
         safe
     }

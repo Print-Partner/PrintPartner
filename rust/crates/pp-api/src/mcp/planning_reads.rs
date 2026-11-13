@@ -13,15 +13,11 @@
 
 use super::{
     ProductMcp, positive_id,
-    write_result::{Code, Refusal, writer_failure},
+    write_result::{Code, Refusal, read_failure},
 };
-use crate::{
-    loopback::PresentedCredential,
-    problem::{Admission, writer_admission},
-};
+use crate::loopback::PresentedCredential;
 use pp_services::mcp_domain::ToolResult;
 use pp_storage::{
-    WriterFailure,
     build_graph::PositiveId,
     read_model::planning::{
         self, BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, ContributionStatus,
@@ -52,19 +48,6 @@ const NO_BRIEF: Refusal = Refusal::new(
 );
 /// A read result this module does not expect. Its cause is never sent.
 const INTERNAL: Refusal = Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
-
-/// A failed read: busy or stopped storage, a refused key, or stored data
-/// that does not read, mapped as every MCP tool maps storage failures. These
-/// reads queue like the older storage families, which report a full or
-/// stopped queue as a plain message; `problem::writer_admission` classifies
-/// it as the HTTP routes do, so it answers `unavailable`.
-fn storage_failure(error: anyhow::Error) -> Refusal {
-    writer_failure(&match writer_admission(&error) {
-        Some(Admission::Full) => WriterFailure::QueueFull,
-        Some(Admission::Stopped) => WriterFailure::Stopped,
-        None => WriterFailure::from(error),
-    })
-}
 
 /// `get_build_planning_state`: the hydrated brief and what is derived from it.
 #[derive(Serialize)]
@@ -246,7 +229,7 @@ impl ProductMcp {
             )
         })
         .await;
-        match read.map_err(|_| INTERNAL)?.map_err(storage_failure)? {
+        match read.map_err(|_| INTERNAL)?.map_err(read_failure)? {
             planning::Outcome::BuildPlanning(response) => Ok(response.planning),
             planning::Outcome::MissingBuild => Err(PLAN_NOT_FOUND),
             _ => Err(INTERNAL),
@@ -272,7 +255,7 @@ impl ProductMcp {
             )
         })
         .await;
-        match read.map_err(|_| INTERNAL)?.map_err(storage_failure)? {
+        match read.map_err(|_| INTERNAL)?.map_err(read_failure)? {
             working_drafts::Outcome::ProfileNotFound => Err(PLAN_NOT_FOUND),
             outcome => Ok(outcome),
         }
@@ -316,7 +299,7 @@ impl ProductMcp {
 
 #[cfg(test)]
 mod tests {
-    use super::{Code, storage_failure};
+    use super::{Code, read_failure};
 
     #[test]
     fn admission_failures_answer_unavailable_and_others_internal() {
@@ -326,12 +309,12 @@ mod tests {
             "Storage stopped without read result",
             "Cancelled before admission",
         ] {
-            let plain = storage_failure(anyhow::anyhow!(message));
+            let plain = read_failure(anyhow::anyhow!(message));
             assert_eq!(plain.code, Code::Unavailable, "{message}");
-            let wrapped = storage_failure(anyhow::anyhow!(message).context("planning read"));
+            let wrapped = read_failure(anyhow::anyhow!(message).context("planning read"));
             assert_eq!(wrapped.code, Code::Unavailable, "{message} under context");
         }
-        let invalid = storage_failure(anyhow::anyhow!("Invalid Build planning brief data"));
+        let invalid = read_failure(anyhow::anyhow!("Invalid Build planning brief data"));
         assert_eq!(invalid.code, Code::Internal);
     }
 }

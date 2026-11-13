@@ -120,7 +120,7 @@ impl BuildGraphClient {
     }
 }
 
-fn stored_brief(
+pub(crate) fn stored_brief(
     tx: &Transaction<'_>,
     tenant: &str,
     build: PositiveId,

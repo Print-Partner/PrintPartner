@@ -1,7 +1,7 @@
 //! `propose_rebuild_plan` as an MCP client sees it. Build 3 has no layers,
 //! no draft and no Accepted Plan. Sources 4 (`Base`) and 5 (`Addon`) are
 //! synced local Sources; the brief gives them their roles.
-use super::reads::{call, session};
+use super::reads::{assert_needs_key, confirm, session, tool};
 use super::*;
 use std::path::{Path, PathBuf};
 
@@ -47,23 +47,13 @@ async fn fixture(brief: Option<Value>, files: bool) -> (McpServer, Vec<(String, 
     let headers = session(&server, &format!("Bearer {}", server.create_key().await.1)).await;
     (server, headers, database)
 }
-async fn tool(
-    server: &McpServer,
-    headers: &[(String, String)],
-    name: &str,
-    args: Value,
-) -> (Value, bool) {
-    let (text, failed) = call(server, headers, name, args).await;
-    (serde_json::from_str(&text).unwrap(), failed)
-}
 async fn rebuild(server: &McpServer, headers: &[(String, String)], args: Value) -> (Value, bool) {
-    let (proposed, failed) = tool(server, headers, TOOL, args).await;
-    assert!(!failed, "{proposed}");
-    let id = proposed["action"]["id"].as_str().unwrap();
-    tool(server, headers, "confirm_apply", json!({"action_id":id})).await
+    let (proposed, _) = tool(server, headers, TOOL, args).await;
+    confirm(server, headers, &proposed).await
 }
 /// Layers, drafts and the stored brief.
-fn snapshot(database: &Path) -> (Vec<(String, i64)>, Vec<(i64, String)>, Value) {
+type Snapshot = (Vec<(String, i64)>, Vec<(i64, String)>, Value);
+fn snapshot(database: &Path) -> Snapshot {
     (
         pp_testkit::mcp_planning::layers(database, 3).unwrap(),
         pp_testkit::mcp_planning::drafts(database, 3).unwrap(),
@@ -86,9 +76,7 @@ async fn mcp_rebuild_sets_layers_from_roles_and_selects_a_new_draft() {
     assert_eq!(proposed["status"], "proposed");
     assert_eq!(snapshot(&database), before, "propose wrote");
 
-    let id = proposed["action"]["id"].as_str().unwrap();
-    let (confirmed, failed) =
-        tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+    let (confirmed, failed) = confirm(&server, &headers, &proposed).await;
     assert!(!failed, "{confirmed}");
     let result = &confirmed["result"];
     assert_eq!(result["recompute"], "created");
@@ -183,11 +171,6 @@ async fn mcp_rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
 async fn mcp_rebuild_needs_an_api_key() {
     let (server, _, database) = fixture(Some(brief(roles(), json!({}))), true).await;
     let before = snapshot(&database);
-    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":TOOL,"arguments":{"plan_id":3}}});
-    let (status, body, session) = server
-        .post("/api/v1/mcp", &[("origin", SELF)], &request)
-        .await;
-    assert_eq!(status, 401, "{body}");
-    assert!(session.is_none());
+    assert_needs_key(&server, TOOL, json!({"plan_id":3})).await;
     assert_eq!(snapshot(&database), before);
 }

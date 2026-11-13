@@ -14,7 +14,7 @@ use super::{
 };
 use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
 use pp_storage::{
-    build_graph::{PositiveId, RoleChange, RoleSet, SourceRolesError},
+    build_graph::{RoleChange, RoleSet, SourceRolesError},
     read_model::planning::SourceRole,
 };
 use serde_json::{Map, Value, json};
@@ -47,7 +47,7 @@ impl CheckoffDomain {
             content: refusal.proposal(),
             proposed_action: None,
         };
-        let Some(build) = plan(args) else {
+        let Some(build) = super::plan_id(args) else {
             return Ok(refused(INVALID_PLAN));
         };
         let Some(roles) = args.get(ROLES).and_then(Value::as_array) else {
@@ -75,7 +75,7 @@ impl CheckoffDomain {
     }
 
     pub(super) fn source_roles_apply(&self, action: &ProposedAction) -> Result<Value, String> {
-        let Some(build) = plan(&action.params) else {
+        let Some(build) = super::plan_id(&action.params) else {
             return Ok(INVALID_PLAN.confirmation());
         };
         let changes = match changes(&action.params) {
@@ -104,12 +104,6 @@ impl CheckoffDomain {
             },
         )
     }
-}
-
-/// `plan_id` as every MCP planning tool reads it: a JSON whole number from 1
-/// up, never a numeric string.
-fn plan(args: &Map<String, Value>) -> Option<PositiveId> {
-    super::positive_id(&json!({ PLAN_ID: args.get(PLAN_ID)? }), PLAN_ID)
 }
 
 /// The checked assignments, or the first refusal. A missing or non-string

@@ -14,7 +14,7 @@ use super::{
 };
 use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
 use pp_storage::{
-    build_graph::{PositiveId, SourceRolesError},
+    build_graph::SourceRolesError,
     working_drafts::rebuild::{RebuildError, RebuildRequest, Rebuilt},
 };
 use serde_json::{Map, Value, json};
@@ -46,25 +46,21 @@ impl CheckoffDomain {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolInvocation, String> {
-        let refused = |refusal: Refusal| ToolInvocation {
-            content: refusal.proposal(),
-            proposed_action: None,
-        };
-        let Some(build) = plan(args) else {
-            return Ok(refused(INVALID_PLAN));
+        let Some(build) = super::plan_id(args) else {
+            return Ok(INVALID_PLAN.invocation());
         };
         let key = match key(args) {
             Ok(key) => key,
-            Err(refusal) => return Ok(refused(refusal)),
+            Err(refusal) => return Ok(refusal.invocation()),
         };
         let credential = self.caller()?.into_credential();
         if let Err(error) = self.builds.check_source_roles(credential, build, self.wait) {
-            return Ok(refused(match error {
+            return Ok(match error {
                 SourceRolesError::NoBrief => NO_BRIEF,
-                SourceRolesError::BriefInvalid => BRIEF_INVALID,
                 SourceRolesError::Writer(failure) => writer_failure(&failure),
                 _ => BRIEF_INVALID,
-            }));
+            }
+            .invocation());
         }
         let mut params = Map::new();
         params.insert(PLAN_ID.into(), build.get().into());
@@ -86,7 +82,7 @@ impl CheckoffDomain {
     }
 
     pub(super) fn rebuild_plan_apply(&self, action: &ProposedAction) -> Result<Value, String> {
-        let Some(build) = plan(&action.params) else {
+        let Some(build) = super::plan_id(&action.params) else {
             return Ok(INVALID_PLAN.confirmation());
         };
         let key = match key(&action.params) {
@@ -118,10 +114,6 @@ impl CheckoffDomain {
             },
         )
     }
-}
-
-fn plan(args: &Map<String, Value>) -> Option<PositiveId> {
-    super::positive_id(&json!({ PLAN_ID: args.get(PLAN_ID)? }), PLAN_ID)
 }
 
 /// The optional key, trimmed. Absent and `null` mean "use the action id".

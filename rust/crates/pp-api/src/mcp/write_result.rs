@@ -131,6 +131,14 @@ impl Refusal {
         json!({ "error": self.detail, "code": self.code.as_str() }).to_string()
     }
 
+    /// A refused propose, as the tool's invocation.
+    pub(super) fn invocation(self) -> pp_services::mcp_domain::ToolInvocation {
+        pp_services::mcp_domain::ToolInvocation {
+            content: self.proposal(),
+            proposed_action: None,
+        }
+    }
+
     /// The result of a refused confirm.
     pub(super) fn confirmation(self) -> Value {
         let mut result = json!({ "ok": false, "code": self.code.as_str(), "detail": self.detail });

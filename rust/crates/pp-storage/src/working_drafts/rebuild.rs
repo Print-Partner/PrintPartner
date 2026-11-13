@@ -8,12 +8,13 @@
 
 use super::{
     Origin, RecomputeOutcome, WorkingDraftClient, abandon_open, baseline_required,
-    carry_open_edits, idempotency_key, insert_snapshot, observation, preparation, snapshot, winner,
+    carry_open_edits, idempotency_key, insert_snapshot, observation, preparation, prepare_draft,
+    snapshot, winner,
 };
 use crate::{
     WriterFailure, auth,
     build_graph::{
-        self, BuildCommand, BuildOutcome,
+        self, BuildCommand, BuildOutcome, SourceRolesError,
         create_with_brief::{brief_key, save},
     },
     read_model::{
@@ -191,21 +192,17 @@ impl WorkingDraftClient {
     }
 }
 
+/// The stored brief, through the read Source roles uses.
 fn stored_brief(
     tx: &Transaction<'_>,
     tenant: &str,
     build: PositiveId,
 ) -> Result<BuildPlanningBrief, RebuildError> {
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
-            params![tenant, brief_key(build)],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let raw = raw.ok_or(RebuildError::NoBrief)?;
-    let id = i64::try_from(build.get()).map_err(|_| RebuildError::BriefInvalid)?;
-    BuildPlanningBrief::parse(&raw, id).map_err(|_| RebuildError::BriefInvalid)
+    build_graph::source_roles::stored_brief(tx, tenant, build).map_err(|error| match error {
+        SourceRolesError::NoBrief => RebuildError::NoBrief,
+        SourceRolesError::Writer(failure) => RebuildError::Writer(failure),
+        _ => RebuildError::BriefInvalid,
+    })
 }
 
 /// The brief's role Sources with their synced revisions: the structural base
@@ -348,27 +345,25 @@ fn prepare_and_insert(
     let mut budget = observation::PreparationBudget::new(flag, observations.limits)
         .map_err(|failure| internal(anyhow::Error::new(failure)))?;
     let options = preparation::PreparationOptions::default();
-    let prepared = preparation::prepare(
+    let prepared = prepare_draft(
         &mut &*tx,
         tenant,
         profile,
         base,
-        preparation::PreparationContext {
-            options: &options,
-            repos: &observations.repos,
-        },
-        observations.reads.as_ref(),
+        &options,
+        observations,
         &mut budget,
-    );
+    )
+    .map_err(internal)?;
     let mut prepared = match prepared {
         Ok(prepared) => prepared,
-        Err(error) => {
-            return Err(match error.downcast_ref() {
-                Some(preparation::Failure::NoStls) => RebuildError::NoStls,
-                Some(preparation::Failure::WouldWipe) => RebuildError::WouldWipe,
-                // `NoLayers` cannot follow: the base layer was just set.
-                _ => internal(error),
-            });
+        Err(RecomputeOutcome::NoStls) => return Err(RebuildError::NoStls),
+        Err(RecomputeOutcome::WouldWipe) => return Err(RebuildError::WouldWipe),
+        // `NoLayers` cannot follow: the base layer was just set.
+        Err(other) => {
+            return Err(internal(anyhow::anyhow!(
+                "draft preparation refused: {other:?}"
+            )));
         }
     };
     if carry_open_edits(tx, tenant, profile, &mut prepared.parts, false, &mut budget)

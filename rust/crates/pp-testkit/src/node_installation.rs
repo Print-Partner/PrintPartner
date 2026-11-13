@@ -34,7 +34,8 @@ const MANIFEST: &str = ".printpartner-source-snapshot.json";
 /// `node_schema::write_schema_33_database`), with Sources, Builds, settings
 /// and files, and one row in each table a long-lived installation fills. One
 /// printer has a numeric id and a bed size stored as text, as old Node
-/// installations do. Source paths are absolute, under `directory`.
+/// installations do. Source paths are absolute, under `directory`, and each
+/// Source has a folder of its own, as Node gives it.
 pub fn populate(directory: &Path) -> io::Result<()> {
     let revision = directory.join("repos/1/revisions/synthetic-a");
     fs::create_dir_all(&revision)?;
@@ -43,6 +44,8 @@ pub fn populate(directory: &Path) -> io::Result<()> {
         revision.join("synthetic-part.stl"),
         "solid synthetic\nendsolid synthetic\n",
     )?;
+    let second = directory.join("repos/2");
+    fs::create_dir_all(&second)?;
     fs::write(
         // ast-grep-ignore: no-writer-family-literal -- A synthetic copy of the Node file for tests; pp-testkit is never in a release build.
         directory.join("custom_filaments.json"),
@@ -62,18 +65,19 @@ pub fn populate(directory: &Path) -> io::Result<()> {
     ];
     let run = || -> rusqlite::Result<()> {
         let connection = Connection::open(directory.join(crate::DATABASE_FILE))?;
-        for (name, imported_paths, metadata) in [
+        for (name, path, imported_paths, metadata) in [
             (
                 "Synthetic Source 01",
+                &revision,
                 Some(" parts/ "),
                 Some(r#"{"category":"synthetic"}"#),
             ),
-            ("Synthetic Source 02", None, None),
+            ("Synthetic Source 02", &second, None, None),
         ] {
             connection.execute(
                 "INSERT INTO projects (name, url, local_path, imported_paths, metadata_json)
                  VALUES (?1, 'https://synthetic.invalid/source', ?2, ?3, ?4)",
-                (name, revision.to_string_lossy(), imported_paths, metadata),
+                (name, path.to_string_lossy(), imported_paths, metadata),
             )?;
         }
         for number in 1..=BUILDS {

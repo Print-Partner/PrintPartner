@@ -52,6 +52,16 @@ fn run(source: &Path) -> Result<DryRunReport, ImportError> {
     result
 }
 
+/// Gives Source 1 a current revision whose snapshot is at `locator`.
+fn give_revision(folder: &Installation, locator: &str) {
+    let sql = format!(
+        "INSERT INTO source_revisions (project_id, upstream_revision_key, manifest_digest, snapshot_locator, synced_at)
+           VALUES (1, 'synthetic-a', 'synthetic-digest', '{locator}', '2026-10-02T00:00:00.000Z');
+         UPDATE projects SET current_source_revision_id = last_insert_rowid() WHERE id = 1;"
+    );
+    execute(folder, &sql);
+}
+
 fn execute(folder: &Installation, sql: &str) {
     Connection::open(folder.database_path())
         .unwrap()
@@ -128,7 +138,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status, Status::Pending))
+        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 2))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
@@ -184,10 +194,57 @@ fn a_full_archive_gives_the_same_counts() {
     let archive = archive_of(folder.path(), 2, "full");
     let from_archive = run(archive.path()).unwrap();
     assert_eq!(from_archive.source, SourceKind::Archive);
+    // Both count the same entries under each root. Only a folder has the
+    // bytes: an archive is listed, not read.
+    assert!(from_folder.roots.iter().all(|count| count.bytes.is_some()));
+    let listed = |report: &DryRunReport| -> Vec<(&'static str, u64)> {
+        (report.roots.iter().map(|count| (count.root, count.entries))).collect()
+    };
+    assert_eq!(listed(&from_archive), listed(&from_folder));
+    // The synthetic `repos/` is itself, four folders and the snapshot's two
+    // files; `custom_filaments.json` is one file.
+    let expected = [("repos", 7), ("custom_filaments.json", 1)];
+    assert_eq!(listed(&from_folder), expected);
+    let text = from_folder.to_string();
+    let lines = "\nBackup roots (files and folders, then bytes of the files):\n  repos 7 38\n  custom_filaments.json 1 52\n  all roots: 8 entries\n";
+    assert!(text.contains(lines), "{text}");
+    let lines = "\n  repos 7\n  custom_filaments.json 1\n  all roots: 8 entries\n";
+    assert!(from_archive.to_string().contains(lines));
+    // The size of each database file the source holds, from its own bytes.
+    let database = std::fs::metadata(folder.database_path()).unwrap().len();
+    assert_eq!(
+        from_folder.database_files[0],
+        ("print-partner.db", database)
+    );
+    assert_eq!(from_archive.database_files[0].0, "print-partner.db");
+    let lines = format!("\nDatabase files (bytes):\n  print-partner.db {database}\n");
+    assert!(from_folder.to_string().contains(&lines));
+    let total: u64 = from_folder
+        .database_files
+        .iter()
+        .map(|(_, bytes)| bytes)
+        .sum();
+    let line = format!("  all database files: {total} bytes\n");
+    assert!(from_folder.to_string().contains(&line));
+    // An archive names no installation folder, so it cannot show that a
+    // Source without a current revision lies inside it.
+    let inside = SourcePaths {
+        rebased: synthetic::SOURCES,
+        ..SourcePaths::default()
+    };
+    assert_eq!(from_folder.source_paths, inside);
+    let outside = SourcePaths {
+        outside: synthetic::SOURCES,
+        ..SourcePaths::default()
+    };
+    assert_eq!(from_archive.source_paths, outside);
     let source = SourceKind::Directory;
     assert_eq!(
         DryRunReport {
             source,
+            roots: from_folder.roots.clone(),
+            database_files: from_folder.database_files.clone(),
+            source_paths: from_folder.source_paths,
             ..from_archive
         },
         from_folder
@@ -375,7 +432,7 @@ fn the_staged_upgrade_keeps_no_rollback_copies() {
     // The import's own upgrade of a staged folder writes no copy beside it.
     let (folder, stage) = (node_folder(), tempfile::tempdir().unwrap());
     stage_directory(folder.path(), stage.path()).unwrap();
-    let (connection, ready) = upgrade(stage.path()).unwrap();
+    let (connection, ready, ()) = upgrade(stage.path(), |_| Ok(())).unwrap();
     drop(connection);
     assert_eq!(
         (ready.previous_version, ready.version),
@@ -512,6 +569,124 @@ fn only_a_full_format_2_archive_is_read() {
         matches!(error, ImportError::Schema(refusal) if refusal.found == 48),
         "{error:?}"
     );
+}
+
+#[test]
+fn the_two_credentials_are_copied_unchanged_and_reported_by_key_only() {
+    let folder = node_folder();
+    execute(
+        &folder,
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES
+           ('default', 'github_pat', 'synthetic-token-value'),
+           ('default', 'discord_notify_webhook_url', 'https://synthetic.invalid/hook-value');",
+    );
+    let report = run(folder.path()).unwrap();
+    for key in ["github_pat", "discord_notify_webhook_url"] {
+        assert!(report.copied.contains(&(Shape::Setting(key), 1)), "{key}");
+        assert!(!report.scalar_settings.contains(key), "{key}");
+    }
+    assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
+    let text = report.to_string();
+    assert!(text.contains("  setting github_pat = 1"), "{text}");
+    assert!(
+        !text.contains("token-value") && !text.contains("hook-value"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_destination_that_cannot_be_resolved_is_reported_and_the_dry_run_goes_on() {
+    let folder = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let file = parent.path().join("file");
+    std::fs::write(&file, "synthetic").unwrap();
+    let below = file.join("child");
+    let temporary = tempfile::tempdir().unwrap();
+    let report = dry_run_in(folder.path(), Some(&below), temporary.path()).unwrap();
+    let found = report.destination.as_ref().unwrap();
+    assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
+    assert!(report.to_string().contains("cannot be read ("), "{report}");
+}
+
+#[test]
+fn a_disk_or_filesystem_failure_in_the_upgrade_is_a_failed_run_not_a_refused_database() {
+    use rusqlite::ffi;
+    let database = Path::new("print-partner.db");
+    let sorted = |cause: &(dyn std::error::Error + 'static)| {
+        upgrade_failure(database, "synthetic detail".into(), [cause].into_iter())
+    };
+    let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+    for code in [
+        ffi::SQLITE_FULL,
+        ffi::SQLITE_IOERR,
+        ffi::SQLITE_READONLY,
+        ffi::SQLITE_CANTOPEN,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(matches!(error, ImportError::Io { .. }), "{code}: {error:?}");
+        assert_eq!(error.to_string(), "print-partner.db: synthetic detail");
+    }
+    let full = std::io::Error::from(ErrorKind::StorageFull);
+    let error = sorted(&full);
+    assert!(
+        matches!(&error, ImportError::Io { source, .. } if source.kind() == ErrorKind::StorageFull),
+        "{error:?}"
+    );
+    // A damaged or unexpected database is still a refusal.
+    for code in [
+        ffi::SQLITE_CORRUPT,
+        ffi::SQLITE_CONSTRAINT,
+        ffi::SQLITE_NOTADB,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(
+            matches!(error, ImportError::Database(_)),
+            "{code}: {error:?}"
+        );
+    }
+    let none = upgrade_failure(
+        database,
+        "Invalid database schema version".into(),
+        [].into_iter(),
+    );
+    assert_eq!(
+        none.to_string(),
+        "The database failed its checks: Invalid database schema version"
+    );
+}
+
+#[test]
+fn the_dry_run_counts_a_source_with_a_current_revision_as_the_import_treats_it() {
+    // Its snapshot is in the folder and in the archive: the import rewrites
+    // it from either, and the dry run of either says so.
+    let folder = node_folder();
+    give_revision(&folder, "1/revisions/synthetic-a");
+    let from_folder = run(folder.path()).unwrap();
+    assert_eq!(
+        (
+            from_folder.source_paths.rebased,
+            from_folder.source_paths.missing_revisions
+        ),
+        (synthetic::SOURCES, 0)
+    );
+    let archive = archive_of(folder.path(), 2, "full");
+    let from_archive = run(archive.path()).unwrap().source_paths;
+    assert_eq!(
+        (from_archive.rebased, from_archive.missing_revisions),
+        (1, 0)
+    );
+    assert_eq!(from_archive.outside, synthetic::SOURCES - 1);
+
+    // A snapshot the copy would lack: the import refuses, and the dry run
+    // says it would.
+    let gone = node_folder();
+    give_revision(&gone, "1/revisions/synthetic-gone");
+    let report = run(gone.path()).unwrap();
+    assert_eq!(report.source_paths.missing_revisions, 1);
+    let line = "Sources whose current revision is missing in the copy: 1. The import would refuse this installation.\n";
+    assert!(report.to_string().contains(line), "{report}");
+    let line = "Sources whose current revision is missing in the copy: 0.\n";
+    assert!(from_folder.to_string().contains(line), "{from_folder}");
 }
 
 #[test]

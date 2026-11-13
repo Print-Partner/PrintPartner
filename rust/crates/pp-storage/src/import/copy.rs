@@ -6,9 +6,9 @@
 //! folder without a marker, which no Rust runtime opens.
 
 use super::{
-    Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch, SourceKind,
-    ensure_outside, inventory, io_error, measure, open_regular, place_destination, repo_files,
-    stage_directory, unsupported, upgrade,
+    DATABASE_FILES, Destination, DryRunReport, Files, Held, ImportError, STAGE_RESERVE, Scratch,
+    SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
+    scan_roots, stage_directory, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -52,6 +52,17 @@ pub struct ImportReport {
     pub sources: u64,
     pub printers: u64,
     pub unmatched_prints: u64,
+    /// Sources whose path now leads into the destination's `repos/`.
+    pub rebased_sources: u64,
+    /// Sources whose stored path is outside the installation. Each keeps its
+    /// record and its stored path; its files are not in the copy.
+    pub sources_outside: u64,
+    /// Sources whose stored path is inside the installation but whose folder
+    /// the copy lacks. Each keeps its record and its stored path.
+    pub sources_missing: u64,
+    /// Source tables, and their rows, that arrived as the source stored them.
+    pub verified_tables: u64,
+    pub verified_rows: u64,
     /// Files copied or extracted under the roots, and their bytes.
     pub files: u64,
     pub bytes: u64,
@@ -61,7 +72,12 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    fn new(counts: &DryRunReport, files: u64, bytes: u64) -> Self {
+    fn new(
+        counts: &DryRunReport,
+        paths: verify::SourcePaths,
+        stored: &verify::Digests,
+        (files, bytes): (u64, u64),
+    ) -> Self {
         let rows = counts.rows.iter().map(|(row, shapes)| RowReport {
             step: row.step,
             status: row.status.to_string(),
@@ -73,13 +89,22 @@ impl ImportReport {
                 .collect(),
         });
         Self {
-            complete: (inventory::ROWS.iter()).all(|row| row.status != inventory::Status::Pending),
+            // A Source whose files are not in the copy keeps the copy
+            // incomplete, whatever the converters.
+            complete: (inventory::ROWS.iter()).all(|row| row.status != inventory::Status::Pending)
+                && paths.outside == 0
+                && paths.missing == 0,
             source_schema: counts.schema_version,
             schema: counts.upgraded_schema,
             builds: counts.builds,
             sources: counts.sources,
             printers: counts.printers,
             unmatched_prints: counts.unmatched_prints,
+            rebased_sources: paths.rebased,
+            sources_outside: paths.outside,
+            sources_missing: paths.missing,
+            verified_tables: stored.len() as u64,
+            verified_rows: stored.values().map(|(_, rows)| rows.len() as u64).sum(),
             files,
             bytes,
             rows: rows.collect(),
@@ -103,15 +128,28 @@ impl fmt::Display for ImportReport {
             self.unmatched_prints,
             self.files
         )?;
-        let pending = self
-            .rows
-            .iter()
+        let pending = (self.rows.iter())
             .filter(|row| row.status == "pending")
             .count();
         writeln!(
             f,
-            "complete: {}. {pending} inventory rows are not converted yet.",
-            self.complete
+            "complete: {}. {pending} inventory rows are not converted yet. {} Source paths now lead into the destination.",
+            self.complete, self.rebased_sources
+        )?;
+        writeln!(
+            f,
+            "Source paths outside the installation: {}",
+            self.sources_outside
+        )?;
+        writeln!(
+            f,
+            "Source paths whose folder is missing in the copy: {}",
+            self.sources_missing
+        )?;
+        writeln!(
+            f,
+            "{} rows in {} tables arrived as the source stored them.",
+            self.verified_rows, self.verified_tables
         )?;
         writeln!(
             f,
@@ -127,6 +165,23 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
     let limits = archive::Limits::default();
     let temporary = std::env::temp_dir();
     import_with(source, destination, &temporary, limits, flush_destination)
+}
+
+/// The second guard: the folder that now exists, with its links resolved,
+/// must still be empty and apart from the source. When it is not, a folder
+/// this run `created` is removed again if it is still empty, so a refusal
+/// leaves nothing behind.
+pub(super) fn recheck(source: &Path, root: &Path, created: bool) -> Result<(), ImportError> {
+    match place_destination(source, root) {
+        Destination::Free => Ok(()),
+        found => {
+            if created {
+                // `remove_dir` refuses a folder that holds anything.
+                let _ = std::fs::remove_dir(root);
+            }
+            Err(ImportError::Destination(found))
+        }
+    }
 }
 
 /// Makes everything the import staged in `destination` durable. Linux
@@ -189,7 +244,7 @@ pub(super) fn import_with(
     // Known before anything is created: the copy takes files and folders
     // only, and it must not leave anything out.
     if metadata.is_dir() {
-        let found = unsupported(source)?;
+        let found = scan_roots(source)?.unsupported;
         if !found.is_empty() {
             return Err(ImportError::NotRegular(found));
         }
@@ -197,16 +252,12 @@ pub(super) fn import_with(
     for folder in [source, destination] {
         ensure_outside(temporary, folder)?;
     }
+    let created = destination.symlink_metadata().is_err();
     pp_os::create_private_dir_all(destination).map_err(|error| io_error(destination, error))?;
-    // The second guard: the folder that now exists, resolved, must still be
-    // empty and apart from the source.
     let root = destination
         .canonicalize()
         .map_err(|error| io_error(destination, error))?;
-    match place_destination(source, &root) {
-        Destination::Free => {}
-        found => return Err(ImportError::Destination(found)),
-    }
+    recheck(source, &root, created)?;
     let stage = Scratch(root.join(STAGE));
     pp_os::create_private_dir(&stage.0).map_err(|error| io_error(&stage.0, error))?;
     let (kind, files, copied) = if metadata.is_dir() {
@@ -217,7 +268,20 @@ pub(super) fn import_with(
         let (files, copied) = extract_archive(source, metadata.len(), &stage.0, limits)?;
         (SourceKind::Archive, files, copied)
     };
-    let (connection, ready) = upgrade(&stage.0)?;
+    let (connection, ready, (stored, paths)) = upgrade(&stage.0, |database| {
+        // Opened for writing, and made to take the write lock once: a Node
+        // stopped in the middle of a transaction leaves a rollback journal
+        // that only a writer may replay. The rows read below are then the
+        // ones the upgrade will see.
+        let source = rusqlite::Connection::open(database)?;
+        source.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
+        // Each Source's path as the source stored it, for the check that
+        // follows the rebase.
+        let mut statement = source.prepare("SELECT id, local_path FROM projects")?;
+        let paths = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let paths: BTreeMap<i64, Option<String>> = paths.collect::<rusqlite::Result<_>>()?;
+        Ok((verify::digests(&source, None)?, paths))
+    })?;
     // Sign-in state is not carried: every Node session ends with the import.
     // It goes before the count, so the report describes what was imported.
     connection.execute_batch("DELETE FROM sessions; DELETE FROM password_reset_tokens;")?;
@@ -236,6 +300,15 @@ pub(super) fn import_with(
     if counts.users > 1 {
         return Err(ImportError::Accounts(counts.users));
     }
+    let repos = root.join("repos");
+    // A folder source is the Node data folder itself; an archive names none.
+    let node = metadata.is_dir().then_some(source);
+    let rebased = verify::rebase_sources(&connection, node, &stage.0.join("repos"), &repos)?;
+    verify::check_sources(&connection, &paths, node, &repos)?;
+    let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
+    if !changed.is_empty() {
+        return Err(ImportError::RowsChanged(changed));
+    }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
     // The closed database is one file. A write-ahead log left beside it
@@ -243,8 +316,10 @@ pub(super) fn import_with(
     for suffix in ["-wal", "-shm"] {
         let left = stage.0.join(format!("{}{suffix}", archive::DATABASE_FILE));
         if left.symlink_metadata().is_ok() {
-            let detail = format!("its {suffix} file is still there after it was closed");
-            return Err(ImportError::Database(detail));
+            // A failure of this run's own write step, not a fault of the
+            // source database.
+            let detail = "is still there after the staged database was closed";
+            return Err(io_error(&left, std::io::Error::other(detail)));
         }
     }
     // Everything staged reaches the disk before the folder can become an
@@ -254,7 +329,7 @@ pub(super) fn import_with(
         path: destination.to_owned(),
         source,
     })?;
-    let report = ImportReport::new(&counts, copied.0, copied.1);
+    let report = ImportReport::new(&counts, rebased, &stored, copied);
     publish(&stage.0, &root, &report)?;
     drop(stage);
     // The marker goes into the folder this run filled, and only while the
@@ -264,6 +339,20 @@ pub(super) fn import_with(
     }
     ownership_marker::mark_imported(&root).map_err(|error| io_error(destination, error))?;
     Ok(report)
+}
+
+/// The free bytes the destination needs once the database is staged: the
+/// files still to be copied, working space for the schema upgrade, whose
+/// write-ahead log can grow as large as the database, and the reserve. No
+/// size cap applies: an import is bounded by free disk space alone.
+pub(super) fn room_needed(files: u64, database: u64) -> u64 {
+    files.saturating_add(database).saturating_add(STAGE_RESERVE)
+}
+
+/// The bytes of the database files staged in `stage`.
+fn staged_database(stage: &Path) -> u64 {
+    let staged = |name| stage.join(name).metadata().map_or(0, |file| file.len());
+    DATABASE_FILES.map(staged).iter().sum()
 }
 
 /// Copies every root of a Node data folder into `stage` and returns the
@@ -277,7 +366,8 @@ fn copy_roots(source: &Path, stage: &Path) -> Result<(u64, u64), ImportError> {
         archive::Item::File(_, _, bytes) => *bytes,
         archive::Item::Directory(_) => 0,
     });
-    ensure_room(stage, sizes.fold(STAGE_RESERVE, u64::saturating_add))?;
+    let roots = sizes.fold(0, u64::saturating_add);
+    ensure_room(stage, room_needed(roots, staged_database(stage)))?;
     let (mut files, mut bytes) = (0, 0);
     for item in &items {
         match item {
@@ -358,6 +448,8 @@ fn extract_archive(
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
+    // Everything is extracted; the upgrade still needs its working space.
+    ensure_room(stage, room_needed(0, staged_database(stage)))?;
     // The archive passed its caps; listing what it wrote needs none.
     let extracted = archive::plan(stage, archive::Scope::Full, u64::MAX)
         .map_err(|error| ImportError::Roots(format!("{error:#}")))?;
@@ -368,8 +460,12 @@ fn extract_archive(
     let (files, bytes) = sizes.fold((0, 0), |(files, total), bytes| (files + 1, total + bytes));
     let files_read = Files {
         documents: stage.to_owned(),
-        repo_files: repo_files(stage)?,
+        repo_files: scan_roots(stage)?.repo_files,
         unsupported: Vec::new(),
+        roots: Vec::new(),
+        database: Vec::new(),
+        root: None,
+        held: Held::Folder(stage.to_owned()),
     };
     Ok((files_read, (files, bytes)))
 }

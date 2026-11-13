@@ -10,8 +10,10 @@
 
 mod copy;
 pub mod inventory;
+mod verify;
 
 pub use copy::{ImportReport, REPORT_FILE, import};
+pub use verify::SourcePaths;
 
 use crate::{archive, ownership_marker, schema, versions};
 use inventory::{Row, Shape};
@@ -69,6 +71,18 @@ pub enum ImportError {
     },
     /// More than one account is stored; the Rust runtime signs in with one.
     Accounts(u64),
+    /// The Source with this id has a current revision with no files under `repos/`.
+    MissingRevision(i64),
+    /// The Source with this id stores a path the import cannot place under `repos/`.
+    SourcePath(i64),
+    /// Rows of these tables differ from the source after the upgrade.
+    RowsChanged(Vec<String>),
+    /// These two Sources would lead to the same folder in the copy.
+    SourcesShare(i64, i64),
+    /// The Source's rewritten path does not stay under the copy's `repos/`.
+    SourceEscapes(i64),
+    /// The Source's path in the copy is not what its stored path maps to.
+    SourceRebase(i64),
     /// Backup roots hold entries that are neither regular files nor folders.
     /// The import skips nothing, so it copies none of the installation.
     NotRegular(Vec<Unsupported>),
@@ -161,6 +175,12 @@ impl fmt::Display for ImportError {
             | Self::Installation { .. }
             | Self::Accounts(_)
             | Self::NotRegular(_)
+            | Self::MissingRevision(_)
+            | Self::SourcePath(_)
+            | Self::RowsChanged(_)
+            | Self::SourcesShare(..)
+            | Self::SourceEscapes(_)
+            | Self::SourceRebase(_)
             | Self::CopyMismatch(_)
             | Self::Flush { .. } => self.fmt_write_step(f),
             Self::NoSpace {
@@ -220,6 +240,31 @@ impl ImportError {
                 f,
                 "The folder holds entries that are neither files nor folders: {}. The import copies files and folders and skips nothing. Remove or replace them, then retry",
                 listed(found)
+            ),
+            Self::MissingRevision(source) => write!(
+                f,
+                "Source {source} has a current revision whose files are not under repos/"
+            ),
+            Self::SourcePath(source) => write!(
+                f,
+                "Source {source} stores a path that does not lead below a repos folder"
+            ),
+            Self::RowsChanged(tables) => write!(
+                f,
+                "Rows changed during the import in {}; they must arrive as the source stored them",
+                tables.join(", ")
+            ),
+            Self::SourcesShare(first, second) => write!(
+                f,
+                "Sources {first} and {second} would lead to the same folder in the copy, so the import stops. Send the dry-run report back"
+            ),
+            Self::SourceEscapes(source) => write!(
+                f,
+                "Source {source}'s folder in the copy does not stay under repos/, so the import stops"
+            ),
+            Self::SourceRebase(source) => write!(
+                f,
+                "Source {source}'s path in the copy is not what its stored path maps to, so the import stops"
             ),
             Self::CopyMismatch(copy) => write!(
                 f,
@@ -314,44 +359,111 @@ impl fmt::Display for Unsupported {
     }
 }
 
-/// Counts, per backup root and kind, the entries of a Node data folder that
-/// are neither regular files nor folders. No link is followed.
-fn unsupported(source: &Path) -> Result<Vec<Unsupported>, ImportError> {
+/// How much one backup root of a source holds. A backup is bounded by its
+/// number of entries, so the dry run reports this for every root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootCount {
+    pub root: &'static str,
+    /// Its regular files and folders, the root itself included, as a backup
+    /// counts them.
+    pub entries: u64,
+    /// The bytes of its files. `None` for an archive, which is only listed.
+    pub bytes: Option<u64>,
+}
+
+/// What one walk of the backup roots found.
+struct Scan {
+    roots: Vec<RootCount>,
+    /// Per root and kind, the entries that are neither files nor folders.
+    unsupported: Vec<Unsupported>,
+    /// The name of every regular file under `repos/`. An entry of any other
+    /// kind is not copied, so it is not listed here.
+    repo_files: Vec<String>,
+}
+
+/// Walks every backup root of a Node data folder once. It counts each
+/// root's files, folders and bytes, lists the files under `repos/`, and
+/// counts the entries that are neither regular files nor folders. No link
+/// is followed, so the walk stays in the folder.
+fn scan_roots(source: &Path) -> Result<Scan, ImportError> {
     let mut found: BTreeMap<(&'static str, EntryKind), u64> = BTreeMap::new();
+    let (mut roots, mut repo_files) = (Vec::new(), Vec::new());
     for (root, _) in archive::FULL_ROOTS {
         let path = source.join(root);
         let Ok(metadata) = path.symlink_metadata() else {
             continue;
         };
-        if metadata.is_file() {
-            continue;
-        }
-        if !metadata.is_dir() {
+        if !metadata.is_dir() && !metadata.is_file() {
             *found
                 .entry((root, EntryKind::of(metadata.file_type())))
                 .or_insert(0) += 1;
             continue;
         }
-        let mut pending = vec![path];
+        let (mut entries, mut bytes) = (1, 0);
+        let mut pending = Vec::from_iter(metadata.is_dir().then_some(path));
+        if metadata.is_file() {
+            bytes = metadata.len();
+        }
         while let Some(directory) = pending.pop() {
             let failed = |error| io_error(&directory, error);
             for entry in std::fs::read_dir(&directory).map_err(failed)? {
                 let entry = entry.map_err(failed)?;
                 let kind = entry.file_type().map_err(failed)?;
                 if kind.is_dir() {
+                    entries += 1;
                     pending.push(entry.path());
-                } else if !kind.is_file() {
+                } else if kind.is_file() {
+                    entries += 1;
+                    bytes += entry.metadata().map_err(failed)?.len();
+                    if root == "repos" {
+                        repo_files.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                } else {
                     *found.entry((root, EntryKind::of(kind))).or_insert(0) += 1;
                 }
             }
         }
+        roots.push(RootCount {
+            root,
+            entries,
+            bytes: Some(bytes),
+        });
     }
     let counted = |((root, kind), entries)| Unsupported {
         root,
         kind,
         entries,
     };
-    Ok(found.into_iter().map(counted).collect())
+    Ok(Scan {
+        roots,
+        unsupported: found.into_iter().map(counted).collect(),
+        repo_files,
+    })
+}
+
+/// The database files in `stage`, with their bytes.
+fn staged_sizes(stage: &Path) -> Vec<(&'static str, u64)> {
+    let sized = |name| Some((name, stage.join(name).metadata().ok()?.len()));
+    DATABASE_FILES.into_iter().filter_map(sized).collect()
+}
+
+/// The entries an archive lists under each backup root.
+fn listed_roots(paths: &BTreeSet<String>) -> Vec<RootCount> {
+    let under = |root: &str| {
+        let below = |path: &&String| {
+            path.as_str() == root
+                || path
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        paths.iter().filter(below).count() as u64
+    };
+    let roots = archive::FULL_ROOTS.iter().map(|(root, _)| RootCount {
+        root,
+        entries: under(root),
+        bytes: None,
+    });
+    roots.filter(|count| count.entries > 0).collect()
 }
 
 /// What the import would find at its destination, read without writing.
@@ -550,6 +662,62 @@ pub struct DryRunReport {
     /// Entries of the backup roots that are neither files nor folders. The
     /// import refuses a folder that holds any.
     pub unsupported: Vec<Unsupported>,
+    /// What each backup root holds, in backup order. A root the source
+    /// lacks is left out.
+    pub roots: Vec<RootCount>,
+    /// The bytes of `print-partner.db`, its `-wal` and its `-journal`, for
+    /// each the source holds. The startup check copies them under `TMPDIR`
+    /// and reads them into memory.
+    pub database_files: Vec<(&'static str, u64)>,
+    /// How the Sources' stored paths would come out. A Source whose path is
+    /// outside the installation, or whose folder is missing, keeps its
+    /// record but its files are not in the copy.
+    pub source_paths: SourcePaths,
+}
+
+impl DryRunReport {
+    /// The bytes of the database files, then the entries, and for a folder
+    /// the bytes, under each backup root.
+    fn fmt_roots(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "\nDatabase files (bytes):")?;
+        for (name, bytes) in &self.database_files {
+            writeln!(f, "  {name} {bytes}")?;
+        }
+        let bytes: u64 = self.database_files.iter().map(|(_, bytes)| bytes).sum();
+        writeln!(f, "  all database files: {bytes} bytes")?;
+        writeln!(
+            f,
+            "\nBackup roots (files and folders, then bytes of the files):"
+        )?;
+        for count in &self.roots {
+            write!(f, "  {} {}", count.root, count.entries)?;
+            if let Some(bytes) = count.bytes {
+                write!(f, " {bytes}")?;
+            }
+            writeln!(f)?;
+        }
+        let entries: u64 = self.roots.iter().map(|count| count.entries).sum();
+        writeln!(f, "  all roots: {entries} entries")?;
+        writeln!(
+            f,
+            "\nSource paths outside the installation: {}",
+            self.source_paths.outside
+        )?;
+        writeln!(
+            f,
+            "Source paths whose folder is missing in the copy: {}",
+            self.source_paths.missing
+        )?;
+        let refused = match self.source_paths.missing_revisions {
+            0 => "",
+            _ => " The import would refuse this installation.",
+        };
+        writeln!(
+            f,
+            "Sources whose current revision is missing in the copy: {}.{refused}",
+            self.source_paths.missing_revisions
+        )
+    }
 }
 
 impl fmt::Display for DryRunReport {
@@ -604,6 +772,7 @@ impl fmt::Display for DryRunReport {
         if let Some(destination) = &self.destination {
             writeln!(f, "The destination {destination}.")?;
         }
+        self.fmt_roots(f)?;
         writeln!(f, "\nTables with rows (rows, then rows per tenant):")?;
         for table in self.tables.iter().filter(|table| table.rows > 0) {
             write!(f, "  {} {}", table.table, table.rows)?;
@@ -672,6 +841,36 @@ struct Files {
     repo_files: Vec<String>,
     /// Entries of the backup roots that are neither files nor folders.
     unsupported: Vec<Unsupported>,
+    /// What each backup root holds.
+    roots: Vec<RootCount>,
+    /// The database files the source holds, with their bytes.
+    database: Vec<(&'static str, u64)>,
+    /// The Node data folder itself, for a folder source. Stored Source
+    /// paths are compared with it. An archive has none.
+    root: Option<PathBuf>,
+    /// Where to look for a Source's folder below `repos/`.
+    held: Held,
+}
+
+/// What says whether the copy will hold a folder below `repos/`.
+enum Held {
+    /// The folder that holds `repos/`: the source folder, or the stage of
+    /// an extracted archive.
+    Folder(PathBuf),
+    /// The entries of an archive a dry run listed and did not extract.
+    Listed(BTreeSet<String>),
+}
+
+impl Held {
+    fn holds(&self, inside: &str) -> bool {
+        match self {
+            Self::Folder(folder) => folder.join("repos").join(inside).is_dir(),
+            Self::Listed(paths) => {
+                let (folder, below) = (format!("repos/{inside}"), format!("repos/{inside}/"));
+                (paths.iter()).any(|path| *path == folder || path.starts_with(&below))
+            }
+        }
+    }
 }
 
 /// Reports what importing `source` would convert. `source` is a stopped Node
@@ -741,9 +940,12 @@ fn dry_run_in(
     // the destination.
     ensure_outside(temporary, source)?;
     let placed = destination.map(|destination| place_destination(source, destination));
-    // A path with `..` is reported as refused; it is not resolved.
+    // A path with `..`, or one that cannot be resolved, is reported as
+    // refused. It names no folder to keep the temporary directory out of.
+    let unresolved =
+        |placed: &Destination| matches!(placed, Destination::Indirect | Destination::Unreadable(_));
     if let Some(destination) = destination
-        && placed != Some(Destination::Indirect)
+        && !placed.as_ref().is_some_and(unresolved)
     {
         ensure_outside(temporary, destination)?;
     }
@@ -761,7 +963,7 @@ fn dry_run_in(
         let kind = std::io::Error::new(ErrorKind::InvalidInput, "neither a folder nor a file");
         return Err(io_error(source, kind));
     };
-    let (connection, ready) = upgrade(&scratch.0)?;
+    let (connection, ready, ()) = upgrade(&scratch.0, |_| Ok(()))?;
     let report = measure(&connection, kind, &ready, &files)?;
     Ok(DryRunReport {
         destination,
@@ -770,8 +972,12 @@ fn dry_run_in(
 }
 
 /// Checks the staged database as startup checks a live one and upgrades it
-/// in place to the current Rust schema, without rollback copies.
-fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportError> {
+/// in place to the current Rust schema, without rollback copies. `before`
+/// reads the checked database while it is still as the source stored it.
+fn upgrade<T>(
+    stage: &Path,
+    before: impl FnOnce(&Path) -> Result<T, ImportError>,
+) -> Result<(Connection, schema::SchemaReady, T), ImportError> {
     // A failed check can hide the version: a Rust database stamped 35 or
     // later fails the job-table check first. Refuse by version when one was read.
     let admitted = crate::restore::admit_schema(stage);
@@ -785,11 +991,48 @@ fn upgrade(stage: &Path) -> Result<(Connection, schema::SchemaReady), ImportErro
             newest: versions::NODE_SCHEMA,
         }));
     }
-    let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
     let database = stage.join(archive::DATABASE_FILE);
+    let version = admitted
+        .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))?;
+    let read = before(&database)?;
     let now = crate::auth::catalog_timestamp();
-    schema::initialize_with(&database, version, &now, false)
-        .map_err(|error| ImportError::Database(format!("{error:#}")))
+    let (connection, ready) = schema::initialize_with(&database, version, &now, false)
+        .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))?;
+    Ok((connection, ready, read))
+}
+
+/// Sorts a failed check or upgrade of the staged database by its causes. A
+/// disk, filesystem or lock that refused the work fails this run and says
+/// nothing about the source, so it is an [`ImportError::Io`]. Anything else
+/// is the database failing its checks.
+fn upgrade_failure<'a>(
+    database: &Path,
+    detail: String,
+    causes: impl Iterator<Item = &'a (dyn std::error::Error + 'static)>,
+) -> ImportError {
+    use rusqlite::ErrorCode;
+    for cause in causes {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return io_error(database, std::io::Error::new(io.kind(), detail));
+        }
+        let storage = matches!(
+            (cause.downcast_ref::<rusqlite::Error>()).and_then(rusqlite::Error::sqlite_error_code),
+            Some(
+                ErrorCode::DiskFull
+                    | ErrorCode::SystemIoFailure
+                    | ErrorCode::ReadOnly
+                    | ErrorCode::CannotOpen
+                    | ErrorCode::PermissionDenied
+                    | ErrorCode::OutOfMemory
+                    | ErrorCode::DatabaseBusy
+                    | ErrorCode::DatabaseLocked
+            )
+        );
+        if storage {
+            return io_error(database, std::io::Error::other(detail));
+        }
+    }
+    ImportError::Database(detail)
 }
 
 /// An I/O failure that names the entry it happened on.
@@ -857,38 +1100,21 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     if stamps() != before {
         return Err(ImportError::Changed);
     }
+    let scan = scan_roots(source)?;
+    let sized = |(name, stamp): (&'static str, &Option<(u64, _)>)| Some((name, stamp.as_ref()?.0));
     Ok(Files {
         documents: source.to_owned(),
-        repo_files: repo_files(source)?,
-        unsupported: unsupported(source)?,
+        repo_files: scan.repo_files,
+        unsupported: scan.unsupported,
+        roots: scan.roots,
+        database: DATABASE_FILES
+            .into_iter()
+            .zip(&before)
+            .filter_map(sized)
+            .collect(),
+        root: Some(source.to_owned()),
+        held: Held::Folder(source.to_owned()),
     })
-}
-
-/// The name of every regular file under `root/repos`. An entry of any other
-/// kind is not copied, so it is not counted here; [`unsupported`] counts it.
-fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
-    let mut repo_files = Vec::new();
-    let repos = root.join("repos");
-    // Neither check follows a link, so the walk stays in the folder.
-    let mut pending = Vec::from_iter(
-        repos
-            .symlink_metadata()
-            .is_ok_and(|m| m.is_dir())
-            .then_some(repos),
-    );
-    while let Some(directory) = pending.pop() {
-        let failed = |error| io_error(&directory, error);
-        for entry in std::fs::read_dir(&directory).map_err(failed)? {
-            let entry = entry.map_err(failed)?;
-            let kind = entry.file_type().map_err(failed)?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                repo_files.push(entry.file_name().to_string_lossy().into_owned());
-            }
-        }
-    }
-    Ok(repo_files)
 }
 
 /// Validates a backup archive and extracts its database and single-file
@@ -918,6 +1144,10 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
             .collect(),
         // Validation refuses an archive entry that is no file or folder.
         unsupported: Vec::new(),
+        roots: listed_roots(&paths),
+        database: staged_sizes(scratch),
+        root: None,
+        held: Held::Listed(paths),
     })
 }
 
@@ -1080,6 +1310,11 @@ fn measure(
     files: &Files,
 ) -> Result<DryRunReport, ImportError> {
     let named: Vec<&Shape> = inventory::named().collect();
+    // What the import would do with each Source's path, judged against the
+    // `repos` the import copies or extracts.
+    let held = |inside: &str| files.held.holds(inside);
+    let rows = verify::source_rows(connection)?;
+    let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held)?);
     let (tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
     let tenants: BTreeSet<&String> = (["build_profiles", "projects"].into_iter())
@@ -1158,6 +1393,9 @@ fn measure(
         scalar_settings,
         unnamed,
         unsupported: files.unsupported.clone(),
+        roots: files.roots.clone(),
+        database_files: files.database.clone(),
+        source_paths,
         tables,
     })
 }

@@ -125,7 +125,7 @@ impl WriterOwner {
             readers: self.client(),
             policy,
             repos: lease.data_dir().join("repos"),
-            // ast-grep-ignore: no-writer-family-literal -- Rust's own thumbnail cache, under thumbs/sources only; Node writes thumbs/<part>.png.
+            // ast-grep-ignore: no-writer-family-literal -- Rust's own thumbnail cache, only inside thumbs/sources, a folder Node never creates; Node writes flat files directly in thumbs/.
             thumbnails: lease.data_dir().join("thumbs/sources"),
             internal: Vec::new(),
         })

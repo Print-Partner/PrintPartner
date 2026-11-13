@@ -38,7 +38,7 @@ pub const FULL_ROOTS: [(&str, RootKind); 11] = [
     ("repos", RootKind::Directory),
     ("sources", RootKind::Directory),
     ("exports", RootKind::Directory),
-    // ast-grep-ignore: no-writer-family-literal -- Names a backup root this module only reads; Rust does not write the family.
+    // ast-grep-ignore: no-writer-family-literal -- Names a backup root; Rust writes only its Source thumbnail cache under thumbs/sources (source_files), never Node's files here.
     ("thumbs", RootKind::Directory),
     // ast-grep-ignore: no-writer-family-literal -- Names a backup root this module only reads; Rust does not write the family.
     ("covers", RootKind::Directory),
@@ -62,7 +62,7 @@ pub const LEGACY_ROOTS: [&str; 5] = [
     "repos",
     "sources",
     "exports",
-    // ast-grep-ignore: no-writer-family-literal -- Names a backup root this module only reads; Rust does not write the family.
+    // ast-grep-ignore: no-writer-family-literal -- Names a backup root; Rust writes only its Source thumbnail cache under thumbs/sources (source_files), never Node's files here.
     "thumbs",
     // ast-grep-ignore: no-writer-family-literal -- Names a backup root this module only reads; Rust does not write the family.
     "covers",

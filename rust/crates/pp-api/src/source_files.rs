@@ -190,10 +190,13 @@ async fn thumbnail(
             code::PATH_REQUIRED,
         );
     };
-    let Ok(_permit) = app.renders.clone().acquire_owned().await else {
+    // The blocking task owns the permit, so a render keeps it until it ends,
+    // even when the client has gone.
+    let Ok(permit) = app.renders.clone().acquire_owned().await else {
         return problem::response(StatusCode::SERVICE_UNAVAILABLE, "Service unavailable");
     };
     let rendered = read(&app, &id, move |client, id, cancelled, wait| {
+        let _permit = permit;
         client.thumbnail(presented.into_credential(), id, &path, cancelled, wait)
     })
     .await;

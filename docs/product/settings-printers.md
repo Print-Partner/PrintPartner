@@ -24,6 +24,13 @@ the integration saved, the form says so and offers two choices. "Save printer"
 sends only the printer again. "Discard" deletes that integration. Escape and a
 click outside the form do not close it in that state.
 
+A failed printer write may still have applied: its answer can be lost to a
+timeout after the core saved the printer. So both choices read the printer list
+again first. When a printer already links the integration, nothing is sent or
+deleted; the form closes and says the printer was saved after all. When the
+list cannot be read, nothing is sent or deleted either; the form says to reopen
+Settings and can then be closed.
+
 ## Delete
 
 Delete opens a confirmation that says what it removes. It sends `deletePrinter`,

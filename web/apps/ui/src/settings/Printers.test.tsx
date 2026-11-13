@@ -203,6 +203,60 @@ describe("Adding a printer", () => {
   });
 });
 
+describe("A printer write whose answer was lost", () => {
+  // The core saved the printer, but the form was told the write failed.
+  async function lostAnswer(readable: () => boolean) {
+    let printers: Printer[] = [];
+    const writes = renderPrinters({
+      [LIST]: () => (readable() ? json({ printers }) : problem(503, "Service unavailable")),
+      "POST /api/v2/printers/probe": () => json(PROBE),
+      "POST /api/v2/integrations": () => json(VIEW),
+      "POST /api/v2/printers": () => {
+        printers = [printer("p-9", "Micron", { id: "i-9", kind: "moonraker" })];
+        return problem(504, "Gateway timeout");
+      },
+    });
+    await fillAdd("http://micron.test");
+    press("Check address");
+    await screen.findByText("The printer answered.");
+    press("Save printer");
+    await screen.findByRole("alert");
+    return writes;
+  }
+  const sent = (writes: [string, unknown][]) => writes.map(([key]) => key).slice(1);
+  const ONCE = ["POST /api/v2/integrations", "POST /api/v2/printers"];
+
+  it("is not sent again by Save printer when the printer is already listed", async () => {
+    const writes = await lostAnswer(() => true);
+    press("Save printer");
+    expect(await screen.findByText("Micron was saved after all.")).toBeTruthy();
+    expect(sent(writes)).toEqual(ONCE);
+  });
+
+  it("keeps the connection on Discard when the printer is already listed", async () => {
+    const writes = await lostAnswer(() => true);
+    press("Discard");
+    expect(await screen.findByText(/^Micron was saved after all, so its connection was kept\./)).toBeTruthy();
+    expect(sent(writes)).toEqual(ONCE);
+  });
+
+  it("sends neither write while the list cannot be read", async () => {
+    let readable = true;
+    const writes = await lostAnswer(() => readable);
+    readable = false;
+    for (const choice of ["Discard", "Save printer"]) {
+      press(choice);
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Could not check whether the printer was saved"));
+    }
+    expect(sent(writes)).toEqual(ONCE);
+    // The form says to reopen Settings, and can now be closed without a choice.
+    expect(screen.getByRole("alert").textContent).toContain("reopen Settings");
+    press("Close");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent(writes)).toEqual(ONCE);
+  });
+});
+
 describe("Deleting a printer", () => {
   it("asks first, then deletes the printer and its connection", async () => {
     let printers = [VORON];

@@ -1,5 +1,5 @@
 import type { RouteResponse } from "@print-partner/rust-client";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useId, useState, type ComponentProps, type FormEvent, type ReactNode } from "react";
 import { readCore, writeCore } from "../core/rust";
 import { reason } from "../core/writes";
@@ -18,6 +18,10 @@ const printersQuery = {
   queryKey: ["core", "printers"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinters", {}, signal),
 } as const;
+
+/** The printers the core lists now, never the cached list. */
+const freshPrinters = (client: QueryClient) =>
+  client.fetchQuery({ ...printersQuery, staleTime: 0 }).then((list) => list.printers);
 
 const why = (failure: unknown) => reason(failure instanceof Error ? failure : new Error(String(failure)));
 
@@ -59,13 +63,18 @@ function useWrite() {
  * Add is two writes: the integration (address and credentials), then the printer that
  * links it. If the printer write fails, the saved integration is kept in `saved` and the
  * owner chooses "Save printer", which sends only the printer, or "Discard", which deletes
- * that integration.
+ * that integration. A failed printer write may still have applied, so both choices read
+ * the list first: when a printer already links the integration the add is done, and
+ * nothing is resent or deleted.
  */
-function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name: string) => void }) {
+function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: string) => void }) {
+  const client = useQueryClient();
   const [kind, setKind] = useState<Kind>("moonraker");
   const [address, setAddress] = useState("");
   const [probe, setProbe] = useState<{ of: string; result: Probe } | null>(null);
   const [saved, setSaved] = useState<Integration | null>(null);
+  // The list could not be read to see what was saved; the form may then be closed.
+  const [unchecked, setUnchecked] = useState(false);
   const write = useWrite();
   const kindId = useId();
   const target = `${kind} ${address.trim()}`;
@@ -73,6 +82,15 @@ function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name:
   const passed = checked !== null && checked.reachable && checked.kind !== null;
   const mayAdd = saved !== null || checked !== null;
 
+  /** The printer that links the saved integration, if one does. A failed read stops the action. */
+  const linkedPrinter = async (integration: Integration) => {
+    try {
+      return (await freshPrinters(client)).find((printer) => printer.integration?.id === integration.id);
+    } catch (failure) {
+      setUnchecked(true);
+      throw new Said(`Could not check whether the printer was saved: ${why(failure)}. Nothing was sent or deleted. Close this form and reopen Settings to see what was saved.`);
+    }
+  };
   const check = () =>
     write.run(async () => {
       const result = await writeCore("probePrinter", {}, { kind, address: address.trim() });
@@ -85,6 +103,8 @@ function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name:
     const text = (name: string) => String(form.get(name) ?? "").trim();
     const mm = (name: string) => Number(form.get(name));
     void write.run(async () => {
+      const added = saved && (await linkedPrinter(saved));
+      if (added) return onDone(`${added.name} was saved after all.`);
       const integration =
         saved ??
         (await writeCore("createIntegration", {}, {
@@ -108,18 +128,22 @@ function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name:
       } catch (failure) {
         throw new Said(`The connection was saved, but the printer was not: ${why(failure)}. Save the printer again, or discard the connection.`);
       }
-      onAdded(text("name"));
+      onDone(`Added ${text("name")}.`);
     });
   };
   const discard = () =>
     write.run(async () => {
-      if (saved) await writeCore("deleteIntegration", { id: saved.id });
+      if (!saved) return onClose();
+      const added = await linkedPrinter(saved);
+      if (added) return onDone(`${added.name} was saved after all, so its connection was kept. Delete the printer if you do not want it.`);
+      await writeCore("deleteIntegration", { id: saved.id });
       onClose();
     });
 
   return (
-    // With a connection saved and no printer, only "Save printer" or "Discard" closes this.
-    <Dialog title="Add a printer" onClose={() => saved === null && onClose()}>
+    // With a connection saved and no printer, only "Save printer" or "Discard" closes this,
+    // unless the list could not be read to check what was saved.
+    <Dialog title="Add a printer" onClose={() => (saved === null || unchecked) && onClose()}>
       <form onSubmit={add}>
         <fieldset disabled={saved !== null}>
           <legend>Connection</legend>
@@ -156,6 +180,7 @@ function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name:
         </div>
         {write.error && <p role="alert" className="pp-field-error">{write.error}</p>}
         <div className="pp-dialog-actions">
+          {unchecked && <button type="button" className="pp-button" onClick={onClose}>Close</button>}
           <button type="button" className="pp-button" onClick={() => void (saved ? discard() : onClose())}>
             {saved ? "Discard" : "Cancel"}
           </button>
@@ -188,9 +213,9 @@ function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Print
       const done = (kept = "") => onRemoved(`Deleted ${printer.name}.${kept}`);
       const connection = printer.integration;
       if (!connection) return done();
-      const fresh = await client.fetchQuery({ ...printersQuery, staleTime: 0 }).catch(() => null);
+      const fresh = await freshPrinters(client).catch(() => null);
       if (!fresh) return done(" Its connection was kept, because the printers could not be read to check that no other printer uses it.");
-      if (fresh.printers.some((other) => other.id !== printer.id && other.integration?.id === connection.id)) {
+      if (fresh.some((other) => other.id !== printer.id && other.integration?.id === connection.id)) {
         return done(" Its connection is used by another printer and was kept.");
       }
       try {
@@ -280,7 +305,7 @@ export function PrintersSection() {
           Add a printer
         </button>
       )}
-      {dialog === "add" && <AddPrinter onClose={() => close()} onAdded={(name) => close(`Added ${name}.`)} />}
+      {dialog === "add" && <AddPrinter onClose={() => close()} onDone={close} />}
       {dialog && dialog !== "add" && (
         <RemovePrinter
           printer={dialog}

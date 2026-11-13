@@ -261,6 +261,14 @@ pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     platform::publish_new(from, to)
 }
 
+/// Rename the file or directory `from` to the new name `to`, failing with
+/// `AlreadyExists` when anything is at `to`: nothing is ever replaced. Both
+/// paths are absolute and on one filesystem. Follow with [`sync_directory`]
+/// on the parent to make the new name durable.
+pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    platform::rename_new(from, to)
+}
+
 /// Flush a file's contents to disk, given its path.
 pub fn sync_file(path: &Path) -> io::Result<()> {
     platform::sync_file(path)

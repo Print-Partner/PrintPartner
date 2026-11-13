@@ -515,6 +515,29 @@ fn only_a_full_format_2_archive_is_read() {
 }
 
 #[test]
+fn the_two_credentials_are_copied_unchanged_and_reported_by_key_only() {
+    let folder = node_folder();
+    execute(
+        &folder,
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES
+           ('default', 'github_pat', 'synthetic-token-value'),
+           ('default', 'discord_notify_webhook_url', 'https://synthetic.invalid/hook-value');",
+    );
+    let report = run(folder.path()).unwrap();
+    for key in ["github_pat", "discord_notify_webhook_url"] {
+        assert!(report.copied.contains(&(Shape::Setting(key), 1)), "{key}");
+        assert!(!report.scalar_settings.contains(key), "{key}");
+    }
+    assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
+    let text = report.to_string();
+    assert!(text.contains("  setting github_pat = 1"), "{text}");
+    assert!(
+        !text.contains("token-value") && !text.contains("hook-value"),
+        "{text}"
+    );
+}
+
+#[test]
 fn the_documented_inventory_names_every_shape() {
     let page = include_str!("../../../../../docs/node-import.md");
     for shape in inventory::named() {

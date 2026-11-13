@@ -76,6 +76,9 @@ pub enum ImportError {
     SourcePath(i64),
     /// Rows of these tables differ from the source after the upgrade.
     RowsChanged(Vec<String>),
+    /// Backup roots hold entries that are neither regular files nor folders.
+    /// The import skips nothing, so it copies none of the installation.
+    NotRegular(Vec<Unsupported>),
     /// A copied file read back differently from its source.
     CopyMismatch(PathBuf),
     /// The flush of the staged files to disk failed. No marker is written.
@@ -160,11 +163,54 @@ impl fmt::Display for ImportError {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Self::Destination(_)
+            | Self::Unnamed(_)
+            | Self::Installation { .. }
+            | Self::Accounts(_)
+            | Self::NotRegular(_)
+            | Self::MissingRevision(_)
+            | Self::SourcePath(_)
+            | Self::RowsChanged(_)
+            | Self::CopyMismatch(_)
+            | Self::Flush { .. } => self.fmt_write_step(f),
+            Self::NoSpace {
+                directory,
+                needed,
+                free,
+            } => write!(
+                f,
+                "Staging needs {needed} bytes free in {} and {free} are free. Free space there, or for a dry run set TMPDIR to a directory with more room",
+                directory.display()
+            ),
+            Self::DestinationSpace { needed, available } => write!(
+                f,
+                "The destination needs {needed} bytes free for the files the import writes and {available} are available"
+            ),
+            Self::Roots(detail) => write!(f, "The folder's files cannot be copied: {detail}"),
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Sqlite(error) => write!(f, "SQLite: {error}"),
+            Self::TemporaryInside { temporary, folder } => write!(
+                f,
+                "The temporary directory {} is inside {}, where nothing may be written. Set TMPDIR to a directory outside the source and the destination",
+                temporary.display(),
+                folder.display()
+            ),
+        }
+    }
+}
+
+impl ImportError {
+    /// The messages of the variants only the import itself returns.
+    fn fmt_write_step(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::Destination(found) => {
-                write!(
-                    f,
-                    "The destination {found}. Empty it or choose another folder"
-                )
+                // Only a folder that merely holds something may be emptied.
+                // Never say so of the source or of a Rust installation.
+                let advice = match found {
+                    Destination::NotEmpty(_) => "Empty it or choose another folder",
+                    _ => "Choose another folder",
+                };
+                write!(f, "The destination {found}. {advice}")
             }
             Self::Unnamed(shapes) => write!(
                 f,
@@ -179,6 +225,11 @@ impl fmt::Display for ImportError {
             Self::Accounts(accounts) => write!(
                 f,
                 "{accounts} accounts are stored, and the Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added"
+            ),
+            Self::NotRegular(found) => write!(
+                f,
+                "The folder holds entries that are neither files nor folders: {}. The import copies files and folders and skips nothing. Remove or replace them, then retry",
+                listed(found)
             ),
             Self::MissingRevision(source) => write!(
                 f,
@@ -203,33 +254,17 @@ impl fmt::Display for ImportError {
                 "The imported files could not be flushed to disk in {}: {source}. Empty the destination and retry",
                 path.display()
             ),
-            Self::NoSpace {
-                directory,
-                needed,
-                free,
-            } => write!(
-                f,
-                "Staging needs {needed} bytes free in {} and {free} are free. Free space there, or for a dry run set TMPDIR to a directory with more room",
-                directory.display()
-            ),
-            Self::DestinationSpace { needed, available } => write!(
-                f,
-                "The destination needs {needed} bytes free for the files the import writes and {available} are available"
-            ),
-            Self::Roots(detail) => write!(f, "The folder's files cannot be copied: {detail}"),
-            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            Self::Sqlite(error) => write!(f, "SQLite: {error}"),
-            Self::TemporaryInside { temporary, folder } => write!(
-                f,
-                "The temporary directory {} is inside {}, where a dry run must write nothing. Set TMPDIR to a directory outside the source and the destination",
-                temporary.display(),
-                folder.display()
-            ),
+            _ => Ok(()),
         }
     }
 }
 
 impl std::error::Error for ImportError {}
+
+fn listed(found: &[Unsupported]) -> String {
+    let found: Vec<String> = found.iter().map(Unsupported::to_string).collect();
+    found.join(", ")
+}
 
 impl From<rusqlite::Error> for ImportError {
     fn from(error: rusqlite::Error) -> Self {
@@ -241,6 +276,105 @@ impl From<rusqlite::Error> for ImportError {
 pub enum SourceKind {
     Directory,
     Archive,
+}
+
+/// An entry in a backup root that is neither a regular file nor a folder.
+/// The import copies files and folders and skips nothing, so one stops it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EntryKind {
+    Link,
+    Fifo,
+    Socket,
+    Device,
+    Other,
+}
+
+impl fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Link => "symbolic links",
+            Self::Fifo => "FIFOs",
+            Self::Socket => "sockets",
+            Self::Device => "devices",
+            Self::Other => "special files",
+        })
+    }
+}
+
+impl EntryKind {
+    fn of(kind: std::fs::FileType) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if kind.is_fifo() {
+                return Self::Fifo;
+            } else if kind.is_socket() {
+                return Self::Socket;
+            } else if kind.is_block_device() || kind.is_char_device() {
+                return Self::Device;
+            }
+        }
+        if kind.is_symlink() {
+            Self::Link
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// How many entries of one kind a backup root holds that the import cannot
+/// copy. It names the root and the kind, never a file name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unsupported {
+    pub root: &'static str,
+    pub kind: EntryKind,
+    pub entries: u64,
+}
+
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} under {}", self.entries, self.kind, self.root)
+    }
+}
+
+/// Counts, per backup root and kind, the entries of a Node data folder that
+/// are neither regular files nor folders. No link is followed.
+fn unsupported(source: &Path) -> Result<Vec<Unsupported>, ImportError> {
+    let mut found: BTreeMap<(&'static str, EntryKind), u64> = BTreeMap::new();
+    for (root, _) in archive::FULL_ROOTS {
+        let path = source.join(root);
+        let Ok(metadata) = path.symlink_metadata() else {
+            continue;
+        };
+        if metadata.is_file() {
+            continue;
+        }
+        if !metadata.is_dir() {
+            *found
+                .entry((root, EntryKind::of(metadata.file_type())))
+                .or_insert(0) += 1;
+            continue;
+        }
+        let mut pending = vec![path];
+        while let Some(directory) = pending.pop() {
+            let failed = |error| io_error(&directory, error);
+            for entry in std::fs::read_dir(&directory).map_err(failed)? {
+                let entry = entry.map_err(failed)?;
+                let kind = entry.file_type().map_err(failed)?;
+                if kind.is_dir() {
+                    pending.push(entry.path());
+                } else if !kind.is_file() {
+                    *found.entry((root, EntryKind::of(kind))).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let counted = |((root, kind), entries)| Unsupported {
+        root,
+        kind,
+        entries,
+    };
+    Ok(found.into_iter().map(counted).collect())
 }
 
 /// What the import would find at its destination, read without writing.
@@ -258,12 +392,46 @@ pub enum Destination {
     /// It, or its marker, could not be read. A destination that is a file
     /// is one case.
     Unreadable(std::io::ErrorKind),
+    /// It shares files with the source.
+    Overlaps(Overlap),
+    /// Its path has a `.` or `..` component. Such a path can name one folder
+    /// before the import creates it and another after.
+    Indirect,
+    /// The path no longer leads to the folder the import wrote into.
+    Replaced,
+}
+
+/// How a destination and the source share files, once links and `..` are
+/// resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlap {
+    /// They are the same folder.
+    Same,
+    /// The destination lies inside the source folder.
+    DestinationInside,
+    /// The source lies inside the destination.
+    SourceInside,
 }
 
 impl fmt::Display for Destination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Free => f.write_str("is absent or empty, as the import needs"),
+            Self::Indirect => f.write_str(
+                "is given with a \".\" or \"..\" component, so the import refuses it. Give the folder's own path",
+            ),
+            Self::Replaced => f.write_str(
+                "no longer leads to the folder the import wrote into, so no marker is written",
+            ),
+            Self::Overlaps(Overlap::Same) => {
+                f.write_str("is the source folder, so the import refuses it")
+            }
+            Self::Overlaps(Overlap::DestinationInside) => {
+                f.write_str("lies inside the source folder, so the import refuses it")
+            }
+            Self::Overlaps(Overlap::SourceInside) => {
+                f.write_str("holds the source, so the import refuses it")
+            }
             Self::NotEmpty(entry) => write!(f, "holds {entry:?}, so the import refuses it"),
             Self::Marked => f.write_str("is a Rust installation, so the import refuses it"),
             Self::BadMarker(refusal) => write!(
@@ -276,6 +444,55 @@ impl fmt::Display for Destination {
             }
         }
     }
+}
+
+/// `path` with its links and `..` resolved. A path that does not exist yet
+/// has its nearest existing ancestor resolved and the rest appended: a name
+/// that does not exist cannot be a link.
+fn resolved(path: &Path) -> std::io::Result<PathBuf> {
+    let path = std::path::absolute(path)?;
+    let mut existing = path.as_path();
+    let mut rest = Vec::new();
+    let mut base = loop {
+        match existing.canonicalize() {
+            Ok(base) => break base,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
+            return Err(ErrorKind::NotFound.into());
+        };
+        rest.push(name);
+        existing = parent;
+    };
+    base.extend(rest.into_iter().rev());
+    Ok(base)
+}
+
+/// Inspects the folder an import of `source` would write to. Nothing is
+/// created. A destination that is the source, lies inside it or holds it is
+/// refused before anything else is read.
+pub fn place_destination(source: &Path, destination: &Path) -> Destination {
+    // A `..` after a name that does not exist yet resolves only once the
+    // import has created that name, and then to its parent.
+    let text = destination.to_string_lossy();
+    if (text.split(std::path::is_separator)).any(|part| part == "." || part == "..") {
+        return Destination::Indirect;
+    }
+    let (from, to) = match (resolved(source), resolved(destination)) {
+        (Ok(from), Ok(to)) => (from, to),
+        (Err(error), _) | (_, Err(error)) => return Destination::Unreadable(error.kind()),
+    };
+    if from == to {
+        return Destination::Overlaps(Overlap::Same);
+    }
+    if to.starts_with(&from) {
+        return Destination::Overlaps(Overlap::DestinationInside);
+    }
+    if from.starts_with(&to) {
+        return Destination::Overlaps(Overlap::SourceInside);
+    }
+    inspect_destination(destination)
 }
 
 /// Inspects the folder an import would write to. Nothing is created.
@@ -353,6 +570,9 @@ pub struct DryRunReport {
     /// Keys of settings that hold no JSON document. They are copied as stored.
     pub scalar_settings: BTreeSet<String>,
     pub unnamed: Vec<Unnamed>,
+    /// Entries of the backup roots that are neither files nor folders. The
+    /// import refuses a folder that holds any.
+    pub unsupported: Vec<Unsupported>,
 }
 
 impl fmt::Display for DryRunReport {
@@ -395,6 +615,13 @@ impl fmt::Display for DryRunReport {
             writeln!(
                 f,
                 "The Rust runtime signs in only when one account is stored, {refused}."
+            )?;
+        }
+        if !self.unsupported.is_empty() {
+            writeln!(
+                f,
+                "Entries that are neither files nor folders: {}. The import skips nothing, {refused}.",
+                listed(&self.unsupported)
             )?;
         }
         if let Some(destination) = &self.destination {
@@ -464,8 +691,10 @@ impl Drop for Scratch {
 struct Files {
     /// The directory that holds the single-file roots.
     documents: PathBuf,
-    /// The name of every file under `repos/`.
+    /// The name of every regular file under `repos/`.
     repo_files: Vec<String>,
+    /// Entries of the backup roots that are neither files nor folders.
+    unsupported: Vec<Unsupported>,
 }
 
 /// Reports what importing `source` would convert. `source` is a stopped Node
@@ -479,18 +708,22 @@ pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport
     dry_run_in(source, destination, &std::env::temp_dir())
 }
 
-/// Refuses when `temporary` is `folder` or lies inside it. Both are resolved
-/// through links first. A path that does not resolve holds no directory.
+/// Refuses when `temporary` is `folder` or lies inside it, with links and
+/// `..` resolved in both. The dry run stages there, and the startup check
+/// that the dry run and the import share copies the database there. A path
+/// that cannot be resolved is an error, never a pass.
 fn ensure_outside(temporary: &Path, folder: &Path) -> Result<(), ImportError> {
-    match (temporary.canonicalize(), folder.canonicalize()) {
-        (Ok(inside), Ok(resolved)) if inside.starts_with(&resolved) => {
-            Err(ImportError::TemporaryInside {
-                temporary: temporary.to_owned(),
-                folder: folder.to_owned(),
-            })
-        }
-        _ => Ok(()),
+    let inside = temporary
+        .canonicalize()
+        .map_err(|error| io_error(temporary, error))?;
+    let around = resolved(folder).map_err(|error| io_error(folder, error))?;
+    if !inside.starts_with(&around) {
+        return Ok(());
     }
+    Err(ImportError::TemporaryInside {
+        temporary: temporary.to_owned(),
+        folder: folder.to_owned(),
+    })
 }
 
 /// Free space kept beyond the copies, for the tables the upgrade adds.
@@ -529,10 +762,15 @@ fn dry_run_in(
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
     // Before any scratch exists: a dry run writes nothing into the source or
     // the destination.
-    for folder in [Some(source), destination].into_iter().flatten() {
-        ensure_outside(temporary, folder)?;
+    ensure_outside(temporary, source)?;
+    let placed = destination.map(|destination| place_destination(source, destination));
+    // A path with `..` is reported as refused; it is not resolved.
+    if let Some(destination) = destination
+        && placed != Some(Destination::Indirect)
+    {
+        ensure_outside(temporary, destination)?;
     }
-    let destination = destination.map(inspect_destination);
+    let destination = placed;
     let scratch = Scratch(temporary.join(format!(
         "pp-import-dry-run-{}",
         hex::encode(rand::random::<[u8; 12]>())
@@ -637,13 +875,12 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     }
     let bytes: u64 = before.iter().flatten().map(|(bytes, _)| bytes).sum();
     ensure_space(scratch, stage_bytes(bytes, 1))?;
+    // Each is read back and compared before anything opens the copy: a
+    // short write-ahead log still opens, and silently lacks its last rows.
     for name in DATABASE_FILES {
         let path = source.join(name);
-        if let Some(mut file) = open_regular(&path)? {
-            let staged = scratch.join(name);
-            let mut copy =
-                std::fs::File::create_new(&staged).map_err(|error| io_error(&staged, error))?;
-            std::io::copy(&mut file, &mut copy).map_err(|error| io_error(&path, error))?;
+        if path.symlink_metadata().is_ok() {
+            copy::copy_verified(&path, &scratch.join(name))?;
         }
     }
     if stamps() != before {
@@ -652,10 +889,12 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     Ok(Files {
         documents: source.to_owned(),
         repo_files: repo_files(source)?,
+        unsupported: unsupported(source)?,
     })
 }
 
-/// The name of every file under `root/repos`.
+/// The name of every regular file under `root/repos`. An entry of any other
+/// kind is not copied, so it is not counted here; [`unsupported`] counts it.
 fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
     let mut repo_files = Vec::new();
     let repos = root.join("repos");
@@ -670,9 +909,10 @@ fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
         let failed = |error| io_error(&directory, error);
         for entry in std::fs::read_dir(&directory).map_err(failed)? {
             let entry = entry.map_err(failed)?;
-            if entry.file_type().map_err(failed)?.is_dir() {
+            let kind = entry.file_type().map_err(failed)?;
+            if kind.is_dir() {
                 pending.push(entry.path());
-            } else {
+            } else if kind.is_file() {
                 repo_files.push(entry.file_name().to_string_lossy().into_owned());
             }
         }
@@ -705,6 +945,8 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
             .filter_map(|path| path.rsplit('/').next())
             .map(str::to_owned)
             .collect(),
+        // Validation refuses an archive entry that is no file or folder.
+        unsupported: Vec::new(),
     })
 }
 
@@ -944,6 +1186,7 @@ fn measure(
         unused: (inventory::UNUSED.iter().map(count)).collect::<Result<_, _>>()?,
         scalar_settings,
         unnamed,
+        unsupported: files.unsupported.clone(),
         tables,
     })
 }

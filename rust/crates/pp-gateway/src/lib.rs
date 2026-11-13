@@ -71,6 +71,26 @@ impl LaunchTarget {
     }
 }
 
+/// What `POST /auth/logout` does to a Rust-only runtime besides revoking the
+/// account session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignOut {
+    /// The desktop app: sign-out ends every desktop session and the runtime.
+    EndsRuntime,
+    /// The headless server: the core keeps serving, and the browser keeps its
+    /// gateway admission so the sign-in screen loads again without a new
+    /// bootstrap link. The revoked account session authorizes nothing.
+    KeepsServing,
+}
+
+/// How a Rust-only start admits requests and answers sign-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RustOnlyMode {
+    /// An explicit headless listener (`PP_LISTEN_ADDR`) instead of loopback.
+    pub network: bool,
+    pub sign_out: SignOut,
+}
+
 #[derive(Clone)]
 pub struct ShutdownRequested {
     token: CancellationToken,
@@ -301,6 +321,7 @@ struct GatewayState {
     relays: TaskTracker,
     cancelled: CancellationToken,
     shutdown_requested: CancellationToken,
+    sign_out: SignOut,
     /// Routes `pp-core` composed for a Rust-only runtime. When present, every
     /// admitted request that is not a gateway or asset path goes here, and
     /// none reaches the compatibility proxy. Logout goes here first too.
@@ -378,12 +399,19 @@ impl Gateway {
         rust_only: Option<(
             tokio::sync::watch::Receiver<RustStatus>,
             Arc<dyn MoonrakerHosts>,
-            bool,
+            RustOnlyMode,
         )>,
     ) -> Result<Self> {
-        let (rust_status, hosts, network) = match rust_only {
-            Some((status, hosts, network)) => (Some(status), Some(hosts), network),
-            None => (None, None, false),
+        let (rust_status, hosts, RustOnlyMode { network, sign_out }) = match rust_only {
+            Some((status, hosts, mode)) => (Some(status), Some(hosts), mode),
+            None => (
+                None,
+                None,
+                RustOnlyMode {
+                    network: false,
+                    sign_out: SignOut::EndsRuntime,
+                },
+            ),
         };
         let mut address = listener.local_addr()?;
         anyhow::ensure!(
@@ -475,6 +503,7 @@ impl Gateway {
             relays: TaskTracker::new(),
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
+            sign_out,
             product: Mutex::new(None),
             rust_status,
             compat_forwards: AtomicU64::new(0),
@@ -912,6 +941,11 @@ fn is_spa_client_path(path: &str) -> bool {
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+/// The two MCP endpoints, matched exactly.
+fn is_mcp(path: &str) -> bool {
+    matches!(path, "/mcp" | "/api/v1/mcp")
+}
+
 fn legal_summary_cors(response: &mut Response<Body>, origin: Option<&HeaderValue>) {
     let headers = response.headers_mut();
     headers.append("vary", HeaderValue::from_static("Origin"));
@@ -959,11 +993,11 @@ async fn handle(
         };
     }
     // With the Rust product routes mounted, MCP answers from their key-only
-    // guard. MCP clients are not browsers and send no Origin; the guard
-    // refuses an unsafe request without one unless it carries an API key.
-    // An explicit network listener never routes MCP: LAN peers stay out until
-    // MCP trust classes exist, whatever key they present.
-    let mcp = if (path == "/mcp" || path == "/api/v1/mcp") && !state.network {
+    // guard, on loopback and on an explicit network listener alike. MCP
+    // clients are not browsers and send no Origin; the guard refuses an unsafe
+    // request without one unless it carries an API key, and refuses any
+    // request without a valid key. No peer is trusted for MCP by its address.
+    let mcp = if is_mcp(&path) {
         product_router(&state)
     } else {
         None
@@ -980,8 +1014,8 @@ async fn handle(
     }
     if let Some(product) = mcp {
         // The desktop cookie is not MCP authorization: the request is only
-        // counted for the drain, and the guard checks loopback, Host, Origin,
-        // the MCP rate limit and the API key. A POST answers as an event
+        // counted for the drain, and the guard checks the transport, Host,
+        // Origin, the MCP rate limit and the API key. A POST answers as an event
         // stream while its tool runs, so only the GET notification stream
         // stops counting when the drain begins.
         let Ok(admission) = Admission::keyed(&state.access) else {
@@ -1045,7 +1079,8 @@ async fn handle(
         return axum::Json(body).into_response();
     }
     if path == "/auth/logout" && request.method() == "POST" {
-        // Rust revokes its own session before the gateway ends the desktop one.
+        // Rust revokes its own session first. The desktop then ends every
+        // desktop session and the runtime; the headless server keeps serving.
         let revoked = match product_router(&state) {
             Some(product) => Some(
                 buffered(
@@ -1055,6 +1090,10 @@ async fn handle(
             ),
             None => None,
         };
+        if state.sign_out == SignOut::KeepsServing {
+            return revoked
+                .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
+        }
         state
             .access
             .lock()
@@ -1067,9 +1106,8 @@ async fn handle(
         return revoked
             .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }
-    // Without the Rust product routes, or on an explicit network listener,
-    // nothing here serves MCP.
-    if path == "/mcp" || path == "/api/v1/mcp" {
+    // Without the Rust product routes, nothing here serves MCP.
+    if is_mcp(&path) {
         return error(
             StatusCode::FORBIDDEN,
             "MCP is disabled in this foundation; API-key authorization is required before enabling it",

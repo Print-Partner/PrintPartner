@@ -107,15 +107,20 @@ pub const ROWS: [Row; 16] = [
     ], "checked with today's typed reader, not rewritten"),
 ];
 
-/// Slicer profile text. The import copies it byte for byte: Rust reads it and
-/// keeps it opaque (`profiles.rs`).
-pub const COPIED: [Shape; 6] = [
+/// What the import copies byte for byte and no converter may rewrite: slicer
+/// profile text, which Rust reads and keeps opaque (`profiles.rs`), and the
+/// two credentials Rust reads as plain settings (`app_settings.rs`).
+pub const COPIED: [Shape; 8] = [
     Column("printer_profiles", "raw_json"),
     Column("printer_profiles", "resolved_flat_config"),
     Column("process_profiles", "resolved_flat_config"),
     Column("filament_profiles", "raw_json"),
     Column("filament_profiles", "resolved_flat_config"),
     Column("filament_profiles", "retraction"),
+    // Credentials. They stay plain settings on every platform, with no
+    // converter and no keychain. The report prints the key, never the value.
+    Setting("github_pat"),
+    Setting("discord_notify_webhook_url"),
 ];
 
 /// Stored data no Rust code reads. The import keeps it byte for byte, also

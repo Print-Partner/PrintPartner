@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-desktop_rebuild = ["serde_json/raw_value", "dep:serde_path_to_error", "dep:pp-domain", "pp-domain/desktop_rebuild", "dep:saphyr-parser", "dep:pp-contracts", "pp-contracts/desktop_rebuild"]
+desktop_rebuild = ["serde_json/raw_value", "dep:serde_path_to_error", "dep:pp-domain", "pp-domain/desktop_rebuild", "dep:saphyr-parser", "dep:pp-contracts", "pp-contracts/desktop_rebuild", "dep:png"]
 # Weak features: codegen adds schemas without activating the gated edges.
 codegen = ["dep:schemars", "pp-contracts?/codegen", "pp-domain?/codegen"]
 # Test-only. Lets tests open unmarked directories with the Rust writer in a
@@ -51,6 +51,7 @@ regress = "=0.11.1"
 ryu-js = "=1.0.2"
 saphyr-parser = { version = "=0.1.0", default-features = false, optional = true }
 schemars = { version = "=0.8.22", optional = true }
+png = { version = "=0.18.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }

@@ -45,7 +45,7 @@ impl Default for GeometryLimits {
 }
 
 impl MeshBounds {
-    fn from_vertices(vertices: &[[f64; 3]]) -> Result<Self> {
+    pub(crate) fn from_vertices(vertices: &[[f64; 3]]) -> Result<Self> {
         ensure!(!vertices.is_empty(), "mesh has no vertices");
         let mut bounds = Self {
             min_x: f64::INFINITY,
@@ -125,7 +125,7 @@ fn exact_binary_size(bytes: &[u8]) -> Option<usize> {
         .then_some(triangles)
 }
 
-fn parse_binary(bytes: &[u8], limits: GeometryLimits) -> Result<ParsedMesh> {
+fn binary_vertices(bytes: &[u8], limits: GeometryLimits) -> Result<Vec<[f64; 3]>> {
     let triangles =
         exact_binary_size(bytes).ok_or_else(|| anyhow::anyhow!("binary STL length is invalid"))?;
     ensure!(
@@ -149,13 +149,10 @@ fn parse_binary(bytes: &[u8], limits: GeometryLimits) -> Result<ParsedMesh> {
         }
         offset += 2;
     }
-    Ok(ParsedMesh {
-        triangles,
-        bounds: MeshBounds::from_vertices(&vertices)?,
-    })
+    Ok(vertices)
 }
 
-fn parse_ascii(bytes: &[u8], limits: GeometryLimits) -> Result<ParsedMesh> {
+fn ascii_vertices(bytes: &[u8], limits: GeometryLimits) -> Result<Vec<[f64; 3]>> {
     let decoded = String::from_utf8_lossy(bytes);
     let text = trim_ecmascript(&decoded);
     let newline = text
@@ -239,19 +236,35 @@ fn parse_ascii(bytes: &[u8], limits: GeometryLimits) -> Result<ParsedMesh> {
         );
     }
     ensure!(triangles > 0, "mesh has no triangles");
+    Ok(vertices)
+}
+
+/// Every triangle's three vertices in file order, binary or ASCII, within
+/// `limits`.
+fn read_vertices(bytes: &[u8], limits: GeometryLimits) -> Result<Vec<[f64; 3]>> {
+    ensure!(bytes.len() <= limits.max_bytes, "STL exceeds byte limit");
+    if exact_binary_size(bytes).is_some() {
+        binary_vertices(bytes, limits)
+    } else {
+        ascii_vertices(bytes, limits)
+    }
+}
+
+pub fn parse_accepted_stl(bytes: &[u8], limits: GeometryLimits) -> Result<ParsedMesh> {
+    let vertices = read_vertices(bytes, limits)?;
     Ok(ParsedMesh {
-        triangles,
+        triangles: vertices.len() / 3,
         bounds: MeshBounds::from_vertices(&vertices)?,
     })
 }
 
-pub fn parse_accepted_stl(bytes: &[u8], limits: GeometryLimits) -> Result<ParsedMesh> {
-    ensure!(bytes.len() <= limits.max_bytes, "STL exceeds byte limit");
-    if exact_binary_size(bytes).is_some() {
-        parse_binary(bytes, limits)
-    } else {
-        parse_ascii(bytes, limits)
-    }
+/// The vertices [`parse_accepted_stl`] reads, three per triangle, with their
+/// bounds. The thumbnail renderer draws from these.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn mesh(bytes: &[u8], limits: GeometryLimits) -> Result<(Vec<[f64; 3]>, MeshBounds)> {
+    let vertices = read_vertices(bytes, limits)?;
+    let bounds = MeshBounds::from_vertices(&vertices)?;
+    Ok((vertices, bounds))
 }
 
 pub fn dimensions_um(mesh: &ParsedMesh) -> Result<MeshDimensions> {

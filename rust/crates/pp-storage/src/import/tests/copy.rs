@@ -1,6 +1,6 @@
 use super::*;
 use crate::import::copy::{
-    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, sync_tree,
+    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, room_needed, sync_tree,
 };
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
@@ -455,6 +455,13 @@ fn a_copy_that_reads_back_differently_stops_the_import() {
 
 #[test]
 fn the_write_step_refuses_a_destination_without_room() {
+    // The files still to copy, the database again for the upgrade's
+    // write-ahead log, and the reserve. Nothing caps the size.
+    let reserve = 64 * 1024 * 1024;
+    assert_eq!(room_needed(0, 0), reserve);
+    let (roots, database) = (50_000_000_000, 1_000_000_000);
+    assert_eq!(room_needed(roots, database), roots + database + reserve);
+    assert_eq!(room_needed(u64::MAX, database), u64::MAX);
     let folder = tempfile::tempdir().unwrap();
     ensure_room(folder.path(), 1).expect("one byte fits");
     let error = ensure_room(folder.path(), u64::MAX).unwrap_err();

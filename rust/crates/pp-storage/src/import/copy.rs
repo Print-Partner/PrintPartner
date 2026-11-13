@@ -6,9 +6,9 @@
 //! folder without a marker, which no Rust runtime opens.
 
 use super::{
-    Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch, SourceKind,
-    ensure_outside, inventory, io_error, measure, open_regular, place_destination, repo_files,
-    stage_directory, unsupported, upgrade, verify,
+    DATABASE_FILES, Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch,
+    SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
+    repo_files, stage_directory, unsupported, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -292,6 +292,20 @@ pub(super) fn import_with(
     Ok(report)
 }
 
+/// The free bytes the destination needs once the database is staged: the
+/// files still to be copied, working space for the schema upgrade, whose
+/// write-ahead log can grow as large as the database, and the reserve. No
+/// size cap applies: an import is bounded by free disk space alone.
+pub(super) fn room_needed(files: u64, database: u64) -> u64 {
+    files.saturating_add(database).saturating_add(STAGE_RESERVE)
+}
+
+/// The bytes of the database files staged in `stage`.
+fn staged_database(stage: &Path) -> u64 {
+    let staged = |name| stage.join(name).metadata().map_or(0, |file| file.len());
+    DATABASE_FILES.map(staged).iter().sum()
+}
+
 /// Copies every root of a Node data folder into `stage` and returns the
 /// number of files and their bytes. Like a backup, it takes regular files
 /// and directories and follows no link. Unlike a backup, it has no cap on
@@ -303,7 +317,8 @@ fn copy_roots(source: &Path, stage: &Path) -> Result<(u64, u64), ImportError> {
         archive::Item::File(_, _, bytes) => *bytes,
         archive::Item::Directory(_) => 0,
     });
-    ensure_room(stage, sizes.fold(STAGE_RESERVE, u64::saturating_add))?;
+    let roots = sizes.fold(0, u64::saturating_add);
+    ensure_room(stage, room_needed(roots, staged_database(stage)))?;
     let (mut files, mut bytes) = (0, 0);
     for item in &items {
         match item {
@@ -384,6 +399,8 @@ fn extract_archive(
     if metadata.scope != archive::MetadataScope::Full {
         return Err(ImportError::PartialArchive(metadata.scope));
     }
+    // Everything is extracted; the upgrade still needs its working space.
+    ensure_room(stage, room_needed(0, staged_database(stage)))?;
     // The archive passed its caps; listing what it wrote needs none.
     let extracted = archive::plan(stage, archive::Scope::Full, u64::MAX)
         .map_err(|error| ImportError::Roots(format!("{error:#}")))?;

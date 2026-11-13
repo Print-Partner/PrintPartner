@@ -895,21 +895,21 @@ async fn run_next_never_claims_a_source_import() {
         .admit(
             session(),
             Admission {
-                key: "send-worker-kind".into(),
-                target: Target::Create {
-                    metadata: Box::new(CreateSource {
-                        name: "Kind check".into(),
-                        source_kind: Some("local".into()),
-                        source_type: Some("local".into()),
-                        ..Default::default()
-                    }),
-                },
                 input: Input::Files {
                     paths: vec!["part.stl".into()],
                 },
-                reserved_bytes: 20 * 1024 * 1024,
                 max_input_bytes: 1024,
                 max_prepared_bytes: 2048,
+                reserved_bytes: 20 * 1024 * 1024,
+                key: "send-worker-kind".into(),
+                target: Target::Create {
+                    metadata: Box::new(CreateSource {
+                        source_type: Some("local".into()),
+                        source_kind: Some("local".into()),
+                        name: "Kind check".into(),
+                        ..Default::default()
+                    }),
+                },
             },
             &supplied,
             &AtomicBool::new(false),

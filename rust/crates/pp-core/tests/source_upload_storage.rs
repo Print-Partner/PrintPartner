@@ -18,134 +18,91 @@ use pp_storage::{
     auth::{Outcome as AuthOutcome, Request as AuthRequest, Secret},
     catalog::Credentials,
 };
-use std::{
-    io::{self, Read},
-    path::PathBuf,
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
+use std::{io, sync::Arc, time::Duration};
 
-struct Fixture {
-    _root: tempfile::TempDir,
-    data: PathBuf,
-    owner: WriterOwner,
-    service: SourceUploadService,
+/// One storage owner with an upload service over it, opened in `root`.
+fn opened(root: &tempfile::TempDir) -> (WriterOwner, SourceUploadService) {
+    let data = std::fs::canonicalize(root.path()).unwrap().join("data");
+    let owner = WriterOwner::open(&data, Limits::default()).unwrap().0;
+    let acquisitions =
+        SourceAcquisitions::new(&owner, desktop_policy(), IMPORT_QUOTA, IMPORT_SLOTS).unwrap();
+    acquisitions.recover_before_accepting().unwrap();
+    let service = SourceUploadService::new(Arc::new(acquisitions), data, 0);
+    (owner, service)
 }
 
-impl Fixture {
-    fn open(limits: Limits) -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let data = std::fs::canonicalize(root.path()).unwrap().join("data");
-        let (owner, _) = WriterOwner::open(&data, limits).unwrap();
-        let imports = Arc::new(
-            SourceAcquisitions::new(&owner, desktop_policy(), IMPORT_QUOTA, IMPORT_SLOTS).unwrap(),
-        );
-        assert_eq!(imports.recover_before_accepting().unwrap(), 0);
-        let service = SourceUploadService::new(imports, data.clone(), 0);
-        Self {
-            _root: root,
-            data,
-            owner,
-            service,
-        }
+/// Registers the first account and returns its session.
+fn signed_in(owner: &WriterOwner) -> Credentials {
+    let request = AuthRequest::Register {
+        email: "owner@example.test".into(),
+        display_name: "Owner".into(),
+        password: Secret::new("ordinary-password".into()),
+    };
+    let auth = owner.auth_with_policy(desktop_policy()).unwrap();
+    let reply = auth.submit(request, Arc::default(), Duration::from_secs(5));
+    match reply.unwrap().recv().unwrap().unwrap() {
+        AuthOutcome::Session { token, .. } => Credentials::Session(token),
+        _ => panic!("session expected"),
     }
+}
 
-    fn session(&self) -> Credentials {
-        let registered = self
-            .owner
-            .auth_with_policy(desktop_policy())
-            .unwrap()
-            .submit(
-                AuthRequest::Register {
-                    email: "owner@example.test".into(),
-                    display_name: "Owner".into(),
-                    password: Secret::new("ordinary-password".into()),
-                },
-                Arc::new(AtomicBool::new(false)),
-                Duration::from_secs(5),
-            )
-            .unwrap()
-            .recv()
-            .unwrap()
-            .unwrap();
-        let AuthOutcome::Session { token, .. } = registered else {
-            panic!("session expected")
-        };
-        Credentials::Session(token)
-    }
+fn stranger() -> Credentials {
+    Credentials::Session(Secret::new("x".repeat(64)))
+}
 
-    /// The upload's storage failure, and the status the route answers.
-    fn refused(&self, credentials: Credentials) -> (WriterFailure, StatusCode) {
-        let part: Box<dyn Read + Send> = Box::new(&b"solid a\nendsolid a\n"[..]);
-        let files: UploadParts =
-            Box::new(std::iter::once(Ok::<_, io::Error>(("a.stl".into(), part))));
-        match self.service.upload(credentials, 9_999, files) {
-            Err(UploadFailure::Storage(failure)) => {
-                let status = writer_failure(&failure).status();
-                (failure, status)
-            }
-            other => panic!("expected a storage failure, got {other:?}"),
-        }
-    }
-
-    /// Holds SQLite's write lock from another connection until dropped.
-    fn lock_database(&self) -> rusqlite::Connection {
-        let connection = rusqlite::Connection::open(self.data.join("print-partner.db")).unwrap();
-        connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        connection
-    }
+/// Uploads one small STL to a Source that does not exist and returns the
+/// storage failure with the status the route answers for it.
+fn refused(service: &SourceUploadService, credentials: Credentials) -> (WriterFailure, StatusCode) {
+    let file: (String, Box<dyn io::Read + Send>) = (
+        "a.stl".into(),
+        Box::new(io::Cursor::new(b"solid a\nendsolid a\n")),
+    );
+    let parts: UploadParts = Box::new([Ok(file)].into_iter());
+    let Err(UploadFailure::Storage(failure)) = service.upload(credentials, 9_999, parts) else {
+        panic!("expected a storage failure")
+    };
+    let status = writer_failure(&failure).status();
+    (failure, status)
 }
 
 #[test]
 fn a_refused_credential_answers_like_the_auth_seam() {
-    let fixture = Fixture::open(Limits::default());
-    let bogus = Credentials::Session(Secret::new("x".repeat(64)));
-    let (failure, status) = fixture.refused(bogus);
+    let root = tempfile::tempdir().unwrap();
+    let (_owner, service) = opened(&root);
+    let (failure, status) = refused(&service, stranger());
     assert!(matches!(failure, WriterFailure::Auth(_)), "{failure:?}");
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[test]
 fn a_storage_fault_is_a_server_error() {
-    let fixture = Fixture::open(Limits::default());
+    let root = tempfile::tempdir().unwrap();
+    let (owner, service) = opened(&root);
     // A Source that does not exist fails inside the admission transaction.
-    let (failure, status) = fixture.refused(fixture.session());
+    let (failure, status) = refused(&service, signed_in(&owner));
     assert!(matches!(failure, WriterFailure::Internal(_)), "{failure:?}");
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[test]
 fn a_stopped_writer_is_retryable() {
-    let Fixture {
-        _root,
-        data,
-        owner,
-        service,
-    } = Fixture::open(Limits::default());
+    let root = tempfile::tempdir().unwrap();
+    let (owner, service) = opened(&root);
     owner.shutdown().unwrap();
-    let fixture = (data, service);
-    let part: Box<dyn Read + Send> = Box::new(&b"solid a\nendsolid a\n"[..]);
-    let files: UploadParts = Box::new(std::iter::once(Ok::<_, io::Error>(("a.stl".into(), part))));
-    let refused = fixture
-        .1
-        .upload(Credentials::Session(Secret::new("x".repeat(64))), 1, files);
-    let Err(UploadFailure::Storage(failure)) = refused else {
-        panic!("expected a storage failure, got {refused:?}")
-    };
+    let (failure, status) = refused(&service, stranger());
     assert!(matches!(failure, WriterFailure::Stopped), "{failure:?}");
-    assert_eq!(
-        writer_failure(&failure).status(),
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[test]
 fn a_busy_database_is_retryable() {
-    let fixture = Fixture::open(Limits::default());
-    let session = fixture.session();
-    // The writer cannot begin its transaction before its 5 s deadline.
-    let _lock = fixture.lock_database();
-    let (failure, status) = fixture.refused(session);
+    let root = tempfile::tempdir().unwrap();
+    let (owner, service) = opened(&root);
+    let session = signed_in(&owner);
+    // Another connection holds the write lock past the writer's 5 s deadline.
+    let lock = rusqlite::Connection::open(root.path().join("data/print-partner.db")).unwrap();
+    lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let (failure, status) = refused(&service, session);
     assert!(matches!(failure, WriterFailure::Busy), "{failure:?}");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }

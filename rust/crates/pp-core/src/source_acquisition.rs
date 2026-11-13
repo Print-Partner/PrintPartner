@@ -600,14 +600,10 @@ impl SourceAcquisitions {
         self.shared.stop.load(Ordering::Acquire)
     }
 
-    fn streamed<F, R>(
+    fn streamed(
         &self,
-        request: StreamedRequest<F>,
-    ) -> Result<AcquisitionReply, AcquisitionError>
-    where
-        F: Iterator<Item = io::Result<(String, R)>>,
-        R: Read,
-    {
+        request: StreamedRequest<impl Iterator<Item = io::Result<(String, impl Read)>>>,
+    ) -> Result<AcquisitionReply, AcquisitionError> {
         let StreamedRequest {
             credential,
             operation_key,

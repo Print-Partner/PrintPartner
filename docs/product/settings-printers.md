@@ -24,12 +24,17 @@ the integration saved, the form says so and offers two choices. "Save printer"
 sends only the printer again. "Discard" deletes that integration. Escape and a
 click outside the form do not close it in that state.
 
-The integration write can lose its answer too. The form then keeps what it
-sent and locks the connection fields. The next "Save printer" or "Discard" reads
-`GET /api/v2/integrations` and the printer list first. An integration with the
-same kind, name and address that no printer links is the one that was saved: it
-is used, or deleted on "Discard", and no second one is created. Only when the
-list shows none is the create sent again.
+The integration write can lose its answer too. So the form reads
+`GET /api/v2/integrations` before it sends the create and keeps the ids it saw;
+when that read fails, nothing is sent. After a create with no answer the form
+keeps what it sent and locks the connection fields. The next "Save printer" or
+"Discard" reads the integrations and the printer list first. An integration
+that was not listed before, with the same kind, name and address, that no
+printer links is the one this form saved: it is used, or deleted on "Discard",
+and no second one is created. An integration that was already there is never
+used or deleted, however alike. When two new ones match, the form stops, says
+so and can be closed. Only when the list shows no new match is the create sent
+again.
 
 A failed printer write may still have applied: its answer can be lost to a
 timeout after the core saved the printer. So both choices read the printer list

@@ -57,6 +57,8 @@ function renderPrinters(answers: Record<string, Answer>) {
     const body: unknown = init?.body ? JSON.parse(init.body as string) : undefined;
     if (!key.startsWith("GET ")) writes.push([key, body]);
     if (key === "GET /health") return json(HEALTH);
+    // Every save reads the stored connections first; a core without an answer lists none.
+    if (key === CONNECTIONS && !answers[key]) return json({ integrations: [] });
     return (answers[key] ?? (() => problem(500, `no answer for ${key}`)))(body);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -262,14 +264,20 @@ describe("A printer write whose answer was lost", () => {
 });
 
 describe("A connection write whose answer was lost", () => {
-  // The first save's createIntegration answers 504. `saved` says whether the core kept it.
-  async function lostCreate(saved: boolean) {
+  const OLD = { ...VIEW, id: "i-old" };
+  // The first save's createIntegration answers 504. `before` is what the core listed before
+  // it, and `kept` what that create left behind although its answer was lost.
+  async function lostCreate(kept: unknown[], before: unknown[] = []) {
+    let listed = before;
     let creates = 0;
     const writes = renderPrinters({
       [LIST]: () => json({ printers: [] }),
-      [CONNECTIONS]: () => json({ integrations: saved ? [VIEW] : [] }),
+      [CONNECTIONS]: () => json({ integrations: listed }),
       "POST /api/v2/printers/probe": () => json(PROBE),
-      "POST /api/v2/integrations": () => (creates++ === 0 ? problem(504, "Gateway timeout") : json(VIEW)),
+      "POST /api/v2/integrations": () => {
+        listed = [...before, ...kept];
+        return creates++ === 0 ? problem(504, "Gateway timeout") : json(VIEW);
+      },
       "POST /api/v2/printers": () => json(CONFIG),
       "DELETE /api/v2/integrations/i-9": () => json(VIEW),
     });
@@ -281,27 +289,69 @@ describe("A connection write whose answer was lost", () => {
     return writes;
   }
   const sent = (writes: [string, unknown][]) => writes.map(([key]) => key).slice(1);
+  const CREATE = "POST /api/v2/integrations";
 
   it("is found in the integrations list and used, not created twice", async () => {
-    const writes = await lostCreate(true);
+    const writes = await lostCreate([VIEW]);
     press("Save printer");
     expect(await screen.findByText("Added Micron.")).toBeTruthy();
-    expect(sent(writes)).toEqual(["POST /api/v2/integrations", "POST /api/v2/printers"]);
+    expect(sent(writes)).toEqual([CREATE, "POST /api/v2/printers"]);
     expect(writes[2][1]).toMatchObject({ integration_id: "i-9" });
   });
 
   it("is found and deleted by Discard", async () => {
-    const writes = await lostCreate(true);
+    const writes = await lostCreate([VIEW]);
     press("Discard");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(sent(writes)).toEqual(["POST /api/v2/integrations", "DELETE /api/v2/integrations/i-9"]);
+    expect(sent(writes)).toEqual([CREATE, "DELETE /api/v2/integrations/i-9"]);
   });
 
   it("is created again only when the list shows it was not saved", async () => {
-    const writes = await lostCreate(false);
+    const writes = await lostCreate([]);
     press("Save printer");
     expect(await screen.findByText("Added Micron.")).toBeTruthy();
-    expect(sent(writes)).toEqual(["POST /api/v2/integrations", "POST /api/v2/integrations", "POST /api/v2/printers"]);
+    expect(sent(writes)).toEqual([CREATE, CREATE, "POST /api/v2/printers"]);
+  });
+
+  it("never takes a look-alike connection that was there before the create", async () => {
+    // An unlinked connection with the same kind, name and address already existed.
+    const writes = await lostCreate([], [OLD]);
+    press("Discard");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // It was not deleted, and nothing but the one create was sent.
+    expect(sent(writes)).toEqual([CREATE]);
+    cleanup();
+    const again = await lostCreate([], [OLD]);
+    press("Save printer");
+    expect(await screen.findByText("Added Micron.")).toBeTruthy();
+    // It was not reused either: the create went out again with the new key.
+    expect(sent(again)).toEqual([CREATE, CREATE, "POST /api/v2/printers"]);
+    expect(again[2][1]).toMatchObject({ api_key: "moon-key-canary" });
+  });
+
+  it("stops when two new connections match, and sends nothing", async () => {
+    const writes = await lostCreate([VIEW, { ...VIEW, id: "i-10" }]);
+    for (const choice of ["Save printer", "Discard"]) {
+      press(choice);
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("More than one new connection matches this printer"));
+    }
+    expect(sent(writes)).toEqual([CREATE]);
+    press("Close");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("sends no create when the saved connections cannot be read first", async () => {
+    const writes = renderPrinters({
+      [LIST]: () => json({ printers: [] }),
+      [CONNECTIONS]: () => problem(503, "Service unavailable"),
+      "POST /api/v2/printers/probe": () => json(PROBE),
+    });
+    await fillAdd("http://micron.test");
+    press("Check address");
+    await screen.findByText("The printer answered.");
+    press("Save printer");
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not read the saved connections, so nothing was sent: Service unavailable.");
+    expect(sent(writes)).toEqual([]);
   });
 });
 

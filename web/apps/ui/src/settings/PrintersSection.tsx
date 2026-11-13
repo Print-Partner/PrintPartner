@@ -91,10 +91,13 @@ function useWrite() {
  * owner chooses "Save printer", which sends only the printer, or "Discard", which deletes
  * that integration. A failed printer write may still have applied, so both choices read
  * the list first: when a printer already links the integration the add is done, and
- * nothing is resent or deleted. The integration write can lose its answer too. It is then
- * kept in `unsure`, and the next save or cancel reads the integrations list before
- * anything is sent: an unlinked integration with the same kind, name and address is the
- * one that was saved, and is used or discarded instead of creating a second.
+ * nothing is resent or deleted. The integration write can lose its answer too. The form
+ * reads the integrations list before that write and keeps the ids it saw; a create with no
+ * answer is then kept in `unsure`, and the next save or cancel reads the list again before
+ * anything is sent. An unlinked integration that was not there before, with the same kind,
+ * name and address, is the one this form saved: it is used or discarded instead of
+ * creating a second. One that was already there is never touched, and two new matches
+ * stop the form.
  */
 function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: string) => void }) {
   const client = useQueryClient();
@@ -102,7 +105,7 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
   const [address, setAddress] = useState("");
   const [probe, setProbe] = useState<{ of: string; result: Probe } | null>(null);
   const [saved, setSaved] = useState<Integration | null>(null);
-  const [unsure, setUnsure] = useState<NewIntegration | null>(null);
+  const [unsure, setUnsure] = useState<{ sent: NewIntegration; known: string[] } | null>(null);
   // The list could not be read to see what was saved; the form may then be closed.
   const [unchecked, setUnchecked] = useState(false);
   const write = useWrite();
@@ -125,30 +128,41 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
       throw unread("printer", failure);
     }
   };
-  /** The integration an unanswered create saved, if it did. A failed read stops the action. */
-  const savedAfterAll = async (sent: NewIntegration) => {
-    try {
-      const [connections, printers] = await Promise.all([
-        client.fetchQuery({ ...integrationsQuery, staleTime: 0 }),
-        freshPrinters(client),
-      ]);
-      return connections.integrations.find(
-        (one) =>
-          one.kind === sent.kind && one.name === sent.name && one.base_url === sent.base_url &&
-          !printers.some((printer) => printer.integration?.id === one.id),
-      );
-    } catch (failure) {
+  /**
+   * The integration an unanswered create saved, if it did: one that was not listed before
+   * the create. A failed read, or more than one such match, stops the action.
+   */
+  const savedAfterAll = async ({ sent, known }: NonNullable<typeof unsure>) => {
+    const read = Promise.all([client.fetchQuery({ ...integrationsQuery, staleTime: 0 }), freshPrinters(client)]);
+    const [connections, printers] = await read.catch((failure: unknown) => {
       throw unread("connection", failure);
+    });
+    const matches = connections.integrations.filter(
+      (one) =>
+        !known.includes(one.id) && one.kind === sent.kind && one.name === sent.name && one.base_url === sent.base_url &&
+        !printers.some((printer) => printer.integration?.id === one.id),
+    );
+    if (matches.length > 1) {
+      setUnchecked(true);
+      throw new Said("More than one new connection matches this printer, so this form cannot tell which one it saved. Nothing was sent or deleted. Close this form and reopen Settings.");
     }
+    return matches[0];
   };
   const create = async (body: NewIntegration) => {
     const found = unsure && (await savedAfterAll(unsure));
     if (found) return found;
+    // The ids listed before the first send: a lost answer is matched only against newer ones.
+    const known = unsure?.known ?? (await client.fetchQuery({ ...integrationsQuery, staleTime: 0 }).then(
+      (list) => list.integrations.map((one) => one.id),
+      (failure: unknown) => {
+        throw new Said(`Could not read the saved connections, so nothing was sent: ${why(failure)}.`);
+      },
+    ));
     try {
       return await writeCore("createIntegration", {}, body);
     } catch (failure) {
       if (!(failure instanceof Error && resendable(failure))) throw failure;
-      setUnsure(body);
+      setUnsure({ sent: body, known });
       throw new Said(`The connection may have been saved: ${why(failure)}. Save again and this form checks before it sends anything, or cancel to discard it.`);
     }
   };
@@ -168,7 +182,7 @@ function AddPrinter({ onClose, onDone }: { onClose: () => void; onDone: (text: s
       if (added) return onDone(`${added.name} was saved after all.`);
       const integration =
         saved ??
-        (await create(unsure ?? {
+        (await create(unsure?.sent ?? {
           kind,
           name: text("name"),
           base_url: address.trim(),

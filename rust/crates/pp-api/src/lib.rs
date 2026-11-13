@@ -110,6 +110,8 @@ pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings_support;
 #[cfg(feature = "desktop_rebuild")]
+pub mod sources_github;
+#[cfg(feature = "desktop_rebuild")]
 pub mod spoolman_deductions;
 #[cfg(feature = "desktop_rebuild")]
 mod update_check;

@@ -76,12 +76,6 @@ impl From<rusqlite::Error> for SourceRolesError {
     }
 }
 
-impl From<anyhow::Error> for SourceRolesError {
-    fn from(error: anyhow::Error) -> Self {
-        Self::Writer(error.into())
-    }
-}
-
 impl BuildGraphClient {
     /// Proves the credential and finds `build`'s brief in a read
     /// transaction. `Ok` is no promise: confirm reads the brief again.
@@ -119,7 +113,8 @@ impl BuildGraphClient {
             let set = apply(&mut brief, &changes)?;
             brief.draft_id = None;
             brief.updated_at = auth::catalog_timestamp();
-            save(tx, tenant, &brief_key(build), &brief.stored_text()?)?;
+            let text = brief.stored_text().map_err(WriterFailure::from)?;
+            save(tx, tenant, &brief_key(build), &text)?;
             Ok(set)
         })?
     }

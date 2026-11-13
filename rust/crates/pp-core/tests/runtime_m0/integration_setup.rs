@@ -7,8 +7,14 @@
 //! `POST /api/v2/printers` shows live in the Farm list the same way, and is
 //! read, edited and deleted. The printer is the recorded loopback Moonraker;
 //! nothing is uploaded or started.
+//!
+//! GRE-1529: a stored row can hold keys Rust's shapes do not name, which the
+//! Node import is to write. No route shows such a key, and an edit stores it
+//! back unchanged.
 use super::printer_host::recorded;
-use super::watcher_proof::{proof_data, run_in_child, shut_down, signed_in, start_rust_only};
+use super::watcher_proof::{
+    proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
+};
 use super::{request, temporary};
 use axum::http::StatusCode;
 use pp_testkit::moonraker::RoutedPrinter;
@@ -16,6 +22,8 @@ use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 
 const SECRET: &str = "created-key-canary";
+/// A value under a key Rust's shapes do not name.
+const UNREAD: &str = "unread-key-canary";
 const CREATED: &str = "/api/v2/integrations";
 const DEFAULT: &str = "/api/v1/settings/spoolman-default";
 
@@ -308,6 +316,83 @@ async fn integration_setup_in_child() {
     key_is_in_no_file_but_the_database(&data);
 }
 
+#[tokio::test]
+async fn imported_rows_keep_their_unread_keys_and_no_route_shows_them() {
+    let data = temporary("unread-keys");
+    run_in_child("integration_setup::unread_keys_in_child", &data).await;
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn unread_keys_in_child() {
+    let data = proof_data();
+    // Rows as the import is to write them: Rust's fields, then the keys it
+    // does not name, on the printer, on the integration and in its config.
+    let stamp = "2026-11-12T03:04:05.678Z";
+    let fleet = json!([{"id": "p-1", "name": "Voron", "model": "v", "bed_width_mm": 350,
+        "bed_depth_mm": 350, "bed_height_mm": 340, "margin_mm": 4, "max_filament_slots": 1,
+        "loaded_filaments": [], "integration_id": "moon-1",
+        "nozzle_mm": 0.4, "notes": {"token": UNREAD}}]);
+    let hosts = json!([{"id": "moon-1", "type": "moonraker", "name": "Host",
+        "config": {"base_url": "http://127.0.0.1:9", "enabled": false,
+                   "poll_seconds": 5, "legacy": {"token": UNREAD}},
+        "created_at": stamp, "updated_at": stamp, "capabilities": {"note": UNREAD}}]);
+    seed_settings(
+        &data,
+        &[("integrations", hosts), ("printer.fleet", fleet.clone())],
+    );
+    let (runtime, origin, desktop) = start_rust_only(&data).await;
+    let cookie = signed_in(&origin, &desktop, 1).await;
+    let printer = "/api/v2/printers/p-1";
+    let host = "/api/v2/integrations/moon-1";
+    let renamed = Some(json!({"name": "Renamed"}));
+    for (method, path, body) in [
+        ("GET", printer, None),
+        ("GET", "/api/v2/printers", None),
+        ("GET", CREATED, None),
+        ("PATCH", printer, renamed.clone()),
+        ("PATCH", host, renamed),
+        ("GET", printer, None),
+    ] {
+        let (code, _, text) = call(&origin, &cookie, method, path, body).await;
+        assert_eq!(code, StatusCode::OK, "{method} {path}: {text}");
+        for trace in [
+            UNREAD,
+            "nozzle",
+            "notes",
+            "poll_seconds",
+            "legacy",
+            "capabilities",
+        ] {
+            assert!(
+                !text.contains(trace),
+                "{method} {path} shows {trace}: {text}"
+            );
+        }
+    }
+    // A request cannot add or change such a key: it is refused whole.
+    for path in [printer, host] {
+        let added = Some(json!({"name": "Again", "nozzle_mm": 0.6}));
+        let (code, _, text) = call(&origin, &cookie, "PATCH", path, added).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{path}: {text}");
+    }
+    shut_down(runtime).await;
+    // The stored rows hold what the edits set and every unread key as it was.
+    let stored = super::farm_reads::settings_rows(&data).unwrap();
+    let mut edited = fleet;
+    edited[0]["name"] = json!("Renamed");
+    assert!(stored.contains(&edited.to_string()), "{stored}");
+    for kept in [
+        format!(r#""enabled":false,"poll_seconds":5,"legacy":{{"token":"{UNREAD}"}}}}"#),
+        format!(r#"","capabilities":{{"note":"{UNREAD}"}}}}]"#),
+        r#""name":"Renamed","config":{"base_url":"http://127.0.0.1:9""#.to_owned(),
+    ] {
+        assert!(stored.contains(&kept), "{kept} is not in {stored}");
+    }
+    key_is_in_no_file_but_the_database(&data);
+}
+
 /// The submitted API key is in no log or other file the runtime wrote. The
 /// database is where it is stored, so its files are left out.
 fn key_is_in_no_file_but_the_database(data: &Path) {
@@ -323,6 +408,7 @@ fn key_is_in_no_file_but_the_database(data: &Path) {
                 let text = std::fs::read(&path).unwrap();
                 let text = String::from_utf8_lossy(&text);
                 assert!(!text.contains(SECRET), "{name} holds the API key");
+                assert!(!text.contains(UNREAD), "{name} holds an unread key's value");
                 read += 1;
             }
         }

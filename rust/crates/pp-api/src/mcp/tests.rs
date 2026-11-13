@@ -18,6 +18,8 @@ mod print_stats;
 mod progress_reads;
 #[path = "tests/reads.rs"]
 mod reads;
+#[path = "tests/source_roles.rs"]
+mod source_roles;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";

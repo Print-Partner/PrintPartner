@@ -324,6 +324,20 @@ pub(crate) fn first_non_empty_entry(directory: &Path) -> std::io::Result<Option<
     }
 }
 
+/// Marks `directory` as Rust-owned after an import published into it. The
+/// marker is the import's last write, so an interrupted import leaves none.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn mark_imported(directory: &Path) -> std::io::Result<()> {
+    let dir = Dir::open(directory)?;
+    write_marker(&dir, directory, &Marker::now())?;
+    match inspect_in(&dir) {
+        MarkerState::Valid(_) => Ok(()),
+        _ => Err(std::io::Error::other(
+            "the ownership marker did not read back",
+        )),
+    }
+}
+
 /// A process lease record names a running process when its pid is alive and
 /// its recorded identity, if any, still matches. An unreadable record, or an
 /// identity that cannot be looked up, counts as live.

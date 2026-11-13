@@ -587,24 +587,25 @@ async fn start_rust_resources(
         pp_gateway::printer_host::HostSends::new()?,
     )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
-    let (imports, uploads) = start_imports(&writer).await?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
-    let uploads = rebuild_api::upload_router(Arc::clone(&writer), &origin, uploads)?;
+    let (imports, uploads) = start_imports(&writer, &origin).await?;
+    // MCP is composed before the gateway starts the watchers; it reads them
+    // through this slot, bound when the gateway hands out its status port.
+    let farm = printer_status::LateFarm::default();
     let product = rebuild_api::product_router_with_updates(
         desktop_rebuild,
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        rebuild_api::ServerOptions {
-            update_checks: server_updates,
-            explicit_listener: listen.is_some(),
-        },
+        rebuild_api::RuntimeInputs::running(server_updates, listen.is_some(), &farm),
     )?
     .context("Rust product routes need the rebuild setting")?
     .merge(uploads);
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let product =
-        move |status| network::for_listener(product.merge(status_routes.mount(status)), listen);
+    let product = move |status: pp_gateway::MoonrakerStatus| {
+        farm.bind(status.clone());
+        network::for_listener(product.merge(status_routes.mount(status)), listen)
+    };
     let served = match snapshot {
         Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
         None => (pp_gateway::ServedUi::Legacy, None),
@@ -651,17 +652,22 @@ async fn start_rust_resources(
 /// (503) but does not stop the server.
 #[cfg(feature = "desktop_rebuild")]
 async fn start_imports(
-    writer: &pp_storage::WriterOwner,
-) -> Result<(
-    Arc<source_acquisition::SourceAcquisitions>,
-    Arc<source_uploads::SourceUploadService>,
-)> {
-    let imports = Arc::new(source_acquisition::SourceAcquisitions::new(
-        writer,
-        rebuild_api::desktop_policy(),
-        source_uploads::IMPORT_QUOTA,
-        source_uploads::IMPORT_SLOTS,
-    )?);
+    writer: &Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
+    origin: &str,
+) -> Result<(Arc<source_acquisition::SourceAcquisitions>, axum::Router)> {
+    let (imports, data_dir) = {
+        let owner = writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage owner lock poisoned"))?;
+        let imports = source_acquisition::SourceAcquisitions::new(
+            &owner,
+            rebuild_api::desktop_policy(),
+            source_uploads::IMPORT_QUOTA,
+            source_uploads::IMPORT_SLOTS,
+        )?;
+        let lease = owner.lease().context("Storage lease unavailable")?;
+        (Arc::new(imports), lease.data_dir().to_owned())
+    };
     let recovering = Arc::clone(&imports);
     let recovered = tokio::task::spawn_blocking(move || {
         let recovered = recovering.recover_before_accepting();
@@ -671,16 +677,13 @@ async fn start_imports(
     if let (Err(error), _) | (_, Err(error)) = recovered {
         tracing::warn!(error = %format!("{error:#}"), "Source import recovery incomplete");
     }
-    let data_dir = writer
-        .lease()
-        .context("Storage lease unavailable")?
-        .data_dir();
     let uploads = Arc::new(source_uploads::SourceUploadService::new(
         Arc::clone(&imports),
-        data_dir.to_owned(),
+        data_dir,
         source_uploads::FREE_SPACE_RESERVE,
     ));
-    Ok((imports, uploads))
+    let router = rebuild_api::upload_router(Arc::clone(writer), origin, uploads)?;
+    Ok((imports, router))
 }
 
 impl CoreRuntime {

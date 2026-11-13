@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 mod create_build;
 #[path = "tests/draft_parts.rs"]
 mod draft_parts;
+#[path = "tests/farm_status.rs"]
+mod farm_status;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]
@@ -74,6 +76,29 @@ impl McpServer {
         seed: &str,
         configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
     ) -> Self {
+        Self::open_watching(flag, tenant, seed, configure, None).await
+    }
+
+    /// The flag on for `default`, `seed` run first, printers observed
+    /// through `observations`.
+    async fn watching(seed: &str, observations: Arc<dyn crate::farm::FarmObservations>) -> Self {
+        Self::open_watching(
+            Some("1"),
+            "default",
+            seed,
+            |config| config,
+            Some(observations),
+        )
+        .await
+    }
+
+    async fn open_watching(
+        flag: Option<&str>,
+        tenant: &str,
+        seed: &str,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+        observations: Option<Arc<dyn crate::farm::FarmObservations>>,
+    ) -> Self {
         let directory = crate::scratch::Scratch::new("pp-mcp-http-");
         let database = directory.join("print-partner.db");
         std::fs::write(
@@ -93,7 +118,10 @@ impl McpServer {
             .0;
         let (listener, origin) = mcp_rpc::listen().await;
         let config = configure(McpHttpConfig::from_startup(&origin, tenant, flag).unwrap());
-        let (router, _) = test_router(&owner, config, policy());
+        let (router, _) = match observations {
+            Some(observations) => test_router_watching(&owner, config, policy(), observations),
+            None => test_router(&owner, config, policy()),
+        };
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -179,6 +207,19 @@ impl McpServer {
             ("origin", SELF),
         ];
         self.post("/api/v1/mcp", &unkeyed, &request).await.0
+    }
+
+    /// The names `tools/list` answers on the session in `headers`.
+    async fn tool_names(&self, headers: &[(&str, &str)]) -> Vec<String> {
+        let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let (status, body, _) = self.post("/api/v1/mcp", headers, &list).await;
+        assert_eq!(status, 200, "{body}");
+        rpc(&body)["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect()
     }
 
     /// POSTs `body` to `path`; returns status, body text and any MCP session id.
@@ -354,15 +395,7 @@ async fn ticket_t_16_mcp_lists_tools_and_write_tools_only_propose() {
     let (status, body, _) = server.post("/api/v1/mcp", &headers, &notified).await;
     assert_eq!(status, 202, "{body}");
 
-    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
-    let (status, body, _) = server.post("/api/v1/mcp", &headers, &list).await;
-    assert_eq!(status, 200, "{body}");
-    let names: Vec<String> = rpc(&body)["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap().to_owned())
-        .collect();
+    let names = server.tool_names(&headers).await;
     for expected in ["confirm_apply", "list_pending_actions", "start_sync"] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -399,6 +432,7 @@ async fn ticket_t_16_mcp_lists_tools_and_write_tools_only_propose() {
         ("mcp-protocol-version", "2025-06-18"),
         ("origin", SELF),
     ];
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
     let (status, _, _) = server.post("/api/v1/mcp", &keyless, &list).await;
     assert_eq!(status, 401);
 }

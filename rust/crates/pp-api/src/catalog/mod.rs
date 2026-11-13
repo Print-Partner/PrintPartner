@@ -1,3 +1,4 @@
+pub mod contract;
 mod http;
 pub(crate) mod wire;
 

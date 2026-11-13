@@ -185,6 +185,8 @@ pub struct McpFarm {
     pub reads: FarmClient,
     pub observations: Arc<dyn crate::farm::FarmObservations>,
     pub modules: pp_storage::SettingsClient,
+    /// `get_print_stats` counts the plates sent in its window here.
+    pub activity: pp_storage::print_activity::PrintActivityClient,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
@@ -310,6 +312,7 @@ pub(crate) fn test_router_watching(
                 reads: owner.farm_reads(policy).unwrap(),
                 observations,
                 modules: owner.client(),
+                activity: owner.print_activity(policy).unwrap(),
             },
         },
     );
@@ -641,6 +644,8 @@ pub(crate) mod plan_accept;
 mod planning;
 #[path = "mcp/planning_reads.rs"]
 mod planning_reads;
+#[path = "mcp/print_stats.rs"]
+mod print_stats;
 #[path = "mcp/progress_reads.rs"]
 mod progress_reads;
 #[path = "mcp/rate_limit.rs"]

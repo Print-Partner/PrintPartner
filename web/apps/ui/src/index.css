@@ -757,6 +757,10 @@ body {
   background: var(--surface-raised);
 }
 
+.pp-screen-actions {
+  margin: 0 0 16px;
+}
+
 .pp-dialog-actions {
   display: flex;
   flex-wrap: wrap;

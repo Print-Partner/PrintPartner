@@ -27,6 +27,30 @@ const PRINTERS = [
   printer("h2d-spare", "Bambu H2D (spare)", null, { execution: "not_set_up", bed_clear: "unknown", display: "not_set_up" }, { reason: "not_set_up", last_heard_at: null }),
 ];
 
+// Build 3's sends in every listed state, and one removed send the tab hides.
+const send = (id, state, extra = {}) => ({
+  id,
+  filename: `plate-${id}.gcode`,
+  printer_id: "micron",
+  profile_id: 3,
+  state,
+  start: false,
+  wait_for_idle: false,
+  unit_count: 0,
+  created_at: "2026-11-05T19:00:00.000Z",
+  updated_at: "2026-11-05T19:05:00.000Z",
+  error: null,
+  upload_job_id: null,
+  outcome_unknown: false,
+  ...extra,
+});
+const SEND_QUEUE = [
+  send("1", "queued"),
+  send("2", "done", { start: true, wait_for_idle: true, upload_job_id: "job-2" }),
+  send("3", "error", { error: "Upload failed (HTTP 500): Disk full", upload_job_id: "job-3" }),
+  send("4", "error", { outcome_unknown: true, upload_job_id: "job-4" }),
+  send("5", "cancelled"),
+];
 // One stored connection per linked printer, as the Settings edit form reads them: a key is set, never shown.
 const INTEGRATIONS = PRINTERS.filter((p) => p.integration).map((p) => ({
   id: p.integration.id,
@@ -41,6 +65,7 @@ const INTEGRATIONS = PRINTERS.filter((p) => p.integration).map((p) => ({
 const SETUP_LISTS = {
   "/api/v2/printers": { printers: PRINTERS },
   "/api/v2/integrations": { integrations: INTEGRATIONS },
+  "/api/v2/printer-send-queue": { items: SEND_QUEUE },
 };
 
 const at = (minute) => `2026-11-05T19:${String(minute).padStart(2, "0")}:00.000Z`;

@@ -3,6 +3,7 @@ import { LoginScreen, SetupScreen } from "./auth/AuthScreens";
 import { BuildCheckoff } from "./builds/BuildCheckoff";
 import { BuildHistory } from "./builds/BuildHistory";
 import { BuildPlan } from "./builds/BuildPlan";
+import { BuildProduction } from "./builds/BuildProduction";
 import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
 import { FarmLog } from "./farm/FarmLog";
@@ -75,6 +76,8 @@ export const routes: RouteObject[] = [
                 <BuildHistory />
               ) : t.path === "plan" ? (
                 <BuildPlan />
+              ) : t.path === "production" ? (
+                <BuildProduction />
               ) : (
                 <LaterTab label={t.label} holds={t.holds} />
               ),

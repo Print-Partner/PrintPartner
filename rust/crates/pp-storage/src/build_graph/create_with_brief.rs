@@ -285,6 +285,32 @@ pub(super) fn save(
     Ok(())
 }
 
-/// Shared with `source_roles` tests, which start from a created brief.
+/// The two ways a Build's stored planning brief is unusable, as each brief
+/// writer's own error enum names them.
+pub(super) trait BriefError: From<rusqlite::Error> {
+    fn no_brief() -> Self;
+    /// The stored brief does not parse or names another Build.
+    fn invalid() -> Self;
+}
+
+/// `build`'s stored planning brief, read in `tx`.
+pub(super) fn stored_brief<E: BriefError>(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: PositiveId,
+) -> Result<BuildPlanningBrief, E> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+            params![tenant, brief_key(build)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let raw = raw.ok_or_else(E::no_brief)?;
+    let id = i64::try_from(build.get()).map_err(|_| E::invalid())?;
+    BuildPlanningBrief::parse(&raw, id).map_err(|_| E::invalid())
+}
+
+/// Shared with the brief writers' tests, which start from a created brief.
 #[cfg(test)]
 pub(super) mod tests;

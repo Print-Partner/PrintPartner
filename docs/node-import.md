@@ -55,6 +55,7 @@ Then it lists:
 
 - **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
 - **Database files:** the bytes of `print-partner.db`, its `-wal` and its `-journal`, for each the source holds, and their total. The startup check copies these under `TMPDIR` and holds them in memory, so compare the total with the free space and memory given above; the documented Docker run gives `/tmp` 1 GB.
+- **Source paths:** two counts, "Source paths outside the installation" and "Source paths whose folder is missing in the copy", by the rule under [Source paths](#source-paths). Paths are never printed.
 - **Backup roots:** for each backup root the source holds, the number of its files and folders, counted as a backup counts entries, and for a folder source the bytes of its files; then the total for all roots. A backup is bounded by its number of entries, so this line says how far an installation is from that bound.
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the import has the row's converter, then `converted`. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
@@ -107,14 +108,16 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | Rows in any table under an installation value other than `default` | The Rust runtime reads only `default`. The message names the value and the number of rows under it. Send the dry-run report back so the case can be added; nothing re-assigns the data today. |
 | More than one account | The Rust runtime signs in with one. Remove the extra accounts in Node first, or send the dry-run report back so a choice can be added. There is no option to pick an account. |
 | A copied file that reads back differently from its source | The disk or the copy failed. |
-| A Source whose current revision has no files under `repos/`, or a Source without a revision whose stored path does not lead below a `repos` folder | The Source's files could not be found in the new folder. The message names the Source id. |
+| A Source whose current revision has no files under `repos/`, or whose snapshot name is not a plain path below `repos/` | The Source's files could not be found in the new folder. The message names the Source id. |
+| Two Sources that would lead to the same folder in the copy | The mapping of stored paths is wrong for this installation. The message names both Source ids. Send the dry-run report back. |
+| A Source whose rewritten path does not stay under the copy's `repos/` with links resolved, or whose path in the copy is not what its stored path maps to | The import checks every path it rewrote, apart from the code that wrote it. The message names the Source id. |
 | A source row that is missing or different after the upgrade and the rebase | Every row of every table must arrive as the source stored it, except what [Verification](#verification) lists. The message names the table. |
 
 What it does:
 
 1. Refuses unless the destination is apart from the source, then creates it, resolves its links, checks it a second time, and from then on writes only through that resolved folder. It creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
 2. From a folder, copies the database files and every backup root: regular files and directories, no links. The database files (`print-partner.db`, its `-wal` and its `-journal`) are read back like every other file, before anything opens the copy. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. The read-back runs before the flush in step 4 and reads the page cache: it catches a wrong copy, and it is not a check of the disk. A folder has no cap on its size, on the size of one file or on the number of entries: the only size refusal for a folder is too little free space at the destination. From an archive, validates and extracts it as a restore does, under the restore caps (100,000 entries, 20 GiB expanded, 8 GiB for one entry). An installation above those caps is imported from a folder: a filesystem snapshot or a copy of the stopped data folder (owner decision, 2026-11-12).
-3. Checks and upgrades the staged database as the dry run does. It then points every Source at its files in the new folder: a Source with a current revision gets `<destination>/repos/<snapshot_locator>`, and one without keeps the part of its stored path below Node's `repos`. It deletes the rows of `sessions` and `password_reset_tokens`. Last, it compares every table with the row digests it took before the upgrade and stops if a row is missing or different; see [Verification](#verification). Lease files and `backups/` are not copied. Users and password hashes are.
+3. Checks and upgrades the staged database as the dry run does. It then rewrites Source paths by the rule under [Source paths](#source-paths). It deletes the rows of `sessions` and `password_reset_tokens`. Last, it compares every table with the row digests it took before the upgrade and stops if a row is missing or different; see [Verification](#verification). Lease files and `backups/` are not copied. Users and password hashes are.
 4. Checkpoints and closes the staged database, so it is one file with no `-wal` or `-shm` beside it. Then it flushes everything it staged to disk in one call: `syncfs` on the destination's filesystem on Linux, which the Docker image runs on. Other platforms have no such call, so there it syncs every staged file and directory. The stage is inside the destination, so one flush covers both. A flush that fails ends the run with `import failed:` and no marker.
 5. Moves the database and the roots into the destination with a rename that fails if the name exists, so it never replaces a file. It saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
 6. Writes `.pp-rust-owned.json` last, into the folder it resolved in step 1 and only while the given path still leads there, and syncs it and its directory.
@@ -127,6 +130,23 @@ Memory: the check in step 3 is the startup check, and it holds the staged databa
 
 A destination with a marker is complete and durable; one without a marker is discarded. Two rules enforce the second half: the Rust runtime refuses to open a folder that holds data and no marker (`ownership_marker::admit_writer`), and the import refuses a destination that is not empty (`inspect_destination`).
 
+### Source paths
+
+Node stores each Source's folder in `projects.local_path` as an absolute path. The import rewrites one only when it can show where the files are in the copy:
+
+- **A Source with a current revision** gets `<destination>/repos/<snapshot_locator>`. The snapshot must be in the copy; if it is not, the import stops.
+- **A Source without one** is rewritten only when its stored path lies under the source installation's own `repos` folder and the copy holds that folder. Both separators are read first, so `..\..` cannot pass as a name. The stored path is compared part by part with the `--from` folder plus `repos`, and everything below that is kept, also when a lower part is again called `repos`. A part that is empty, `.`, `..` or a drive letter is never accepted.
+- **Every other stored path is kept byte for byte.** A folder the user picked outside the installation, a path that climbs out of `repos`, or a folder the copy does not hold is never pointed at another Source's files. Such a Source keeps its record and loses nothing, but its files are not in the copy.
+
+The dry run and the import report give two counts, never a path: "Source paths outside the installation" and "Source paths whose folder is missing in the copy". While either is above zero the copy says `complete: false`.
+
+Two cases count as outside although the files may be in the copy, because the import cannot show it:
+
+- **A snapshot or copy at another path than Node used.** The comparison is with the `--from` folder as given. If Node ran with its data at `/data` and the import reads a copy at `/snapshots/data`, the stored paths start with `/data` and count as outside. Sources with a current revision are not affected.
+- **An archive.** It does not record which folder its installation lived in.
+
+After writing, the import checks every Source's path in the copy against the path the source stored, without the code that wrote it: the path is either the stored one, or `<destination>/repos/` followed by the snapshot name or by what the stored path holds below the installation's `repos`.
+
 ### Verification
 
 Before the upgrade, the import takes a SHA-256 of every row of every table in the staged database. After the upgrade and the rebase it takes them again, over the columns the source had, and refuses the import unless every table holds exactly the rows it held. The tables come from the database, not from a list, so a table this page does not know is compared too. The report gives the number of tables and rows compared.
@@ -137,7 +157,7 @@ It leaves out only what the import or the upgrade changes on purpose:
 | --- | --- |
 | Tables `sessions` and `password_reset_tokens` | The import empties them. |
 | Setting `schema_version` | The upgrade writes Rust's schema number. |
-| Every shape an inventory row marks `converted`, today `projects.local_path` | A converter rewrites it, and that converter's own check covers it. |
+| Every shape an inventory row marks `converted`, today `projects.local_path` | A converter rewrites it, and that converter's own check covers it; for `projects.local_path` see [Source paths](#source-paths). |
 | Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
@@ -154,7 +174,7 @@ The report holds keys, names and counts, never a stored value. It says `complete
 
 | Step | Stored shape | Rust reader today | Typed target | Status |
 | --- | --- | --- | --- | --- |
-| 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>` | converted |
+| 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>`, or `<data>/repos/` and the stored path below the installation's `repos`; any other path is kept | converted |
 | 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document | pending |
 | 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; unknown kinds kept as they are | pending |
 | 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | pending |

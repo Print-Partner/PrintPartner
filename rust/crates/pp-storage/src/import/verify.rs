@@ -157,56 +157,211 @@ pub(super) fn changed(before: &Digests, after: &Digests) -> Vec<String> {
     before.iter().filter_map(differs).collect()
 }
 
-/// Points every Source at its files under `repos`, which is where the
-/// destination will hold `stage_repos`. Node stores `projects.local_path` as
-/// an absolute path into its own data folder. A Source with a current
-/// revision gets `repos/<snapshot_locator>`, which must exist. One without
-/// keeps the part of its path below Node's `repos`. Returns how many paths
-/// were written.
+/// The stored path and current revision of one Source.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SourceRow {
+    pub id: i64,
+    pub stored: Option<String>,
+    pub locator: Option<String>,
+}
+
+/// What the import does with one Source's stored path.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Decision {
+    /// No stored path and no current revision: nothing to rewrite.
+    Keep,
+    /// Its files are in the copy at this `/`-separated path below `repos`.
+    Rewrite(String),
+    /// Its current revision names a snapshot the copy does not hold.
+    MissingRevision,
+    /// The stored path is not below the installation's own `repos`. It is
+    /// kept byte for byte.
+    Outside,
+    /// The stored path is below the installation's `repos`, but the copy
+    /// holds no such folder. It is kept byte for byte.
+    Missing,
+}
+
+/// How the Sources' paths came out, by count. A path is never reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourcePaths {
+    /// Paths that now lead into the destination's `repos`.
+    pub rebased: u64,
+    /// Paths outside the installation, kept as stored.
+    pub outside: u64,
+    /// Paths inside the installation whose folder the copy lacks, kept as
+    /// stored.
+    pub missing: u64,
+}
+
+impl SourcePaths {
+    /// Counts what `decisions` would do.
+    pub(super) fn of(decisions: &[(i64, Decision)]) -> Self {
+        let count = |wanted: fn(&Decision) -> bool| {
+            decisions
+                .iter()
+                .filter(|(_, decision)| wanted(decision))
+                .count() as u64
+        };
+        Self {
+            rebased: count(|decision| matches!(decision, Decision::Rewrite(_))),
+            outside: count(|decision| matches!(decision, Decision::Outside)),
+            missing: count(|decision| matches!(decision, Decision::Missing)),
+        }
+    }
+}
+
+/// Every Source's stored path and the snapshot of its current revision.
+pub(super) fn source_rows(connection: &Connection) -> rusqlite::Result<Vec<SourceRow>> {
+    let mut statement = connection.prepare(
+        "SELECT p.id, p.local_path, r.snapshot_locator FROM projects p
+         LEFT JOIN source_revisions r ON r.id = p.current_source_revision_id ORDER BY p.id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(SourceRow {
+            id: row.get(0)?,
+            stored: row.get(1)?,
+            locator: row.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// `path` split at both separators: Node on Windows stores backslashes. The
+/// split comes before every check, so `..\..` cannot pass as one name.
+fn segments(path: &str) -> Vec<&str> {
+    path.split(['/', '\\']).collect()
+}
+
+/// `parts` as a path below `repos`, when every part is a plain name: not
+/// empty, not `.` or `..`, and not a drive letter.
+fn below(parts: &[&str]) -> Option<String> {
+    let plain = |part: &&str| {
+        let drive = part.len() == 2 && part.ends_with(':');
+        !part.is_empty() && *part != "." && *part != ".." && !drive
+    };
+    (!parts.is_empty() && parts.iter().all(plain)).then(|| parts.join("/"))
+}
+
+/// Decides, for every Source, what its stored path becomes. `root` is the
+/// Node data folder the import reads, as given and not resolved; an archive
+/// has none. `held` says whether the copy holds a folder at a path below
+/// `repos`.
+///
+/// A Source with a current revision is at `repos/<snapshot_locator>`. One
+/// without is rewritten only when its stored path lies under `root`'s own
+/// `repos`, compared part by part, and the copy holds the rest of the path.
+pub(super) fn decide(
+    rows: &[SourceRow],
+    root: Option<&Path>,
+    held: impl Fn(&str) -> bool,
+) -> Result<Vec<(i64, Decision)>, ImportError> {
+    let root = root.and_then(|root| std::path::absolute(root).ok());
+    let root = root.as_ref().map(|root| root.to_string_lossy());
+    let own: Option<Vec<&str>> = root.as_ref().map(|root| {
+        let mut parts = segments(root.trim_end_matches(['/', '\\']));
+        parts.push("repos");
+        parts
+    });
+    let decided = |row: &SourceRow| -> Result<Decision, ImportError> {
+        if let Some(locator) = &row.locator {
+            let inside = below(&segments(locator)).ok_or(ImportError::SourcePath(row.id))?;
+            return Ok(match held(&inside) {
+                true => Decision::Rewrite(inside),
+                false => Decision::MissingRevision,
+            });
+        }
+        let Some(stored) = row.stored.as_deref().filter(|path| !path.is_empty()) else {
+            return Ok(Decision::Keep);
+        };
+        let parts = segments(stored);
+        let rest = (own.as_ref()).and_then(|own| parts.strip_prefix(own.as_slice()));
+        Ok(match rest.and_then(below) {
+            Some(inside) if held(&inside) => Decision::Rewrite(inside),
+            Some(_) => Decision::Missing,
+            None => Decision::Outside,
+        })
+    };
+    rows.iter().map(|row| Ok((row.id, decided(row)?))).collect()
+}
+
+/// Writes what [`decide`] decided. A Source whose current revision the copy
+/// lacks stops the import. Two guards follow, each a refusal, because each
+/// means the mapping itself is wrong: no two Sources may land on one path,
+/// and every rewritten path must lie under the staged `repos` with links
+/// resolved. `repos` is where the destination will hold `stage_repos`.
 pub(super) fn rebase_sources(
     connection: &Connection,
+    root: Option<&Path>,
     stage_repos: &Path,
     repos: &Path,
-) -> Result<u64, ImportError> {
-    let sources: Vec<(i64, Option<String>, Option<String>)> = {
-        let mut statement = connection.prepare(
-            "SELECT p.id, p.local_path, r.snapshot_locator FROM projects p
-             LEFT JOIN source_revisions r ON r.id = p.current_source_revision_id ORDER BY p.id",
-        )?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-    let mut rebased = 0;
-    for (source, stored, locator) in sources {
-        let below = match (locator, stored.filter(|path| !path.is_empty())) {
-            (Some(locator), _) => {
-                let inside = relative(&locator).ok_or(ImportError::SourcePath(source))?;
-                if !stage_repos.join(inside).is_dir() {
-                    return Err(ImportError::MissingRevision(source));
-                }
-                locator
-            }
-            (None, None) => continue,
-            // Node on Windows stores backslashes; both separators are read.
-            (None, Some(stored)) => stored
-                .rsplit_once("/repos/")
-                .or_else(|| stored.rsplit_once("\\repos\\"))
-                .and_then(|(_, below)| relative(below).map(|_| below.replace('\\', "/")))
-                .ok_or(ImportError::SourcePath(source))?,
+) -> Result<SourcePaths, ImportError> {
+    let rows = source_rows(connection)?;
+    let decisions = decide(&rows, root, |inside| stage_repos.join(inside).is_dir())?;
+    let staged = stage_repos.canonicalize().ok();
+    let mut taken = BTreeMap::new();
+    for (source, decision) in &decisions {
+        let inside = match decision {
+            Decision::Rewrite(inside) => inside,
+            Decision::MissingRevision => return Err(ImportError::MissingRevision(*source)),
+            Decision::Keep | Decision::Outside | Decision::Missing => continue,
         };
-        let path = pp_os::display_path(&repos.join(below));
+        if let Some(first) = taken.insert(inside.as_str(), *source) {
+            return Err(ImportError::SourcesShare(first, *source));
+        }
+        let resolved = stage_repos.join(inside).canonicalize().ok();
+        let contained =
+            matches!((&staged, &resolved), (Some(staged), Some(path)) if path.starts_with(staged));
+        if !contained {
+            return Err(ImportError::SourceEscapes(*source));
+        }
+        let path = pp_os::display_path(&repos.join(inside));
         connection.execute(
             "UPDATE projects SET local_path = ?1 WHERE id = ?2",
             (path.to_string_lossy(), source),
         )?;
-        rebased += 1;
     }
-    Ok(rebased)
+    Ok(SourcePaths::of(&decisions))
 }
 
-/// `path` when it is relative and stays below its start.
-fn relative(path: &str) -> Option<&Path> {
-    let path = Path::new(path);
-    let normal = |component| matches!(component, Component::Normal(_));
-    (path.components().next().is_some() && path.components().all(normal)).then_some(path)
+/// Checks every Source's path in the copy against `before`, the paths the
+/// source stored, without using [`decide`]: a path is either what the source
+/// stored, byte for byte, or `repos` joined with the snapshot of the current
+/// revision, or with what the stored path holds below `root`'s own `repos`.
+/// A Source with a current revision must have been rewritten.
+pub(super) fn check_sources(
+    connection: &Connection,
+    before: &BTreeMap<i64, Option<String>>,
+    root: Option<&Path>,
+    repos: &Path,
+) -> Result<(), ImportError> {
+    let own = root.and_then(|root| std::path::absolute(root).ok());
+    let own = own.map(|root| root.join("repos"));
+    for row in source_rows(connection)? {
+        let wrong = || ImportError::SourceRebase(row.id);
+        let stored = before.get(&row.id).ok_or_else(wrong)?;
+        // Only a Source without a current revision may keep what it stored.
+        if row.locator.is_none() && row.stored == *stored {
+            continue;
+        }
+        let under = |path: &str| Path::new(path).strip_prefix(repos).ok().map(Path::to_owned);
+        let found = row.stored.as_deref().and_then(under).ok_or_else(wrong)?;
+        let found = found.as_path();
+        let from_revision = row.locator.as_deref().map(Path::new) == Some(found);
+        let unix = stored.as_deref().map(|path| path.replace('\\', "/"));
+        let from_stored = row.locator.is_none()
+            && (own.as_deref())
+                .zip(unix.as_deref())
+                .is_some_and(|(own, path)| {
+                    !path.contains("//") && Path::new(path).strip_prefix(own) == Ok(found)
+                });
+        let plain = found.components().next().is_some()
+            && found
+                .components()
+                .all(|part| matches!(part, Component::Normal(_)));
+        if !plain || !(from_revision || from_stored) {
+            return Err(wrong());
+        }
+    }
+    Ok(())
 }

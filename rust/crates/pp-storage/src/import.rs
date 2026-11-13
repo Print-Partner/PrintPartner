@@ -13,6 +13,7 @@ pub mod inventory;
 mod verify;
 
 pub use copy::{ImportReport, REPORT_FILE, import};
+pub use verify::SourcePaths;
 
 use crate::{archive, ownership_marker, schema, versions};
 use inventory::{Row, Shape};
@@ -76,6 +77,12 @@ pub enum ImportError {
     SourcePath(i64),
     /// Rows of these tables differ from the source after the upgrade.
     RowsChanged(Vec<String>),
+    /// These two Sources would lead to the same folder in the copy.
+    SourcesShare(i64, i64),
+    /// The Source's rewritten path does not stay under the copy's `repos/`.
+    SourceEscapes(i64),
+    /// The Source's path in the copy is not what its stored path maps to.
+    SourceRebase(i64),
     /// Backup roots hold entries that are neither regular files nor folders.
     /// The import skips nothing, so it copies none of the installation.
     NotRegular(Vec<Unsupported>),
@@ -171,6 +178,9 @@ impl fmt::Display for ImportError {
             | Self::MissingRevision(_)
             | Self::SourcePath(_)
             | Self::RowsChanged(_)
+            | Self::SourcesShare(..)
+            | Self::SourceEscapes(_)
+            | Self::SourceRebase(_)
             | Self::CopyMismatch(_)
             | Self::Flush { .. } => self.fmt_write_step(f),
             Self::NoSpace {
@@ -243,6 +253,18 @@ impl ImportError {
                 f,
                 "Rows changed during the import in {}; they must arrive as the source stored them",
                 tables.join(", ")
+            ),
+            Self::SourcesShare(first, second) => write!(
+                f,
+                "Sources {first} and {second} would lead to the same folder in the copy, so the import stops. Send the dry-run report back"
+            ),
+            Self::SourceEscapes(source) => write!(
+                f,
+                "Source {source}'s folder in the copy does not stay under repos/, so the import stops"
+            ),
+            Self::SourceRebase(source) => write!(
+                f,
+                "Source {source}'s path in the copy is not what its stored path maps to, so the import stops"
             ),
             Self::CopyMismatch(copy) => write!(
                 f,
@@ -629,6 +651,10 @@ pub struct DryRunReport {
     /// each the source holds. The startup check copies them under `TMPDIR`
     /// and reads them into memory.
     pub database_files: Vec<(&'static str, u64)>,
+    /// How the Sources' stored paths would come out. A Source whose path is
+    /// outside the installation, or whose folder is missing, keeps its
+    /// record but its files are not in the copy.
+    pub source_paths: SourcePaths,
 }
 
 impl DryRunReport {
@@ -653,7 +679,17 @@ impl DryRunReport {
             writeln!(f)?;
         }
         let entries: u64 = self.roots.iter().map(|count| count.entries).sum();
-        writeln!(f, "  all roots: {entries} entries")
+        writeln!(f, "  all roots: {entries} entries")?;
+        writeln!(
+            f,
+            "\nSource paths outside the installation: {}",
+            self.source_paths.outside
+        )?;
+        writeln!(
+            f,
+            "Source paths whose folder is missing in the copy: {}",
+            self.source_paths.missing
+        )
     }
 }
 
@@ -782,6 +818,9 @@ struct Files {
     roots: Vec<RootCount>,
     /// The database files the source holds, with their bytes.
     database: Vec<(&'static str, u64)>,
+    /// The Node data folder itself, for a folder source. Stored Source
+    /// paths are compared with it. An archive has none.
+    root: Option<PathBuf>,
 }
 
 /// Reports what importing `source` would convert. `source` is a stopped Node
@@ -1023,6 +1062,7 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
             .zip(&before)
             .filter_map(sized)
             .collect(),
+        root: Some(source.to_owned()),
     })
 }
 
@@ -1082,6 +1122,7 @@ fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
         unsupported: Vec::new(),
         roots: listed_roots(&paths),
         database: staged_sizes(scratch),
+        root: None,
     })
 }
 
@@ -1244,6 +1285,14 @@ fn measure(
     files: &Files,
 ) -> Result<DryRunReport, ImportError> {
     let named: Vec<&Shape> = inventory::named().collect();
+    // What the import would do with each Source's path, judged against the
+    // source folder: its `repos` is what the import copies.
+    let held = |inside: &str| {
+        let repos = files.root.as_ref().map(|root| root.join("repos"));
+        repos.is_some_and(|repos| repos.join(inside).is_dir())
+    };
+    let rows = verify::source_rows(connection)?;
+    let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held)?);
     let (tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
     let tenants: BTreeSet<&String> = (["build_profiles", "projects"].into_iter())
@@ -1324,6 +1373,7 @@ fn measure(
         unsupported: files.unsupported.clone(),
         roots: files.roots.clone(),
         database_files: files.database.clone(),
+        source_paths,
         tables,
     })
 }

@@ -191,14 +191,14 @@ fn a_full_archive_gives_the_same_counts() {
         (report.roots.iter().map(|count| (count.root, count.entries))).collect()
     };
     assert_eq!(listed(&from_archive), listed(&from_folder));
-    // The synthetic `repos/` is itself, three folders and the snapshot's two
+    // The synthetic `repos/` is itself, four folders and the snapshot's two
     // files; `custom_filaments.json` is one file.
-    let expected = [("repos", 6), ("custom_filaments.json", 1)];
+    let expected = [("repos", 7), ("custom_filaments.json", 1)];
     assert_eq!(listed(&from_folder), expected);
     let text = from_folder.to_string();
-    let lines = "\nBackup roots (files and folders, then bytes of the files):\n  repos 6 38\n  custom_filaments.json 1 52\n  all roots: 7 entries\n";
+    let lines = "\nBackup roots (files and folders, then bytes of the files):\n  repos 7 38\n  custom_filaments.json 1 52\n  all roots: 8 entries\n";
     assert!(text.contains(lines), "{text}");
-    let lines = "\n  repos 6\n  custom_filaments.json 1\n  all roots: 7 entries\n";
+    let lines = "\n  repos 7\n  custom_filaments.json 1\n  all roots: 8 entries\n";
     assert!(from_archive.to_string().contains(lines));
     // The size of each database file the source holds, from its own bytes.
     let database = std::fs::metadata(folder.database_path()).unwrap().len();
@@ -216,12 +216,25 @@ fn a_full_archive_gives_the_same_counts() {
         .sum();
     let line = format!("  all database files: {total} bytes\n");
     assert!(from_folder.to_string().contains(&line));
+    // An archive names no installation folder, so it cannot show that a
+    // Source without a current revision lies inside it.
+    let inside = SourcePaths {
+        rebased: synthetic::SOURCES,
+        ..SourcePaths::default()
+    };
+    assert_eq!(from_folder.source_paths, inside);
+    let outside = SourcePaths {
+        outside: synthetic::SOURCES,
+        ..SourcePaths::default()
+    };
+    assert_eq!(from_archive.source_paths, outside);
     let source = SourceKind::Directory;
     assert_eq!(
         DryRunReport {
             source,
             roots: from_folder.roots.clone(),
             database_files: from_folder.database_files.clone(),
+            source_paths: from_folder.source_paths,
             ..from_archive
         },
         from_folder

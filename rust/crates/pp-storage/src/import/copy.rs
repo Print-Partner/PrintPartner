@@ -54,6 +54,12 @@ pub struct ImportReport {
     pub unmatched_prints: u64,
     /// Sources whose path now leads into the destination's `repos/`.
     pub rebased_sources: u64,
+    /// Sources whose stored path is outside the installation. Each keeps its
+    /// record and its stored path; its files are not in the copy.
+    pub sources_outside: u64,
+    /// Sources whose stored path is inside the installation but whose folder
+    /// the copy lacks. Each keeps its record and its stored path.
+    pub sources_missing: u64,
     /// Source tables, and their rows, that arrived as the source stored them.
     pub verified_tables: u64,
     pub verified_rows: u64,
@@ -68,7 +74,7 @@ pub struct ImportReport {
 impl ImportReport {
     fn new(
         counts: &DryRunReport,
-        rebased_sources: u64,
+        paths: verify::SourcePaths,
         stored: &verify::Digests,
         (files, bytes): (u64, u64),
     ) -> Self {
@@ -83,14 +89,20 @@ impl ImportReport {
                 .collect(),
         });
         Self {
-            complete: (inventory::ROWS.iter()).all(|row| row.status != inventory::Status::Pending),
+            // A Source whose files are not in the copy keeps the copy
+            // incomplete, whatever the converters.
+            complete: (inventory::ROWS.iter()).all(|row| row.status != inventory::Status::Pending)
+                && paths.outside == 0
+                && paths.missing == 0,
             source_schema: counts.schema_version,
             schema: counts.upgraded_schema,
             builds: counts.builds,
             sources: counts.sources,
             printers: counts.printers,
             unmatched_prints: counts.unmatched_prints,
-            rebased_sources,
+            rebased_sources: paths.rebased,
+            sources_outside: paths.outside,
+            sources_missing: paths.missing,
             verified_tables: stored.len() as u64,
             verified_rows: stored.values().map(|(_, rows)| rows.len() as u64).sum(),
             files,
@@ -123,6 +135,16 @@ impl fmt::Display for ImportReport {
             f,
             "complete: {}. {pending} inventory rows are not converted yet. {} Source paths now lead into the destination.",
             self.complete, self.rebased_sources
+        )?;
+        writeln!(
+            f,
+            "Source paths outside the installation: {}",
+            self.sources_outside
+        )?;
+        writeln!(
+            f,
+            "Source paths whose folder is missing in the copy: {}",
+            self.sources_missing
         )?;
         writeln!(
             f,
@@ -246,10 +268,15 @@ pub(super) fn import_with(
         let (files, copied) = extract_archive(source, metadata.len(), &stage.0, limits)?;
         (SourceKind::Archive, files, copied)
     };
-    let (connection, ready, stored) = upgrade(&stage.0, |database| {
+    let (connection, ready, (stored, paths)) = upgrade(&stage.0, |database| {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
         let source = rusqlite::Connection::open_with_flags(database, flags)?;
-        Ok(verify::digests(&source, None)?)
+        // Each Source's path as the source stored it, for the check that
+        // follows the rebase.
+        let mut statement = source.prepare("SELECT id, local_path FROM projects")?;
+        let paths = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let paths: BTreeMap<i64, Option<String>> = paths.collect::<rusqlite::Result<_>>()?;
+        Ok((verify::digests(&source, None)?, paths))
     })?;
     // Sign-in state is not carried: every Node session ends with the import.
     // It goes before the count, so the report describes what was imported.
@@ -270,7 +297,10 @@ pub(super) fn import_with(
         return Err(ImportError::Accounts(counts.users));
     }
     let repos = root.join("repos");
-    let rebased = verify::rebase_sources(&connection, &stage.0.join("repos"), &repos)?;
+    // A folder source is the Node data folder itself; an archive names none.
+    let node = metadata.is_dir().then_some(source);
+    let rebased = verify::rebase_sources(&connection, node, &stage.0.join("repos"), &repos)?;
+    verify::check_sources(&connection, &paths, node, &repos)?;
     let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
     if !changed.is_empty() {
         return Err(ImportError::RowsChanged(changed));
@@ -430,6 +460,7 @@ fn extract_archive(
         unsupported: Vec::new(),
         roots: Vec::new(),
         database: Vec::new(),
+        root: None,
     };
     Ok((files_read, (files, bytes)))
 }

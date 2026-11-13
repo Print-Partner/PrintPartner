@@ -87,11 +87,10 @@ fn a_folder_imports_into_a_new_rust_owned_folder() {
             Path::new(&path).starts_with(destination.join("repos")),
             "{path}"
         );
-        assert!(
-            Path::new(&path).join("synthetic-part.stl").is_file(),
-            "{path}"
-        );
+        assert!(Path::new(&path).is_dir(), "{path}");
     }
+    let first = stored("SELECT local_path FROM projects WHERE id = 1");
+    assert!(Path::new(&first).join("synthetic-part.stl").is_file());
 
     // A second import refuses the folder it just wrote, and changes nothing in it.
     let written = state(&destination);
@@ -153,6 +152,27 @@ fn a_full_archive_imports_the_same_data() {
     let parent = tempfile::tempdir().unwrap();
     let from_archive = import(archive.path(), &parent.path().join("a")).unwrap();
     let from_folder = import(source.path(), &parent.path().join("b")).unwrap();
+    // An archive does not say which folder its installation lived in, so a
+    // Source without a current revision cannot be shown to lie inside it:
+    // its path is kept and counted. The folder import rewrites both.
+    assert_eq!(
+        (from_folder.rebased_sources, from_folder.sources_outside),
+        (synthetic::SOURCES, 0)
+    );
+    assert_eq!(
+        (from_archive.rebased_sources, from_archive.sources_outside),
+        (0, synthetic::SOURCES)
+    );
+    let kept = setting(
+        &parent.path().join("a/print-partner.db"),
+        "SELECT local_path FROM projects WHERE id = 2",
+    );
+    assert_eq!(Path::new(&kept), source.path().join("repos/2"));
+    let from_archive = ImportReport {
+        rebased_sources: from_folder.rebased_sources,
+        sources_outside: 0,
+        ..from_archive
+    };
     assert_eq!(from_archive, from_folder);
     assert_eq!(
         entries(&parent.path().join("a")),
@@ -323,13 +343,12 @@ fn a_source_whose_files_cannot_be_placed_stops_the_import() {
     );
     assert_eq!(entries(&destination), Vec::<String>::new());
 
-    let elsewhere = node_folder();
-    execute(
-        &elsewhere,
-        "UPDATE projects SET local_path = '/synthetic/elsewhere' WHERE id = 2",
-    );
-    let error = import(elsewhere.path(), &destination).unwrap_err();
-    assert!(matches!(error, ImportError::SourcePath(2)), "{error:?}");
+    // A snapshot name that is no plain path below `repos` is refused too.
+    let climbing = node_folder();
+    execute(&climbing, &revision("..\\..\\synthetic"));
+    let error = import(climbing.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::SourcePath(1)), "{error:?}");
+    assert_eq!(entries(&destination), Vec::<String>::new());
 
     // A current revision decides the path, whatever Node stored beside it.
     let current = node_folder();
@@ -818,4 +837,230 @@ fn a_refusal_after_creation_removes_the_folder_this_run_created() {
     let parent = tempfile::tempdir().unwrap();
     recheck(source.path(), parent.path(), true).unwrap();
     assert!(parent.path().is_dir());
+}
+
+/// Stores `paths` as the Sources' paths, by id, imports the folder and
+/// returns the report with each Source's path in the copy. The marker must
+/// be there: none of these cases stops the import.
+fn imported_with(
+    folder: &Installation,
+    paths: &[(i64, &str)],
+) -> (ImportReport, Vec<String>, tempfile::TempDir) {
+    let connection = Connection::open(folder.database_path()).unwrap();
+    for (source, path) in paths {
+        connection
+            .execute(
+                "UPDATE projects SET local_path = ?1 WHERE id = ?2",
+                (path, source),
+            )
+            .unwrap();
+    }
+    drop(connection);
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let report = import(folder.path(), &destination).unwrap();
+    assert!(destination.join(ownership_marker::MARKER_FILE).is_file());
+    let connection = Connection::open(destination.join("print-partner.db")).unwrap();
+    let stored = strings(
+        &connection,
+        "SELECT local_path FROM projects ORDER BY id",
+        None,
+    )
+    .unwrap();
+    (report, stored, parent)
+}
+
+#[test]
+fn a_source_path_outside_the_installation_is_kept_and_counted() {
+    // A folder the user picked: Node stores whatever `path.resolve` gave.
+    for outside in ["/home/synthetic/repos/voron", "D:\\repos\\voron"] {
+        let folder = node_folder();
+        let dry = {
+            execute(
+                &folder,
+                &format!("UPDATE projects SET local_path = '{outside}' WHERE id = 2"),
+            );
+            run(folder.path()).unwrap()
+        };
+        assert_eq!((dry.source_paths.outside, dry.source_paths.missing), (1, 0));
+        let text = dry.to_string();
+        assert!(
+            text.contains("\nSource paths outside the installation: 1\n"),
+            "{text}"
+        );
+        assert!(!text.contains("voron"), "{text}");
+        let (report, stored, _parent) = imported_with(&folder, &[]);
+        assert_eq!(stored[1], outside, "the stored path was rewritten");
+        assert_eq!(
+            (
+                report.rebased_sources,
+                report.sources_outside,
+                report.sources_missing
+            ),
+            (1, 1, 0)
+        );
+        assert!(!report.complete);
+        let text = report.to_string();
+        assert!(
+            text.contains("Source paths outside the installation: 1\n"),
+            "{text}"
+        );
+        assert!(!text.contains("voron"), "{text}");
+    }
+}
+
+#[test]
+fn two_sources_with_the_same_tail_each_keep_their_own_path() {
+    let folder = node_folder();
+    let paths = [
+        (1, "/home/synthetic-a/repos/kit"),
+        (2, "/home/synthetic-b/repos/kit"),
+    ];
+    let (report, stored, _parent) = imported_with(&folder, &paths);
+    assert_eq!(
+        stored,
+        ["/home/synthetic-a/repos/kit", "/home/synthetic-b/repos/kit"]
+    );
+    assert_eq!((report.rebased_sources, report.sources_outside), (0, 2));
+}
+
+#[test]
+fn a_path_inside_the_installation_keeps_all_of_it_below_repos() {
+    // A second `repos` lower down is part of the path, not a new start.
+    let folder = node_folder();
+    let nested = folder.path().join("repos/a/repos/b");
+    std::fs::create_dir_all(&nested).unwrap();
+    let (report, stored, parent) = imported_with(&folder, &[(2, &nested.to_string_lossy())]);
+    let destination = parent.path().join("rust").canonicalize().unwrap();
+    assert_eq!(Path::new(&stored[1]), destination.join("repos/a/repos/b"));
+    assert!(Path::new(&stored[1]).is_dir());
+    assert_eq!((report.rebased_sources, report.sources_outside), (2, 0));
+}
+
+#[test]
+fn a_path_that_climbs_out_once_its_separators_are_read_is_kept() {
+    let folder = node_folder();
+    let root = folder.path().to_string_lossy().into_owned();
+    for climbing in [
+        format!("{root}/repos/..\\..\\etc"),
+        format!("{root}/repos/\\etc\\passwd"),
+        format!("{root}/repos/../../etc"),
+        format!("{root}/repos/1/../1"),
+        "C:\\node\\repos\\..\\..\\etc".to_owned(),
+        "\\etc\\passwd".to_owned(),
+    ] {
+        let folder = node_folder();
+        let climbing = climbing.replace(&root, &folder.path().to_string_lossy());
+        let (report, stored, parent) = imported_with(&folder, &[(2, &climbing)]);
+        assert_eq!(stored[1], climbing, "the stored path was rewritten");
+        assert_eq!(
+            (report.rebased_sources, report.sources_outside),
+            (1, 1),
+            "{climbing}"
+        );
+        // Nothing the import wrote leads out of the destination's `repos`.
+        assert!(Path::new(&stored[0]).starts_with(parent.path().canonicalize().unwrap()));
+    }
+}
+
+#[test]
+fn a_source_whose_folder_is_missing_in_the_copy_is_kept_and_counted() {
+    let folder = node_folder();
+    let gone = folder.path().join("repos/synthetic-gone");
+    let gone = gone.to_string_lossy();
+    execute(
+        &folder,
+        &format!("UPDATE projects SET local_path = '{gone}' WHERE id = 2"),
+    );
+    let dry = run(folder.path()).unwrap();
+    assert_eq!((dry.source_paths.outside, dry.source_paths.missing), (0, 1));
+    let line = "Source paths whose folder is missing in the copy: 1\n";
+    assert!(dry.to_string().contains(line), "{dry}");
+    let (report, stored, _parent) = imported_with(&folder, &[]);
+    assert_eq!(stored[1], gone, "the stored path was rewritten");
+    assert_eq!(
+        (
+            report.rebased_sources,
+            report.sources_outside,
+            report.sources_missing
+        ),
+        (1, 0, 1)
+    );
+    assert!(!report.complete);
+    assert!(report.to_string().contains(line), "{report}");
+}
+
+#[test]
+fn two_sources_that_would_share_a_folder_stop_the_import() {
+    let folder = node_folder();
+    let shared = folder.path().join("repos/2");
+    let shared = shared.to_string_lossy();
+    execute(
+        &folder,
+        &format!("UPDATE projects SET local_path = '{shared}'"),
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(
+        matches!(error, ImportError::SourcesShare(1, 2)),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("Sources 1 and 2 would lead to the same folder")
+    );
+    // No marker and no stage.
+    assert_eq!(entries(&destination), Vec::<String>::new());
+}
+
+#[test]
+fn a_rewritten_source_path_is_checked_against_the_stored_one() {
+    let folder = node_folder();
+    let (root, repos) = (folder.path(), Path::new("/synthetic/rust/repos"));
+    let connection = Connection::open(folder.database_path()).unwrap();
+    let before: BTreeMap<i64, Option<String>> = [1, 2]
+        .map(|source| {
+            (
+                source,
+                Some(setting(
+                    &folder.database_path(),
+                    &format!("SELECT local_path FROM projects WHERE id = {source}"),
+                )),
+            )
+        })
+        .into();
+    let set = |source: i64, path: &str| {
+        connection
+            .execute(
+                "UPDATE projects SET local_path = ?1 WHERE id = ?2",
+                (path, source),
+            )
+            .unwrap();
+    };
+    let checked = || verify::check_sources(&connection, &before, Some(root), repos);
+    // As stored, or rewritten to the same place below the new `repos`.
+    checked().unwrap();
+    set(1, "/synthetic/rust/repos/1/revisions/synthetic-a");
+    set(2, "/synthetic/rust/repos/2");
+    checked().unwrap();
+    // Another Source's folder, a folder outside `repos`, and a climb.
+    for wrong in [
+        "/synthetic/rust/repos/1/revisions/synthetic-a",
+        "/synthetic/rust/elsewhere",
+        "/synthetic/rust/repos/2/../1",
+        "/synthetic/elsewhere/repos/2",
+    ] {
+        set(2, wrong);
+        let error = checked().unwrap_err();
+        assert!(
+            matches!(error, ImportError::SourceRebase(2)),
+            "{wrong}: {error:?}"
+        );
+    }
+    // An archive names no installation folder: nothing may be rewritten.
+    set(2, "/synthetic/rust/repos/2");
+    let error = verify::check_sources(&connection, &before, None, repos).unwrap_err();
+    assert!(matches!(error, ImportError::SourceRebase(1)), "{error:?}");
 }

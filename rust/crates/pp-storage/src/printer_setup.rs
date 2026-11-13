@@ -177,6 +177,25 @@ impl PrinterSetupClient {
         })?
     }
 
+    /// Every stored integration, in stored order, without its secrets: a view
+    /// says only whether an API key or password is set. Kinds Rust cannot
+    /// create are listed too, so they can be deleted.
+    pub fn list_integrations(
+        &self,
+        credential: Credential,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Vec<IntegrationSummary>, PrinterSetupError> {
+        let name = "printer_setup.list_integrations";
+        self.readers.read(name, cancelled, wait, |tx| {
+            let installation = authorize(tx, &credential, self.policy)?;
+            Ok(load(tx, &installation)?
+                .iter()
+                .map(Entry::summary)
+                .collect())
+        })?
+    }
+
     /// Removes the integration of any kind with `id`, together with its TLS
     /// pin and a Spoolman default that names it, and answers what it removed.
     /// A printer that linked it keeps the id and reads as unlinked.

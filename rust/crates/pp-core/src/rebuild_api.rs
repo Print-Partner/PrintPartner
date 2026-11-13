@@ -909,28 +909,36 @@ mod tests {
         fn discard(&self, _: &Value) {}
     }
 
-    /// The farm reads and the send queue writes, as the Rust-only runtime
-    /// mounts them, over checks that never observe or send.
-    fn farm_routes(
-        owner: &std::sync::Mutex<pp_storage::WriterOwner>,
-        origin: &str,
-        policy: pp_storage::auth::AuthPolicy,
-    ) -> axum::Router {
-        let config = || {
-            pp_api::accepted::AcceptedHttpConfig::from_startup(origin, "default", Some("1"))
-                .unwrap()
-        };
-        let owner = owner.lock().unwrap();
-        pp_api::farm::farm_router(
-            config(),
+    /// The farm read, the printer-host routes and the send queue writes, which
+    /// the runtime mounts beside the status watchers; the TLS pin routes are
+    /// among them. The send checks never observe or send.
+    fn farm_and_host_routes(owner: &WriterOwner, origin: &str) -> Router {
+        let (settings, policy) = (owner.client(), desktop_policy());
+        let accepted = AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+        let farm = pp_api::farm::farm_router(
+            accepted,
             owner.farm_reads(policy).unwrap(),
             Arc::new(NoObservations),
-        )
-        .merge(pp_api::send_queue::send_queue_router(
-            config(),
+        );
+        let reads = owner.accepted_reads_with_policy(policy).unwrap();
+        let config = AdminHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+        let hosts = crate::printer_host::StoredPrinterHosts::new(
+            settings.clone(),
+            HostReads::new().unwrap(),
+        );
+        let snapshots = settings.print_file_snapshots();
+        let sends = pp_api::send_queue::send_queue_router(
+            AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap(),
             owner.send_queue(policy).unwrap(),
             Arc::new(NoTargets),
-        ))
+        );
+        farm.merge(sends)
+            .merge(pp_api::printer_host::printer_host_router(
+                config,
+                reads,
+                Arc::new(hosts),
+                snapshots,
+            ))
     }
 
     /// Whether an anonymous request got the answer the route's stated auth predicts.
@@ -1007,7 +1015,7 @@ mod tests {
             "default",
             None,
         );
-        let farm = farm_routes(&owner, &origin, policy);
+        let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
         let mut server = serve(
             listener,
             reads

@@ -359,6 +359,33 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("CreateIntegrationRequest"),
         "IntegrationView",
     ),
+    route(
+        "listIntegrations",
+        "GET",
+        "/api/v2/integrations",
+        None,
+        "IntegrationList",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "readTlsPin",
+            "GET",
+            "/api/v1/integrations/{id}/tls-pin",
+            None,
+            "TlsPin",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "resetTlsPin",
+            "POST",
+            "/api/v1/integrations/{id}/tls-pin/reset",
+            None,
+            "TlsPinReset",
+        )
+    },
     ClientRoute {
         text_params: &["id"],
         ..route(
@@ -607,14 +634,19 @@ pub(crate) mod codegen {
             "CreateIntegrationRequest",
             schemars::schema_for!(crate::integrations::CreateIntegrationRequest),
         )?;
-        // The view always serializes these two, null included.
-        let mut view = schemars::schema_for!(crate::integrations::IntegrationView);
-        if let Some(object) = view.schema.object.as_mut() {
-            object
-                .required
-                .extend(["base_url", "username"].map(String::from));
-        }
-        schema("IntegrationView", view)?;
+        schema(
+            "IntegrationView",
+            schemars::schema_for!(crate::integrations::IntegrationView),
+        )?;
+        schema(
+            "IntegrationList",
+            schemars::schema_for!(crate::integrations::IntegrationList),
+        )?;
+        schema("TlsPin", schemars::schema_for!(crate::printer_host::TlsPin))?;
+        schema(
+            "TlsPinReset",
+            schemars::schema_for!(crate::printer_host::TlsPinReset),
+        )?;
         use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
         let create = schemars::schema_for!(CreatePrinterRequest);
         schema("CreatePrinterRequest", create)?;
@@ -1930,7 +1962,8 @@ pub(crate) mod codegen {
     }
 
     fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {
-        use crate::integrations::{CreateIntegrationRequest, IntegrationView};
+        use crate::integrations::{CreateIntegrationRequest, IntegrationList, IntegrationView};
+        use crate::printer_host::{TlsPin, TlsPinReset};
         use pp_storage::printer_setup::ServiceKind;
         let view = |kind, filled: bool| IntegrationView {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -1942,7 +1975,37 @@ pub(crate) mod codegen {
             has_api_key: false,
             has_password: filled,
         };
+        let list = |integrations| IntegrationList { integrations };
         let mut cases = vec![
+            served("IntegrationList", "empty", list(vec![]))?,
+            served(
+                "IntegrationList",
+                "mixed",
+                list(vec![
+                    view(ServiceKind::Moonraker, true),
+                    view(ServiceKind::Bambu, false),
+                ]),
+            )?,
+            served(
+                "TlsPin",
+                "pinned",
+                TlsPin {
+                    pinned: true,
+                    sha256_prefix: Some("ab12cd34ef56".into()),
+                    pinned_at: Some("2026-11-07T05:00:00.000Z".into()),
+                },
+            )?,
+            served(
+                "TlsPin",
+                "unpinned",
+                TlsPin {
+                    pinned: false,
+                    sha256_prefix: None,
+                    pinned_at: None,
+                },
+            )?,
+            served("TlsPinReset", "reset", TlsPinReset { reset: true })?,
+            served("TlsPinReset", "none-stored", TlsPinReset { reset: false })?,
             served(
                 "IntegrationView",
                 "prusalink",

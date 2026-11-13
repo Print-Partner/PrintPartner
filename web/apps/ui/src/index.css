@@ -475,6 +475,42 @@ body {
   padding-left: 24px;
 }
 
+.pp-filament-section {
+  margin: 0 0 24px;
+}
+
+.pp-filament-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pp-filaments {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-filaments h3 {
+  margin: 0 0 8px;
+}
+
+.pp-filament-facts {
+  margin: 0 0 8px;
+}
+
+.pp-filament-parts {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.pp-tag.pp-tag-flush {
+  margin-left: 0;
+}
+
 .printer-states {
   display: flex;
   flex-wrap: wrap;

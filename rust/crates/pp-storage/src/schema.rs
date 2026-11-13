@@ -319,17 +319,30 @@ pub(crate) fn initialize(
     version: u64,
     now: &str,
 ) -> Result<(Connection, SchemaReady)> {
+    initialize_with(path, version, now, true)
+}
+
+/// [`initialize`], with or without the rollback copies under `backups/`. An
+/// import upgrades a staged copy that is discarded whole when a step fails,
+/// so it keeps none.
+pub(crate) fn initialize_with(
+    path: &Path,
+    version: u64,
+    now: &str,
+    rollback_copies: bool,
+) -> Result<(Connection, SchemaReady)> {
     let mut conn = Connection::open(path)?;
-    let populated = path
-        .metadata()
-        .with_context(|| {
-            format!(
-                "schema::initialize: stat {} after SQLite open",
-                path.display()
-            )
-        })?
-        .len()
-        > 0;
+    let populated = rollback_copies
+        && path
+            .metadata()
+            .with_context(|| {
+                format!(
+                    "schema::initialize: stat {} after SQLite open",
+                    path.display()
+                )
+            })?
+            .len()
+            > 0;
     let legacy_version = if cfg!(feature = "desktop_rebuild") {
         37
     } else {

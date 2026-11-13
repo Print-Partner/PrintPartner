@@ -109,6 +109,8 @@ test("a descriptor table missing a key value is refused", () => {
 // bursts and sends carry, with its `reason` only when refused, and `restorable`, which only
 // snapshots carry (docs/build-history.md).
 const optionalMembers = {
+  // Sent only when a pin is stored (skip_serializing_if).
+  TlsPin: new Set(["sha256_prefix", "pinned_at"]),
   Problem: new Set(["code", "detail", "errors"]),
   Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
@@ -123,6 +125,9 @@ const optionalMembers = {
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
   // Create takes `enabled` (default true) and only the credential fields its kind uses.
   CreateIntegrationRequest: new Set(["enabled", "username", "api_key", "password"]),
+  // Create defaults the margin and slot count; an edit sends only the fields it changes.
+  CreatePrinterRequest: new Set(["margin_mm", "max_filament_slots", "integration_id"]),
+  UpdatePrinterRequest: new Set(["name", "model", "bed_width_mm", "bed_depth_mm", "bed_height_mm", "margin_mm", "max_filament_slots", "integration_id"]),
 };
 
 for (const fixture of document.fixtures) {

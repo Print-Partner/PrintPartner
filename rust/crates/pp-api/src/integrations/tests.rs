@@ -7,12 +7,17 @@ use pp_storage::{
 };
 use serde_json::{Value, json};
 
-async fn answered(error: PrinterSetupError) -> (u16, Value) {
-    let response = refused(&error, &WORDING);
+/// The status and problem body `error` answers with under `wording`.
+pub(crate) async fn refusal(error: PrinterSetupError, wording: &Wording) -> (u16, Value) {
+    let response = refused(&error, wording);
     assert!(problem::is_problem(&response));
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn answered(error: PrinterSetupError) -> (u16, Value) {
+    refusal(error, &WORDING).await
 }
 
 #[tokio::test]

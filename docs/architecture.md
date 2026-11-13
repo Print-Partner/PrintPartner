@@ -159,7 +159,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net`, `pp-os` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | `pp-os` (Windows log entries, Node path spelling) |
-| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api` gated |
+| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api`, `pp-services` gated |
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core`, `pp-os` (focus identity, Windows pipe security) |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |

@@ -27,6 +27,22 @@ const PRINTERS = [
   printer("h2d-spare", "Bambu H2D (spare)", null, { execution: "not_set_up", bed_clear: "unknown", display: "not_set_up" }, { reason: "not_set_up", last_heard_at: null }),
 ];
 
+// One stored connection per linked printer, as the Settings edit form reads them: a key is set, never shown.
+const INTEGRATIONS = PRINTERS.filter((p) => p.integration).map((p) => ({
+  id: p.integration.id,
+  kind: p.integration.kind,
+  name: p.name,
+  enabled: true,
+  base_url: p.integration.kind === "bambu" ? null : `http://${p.id}.fixture.invalid`,
+  username: null,
+  has_api_key: p.integration.kind !== "bambu",
+  has_password: false,
+}));
+const SETUP_LISTS = {
+  "/api/v2/printers": { printers: PRINTERS },
+  "/api/v2/integrations": { integrations: INTEGRATIONS },
+};
+
 const at = (minute) => `2026-11-05T19:${String(minute).padStart(2, "0")}:00.000Z`;
 const FARM_UNDO = { undoable: true, reason: null, detail: null };
 const farmRefused = (reason, detail = null) => ({ undoable: false, reason, detail });
@@ -341,7 +357,7 @@ export function fakeCore(count, { orders = "on" } = {}) {
     if (pathname === "/api/v2/plans") return { status: 200, body: { profiles: builds } };
     if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };
     if (pathname === "/api/v2/printer-checkoff") return { status: 200, body: { results: CHECKOFF } };
-    if (pathname === "/api/v2/printers") return { status: 200, body: { printers: PRINTERS } };
+    if (SETUP_LISTS[pathname]) return { status: 200, body: SETUP_LISTS[pathname] };
     if (pathname === "/api/v2/farm-log") return { status: 200, body: { entries: FARM_LOG, next_cursor: null } };
     const plan = /^\/api\/v2\/plans\/(\d+)(\/drafts.*)$/.exec(pathname);
     const planned = plan && builds[Number(plan[1]) - 1] && planRead(builds[Number(plan[1]) - 1], plan[2]);

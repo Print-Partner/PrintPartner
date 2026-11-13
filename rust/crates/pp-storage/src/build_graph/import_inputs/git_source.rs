@@ -64,14 +64,13 @@ pub(super) fn create(
             source_type: Some("git".into()),
             ..CreateSource::default()
         };
-        let summary =
-            catalog::create_in(tx, repos, tenant, source).map_err(|error| match error
-                .downcast_ref::<CatalogFailure>()
-            {
+        let summary = catalog::rebuild::create_in(tx, repos, tenant, source).map_err(|error| {
+            match error.downcast_ref::<CatalogFailure>() {
                 Some(CatalogFailure::DuplicateName(_)) => ImportInputsError::SourceNameTaken,
                 Some(CatalogFailure::Input(_)) => ImportInputsError::InvalidRepository,
                 _ => WriterFailure::from(error).into(),
-            })?;
+            }
+        })?;
         ids.insert(new.key, summary.id);
         created.push(summary.id);
     }

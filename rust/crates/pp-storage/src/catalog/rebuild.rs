@@ -197,6 +197,18 @@ pub(super) fn create(
     ensure!(!duplicate, CatalogFailure::DuplicateName(name.into()));
     Ok(source)
 }
+/// `POST /sources`'s create, inside a write transaction another writer
+/// already holds: the planning brief's git URL inputs create their Source in
+/// the same transaction as the brief. `repos` is the data folder's `repos`.
+pub(crate) fn create_in(
+    tx: &Transaction<'_>,
+    repos: &std::path::Path,
+    tenant: &str,
+    source: CreateSource,
+) -> Result<SourceSummary> {
+    let source = create(tx, tenant, source)?;
+    super::create_source(tx, repos, tenant, source)
+}
 pub(super) fn update(
     tx: &Transaction<'_>,
     tenant: &str,

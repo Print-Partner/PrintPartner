@@ -3,7 +3,7 @@ mod activity;
 #[cfg(feature = "desktop_rebuild")]
 mod location;
 #[cfg(feature = "desktop_rebuild")]
-mod rebuild;
+pub(crate) mod rebuild;
 #[cfg(feature = "desktop_rebuild")]
 pub use activity::SourceActivityEvent;
 #[cfg(feature = "desktop_rebuild")]
@@ -1219,20 +1219,6 @@ pub(crate) fn run(
         }
     })
 }
-/// `POST /sources`'s create, inside a write transaction another writer
-/// already holds: the planning brief's git URL inputs create their Source in
-/// the same transaction as the brief. `repos` is the data folder's `repos`.
-#[cfg(feature = "desktop_rebuild")]
-pub(crate) fn create_in(
-    tx: &Transaction<'_>,
-    repos: &Path,
-    tenant: &str,
-    source: CreateSource,
-) -> Result<SourceSummary> {
-    let source = rebuild::create(tx, tenant, source)?;
-    create_source(tx, repos, tenant, source)
-}
-
 fn create_source(
     tx: &Transaction<'_>,
     repos: &Path,

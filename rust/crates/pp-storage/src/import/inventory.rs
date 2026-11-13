@@ -42,12 +42,15 @@ impl fmt::Display for Shape {
 pub enum Status {
     /// No converter or check yet.
     Pending,
+    /// The import converts the row.
+    Converted,
 }
 
 impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Pending => f.write_str("pending"),
+            Self::Converted => f.write_str("converted"),
         }
     }
 }
@@ -75,7 +78,7 @@ const fn pending(step: u8, shapes: &'static [Shape], target: &'static str) -> Ro
 /// The rows the import converts or checks, in step order.
 #[rustfmt::skip]
 pub const ROWS: [Row; 16] = [
-    pending(2, &[Column("projects", "local_path")], "<data>/repos/<snapshot_locator>"),
+    Row { status: Status::Converted, ..pending(2, &[Column("projects", "local_path")], "<data>/repos/<snapshot_locator>") },
     pending(3, &[Setting("printer.fleet")], "typed fleet document"),
     pending(3, &[Setting("integrations")], "typed integrations document"),
     pending(4, &[Setting("printer.checkoff_links")], "Vec<CheckoffLink>"),

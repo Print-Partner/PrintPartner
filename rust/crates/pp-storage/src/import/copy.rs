@@ -8,7 +8,7 @@
 use super::{
     Destination, DryRunReport, Files, ImportError, STAGE_RESERVE, Scratch, SourceKind,
     inspect_destination, inventory, io_error, measure, open_regular, repo_files, stage_directory,
-    upgrade,
+    upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -52,6 +52,11 @@ pub struct ImportReport {
     pub sources: u64,
     pub printers: u64,
     pub unmatched_prints: u64,
+    /// Sources whose path now leads into the destination's `repos/`.
+    pub rebased_sources: u64,
+    /// Source tables, and their rows, that arrived as the source stored them.
+    pub verified_tables: u64,
+    pub verified_rows: u64,
     /// Files copied or extracted under the roots, and their bytes.
     pub files: u64,
     pub bytes: u64,
@@ -61,7 +66,12 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    fn new(counts: &DryRunReport, files: u64, bytes: u64) -> Self {
+    fn new(
+        counts: &DryRunReport,
+        rebased_sources: u64,
+        stored: &verify::Digests,
+        (files, bytes): (u64, u64),
+    ) -> Self {
         let rows = counts.rows.iter().map(|(row, shapes)| RowReport {
             step: row.step,
             status: row.status.to_string(),
@@ -80,6 +90,9 @@ impl ImportReport {
             sources: counts.sources,
             printers: counts.printers,
             unmatched_prints: counts.unmatched_prints,
+            rebased_sources,
+            verified_tables: stored.len() as u64,
+            verified_rows: stored.values().map(|(_, rows)| rows.len() as u64).sum(),
             files,
             bytes,
             rows: rows.collect(),
@@ -103,15 +116,18 @@ impl fmt::Display for ImportReport {
             self.unmatched_prints,
             self.files
         )?;
-        let pending = self
-            .rows
-            .iter()
+        let pending = (self.rows.iter())
             .filter(|row| row.status == "pending")
             .count();
         writeln!(
             f,
-            "complete: {}. {pending} inventory rows are not converted yet.",
-            self.complete
+            "complete: {}. {pending} inventory rows are not converted yet. {} Source paths now lead into the destination.",
+            self.complete, self.rebased_sources
+        )?;
+        writeln!(
+            f,
+            "{} rows in {} tables arrived as the source stored them.",
+            self.verified_rows, self.verified_tables
         )?;
         writeln!(
             f,
@@ -190,7 +206,11 @@ pub(super) fn import_with(
         let (files, copied) = extract_archive(source, metadata.len(), &stage.0, limits)?;
         (SourceKind::Archive, files, copied)
     };
-    let (connection, ready) = upgrade(&stage.0)?;
+    let (connection, ready, stored) = upgrade(&stage.0, |database| {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let source = rusqlite::Connection::open_with_flags(database, flags)?;
+        Ok(verify::digests(&source, None)?)
+    })?;
     // Sign-in state is not carried: every Node session ends with the import.
     // It goes before the count, so the report describes what was imported.
     connection.execute_batch("DELETE FROM sessions; DELETE FROM password_reset_tokens;")?;
@@ -208,6 +228,12 @@ pub(super) fn import_with(
     }
     if counts.users > 1 {
         return Err(ImportError::Accounts(counts.users));
+    }
+    let repos = destination.join("repos");
+    let rebased = verify::rebase_sources(&connection, &stage.0.join("repos"), &repos)?;
+    let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
+    if !changed.is_empty() {
+        return Err(ImportError::RowsChanged(changed));
     }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
@@ -227,7 +253,7 @@ pub(super) fn import_with(
         path: destination.to_owned(),
         source,
     })?;
-    let report = ImportReport::new(&counts, copied.0, copied.1);
+    let report = ImportReport::new(&counts, rebased, &stored, copied);
     publish(&stage.0, destination, &report)?;
     drop(stage);
     ownership_marker::mark_imported(destination).map_err(|error| io_error(destination, error))?;

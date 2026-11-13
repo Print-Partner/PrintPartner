@@ -1,6 +1,7 @@
 use super::*;
 use crate::import::copy::{
-    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, room_needed, sync_tree,
+    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, recheck, room_needed,
+    sync_tree,
 };
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
@@ -784,4 +785,37 @@ fn publishing_never_replaces_what_the_destination_holds() {
     let error = pp_os::rename_new(&stage.join("repos"), &taken).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(std::fs::read(&taken).unwrap(), b"held");
+}
+
+/// A refusal at the second check, after the destination exists, leaves
+/// nothing behind: a folder this run created is removed, if still empty.
+#[test]
+fn a_refusal_after_creation_removes_the_folder_this_run_created() {
+    let source = node_folder();
+    let inside = Destination::Overlaps(Overlap::DestinationInside);
+    let refused = |root: &Path, created: bool| {
+        let error = recheck(source.path(), root, created).unwrap_err();
+        assert!(
+            matches!(&error, ImportError::Destination(found) if found == &inside),
+            "{error}"
+        );
+    };
+    let created = source.path().join("synthetic-created");
+    std::fs::create_dir(&created).unwrap();
+    refused(&created, true);
+    assert!(!created.exists(), "the created folder was left behind");
+    // A folder that was there before, or that holds something, stays.
+    std::fs::create_dir(&created).unwrap();
+    refused(&created, false);
+    assert!(created.is_dir());
+    std::fs::write(created.join("synthetic.txt"), "kept").unwrap();
+    refused(&created, true);
+    assert_eq!(
+        std::fs::read(created.join("synthetic.txt")).unwrap(),
+        b"kept"
+    );
+    // A free folder passes and is left alone.
+    let parent = tempfile::tempdir().unwrap();
+    recheck(source.path(), parent.path(), true).unwrap();
+    assert!(parent.path().is_dir());
 }

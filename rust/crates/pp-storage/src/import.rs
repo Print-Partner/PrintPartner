@@ -764,9 +764,12 @@ fn dry_run_in(
     // the destination.
     ensure_outside(temporary, source)?;
     let placed = destination.map(|destination| place_destination(source, destination));
-    // A path with `..` is reported as refused; it is not resolved.
+    // A path with `..`, or one that cannot be resolved, is reported as
+    // refused. It names no folder to keep the temporary directory out of.
+    let unresolved =
+        |placed: &Destination| matches!(placed, Destination::Indirect | Destination::Unreadable(_));
     if let Some(destination) = destination
-        && placed != Some(Destination::Indirect)
+        && !placed.as_ref().is_some_and(unresolved)
     {
         ensure_outside(temporary, destination)?;
     }
@@ -812,13 +815,48 @@ fn upgrade<T>(
             newest: versions::NODE_SCHEMA,
         }));
     }
-    let version = admitted.map_err(|error| ImportError::Database(format!("{error:#}")))?;
     let database = stage.join(archive::DATABASE_FILE);
+    let version = admitted
+        .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))?;
     let read = before(&database)?;
     let now = crate::auth::catalog_timestamp();
     let (connection, ready) = schema::initialize_with(&database, version, &now, false)
-        .map_err(|error| ImportError::Database(format!("{error:#}")))?;
+        .map_err(|error| upgrade_failure(&database, format!("{error:#}"), error.chain()))?;
     Ok((connection, ready, read))
+}
+
+/// Sorts a failed check or upgrade of the staged database by its causes. A
+/// disk, filesystem or lock that refused the work fails this run and says
+/// nothing about the source, so it is an [`ImportError::Io`]. Anything else
+/// is the database failing its checks.
+fn upgrade_failure<'a>(
+    database: &Path,
+    detail: String,
+    causes: impl Iterator<Item = &'a (dyn std::error::Error + 'static)>,
+) -> ImportError {
+    use rusqlite::ErrorCode;
+    for cause in causes {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return io_error(database, std::io::Error::new(io.kind(), detail));
+        }
+        let storage = matches!(
+            (cause.downcast_ref::<rusqlite::Error>()).and_then(rusqlite::Error::sqlite_error_code),
+            Some(
+                ErrorCode::DiskFull
+                    | ErrorCode::SystemIoFailure
+                    | ErrorCode::ReadOnly
+                    | ErrorCode::CannotOpen
+                    | ErrorCode::PermissionDenied
+                    | ErrorCode::OutOfMemory
+                    | ErrorCode::DatabaseBusy
+                    | ErrorCode::DatabaseLocked
+            )
+        );
+        if storage {
+            return io_error(database, std::io::Error::other(detail));
+        }
+    }
+    ImportError::Database(detail)
 }
 
 /// An I/O failure that names the entry it happened on.

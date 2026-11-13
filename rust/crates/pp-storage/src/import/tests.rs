@@ -538,6 +538,67 @@ fn the_two_credentials_are_copied_unchanged_and_reported_by_key_only() {
 }
 
 #[test]
+fn a_destination_that_cannot_be_resolved_is_reported_and_the_dry_run_goes_on() {
+    let folder = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let file = parent.path().join("file");
+    std::fs::write(&file, "synthetic").unwrap();
+    let below = file.join("child");
+    let temporary = tempfile::tempdir().unwrap();
+    let report = dry_run_in(folder.path(), Some(&below), temporary.path()).unwrap();
+    let found = report.destination.as_ref().unwrap();
+    assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
+    assert!(report.to_string().contains("cannot be read ("), "{report}");
+}
+
+#[test]
+fn a_disk_or_filesystem_failure_in_the_upgrade_is_a_failed_run_not_a_refused_database() {
+    use rusqlite::ffi;
+    let database = Path::new("print-partner.db");
+    let sorted = |cause: &(dyn std::error::Error + 'static)| {
+        upgrade_failure(database, "synthetic detail".into(), [cause].into_iter())
+    };
+    let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+    for code in [
+        ffi::SQLITE_FULL,
+        ffi::SQLITE_IOERR,
+        ffi::SQLITE_READONLY,
+        ffi::SQLITE_CANTOPEN,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(matches!(error, ImportError::Io { .. }), "{code}: {error:?}");
+        assert_eq!(error.to_string(), "print-partner.db: synthetic detail");
+    }
+    let full = std::io::Error::from(ErrorKind::StorageFull);
+    let error = sorted(&full);
+    assert!(
+        matches!(&error, ImportError::Io { source, .. } if source.kind() == ErrorKind::StorageFull),
+        "{error:?}"
+    );
+    // A damaged or unexpected database is still a refusal.
+    for code in [
+        ffi::SQLITE_CORRUPT,
+        ffi::SQLITE_CONSTRAINT,
+        ffi::SQLITE_NOTADB,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(
+            matches!(error, ImportError::Database(_)),
+            "{code}: {error:?}"
+        );
+    }
+    let none = upgrade_failure(
+        database,
+        "Invalid database schema version".into(),
+        [].into_iter(),
+    );
+    assert_eq!(
+        none.to_string(),
+        "The database failed its checks: Invalid database schema version"
+    );
+}
+
+#[test]
 fn the_documented_inventory_names_every_shape() {
     let page = include_str!("../../../../../docs/node-import.md");
     for shape in inventory::named() {

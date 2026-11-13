@@ -145,6 +145,23 @@ pub fn import(source: &Path, destination: &Path) -> Result<ImportReport, ImportE
     import_with(source, destination, &temporary, limits, flush_destination)
 }
 
+/// The second guard: the folder that now exists, with its links resolved,
+/// must still be empty and apart from the source. When it is not, a folder
+/// this run `created` is removed again if it is still empty, so a refusal
+/// leaves nothing behind.
+pub(super) fn recheck(source: &Path, root: &Path, created: bool) -> Result<(), ImportError> {
+    match place_destination(source, root) {
+        Destination::Free => Ok(()),
+        found => {
+            if created {
+                // `remove_dir` refuses a folder that holds anything.
+                let _ = std::fs::remove_dir(root);
+            }
+            Err(ImportError::Destination(found))
+        }
+    }
+}
+
 /// Makes everything the import staged in `destination` durable. Linux
 /// flushes the destination's filesystem in one call. Other platforms have no
 /// such call, so every staged file and directory is synced.
@@ -213,16 +230,12 @@ pub(super) fn import_with(
     for folder in [source, destination] {
         ensure_outside(temporary, folder)?;
     }
+    let created = destination.symlink_metadata().is_err();
     pp_os::create_private_dir_all(destination).map_err(|error| io_error(destination, error))?;
-    // The second guard: the folder that now exists, resolved, must still be
-    // empty and apart from the source.
     let root = destination
         .canonicalize()
         .map_err(|error| io_error(destination, error))?;
-    match place_destination(source, &root) {
-        Destination::Free => {}
-        found => return Err(ImportError::Destination(found)),
-    }
+    recheck(source, &root, created)?;
     let stage = Scratch(root.join(STAGE));
     pp_os::create_private_dir(&stage.0).map_err(|error| io_error(&stage.0, error))?;
     let (kind, files, copied) = if metadata.is_dir() {
@@ -269,8 +282,10 @@ pub(super) fn import_with(
     for suffix in ["-wal", "-shm"] {
         let left = stage.0.join(format!("{}{suffix}", archive::DATABASE_FILE));
         if left.symlink_metadata().is_ok() {
-            let detail = format!("its {suffix} file is still there after it was closed");
-            return Err(ImportError::Database(detail));
+            // A failure of this run's own write step, not a fault of the
+            // source database.
+            let detail = "is still there after the staged database was closed";
+            return Err(io_error(&left, std::io::Error::other(detail)));
         }
     }
     // Everything staged reaches the disk before the folder can become an

@@ -242,6 +242,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "CheckoffResultList",
     ),
     route(
+        "listSpoolmanDeductions",
+        "GET",
+        "/api/v2/spoolman/deductions",
+        None,
+        "DeductionList",
+    ),
+    route(
         "listUnmatchedPrints",
         "GET",
         "/api/v2/printer-checkoff/unattributed",
@@ -627,6 +634,22 @@ pub(crate) mod codegen {
             object.required.extend(nullable.map(String::from));
         }
         schema("PrinterConfig", config)?;
+        // A deduction always serializes its nullable fields, null included.
+        let mut deductions = schemars::schema_for!(crate::spoolman_deductions::DeductionList);
+        if let Some(schemars::schema::Schema::Object(view)) =
+            deductions.definitions.get_mut("DeductionView")
+            && let Some(object) = view.object.as_mut()
+        {
+            let nullable = [
+                "reason",
+                "integration_id",
+                "spool_id",
+                "grams",
+                "grams_basis",
+            ];
+            object.required.extend(nullable.map(String::from));
+        }
+        schema("DeductionList", deductions)?;
         schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),

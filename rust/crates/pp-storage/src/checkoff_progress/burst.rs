@@ -437,7 +437,33 @@ pub(super) fn verify_batch(
     }));
     save_receipts(tx, tenant, &receipts)?;
     #[cfg(feature = "desktop_rebuild")]
-    super::farm_log::append_burst(tx, tenant, &response)?;
+    {
+        super::farm_log::append_burst(tx, tenant, &response)?;
+        // Each bed's confirmed units, with the Build its verified link names.
+        let beds: Vec<_> = burst
+            .beds
+            .iter()
+            .zip(&results)
+            .filter_map(|((id, bed), (link, ..))| {
+                let units = field(bed, "decisions")
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d.get("result").and_then(Value::as_str) == Some("confirmed"))
+                    .filter_map(|d| {
+                        let part = links::js_integer(d.get("part_id"), 1.0)?;
+                        Some((part, links::js_integer(d.get("unit_index"), 0.0)?))
+                    })
+                    .collect();
+                Some(crate::spoolman_deductions::ConfirmedBed {
+                    link_id: id.clone(),
+                    profile_id: link["profile_id"].as_i64()?,
+                    units,
+                })
+            })
+            .collect();
+        crate::spoolman_deductions::record_burst(tx, tenant, &token, &beds)?;
+    }
     Ok(Ok(Response::ok(Body::Receipt(response))))
 }
 
@@ -703,7 +729,10 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
     }
     let undone_at = mark_undone(tx, tenant, (KEY, RETIRED_KEY), &mut receipts, position)?;
     #[cfg(feature = "desktop_rebuild")]
-    super::farm_log::append_undo(tx, tenant, token, &receipts[position]["response"])?;
+    {
+        super::farm_log::append_undo(tx, tenant, token, &receipts[position]["response"])?;
+        crate::spoolman_deductions::remove_burst(tx, tenant, token)?;
+    }
     let mut body = Map::new();
     body.insert("undo_token".into(), token.into());
     body.insert("undone_at".into(), undone_at.into());

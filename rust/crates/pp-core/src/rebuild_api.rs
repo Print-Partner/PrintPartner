@@ -227,7 +227,8 @@ pub fn read_router(
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
-/// the integration writes and the printer routes, from the same owner.
+/// the integration writes, the printer routes and the Spoolman deduction
+/// list, from the same owner.
 fn setup_routes(
     owner: &Mutex<WriterOwner>,
     policy: AuthPolicy,
@@ -240,9 +241,14 @@ fn setup_routes(
     let setup = guard.printer_setup(policy)?;
     let integrations = integrations_router(config.clone(), setup.clone());
     let printers = printers_router(config.clone(), setup);
+    let deductions = pp_api::spoolman_deductions::spoolman_deductions_router(
+        config.clone(),
+        guard.spoolman_deductions(policy)?,
+    );
     Ok(modules_router(config, features)
         .merge(integrations)
-        .merge(printers))
+        .merge(printers)
+        .merge(deductions))
 }
 
 fn read_router_with_updates(

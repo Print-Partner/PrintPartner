@@ -1092,12 +1092,13 @@ mod tests {
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
     /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 5] = [
+        const CODES: [&str; 6] = [
             "integration_not_found",
             "printer_not_found",
             "draft_not_found",
             "snapshot_not_found",
             "farm_log_entry_not_found",
+            "print_not_found",
         ];
         const DETAILS: [&str; 6] = [
             "beds[0]: Checkoff link not found",

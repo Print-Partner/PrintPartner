@@ -21,6 +21,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path};
 
+mod undo;
+pub use undo::{DismissUndo, UndoDismissError};
+
 const PRINTS: &str = "printer.unattributed_prints";
 const BINDINGS: &str = "printer.plan_bindings";
 const MAX_ENTRIES: usize = 100;

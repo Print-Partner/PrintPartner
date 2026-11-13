@@ -164,7 +164,8 @@ Only the server entry point allows environment-driven update checks. By coordina
   open print of that file on that integration claimed, records the printer's
   plan binding and appends `checkoff.unattributed_resolved`.
   `POST .../unattributed/{id}/dismiss` marks the print dismissed with the same
-  event. Refusals keep Node's status and detail (400 `profile_id is required`,
+  event, and `.../dismiss/undo` (GRE-1549) opens it again; see
+  [Match suggestions](farm-reads.md#match-suggestions). Refusals keep Node's status and detail (400 `profile_id is required`,
   404 `Unattributed print not found`, 409 `Print already claimed`, `That print
   file is already assigned`, and the rest of `materializeProblem`) and write
   nothing. A Build that does not exist is a 500, as in Node (GRE-1217). Node's per-IP rate limit is not carried over because the routes are

@@ -36,6 +36,12 @@ impl Fixture {
         }
     }
 
+    /// A connection of its own to the installation's database, for seeding
+    /// rows no client writes in these tests.
+    pub(in crate::build_graph) fn database(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self._directory.path().join("print-partner.db")).unwrap()
+    }
+
     pub(in crate::build_graph) fn session(&self) -> Credential {
         Credential::Session(Secret::new(self.token.clone()))
     }

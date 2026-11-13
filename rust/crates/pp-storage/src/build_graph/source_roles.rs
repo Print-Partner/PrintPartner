@@ -14,10 +14,10 @@
 
 use super::{
     BuildGraphClient,
-    create_with_brief::{brief_key, save},
+    create_with_brief::{BriefError, store_changed_brief, stored_brief},
 };
 use crate::{
-    WriterFailure, auth,
+    WriterFailure,
     read_model::{
         Credential,
         planning::{BuildPlanningBrief, SourceRole},
@@ -25,7 +25,6 @@ use crate::{
     write::authorize,
 };
 use pp_domain::{PositiveId, build_identity::trim_js};
-use rusqlite::{OptionalExtension, Transaction, params};
 use std::{sync::atomic::AtomicBool, time::Duration};
 
 /// One requested role. A later change for the same evidence replaces an
@@ -76,6 +75,15 @@ impl From<rusqlite::Error> for SourceRolesError {
     }
 }
 
+impl BriefError for SourceRolesError {
+    fn no_brief() -> Self {
+        Self::NoBrief
+    }
+    fn invalid() -> Self {
+        Self::BriefInvalid
+    }
+}
+
 impl BuildGraphClient {
     /// Proves the credential and finds `build`'s brief in a read
     /// transaction. `Ok` is no promise: confirm reads the brief again.
@@ -90,7 +98,7 @@ impl BuildGraphClient {
         self.settings
             .read(name, &AtomicBool::new(false), wait, move |tx| {
                 let installation = authorize(tx, &credential, policy)?;
-                stored_brief(tx, installation.id(), build).map(drop)
+                stored_brief::<SourceRolesError>(tx, installation.id(), build).map(drop)
             })?
     }
 
@@ -109,32 +117,12 @@ impl BuildGraphClient {
         self.shared.write(name, cancelled, wait, move |tx, _| {
             let installation = authorize(tx, &credential, policy)?;
             let tenant = installation.id();
-            let mut brief = stored_brief(tx, tenant, build)?;
+            let mut brief = stored_brief::<SourceRolesError>(tx, tenant, build)?;
             let set = apply(&mut brief, &changes)?;
-            brief.draft_id = None;
-            brief.updated_at = auth::catalog_timestamp();
-            let text = brief.stored_text().map_err(WriterFailure::from)?;
-            save(tx, tenant, &brief_key(build), &text)?;
+            store_changed_brief(tx, tenant, build, brief)?;
             Ok(set)
         })?
     }
-}
-
-fn stored_brief(
-    tx: &Transaction<'_>,
-    tenant: &str,
-    build: PositiveId,
-) -> Result<BuildPlanningBrief, SourceRolesError> {
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
-            params![tenant, brief_key(build)],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let raw = raw.ok_or(SourceRolesError::NoBrief)?;
-    let id = i64::try_from(build.get()).map_err(|_| SourceRolesError::BriefInvalid)?;
-    BuildPlanningBrief::parse(&raw, id).map_err(|_| SourceRolesError::BriefInvalid)
 }
 
 /// Sets each change's role on `brief`'s evidence. Every change must name
@@ -180,5 +168,6 @@ fn apply(
     Ok(set)
 }
 
+/// Shared with `import_inputs` tests, which start from the same brief.
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -398,6 +398,17 @@ fn source_acquisition_resumes_owned_imports_after_restart() {
 }
 
 #[test]
+fn source_acquisition_resume_stops_when_nothing_can_be_claimed() {
+    let mut fixture = Fixture::open();
+    let acquisitions = fixture.acquisitions();
+    assert_eq!(acquisitions.recover_before_accepting().unwrap(), 0);
+    // A stopped writer refuses every claim: the call ends at once and counts
+    // nothing, instead of counting each refused claim as an import.
+    fixture.owner.take().unwrap().shutdown().unwrap();
+    assert_eq!(acquisitions.resume_imports().unwrap(), 0);
+}
+
+#[test]
 fn source_acquisition_held_claim_names_its_cause() {
     let fixture = Fixture::open();
     let held = admitted(&fixture, "held-claim");

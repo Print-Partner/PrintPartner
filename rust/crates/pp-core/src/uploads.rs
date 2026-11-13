@@ -289,6 +289,21 @@ impl SourceImports {
         })
     }
 
+    /// Claims the next queued supplied import without working it.
+    pub fn claim_next(&self) -> Result<Option<ClaimedAttempt>> {
+        self.worker.claim_kind(JobKind::SuppliedSourceImport)
+    }
+
+    /// Works a claim from [`SourceImports::claim_next`] through `through`.
+    pub fn work_claim(
+        &self,
+        claim: ClaimedAttempt,
+        through: Through,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Operation>> {
+        self.work_claimed(claim, None, None, through, cancelled)
+    }
+
     fn work(
         &self,
         job_id: Option<&str>,

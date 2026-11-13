@@ -476,22 +476,34 @@ impl SourceAcquisitions {
     /// input; opening storage requeued their jobs. Call it after
     /// [`SourceAcquisitions::recover_before_accepting`], which settles the
     /// imports still held as retained captures. A failed import is recorded
-    /// as failed on its job. Returns the number of imports worked.
+    /// as failed on its job and not counted. Returns the number of imports
+    /// settled; a failure to claim ends the call with the count so far.
     pub fn resume_imports(&self) -> Result<usize> {
-        let mut worked = 0;
+        let mut settled = 0;
         // Each claim leases its job, so a job that fails is not claimed again
         // here; the bound only guards against a storage fault.
         for _ in 0..1024 {
-            match self.imports.work_next(Through::Settled, &self.shared.stop) {
-                Ok(None) => return Ok(worked),
-                Ok(Some(_)) => worked += 1,
+            // A failure to claim (a busy, full or stopped writer) ends the
+            // loop: nothing was taken, and retrying would only repeat it.
+            let claim = match self.imports.claim_next() {
+                Ok(Some(claim)) => claim,
+                Ok(None) => return Ok(settled),
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "Source imports not claimed");
+                    return Ok(settled);
+                }
+            };
+            match self
+                .imports
+                .work_claim(claim, Through::Settled, &self.shared.stop)
+            {
+                Ok(_) => settled += 1,
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"), "Source import did not resume");
-                    worked += 1;
                 }
             }
         }
-        Ok(worked)
+        Ok(settled)
     }
 
     /// Acquires a captured import. A key whose operation is already recorded

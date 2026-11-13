@@ -10,11 +10,17 @@
 //! later read by path (the thumbnail route) could not open them as files of
 //! the revision. A revision with more than [`MAX_FILES`] files is refused
 //! rather than listed in part.
+//!
+//! The snapshot writer keeps its own entries at a revision's root. Storage may
+//! not depend on `pp-source`, so the caller names them with
+//! [`SourceFilesClient::skipping_at_root`]; `pp-core` passes
+//! `pp_source::MANIFEST`.
 
 use crate::{
     SettingsClient, WriterFailure, WriterOwner,
     auth::AuthPolicy,
-    read_model::{Credential, graph::safe_path},
+    read_model::Credential,
+    working_drafts::source_reads::revision_root,
     write::{Installation, authorize},
 };
 use rusqlite::{OptionalExtension, Transaction};
@@ -95,6 +101,8 @@ pub struct SourceFilesClient {
     readers: SettingsClient,
     policy: AuthPolicy,
     repos: PathBuf,
+    /// Names at a revision's root that belong to the snapshot writer.
+    internal: Vec<String>,
 }
 
 impl WriterOwner {
@@ -108,6 +116,7 @@ impl WriterOwner {
             readers: self.client(),
             policy,
             repos: lease.data_dir().join("repos"),
+            internal: Vec::new(),
         })
     }
 }
@@ -120,6 +129,13 @@ struct Current {
 }
 
 impl SourceFilesClient {
+    /// Leaves `name` out of the list when it sits at a revision's root: an
+    /// entry the snapshot writer keeps there, such as `pp_source::MANIFEST`.
+    pub fn skipping_at_root(mut self, name: &str) -> Self {
+        self.internal.push(name.to_owned());
+        self
+    }
+
     /// The files of Source `source_id`'s current revision.
     pub fn list(
         &self,
@@ -144,31 +160,13 @@ impl SourceFilesClient {
         let locator = current
             .locator
             .ok_or(SourceFilesError::SnapshotUnavailable)?;
-        let root = self.snapshot(source_id, &locator)?;
+        let root = revision_root(&self.repos, source_id, &locator)
+            .ok_or(SourceFilesError::SnapshotUnavailable)?;
         Ok(SourceFiles {
             source_id,
             revision_id: Some(revision_id),
-            files: walk(&root)?,
+            files: walk(&root, &self.internal)?,
         })
-    }
-
-    /// The snapshot directory, which must resolve inside `repos/<source_id>`.
-    fn snapshot(&self, source_id: i64, locator: &str) -> Result<PathBuf, SourceFilesError> {
-        let unavailable = SourceFilesError::SnapshotUnavailable;
-        if !safe_path(locator) || !locator.starts_with(&format!("{source_id}/")) {
-            return Err(unavailable);
-        }
-        let workspace = self.repos.join(source_id.to_string());
-        if !fs::symlink_metadata(&workspace).is_ok_and(|meta| meta.is_dir()) {
-            return Err(unavailable);
-        }
-        match (
-            fs::canonicalize(&workspace),
-            fs::canonicalize(self.repos.join(locator)),
-        ) {
-            (Ok(workspace), Ok(root)) if root.starts_with(&workspace) && root.is_dir() => Ok(root),
-            _ => Err(unavailable),
-        }
     }
 }
 
@@ -195,8 +193,9 @@ fn current(
     row.ok_or(SourceFilesError::NotFound)
 }
 
-/// Every regular file under `root`, sorted by path.
-fn walk(root: &Path) -> Result<Vec<SourceFile>, SourceFilesError> {
+/// Every regular file under `root`, sorted by path, without the `internal`
+/// names at the root.
+fn walk(root: &Path, internal: &[String]) -> Result<Vec<SourceFile>, SourceFilesError> {
     let unavailable = |_| SourceFilesError::SnapshotUnavailable;
     let mut files = Vec::new();
     let mut pending = vec![(root.to_path_buf(), String::new())];
@@ -206,6 +205,9 @@ fn walk(root: &Path) -> Result<Vec<SourceFile>, SourceFilesError> {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
+            if prefix.is_empty() && internal.contains(&name) {
+                continue;
+            }
             let path = format!("{prefix}{name}");
             // `file_type` does not follow a symbolic link, so links are skipped.
             let kind = entry.file_type().map_err(unavailable)?;

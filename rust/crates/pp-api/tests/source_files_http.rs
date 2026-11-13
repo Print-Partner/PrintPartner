@@ -1,59 +1,52 @@
 #![cfg(feature = "desktop_rebuild")]
 //! GRE-430 part 1: `GET /sources/{id}/files` at the root and `/api/v1`, on a
-//! disposable installation whose Source 1 has a revision snapshot on disk.
+//! disposable copy of the Node-written `accepted-plate-node.db`. Its Source 1
+//! has revision 1 at `1/revisions/accepted`; the test writes that snapshot and
+//! adds Source 2 without a revision.
 use axum::{Router, http::StatusCode};
 use loopback::ORIGIN;
 use pp_api::{accepted::AcceptedHttpConfig, source_files::source_files_router};
 use pp_storage::{
     Limits, WriterOwner,
-    auth::{
-        AuthPolicy, FirstUserTenant, Outcome, RegistrationPolicy, Request, Secret,
-        SessionTenantPolicy,
-    },
+    auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy},
 };
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
 #[path = "support/loopback.rs"]
 mod loopback;
 
+/// The fixture's session, admitted to its account's installation.
+const COOKIE: &str = "pp_session=read-fixture-secret";
 const POLICY: AuthPolicy = AuthPolicy {
-    registration: RegistrationPolicy::FirstAccountOnly,
+    registration: RegistrationPolicy::Open,
+    session_tenant: SessionTenantPolicy::AccountTenant,
     first_user: FirstUserTenant::NewUser,
-    session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
-/// Registers the one account and answers its session cookie, then adds
-/// Source 1 with revision 10 at `1/revisions/r1` and Source 2 with none.
 fn installation(root: &Path) -> String {
-    let owner = WriterOwner::open(root, Limits::default()).unwrap().0;
-    let register = Request::Register {
-        email: "owner@example.com".into(),
-        display_name: "Owner".into(),
-        password: Secret::new("correct-horse".into()),
-    };
-    let auth = owner.auth(FirstUserTenant::NewUser);
-    let reply = auth
-        .submit(register, Default::default(), Duration::from_secs(5))
-        .unwrap();
-    let Outcome::Session { token, .. } = reply.recv().unwrap().unwrap() else {
-        panic!("registration returns a session");
-    };
-    owner.shutdown().unwrap();
-    rusqlite::Connection::open(root.join("print-partner.db"))
+    let database = root.join("print-partner.db");
+    std::fs::write(
+        &database,
+        include_bytes!("../../pp-storage/tests/fixtures/accepted-plate-node.db"),
+    )
+    .unwrap();
+    let sql = "INSERT INTO projects(id,tenant_id,name,url,source_kind) VALUES(2,'default','Empty','','local')";
+    rusqlite::Connection::open(database)
         .unwrap()
-        .execute_batch(
-            "INSERT INTO projects(id,tenant_id,name,url,source_kind) VALUES(1,'default','Kit','','local'),(2,'default','Empty','','local');
-             INSERT INTO source_revisions(id,tenant_id,project_id,upstream_revision_key,manifest_digest,snapshot_locator,synced_at) VALUES(10,'default',1,'r1','d1','1/revisions/r1','2026-11-12T00:00:00.000Z');
-             UPDATE projects SET current_source_revision_id=10 WHERE id=1;",
-        )
+        .execute(sql, [])
         .unwrap();
-    let snapshot = root.join("repos/1/revisions/r1");
-    std::fs::create_dir_all(snapshot.join("stl/arms")).unwrap();
-    std::fs::write(snapshot.join("stl/body.stl"), b"solid body").unwrap();
-    std::fs::write(snapshot.join("stl/arms/arm.stl"), b"arm").unwrap();
-    std::fs::write(snapshot.join("README.md"), b"# Kit").unwrap();
-    format!("pp_session={}", token.expose())
+    let snapshot = root.join("repos/1/revisions/accepted");
+    for (path, bytes) in [
+        ("stl/body.stl", &b"solid body"[..]),
+        ("stl/arms/arm.stl", b"arm"),
+        ("README.md", b"# Kit"),
+    ] {
+        let file = snapshot.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+    COOKIE.into()
 }
 
 fn router(root: &Path, flag: &str) -> (WriterOwner, Router) {
@@ -70,7 +63,7 @@ async fn lists_the_current_revisions_files_at_both_prefixes() {
     let (_owner, router) = router(root.path(), "1");
     let expected = json!({
         "source_id": 1,
-        "revision_id": 10,
+        "revision_id": 1,
         "files": [
             {"path": "README.md", "kind": "document", "size_bytes": 5},
             {"path": "stl/arms/arm.stl", "kind": "stl", "size_bytes": 3},

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     Limits,
     auth::{FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
-    write::test_support::first_session,
+    write::test_support::{first_session, opened},
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -23,11 +23,11 @@ struct Fixture {
 impl Fixture {
     /// Source 1 "Kit" with no revision.
     fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
+        let (directory, owner) = opened(Limits::default());
         let token = first_session(&owner);
+        let client = owner.source_files(POLICY).unwrap();
         let fixture = Self {
-            client: owner.source_files(POLICY).unwrap(),
+            client: client.skipping_at_root(pp_source::MANIFEST),
             token,
             owner,
             directory,
@@ -186,4 +186,28 @@ fn kinds_follow_the_extension_whatever_its_case() {
     ] {
         assert_eq!(FileKind::of(name), kind, "{name}");
     }
+}
+
+#[test]
+fn the_snapshot_writers_manifest_is_not_one_of_the_owners_files() {
+    let fixture = Fixture::new();
+    let owner_files: [(&str, &[u8]); 3] = [
+        ("README.md", b"# Kit"),
+        ("stl/body.stl", b"solid body"),
+        // Only the root entry is the writer's; the same name deeper down is
+        // an owner's file.
+        ("docs/.printpartner-source-snapshot.json", b"{}"),
+    ];
+    let root = fixture.snapshot("1/revisions/r1", &owner_files);
+    fs::write(root.join(pp_source::MANIFEST), b"{\"schema\":1}").unwrap();
+    fixture.sql(FIRST);
+
+    let listed = fixture.list(1).unwrap().files;
+
+    assert_eq!(listed.len(), owner_files.len());
+    assert!(!listed.iter().any(|file| file.path == pp_source::MANIFEST));
+    let mut paths: Vec<&str> = owner_files.iter().map(|(path, _)| *path).collect();
+    paths.sort_unstable();
+    let listed_paths: Vec<&str> = listed.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(listed_paths, paths);
 }

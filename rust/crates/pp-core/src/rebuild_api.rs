@@ -273,7 +273,12 @@ fn source_file_routes(
     let guard = owner
         .lock()
         .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
-    Ok(source_files_router(config, guard.source_files(policy)?))
+    // A published revision keeps pp-source's snapshot manifest at its root;
+    // it is not one of the owner's files.
+    let client = guard
+        .source_files(policy)?
+        .skipping_at_root(pp_source::MANIFEST);
+    Ok(source_files_router(config, client))
 }
 
 fn read_router_with_updates(

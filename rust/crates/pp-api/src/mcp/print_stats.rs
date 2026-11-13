@@ -19,7 +19,8 @@ use super::{
 use pp_services::mcp_domain::ToolInvocation;
 use pp_storage::{
     build_graph::{
-        AcceptedProgress, AcceptedProgressUnavailable, BuildCommand, BuildOutcome, ProfileSummary,
+        AcceptedProgress, AcceptedProgressUnavailable, BuildCommand, BuildOutcome, Failure,
+        ProfileSummary,
     },
     print_activity::{PrintActivityError, PrinterActivity},
     read_model::farm::{CheckoffResult, HostOutcome, Observation, UnmatchedPrint, iso_time},
@@ -87,7 +88,7 @@ pub(super) struct PrintStats {
     filament_consumed_g: f64,
     by_printer: Vec<PrinterStats>,
     prints_seen_on_printers: PrintsSeen,
-    active_plans: Vec<ActivePlan>,
+    active_plans: ActivePlans,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +120,25 @@ struct SeenOnPrinter {
     completed: u64,
     failed: u64,
     cancelled: u64,
+}
+
+/// The active Builds, or why they could not be listed. The plate and print
+/// counts are answered either way, as Node did.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ActivePlans {
+    Listed { plans: Vec<ActivePlan> },
+    Unavailable { reason: PlansUnavailable },
+}
+
+/// Why the Build list could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PlansUnavailable {
+    /// More than 64 Builds, archived ones included: the Build list refuses.
+    TooManyBuilds,
+    /// Busy storage, or a Build whose summary could not be read.
+    ReadFailed,
 }
 
 #[derive(Debug, Serialize)]
@@ -194,9 +214,17 @@ impl CheckoffDomain {
             self.wait,
         );
         let builds = match listed {
-            Ok(BuildOutcome::Listed { profiles }) => profiles,
-            Ok(_) => return Err(INTERNAL),
-            Err(error) => return Err(read_failure(error)),
+            Ok(BuildOutcome::Listed { profiles }) => Ok(profiles),
+            Ok(_) => Err(PlansUnavailable::ReadFailed),
+            Err(error) if matches!(error.downcast_ref(), Some(Failure::TooManyBuilds)) => {
+                Err(PlansUnavailable::TooManyBuilds)
+            }
+            // A refused key refuses the whole call; anything else costs only
+            // the plan list.
+            Err(error) => match read_failure(error) {
+                refusal if refusal.code == Code::Unauthorized => return Err(refusal),
+                _ => Err(PlansUnavailable::ReadFailed),
+            },
         };
         let (checkoff, unmatched) = (farm.checkoff(), farm.unmatched());
         Ok(stats(
@@ -220,7 +248,7 @@ pub(super) struct Inputs<'a> {
     pub(super) unmatched: &'a [UnmatchedPrint],
     /// Fleet printer names by id.
     pub(super) names: HashMap<String, String>,
-    pub(super) builds: Vec<ProfileSummary>,
+    pub(super) builds: Result<Vec<ProfileSummary>, PlansUnavailable>,
 }
 
 /// The stats for `window`, ending at `now`.
@@ -258,17 +286,21 @@ pub(super) fn stats(window: Window, now: SystemTime, inputs: Inputs<'_>) -> Prin
         filament_consumed_g: by_printer.iter().map(|row| row.filament_consumed_g).sum(),
         by_printer,
         prints_seen_on_printers: seen,
-        active_plans: inputs
-            .builds
-            .iter()
-            .filter(|build| build.archived_at.is_none())
-            .map(|build| ActivePlan {
-                plan_id: build.id,
-                plan_name: build.name.clone(),
-                part_count: build.part_count,
-                accepted_progress: progress(&build.accepted_progress),
-            })
-            .collect(),
+        active_plans: match &inputs.builds {
+            Ok(builds) => ActivePlans::Listed {
+                plans: builds
+                    .iter()
+                    .filter(|build| build.archived_at.is_none())
+                    .map(|build| ActivePlan {
+                        plan_id: build.id,
+                        plan_name: build.name.clone(),
+                        part_count: build.part_count,
+                        accepted_progress: progress(&build.accepted_progress),
+                    })
+                    .collect(),
+            },
+            Err(reason) => ActivePlans::Unavailable { reason: *reason },
+        },
     }
 }
 

@@ -116,7 +116,8 @@ async fn mcp_print_stats_counts_the_window() {
 
     // Active plans: Build 1 as get_remaining counts it, Build 3 empty, Build 4
     // archived and Build 2 another installation's, both absent.
-    let plans = stats_8h["active_plans"].as_array().unwrap();
+    assert_eq!(stats_8h["active_plans"]["kind"], "listed");
+    let plans = stats_8h["active_plans"]["plans"].as_array().unwrap();
     let ids: Vec<_> = plans.iter().map(|plan| plan["plan_id"].clone()).collect();
     assert_eq!(
         ids,

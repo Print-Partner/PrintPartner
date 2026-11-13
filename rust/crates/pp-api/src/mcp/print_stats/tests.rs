@@ -68,7 +68,7 @@ fn stats_count_the_window_and_list_active_plans() {
         results: &[],
         unmatched: &[],
         names: HashMap::from([("p-a".to_owned(), "Printer A".to_owned())]),
-        builds: vec![
+        builds: Ok(vec![
             build(
                 1,
                 AcceptedProgress::Ready {
@@ -79,7 +79,7 @@ fn stats_count_the_window_and_list_active_plans() {
             ),
             build(2, AcceptedProgress::Empty, false),
             build(3, AcceptedProgress::Empty, true),
-        ],
+        ]),
     };
     let window = Window::parse(&args(json!({}))).unwrap();
     let stats = serde_json::to_value(stats(window, now, inputs)).unwrap();
@@ -102,11 +102,36 @@ fn stats_count_the_window_and_list_active_plans() {
     assert_eq!(stats["by_printer"][0]["printer_name"], "Printer A");
     assert_eq!(
         stats["active_plans"],
-        json!([
+        json!({ "kind": "listed", "plans": [
             { "plan_id": 1, "plan_name": "B1", "part_count": 3, "accepted_progress":
               { "kind": "ready", "total_units": 10, "remaining_units": 4, "printed_units": 6 } },
             { "plan_id": 2, "plan_name": "B2", "part_count": 3, "accepted_progress": { "kind": "empty" } },
-        ])
+        ] })
+    );
+}
+
+#[test]
+fn an_unreadable_build_list_keeps_the_counts() {
+    let inputs = Inputs {
+        jobs: vec![PrinterActivity {
+            printer_id: Some("p-a".into()),
+            sent: 3,
+            completed: 2,
+            failed: 0,
+            filament_consumed_g: 40.0,
+        }],
+        results: &[],
+        unmatched: &[],
+        names: HashMap::new(),
+        builds: Err(PlansUnavailable::TooManyBuilds),
+    };
+    let window = Window::parse(&args(json!({}))).unwrap();
+    let stats = serde_json::to_value(stats(window, SystemTime::now(), inputs)).unwrap();
+    assert_eq!(stats["plates_sent"], json!(3));
+    assert_eq!(stats["filament_consumed_g"], json!(40));
+    assert_eq!(
+        stats["active_plans"],
+        json!({ "kind": "unavailable", "reason": "too_many_builds" })
     );
 }
 
@@ -117,7 +142,7 @@ fn an_empty_window_counts_zero() {
         results: &[],
         unmatched: &[],
         names: HashMap::new(),
-        builds: Vec::new(),
+        builds: Ok(Vec::new()),
     };
     let window = Window::parse(&args(json!({ "hours": 1.5 }))).unwrap();
     let stats = serde_json::to_value(stats(window, SystemTime::now(), inputs)).unwrap();

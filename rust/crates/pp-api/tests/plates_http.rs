@@ -381,6 +381,64 @@ async fn plates_http_initializes_then_arranges_within_node_body_limits() {
     owner.shutdown().unwrap();
 }
 
+/// Initialize's status and body on a fresh copy of the `no_head` fixture,
+/// with its STL removed first when `removed`.
+async fn initialize_once(removed: bool) -> (StatusCode, Value) {
+    let dir = data_dir();
+    let root = dir.path();
+    let body = initialize_fixture(root);
+    if removed {
+        std::fs::remove_file(root.join("repos/1/revisions/accepted/included.stl")).unwrap();
+    }
+    let (owner, router) = open(root, "1");
+    let answer = send(
+        &router,
+        "POST",
+        "/api/v2/plans/1/plates/initialize",
+        &body,
+        true,
+    )
+    .await;
+    owner.shutdown().unwrap();
+    answer
+}
+
+/// GRE-1519: initialize answers alike through the public, typed verified
+/// open. With the STL in place it gives Node's `creates_head` body; with the
+/// STL removed, the 409 `missing` refusal naming the unit, as Node's
+/// `artifact_missing` case does.
+#[tokio::test]
+async fn plates_http_initialize_answers_alike_with_intact_and_removed_stls() {
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/parity/plates-initialize/node.json"
+    ))
+    .unwrap();
+    let node = |phase: &str, id: &str| {
+        let phase = golden["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == phase);
+        let cases = phase.unwrap()["cases"].as_array().unwrap();
+        cases.iter().find(|case| case["id"] == id).unwrap()["node"].clone()
+    };
+    let created = node("no_head", "creates_head");
+    assert_eq!(created["status"], 200);
+    assert_eq!(
+        initialize_once(false).await,
+        (StatusCode::OK, created["body"].clone())
+    );
+
+    let missing = node("missing_file", "artifact_missing")["body"].clone();
+    let mut problem =
+        json!({"type": "urn:print-partner:problem:conflict", "title": "Conflict", "status": 409});
+    problem
+        .as_object_mut()
+        .unwrap()
+        .extend(missing.as_object().unwrap().clone());
+    assert_eq!(initialize_once(true).await, (StatusCode::CONFLICT, problem));
+}
+
 #[tokio::test]
 async fn plates_http_serves_production_setup_at_the_root_only() {
     let dir = data_dir();

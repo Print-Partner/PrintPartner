@@ -10,6 +10,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
 import { LoadedAt, ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
+import { FilamentSection } from "./FilamentSection";
 import { dateText, freshnessText, progressText } from "./format";
 
 /** The Build workspace tabs from docs/product/ui-ux-target.md. The Machine tab is parked. */
@@ -165,6 +166,7 @@ function OverviewBody({ build, layers }: BuildData) {
           where="the Overview"
         />
       )}
+      <FilamentSection id={build.id} />
       <h2 id={layersId}>Layers</h2>
       {layers.length === 0 ? (
         <p>This Build has no layers.</p>

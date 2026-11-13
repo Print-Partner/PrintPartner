@@ -261,6 +261,14 @@ pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     platform::publish_new(from, to)
 }
 
+/// Rename the file or directory `from` to the new name `to`, failing with
+/// `AlreadyExists` when anything is at `to`: nothing is ever replaced. Both
+/// paths are absolute and on one filesystem. Follow with [`sync_directory`]
+/// on the parent to make the new name durable.
+pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    platform::rename_new(from, to)
+}
+
 /// Flush a file's contents to disk, given its path.
 pub fn sync_file(path: &Path) -> io::Result<()> {
     platform::sync_file(path)
@@ -269,6 +277,25 @@ pub fn sync_file(path: &Path) -> io::Result<()> {
 /// Flush a directory's entries, so renames and links in it survive a crash.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     platform::sync_directory(path)
+}
+
+/// Whether [`sync_filesystem`] flushes anything on this platform. Where it
+/// is false, a caller that needs durability syncs each file it writes.
+pub const SYNCS_FILESYSTEM: bool = cfg!(target_os = "linux");
+
+/// Flush every file and directory of the filesystem that holds `path` in one
+/// call: `syncfs` on Linux. It does nothing on other platforms, which have
+/// no such call for an unprivileged process.
+pub fn sync_filesystem(path: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(rustix::fs::syncfs(std::fs::File::open(path)?)?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 /// `path` as a user or Node writes it. The verbatim `\\?\C:\…` that

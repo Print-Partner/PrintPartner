@@ -17,6 +17,8 @@ const POLICY: AuthPolicy = AuthPolicy {
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
+type Changed = Result<IntegrationSummary, PrinterSetupError>;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     owner: WriterOwner,
@@ -44,6 +46,12 @@ impl Fixture {
     fn create(&self, new: NewIntegration) -> Result<IntegrationSummary, PrinterSetupError> {
         self.client
             .create_integration(self.session(), new, &IDLE, WAIT)
+    }
+
+    fn change(&self, id: &str, patch: IntegrationPatch) -> Changed {
+        let (session, id) = (self.session(), id.into());
+        self.client
+            .update_integration(session, id, patch, &IDLE, WAIT)
     }
 
     fn delete(&self, id: &str) -> Result<IntegrationSummary, PrinterSetupError> {
@@ -239,6 +247,7 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
         };
         for refused in [
             fixture.create(new(ServiceKind::Moonraker, "http://moon.test")),
+            fixture.change("moon-1", IntegrationPatch::default()),
             fixture.delete("moon-1"),
         ] {
             // The refusal names the entry and holds none of its text.
@@ -389,4 +398,5 @@ fn the_list_names_every_integration_and_no_secret() {
     ));
 }
 
+mod edits;
 mod printers;

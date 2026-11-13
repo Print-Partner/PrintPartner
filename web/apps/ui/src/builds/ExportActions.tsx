@@ -7,7 +7,7 @@ import { buildQuery } from "./BuildWorkspace";
 type Download = "stl-pack" | "checklist";
 
 /** The two accepted Plan exports (GRE-1447, GRE-1525). They answer files, not JSON. */
-export const exportPath = (build: number, download: Download, remaining = false) =>
+const exportPath = (build: number, download: Download, remaining = false) =>
   `/api/v2/plans/${build}/exports/${download}${download === "stl-pack" && remaining ? "?scope=remaining" : ""}`;
 
 /**
@@ -18,7 +18,7 @@ export const exportPath = (build: number, download: Download, remaining = false)
  *    same-origin GET, and the browser saves the file under the server's filename.
  * The core builds the file twice for one download; the ticket accepts that cost.
  */
-export async function download(path: string): Promise<void> {
+async function download(path: string): Promise<void> {
   const controller = new AbortController();
   await fetchCore(path, { headers: { accept: "*/*" }, signal: controller.signal });
   controller.abort();
@@ -43,7 +43,7 @@ const REASONS: Readonly<Record<string, string>> = {
 };
 
 /** A Source file the pack refused, in words. An unknown reason reads "is unavailable". */
-export const fileText = (file: UnavailableSourceFile) =>
+const fileText = (file: UnavailableSourceFile) =>
   `${file.source}: ${file.relative_path} ${REASONS[file.reason] ?? "is unavailable"}`;
 
 type Refusal = { download: Download; detail: string; files: readonly UnavailableSourceFile[] };

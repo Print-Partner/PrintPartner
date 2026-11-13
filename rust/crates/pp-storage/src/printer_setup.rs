@@ -1,5 +1,5 @@
-//! Printer setup: adding and removing integrations, and adding, reading,
-//! editing and removing printers.
+//! Printer setup: adding, editing and removing integrations, and adding,
+//! reading, editing and removing printers.
 //!
 //! Each kind lives in one `app_settings` document with one typed shape
 //! ([`integrations`], [`printers`]). A write runs through the write seam: it
@@ -14,7 +14,7 @@
 pub(crate) mod integrations;
 pub(crate) mod printers;
 
-pub use integrations::{IntegrationSummary, NewIntegration, ServiceKind};
+pub use integrations::{IntegrationPatch, IntegrationSummary, NewIntegration, ServiceKind};
 pub use printers::{LoadedFilament, NewPrinter, Printer, PrinterPatch};
 
 use crate::{
@@ -67,6 +67,8 @@ pub enum Reason {
     NotCreatable,
     /// The kind does not sign in with this field.
     NotUsedByKind,
+    /// A stored secret an address change must send again, or clear.
+    NotResent,
     /// A number outside what its field takes; `printers` has the ranges.
     OutOfRange,
     /// No stored Moonraker, PrusaLink or Bambu integration has that id.
@@ -116,6 +118,9 @@ pub enum PrinterSetupError {
     NotFound,
     #[error("the installation already has as many of these as it may hold")]
     LimitReached,
+    /// The integration is a kind Rust keeps but cannot edit.
+    #[error("the stored integration is a kind that cannot be edited")]
+    NotEditable,
     /// A filament slot the edit would remove still holds filament.
     #[error("a filament slot the edit removes holds filament")]
     SlotHoldsFilament,
@@ -172,6 +177,34 @@ impl PrinterSetupClient {
             }
             let summary = row.summary();
             entries.push(Entry::Host(row));
+            save(tx, &installation, &entries)?;
+            Ok(summary)
+        })?
+    }
+
+    /// Changes what `patch` sends on the integration with `id`, in one
+    /// write, and answers it without its secrets. A kind Rust keeps but
+    /// cannot create is [`PrinterSetupError::NotEditable`].
+    pub fn update_integration(
+        &self,
+        credential: Credential,
+        id: String,
+        patch: IntegrationPatch,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<IntegrationSummary, PrinterSetupError> {
+        let policy = self.policy;
+        let name = "printer_setup.update_integration";
+        self.shared.write(name, cancelled, wait, move |tx, _| {
+            let installation = authorize(tx, &credential, policy)?;
+            let mut entries = load(tx, &installation)?;
+            let entry = entries.iter_mut().find(|entry| entry.id() == id);
+            let Entry::Host(row) = entry.ok_or(PrinterSetupError::NotFound)? else {
+                return Err(PrinterSetupError::NotEditable);
+            };
+            row.apply(patch, now(tx)?)
+                .map_err(PrinterSetupError::Invalid)?;
+            let summary = row.summary();
             save(tx, &installation, &entries)?;
             Ok(summary)
         })?

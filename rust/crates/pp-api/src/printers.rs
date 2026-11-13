@@ -9,7 +9,7 @@
 //! with the integration routes; this module only supplies its own wording.
 
 use crate::accepted::AcceptedHttpConfig;
-use crate::integrations::{App, Wording, answer, code, mounted, unreadable};
+use crate::integrations::{App, Wording, answer, code, mounted, sent, unreadable};
 use crate::loopback::PresentedCredential;
 use crate::problem;
 use axum::{
@@ -23,7 +23,7 @@ use pp_storage::{
     printer_setup::{NewPrinter, Printer, PrinterPatch, PrinterSetupClient, PrinterSetupError},
     read_model::Credential,
 };
-use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{sync::atomic::AtomicBool, time::Duration};
 
 const BODY_LIMIT: usize = 16 * 1024;
@@ -71,12 +71,6 @@ pub struct UpdatePrinterRequest {
     pub max_filament_slots: Option<u8>,
     #[serde(default, deserialize_with = "sent")]
     pub integration_id: Option<Option<String>>,
-}
-
-/// `Some(None)` for a key that is present and null, where serde's default
-/// would read it as absent.
-fn sent<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<String>>, D::Error> {
-    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// A stored printer's configuration. Lengths are whole millimetres. Its live

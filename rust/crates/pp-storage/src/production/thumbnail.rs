@@ -98,7 +98,12 @@ fn rasterize(vertices: &[[f64; 3]]) -> Vec<u8> {
     let side = SIZE as usize;
     let mut depth = vec![f64::NEG_INFINITY; side * side];
     let mut rgba = vec![0u8; side * side * 4];
-    for (triangle, corners) in vertices.chunks_exact(3).zip(projected.chunks_exact(3)) {
+    for (triangle, corners) in vertices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(projected.as_chunks::<3>().0)
+    {
         let normal = cross(sub(triangle[1], triangle[0]), sub(triangle[2], triangle[0]));
         let length = dot(normal, normal).sqrt();
         if length == 0.0 {

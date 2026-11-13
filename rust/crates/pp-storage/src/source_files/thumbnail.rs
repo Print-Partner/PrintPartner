@@ -1,0 +1,147 @@
+//! A thumbnail of one STL in a Source's current revision, cached under
+//! `<data>/thumbs/sources` (GRE-430 part 2a).
+//!
+//! The requested path is checked before anything is read: a relative path of
+//! plain names ending in `.stl`, outside the snapshot writer's root entries.
+//! One read transaction then finds the current revision. The file is opened
+//! only when every name on the way down is a real folder or file, as the file
+//! list shows them: a symbolic link anywhere is not found.
+//!
+//! The cache file is `<revision id>/<SHA-256 of the path>-v<renderer
+//! version>.png`, so nothing from the request names a folder or file there. A
+//! revision never changes, so a cached file stays right; a hit is answered
+//! without opening the STL. A new file is written under a temporary name and
+//! renamed into place. A corrupt or oversized STL is refused and nothing is
+//! cached. A cache write that fails is logged and the rendered PNG is still
+//! answered.
+
+use super::{SourceFilesClient, SourceFilesError};
+use crate::{
+    production::{
+        geometry::GeometryLimits,
+        thumbnail::{RENDERER_VERSION, render},
+    },
+    read_model::{Credential, graph::safe_path},
+};
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
+    time::Duration,
+};
+
+/// How many thumbnail requests may run at once; the HTTP route enforces it.
+pub const THUMBNAIL_CONCURRENCY: usize = 2;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceThumbnail {
+    pub revision_id: i64,
+    /// The same for the same revision, path and renderer version, and
+    /// different otherwise: an entity tag for these bytes.
+    pub tag: String,
+    pub png: Vec<u8>,
+}
+
+impl SourceFilesClient {
+    /// The 256 x 256 PNG of the STL at `path` in Source `source_id`'s
+    /// current revision.
+    pub fn thumbnail(
+        &self,
+        credential: Credential,
+        source_id: i64,
+        path: &str,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<SourceThumbnail, SourceFilesError> {
+        if !self.requestable(path) {
+            return Err(SourceFilesError::FileNotFound);
+        }
+        let name = "source_files.thumbnail";
+        let Some((revision_id, root)) =
+            self.snapshot(name, credential, source_id, cancelled, wait)?
+        else {
+            return Err(SourceFilesError::FileNotFound);
+        };
+        let digest = hex::encode(Sha256::digest(path.as_bytes()));
+        let tag = format!("{revision_id}-v{RENDERER_VERSION}-{}", &digest[..16]);
+        let cached = self
+            .thumbnails
+            .join(revision_id.to_string())
+            .join(format!("{digest}-v{RENDERER_VERSION}.png"));
+        if let Ok(png) = fs::read(&cached) {
+            return Ok(SourceThumbnail {
+                revision_id,
+                tag,
+                png,
+            });
+        }
+        let limits = GeometryLimits::default();
+        let stl = read_stl(&stl_file(&root, path)?, limits.max_bytes)?;
+        let png = render(&stl, limits).map_err(|_| SourceFilesError::Unrenderable)?;
+        if let Err(error) = store(&cached, &png) {
+            tracing::warn!(error = %error, "source_thumbnail_cache_write_failed");
+        }
+        Ok(SourceThumbnail {
+            revision_id,
+            tag,
+            png,
+        })
+    }
+
+    /// A path the file list could show for an STL.
+    fn requestable(&self, path: &str) -> bool {
+        let first = path.split('/').next().unwrap_or_default();
+        path.len() <= 4096
+            && safe_path(path)
+            && path.to_ascii_lowercase().ends_with(".stl")
+            && !self.internal.iter().any(|name| name == first)
+    }
+}
+
+/// The STL at `path` under `root`, reached through real folders only.
+fn stl_file(root: &Path, path: &str) -> Result<PathBuf, SourceFilesError> {
+    let not_found = |_| SourceFilesError::FileNotFound;
+    let mut file = root.to_path_buf();
+    let names: Vec<&str> = path.split('/').collect();
+    for (index, name) in names.iter().enumerate() {
+        file.push(name);
+        let kind = fs::symlink_metadata(&file).map_err(not_found)?.file_type();
+        let last = index + 1 == names.len();
+        if (last && !kind.is_file()) || (!last && !kind.is_dir()) {
+            return Err(SourceFilesError::FileNotFound);
+        }
+    }
+    Ok(file)
+}
+
+/// The file's bytes, refused unread when over `max_bytes`.
+fn read_stl(file: &Path, max_bytes: usize) -> Result<Vec<u8>, SourceFilesError> {
+    let unavailable = |_| SourceFilesError::SnapshotUnavailable;
+    let opened = fs::File::open(file).map_err(unavailable)?;
+    let size = opened.metadata().map_err(unavailable)?.len();
+    if usize::try_from(size).map_or(true, |size| size > max_bytes) {
+        return Err(SourceFilesError::Unrenderable);
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    // One more than the cap, so a file that grew since is still refused.
+    let mut limited = opened.take(max_bytes as u64 + 1);
+    limited.read_to_end(&mut bytes).map_err(unavailable)?;
+    if bytes.len() > max_bytes {
+        return Err(SourceFilesError::Unrenderable);
+    }
+    Ok(bytes)
+}
+
+/// Writes `png` to `cached` through a temporary file in the same folder.
+fn store(cached: &Path, png: &[u8]) -> std::io::Result<()> {
+    let folder = cached.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    fs::create_dir_all(folder)?;
+    let temporary = folder.join(format!(".{:016x}.tmp", rand::random::<u64>()));
+    let written = fs::write(&temporary, png).and_then(|()| fs::rename(&temporary, cached));
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written
+}

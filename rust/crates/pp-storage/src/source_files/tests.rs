@@ -215,3 +215,156 @@ fn the_snapshot_writers_manifest_is_not_one_of_the_owners_files() {
     let listed_paths: Vec<&str> = listed.iter().map(|file| file.path.as_str()).collect();
     assert_eq!(listed_paths, paths);
 }
+
+/// One triangle, binary: 80-byte header, count, normal, three vertices, attribute.
+fn one_triangle_binary() -> Vec<u8> {
+    let mut bytes = vec![0u8; 80];
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend([0u8; 12]);
+    for value in [0.0f32, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 5.0] {
+        bytes.extend(value.to_le_bytes());
+    }
+    bytes.extend([0u8; 2]);
+    bytes
+}
+
+const ONE_TRIANGLE_ASCII: &[u8] = b"solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 5\nendloop\nendfacet\nendsolid t";
+
+impl Fixture {
+    fn thumbnail(&self, path: &str) -> Result<SourceThumbnail, SourceFilesError> {
+        let session = Credential::Session(Secret::new(self.token.clone()));
+        self.client.thumbnail(session, 1, path, &IDLE, WAIT)
+    }
+
+    /// Every file under `thumbs/`, relative to it.
+    fn cached(&self) -> Vec<String> {
+        let thumbs = self.directory.path().join("thumbs");
+        let mut found = Vec::new();
+        let mut pending = vec![thumbs.clone()];
+        while let Some(folder) = pending.pop() {
+            for entry in fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    found.push(path.strip_prefix(&thumbs).unwrap().display().to_string());
+                }
+            }
+        }
+        found
+    }
+}
+
+/// Width and height from a PNG's header.
+fn png_size(png: &[u8]) -> (u32, u32) {
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    let word = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    (word(16), word(20))
+}
+
+#[test]
+fn a_thumbnail_is_rendered_once_then_served_from_thumbs_sources() {
+    let fixture = Fixture::new();
+    let root = fixture.snapshot(
+        "1/revisions/r1",
+        &[
+            ("stl/part.stl", &one_triangle_binary()),
+            ("text.stl", ONE_TRIANGLE_ASCII),
+        ],
+    );
+    fixture.sql(FIRST);
+    assert!(fixture.cached().is_empty());
+
+    let first = fixture.thumbnail("stl/part.stl").unwrap();
+    assert_eq!(png_size(&first.png), (256, 256));
+    assert_eq!(first.revision_id, 10);
+    let cached = fixture.cached();
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert!(cached[0].starts_with("sources/10/"), "{cached:?}");
+
+    // A hit never opens the STL: the corrupted file still answers the cached bytes.
+    fs::write(root.join("stl/part.stl"), b"no longer an stl").unwrap();
+    let second = fixture.thumbnail("stl/part.stl").unwrap();
+    assert_eq!(second, first);
+
+    let ascii = fixture.thumbnail("text.stl").unwrap();
+    assert_eq!(png_size(&ascii.png), (256, 256));
+    assert_ne!(ascii.tag, first.tag);
+    assert_eq!(fixture.cached().len(), 2);
+}
+
+#[test]
+fn only_a_real_stl_of_the_current_revision_has_a_thumbnail() {
+    let fixture = Fixture::new();
+    let not_found = |result| matches!(result, Err(SourceFilesError::FileNotFound));
+    assert!(not_found(fixture.thumbnail("part.stl")), "no revision yet");
+    let root = fixture.snapshot(
+        "1/revisions/r1",
+        &[
+            ("part.stl", &one_triangle_binary()),
+            ("README.md", b"# Kit"),
+            ("dir.stl/x", b""),
+        ],
+    );
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("part.stl"), root.join("link.stl")).unwrap();
+    fixture.sql(FIRST);
+    for path in [
+        "missing.stl",
+        "README.md",
+        "dir.stl",
+        "link.stl",
+        WRITER_ENTRY,
+    ] {
+        assert!(not_found(fixture.thumbnail(path)), "{path}");
+    }
+    let session = Credential::Session(Secret::new(fixture.token.clone()));
+    let unknown = fixture
+        .client
+        .thumbnail(session, 2, "part.stl", &IDLE, WAIT);
+    assert!(matches!(unknown, Err(SourceFilesError::NotFound)));
+    assert!(fixture.cached().is_empty());
+}
+
+#[test]
+fn an_unsafe_path_is_refused_before_any_read_or_write() {
+    let fixture = Fixture::new();
+    let outside = fixture.directory.path().join("repos/1/x.stl");
+    fixture.snapshot("1/revisions/r1", &[("part.stl", &one_triangle_binary())]);
+    fs::write(&outside, one_triangle_binary()).unwrap();
+    fixture.sql(FIRST);
+    // A credential that would be refused: the path check comes first, so the
+    // answer is "not found", not an authentication failure.
+    let refused = || Credential::Session(Secret::new("not-a-session".into()));
+    for path in [
+        "../x.stl",
+        "/etc/x.stl",
+        "a/../x.stl",
+        "./part.stl",
+        "C:/x.stl",
+        "a\\x.stl",
+        "",
+    ] {
+        let answer = fixture.client.thumbnail(refused(), 1, path, &IDLE, WAIT);
+        assert!(
+            matches!(answer, Err(SourceFilesError::FileNotFound)),
+            "{path}"
+        );
+    }
+    assert!(fixture.cached().is_empty());
+}
+
+#[test]
+fn a_corrupt_stl_is_unrenderable_and_nothing_is_cached() {
+    let fixture = Fixture::new();
+    fixture.snapshot(
+        "1/revisions/r1",
+        &[("broken.stl", b"solid broken\nendsolid broken")],
+    );
+    fixture.sql(FIRST);
+    assert!(matches!(
+        fixture.thumbnail("broken.stl"),
+        Err(SourceFilesError::Unrenderable)
+    ));
+    assert!(fixture.cached().is_empty());
+}

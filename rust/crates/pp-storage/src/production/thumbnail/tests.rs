@@ -89,12 +89,16 @@ fn a_box_renders_a_256_pixel_png_with_the_part_centred() {
         assert_eq!(alpha(&pixels, x, y), 0, "corner {x},{y} is background");
     }
     let opaque = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| pixel[3] == 255)
         .count();
     assert!(opaque > 10_000, "the part fills the frame: {opaque} pixels");
     let shades: std::collections::BTreeSet<_> = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| pixel[3] == 255)
         .map(|pixel| [pixel[0], pixel[1], pixel[2]])
         .collect();

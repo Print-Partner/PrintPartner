@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "crates": {
+    "pp-core": {
+      "module": 50,
+      "item": 40,
+      "statement": 12
+    }
+  }
+}

@@ -400,6 +400,7 @@ impl super::Gateway {
         product: impl FnOnce(super::MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<super::RustStatus>,
         hosts: std::sync::Arc<dyn super::MoonrakerHosts>,
+        sign_out: super::SignOut,
     ) -> anyhow::Result<Self> {
         Self::start_inner(
             listener,
@@ -408,7 +409,14 @@ impl super::Gateway {
             pp_compat::CompatHandle::unpublished(),
             &super::OperationOwners::node_only(),
             Some(Box::new(product)),
-            Some((status, hosts, false)),
+            Some((
+                status,
+                hosts,
+                super::RustOnlyMode {
+                    network: false,
+                    sign_out,
+                },
+            )),
         )
     }
 }

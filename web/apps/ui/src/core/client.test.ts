@@ -72,6 +72,14 @@ describe("fetchCore", () => {
     },
   );
 
+  it("keeps the fields a refusal names, in the core's order, and drops malformed entries", async () => {
+    const errors = [{ pointer: "/api_key", detail: "must be sent again" }, { pointer: 3 }, "x", { pointer: "/name", detail: "must not be empty" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Request is invalid", errors }), { status: 400 })));
+    const error = await fetchCore("/api/v2/integrations/i-1", { method: "PATCH" }).catch((caught: unknown) => caught);
+    expect((error as CoreError).errors).toEqual([errors[0], errors[3]]);
+    expect((error as CoreError).detail).toBe("Request is invalid");
+  });
+
   it("turns a non-2xx answer into a CoreError naming the status", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 })));
 

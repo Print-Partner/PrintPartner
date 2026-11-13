@@ -114,6 +114,21 @@ describe("SET-02 integration settings never display secrets", () => {
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
+  it("never shows sign-in details stored in an address, and nothing of one that is not a URL", async () => {
+    const list = [
+      view("m1", "moonraker", "Voron", { base_url: "http://u:secret@printer.local" }),
+      view("m2", "moonraker", "Micron", { base_url: "http://micron.local:7125/?api_key=query-secret#frag" }),
+      view("m3", "moonraker", "Old", { base_url: "not a url secret" }),
+    ];
+    renderSettings(core({ list: () => json({ integrations: list }) }).fetchMock);
+    await screen.findByText("Voron", { selector: "dt" });
+    expect(within(row("Voron")).getByText("http://printer.local/")).toBeTruthy();
+    expect(within(row("Voron")).getByText("Sign-in details stored in this address are hidden.")).toBeTruthy();
+    expect(within(row("Micron")).getByText("http://micron.local:7125/")).toBeTruthy();
+    expect(within(row("Old")).getByText("The stored address can't be shown.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("secret");
+  });
+
   it("says when there are no integrations", async () => {
     renderSettings(core({ list: () => json({ integrations: [] }) }).fetchMock);
     expect(await within(await section()).findByText("No integrations yet.")).toBeTruthy();

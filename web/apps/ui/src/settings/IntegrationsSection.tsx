@@ -7,6 +7,7 @@ import { readCore, RequestContractError, writeCore } from "../core/rust";
 import { reason } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
+import { HIDDEN_NOTE, integrationsQuery, shownAddress, UNSHOWN_ADDRESS } from "./connections";
 
 type Integration = RouteResponse<"listIntegrations">["integrations"][number];
 
@@ -19,11 +20,6 @@ const KIND_NAMES: Record<Integration["kind"], string> = {
   ai_assistant: "AI assistant",
   slicer_sidecar: "Slicer sidecar",
 };
-
-const integrationsQuery = {
-  queryKey: ["core", "integrations"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listIntegrations", {}, signal),
-} as const;
 
 const pinQuery = (id: string) =>
   ({
@@ -186,12 +182,14 @@ function BambuPin({ integration, offline, onMessage }: { integration: Integratio
 
 function Row({ integration, offline, onMessage }: { integration: Integration; offline: boolean; onMessage: (text: string) => void }) {
   const credentials = credentialText(integration);
+  const address = shownAddress(integration.base_url);
   return (
     <div className="pp-fact" data-integration={integration.id} data-kind={integration.kind}>
       <dt>{integration.name}</dt>
       <dd>
         {KIND_NAMES[integration.kind]}, {integration.enabled ? "on" : "off"}
-        {integration.base_url !== null && <span className="pp-fact-detail">{integration.base_url}</span>}
+        {address && <span className="pp-fact-detail">{address.text ?? UNSHOWN_ADDRESS}</span>}
+        {address?.hidden && <span className="pp-fact-detail">{HIDDEN_NOTE}</span>}
         {credentials && <span className="pp-fact-detail">{credentials}</span>}
         {integration.kind === "spoolman" && (
           <span className="pp-fact-detail">

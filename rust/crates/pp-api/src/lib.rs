@@ -70,6 +70,8 @@ pub mod drafts;
 #[cfg(feature = "desktop_rebuild")]
 pub mod events;
 #[cfg(feature = "desktop_rebuild")]
+pub mod exports;
+#[cfg(feature = "desktop_rebuild")]
 pub mod farm;
 #[cfg(feature = "desktop_rebuild")]
 pub mod filaments;
@@ -109,6 +111,8 @@ pub mod send_queue;
 pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings_support;
+#[cfg(feature = "desktop_rebuild")]
+pub mod sources_github;
 #[cfg(feature = "desktop_rebuild")]
 mod update_check;
 #[cfg(feature = "desktop_rebuild")]

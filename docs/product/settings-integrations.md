@@ -7,7 +7,12 @@ address when the core has one, the username when one is set, and whether an API
 key or password is saved. The list route answers only `has_api_key` and
 `has_password`, never the key or password, so the section cannot show a secret.
 Its tests feed a list that carries a secret anyway and check it never reaches
-the page. Adding and editing integrations are separate changes. Adding or
+the page. The address is shown without any user name, password, query or
+fragment, with "Sign-in details stored in this address are hidden." when it
+had any; text that is not a URL shows "The stored address can't be shown."
+The core leaves those parts out too (GRE-1342, and GRE-1517 for the read
+side); the screen does it again so a password stored before that check never
+reaches the page. Adding and editing integrations are separate changes. Adding or
 deleting a printer in the Printers section also writes its connection, so it
 reads this list again.
 

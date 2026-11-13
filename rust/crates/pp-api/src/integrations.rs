@@ -1,6 +1,7 @@
-//! `POST /api/v2/integrations` and `PATCH` and `DELETE
-//! /api/v2/integrations/{id}`: the replacement Settings screen adds, edits
-//! and removes a Moonraker, PrusaLink or Spoolman integration. Rust-only runtime: the routes mount only when
+//! `GET` and `POST /api/v2/integrations` and `PATCH` and `DELETE
+//! /api/v2/integrations/{id}`: the replacement Settings screen lists every
+//! integration, and adds, edits and removes a Moonraker, PrusaLink or
+//! Spoolman integration. Rust-only runtime: the routes mount only when
 //! `PP_DESKTOP_REBUILD` is on, and Node keeps its own routes in mixed mode.
 //!
 //! Storage owns the rules and answers a typed error
@@ -18,7 +19,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::Response,
-    routing::{patch, post},
+    routing::{get, patch},
 };
 use pp_storage::{
     auth::Secret,
@@ -120,11 +121,28 @@ pub struct IntegrationView {
     pub kind: ServiceKind,
     pub name: String,
     pub enabled: bool,
-    /// Null for a kind these routes cannot create.
+    /// Null for a kind these routes cannot create. Always sent.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
+    )]
     pub base_url: Option<String>,
+    /// Always sent; null when the integration has none.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
+    )]
     pub username: Option<String>,
     pub has_api_key: bool,
     pub has_password: bool,
+}
+
+/// `GET /api/v2/integrations` body: every stored integration in stored order,
+/// kinds these routes cannot create included, without secrets.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct IntegrationList {
+    pub integrations: Vec<IntegrationView>,
 }
 
 impl From<IntegrationSummary> for IntegrationView {
@@ -163,13 +181,30 @@ pub(crate) fn mounted(
     gate.guard(routes).with_state(App { gate, setup })
 }
 
-/// The integration create, edit and delete routes, under [`mounted`]'s guard.
+/// The integration list, create, edit and delete routes, under [`mounted`]'s guard.
 pub fn integrations_router(config: AcceptedHttpConfig, setup: PrinterSetupClient) -> Router {
     let routes = Router::new()
-        .route("/api/v2/integrations", post(create))
+        .route("/api/v2/integrations", get(list).post(create))
         .route("/api/v2/integrations/{id}", patch(update).delete(remove))
         .layer(DefaultBodyLimit::max(BODY_LIMIT));
     mounted(config, setup, routes)
+}
+
+async fn list(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+) -> Response {
+    let setup = app.setup.clone();
+    let read = app.gate.blocking(move |cancelled, wait| {
+        setup.list_integrations(presented.into_credential(), &cancelled, wait)
+    });
+    match read.await {
+        Ok(Ok(summaries)) => ok_json(&IntegrationList {
+            integrations: summaries.into_iter().map(IntegrationView::from).collect(),
+        }),
+        Ok(Err(error)) => refused(&error, &WORDING),
+        Err(_) => internal(),
+    }
 }
 
 async fn create(

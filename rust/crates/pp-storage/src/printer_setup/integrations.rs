@@ -93,6 +93,26 @@ pub(crate) struct HostConfig {
     pub(crate) storage: Option<String>,
 }
 
+/// The address a view shows. Rust's create refuses credentials in a URL, but a
+/// row another writer stored can hold a username, password or a query such as
+/// `?api_key=`: those parts are removed. Text that is not a URL is not shown.
+fn shown_url(stored: &str) -> Option<String> {
+    let mut url = url::Url::parse(stored).ok()?;
+    let plain = url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none();
+    if plain {
+        return Some(stored.to_owned());
+    }
+    // Only cannot-be-a-base URLs refuse these, and they have no credentials.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.into())
+}
+
 /// The only path that writes a [`Secret`] out: into the stored document.
 /// `Secret` has no `Serialize`, so a response type cannot carry one.
 mod stored_secret {
@@ -416,7 +436,7 @@ impl Integration {
             kind: self.kind,
             name: self.name.clone(),
             enabled: self.config.enabled,
-            base_url: Some(self.config.base_url.clone()),
+            base_url: shown_url(&self.config.base_url),
             username: self.config.username.clone(),
             has_api_key: self.config.api_key.is_some(),
             has_password: self.config.password.is_some(),

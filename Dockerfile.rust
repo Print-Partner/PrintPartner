@@ -80,8 +80,10 @@ RUN echo "$PP_COMMIT" | grep -Eqx '[0-9a-f]{40}' && \
 
 # Rust-only mode is on in this image only. Every other build keeps it off.
 ENV PP_DESKTOP_REBUILD=1 \
+    PP_LISTEN_ADDR=0.0.0.0:8080 \
     HOME=/data \
     TMPDIR=/tmp
+EXPOSE 8080
 USER 1000:1000
 WORKDIR /data
 VOLUME ["/data"]

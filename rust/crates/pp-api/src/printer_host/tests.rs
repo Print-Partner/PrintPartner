@@ -147,23 +147,24 @@ impl PrinterHostPort for Fake {
         };
         Box::pin(async move { answer })
     }
-    fn tls_pin(&self, integration: String) -> Answer<Value> {
+    fn tls_pin(&self, integration: String) -> Answer<TlsPin> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("tls-pin {integration}"));
-        let answer = answer_with(
-            &integration,
-            || json!({"pinned": true, "sha256_prefix": "ab12cd34ef56", "pinned_at": "2026-11-07T05:00:00.000Z"}),
-        );
+        let answer = answer_with(&integration, || TlsPin {
+            pinned: true,
+            sha256_prefix: Some("ab12cd34ef56".into()),
+            pinned_at: Some("2026-11-07T05:00:00.000Z".into()),
+        });
         Box::pin(async move { answer })
     }
-    fn reset_tls_pin(&self, integration: String) -> Answer<Value> {
+    fn reset_tls_pin(&self, integration: String) -> Answer<TlsPinReset> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("reset {integration}"));
-        let answer = answer_with(&integration, || json!({"reset": true}));
+        let answer = answer_with(&integration, || TlsPinReset { reset: true });
         Box::pin(async move { answer })
     }
 }

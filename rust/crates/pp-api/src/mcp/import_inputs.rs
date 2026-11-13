@@ -1,12 +1,13 @@
-//! MCP `propose_import_build_inputs` and its `confirm_apply` on Rust storage,
-//! for `source_id` inputs (GRE-1300 part 2). A `url` input is refused until
-//! part 3 adds the URL classifier.
+//! MCP `propose_import_build_inputs` and its `confirm_apply` on Rust storage
+//! (GRE-1300 parts 2 and 3a): Library Sources by `source_id`, and model pages
+//! and other links by `url`. A git repository URL is refused until part 3b.
 //!
-//! Propose checks `plan_id` and every input, then proves the API key and runs
-//! `BuildGraphClient::check_import_inputs`, which finds the brief, each
+//! Propose checks `plan_id` and every input, classifying each `url` with
+//! `pp_services::build_url` (no network call), then proves the API key and
+//! runs `BuildGraphClient::check_import_inputs`, which finds the brief, each
 //! Source and each `derived_from_evidence_id`. It writes nothing. Confirm
 //! checks the stored params again and runs `BuildGraphClient::import_inputs`,
-//! which puts one evidence item per Source in the brief and clears its
+//! which puts one evidence item per input in the brief and clears its
 //! selected draft in one transaction. It creates and changes no Source.
 
 use super::{
@@ -14,9 +15,12 @@ use super::{
     source_roles::{BRIEF_INVALID, INVALID_PLAN, NO_BRIEF, brief_proposal, plan},
     write_result::{Code, Refusal, writer_failure},
 };
-use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
+use pp_services::{
+    build_url::{self, UrlClass},
+    mcp_domain::{ProposedAction, ToolInvocation},
+};
 use pp_storage::{
-    build_graph::{ImportInputsError, Imported, SourceInput},
+    build_graph::{ImportInput, ImportInputsError, Imported, Page, Target},
     read_model::planning::EvidenceKind,
 };
 use serde_json::{Map, Value, json};
@@ -27,7 +31,7 @@ pub(super) const PROPOSE: &str = "propose_import_build_inputs";
 const INPUTS: &str = "inputs";
 const INVALID_INPUTS: Refusal = Refusal::new(
     Code::InvalidInputs,
-    "inputs must be a non-empty list of { source_id, kind?, title?, filenames?, derived_from_evidence_id? }.",
+    "inputs must be a non-empty list of { source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }.",
 );
 /// Confirm adds the unknown id as `source_id`.
 const SOURCE_NOT_FOUND: Refusal = Refusal::new(
@@ -63,8 +67,8 @@ impl CheckoffDomain {
             PROPOSE,
             build,
             (INPUTS, args[INPUTS].clone()),
-            "Attach Sources to Build",
-            "Attach Library Sources to the Build's planning brief and clear its selected draft. No Source changes.",
+            "Attach evidence to Build",
+            "Attach Library Sources and pages to the Build's planning brief and clear its selected draft. No Source changes.",
         )
     }
 
@@ -107,7 +111,7 @@ impl CheckoffDomain {
 }
 
 /// The checked inputs, or the first refusal.
-fn inputs(args: &Map<String, Value>) -> Result<Vec<SourceInput>, Refusal> {
+fn inputs(args: &Map<String, Value>) -> Result<Vec<ImportInput>, Refusal> {
     let rows = args
         .get(INPUTS)
         .and_then(Value::as_array)
@@ -116,22 +120,18 @@ fn inputs(args: &Map<String, Value>) -> Result<Vec<SourceInput>, Refusal> {
     rows.iter().map(input).collect()
 }
 
-fn input(row: &Value) -> Result<SourceInput, Refusal> {
-    let row = row.as_object().ok_or(Refusal::new(
+fn input(row: &Value) -> Result<ImportInput, Refusal> {
+    let one_of = Refusal::new(
         Code::InvalidInput,
-        "Each inputs item must be an object with a source_id.",
-    ))?;
-    if row.get("url").is_some_and(|url| !url.is_null()) {
-        return Err(Refusal::new(
-            Code::UrlInputsNotSupported,
-            "url inputs are not supported yet. Attach a Library Source by source_id.",
-        ));
-    }
-    let source_id =
-        super::positive_id(&Value::Object(row.clone()), "source_id").ok_or(Refusal::new(
-            Code::InvalidInput,
-            "source_id must name a Library Source by its positive number.",
-        ))?;
+        "Each inputs item must be an object with either a source_id or a url.",
+    );
+    let row = row.as_object().ok_or(one_of)?;
+    let given = |field: &str| row.get(field).filter(|value| !value.is_null());
+    let target = match (given("source_id"), given("url")) {
+        (Some(_), None) => source(row)?,
+        (None, Some(url)) => page(url)?,
+        _ => return Err(one_of),
+    };
     let kind = match row.get("kind") {
         None | Some(Value::Null) => None,
         Some(kind) => Some(kind.as_str().and_then(EvidenceKind::from_wire).ok_or(
@@ -142,6 +142,20 @@ fn input(row: &Value) -> Result<SourceInput, Refusal> {
         )?),
     };
     let text = |field: &str| row.get(field).and_then(Value::as_str).map(str::to_owned);
+    Ok(ImportInput {
+        target,
+        kind,
+        title: text("title"),
+        extract: text("extract"),
+        derived_from_evidence_id: text("derived_from_evidence_id"),
+    })
+}
+
+fn source(row: &Map<String, Value>) -> Result<Target, Refusal> {
+    let id = super::positive_id(&Value::Object(row.clone()), "source_id").ok_or(Refusal::new(
+        Code::InvalidInput,
+        "source_id must name a Library Source by its positive number.",
+    ))?;
     let filenames = row
         .get("filenames")
         .and_then(Value::as_array)
@@ -153,12 +167,30 @@ fn input(row: &Value) -> Result<SourceInput, Refusal> {
                 .collect()
         })
         .unwrap_or_default();
-    Ok(SourceInput {
-        source_id,
-        kind,
-        title: text("title"),
-        filenames,
-        derived_from_evidence_id: text("derived_from_evidence_id"),
+    Ok(Target::Source { id, filenames })
+}
+
+/// A model page or link, classified as Node classifies it.
+fn page(url: &Value) -> Result<Target, Refusal> {
+    let url = url.as_str().unwrap_or_default();
+    let classified = build_url::classify(url).ok_or(Refusal::new(
+        Code::InvalidUrl,
+        "url must be an http or https URL.",
+    ))?;
+    let page = match classified.class {
+        UrlClass::ModelPage => Page::Model,
+        UrlClass::Link => Page::Link,
+        UrlClass::Git { .. } => {
+            return Err(Refusal::new(
+                Code::UrlInputsNotSupported,
+                "Git repository URLs are not supported yet. Add the repository as a Library Source, then attach it by source_id.",
+            ));
+        }
+    };
+    Ok(Target::Url {
+        url: url.to_owned(),
+        normalized: classified.normalized,
+        page,
     })
 }
 
@@ -168,7 +200,7 @@ fn item(imported: &Imported) -> Value {
         "kind": imported.kind.as_str(),
         "source_id": imported.source_id,
         "url": imported.url,
-        "upload_required": false,
+        "upload_required": imported.upload_required,
     })
 }
 

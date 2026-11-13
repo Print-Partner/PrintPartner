@@ -101,6 +101,68 @@ async function go(page: Page, destination: string) {
   await expect(screen(page, destination)).toBeVisible();
 }
 
+const BUILD = "Daily loop kit";
+// A stand-in for the kit's repository. The ticket that syncs it names a real one.
+const KIT_URL = "https://github.com/example/daily-loop-kit";
+
+/**
+ * The assistant: an MCP client connected as docs/docker.md says, with an API key made
+ * while signed in and neither cookie nor Origin. The key is a secret; nothing here prints it.
+ */
+async function connectAssistant(page: Page) {
+  const origin = new URL(page.url()).origin;
+  const made = await page.request.post(`${origin}/settings/api-keys`, {
+    data: {},
+    headers: { Origin: origin },
+  });
+  expect(made.status(), "POST /settings/api-keys").toBe(201);
+  const { key } = (await made.json()) as { key: string };
+  let session: string | null = null;
+  let id = 0;
+  const send = async (method: string, params?: object) => {
+    const notification = method.startsWith("notifications/");
+    const response = await fetch(`${origin}/mcp`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...(session && { "Mcp-Session-Id": session, "Mcp-Protocol-Version": "2025-06-18" }),
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method, params, ...(!notification && { id: ++id }) }),
+    });
+    session ??= response.headers.get("mcp-session-id");
+    if (notification) return undefined;
+    // The server may keep an event stream open after its answer: read to the first one.
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    for (let text = ""; ; ) {
+      const { value, done } = await reader.read();
+      text += decoder.decode(value, { stream: !done });
+      const answer = /^(?:data: *)?(\{.*\})\s*$/m.exec(text)?.[1];
+      if (answer && (done || text.endsWith("\n"))) {
+        await reader.cancel();
+        return JSON.parse(answer).result;
+      }
+      if (done) throw new Error(`MCP ${method} answered ${response.status} with no result`);
+    }
+  };
+  await send("initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "daily-loop", version: "0" },
+  });
+  await send("notifications/initialized");
+  return {
+    /** Calls a tool and returns the JSON it answers with; a tool error throws its text. */
+    call: async (name: string, args: object) => {
+      const { content, isError } = await send("tools/call", { name, arguments: args });
+      if (isError) throw new Error(`${name}: ${content[0].text}`);
+      return JSON.parse(content[0].text);
+    },
+  };
+}
+
 /** Signs in and opens the first Build in the Builds list, on the named tab. */
 async function openBuild(page: Page, tab = "Overview") {
   await signIn(page);
@@ -132,14 +194,17 @@ step(1, null, async ({ page }) => {
   }).toPass({ timeout: 120_000 });
 });
 
-step(2, "GRE-412", async ({ page }) => {
+// GRE-412's parts land one by one, and the marker names the open one. The import is to
+// write the synthetic installation (22 Builds with accepted Plans, 10 Sources, 2 printers)
+// into the data volume, and the server is to restart on it. Steps 6 and 10 use its Builds.
+step(2, "GRE-1450", async ({ page }) => {
   await serverReady();
   const imported = inContainer("pp-server", "import", "--from", "/tmp/node-installation");
   expect(imported.status, imported.stderr).toBe(0);
   await signIn(page);
   await go(page, "Builds");
   unwritten(
-    "the import of a Node installation fixture: its Builds, accepted Plans, Plates, Checkoff history, printers and Sources open, Plan, Plate and Required-unit IDs match, and the original is unchanged",
+    "the synthetic installation is imported and the server restarted on it: its Builds, accepted Plans, Plates, Checkoff history, printers and Sources open, Plan, Plate and Required-unit IDs match, and the original is unchanged",
   );
 });
 
@@ -161,14 +226,35 @@ step(4, "GRE-1365", async ({ page }) => {
   );
 });
 
-step(5, "GRE-1401", async ({ page }) => {
+// The owner creates Builds through the assistant, so this step goes over MCP.
+step(5, "GRE-1300", async ({ page }) => {
   await signIn(page);
+  // The assistant refuses to create a Build while the Orders Module is off, which it is
+  // on a new installation, and tells the owner to turn it on in Settings.
+  await go(page, "Settings");
+  await page.getByRole("button", { name: "Turn Orders on" }).click();
+  await page.getByRole("button", { name: "Confirm Module change" }).click();
+  await expect(page.getByRole("button", { name: "Turn Orders off" })).toBeVisible();
+  const assistant = await connectAssistant(page);
+  const request = "One kit for the daily-loop test.";
+  const proposed = await assistant.call("propose_create_build", { name: BUILD, request });
+  expect(proposed.status, JSON.stringify(proposed)).toBe("proposed");
+  const applied = await assistant.call("confirm_apply", { action_id: proposed.action.id });
+  expect(applied.ok, JSON.stringify(applied)).toBe(true);
   await go(page, "Builds");
-  await page.getByRole("button", { name: /new build/i }).click();
-  unwritten("the Build exists with the Source from step 4 and a first draft Plan");
+  const builds = page.getByRole("table", { name: "Builds" });
+  await expect(builds.getByRole("link", { name: BUILD })).toBeVisible();
+  // Its Sources: he gives the assistant the kit's repository.
+  const inputs = [{ url: KIT_URL }];
+  const plan = applied.result.plan_id;
+  const sources = await assistant.call("propose_import_build_inputs", { plan_id: plan, inputs });
+  expect(sources.status, JSON.stringify(sources)).toBe("proposed");
+  unwritten(
+    "the import is confirmed, propose_rebuild_plan saves a first draft Plan (GRE-1434), and the Build's Sources and Plan tabs show both",
+  );
 });
 
-step(6, "GRE-1401", async ({ page }) => {
+step(6, "GRE-1450", async ({ page }) => {
   await openBuild(page, "Plan");
   const quantity = page.getByRole("textbox", { name: /^Quantity of / }).first();
   await quantity.fill("2");
@@ -203,7 +289,7 @@ step(9, "GRE-1103", async ({ page }) => {
   unwritten("Farm and Today follow the simulated printer to the end of the print without a page reload");
 });
 
-step(10, "GRE-1401", async ({ page }) => {
+step(10, "GRE-1450", async ({ page }) => {
   await openBuild(page, "Checkoff");
   await page.getByRole("checkbox", { name: / unit 1$/ }).first().click();
   await page.getByRole("button", { name: "Record 1 picked unit" }).click();

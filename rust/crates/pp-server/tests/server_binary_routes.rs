@@ -8,6 +8,8 @@ mod child_process;
 mod process_tree;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
+#[path = "support/stop.rs"]
+mod stop;
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -19,6 +21,18 @@ use std::{
 
 /// One HTTP/1.1 exchange; returns the raw response.
 fn exchange(origin: &str, method: &str, path: &str, cookie: &str, body: &str) -> String {
+    exchange_with(origin, method, path, cookie, body, "")
+}
+
+/// `exchange` with extra header lines, each ending in `\r\n`.
+fn exchange_with(
+    origin: &str,
+    method: &str,
+    path: &str,
+    cookie: &str,
+    body: &str,
+    headers: &str,
+) -> String {
     let host = origin.trim_start_matches("http://");
     let mut stream = TcpStream::connect(host).unwrap();
     stream
@@ -26,7 +40,7 @@ fn exchange(origin: &str, method: &str, path: &str, cookie: &str, body: &str) ->
         .unwrap();
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nCookie: {cookie}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nCookie: {cookie}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();
@@ -62,7 +76,9 @@ fn check_children(server: u32, node: &serde_json::Value) {
 fn run(value: &str, root: &Path, rust: bool) {
     let bundle = release::launch(root.join("data")).bundle;
     let credentials = root.join("credentials.json");
-    let mut child = child_process::command(child_process::bin_exe("pp-server"))
+    let mut command = child_process::command(child_process::bin_exe("pp-server"));
+    stop::own_process_group(&mut command);
+    let mut child = command
         .args(["--data".as_ref(), root.join("data").as_os_str()])
         .args(["--web".as_ref(), bundle.web_root.as_os_str()])
         .args(["--node".as_ref(), bundle.node.as_os_str()])
@@ -93,12 +109,14 @@ fn run(value: &str, root: &Path, rust: bool) {
     let cookies = if rust {
         rust_routes(&origin, &desktop)
     } else {
-        desktop
+        desktop.clone()
     };
     check_children(child.id(), &receipt["child_pid"]);
 
-    // The gateway's logout stops the binary, which prints its shutdown receipt.
-    // With Rust routes, Rust revokes its session first.
+    // With Rust routes, logout revokes the Rust session and the headless
+    // server keeps serving until its stop signal (GRE-1453). The Node-backed
+    // runtime's logout still stops the binary. Either way it prints its
+    // shutdown receipt.
     let response = exchange(&origin, "POST", "/auth/logout", &cookies, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert_eq!(
@@ -106,6 +124,18 @@ fn run(value: &str, root: &Path, rust: bool) {
         rust,
         "{response}"
     );
+    if rust {
+        // Logout no longer ends the child, so a failed check must.
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            signed_out_keeps_serving(&origin, &desktop, &cookies, &mut child)
+        }));
+        if let Err(panic) = checked {
+            let _ = child.kill();
+            let _ = child.wait();
+            std::panic::resume_unwind(panic);
+        }
+        stop::send_stop_signal(&child);
+    }
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -120,6 +150,48 @@ fn run(value: &str, root: &Path, rust: bool) {
     let receipt: serde_json::Value = serde_json::from_str(rest.trim()).unwrap();
     assert_eq!(receipt["storage_released"], true, "{receipt}");
     assert_eq!(receipt["errors"], serde_json::json!([]), "{receipt}");
+}
+
+/// After logout the headless server still runs: health reports signed out,
+/// the sign-in page loads, the old Rust session authorizes nothing, and
+/// signing in again works without a restart.
+fn signed_out_keeps_serving(
+    origin: &str,
+    desktop: &str,
+    signed_out: &str,
+    child: &mut std::process::Child,
+) {
+    let running = |child: &mut std::process::Child| child.try_wait().unwrap().is_none();
+    assert!(running(child), "pp-server stopped on logout");
+    let response = exchange(origin, "GET", "/health", desktop, "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains(r#""authenticated":false"#), "{response}");
+    let response = exchange_with(
+        origin,
+        "GET",
+        "/login",
+        desktop,
+        "",
+        "Accept: text/html\r\n",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("content-type: text/html"), "{response}");
+    for path in ["/auth/me", "/api/v1/plans"] {
+        let response = exchange(origin, "GET", path, signed_out, "");
+        assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+    }
+    let response = exchange(
+        origin,
+        "POST",
+        "/auth/login",
+        desktop,
+        r#"{"email":"server@example.test","password":"password-1234"}"#,
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let again = format!("{desktop}; {}", cookie(&response));
+    let response = exchange(origin, "GET", "/api/v1/plans", &again, "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(running(child), "pp-server stopped after signing in again");
 }
 
 /// Desktop admission alone is not a session; Rust auth answers until a user

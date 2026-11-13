@@ -528,6 +528,9 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 /// gateway answers admitted requests from the `pp-api` routers. The marker
 /// decision runs first; release verification, cutover recovery and source-sync
 /// admission run only on an accepted directory (`rust_startup::admit`).
+/// `server_updates` is set only for the headless `pp-server`: it checks for
+/// server updates, and sign-out keeps it serving. The desktop launcher does
+/// neither.
 #[cfg(feature = "desktop_rebuild")]
 async fn start_rust_resources(
     input: DesktopLaunch,
@@ -605,14 +608,17 @@ async fn start_rust_resources(
         Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
         None => (pp_gateway::ServedUi::Legacy, None),
     };
+    let sign_out = if server_updates {
+        pp_gateway::SignOut::KeepsServing
+    } else {
+        pp_gateway::SignOut::EndsRuntime
+    };
+    let mode = pp_gateway::RustOnlyMode {
+        network: listen.is_some(),
+        sign_out,
+    };
     let gateway = Gateway::start_rust_only_with_network(
-        listener,
-        listen.is_some(),
-        assets,
-        served,
-        product,
-        receiver,
-        hosts,
+        listener, mode, assets, served, product, receiver, hosts,
     )?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);

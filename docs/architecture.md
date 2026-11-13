@@ -305,14 +305,10 @@ may have happened. An unknown printer send becomes reconciliation work, never a
 second send. An outbox is suitable for at-least-once notifications, not automatic
 printer resend. Spoolman deductions need their own duplicate/reconciliation rules.
 
-A printer send starts only from a signed-in request to the send queue routes
-(`pp_api::send_queue`): Add to queue stages the file and sends nothing, and
-Send now or Send ready is each one explicit user action. Reconcile only
-records the user's answer about an unknown send and never sends. No MCP tool
-and no watcher calls `SendQueueClient`, and there is no separate send
-capability type (GRE-1103 design call 4). Adding an MCP send tool needs an
-owner decision. Upload-only and upload-and-start are separate confirmed
-effects; upload-only is the default.
+Require a send capability constructible only from an authenticated, explicitly
+confirmed user action. A freely constructible `Actor::User` enum alone is not
+authorization. MCP/background watchers cannot mint the capability. Upload-only
+and upload-and-start are separate confirmed effects; upload-only is the default.
 Shutdown stops admission, signals cancellation, settles permitted writes and
 joins workers before releasing the directory lock.
 

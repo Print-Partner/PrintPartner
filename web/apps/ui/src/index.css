@@ -637,6 +637,7 @@ body {
 }
 
 .pp-field input,
+.pp-field select,
 .pp-quantity {
   box-sizing: border-box;
   min-height: var(--touch-target-min);

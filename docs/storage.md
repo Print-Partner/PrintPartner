@@ -108,7 +108,7 @@ The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision
 
 `ticket_t_7_migrations` opens a fresh directory and Node-built schema 31, 32, 33 and 34 databases through the writer and checks each against its named path.
 
-The refusal is terminal. The version is read from the preflight copy in the temporary directory, before the integrity check, so a refused database, its `-wal` and its `-journal` keep their bytes. The message names the version found, the supported range and the recovery step:
+The refusal is terminal. The version is read from the preflight copy, made in a private `.pp-preflight-<id>` folder inside the data folder, before the integrity check, so a refused database, its `-wal` and its `-journal` keep their bytes. The message names the version found, the supported range and the recovery step:
 
 - Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 48). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
 - Too new: `Incompatible storage: database schema version 49 is newer than supported version 48 (this release opens schema 31 to 48). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`

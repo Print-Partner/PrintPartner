@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, ensure};
 use pp_source::{
     ArtifactBudget, ContentFile, LocalFiles, MAX_ENTRIES, Selection, SnapshotRequest, SourcePath,
     TenantRepos,
+    archive::{ArchiveLabelPolicy, ArchiveLimits, ZipInput},
     local_selection::{self, InputFile},
     media::MediaLimits,
     retained_capture::{FrozenCapture, RetainedInputTransfer},
@@ -431,10 +432,35 @@ impl SourceImports {
                 );
                 let mut root = TenantRepos::open(op.tenant.clone(), &self.repos)?
                     .source(op.source_id.try_into()?)?;
+                // A captured ZIP is unpacked first, in the order
+                // `pp-source-media` uses, and its files and folders are
+                // prepared in place of the upload itself (GRE-1444).
+                let extracted = match op.input.captured_zip_path() {
+                    Some(path) => Some(root.extract_zip_with_label_policy(
+                        ZipInput::open(&local, &SourcePath::try_from(path.to_owned())?)?,
+                        ArchiveLimits::default(),
+                        ArchiveLabelPolicy::NfcAtAcquisition,
+                        cancelled,
+                    )?),
+                    None => None,
+                };
+                let (media, media_paths, directories) = match &extracted {
+                    Some(archive) => (
+                        archive.files(),
+                        archive
+                            .receipt()
+                            .files
+                            .iter()
+                            .map(|file| file.path.clone())
+                            .collect(),
+                        archive.receipt().directories.as_slice(),
+                    ),
+                    None => (&local, local.paths()?, &[][..]),
+                };
                 let prepared = root.prepare_media(
-                    &local,
-                    &local.paths()?,
-                    &[],
+                    media,
+                    &media_paths,
+                    directories,
                     MediaLimits {
                         max_total_bytes: op.max_prepared_bytes,
                         max_output_bytes: op.max_prepared_bytes.min(256 * 1024 * 1024),
@@ -478,6 +504,9 @@ impl SourceImports {
                     .worker
                     .import_phase(&lease, &live, Phase::Published(artifact))?;
                 prepared.discard()?;
+                if let Some(archive) = extracted {
+                    archive.discard()?;
+                }
             }
             if through == Through::Published {
                 return Ok(());

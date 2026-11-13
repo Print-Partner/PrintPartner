@@ -33,14 +33,31 @@ impl Server {
     /// Start without `--node` on `<root>/data`, keeping `<root>/status.json`,
     /// and wait until the status file says ready. Stdout and stderr are captured.
     pub fn start(root: &Path) -> Self {
+        Self::start_with_listener(root, None, None)
+    }
+
+    pub fn start_with_listener(
+        root: &Path,
+        listen: Option<&str>,
+        credential: Option<&Path>,
+    ) -> Self {
         let (data, status) = (root.join("data"), root.join("status.json"));
         let bundle = release::launch(data.clone()).bundle;
-        let child = child_process::command(server_binary())
+        let mut command = child_process::command(server_binary());
+        command
+            .env_remove("PP_LISTEN_ADDR")
             .env("PP_DESKTOP_REBUILD", "1")
             .args(["--data".as_ref(), data.as_os_str()])
             .args(["--web".as_ref(), bundle.web_root.as_os_str()])
             .args(["--commit", &bundle.commit])
-            .args(["--status-file".as_ref(), status.as_os_str()])
+            .args(["--status-file".as_ref(), status.as_os_str()]);
+        if let Some(address) = listen {
+            command.env("PP_LISTEN_ADDR", address);
+        }
+        if let Some(path) = credential {
+            command.args(["--test-credential-file".as_ref(), path.as_os_str()]);
+        }
+        let child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

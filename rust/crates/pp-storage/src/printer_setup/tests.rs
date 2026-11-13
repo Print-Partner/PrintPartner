@@ -17,6 +17,8 @@ const POLICY: AuthPolicy = AuthPolicy {
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
+type Changed = Result<IntegrationSummary, PrinterSetupError>;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     owner: WriterOwner,
@@ -44,6 +46,12 @@ impl Fixture {
     fn create(&self, new: NewIntegration) -> Result<IntegrationSummary, PrinterSetupError> {
         self.client
             .create_integration(self.session(), new, &IDLE, WAIT)
+    }
+
+    fn change(&self, id: &str, patch: IntegrationPatch) -> Changed {
+        let (session, id) = (self.session(), id.into());
+        self.client
+            .update_integration(session, id, patch, &IDLE, WAIT)
     }
 
     fn delete(&self, id: &str) -> Result<IntegrationSummary, PrinterSetupError> {
@@ -81,6 +89,14 @@ fn new(kind: ServiceKind, base_url: &str) -> NewIntegration {
         api_key: None,
         password: None,
     }
+}
+
+/// The fields an `Invalid` refusal names, in order.
+fn invalid_fields<T>(refused: Result<T, PrinterSetupError>, case: usize) -> Vec<(Field, Reason)> {
+    let Err(PrinterSetupError::Invalid(invalid)) = refused else {
+        panic!("case {case} was not refused as invalid")
+    };
+    invalid.iter().map(|one| (one.field, one.reason)).collect()
 }
 
 fn secret(value: &str) -> Option<Secret> {
@@ -193,11 +209,8 @@ fn an_invalid_value_names_its_field_and_stores_nothing() {
         ),
     ];
     for (index, (request, expected)) in cases.into_iter().enumerate() {
-        let Err(PrinterSetupError::Invalid(invalid)) = fixture.create(request) else {
-            panic!("case {index} was not refused as invalid")
-        };
-        let invalid: Vec<_> = invalid.iter().map(|one| (one.field, one.reason)).collect();
-        assert_eq!(invalid, expected, "case {index}");
+        let named = invalid_fields(fixture.create(request), index);
+        assert_eq!(named, expected, "case {index}");
     }
     assert_eq!(fixture.stored(), None);
 }
@@ -234,6 +247,7 @@ fn a_document_that_is_not_the_typed_shape_refuses_every_write_untouched() {
         };
         for refused in [
             fixture.create(new(ServiceKind::Moonraker, "http://moon.test")),
+            fixture.change("moon-1", IntegrationPatch::default()),
             fixture.delete("moon-1"),
         ] {
             // The refusal names the entry and holds none of its text.
@@ -321,4 +335,68 @@ fn the_limit_and_a_refused_credential_store_nothing() {
     fixture.create(moon()).unwrap();
 }
 
+#[test]
+fn the_list_names_every_integration_and_no_secret() {
+    let fixture = Fixture::new();
+    let list = |credential| fixture.client.list_integrations(credential, &IDLE, WAIT);
+    assert_eq!(list(fixture.session()).unwrap(), []);
+    let bambu = r#"{"type":"bambu","id":"bambu-1","name":"H2D","config":{"host":"10.0.0.9","access_code":"kept-canary"}}"#;
+    fixture.seed(&format!("[{bambu}]"));
+    let moon = NewIntegration {
+        api_key: secret("api-canary"),
+        ..new(ServiceKind::Moonraker, "http://moon.test")
+    };
+    let prusa = NewIntegration {
+        username: Some("maker".into()),
+        password: secret("password-canary"),
+        ..new(ServiceKind::Prusalink, "http://prusa.test")
+    };
+    let created = [
+        fixture.create(moon).unwrap(),
+        fixture.create(prusa).unwrap(),
+    ];
+
+    let listed = list(fixture.session()).unwrap();
+    assert_eq!(listed[1..], created);
+    assert_eq!(
+        (
+            listed[0].kind,
+            listed[0].id.as_str(),
+            listed[0].base_url.as_deref()
+        ),
+        (ServiceKind::Bambu, "bambu-1", None)
+    );
+    let flags: Vec<_> = listed
+        .iter()
+        .map(|i| (i.has_api_key, i.has_password))
+        .collect();
+    assert_eq!(flags, [(false, false), (true, false), (false, true)]);
+    // The summaries hold no secret value at all.
+    let shown = format!("{listed:?}");
+    for canary in ["kept-canary", "api-canary", "password-canary", "10.0.0.9"] {
+        assert!(!shown.contains(canary), "{canary} in {shown}");
+    }
+
+    // A row another writer stored with credentials or a key in its address
+    // is shown without them.
+    fixture.seed(
+        r#"[{"type":"moonraker","id":"node-1","name":"Old","config":{"base_url":"http://admin:hunter2@192.168.1.5:7125/?api_key=query-canary#x","enabled":true},"created_at":"","updated_at":""},
+            {"type":"moonraker","id":"node-2","name":"Bad","config":{"base_url":"not a url","enabled":true},"created_at":"","updated_at":""}]"#,
+    );
+    let shown = list(fixture.session()).unwrap();
+    let urls: Vec<_> = shown.iter().map(|i| i.base_url.as_deref()).collect();
+    assert_eq!(urls, [Some("http://192.168.1.5:7125/"), None]);
+
+    let anonymous = Credential::Session(Secret::new("not-a-session".into()));
+    let refused = format!("{:?}", list(anonymous));
+    assert_eq!(refused, "Err(Writer(Auth(SessionRequired)))");
+    fixture.seed(r#"[{"type":"moonraker","id":"m","config":"not an object"}]"#);
+    let unreadable = list(fixture.session());
+    assert!(matches!(
+        unreadable,
+        Err(PrinterSetupError::StoredDocumentInvalid(_))
+    ));
+}
+
+mod edits;
 mod printers;

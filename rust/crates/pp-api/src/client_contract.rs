@@ -359,6 +359,43 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("CreateIntegrationRequest"),
         "IntegrationView",
     ),
+    route(
+        "listIntegrations",
+        "GET",
+        "/api/v2/integrations",
+        None,
+        "IntegrationList",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "readTlsPin",
+            "GET",
+            "/api/v1/integrations/{id}/tls-pin",
+            None,
+            "TlsPin",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "resetTlsPin",
+            "POST",
+            "/api/v1/integrations/{id}/tls-pin/reset",
+            None,
+            "TlsPinReset",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "updateIntegration",
+            "PATCH",
+            "/api/v2/integrations/{id}",
+            Some("UpdateIntegrationRequest"),
+            "IntegrationView",
+        )
+    },
     ClientRoute {
         text_params: &["id"],
         ..route(
@@ -369,11 +406,38 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "IntegrationView",
         )
     },
+    route(
+        "createPrinter",
+        "POST",
+        "/api/v2/printers",
+        Some("CreatePrinterRequest"),
+        "PrinterConfig",
+    ),
     ClientRoute {
         text_params: &["id"],
         ..route(
             "readPrinter",
             "GET",
+            "/api/v2/printers/{id}",
+            None,
+            "PrinterConfig",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "updatePrinter",
+            "PATCH",
+            "/api/v2/printers/{id}",
+            Some("UpdatePrinterRequest"),
+            "PrinterConfig",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "deletePrinter",
+            "DELETE",
             "/api/v2/printers/{id}",
             None,
             "PrinterConfig",
@@ -580,14 +644,28 @@ pub(crate) mod codegen {
             "CreateIntegrationRequest",
             schemars::schema_for!(crate::integrations::CreateIntegrationRequest),
         )?;
-        // The view always serializes these two, null included.
-        let mut view = schemars::schema_for!(crate::integrations::IntegrationView);
-        if let Some(object) = view.schema.object.as_mut() {
-            object
-                .required
-                .extend(["base_url", "username"].map(String::from));
-        }
-        schema("IntegrationView", view)?;
+        schema(
+            "UpdateIntegrationRequest",
+            schemars::schema_for!(crate::integrations::UpdateIntegrationRequest),
+        )?;
+        schema(
+            "IntegrationView",
+            schemars::schema_for!(crate::integrations::IntegrationView),
+        )?;
+        schema(
+            "IntegrationList",
+            schemars::schema_for!(crate::integrations::IntegrationList),
+        )?;
+        schema("TlsPin", schemars::schema_for!(crate::printer_host::TlsPin))?;
+        schema(
+            "TlsPinReset",
+            schemars::schema_for!(crate::printer_host::TlsPinReset),
+        )?;
+        use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
+        let create = schemars::schema_for!(CreatePrinterRequest);
+        schema("CreatePrinterRequest", create)?;
+        let update = schemars::schema_for!(UpdatePrinterRequest);
+        schema("UpdatePrinterRequest", update)?;
         // The view always serializes these two, null included.
         let mut config = schemars::schema_for!(crate::printers::PrinterConfig);
         if let Some(object) = config.schema.object.as_mut() {
@@ -1850,14 +1928,55 @@ pub(crate) mod codegen {
             max_filament_slots: 4,
             integration_id: filled.then(|| "fedcba9876543210fedcba9876543210".into()),
         };
-        Ok(vec![
+        use crate::printers::{CreatePrinterRequest, UpdatePrinterRequest};
+        let mut cases = vec![
             served("PrinterConfig", "linked", config(true))?,
             served("PrinterConfig", "nulls", config(false))?,
-        ])
+        ];
+        let voron = json!({"name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
+            "bed_depth_mm": 350, "bed_height_mm": 340});
+        let with = |key: &str, value: Value| {
+            let mut body = voron.clone();
+            body[key] = value;
+            body
+        };
+        let short =
+            json!({"name": "Voron", "model": "v", "bed_width_mm": 350, "bed_depth_mm": 350});
+        for (name, value) in [
+            ("minimal", voron.clone()),
+            ("linked", with("integration_id", json!("moon-1"))),
+            ("margin", with("margin_mm", json!(6))),
+            ("slots", with("max_filament_slots", json!(2))),
+            ("fractional-size", with("bed_width_mm", json!(350.5))),
+            ("negative-size", with("bed_height_mm", json!(-1))),
+            ("extra-key", with("nozzle", json!(1))),
+            ("missing-height", short),
+        ] {
+            let dto = "CreatePrinterRequest";
+            cases.push(request::<CreatePrinterRequest>(dto, name, value));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            ("rename", json!({"name": "Big Voron"})),
+            ("unlink", json!({"integration_id": null})),
+            ("sizes-and-slots", with("max_filament_slots", json!(2))),
+            ("margin", json!({"margin_mm": 6})),
+            ("link", json!({"integration_id": "moon-1"})),
+            ("fractional-margin", json!({"margin_mm": 2.5})),
+            ("slots-over-a-byte", json!({"max_filament_slots": 256})),
+            ("extra-key", json!({"id": "p-1"})),
+        ] {
+            let dto = "UpdatePrinterRequest";
+            cases.push(request::<UpdatePrinterRequest>(dto, name, value));
+        }
+        Ok(cases)
     }
 
     fn integration_cases() -> Result<Vec<Value>, serde_json::Error> {
-        use crate::integrations::{CreateIntegrationRequest, IntegrationView};
+        use crate::integrations::{
+            CreateIntegrationRequest, IntegrationList, IntegrationView, UpdateIntegrationRequest,
+        };
+        use crate::printer_host::{TlsPin, TlsPinReset};
         use pp_storage::printer_setup::ServiceKind;
         let view = |kind, filled: bool| IntegrationView {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -1869,7 +1988,37 @@ pub(crate) mod codegen {
             has_api_key: false,
             has_password: filled,
         };
+        let list = |integrations| IntegrationList { integrations };
         let mut cases = vec![
+            served("IntegrationList", "empty", list(vec![]))?,
+            served(
+                "IntegrationList",
+                "mixed",
+                list(vec![
+                    view(ServiceKind::Moonraker, true),
+                    view(ServiceKind::Bambu, false),
+                ]),
+            )?,
+            served(
+                "TlsPin",
+                "pinned",
+                TlsPin {
+                    pinned: true,
+                    sha256_prefix: Some("ab12cd34ef56".into()),
+                    pinned_at: Some("2026-11-07T05:00:00.000Z".into()),
+                },
+            )?,
+            served(
+                "TlsPin",
+                "unpinned",
+                TlsPin {
+                    pinned: false,
+                    sha256_prefix: None,
+                    pinned_at: None,
+                },
+            )?,
+            served("TlsPinReset", "reset", TlsPinReset { reset: true })?,
+            served("TlsPinReset", "none-stored", TlsPinReset { reset: false })?,
             served(
                 "IntegrationView",
                 "prusalink",
@@ -1901,6 +2050,19 @@ pub(crate) mod codegen {
         ] {
             let dto = "CreateIntegrationRequest";
             cases.push(request::<CreateIntegrationRequest>(dto, name, value));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            ("address", json!({"base_url": "http://fixture.invalid"})),
+            ("pause", json!({"name": "Voron", "enabled": false})),
+            ("password", json!({"password": "fixture-password"})),
+            ("clear", json!({"api_key": null, "password": null})),
+            ("kind", json!({"kind": "prusalink"})),
+            ("enabled-not-boolean", json!({"enabled": "no"})),
+            ("password-not-text", json!({"password": 1})),
+        ] {
+            let dto = "UpdateIntegrationRequest";
+            cases.push(request::<UpdateIntegrationRequest>(dto, name, value));
         }
         Ok(cases)
     }

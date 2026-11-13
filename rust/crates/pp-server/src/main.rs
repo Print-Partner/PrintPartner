@@ -33,6 +33,10 @@ fn main() -> Result<()> {
         args.next();
         return import(args);
     }
+    // The headless server's tracing events go to stderr, which a container
+    // collects (provisional, GRE-1457). The subcommands above print only
+    // their own output.
+    pp_core::CoreLog::stderr().install();
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -76,6 +80,43 @@ fn healthcheck(args: impl Iterator<Item = String>) -> Result<()> {
             println!("unhealthy: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+fn listen_address() -> Result<Option<std::net::SocketAddr>> {
+    std::env::var_os("PP_LISTEN_ADDR")
+        .map(|value| -> Result<std::net::SocketAddr> {
+            let address: std::net::SocketAddr = value
+                .to_str()
+                .context("PP_LISTEN_ADDR must be UTF-8")?
+                .parse()
+                .context("Invalid PP_LISTEN_ADDR: expected IP:port")?;
+            let ip = address.ip().to_canonical();
+            anyhow::ensure!(
+                !ip.is_multicast() && (!ip.is_unspecified() || address.ip().is_unspecified()),
+                "Invalid PP_LISTEN_ADDR: multicast and mapped unspecified addresses are unsupported"
+            );
+            Ok(address)
+        })
+        .transpose()
+}
+
+fn take_bootstrap_url(runtime: &mut CoreRuntime, server_origin: &str) -> Result<String> {
+    let url = runtime.take_launch_target()?.into_url();
+    let path_and_query = url
+        .strip_prefix(runtime.origin())
+        .context("Bootstrap URL does not match runtime origin")?;
+    Ok(format!("{server_origin}{path_and_query}"))
+}
+
+fn server_origin(origin: &str, listen: Option<std::net::SocketAddr>) -> Result<String> {
+    match listen {
+        Some(address) if !address.ip().is_unspecified() => {
+            let mut bound: std::net::SocketAddr = origin.trim_start_matches("http://").parse()?;
+            bound.set_ip(address.ip());
+            Ok(format!("http://{bound}"))
+        }
+        _ => Ok(origin.to_owned()),
     }
 }
 
@@ -126,6 +167,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         credential_file,
         status_file,
     } = args::parse(args.into_iter())?;
+    let listen = listen_address()?;
     let web = web.context("--web is required")?.canonicalize()?;
     let package: serde_json::Value =
         serde_json::from_slice(&std::fs::read(web.join("package.json"))?)?;
@@ -148,14 +190,18 @@ async fn serve(args: Vec<String>) -> Result<()> {
         commit: commit.context("--commit is required")?,
     };
     let data = data.context("--data is required")?;
-    let mut runtime = CoreRuntime::start_for_server(DesktopLaunch {
-        data_dir: data.clone(),
-        assets: web.join("apps/web/dist"),
-        bundle,
-    })
+    let mut runtime = CoreRuntime::start_for_server(
+        DesktopLaunch {
+            data_dir: data.clone(),
+            assets: web.join("apps/web/dist"),
+            bundle,
+        },
+        listen,
+    )
     .await?;
+    let server_origin = server_origin(runtime.origin(), listen)?;
     if let Some(path) = credential_file {
-        let url = runtime.take_launch_target()?.into_url();
+        let url = take_bootstrap_url(&mut runtime, &server_origin)?;
         let child_pid = match runtime.handle().compat_status() {
             None => None,
             Some(status) => match *status.borrow() {
@@ -187,7 +233,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
     let stop_signal = platform::stop_signal()?;
     if let Some(Err(error)) = status
         .as_ref()
-        .map(|status| status.publish(health::State::Ready, Some(runtime.origin())))
+        .map(|status| status.publish(health::State::Ready, Some(&server_origin)))
     {
         #[cfg(unix)]
         drop(bootstrap);
@@ -195,7 +241,8 @@ async fn serve(args: Vec<String>) -> Result<()> {
         anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
         return Err(error);
     }
-    println!("{}", runtime.origin());
+    tracing::info!(origin = %server_origin, "pp_server_ready");
+    println!("{server_origin}");
     let shutdown_requested = runtime.shutdown_requested();
     tokio::select! {
         _ = stop_signal => {}

@@ -1,8 +1,12 @@
 //! Daily-loop step 3 on a Rust-only runtime: an integration added through
 //! `POST /api/v2/integrations` passes its connection test and reports live
 //! status with no restart, still does after a restart on the same data
-//! directory, and is gone everywhere after `DELETE`. The printer is the
-//! recorded loopback Moonraker; nothing is uploaded or started.
+//! directory, is listed by `GET /api/v2/integrations` without its key, and is
+//! gone everywhere after `DELETE`. One `PATCH` moves an integration saved at a
+//! dead address to the printer. A printer added through
+//! `POST /api/v2/printers` shows live in the Farm list the same way, and is
+//! read, edited and deleted. The printer is the recorded loopback Moonraker;
+//! nothing is uploaded or started.
 use super::printer_host::recorded;
 use super::watcher_proof::{proof_data, run_in_child, shut_down, signed_in, start_rust_only};
 use super::{request, temporary};
@@ -76,10 +80,45 @@ async fn tested_and_polled(origin: &str, cookie: &str, id: &str) {
     printing(origin, cookie, id).await;
 }
 
+/// An integration saved at a dead address fails its test. A `PATCH` that
+/// moves it without its API key is refused. One `PATCH` with the key then
+/// moves it to the printer and renames it: with no restart the test passes
+/// and it is polled.
+async fn moved_to_the_printer(origin: &str, cookie: &str, moonraker: &Value) {
+    let mut down = moonraker.clone();
+    down["base_url"] = json!("http://127.0.0.1:9");
+    let (code, view, _) = call(origin, cookie, "POST", CREATED, Some(down)).await;
+    assert_eq!(code, StatusCode::OK, "{view}");
+    let id = view["id"].as_str().unwrap();
+    let test = format!("/api/v1/integrations/{id}/test");
+    let (code, body, _) = call(origin, cookie, "POST", &test, None).await;
+    let failed = (code, &body["ok"]);
+    assert_eq!(failed, (StatusCode::OK, &json!(false)), "{body}");
+
+    let path = format!("{CREATED}/{id}");
+    // A new address without the stored key would send that key to it.
+    let refused = json!({"base_url": moonraker["base_url"]});
+    let (code, problem, _) = call(origin, cookie, "PATCH", &path, Some(refused)).await;
+    let named = (code, &problem["errors"][0]["pointer"]);
+    assert_eq!(named, (StatusCode::BAD_REQUEST, &json!("/api_key")));
+    let mut patch = moonraker.clone();
+    patch["name"] = json!("Moved");
+    patch.as_object_mut().unwrap().remove("kind");
+    let (code, moved, text) = call(origin, cookie, "PATCH", &path, Some(patch)).await;
+    let mut expected = view.clone();
+    expected["name"] = json!("Moved");
+    expected["base_url"] = moonraker["base_url"].clone();
+    assert_eq!((code, &moved), (StatusCode::OK, &expected), "{text}");
+    assert!(!text.contains(SECRET), "{text}");
+    tested_and_polled(origin, cookie, id).await;
+    let (code, _, _) = call(origin, cookie, "DELETE", &path, None).await;
+    assert_eq!(code, StatusCode::OK);
+}
+
 /// Delete answers what it removed. Then the test and status routes do not
 /// know the id, the linked printer shows no integration, and the printer
 /// hears nothing more.
-async fn deleted(origin: &str, cookie: &str, printer: &RoutedPrinter, view: &Value) {
+async fn deleted(origin: &str, cookie: &str, printer: &RoutedPrinter, view: &Value, kept: &str) {
     let id = view["id"].as_str().unwrap();
     let remove = format!("/api/v2/integrations/{id}");
     let (code, removed, text) = call(origin, cookie, "DELETE", &remove, None).await;
@@ -106,13 +145,83 @@ async fn deleted(origin: &str, cookie: &str, printer: &RoutedPrinter, view: &Val
     let linked = &farm["printers"][0];
     assert_eq!(
         (&linked["id"], &linked["integration"]),
-        (&json!("p-1"), &Value::Null)
+        (&json!(kept), &Value::Null)
     );
     tokio::time::sleep(Duration::from_millis(2500)).await;
     let heard = printer.request_lines().len();
     tokio::time::sleep(Duration::from_millis(3500)).await;
     let later = printer.request_lines().len();
     assert_eq!(later, heard, "a deleted host is polled");
+}
+
+/// Printers are refused, created, read, edited and deleted through the
+/// routes. Answers the id of the one printer left, which links `host`.
+async fn printer_routes(origin: &str, cookie: &str, host: &str, spoolman: &str) -> String {
+    let printers = "/api/v2/printers";
+    let (code, farm, _) = call(origin, cookie, "GET", printers, None).await;
+    assert_eq!((code, &farm["printers"]), (StatusCode::OK, &json!([])));
+    let voron = json!({"name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
+        "bed_depth_mm": 350, "bed_height_mm": 340, "integration_id": host});
+    for (field, value) in [
+        ("bed_width_mm", json!(0)),
+        ("margin_mm", json!(175)),
+        ("max_filament_slots", json!(5)),
+        ("integration_id", json!(spoolman)),
+    ] {
+        let mut body = voron.clone();
+        body[field] = value;
+        let (code, problem, _) = call(origin, cookie, "POST", printers, Some(body)).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{problem}");
+        let pointer = format!("/{field}");
+        assert_eq!(problem["errors"][0]["pointer"], pointer, "{problem}");
+    }
+    let (code, kept, _) = call(origin, cookie, "POST", printers, Some(voron.clone())).await;
+    assert_eq!(code, StatusCode::OK, "{kept}");
+    let mut expected = voron.clone();
+    expected["id"] = kept["id"].clone();
+    expected["margin_mm"] = json!(4);
+    expected["max_filament_slots"] = json!(1);
+    assert_eq!(kept, expected);
+
+    // A second printer is read, edited and deleted; its integration stays.
+    let (_, spare, _) = call(origin, cookie, "POST", printers, Some(voron)).await;
+    let path = format!("{printers}/{}", spare["id"].as_str().unwrap());
+    let (code, read, _) = call(origin, cookie, "GET", &path, None).await;
+    assert_eq!((code, &read), (StatusCode::OK, &spare));
+    let edit = json!({"name": "Spare", "integration_id": null});
+    let (code, edited, _) = call(origin, cookie, "PATCH", &path, Some(edit)).await;
+    let mut expected = spare.clone();
+    expected["name"] = json!("Spare");
+    expected["integration_id"] = Value::Null;
+    assert_eq!((code, &edited), (StatusCode::OK, &expected));
+    let (code, removed, _) = call(origin, cookie, "DELETE", &path, None).await;
+    assert_eq!((code, &removed), (StatusCode::OK, &expected));
+    let (code, problem, _) = call(origin, cookie, "GET", &path, None).await;
+    let gone = (code, &problem["code"]);
+    assert_eq!(gone, (StatusCode::NOT_FOUND, &json!("printer_not_found")));
+    kept["id"].as_str().unwrap().to_owned()
+}
+
+/// The Farm list shows exactly `printer`, linked to `host` and printing.
+async fn listed_live(origin: &str, cookie: &str, printer: &str, host: &str) {
+    let link = json!({"id": host, "kind": "moonraker"});
+    let live = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let (code, farm, _) = call(origin, cookie, "GET", "/api/v2/printers", None).await;
+            assert_eq!(code, StatusCode::OK, "{farm}");
+            let listed = farm["printers"].as_array().unwrap();
+            let one = listed.len() == 1 && listed[0]["id"] == printer;
+            if one
+                && listed[0]["integration"] == link
+                && listed[0]["state"]["execution"] == "printing"
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+    live.await
+        .expect("the created printer never showed live in the Farm list");
 }
 
 #[tokio::test]
@@ -123,7 +232,14 @@ async fn integration_setup_in_child() {
     let (runtime, origin, desktop) = start_rust_only(&data).await;
     let moonraker = json!({"kind": "moonraker", "name": "Voron",
         "base_url": printer.url(), "api_key": SECRET});
-    for (method, path) in [("POST", CREATED), ("DELETE", "/api/v2/integrations/any")] {
+    let any = "/api/v2/integrations/any";
+    let anonymous = [
+        ("GET", CREATED),
+        ("POST", CREATED),
+        ("PATCH", any),
+        ("DELETE", any),
+    ];
+    for (method, path) in anonymous {
         let body = (method == "POST").then(|| moonraker.clone());
         let (code, _, _) = call(&origin, &desktop, method, path, body).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{method} {path}");
@@ -136,6 +252,7 @@ async fn integration_setup_in_child() {
     assert_eq!(code, StatusCode::UNAUTHORIZED);
     let cookie = signed_in(&origin, &desktop, 1).await;
     refuses_invalid_requests(&origin, &cookie, &moonraker).await;
+    moved_to_the_printer(&origin, &cookie, &moonraker).await;
 
     let (code, view, text) = call(&origin, &cookie, "POST", CREATED, Some(moonraker)).await;
     assert_eq!(code, StatusCode::OK, "{text}");
@@ -148,21 +265,6 @@ async fn integration_setup_in_child() {
             "has_api_key": true, "has_password": false})
     );
 
-    // A printer that links the new host shows it. Printer writes are a later
-    // change, so the fleet row is stored directly.
-    let fleet = json!([{"id": "p-1", "name": "Voron", "integration_id": id}]).to_string();
-    rusqlite::Connection::open(data.join("print-partner.db"))
-        .unwrap()
-        .execute(
-            "INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet',?1)",
-            [&fleet],
-        )
-        .unwrap();
-    let (code, farm, _) = call(&origin, &cookie, "GET", "/api/v2/printers", None).await;
-    assert_eq!(code, StatusCode::OK, "{farm}");
-    let linked = &farm["printers"][0]["integration"];
-    assert_eq!(linked, &json!({"id": id, "kind": "moonraker"}), "{farm}");
-
     // A Spoolman integration created here is one the default setting takes.
     let spoolman = json!({"kind": "spoolman", "name": "Spools", "base_url": "http://127.0.0.1:9"});
     let (code, spool, _) = call(&origin, &cookie, "POST", CREATED, Some(spoolman)).await;
@@ -170,16 +272,26 @@ async fn integration_setup_in_child() {
     let chosen = json!({"integration_id": spool["id"]});
     let (code, body, _) = call(&origin, &cookie, "PUT", DEFAULT, Some(chosen.clone())).await;
     assert_eq!((code, &body), (StatusCode::OK, &chosen));
+    // The list shows both, in stored order, and never the key.
+    let (code, list, text) = call(&origin, &cookie, "GET", CREATED, None).await;
+    assert_eq!(code, StatusCode::OK, "{text}");
+    assert!(!text.contains(SECRET), "{text}");
+    assert_eq!(list, json!({"integrations": [view, spool]}));
 
-    // With no restart the new host passes its test and is polled; after a
-    // restart on the same data directory it still does.
+    // With no restart the new host passes its test and is polled, and the
+    // printer that links it shows live; after a restart on the same data
+    // directory both still hold.
+    let spool_id = spool["id"].as_str().unwrap();
+    let kept = printer_routes(&origin, &cookie, &id, spool_id).await;
     tested_and_polled(&origin, &cookie, &id).await;
+    listed_live(&origin, &cookie, &kept, &id).await;
     shut_down(runtime).await;
     let (runtime, origin, desktop) = start_rust_only(&data).await;
     let cookie = signed_in(&origin, &desktop, 2).await;
     tested_and_polled(&origin, &cookie, &id).await;
+    listed_live(&origin, &cookie, &kept, &id).await;
 
-    deleted(&origin, &cookie, &printer, &view).await;
+    deleted(&origin, &cookie, &printer, &view, &kept).await;
     // Deleting the Spoolman integration clears the default that named it.
     let spool_path = format!("/api/v2/integrations/{}", spool["id"].as_str().unwrap());
     let (code, _, _) = call(&origin, &cookie, "DELETE", &spool_path, None).await;
@@ -187,6 +299,8 @@ async fn integration_setup_in_child() {
     let (code, body, _) = call(&origin, &cookie, "GET", DEFAULT, None).await;
     let cleared = json!({"integration_id": null});
     assert_eq!((code, &body), (StatusCode::OK, &cleared));
+    let (code, list, _) = call(&origin, &cookie, "GET", CREATED, None).await;
+    assert_eq!((code, list), (StatusCode::OK, json!({"integrations": []})));
     shut_down(runtime).await;
     for line in printer.request_lines() {
         assert!(line.starts_with("GET "), "the printer saw {line}");

@@ -200,7 +200,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
 
-## Integration create and delete routes (GRE-1439)
+## Integration create, edit and delete routes (GRE-1439, GRE-1481)
 
 `POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman integration
 and `DELETE /api/v2/integrations/{id}` removes one of any kind, for the
@@ -218,9 +218,24 @@ removed. No response or problem carries an API key or a password.
 - The create body is `kind`, `name` and `base_url`, plus optional `enabled`
   (default `true`), `api_key` (Moonraker and Spoolman) and `username` and
   `password` (PrusaLink). Unknown keys are refused.
-- A new host needs no restart: the status watchers re-read the stored hosts
-  about once a second, and `POST /api/v1/integrations/{id}/test` reads the
-  stored row.
+- `PATCH /api/v2/integrations/{id}` (`updateIntegration`) edits one and
+  answers the same view. Its body takes `name`, `base_url`, `enabled`,
+  `username`, `api_key` and `password`, all optional, and applies what it is
+  sent in one write, so an address and its credentials change together. A field that is absent keeps
+  its stored value. For `username`, `api_key` and `password`, null clears the
+  stored value; for the other three, null keeps it. `kind` is not a field: an
+  integration's kind never changes. Only the fields a request sends are
+  checked, so a row that predates a check can still be edited.
+- An edit that changes `base_url` must also send each stored `api_key` and
+  `password`, as the value to use at the new address or as null. Without that
+  the stored secret would be sent to whatever host the caller named, so the
+  edit is refused and names the field. The view's `has_api_key` and
+  `has_password` say which are stored.
+- Bambu, Home Assistant, AI assistant and slicer integrations cannot be edited
+  here. They are kept as stored and can only be deleted.
+- A new or edited host needs no restart: the status watchers re-read the
+  stored hosts about once a second, and `POST /api/v1/integrations/{id}/test`
+  reads the stored row.
 - Delete also removes the integration's TLS pin and clears a Spoolman default
   that names it, in the same transaction. A printer that linked it keeps the id
   and shows `integration: null` in `GET /api/v2/printers`. The status route
@@ -234,6 +249,7 @@ removed. No response or problem carries an API key or a password.
 | A value is invalid, or the body is not the request shape. `errors` names each field by JSON Pointer, never its value. Nothing is stored. | `400` | `invalid_integration` |
 | No stored integration has that id | `404` | `integration_not_found` |
 | The installation already has 64 integrations | `409` | `integration_limit` |
+| An edit names an integration of a kind that cannot be edited here | `409` | `integration_not_editable` |
 | The stored `integrations` document is not the typed shape. Every write is refused and the stored text is left as it is. | `500` | `integrations_unreadable` |
 | The write could not start before its deadline | `503` | `transaction_unavailable` |
 
@@ -244,7 +260,9 @@ Invalid values:
   longer than 2,048 bytes, or has whitespace or a control character in it.
 - `api_key`, `username`, `password`: an empty string (omit the field or send
   `null` for none), longer than 4,096 bytes, or a field the kind does not use.
-- `kind`: anything but `moonraker`, `prusalink` or `spoolman`.
+  On an edit, also a stored `api_key` or `password` left out of a body that
+  changes `base_url`.
+- `kind`, on create: anything but `moonraker`, `prusalink` or `spoolman`.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
@@ -252,33 +270,87 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(integration_setup) | test(integrations::tests) | test(printer_setup::) | test(client_routes_match_registrations)'
 ```
 
-## Printer read route (GRE-1452)
+## Integration list route (GRE-1342)
 
-`GET /api/v2/printers/{id}` reads one stored printer for the replacement
-Settings screen. It is `readPrinter` in the generated
-`@print-partner/rust-client` and answers `200` with a `PrinterConfig`: `id`,
-`name`, `model`, `bed_width_mm`, `bed_depth_mm`, `bed_height_mm`, `margin_mm`,
-`max_filament_slots` and `integration_id`. `GET /api/v2/printers` is still the
-Farm list, which adds the live state.
+`GET /api/v2/integrations` lists every stored integration for the replacement
+Settings screen, in stored order. It is `listIntegrations` in the generated
+`@print-partner/rust-client` and answers `200` with
+`{"integrations": [IntegrationView, ...]}`, the same view the create and
+delete routes answer. Kinds those routes cannot create (Bambu, Home Assistant,
+AI assistant, slicer sidecar) are listed too, with `base_url: null`, so they
+can be deleted. No secret is read into the answer: a view says only whether an
+API key or password is set.
 
-- It mounts like the integration routes above: `/api/v2` only, Rust-only
+- Same mount, gate and credential proof as create and delete; storage reads
+  through the read seam (`SettingsClient::read`), so the credential check and
+  the list are one snapshot. No per-minute window: the gate's admission cap
+  bounds it, as for the other `/api/v2` reads.
+- An unknown credential answers `401`. A stored `integrations` document that is
+  not the typed shape answers `500` `integrations_unreadable`.
+
+The two TLS pin routes in [Printer host reads](printer-host-reads.md) are
+`readTlsPin` and `resetTlsPin` in the same client, with the bodies `TlsPin` and
+`TlsPinReset`.
+
+## Printer routes (GRE-1452, GRE-1448)
+
+`POST /api/v2/printers` adds a printer, and `GET`, `PATCH` and `DELETE
+/api/v2/printers/{id}` read, edit and remove one, for the replacement Settings
+screen. They are `createPrinter`, `readPrinter`, `updatePrinter` and
+`deletePrinter` in the generated `@print-partner/rust-client`. Each answers
+`200` with a `PrinterConfig`: `id`, `name`, `model`, `bed_width_mm`,
+`bed_depth_mm`, `bed_height_mm`, `margin_mm`, `max_filament_slots` and
+`integration_id`. Delete answers the printer it removed. `GET /api/v2/printers`
+is still the Farm list, which adds the live state.
+
+- They mount like the integration routes above: `/api/v2` only, Rust-only
   runtime only, behind the accepted gate, with the credential proved in the
-  read's own transaction.
-- Lengths are whole millimetres, as integers. `bed_height_mm` is null only for
-  a printer that came from an installation without one.
-- The read runs through the read seam (`pp-storage/src/read.rs`) on the
-  read-only pool, so it does not wait in the writer queue.
+  operation's own transaction.
+- Lengths are whole millimetres, as integers. A fractional value in a request
+  is refused with `400` naming the field. `bed_height_mm` is null only for a
+  printer that came from an installation without one.
+- Create takes `name`, `model`, `bed_width_mm`, `bed_depth_mm` and
+  `bed_height_mm`, plus optional `margin_mm` (default 4), `max_filament_slots`
+  (default 1) and `integration_id`.
+- `PATCH` changes only the fields it sends; a field that is absent or null
+  keeps its stored value. The exception is `integration_id`: null unlinks the
+  printer and only leaving the field out keeps the link.
+- An edit checks only the values it sets, so a printer with an older value
+  these rules would refuse can still be edited. Two things follow from the
+  stored row: a new bed size is compared with the stored margin, and a link is
+  checked only when it changes.
+- Every invalid field is named in one answer. A slot that holds filament
+  answers `409` only when the values themselves are valid.
+- A new or relinked printer needs no restart: the Farm list reads the stored
+  printers on each request.
+- Delete removes the printer only. Its integration stays.
+- The three writes run through the write seam. The read runs through the read
+  seam (`pp-storage/src/read.rs`) on the read-only pool, so it does not wait in
+  the writer queue.
 
 | Case | Status | `code` |
 | --- | --- | --- |
+| A value is invalid, or the body is not the request shape. `errors` names each field. Nothing is stored. | `400` | `invalid_printer` |
 | No stored printer has that id | `404` | `printer_not_found` |
-| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. The read is refused for every id and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
-| No reader came free in time | `503` | `transaction_unavailable` |
+| The installation already has 64 printers | `409` | `printer_limit` |
+| The edit lowers `max_filament_slots` below a slot that holds filament | `409` | `filament_slot_in_use` |
+| The stored `printer.fleet` document is not the typed shape, for example one printer has a fractional length, which Node accepted. Every operation is refused and the stored text is left as it is. The import is to round such lengths (GRE-412); that conversion is not built yet. | `500` | `printers_unreadable` |
+| The write could not start before its deadline, or no reader came free in time | `503` | `transaction_unavailable` |
+
+Invalid values:
+
+- `name`, `model`: empty after trimming, or longer than 200 bytes.
+- `bed_width_mm`, `bed_depth_mm`, `bed_height_mm`: not a whole number from 1 to
+  10,000.
+- `margin_mm`: not a whole number, or half the bed width or depth, or more.
+  Accept applies the same test and cannot place on a printer that fails it.
+- `max_filament_slots`: not 1 to 4.
+- `integration_id`: names no stored Moonraker, PrusaLink or Bambu integration.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage -p pp-api \
   --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
-  --no-tests=fail -E 'test(read::tests) | test(printer_setup::) | test(printers::tests) | test(client_routes_match_registrations)'
+  --no-tests=fail -E 'test(integration_setup) | test(printers::tests) | test(printer_setup::) | test(read::tests) | test(client_routes_match_registrations)'
 ```
 
 ## GitHub PAT and Discord notification settings (GRE-1360)

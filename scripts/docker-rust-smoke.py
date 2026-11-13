@@ -6,17 +6,19 @@
 Checks, in order: no Node, npm, npx or Python in the runtime; the image user is
 1000:1000; `pp-server healthcheck --help`; a hardened start (read-only root,
 bounded /tmp, all capabilities dropped, no-new-privileges) on a fresh named
-volume; liveness and readiness; sign-in through `pp-server bootstrap-url`, whose
-URL works once and never appears in the container logs; `GET /` serves the
-image's replacement UI index.html, not the old UI; an account written to
-SQLite and read back after a restart; SIGTERM drains with a complete shutdown
-receipt and leaves no process behind. The container uses host networking so
-this script can reach pp-server's loopback origin; pp-server still binds
-127.0.0.1 only. Sign-in URLs and cookies stay in memory and are never printed. Every container and
+volume; sign-in through the production bootstrap-url command, whose URL works
+once and never appears in the container logs; liveness and readiness; `GET /`
+serves the image's replacement UI index.html, not the old UI, and its CSP names
+the WebSocket origin of the published host port; an account written to SQLite
+and read back after a restart; SIGTERM drains with a complete shutdown receipt
+and leaves no process behind. The container publishes port 8080 on a free host
+loopback port, so requests reach it from a non-loopback Docker bridge peer.
+Sign-in URLs and cookies stay in memory and are never printed. Every container and
 volume it creates is removed on exit.
 """
 
 import http.client
+import ipaddress
 import json
 import re
 import subprocess
@@ -43,10 +45,12 @@ def log(message):
     print(f"[docker-smoke] {message}", flush=True)
 
 
-def request(origin, method, path, cookie="", body=None, accept=None):
+def request(origin, method, path, cookie="", body=None, peer_container=None, accept=None):
     url = urllib.parse.urlsplit(origin)
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
     headers = {"Host": url.netloc, "Origin": origin}
+    if path == "/login":
+        headers["Accept"] = "text/html"
     if cookie:
         headers["Cookie"] = cookie
     if accept:
@@ -57,9 +61,95 @@ def request(origin, method, path, cookie="", body=None, accept=None):
     connection.request(method, path, body=body, headers=headers)
     response = connection.getresponse()
     payload = response.read()
+    if peer_container is not None:
+        require_non_loopback_peer(peer_container)
     cookies = [value.split(";", 1)[0] for key, value in response.getheaders() if key.lower() == "set-cookie"]
     connection.close()
     return response.status, payload, cookies
+
+
+def mcp(origin, path, headers, message, peer_container=None):
+    """One MCP POST as an MCP client sends it: no Origin and no cookie unless `headers` add them.
+    Returns the status, the issued mcp-session-id, and the JSON-RPC answer or error body."""
+    url = urllib.parse.urlsplit(origin)
+    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    connection.request("POST", path, body=json.dumps(message), headers={
+        "Host": url.netloc,
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        **headers,
+    })
+    response = connection.getresponse()
+    if peer_container is not None:
+        require_non_loopback_peer(peer_container)
+    session = response.getheader("mcp-session-id")
+    answer = None
+    if (response.getheader("content-type") or "").startswith("text/event-stream"):
+        # rmcp may keep the stream open after its answer, so read up to the first JSON event.
+        while answer is None:
+            line = response.fp.readline()
+            if not line:
+                break
+            data = line.decode().removeprefix("data:").strip() if line.startswith(b"data:") else ""
+            if data:
+                answer = json.loads(data)
+    elif response.status != 202:
+        answer = json.loads(response.read() or b"null")
+    connection.close()
+    return response.status, session, answer
+
+
+def check_mcp(name, origin, cookies):
+    """GRE-1459: MCP on the explicit listener admits a valid API key from a non-loopback
+    peer and refuses no key or a wrong key without creating a session."""
+    status, body, _ = request(origin, "POST", "/settings/api-keys", cookies, {})
+    if status != 201:
+        raise SystemExit(f"creating an API key answered {status}")
+    bearer = {"Authorization": f"Bearer {json.loads(body)['key']}"}
+    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "docker-smoke", "version": "0"}}}
+    for path in ["/mcp", "/api/v1/mcp"]:
+        status, session, answer = mcp(origin, path, bearer, initialize, peer_container=name)
+        if status != 200 or not session or "serverInfo" not in (answer or {}).get("result", {}):
+            raise SystemExit(f"{path} initialize with a key answered {status}: {answer}")
+        headers = {**bearer, "Mcp-Session-Id": session, "Mcp-Protocol-Version": "2025-06-18"}
+        status, _, _ = mcp(origin, path, headers, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        if status != 202:
+            raise SystemExit(f"{path} initialized notification answered {status}")
+        status, _, answer = mcp(origin, path, headers, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = [tool["name"] for tool in ((answer or {}).get("result") or {}).get("tools", [])]
+        if status != 200 or "list_plans" not in tools:
+            raise SystemExit(f"{path} tools/list answered {status} with {len(tools)} tools")
+        call = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_plans", "arguments": {}}}
+        status, _, answer = mcp(origin, path, headers, call)
+        result = (answer or {}).get("result") or {}
+        if status != 200 or result.get("isError") or not result.get("content"):
+            raise SystemExit(f"{path} list_plans answered {status}: {answer}")
+        wrong = {"Authorization": "Bearer ppk_0000000000000000000000000000000000000000"}
+        for label, headers, expected in [
+            ("no key", {"Origin": origin}, 401),
+            ("no key, no Origin", {}, 403),
+            ("wrong key", wrong, 401),
+        ]:
+            status, session, _ = mcp(origin, path, headers, initialize)
+            if status != expected or session:
+                raise SystemExit(f"{path} {label} answered {status} (session {bool(session)}), expected {expected}")
+    log(f"MCP over the published port: a key lists {len(tools)} tools and runs list_plans; "
+        "no key or a wrong key gets 401 (403 without Origin) and no session")
+
+
+def require_non_loopback_peer(name):
+    # The HTTP connection stays open while we inspect its container-side peer.
+    table = docker("exec", name, "cat", "/proc/net/tcp").stdout
+    for row in table.splitlines()[1:]:
+        fields = row.split()
+        if fields[1].endswith(":1F90") and fields[3] == "01":  # port 8080, ESTABLISHED
+            peer = ipaddress.IPv4Address(bytes.fromhex(fields[2].split(":")[0])[::-1])
+            if not peer.is_loopback and not peer.is_unspecified:
+                log("container TCP table confirms a non-loopback peer on port 8080")
+                return
+    raise SystemExit("published-port request did not arrive from a non-loopback peer")
 
 
 def inspect_image(image):
@@ -68,6 +158,8 @@ def inspect_image(image):
         raise SystemExit(f"image user is {config['User']!r}, expected 1000:1000")
     if "PP_DESKTOP_REBUILD=1" not in config["Env"]:
         raise SystemExit("image does not set PP_DESKTOP_REBUILD=1")
+    if "PP_LISTEN_ADDR=0.0.0.0:8080" not in config["Env"]:
+        raise SystemExit("image does not set PP_LISTEN_ADDR=0.0.0.0:8080")
     log(f"image user {config['User']}, PP_DESKTOP_REBUILD=1, healthcheck {config['Healthcheck']['Test']}")
     found = docker(
         "run", "--rm", "--entrypoint", "/bin/sh", image, "-c",
@@ -86,7 +178,7 @@ def inspect_image(image):
 
 def start(image, name, volume):
     docker(
-        "run", "-d", "--name", name, "--network", "host",
+        "run", "-d", "--name", name, "-p", "127.0.0.1::8080",
         "--read-only", "--tmpfs", "/tmp:size=64m,mode=1777",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--health-interval", "2s", "--health-start-period", "60s",
@@ -110,14 +202,22 @@ def start(image, name, volume):
     credential = json.loads(docker("exec", name, "cat", CREDENTIAL).stdout)
     if credential["child_pid"] is not None:
         raise SystemExit("a Node child started")
-    origin = docker("logs", name).stdout.splitlines()[0].strip()
+    binding = json.loads(docker("inspect", name).stdout)[0]["NetworkSettings"]["Ports"]["8080/tcp"][0]
+    origin = f"http://127.0.0.1:{binding['HostPort']}"
+    if "Listening on 0.0.0.0:8080" not in docker("logs", name).stderr:
+        raise SystemExit("container did not report binding PP_LISTEN_ADDR")
+    log("docker run: bound 0.0.0.0:8080, reached through published loopback port")
+    status, _, _ = request(origin, "GET", "/api/v1/plans", peer_container=name)
+    if status != 401:
+        raise SystemExit(f"anonymous plans answered {status}, expected 401")
     if not origin.startswith("http://127.0.0.1:"):
         raise SystemExit(f"unexpected origin {origin!r}")
     # Sign in as a headless operator would: the URL comes from docker exec, not
     # from the test-only credential file.
     url = docker("exec", name, "pp-server", "bootstrap-url", "--data", "/data").stdout.strip()
     bootstrap = urllib.parse.urlsplit(url)
-    if f"{bootstrap.scheme}://{bootstrap.netloc}" != origin or bootstrap.path != "/__desktop/bootstrap":
+    # bootstrap-url knows the container port, not Docker's published host port.
+    if f"{bootstrap.scheme}://{bootstrap.netloc}" != "http://127.0.0.1:8080" or bootstrap.path != "/__desktop/bootstrap":
         raise SystemExit("bootstrap-url printed an unexpected URL")
     status, _, cookies = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
     if status != 303 or not cookies:
@@ -133,7 +233,21 @@ def start(image, name, volume):
     if refused.returncode == 0 or refused.stdout:
         raise SystemExit("root, which does not own /data, got a bootstrap URL")
     log("bootstrap-url: signed in once, a reused URL is refused, no URL in the logs, root is refused")
-    return origin, cookies[0]
+    desktop = cookies[0]
+    for path in ["/api/v1/plans", "/api/v1/integrations/missing/status"]:
+        status, _, _ = request(origin, "GET", path, desktop)
+        if status != 401:
+            raise SystemExit(f"{path} without account login answered {status}, expected 401")
+    for path in ["/mcp", "/api/v1/mcp"]:
+        # The desktop cookie is not an MCP key; the key guard answers.
+        status, _, _ = request(origin, "POST", path, desktop, {})
+        if status != 401:
+            raise SystemExit(f"MCP without a key answered {status}, expected 401")
+    status, page, _ = request(origin, "GET", "/login", desktop)
+    if status != 200 or b"<html" not in page.lower():
+        raise SystemExit(f"sign-in page through published port answered {status}")
+    log("non-loopback peer: login required, MCP without key refused, sign-in page 200")
+    return origin, desktop
 
 
 def check_replacement_ui(name, origin, desktop):
@@ -149,6 +263,25 @@ def check_replacement_ui(name, origin, desktop):
     if "Replacement UI bundle absent" in logs.stdout + logs.stderr:
         raise SystemExit("pp-server fell back to the old UI")
     log(f"GET / serves {REPLACEMENT_INDEX} with one style nonce; no fallback line in the logs")
+    # The browser's authority is the published host port, not the container's 8080.
+    netloc = urllib.parse.urlsplit(origin).netloc
+    policy = served_policy(origin, desktop)
+    if f"connect-src 'self' ws://{netloc}/ws/printers;" not in policy:
+        raise SystemExit(f"replacement CSP does not name ws://{netloc}/ws/printers: {policy!r}")
+    log(f"replacement CSP connect-src names ws://{netloc}/ws/printers, the published host port")
+
+
+def served_policy(origin, cookie):
+    """The Content-Security-Policy on the document that GET / returns through `origin`."""
+    url = urllib.parse.urlsplit(origin)
+    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    headers = {"Host": url.netloc, "Origin": origin, "Cookie": cookie, "Accept": "text/html"}
+    connection.request("GET", "/", headers=headers)
+    response = connection.getresponse()
+    response.read()
+    policy = response.getheader("Content-Security-Policy", "")
+    connection.close()
+    return policy
 
 
 def wait_health(name):
@@ -203,7 +336,11 @@ def main():
         status, body, _ = request(origin, "GET", "/api/v1/plans", f"{desktop}; {cookies[0]}")
         if status != 200:
             raise SystemExit(f"plans answered {status}")
-        log("first start: /health 200, account registered, /api/v1/plans 200")
+        status, _, _ = request(origin, "GET", "/api/v1/integrations/missing/status", f"{desktop}; {cookies[0]}")
+        if status != 404:
+            raise SystemExit(f"missing-printer status answered {status}, expected 404 after login")
+        log("first start: /health 200, account registered, /api/v1/plans 200, missing-printer status 404")
+        check_mcp(names[0], origin, f"{desktop}; {cookies[0]}")
         listing = docker("exec", names[0], "ls", "/data").stdout.split()
         log(f"/data holds: {' '.join(sorted(listing))}")
         second = docker("exec", names[0], "/usr/local/bin/pp-server-start", check=False)

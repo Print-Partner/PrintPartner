@@ -107,8 +107,8 @@ Only the server entry point allows environment-driven update checks. By coordina
   runtime keeps `apps/web/dist` and its legacy policy. See
   [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
-  session, then the gateway ends the desktop session and stops the runtime as
-  it does today.
+  session. The desktop app then ends the desktop session and its runtime;
+  headless `pp-server` keeps serving (`SignOut::KeepsServing`).
 - Moonraker status (GRE-335, GRE-449): the gateway's status watchers poll the
   Moonraker hosts in the stored `integrations` setting (tenant `default`).
   `pp_storage::printer_hosts` projects that setting the way Node's private
@@ -211,9 +211,9 @@ Only the server entry point allows environment-driven update checks. By coordina
     -E 'test(ticket_t_21) | test(ticket_t_22)'
   ```
 
-- The gateway listener is loopback only and passes the peer address to the
-  Rust routes as `ConnectInfo`; they refuse a non-loopback peer. LAN sharing is
-  not part of this mode.
+- Desktop startup stays loopback-only. Explicit headless listeners preserve
+  `ConnectInfo` and require login; see [Docker](docker.md#run). Desktop sharing
+  stays off.
 - Shutdown drains and stops the gateway, drops its routes, then shuts the
   writer down. If tracked shutdown work is still running, the writer and its
   lock are kept until the process exits. The receipt reports

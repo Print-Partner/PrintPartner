@@ -325,7 +325,7 @@ describe("Editing a printer", () => {
     expect(((await within(dialog).findByLabelText("Address")) as HTMLInputElement).value).toBe("http://voron.test");
     expect((within(dialog).getByLabelText("Name") as HTMLInputElement).value).toBe("Voron");
     expect((within(dialog).getByLabelText("New API key") as HTMLInputElement).value).toBe("");
-    expect(within(dialog).getByText("An API key is set. Leave this empty to keep it.")).toBeTruthy();
+    expect(within(dialog).getByText("An API key is set. Leave the field empty to keep it.")).toBeTruthy();
     expect(within(dialog).queryByLabelText("Username")).toBeNull();
   });
 

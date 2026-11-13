@@ -278,6 +278,7 @@ function connectionPatch(form: FormData, stored: Integration): IntegrationPatch 
 /** The address and credentials of a Moonraker or PrusaLink connection. A secret is write-only. */
 function ConnectionFields({ stored, locked }: { stored: Integration; locked: boolean }) {
   const [address, setAddress] = useState(stored.base_url ?? "");
+  const noteId = useId();
   const secret = secretOf(stored);
   const moved = address.trim() !== (stored.base_url ?? "");
   return (
@@ -286,14 +287,9 @@ function ConnectionFields({ stored, locked }: { stored: Integration; locked: boo
       <div className="pp-fields">
         <Field label="Address" name="address" type="url" required value={address} onChange={(event) => setAddress(event.target.value)} />
         {stored.kind === "prusalink" && <Field label="Username" name="username" autoComplete="off" defaultValue={stored.username ?? ""} />}
-        <Field
-          label={`New ${secret.word}`}
-          name="secret"
-          type="password"
-          autoComplete="off"
-          hint={secret.held ? `${secret.one} is set. Leave this empty to keep it.` : `No ${secret.word} is set.`}
-        />
+        <Field label={`New ${secret.word}`} name="secret" type="password" autoComplete="off" aria-describedby={noteId} />
       </div>
+      <p id={noteId}>{secret.held ? `${secret.one} is set. Leave the field empty to keep it.` : `No ${secret.word} is set.`}</p>
       {secret.held && (
         <label>
           <input type="checkbox" name="remove_secret" /> Remove the stored {secret.word}

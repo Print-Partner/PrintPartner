@@ -29,7 +29,6 @@ use std::{
     collections::HashSet,
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -97,7 +96,9 @@ pub type HeadPlates = (
 
 #[derive(Clone)]
 pub struct ReadClient {
-    shared: Arc<Shared>,
+    /// The writer queue reads submit to, and the reader pool
+    /// [`ReadClient::read_plan`] reads on.
+    storage: crate::SettingsClient,
     repos: PathBuf,
     policy: auth::AuthPolicy,
 }
@@ -132,7 +133,7 @@ impl WriterOwner {
         auth::validate_policy(policy)?;
         Ok(ReadClient {
             policy,
-            shared: self.client.shared.clone(),
+            storage: self.client.clone(),
             repos: self
                 .lease
                 .as_ref()
@@ -212,6 +213,34 @@ impl ReadClient {
         self.submit(credential, target, cancelled, wait)
     }
 
+    /// Reads one Accepted Plan on the read seam, never through the writer
+    /// thread. `None` names no Build: the credential is still checked, and
+    /// the answer is [`AcceptedRead::Missing`], as for a Build the caller's
+    /// tenant does not have.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn read_plan(
+        &self,
+        credential: Credential,
+        profile_id: Option<i64>,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<AcceptedRead, crate::WriterFailure> {
+        use crate::WriterFailure;
+        let ids = match profile_id {
+            Some(id) => vec![plan_id(id).map_err(WriterFailure::Internal)?],
+            None => Vec::new(),
+        };
+        let (policy, repos) = (self.policy, &self.repos);
+        let name = "read_model.read_plan";
+        self.storage
+            .read(name, cancelled, wait, |tx| {
+                let installation = crate::write::authorize(tx, &credential, policy)?;
+                let batch = read_batch(tx, installation.id(), Target::Profiles(ids), repos)?;
+                Ok::<_, WriterFailure>(batch.builds.into_iter().next())
+            })?
+            .map(|build| build.map_or(AcceptedRead::Missing, |build| build.accepted))
+    }
+
     fn submit(
         &self,
         credential: Credential,
@@ -219,14 +248,16 @@ impl ReadClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Batch> {
-        submit_read(&self.shared, cancelled, wait, |reply| Envelope::Read {
-            command: Command {
-                credential,
-                target,
-                repos: self.repos.clone(),
-                policy: self.policy,
-            },
-            reply,
+        submit_read(&self.storage.shared, cancelled, wait, |reply| {
+            Envelope::Read {
+                command: Command {
+                    credential,
+                    target,
+                    repos: self.repos.clone(),
+                    policy: self.policy,
+                },
+                reply,
+            }
         })
     }
 }
@@ -328,17 +359,30 @@ pub(crate) fn owned_build<'c>(
 pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<Batch> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let tenant = read_tenant(&tx, &command.credential, command.policy)?;
+    let batch = read_batch(&tx, &tenant, command.target, &command.repos)?;
+    tx.commit()?;
+    Ok(batch)
+}
+
+/// Reads `target` for `tenant` inside `tx`. Shared by [`execute`] on the
+/// writer thread and [`ReadClient::read_plan`] on the read seam.
+fn read_batch(
+    tx: &rusqlite::Transaction<'_>,
+    tenant: &str,
+    target: Target,
+    repos: &std::path::Path,
+) -> Result<Batch> {
     #[cfg(feature = "desktop_rebuild")]
-    let stock_profile = match command.target {
+    let stock_profile = match target {
         Target::Stock(id) => Some(id),
         _ => None,
     };
     #[cfg(feature = "desktop_rebuild")]
-    let plates_profile = match command.target {
+    let plates_profile = match target {
         Target::CheckoffUnits(id) => Some(id),
         _ => None,
     };
-    let profile_ids = match command.target {
+    let profile_ids = match target {
         Target::Profiles(ids) => ids,
         #[cfg(feature = "desktop_rebuild")]
         Target::Stock(id) | Target::CheckoffUnits(id) => vec![id],
@@ -355,9 +399,9 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
     let mut builds = Vec::new();
     let mut budget = graph::Budget::default();
     for profile_id in profile_ids {
-        let accepted = accepted_read(&tx, &tenant, profile_id, &command.repos, &mut budget)?;
+        let accepted = accepted_read(tx, tenant, profile_id, repos, &mut budget)?;
         let (context, context_error) =
-            match context::capture(&tx, &tenant, profile_id, &accepted, &mut budget) {
+            match context::capture(tx, tenant, profile_id, &accepted, &mut budget) {
                 Ok(value) => (value, None),
                 Err(error) => {
                     #[cfg(feature = "desktop_rebuild")]
@@ -384,18 +428,17 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
                 .iter()
                 .any(|b| !matches!(b.accepted, AcceptedRead::Missing)) =>
         {
-            Some(stock::read_inputs(&tx, &tenant, id)?)
+            Some(stock::read_inputs(tx, tenant, id)?)
         }
         _ => None,
     };
     #[cfg(feature = "desktop_rebuild")]
     let plates = match (plates_profile, builds.first().map(|b| &b.accepted)) {
         (Some(id), Some(AcceptedRead::Ready { snapshot })) => {
-            crate::plates::head_plates(&tx, &tenant, id, snapshot)?
+            crate::plates::head_plates(tx, tenant, id, snapshot)?
         }
         _ => None,
     };
-    tx.commit()?;
     Ok(Batch {
         builds,
         #[cfg(feature = "desktop_rebuild")]

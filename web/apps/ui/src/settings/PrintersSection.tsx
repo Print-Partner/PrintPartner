@@ -170,10 +170,14 @@ function AddPrinter({ onClose, onAdded }: { onClose: () => void; onAdded: (name:
 }
 
 /**
- * Delete is the printer, then its integration when no other printer links it. If the
- * second write fails the dialog says the printer is gone and offers that write again.
+ * Delete is the printer, then its integration when no other printer links it. The core
+ * does not refuse to delete an integration a printer still links, and the listed printers
+ * can be out of date, so the list is read again before that second write: the integration
+ * is kept when another printer links it, or when that read fails. If the second write
+ * fails the dialog says the printer is gone and offers that write again.
  */
 function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Printer; shared: boolean; onClose: () => void; onRemoved: (text: string) => void }) {
+  const client = useQueryClient();
   const [printerGone, setPrinterGone] = useState(false);
   const write = useWrite();
   const link = shared ? null : printer.integration;
@@ -181,20 +185,26 @@ function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Print
     write.run(async () => {
       if (!printerGone) await writeCore("deletePrinter", { id: printer.id });
       setPrinterGone(true);
-      if (link) {
-        try {
-          await writeCore("deleteIntegration", { id: link.id });
-        } catch (failure) {
-          throw new Said(`The printer was deleted, but its connection was not: ${why(failure)}.`);
-        }
+      const done = (kept = "") => onRemoved(`Deleted ${printer.name}.${kept}`);
+      const connection = printer.integration;
+      if (!connection) return done();
+      const fresh = await client.fetchQuery({ ...printersQuery, staleTime: 0 }).catch(() => null);
+      if (!fresh) return done(" Its connection was kept, because the printers could not be read to check that no other printer uses it.");
+      if (fresh.printers.some((other) => other.id !== printer.id && other.integration?.id === connection.id)) {
+        return done(" Its connection is used by another printer and was kept.");
       }
-      onRemoved(`Deleted ${printer.name}.`);
+      try {
+        await writeCore("deleteIntegration", { id: connection.id });
+      } catch (failure) {
+        throw new Said(`The printer was deleted, but its connection was not: ${why(failure)}.`);
+      }
+      done();
     });
   return (
     <Dialog title={`Delete ${printer.name}?`} onClose={onClose}>
       <p>
         {link
-          ? `This deletes the printer and its ${KIND_NAMES[link.kind]} connection, with the saved address and credentials.`
+          ? `This deletes the printer and its ${KIND_NAMES[link.kind]} connection, with the saved address and credentials. The connection is kept if another printer uses it.`
           : shared
             ? "This deletes the printer. Its connection is used by another printer and stays."
             : "This deletes the printer."}

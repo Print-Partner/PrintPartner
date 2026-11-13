@@ -232,7 +232,38 @@ describe("Deleting a printer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete Voron" }));
     expect(screen.getByText("This deletes the printer. Its connection is used by another printer and stays.")).toBeTruthy();
     press("Delete printer");
-    expect(await screen.findByText("Deleted Voron.")).toBeTruthy();
+    expect(await screen.findByText("Deleted Voron. Its connection is used by another printer and was kept.")).toBeTruthy();
+    expect(writes.map(([key]) => key)).toEqual(["DELETE /api/v2/printers/p-1"]);
+  });
+
+  it("reads the list again before deleting a connection, and keeps one a printer added elsewhere uses", async () => {
+    // The shown list has only Voron; another window has since added Twin on the same connection.
+    let printers = [VORON];
+    const writes = renderPrinters({
+      [LIST]: () => json({ printers }),
+      "DELETE /api/v2/printers/p-1": () => {
+        printers = [printer("p-2", "Twin", VORON.integration)];
+        return json({ ...CONFIG, id: "p-1" });
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Voron" }));
+    press("Delete printer");
+    expect(await screen.findByText("Deleted Voron. Its connection is used by another printer and was kept.")).toBeTruthy();
+    expect(writes.map(([key]) => key)).toEqual(["DELETE /api/v2/printers/p-1"]);
+  });
+
+  it("keeps the connection when the list cannot be read to check it", async () => {
+    let readable = true;
+    const writes = renderPrinters({
+      [LIST]: () => (readable ? json({ printers: [VORON] }) : problem(503, "Service unavailable")),
+      "DELETE /api/v2/printers/p-1": () => {
+        readable = false;
+        return json({ ...CONFIG, id: "p-1" });
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Voron" }));
+    press("Delete printer");
+    expect(await screen.findByText(/^Deleted Voron\. Its connection was kept, because the printers could not be read/)).toBeTruthy();
     expect(writes.map(([key]) => key)).toEqual(["DELETE /api/v2/printers/p-1"]);
   });
 

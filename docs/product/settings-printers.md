@@ -27,9 +27,14 @@ click outside the form do not close it in that state.
 ## Delete
 
 Delete opens a confirmation that says what it removes. It sends `deletePrinter`,
-then `deleteIntegration` when no other listed printer links that integration. If
-the second write fails, the dialog says the printer is deleted and offers
-"Delete connection", which sends only that write.
+then reads the printer list again, and sends `deleteIntegration` only when that
+fresh list shows no other printer linking the integration. The core does not
+refuse to delete an integration a printer still links, and the shown list can
+be out of date, for example after a printer was added in another window. When
+another printer links it, or the list cannot be read, the integration is kept
+and the message says so. If the integration write fails, the dialog says the
+printer is deleted and offers "Delete connection", which checks and sends only
+that write.
 
 ## Rules
 

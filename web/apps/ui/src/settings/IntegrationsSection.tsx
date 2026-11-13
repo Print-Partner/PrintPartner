@@ -57,25 +57,40 @@ const refused = (failure: unknown) =>
  */
 type Outcome = { kind: "refused"; text: string } | { kind: "unconfirmed"; at: number } | null;
 
+type Pin = ReturnType<typeof useQuery<RouteResponse<"readTlsPin">>>;
+
+function pinText(pin: Pin): string {
+  if (pin.isError) return `Certificate state unavailable: ${why(pin.error)}.`;
+  if (pin.data?.pinned) {
+    return ["Certificate pinned", pin.data.sha256_prefix, dateText(pin.data.pinned_at ?? null)].filter(Boolean).join(" · ");
+  }
+  return pin.data ? "Not pinned. Test connection to pin." : "Checking the certificate.";
+}
+
+function outcomeNote(outcome: Outcome, checking: boolean, pinned: boolean): string {
+  if (outcome?.kind === "refused") return outcome.text;
+  if (outcome?.kind !== "unconfirmed") return "";
+  if (checking) return "The core didn't confirm the reset. Checking the current pin.";
+  return pinned
+    ? "The core didn't confirm the reset, and the certificate is still pinned."
+    : "The core didn't confirm the reset. The certificate is no longer pinned.";
+}
+
 /**
- * The certificate a Bambu Test connection pinned, and its deliberate reset. The reset lives
- * here, not in the dialog, so its outcome survives Cancel or Escape while it is in flight.
- * Every reset reads the pin again once it settles. After an unconfirmed reset, Reset stays off
- * until that read answers.
+ * One integration's pin and its reset. The reset lives here, not in the dialog, so its
+ * outcome survives Cancel or Escape while it is in flight. Every reset reads the pin again
+ * once it settles. After an unconfirmed reset, Reset stays off until that read answers.
  */
-function BambuPin({ integration, offline, onMessage }: { integration: Integration; offline: boolean; onMessage: (text: string) => void }) {
+function usePinReset(integration: Integration, offline: boolean, onDone: () => void) {
   const client = useQueryClient();
   const query = pinQuery(integration.id);
   const pin = useQuery(query);
-  const [confirming, setConfirming] = useState(false);
   const [sending, setSending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
   const sendingNow = useRef(false);
-  const reasonId = useId();
   const checking = outcome?.kind === "unconfirmed" && !(pin.isSuccess && pin.dataUpdatedAt >= outcome.at);
   const pinned = pin.data?.pinned === true && !pin.isError;
   const armed = pinned && !sending && !offline && !checking;
-
   const reset = async () => {
     if (!armed || sendingNow.current) return;
     sendingNow.current = true;
@@ -84,8 +99,7 @@ function BambuPin({ integration, offline, onMessage }: { integration: Integratio
     try {
       await writeCore("resetTlsPin", { id: integration.id });
       client.setQueryData(query.queryKey, { pinned: false });
-      setConfirming(false);
-      onMessage(`Certificate reset for ${integration.name}. The next Test connection pins the certificate the printer shows.`);
+      onDone();
     } catch (failure) {
       setOutcome(
         refused(failure)
@@ -99,77 +113,72 @@ function BambuPin({ integration, offline, onMessage }: { integration: Integratio
       void client.invalidateQueries({ queryKey: query.queryKey });
     }
   };
+  return { pin, pinned, armed, checking, sending, outcome, note: outcomeNote(outcome, checking, pinned), reset, clear: () => setOutcome(null) };
+}
+
+type PinReset = ReturnType<typeof usePinReset>;
+
+/** Asks before forgetting the pin. Focus starts on Cancel; only the confirm button sends. */
+function ResetDialog({ name, offline, state, onClose }: { name: string; offline: boolean; state: PinReset; onClose: () => void }) {
+  const reasonId = useId();
+  return (
+    <Dialog title={`Reset the certificate for ${name}?`} onClose={onClose}>
+      <p>
+        Print Partner forgets the pinned certificate. The next Test connection trusts whatever
+        certificate answers at this printer's address, so run it only while you are sure the
+        printer on your network is this same device.
+      </p>
+      {offline && <p id={reasonId}>{OFFLINE_REASON}</p>}
+      {state.sending && <p role="status">Resetting the certificate.</p>}
+      {state.note && <p role="alert" className="pp-field-error">{state.note}</p>}
+      <div className="pp-dialog-actions">
+        <button type="button" className="pp-button" onClick={onClose}>
+          {state.sending || state.outcome ? "Close" : "Cancel"}
+        </button>
+        {state.pinned && (
+          <button
+            type="button"
+            className="pp-button pp-button-primary"
+            aria-disabled={!state.armed || undefined}
+            aria-describedby={offline ? reasonId : undefined}
+            onClick={() => void state.reset()}
+          >
+            Reset certificate
+          </button>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** The certificate a Bambu Test connection pinned, and its deliberate reset. */
+function BambuPin({ integration, offline, onMessage }: { integration: Integration; offline: boolean; onMessage: (text: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const state = usePinReset(integration, offline, () => {
+    setConfirming(false);
+    onMessage(`Certificate reset for ${integration.name}. The next Test connection pins the certificate the printer shows.`);
+  });
   const open = () => {
-    if (offline || checking) return;
-    setOutcome(null);
+    if (offline || state.checking) return;
+    state.clear();
     setConfirming(true);
   };
-
-  let text: string;
-  if (pin.isError) {
-    text = `Certificate state unavailable: ${why(pin.error)}.`;
-  } else if (pin.data?.pinned) {
-    text = ["Certificate pinned", pin.data.sha256_prefix, dateText(pin.data.pinned_at ?? null)].filter(Boolean).join(" · ");
-  } else if (pin.data) {
-    text = "Not pinned. Test connection to pin.";
-  } else {
-    text = "Checking the certificate.";
-  }
-  let note = "";
-  if (outcome?.kind === "refused") note = outcome.text;
-  else if (outcome?.kind === "unconfirmed") {
-    note = checking
-      ? "The core didn't confirm the reset. Checking the current pin."
-      : pinned
-        ? "The core didn't confirm the reset, and the certificate is still pinned."
-        : "The core didn't confirm the reset. The certificate is no longer pinned.";
-  }
   return (
     <span className="pp-fact-detail" data-tls-pin={integration.id}>
-      {text}
-      {pin.isError && (
-        <button type="button" className="pp-button" onClick={() => void pin.refetch()}>
+      {pinText(state.pin)}
+      {state.pin.isError && (
+        <button type="button" className="pp-button" onClick={() => void state.pin.refetch()}>
           Check the certificate again
         </button>
       )}
-      {note && !confirming && <span role="alert">{note}</span>}
-      {pinned && (
-        <button
-          type="button"
-          className="pp-button"
-          aria-disabled={offline || checking || undefined}
-          onClick={open}
-        >
+      {state.note && !confirming && <span role="alert">{state.note}</span>}
+      {state.pinned && (
+        <button type="button" className="pp-button" aria-disabled={offline || state.checking || undefined} onClick={open}>
           Reset certificate
         </button>
       )}
       {confirming && (
-        <Dialog title={`Reset the certificate for ${integration.name}?`} onClose={() => setConfirming(false)}>
-          <p>
-            Print Partner forgets the pinned certificate. The next Test connection trusts whatever
-            certificate answers at this printer's address, so run it only while you are sure the
-            printer on your network is this same device.
-          </p>
-          {offline && <p id={reasonId}>{OFFLINE_REASON}</p>}
-          {sending && <p role="status">Resetting the certificate.</p>}
-          {note && <p role="alert" className="pp-field-error">{note}</p>}
-          <div className="pp-dialog-actions">
-            <button type="button" className="pp-button" onClick={() => setConfirming(false)}>
-              {sending || outcome ? "Close" : "Cancel"}
-            </button>
-            {pinned && (
-              <button
-                type="button"
-                className="pp-button pp-button-primary"
-                aria-disabled={!armed || undefined}
-                aria-describedby={offline ? reasonId : undefined}
-                onClick={() => void reset()}
-              >
-                Reset certificate
-              </button>
-            )}
-          </div>
-        </Dialog>
+        <ResetDialog name={integration.name} offline={offline} state={state} onClose={() => setConfirming(false)} />
       )}
     </span>
   );

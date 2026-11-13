@@ -79,6 +79,77 @@ problem_types! {
     Internal = "urn:print-partner:problem:internal", "Internal Error";
 }
 
+/// Declares [`ProblemCode`] with each variant's wire value, and
+/// [`ProblemCode::ALL`] and [`ProblemCode::as_str`] from the same list.
+macro_rules! problem_codes {
+    ($($variant:ident = $wire:literal;)+) => {
+        /// The closed list of `code` values that have a typed producer in
+        /// `pp-api` or that the replacement UI branches on. The serialized
+        /// value is the `code` string. Older families still send codes
+        /// outside this list, so [`Problem::code`] stays a string; a family's
+        /// codes join when it is rewritten. See `docs/problem-responses.md`.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+        #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+        pub enum ProblemCode {
+            $(
+                #[serde(rename = $wire)]
+                $variant,
+            )+
+        }
+
+        impl ProblemCode {
+            /// Every variant, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)+];
+
+            /// The `code` string on the wire.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire,)+
+                }
+            }
+        }
+    };
+}
+
+problem_codes! {
+    // The draft and History routes; the replacement UI branches on these.
+    DraftChanged = "draft_changed";
+    BaseChanged = "base_changed";
+    HeaderChanged = "header_changed";
+    DuplicateBuildName = "duplicate_build_name";
+    DuplicateOrder = "duplicate_order";
+    BuildArchived = "build_archived";
+    DraftNotFound = "draft_not_found";
+    IdempotencyConflict = "idempotency_conflict";
+    OutcomeUnknown = "outcome_unknown";
+    AlreadyApplied = "already_applied";
+    ReconciliationRequired = "reconciliation_required";
+    SnapshotNotRestorable = "snapshot_not_restorable";
+    SnapshotNotFound = "snapshot_not_found";
+    InputsChanged = "inputs_changed";
+    PrintedUnitsAffected = "printed_units_affected";
+    AcceptedBaselineRequired = "accepted_baseline_required";
+    RequiredUnitSetUnavailable = "required_unit_set_unavailable";
+    InvalidHeader = "invalid_header";
+    // Every write through the write seam, with `OutcomeUnknown`.
+    TransactionUnavailable = "transaction_unavailable";
+    // The integration and printer routes.
+    InvalidIntegration = "invalid_integration";
+    IntegrationNotFound = "integration_not_found";
+    IntegrationLimit = "integration_limit";
+    IntegrationNotEditable = "integration_not_editable";
+    IntegrationsUnreadable = "integrations_unreadable";
+    InvalidPrinter = "invalid_printer";
+    PrinterNotFound = "printer_not_found";
+    PrinterLimit = "printer_limit";
+    PrintersUnreadable = "printers_unreadable";
+    FilamentSlotInUse = "filament_slot_in_use";
+    // `GET /sources/{id}/files`.
+    SourceNotFound = "source_not_found";
+    SourceSnapshotUnavailable = "source_snapshot_unavailable";
+    SourceTooManyFiles = "source_too_many_files";
+}
+
 impl ProblemType {
     /// The type for an error `status` and Node-compatible `code`. A code that
     /// names a precise cause wins over the status.
@@ -170,8 +241,15 @@ impl Problem {
         self
     }
 
+    /// Sets a code outside the closed list, for the older families.
     pub fn with_code(mut self, code: &str) -> Self {
         self.code = Some(cut(code, MAX_CODE_BYTES));
+        self
+    }
+
+    /// Sets a code from the closed list. New families use this.
+    pub fn with_problem_code(mut self, code: ProblemCode) -> Self {
+        self.code = Some(code.as_str().to_owned());
         self
     }
 
@@ -230,6 +308,31 @@ mod tests {
             serde_json::json!({"type": "urn:print-partner:problem:not-found", "title": "Not Found",
                 "status": 404, "detail": "Source not found", "code": "x"})
         );
+    }
+
+    #[test]
+    fn problem_response_codes_are_unique_and_hold_every_family_constant() {
+        use crate::{integrations::code as setup, source_files::code as files};
+        let wire: Vec<&str> = ProblemCode::ALL.iter().map(|code| code.as_str()).collect();
+        for (index, &code) in ProblemCode::ALL.iter().enumerate() {
+            assert!(!wire[..index].contains(&wire[index]), "{code:?} repeats");
+            assert!(wire[index].len() <= MAX_CODE_BYTES, "{code:?}");
+            assert_eq!(serde_json::json!(code), wire[index]);
+            let problem = Problem::new(ProblemType::Conflict, 409, "").with_problem_code(code);
+            assert_eq!(problem.code.as_deref(), Some(wire[index]));
+        }
+        #[rustfmt::skip]
+        let constants = [
+            setup::INVALID_INTEGRATION, setup::INTEGRATION_NOT_FOUND, setup::INTEGRATION_LIMIT,
+            setup::INTEGRATION_NOT_EDITABLE, setup::INTEGRATIONS_UNREADABLE, setup::INVALID_PRINTER,
+            setup::PRINTER_NOT_FOUND, setup::PRINTER_LIMIT, setup::PRINTERS_UNREADABLE,
+            setup::FILAMENT_SLOT_IN_USE, files::SOURCE_NOT_FOUND, files::SNAPSHOT_UNAVAILABLE,
+            files::TOO_MANY_FILES, crate::problem::TRANSACTION_UNAVAILABLE,
+            crate::problem::OUTCOME_UNKNOWN,
+        ];
+        for constant in constants {
+            assert!(wire.contains(&constant), "{constant} is not a ProblemCode");
+        }
     }
 
     #[test]

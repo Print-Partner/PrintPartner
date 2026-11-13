@@ -64,6 +64,8 @@ mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
 #[cfg(feature = "desktop_rebuild")]
+pub mod source_files;
+#[cfg(feature = "desktop_rebuild")]
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_sync;

@@ -167,22 +167,27 @@ impl SourceReads {
         b.check()?;
         let locator = locator.ok_or(ReadFailure::UnsafeLocator)?;
         b.comparison(locator.len())?;
-        if !crate::read_model::graph::safe_path(locator)
-            || !locator.starts_with(&format!("{source}/"))
-        {
-            return Err(ReadFailure::UnsafeLocator);
-        }
-        let workspace = self.repos.join(source.to_string());
-        if !fs::symlink_metadata(&workspace).is_ok_and(|meta| meta.is_dir()) {
-            return Err(ReadFailure::UnsafeLocator);
-        }
-        match (
-            fs::canonicalize(&workspace),
-            fs::canonicalize(self.repos.join(locator)),
-        ) {
-            (Ok(workspace), Ok(root)) if root.starts_with(&workspace) && root.is_dir() => Ok(root),
-            _ => Err(ReadFailure::UnsafeLocator),
-        }
+        revision_root(&self.repos, source, locator).ok_or(ReadFailure::UnsafeLocator)
+    }
+}
+/// The snapshot directory a revision's `locator` names under `repos`, or
+/// `None` unless the locator is a safe relative path under `<source>/` and
+/// resolves, after symbolic links, to a directory inside `repos/<source>`.
+pub(crate) fn revision_root(repos: &Path, source: i64, locator: &str) -> Option<PathBuf> {
+    if !crate::read_model::graph::safe_path(locator) || !locator.starts_with(&format!("{source}/"))
+    {
+        return None;
+    }
+    let workspace = repos.join(source.to_string());
+    if !fs::symlink_metadata(&workspace).is_ok_and(|meta| meta.is_dir()) {
+        return None;
+    }
+    match (
+        fs::canonicalize(&workspace),
+        fs::canonicalize(repos.join(locator)),
+    ) {
+        (Ok(workspace), Ok(root)) if root.starts_with(&workspace) && root.is_dir() => Some(root),
+        _ => None,
     }
 }
 /// Node's `path.resolve` for one path: absolute against the working directory,

@@ -60,12 +60,15 @@ export function StartConfirm({
   file,
   printerName,
   bedToClear,
+  stateUnknown = false,
   onCancel,
   onStart,
 }: {
   file: string;
   printerName: string;
   bedToClear: boolean;
+  /** The printer's current state could not be read, so the bed may need clearing. */
+  stateUnknown?: boolean;
   onCancel: () => void;
   onStart: () => void;
 }) {
@@ -74,6 +77,12 @@ export function StartConfirm({
       {bedToClear && (
         <p className="pp-banner" data-kind="attention" role="note">
           The bed needs clearing. Clear it before you start this print.
+        </p>
+      )}
+      {stateUnknown && (
+        <p className="pp-banner" data-kind="attention" role="note">
+          Print Partner could not read this printer's current state. Check that the bed is clear
+          before you start this print.
         </p>
       )}
       <p>

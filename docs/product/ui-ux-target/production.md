@@ -34,7 +34,7 @@ The UI never sends `force`. Nothing is sent when the tab or sheet opens, when a 
 
 ## Row actions (GRE-1524)
 
-Each send row offers actions for its state. Only Remove and the two answers write without a further step.
+Each send row offers actions for its state. Only Send now on an Upload and start print row asks first; every other action writes on one press.
 
 | Row state | Actions |
 | --- | --- |
@@ -43,7 +43,7 @@ Each send row offers actions for its state. Only Remove and the two answers writ
 | Outcome unknown | It printed, It did not print, Remove (no Send now) |
 | Sending, Sent | None |
 
-- **Send now** on an Upload and start print row opens the same "Start this print?" confirmation as the sheet, with the bed warning first when the printer shows Bed to clear. On an Upload only row it sends at once.
+- **Send now** on an Upload and start print row reads the printers again, then opens the same "Start this print?" confirmation as the sheet, with the bed warning first when the printer now shows Bed to clear. When the printer's state cannot be read, the confirmation says so and asks to check the bed. On an Upload only row it sends at once.
 - **It printed** and **It did not print** are separate, explicitly labelled buttons. Neither is styled or focused as the default, so a mis-tap or Enter never records an answer. Each sends Reconcile with `{printed, job_id}`, where `job_id` is the row's `upload_job_id`. It printed makes the row Sent; It did not print makes it Failed, and Send now sends it again only when pressed.
 - **Answers from the core:** a 4xx, including 409 `send_changed` for an answer about an earlier send, re-reads the queue and shows the problem's detail on the row. A 5xx or no answer re-reads and says Print Partner could not confirm what the core did. Nothing is repeated on its own.
-- **One write at a time:** a row's buttons are off while its write is in flight. Offline, they say why.
+- **One write at a time:** a row's buttons are off, and say so, from the press until the queue has been read again. Offline, they say why. A row's last notice stays until its next action, so a refusal's reason is still shown after the re-read changes the row.

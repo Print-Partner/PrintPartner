@@ -14,7 +14,7 @@ import {
   UNREACHABLE,
   writes,
   type State,
-} from "./sendQueueFake";
+} from "./sendQueueFake.test-utils";
 
 afterEach(() => {
   cleanup();

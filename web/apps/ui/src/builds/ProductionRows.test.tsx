@@ -1,6 +1,16 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BED, fakeCore, item, json, printer, problem, renderAt, writes } from "./sendQueueFake";
+import {
+  BED,
+  fakeCore,
+  item,
+  json,
+  printer,
+  problem,
+  READY,
+  renderAt,
+  writes,
+} from "./sendQueueFake.test-utils";
 
 // GRE-1524: row actions. "The simulator" in the acceptance is the fake core's request log:
 // a dispatch is the only request that would reach a printer.
@@ -9,6 +19,10 @@ const dispatches = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
 
 const row = async (filename: string) =>
   within(await screen.findByRole("group", { name: `Actions for ${filename}` }));
+
+/** The row's State cell, so a test cannot pass on another row's text. */
+const stateOf = (filename: string) =>
+  screen.getByText(filename).closest("tr")!.querySelectorAll("td")[4]!.textContent ?? "";
 
 const UNKNOWN = item("lost", {
   filename: "lost.gcode",
@@ -68,8 +82,8 @@ describe("Production row actions", () => {
       const { fetchMock } = fakeCore({ items: [UNKNOWN] });
       renderAt(fetchMock);
       fireEvent.click((await row("lost.gcode")).getByRole("button", { name: answer as string }));
-      const table = await screen.findByRole("table", { name: "Sends" });
-      await waitFor(() => expect(table.textContent).toContain(state));
+      await screen.findByRole("table", { name: "Sends" });
+      await waitFor(() => expect(stateOf("lost.gcode")).toMatch(new RegExp(`^${state}`)));
       const [[path, init]] = writes(fetchMock) as [[string, RequestInit]];
       expect(path).toBe("/api/v2/printer-send-queue/lost/reconcile");
       expect(JSON.parse(String(init.body))).toEqual({ printed, job_id: "job-7" });
@@ -97,8 +111,7 @@ describe("Production row actions", () => {
     renderAt(fetchMock);
     fireEvent.click((await row("lost.gcode")).getByRole("button", { name: "It did not print" }));
     expect(await screen.findByText("This answer is for an earlier send of this item")).toBeTruthy();
-    const table = screen.getByRole("table", { name: "Sends" });
-    await waitFor(() => expect(table.textContent).toContain("Sent"));
+    await waitFor(() => expect(stateOf("lost.gcode")).toBe("Sent"));
     expect(dispatches(fetchMock)).toEqual([]);
   });
 
@@ -109,6 +122,7 @@ describe("Production row actions", () => {
     for (const name of ["It printed", "It did not print"]) {
       const button = actions.getByRole("button", { name });
       expect(button.className).not.toContain("pp-button-primary");
+      expect(button.hasAttribute("autofocus")).toBe(false);
       expect(document.activeElement).not.toBe(button);
     }
     const tableRow = screen.getByText("lost.gcode").closest("tr")!;
@@ -136,6 +150,27 @@ describe("Production row actions", () => {
     confirm = await screen.findByRole("dialog", { name: "Start this print?" });
     fireEvent.click(within(confirm).getByRole("button", { name: "Start print" }));
     await waitFor(() => expect(dispatches(fetchMock)).toHaveLength(1));
+  });
+
+  it("Send now on a start row reads the printer again: a print that finished since the tab opened warns", async () => {
+    const printers = [printer("p1", "Micron", READY)];
+    const start = item("s", { filename: "start.gcode", start: true, wait_for_idle: true });
+    const { fetchMock } = fakeCore({ items: [start], printers });
+    renderAt(fetchMock);
+    const actions = await row("start.gcode");
+    printers[0] = printer("p1", "Micron", BED);
+    fireEvent.click(actions.getByRole("button", { name: "Send now" }));
+    const confirm = await screen.findByRole("dialog", { name: "Start this print?" });
+    expect(confirm.textContent).toMatch(/bed needs clearing/);
+    expect(writes(fetchMock)).toEqual([]);
+  });
+
+  it("a start row whose printer cannot be read says so in the confirmation", async () => {
+    const start = item("s", { filename: "start.gcode", printer_id: "gone", start: true });
+    renderAt(fakeCore({ items: [start] }).fetchMock);
+    fireEvent.click((await row("start.gcode")).getByRole("button", { name: "Send now" }));
+    const confirm = await screen.findByRole("dialog", { name: "Start this print?" });
+    expect(confirm.textContent).toMatch(/could not read this printer's current state/);
   });
 
   it("Upload only Send now needs no confirmation", async () => {
@@ -178,6 +213,7 @@ describe("Production row actions", () => {
         "true",
       ),
     );
+    expect(actions.getByText("Waiting for the core's answer.")).toBeTruthy();
     fireEvent.click(actions.getByRole("button", { name: "Send now" }));
     fireEvent.click(actions.getByRole("button", { name: "Remove" }));
     expect(writes(fetchMock)).toHaveLength(1);

@@ -63,7 +63,7 @@ function SendRows({
                 )}
               </td>
               <td>
-                <SendRowActions item={item} printer={printers.get(item.printer_id)} />
+                <SendRowActions item={item} />
               </td>
             </tr>
           );

@@ -1,8 +1,8 @@
 //! `propose_import_build_inputs` and its `confirm_apply`: `source_id` inputs
-//! (GRE-1300 part 2, GRE-1521) and model-page and link `url` inputs (part 3a,
-//! GRE-1526), through the MCP router with an API key, on the Build the
-//! Source-roles tests seed.
-use super::create_build::{confirm, database, execute, pending};
+//! (GRE-1300 part 2, GRE-1521), model-page and link `url` inputs (part 3a,
+//! GRE-1526) and git `url` inputs (part 3b, GRE-1533), through the MCP router
+//! with an API key, on the Build the Source-roles tests seed.
+use super::create_build::{confirm, database, execute, json_call, pending};
 use super::source_roles::Seeded;
 use super::*;
 use pp_storage::read_model::planning::EvidenceKind;
@@ -176,11 +176,8 @@ async fn mcp_import_inputs_propose_refuses_with_a_code() {
             "invalid_input",
         ),
         (
-            args(
-                &seeded,
-                json!([{ "url": "https://github.com/example/kit" }]),
-            ),
-            "url_inputs_not_supported",
+            args(&seeded, json!([{ "url": "https://github.com/example" }])),
+            "invalid_repository_url",
         ),
         (
             args(&seeded, json!([{ "url": "ftp://example.com/kit.zip" }])),
@@ -273,6 +270,122 @@ async fn mcp_import_inputs_confirm_refuses_with_a_code_and_changes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_import_inputs_without_a_key_is_refused_and_proposes_nothing() {
     let seeded = seeded().await;
-    let arguments = args(&seeded, json!([{ "source_id": S3 }]));
+    let arguments = args(&seeded, json!([{ "url": KIT }]));
+    let sources = library(&seeded);
     seeded.unkeyed_proposes_nothing(TOOL, arguments).await;
+    assert_eq!(library(&seeded), sources);
+}
+
+/// Daily-loop step 5's kit repository.
+const KIT: &str = "https://github.com/example/daily-loop-kit";
+
+/// The Library Sources whose URL is `KIT`, as `[id, name, branch,
+/// source_kind, source_type, last_synced_at]`.
+fn kit_sources(seeded: &Seeded) -> Value {
+    let text: String = database(&seeded.server)
+        .query_row(
+            "SELECT json_group_array(json_array(id,name,branch,source_kind,source_type,last_synced_at)) \
+             FROM projects WHERE url=?1",
+            [KIT],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+/// The evidence item `build`'s stored brief holds for Source `source`.
+fn item_for(seeded: &Seeded, build: u64, source: i64) -> Value {
+    let text: String = database(&seeded.server)
+        .query_row(
+            "SELECT value FROM app_settings WHERE key=?1",
+            [format!("build_planning.v1.{build}")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let brief: Value = serde_json::from_str(&text).unwrap();
+    let items = brief["evidence"].as_array().unwrap();
+    let found: Vec<_> = items
+        .iter()
+        .filter(|item| item["source_id"] == source)
+        .collect();
+    assert_eq!(found.len(), 1, "{brief}");
+    found[0].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_import_inputs_create_a_git_source_once_and_reuse_it() {
+    let seeded = seeded().await;
+    let sources = library(&seeded);
+    // Propose writes nothing: no proposal state (checked by proposed_call)
+    // and no Source. It makes no network call; nothing on this path has one.
+    let id = seeded
+        .proposed_call(TOOL, args(&seeded, json!([{ "url": KIT }])))
+        .await;
+    assert_eq!(library(&seeded), sources, "propose creates no Source");
+    let (confirmed, error) = confirm(&seeded.server, &seeded.headers, &id).await;
+    assert!(!error, "{confirmed}");
+    let kit = kit_sources(&seeded);
+    let source = kit[0][0].as_i64().unwrap();
+    assert_eq!(
+        kit,
+        json!([[
+            source,
+            "example-daily-loop-kit",
+            "main",
+            "github",
+            "git",
+            null
+        ]]),
+        "one unsynced git Source, branch main"
+    );
+    assert_eq!(confirmed["result"]["created_source_ids"], json!([source]));
+    assert_eq!(confirmed["result"]["evidence"][0]["source_id"], source);
+    assert_eq!(confirmed["result"]["evidence"][0]["kind"], "mod");
+    let item = item_for(&seeded, seeded.build, source);
+    assert_eq!(item["source_role"], "addon", "{item}");
+    assert_eq!(item["normalized_url"], KIT);
+
+    // The owner sets the role; a re-import with case, `.git` and slash
+    // differences reuses the Source and keeps the role.
+    let roles = json!({ "plan_id": seeded.build, "roles": [{ "evidence_id": item["id"], "role": "overlay" }] });
+    let set = seeded
+        .proposed_call("propose_set_build_source_roles", roles)
+        .await;
+    assert!(!confirm(&seeded.server, &seeded.headers, &set).await.1);
+    let again = imported(&seeded, json!([{ "url": KIT }])).await;
+    assert_eq!(again["result"]["created_source_ids"], json!([]));
+    assert_eq!(
+        item_for(&seeded, seeded.build, source)["source_role"],
+        "overlay"
+    );
+
+    // Another Build: the same repository, written differently, reuses it.
+    let args_b = json!({ "name": "Second kit", "request": "The same kit again" });
+    let (proposal, _) = json_call(
+        &seeded.server,
+        &seeded.headers,
+        "propose_create_build",
+        args_b,
+    )
+    .await;
+    let made = proposal["action"]["id"].as_str().unwrap().to_owned();
+    let (created, _) = confirm(&seeded.server, &seeded.headers, &made).await;
+    let other = created["result"]["plan_id"].as_u64().unwrap();
+    let variant = "https://GitHub.com/Example/Daily-Loop-Kit.git/";
+    let id = seeded
+        .proposed_call(
+            TOOL,
+            json!({ "plan_id": other, "inputs": [{ "url": variant }] }),
+        )
+        .await;
+    let (reused, error) = confirm(&seeded.server, &seeded.headers, &id).await;
+    assert!(!error, "{reused}");
+    assert_eq!(reused["result"]["created_source_ids"], json!([]));
+    assert_eq!(reused["result"]["evidence"][0]["source_id"], source);
+    assert_eq!(item_for(&seeded, other, source)["source_role"], "addon");
+    assert_eq!(
+        kit_sources(&seeded).as_array().unwrap().len(),
+        1,
+        "one Source"
+    );
 }

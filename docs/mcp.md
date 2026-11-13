@@ -77,17 +77,18 @@ It also answers the four shared codes above.
 
 ### `propose_import_build_inputs`
 
-`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), and model pages and other links by `url` (part 3a, GRE-1526). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A git repository URL is refused until GRE-1300 part 3b.
+`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, branch?, derived_from_evidence_id? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), and git repositories, model pages and other links by `url` (parts 3a and 3b, GRE-1526 and GRE-1533). It creates a git Source only for a repository no Library Source holds, changes no existing Source, and fetches or syncs nothing. The Build's layers, drafts and Accepted Plan stay as they are.
 
 - **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing and makes no network call.
 - **Confirm** runs the same checks and then one transaction: one evidence item per input goes in the brief, the selected draft is cleared, and the brief is stored. The inputs of one confirm are attached together or not at all. Each item's `id` is the first 20 hex digits of the SHA-256 of its normalized URL, as Node makes it. Importing an input the brief already holds, by that URL, updates its one item in place and keeps its `source_role`; Node drops the role there.
   - **A Source** gets the URL `printpartner:source:<id>`. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files.
   - **A URL** is classified as Node's `classifyBuildUrl` does (`pp_services::build_url`). It must be http or https. The normalized URL is the trimmed URL without its fragment and without trailing slashes on its path; `url` keeps the value as sent.
     - A page on Printables, MakerWorld, Thingiverse, Thangs, Cults3D or MyMiniFactory, or one of their subdomains, is a model page: `kind` defaults to `model_source`, `input_kind` is `model_page`, and `upload_required` is `true`. Upload its files into a Source, then attach that Source by `source_id`.
-    - Any other non-git URL is a link: `kind` defaults to `informational_evidence` and `input_kind` is `url`.
+    - A git repository is a `github.com` URL or a path ending `.git`. Its item has `kind` `mod`, `input_kind` `url`, `source_role` `addon` and `sync_status` `pending`, as Node stores it, and the `source_id` of the Library Source that holds the repository. Confirm reuses the Source whose URL names the same repository: the normalized URL without a trailing `.git`, and on `github.com` the owner and repository in any letter case. With no such Source, confirm creates an unsynced git Source in the same transaction, as `POST /sources` creates one: a `github.com` URL is stored as `https://github.com/<owner>/<repo>`, and the branch is `branch`, the branch a `/tree/<branch>` URL names, or `main`. Rust does not ask GitHub for the default branch as Node does, so a repository whose default branch is not `main` fails its first sync until its branch is set in Library. The Source is named as Node names it: the owner and repository joined with `-` (or the last two path segments, without `.git`), with the first 6 characters of the item's id added when another Source has that name.
+    - Any other URL is a link: `kind` defaults to `informational_evidence` and `input_kind` is `url`.
     - `title` is stored when given. `derived_from_evidence_id` is checked but, as in Node, not stored on a URL's item.
   - **`extract`**, on any input, is stored trimmed with its SHA-256 as `content_hash` and the time as `retrieved_at`.
-- It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required" }], "created_source_ids": [] } }`, one item per input in input order. `source_id` is `null` for a URL.
+- It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required" }], "created_source_ids" } }`, one item per input in input order. `source_id` is `null` for a model page or link. `created_source_ids` lists the git Sources this confirm created, once each.
 
 A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
 
@@ -97,12 +98,13 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 | `invalid_inputs` | `inputs` is missing, not a list, or empty. |
 | `invalid_input` | An input is not an object, has both or neither of `source_id` and `url`, or its `source_id` is not a positive whole number. |
 | `invalid_url` | A `url` is not an http or https URL. |
-| `url_inputs_not_supported` | A `url` is a git repository: a `github.com` URL or a path ending `.git` (until GRE-1300 part 3b). |
+| `invalid_repository_url` | A git `url` names no repository, such as `https://github.com/<owner>` alone, or Library refuses it as a Source location. |
 | `invalid_evidence_kind` | A `kind` is not `canonical_design`, `vendor_overlay`, `mod`, `component`, `model_source` or `informational_evidence`. |
 | `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
 | `planning_brief_invalid` | The stored brief does not parse. |
 | `source_not_found` | A `source_id` names no Library Source. A refused confirm names it in `source_id`. |
 | `derived_evidence_not_found` | A `derived_from_evidence_id` names no evidence already in the brief. A refused confirm names it in `evidence_id`. |
+| `source_name_taken` | Both the name for a new git Source and that name with its suffix belong to other Sources. Add the repository from Library under another name, then attach it by `source_id`. |
 
 It also answers the four shared codes above.
 

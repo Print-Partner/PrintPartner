@@ -152,6 +152,9 @@ impl DomainPort for CheckoffDomain {
         if name == super::create_build::PROPOSE {
             return self.create_build_propose(args);
         }
+        if name == super::source_roles::PROPOSE {
+            return self.source_roles_propose(args);
+        }
         Err(format!("{name} has no Rust port yet"))
     }
 
@@ -164,6 +167,9 @@ impl DomainPort for CheckoffDomain {
         }
         if action.action_type == super::create_build::PROPOSE {
             return self.create_build_apply(action);
+        }
+        if action.action_type == super::source_roles::PROPOSE {
+            return self.source_roles_apply(action);
         }
         if action.action_type != VERIFY {
             return Ok(

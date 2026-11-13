@@ -219,6 +219,12 @@ pub(crate) fn publish_rename(from: &Path, to: &Path) -> io::Result<()> {
     move_file(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
 }
 
+/// Without `MOVEFILE_REPLACE_EXISTING` the move fails when `to` exists. It
+/// moves a directory too, within one volume.
+pub(crate) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    move_file(from, to, MOVEFILE_WRITE_THROUGH)
+}
+
 /// Without `MOVEFILE_REPLACE_EXISTING` the move fails when `to` exists.
 pub(crate) fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     move_file(from, to, MOVEFILE_WRITE_THROUGH)

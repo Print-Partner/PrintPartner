@@ -45,10 +45,17 @@ pub(super) enum Code {
     BaseChanged,
     AcceptedBaselineRequired,
     EditRefused,
-    // get_build_planning_state, get_plan_draft
+    // get_build_planning_state, get_plan_draft, propose_set_build_source_roles
     InvalidPlanId,
     PlanNotFound,
     NoPlanningBrief,
+    // propose_set_build_source_roles
+    InvalidRoles,
+    PlanningBriefInvalid,
+    InvalidRoleAssignment,
+    InvalidSourceRole,
+    EvidenceNotFound,
+    MultipleStructuralBases,
 }
 
 impl Code {
@@ -82,6 +89,12 @@ impl Code {
             Self::InvalidPlanId => "invalid_plan_id",
             Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",
+            Self::InvalidRoles => "invalid_roles",
+            Self::PlanningBriefInvalid => "planning_brief_invalid",
+            Self::InvalidRoleAssignment => "invalid_role_assignment",
+            Self::InvalidSourceRole => "invalid_source_role",
+            Self::EvidenceNotFound => "evidence_not_found",
+            Self::MultipleStructuralBases => "multiple_structural_bases",
         }
     }
 }

@@ -20,12 +20,13 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not edit them; change the Rust types or the metadata consumed by `export-rust-client` and regenerate.
 
 The exporter composes the base `CLIENT_ROUTES` and `document()` in
-`rust/crates/pp-api/src/client_contract.rs` with two module extensions: the
+`rust/crates/pp-api/src/client_contract.rs` with three module extensions: the
 send queue's `CLIENT_ROUTES` and `client_document()` in
-`rust/crates/pp-api/src/send_queue.rs`, and the first-run probe's
+`rust/crates/pp-api/src/send_queue.rs`, the first-run probe's
 `CLIENT_ROUTE` and `client_document()` in
-`rust/crates/pp-api/src/printer_host/probe.rs`. Each module adds its DTO
-schemas and Rust-serialized fixtures. `document()` and `document_bytes()` return
+`rust/crates/pp-api/src/printer_host/probe.rs`, and Library's `CLIENT_ROUTES`
+and `client_document()` in `rust/crates/pp-api/src/catalog/contract.rs`. Each
+module adds its DTO schemas and fixtures. `document()` and `document_bytes()` return
 the base contract only; use the export binary for the complete generator input.
 
 | File | Contents |
@@ -58,6 +59,8 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v2/plans/{id}/decisions` | | `PlanDecisionList` |
 | `GET /api/v2/printers` | | `FarmPrinterList` |
 | `POST /api/v2/printers/probe` | `PrinterProbeRequest` | `PrinterProbeResult` |
+| `POST /api/v1/sources` (`createSource`) | `CreateSourceRequest` | `SourceSummary` |
+| `GET /api/v1/jobs/{id}` (`readJob`, text `id`) | | `JobSnapshot` (`status` one of `pending`, `running`, `done`, `error`, `cancelled`; `result` untyped JSON or null) |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
@@ -132,7 +135,7 @@ The emitter (`web/scripts/rust-contracts/client.mjs`, `rust-client-zod/1`) refus
 ## Add a route
 
 1. Make sure the request and response types derive `schemars::JsonSchema` under the `codegen` feature, and that the handler serializes that type rather than a `json!` literal.
-2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. The base uses `CLIENT_ROUTES` and `document()` in `rust/crates/pp-api/src/client_contract.rs`; the probe and send queue modules supply extensions composed by the binary. Include module metadata in `pp-core`'s mounted-route contract test as well.
+2. Register the route metadata, schemas and serialized fixtures in the contract written by `export-rust-client`. The base uses `CLIENT_ROUTES` and `document()` in `rust/crates/pp-api/src/client_contract.rs`; the probe, send queue and catalog modules supply extensions composed by the binary. Include module metadata in `pp-core`'s mounted-route contract test as well.
 3. Run `generate`, then `check`.
 
 ## Add a descriptor table

@@ -3,8 +3,19 @@ use inventory::Status;
 use pp_testkit::{Fixture, Installation, node_installation as synthetic, node_schema};
 use std::time::SystemTime;
 
+mod copy;
+
 fn node_folder() -> Installation {
     let installation = Installation::create(Fixture::NodeSchema34).unwrap();
+    synthetic::populate(installation.path()).unwrap();
+    installation
+}
+
+/// The same synthetic installation as Print Partner v3.3.0 stored it, at
+/// schema 33.
+fn node_folder_33() -> Installation {
+    let installation = Installation::create(Fixture::Empty).unwrap();
+    node_schema::write_schema_33_database(&installation.database_path()).unwrap();
     synthetic::populate(installation.path()).unwrap();
     installation
 }
@@ -150,7 +161,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     assert!(report.unused.contains(&kept), "{:?}", report.unused);
     assert_eq!(items["setting build_planning.create.*"], 1);
     assert_eq!(report.installations, BTreeSet::from(["default".to_owned()]));
-    assert_eq!(report.users, 0);
+    assert_eq!(report.users, 1);
     assert_eq!(report.destination, None);
     assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
 
@@ -159,7 +170,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
     holds("step 3 pending: setting printer.fleet = 2");
     holds("Stored JSON the inventory does not name:\n  none");
-    holds("Installation value \"default\", 0 accounts.");
+    holds("Installation value \"default\"; accounts stored: 1.");
     holds("Kept, not used by Rust:\n  setting filename_grouping:* = 1");
     // No stored value: not the integration's key, a printer name or a free-text key.
     let stored = [
@@ -232,8 +243,8 @@ fn an_account_without_builds_or_sources_is_reported_under_its_own_value() {
     assert_eq!(report.installations, values.into());
     let text = report.to_string();
     for line in [
-        "Installation values \"basic-***\", \"default\", \"***\", 1 accounts.",
-        "The Rust runtime reads only data under \"default\".",
+        "Installation values \"basic-***\", \"default\", \"***\"; accounts stored: 1.",
+        "reads only data under \"default\", so the import would refuse this installation.",
         "  app_settings ",
     ] {
         assert!(text.contains(line), "{line} is not in:\n{text}");
@@ -251,8 +262,7 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
         &folder,
         "UPDATE build_profiles SET tenant_id = 'basic-solo'; UPDATE projects SET tenant_id = 'basic-solo';
          UPDATE app_settings SET value = '{}' WHERE key = 'printer.fleet';
-         INSERT INTO users (id, display_name, created_at) VALUES
-           ('synthetic-a', 'Synthetic A', '2026-10-02'), ('synthetic-b', 'Synthetic B', '2026-10-02');",
+         INSERT INTO users (id, display_name, created_at) VALUES ('synthetic-b', 'Synthetic B', '2026-10-02');",
     );
     let report = run(folder.path()).unwrap();
     assert_eq!((report.builds, report.printers), (synthetic::BUILDS, 0));
@@ -265,9 +275,9 @@ fn one_tenant_of_another_name_is_reported_and_a_fleet_that_is_no_array_has_no_pr
     let text = report.to_string();
     assert!(!text.contains("solo"), "{text}");
     for line in [
-        "Installation values \"basic-***\", \"default\", 2 accounts.",
-        "The Rust runtime reads only data under \"default\".",
-        "The Rust runtime signs in only when one account is stored.",
+        "Installation values \"basic-***\", \"default\"; accounts stored: 2.",
+        "reads only data under \"default\", so the import would refuse this installation.",
+        "signs in only when one account is stored, so the import would refuse this installation.",
     ] {
         assert!(text.contains(line), "{line} is not in:\n{text}");
     }
@@ -404,7 +414,7 @@ fn a_database_that_cannot_fit_is_refused_before_it_is_copied() {
     };
     assert!(needed > (1 << 44) && free < needed);
     assert!(
-        refusal.contains(&format!("needs {needed} bytes")) && refusal.contains("Set TMPDIR"),
+        refusal.contains(&format!("needs {needed} bytes")) && refusal.contains("set TMPDIR"),
         "{refusal}"
     );
 }
@@ -509,6 +519,13 @@ fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
     assert!(matches!(
         refused("Rust installation"),
         ImportError::RustOwned
+    ));
+    folder
+        .write_corrupt_marker(pp_testkit::Corruption::Truncated)
+        .unwrap();
+    assert!(matches!(
+        refused("is no valid marker"),
+        ImportError::SourceMarker(_)
     ));
     folder.remove_marker().unwrap();
     run(folder.path()).expect("the folder imports again once each cause is undone");

@@ -135,12 +135,10 @@ pub(super) enum Policy {
     /// The Node-backed runtime: frame, object, base and ancestor rules only.
     Legacy,
     /// The Rust-only runtime, which only a `desktop_rebuild` build started with
-    /// `PP_DESKTOP_REBUILD` runs: `replacement-csp.txt`, with the gateway's own
-    /// WebSocket origin for the printer event stream.
-    Replacement {
-        ws_origin: String,
-        files: pp_compat::AssetSnapshot,
-    },
+    /// `PP_DESKTOP_REBUILD` runs: `replacement-csp.txt`, with the WebSocket
+    /// origin of the authority each request was admitted on for the printer
+    /// event stream.
+    Replacement { files: pp_compat::AssetSnapshot },
 }
 
 const LEGACY_POLICY: &str =
@@ -163,28 +161,22 @@ impl Policy {
         }
     }
 
-    pub(super) fn replacement(origin: &str, files: pp_compat::AssetSnapshot) -> Self {
-        let authority = origin.strip_prefix("http://").unwrap_or(origin);
-        Self::Replacement {
-            ws_origin: format!("ws://{authority}"),
-            files,
-        }
-    }
-
     /// `nonce` is set only on a replacement document; other responses allow
-    /// no inline style at all.
-    fn header(&self, nonce: Option<&str>) -> axum::http::HeaderValue {
+    /// no inline style at all. `authority` is the admitted `host:port`: the
+    /// desktop listener's, or the literal-IP Host an explicit listener
+    /// validated, so a LAN browser gets its own WebSocket origin.
+    fn header(&self, nonce: Option<&str>, authority: &str) -> axum::http::HeaderValue {
         match self {
             Self::Legacy => axum::http::HeaderValue::from_static(LEGACY_POLICY),
-            Self::Replacement { ws_origin, .. } => {
+            Self::Replacement { .. } => {
                 let template = REPLACEMENT_POLICY.trim_end();
                 let policy = match nonce {
                     Some(nonce) => template.replace("{nonce}", nonce),
                     None => template.replace(" 'nonce-{nonce}'", ""),
                 }
-                .replace("{ws_origin}", ws_origin);
-                // The template and a loopback origin are plain ASCII; if that
-                // ever fails, fail closed with a policy that allows nothing.
+                .replace("{ws_origin}", &format!("ws://{authority}"));
+                // The template and an admitted IP authority are plain ASCII; if
+                // that ever fails, fail closed with a policy that allows nothing.
                 axum::http::HeaderValue::from_str(&policy)
                     .unwrap_or_else(|_| axum::http::HeaderValue::from_static("default-src 'none'"))
             }
@@ -244,7 +236,7 @@ pub(super) async fn serve(
     root: &Path,
     relative: &str,
     document: bool,
-    policy: &Policy,
+    (policy, authority): (&Policy, &str),
     method: &Method,
     request_headers: &HeaderMap,
 ) -> Response<Body> {
@@ -257,7 +249,14 @@ pub(super) async fn serve(
         return response;
     }
     if let Policy::Replacement { files, .. } = policy {
-        return serve_snapshot(files, relative, document, policy, method, request_headers);
+        return serve_snapshot(
+            files,
+            relative,
+            document,
+            (policy, authority),
+            method,
+            request_headers,
+        );
     }
     let identity = match open_contained(root, &root.join(relative)).await {
         Some(asset) => asset,
@@ -288,14 +287,21 @@ pub(super) async fn serve(
             64 * 1024,
         ))
     };
-    asset_response(body, length, mime, policy, None, content_encoding)
+    asset_response(
+        body,
+        length,
+        mime,
+        (policy, authority),
+        None,
+        content_encoding,
+    )
 }
 
 fn asset_response(
     body: Body,
     length: u64,
     mime: &'static str,
-    policy: &Policy,
+    (policy, authority): (&Policy, &str),
     nonce: Option<&str>,
     content_encoding: Option<&'static str>,
 ) -> Response<Body> {
@@ -325,7 +331,7 @@ fn asset_response(
         "x-content-type-options",
         axum::http::HeaderValue::from_static("nosniff"),
     );
-    headers.insert("content-security-policy", policy.header(nonce));
+    headers.insert("content-security-policy", policy.header(nonce, authority));
     response
 }
 
@@ -350,7 +356,7 @@ fn serve_snapshot(
     files: &pp_compat::AssetSnapshot,
     relative: &str,
     document: bool,
-    policy: &Policy,
+    (policy, authority): (&Policy, &str),
     method: &Method,
     headers: &HeaderMap,
 ) -> Response<Body> {
@@ -379,7 +385,7 @@ fn serve_snapshot(
         body,
         length,
         content_type(Path::new(relative), relative),
-        policy,
+        (policy, authority),
         nonce.as_deref(),
         None,
     )
@@ -394,6 +400,7 @@ impl super::Gateway {
         product: impl FnOnce(super::MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<super::RustStatus>,
         hosts: std::sync::Arc<dyn super::MoonrakerHosts>,
+        sign_out: super::SignOut,
     ) -> anyhow::Result<Self> {
         Self::start_inner(
             listener,
@@ -402,7 +409,14 @@ impl super::Gateway {
             pp_compat::CompatHandle::unpublished(),
             &super::OperationOwners::node_only(),
             Some(Box::new(product)),
-            Some((status, hosts)),
+            Some((
+                status,
+                hosts,
+                super::RustOnlyMode {
+                    network: false,
+                    sign_out,
+                },
+            )),
         )
     }
 }

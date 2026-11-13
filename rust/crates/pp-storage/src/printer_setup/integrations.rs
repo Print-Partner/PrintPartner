@@ -9,9 +9,9 @@
 //! The shape is strict (`deny_unknown_fields`) and has no version field: a
 //! stored document's shape changes only through a numbered schema step that
 //! rewrites it. A document that is not this shape takes no write. Values are
-//! checked when they arrive, in [`Integration::new`], and not again when a
-//! stored row is read. A stored row may carry a credential field its kind does
-//! not use; the readers ignore it.
+//! checked when they arrive, in [`Integration::apply`], and not again when a
+//! stored row is read or edited. A stored row may carry a credential field its
+//! kind does not use; the readers ignore it.
 
 use super::{DocumentFault, Field, InvalidDocument, InvalidField, Reason, SetupDocument};
 use crate::auth::Secret;
@@ -93,6 +93,26 @@ pub(crate) struct HostConfig {
     pub(crate) storage: Option<String>,
 }
 
+/// The address a view shows. Rust's create refuses credentials in a URL, but a
+/// row another writer stored can hold a username, password or a query such as
+/// `?api_key=`: those parts are removed. Text that is not a URL is not shown.
+fn shown_url(stored: &str) -> Option<String> {
+    let mut url = url::Url::parse(stored).ok()?;
+    let plain = url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none();
+    if plain {
+        return Some(stored.to_owned());
+    }
+    // Only cannot-be-a-base URLs refuse these, and they have no credentials.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.into())
+}
+
 /// The only path that writes a [`Secret`] out: into the stored document.
 /// `Secret` has no `Serialize`, so a response type cannot carry one.
 mod stored_secret {
@@ -137,6 +157,18 @@ pub struct NewIntegration {
     pub username: Option<String>,
     pub api_key: Option<Secret>,
     pub password: Option<Secret>,
+}
+
+/// A change to a stored integration. `None` keeps the stored value. For a
+/// credential, `Some(None)` clears it. No `Debug`, as for [`NewIntegration`].
+#[derive(Default)]
+pub struct IntegrationPatch {
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub enabled: Option<bool>,
+    pub username: Option<Option<String>>,
+    pub api_key: Option<Option<Secret>>,
+    pub password: Option<Option<Secret>>,
 }
 
 /// One row of the document. No `Debug`: a kept row's text holds its secrets.
@@ -290,46 +322,112 @@ impl Checks {
             self.fail(field, Reason::TooLong);
         }
     }
+
+    /// An API key or password a patch may set or clear. `moved` is true when
+    /// the patch changes the address of a row that stores this secret: the
+    /// patch must then send it again, as a value or as null. Otherwise the
+    /// stored secret would go to whatever host the caller named.
+    fn secret(&mut self, field: Field, sent: &Option<Option<Secret>>, moved: bool) {
+        match sent {
+            Some(value) => self.credential(field, value.as_ref().map(Secret::expose)),
+            None if moved => self.fail(field, Reason::NotResent),
+            None => {}
+        }
+    }
 }
 
 impl Integration {
-    /// The row for `new`, created at `now` with id `id`. Every new row is
-    /// built here, so every stored value passed these checks.
+    /// The row for `new`, created at `now` with id `id`. Its values go
+    /// through [`Self::apply`], so every stored value passed those checks.
     pub(crate) fn new(
         new: NewIntegration,
         id: String,
         now: String,
     ) -> Result<Self, Vec<InvalidField>> {
-        let mut checks = Checks {
-            kind: new.kind,
-            invalid: Vec::new(),
-        };
-        if !new.kind.creatable() {
-            checks.fail(Field::Kind, Reason::NotCreatable);
-        }
-        let name = checks.name(&new.name);
-        checks.base_url(&new.base_url);
-        checks.credential(Field::Username, new.username.as_deref());
-        checks.credential(Field::ApiKey, new.api_key.as_ref().map(Secret::expose));
-        checks.credential(Field::Password, new.password.as_ref().map(Secret::expose));
-        if !checks.invalid.is_empty() {
-            return Err(checks.invalid);
-        }
-        Ok(Self {
+        let mut row = Self {
             id,
             kind: new.kind,
-            name,
+            name: String::new(),
             config: HostConfig {
-                base_url: new.base_url,
+                base_url: String::new(),
                 enabled: new.enabled,
-                username: new.username,
-                api_key: new.api_key,
-                password: new.password,
+                username: None,
+                api_key: None,
+                password: None,
                 storage: None,
             },
             created_at: now.clone(),
-            updated_at: now,
-        })
+            updated_at: String::new(),
+        };
+        let values = IntegrationPatch {
+            name: Some(new.name),
+            base_url: Some(new.base_url),
+            enabled: None,
+            username: new.username.map(Some),
+            api_key: new.api_key.map(Some),
+            password: new.password.map(Some),
+        };
+        let uncreatable = (!new.kind.creatable()).then_some(InvalidField {
+            field: Field::Kind,
+            reason: Reason::NotCreatable,
+        });
+        match (uncreatable, row.apply(values, now)) {
+            (None, Ok(())) => Ok(row),
+            (kind, checked) => Err(kind
+                .into_iter()
+                .chain(checked.err().unwrap_or_default())
+                .collect()),
+        }
+    }
+
+    /// Sets what `patch` sends, at `now`. Only those values are checked, and
+    /// every invalid field is collected; a refused patch changes nothing. A
+    /// new address never keeps a stored secret the patch did not send.
+    pub(crate) fn apply(
+        &mut self,
+        patch: IntegrationPatch,
+        now: String,
+    ) -> Result<(), Vec<InvalidField>> {
+        let mut checks = Checks {
+            kind: self.kind,
+            invalid: Vec::new(),
+        };
+        let name = patch.name.map(|name| checks.name(&name));
+        if let Some(base_url) = &patch.base_url {
+            checks.base_url(base_url);
+        }
+        let stored = &self.config;
+        let moved = patch
+            .base_url
+            .as_ref()
+            .is_some_and(|url| *url != stored.base_url);
+        let username = patch.username.as_ref().and_then(Option::as_deref);
+        checks.credential(Field::Username, username);
+        let held = |secret: &Option<Secret>| moved && secret.is_some();
+        checks.secret(Field::ApiKey, &patch.api_key, held(&stored.api_key));
+        checks.secret(Field::Password, &patch.password, held(&stored.password));
+        if !checks.invalid.is_empty() {
+            return Err(checks.invalid);
+        }
+        let config = &mut self.config;
+        if let Some(name) = name {
+            self.name = name;
+        }
+        if let Some(base_url) = patch.base_url {
+            config.base_url = base_url;
+        }
+        config.enabled = patch.enabled.unwrap_or(config.enabled);
+        if let Some(username) = patch.username {
+            config.username = username;
+        }
+        if let Some(api_key) = patch.api_key {
+            config.api_key = api_key;
+        }
+        if let Some(password) = patch.password {
+            config.password = password;
+        }
+        self.updated_at = now;
+        Ok(())
     }
 
     pub(crate) fn summary(&self) -> IntegrationSummary {
@@ -338,7 +436,7 @@ impl Integration {
             kind: self.kind,
             name: self.name.clone(),
             enabled: self.config.enabled,
-            base_url: Some(self.config.base_url.clone()),
+            base_url: shown_url(&self.config.base_url),
             username: self.config.username.clone(),
             has_api_key: self.config.api_key.is_some(),
             has_password: self.config.password.is_some(),

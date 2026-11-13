@@ -591,6 +591,18 @@ fn node_fixture() -> Value {
     .unwrap()
 }
 
+/// Node's create body from the parity fixture with each value as the string
+/// Node's `String()` made of it. Rust's typed create refuses Node's original
+/// body (GRE-1490) and stores Node's Source from this one. `source_type` is
+/// not a create field and stays ignored.
+#[cfg(feature = "desktop_rebuild")]
+fn typed_create_body(fixture: &Value) -> Value {
+    let body = &fixture["create"]["body"];
+    json!({"name": "12", "url": body["url"], "branch": "false", "tag": " v1 ,",
+        "source_kind": "GitHub", "role": "[object Object]", "metadata": body["metadata"],
+        "source_type": 5})
+}
+
 #[cfg(feature = "desktop_rebuild")]
 fn assert_source(actual: &Value, expected: &Value, directory: &Path) {
     for (key, value) in expected.as_object().unwrap() {
@@ -675,9 +687,7 @@ async fn catalog_create_patch_match_node_coercions() {
     assert!(list(&owner.lock().unwrap()).is_empty());
     // The same values as the strings Node's `String()` made of them store the
     // Source Node stored. `source_type` is not a create field and stays ignored.
-    let typed = json!({"name": "12", "url": fixture["create"]["body"]["url"],
-        "branch": "false", "tag": " v1 ,", "source_kind": "GitHub", "role": "[object Object]",
-        "metadata": fixture["create"]["body"]["metadata"], "source_type": 5});
+    let typed = typed_create_body(&fixture);
     let (status, created) = server
         .exchange(
             Method::POST,
@@ -1906,7 +1916,7 @@ async fn catalog_patch_stale_metadata_is_conflict() {
             Method::POST,
             "/sources",
             &[("Cookie", &cookie)],
-            Some(&fixture["create"]["body"]),
+            Some(&typed_create_body(&fixture)),
         )
         .await;
     assert_eq!(status, 200);
@@ -1981,7 +1991,7 @@ async fn catalog_patch_non_integer_metadata_version_is_rejected() {
             Method::POST,
             "/sources",
             &[("Cookie", &cookie)],
-            Some(&fixture["create"]["body"]),
+            Some(&typed_create_body(&fixture)),
         )
         .await;
     assert_eq!(status, 200);

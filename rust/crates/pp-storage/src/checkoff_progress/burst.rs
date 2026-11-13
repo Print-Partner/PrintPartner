@@ -295,6 +295,20 @@ struct Decided {
     touched: Vec<(i64, i64, (bool, bool))>,
 }
 
+/// Each decision's unit and whether it confirms it. A decision without a
+/// valid Part ID and unit index is left out.
+fn decisions(bed: &Value) -> Vec<((i64, i64), bool)> {
+    let decisions = field(bed, "decisions").as_array().into_iter().flatten();
+    decisions
+        .filter_map(|d| {
+            let part = links::js_integer(d.get("part_id"), 1.0)?;
+            let index = links::js_integer(d.get("unit_index"), 0.0)?;
+            let confirmed = d.get("result").and_then(Value::as_str) == Some("confirmed");
+            Some(((part, index), confirmed))
+        })
+        .collect()
+}
+
 fn decided(tx: &Transaction<'_>, tenant: &str, beds: &[(String, Value)]) -> Result<Decided> {
     let mut out = Decided {
         units: BTreeSet::new(),
@@ -302,15 +316,9 @@ fn decided(tx: &Transaction<'_>, tenant: &str, beds: &[(String, Value)]) -> Resu
         touched: Vec::new(),
     };
     for (_, bed) in beds {
-        for d in field(bed, "decisions").as_array().into_iter().flatten() {
-            let (Some(part), Some(index)) = (
-                links::js_integer(d.get("part_id"), 1.0),
-                links::js_integer(d.get("unit_index"), 0.0),
-            ) else {
-                continue;
-            };
+        for ((part, index), confirmed) in decisions(bed) {
             out.units.insert((part, index));
-            if d.get("result").and_then(Value::as_str) == Some("confirmed") {
+            if confirmed {
                 out.confirmed.insert((part, index));
             }
             if let Some(row) = progress_row(tx, tenant, part, index)? {
@@ -440,25 +448,14 @@ pub(super) fn verify_batch(
     {
         super::farm_log::append_burst(tx, tenant, &response)?;
         // Each bed's confirmed units, with the Build its verified link names.
-        let beds: Vec<_> = burst
-            .beds
-            .iter()
-            .zip(&results)
+        let beds = burst.beds.iter().zip(&results);
+        let beds: Vec<_> = beds
             .filter_map(|((id, bed), (link, ..))| {
-                let units = field(bed, "decisions")
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|d| d.get("result").and_then(Value::as_str) == Some("confirmed"))
-                    .filter_map(|d| {
-                        let part = links::js_integer(d.get("part_id"), 1.0)?;
-                        Some((part, links::js_integer(d.get("unit_index"), 0.0)?))
-                    })
-                    .collect();
+                let units = decisions(bed).into_iter().filter(|unit| unit.1);
                 Some(crate::spoolman_deductions::ConfirmedBed {
                     link_id: id.clone(),
                     profile_id: link["profile_id"].as_i64()?,
-                    units,
+                    units: units.map(|(unit, _)| unit).collect(),
                 })
             })
             .collect();

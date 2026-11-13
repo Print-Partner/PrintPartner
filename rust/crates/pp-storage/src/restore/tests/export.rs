@@ -220,3 +220,33 @@ fn open_removes_only_the_export_folders_a_killed_backup_left() {
     assert_eq!(kept(&root), before);
     assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"keep");
 }
+
+/// A refusal leaves every byte where it was: the sweep runs only when the
+/// open goes ahead.
+#[test]
+fn a_refused_open_leaves_a_leftover_export_byte_for_byte() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let killed = owner.installation().unwrap().export_backup("test").unwrap();
+    // A killed process runs no destructor.
+    std::mem::forget(killed);
+    owner.shutdown().unwrap();
+    assert_eq!(exports(&root).len(), 1);
+
+    let work = root.join(WORK_DIR);
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("unexpected"), b"keep").unwrap();
+    let backups = pp_testkit::snapshot(&root.join("backups")).unwrap();
+    let database = pp_testkit::node_schema::database_files(&root);
+    let error = open(&root)
+        .err()
+        .expect("an unexpected restore entry refuses the open");
+    assert!(error.to_string().contains("unexpected entry"), "{error:#}");
+    assert!(pp_testkit::snapshot(&root.join("backups")).unwrap() == backups);
+    assert!(pp_testkit::node_schema::database_files(&root) == database);
+    assert_eq!(std::fs::read(work.join("unexpected")).unwrap(), b"keep");
+
+    std::fs::remove_dir_all(&work).unwrap();
+    open(&root).unwrap().shutdown().unwrap();
+    assert!(exports(&root).is_empty());
+}

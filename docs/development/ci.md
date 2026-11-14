@@ -927,6 +927,15 @@ can leave the site half-published, and `release.yml` runs only on tags.
 The web validation job keeps its 45-minute limit on same-repository PRs; fork
 PRs and non-PR runs keep 20 minutes.
 
+## Daily loop
+
+`daily-loop.yml` (workflow `Daily loop`, job `daily loop`) builds the Rust-only image from `Dockerfile.rust` at the commit under test and walks the twelve steps of [the daily loop](../product/daily-loop.md) in a browser. [Score](../product/daily-loop.md#score) explains the states and the markers.
+
+- **Triggers.** Each push to `main`, manual dispatch, and a ready pull request that carries the label `ci:daily-loop`. Adding the label starts a run. Each later push, label change or draft change on that PR starts another and cancels the older one. A PR run tests the PR's head commit, not the merge commit. Without the label, or on a draft, the job reports skipped. Every push to `main` gets its own run.
+- **Not a required check.** It is not in the ruleset and does not run in merge groups. `main-red.yml` reports a failed push run on `main`, which includes a marked step that passed.
+- **Result.** The log prints one line per step and `Daily loop: N of 12`, and the job summary holds the same table. The artifact `daily-loop-score` holds one file, `daily-loop-score.json`: `{commit, score, steps: [{number, title, state, ticket}]}`, where `commit` is the full SHA, `state` is `pass`, `expected_fail`, `fail` or `unexpected_pass`, and `ticket` is a `GRE-n` string or null. The Control Room scorecard reads that file, so keep those names. A run that stops before the tests start (the title check, the image build or the container start) has no score file, artifact or table.
+- **Locally.** `npm --prefix web run test:daily-loop` runs the same suite. It needs Docker, Chrome or Chromium, and `npm --prefix web ci`. It builds the working tree and records `HEAD` as the commit, so commit first. It writes `web/test-results/daily-loop/daily-loop-score.json` and removes the container, the volume and the image tag it created, each named `pp-daily-loop-<8 hex digits>`, when the run passes, fails or is stopped.
+
 ## Review checks
 
 | Hosted check | Workflow | Local command |

@@ -29,6 +29,36 @@ route or a merged PR is not a finished step.
 | 11 | Reads remaining work and filament stock | Today and the Build show what is left. Spoolman shortfalls are current, and a deduction is recorded once. |
 | 12 | Makes a backup and restores it on a copy | The restored copy opens with the same Builds and history. |
 
+## Score
+
+The daily-loop test counts the steps that work today. It is the measure of progress
+between Chad's walks; the plan still finishes only on his own walk on his data.
+
+`web/test/daily-loop/daily-loop.spec.ts` holds twelve tests, one per row above, titled
+with the row's "The owner does" text. They run in that order, in a browser, against one
+installation of the Rust-only image built from the commit under test. A separate test
+fails when the titles and the table differ.
+
+```sh
+npm --prefix web run test:daily-loop
+```
+
+The run prints one line per step and ends with `Daily loop: N of 12`. N counts `pass`
+only. No step is skipped.
+
+| State | Meaning | The run |
+| --- | --- | --- |
+| `pass` | The step passed and has no marker. | passes |
+| `expected_fail` | The step failed and has a marker: the ticket that will make it pass. | passes |
+| `fail` | The step failed and has no marker. Or, marker or not, it did not finish: it timed out, did not run, or the harness failed (the server was not ready or the sign-in did not work). | fails |
+| `unexpected_pass` | The step passed and still has a marker. | fails |
+
+A marker is the ticket in `step(3, "GRE-1431", …)`. The test of a marked step goes as far
+as the screens allow and then stops at `unwritten(…)`, which names what is still to check.
+The ticket that makes a step work finishes that test and sets the marker to `null` in the
+same PR; the label `ci:daily-loop` runs the test on that PR. The `Daily loop` workflow runs
+it on each push to `main` and publishes the score ([CI](../development/ci.md#daily-loop)).
+
 ## Speed
 
 The four operations Chad named as slow must be no slower than the Node

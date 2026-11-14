@@ -44,9 +44,13 @@ fn state(source: &Path) -> Vec<(PathBuf, u64, SystemTime, Option<Vec<u8>>)> {
 /// Runs the dry run with its own temporary directory, and checks that the
 /// run changed nothing in the source and removed its temporary copy.
 fn run(source: &Path) -> Result<DryRunReport, ImportError> {
+    run_with(source, archive::Limits::default())
+}
+
+fn run_with(source: &Path, limits: archive::Limits) -> Result<DryRunReport, ImportError> {
     let temporary = tempfile::tempdir().unwrap();
     let before = state(source);
-    let result = dry_run_in(source, None, temporary.path());
+    let result = dry_run_in(source, None, temporary.path(), limits);
     assert!(before == state(source), "the dry run changed its source");
     assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
     result
@@ -194,6 +198,32 @@ fn a_full_archive_gives_the_same_counts() {
     );
 }
 
+/// The supported way to dry-run an installation larger than the archive's
+/// expanded-size cap is a folder copy or snapshot: the cap applies only to a
+/// packed archive (docs/node-import.md).
+#[test]
+fn a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused() {
+    let folder = node_folder();
+    let database = std::fs::metadata(folder.database_path()).unwrap().len();
+    let limits = archive::Limits {
+        max_total_bytes: database / 2,
+        ..archive::Limits::default()
+    };
+    let archive = archive_of(folder.path(), 2, "full");
+    let error = run_with(archive.path(), limits).unwrap_err();
+    assert!(matches!(error, ImportError::InvalidArchive(_)), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Invalid backup archive: Backup archive decompressed byte limit exceeded ({})",
+            database / 2
+        )
+    );
+    let report = run_with(folder.path(), limits).unwrap();
+    assert_eq!(report.source, SourceKind::Directory);
+    assert_eq!(report, run(folder.path()).unwrap());
+}
+
 #[test]
 fn an_account_without_builds_or_sources_is_reported_under_its_own_value() {
     // No Build and no Source: the values come from the other tables.
@@ -287,7 +317,13 @@ fn a_destination_is_inspected_and_never_created() {
     let found = inspect_destination(&file);
     assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
     assert!(found.to_string().contains("cannot be read ("), "{found}");
-    let report = dry_run_in(node.path(), Some(&file), parent.path()).unwrap();
+    let report = dry_run_in(
+        node.path(),
+        Some(&file),
+        parent.path(),
+        archive::Limits::default(),
+    )
+    .unwrap();
     assert_eq!(report.destination, Some(found));
 }
 
@@ -299,7 +335,8 @@ fn a_temporary_directory_inside_the_source_or_the_destination_is_refused() {
     let destination = tempfile::tempdir().unwrap();
     let before = state(folder.path());
     let refused = |target: Option<&Path>, temporary: &Path, named: &Path| {
-        let error = dry_run_in(folder.path(), target, temporary).unwrap_err();
+        let error =
+            dry_run_in(folder.path(), target, temporary, archive::Limits::default()).unwrap_err();
         let text = error.to_string();
         let ImportError::TemporaryInside { folder: found, .. } = error else {
             panic!(
@@ -332,7 +369,13 @@ fn a_temporary_directory_inside_the_source_or_the_destination_is_refused() {
     }
     // A directory beside both is used.
     let beside = tempfile::tempdir().unwrap();
-    let report = dry_run_in(folder.path(), Some(destination.path()), beside.path()).unwrap();
+    let report = dry_run_in(
+        folder.path(),
+        Some(destination.path()),
+        beside.path(),
+        archive::Limits::default(),
+    )
+    .unwrap();
     assert_eq!(report.destination, Some(Destination::Free));
 }
 
@@ -356,7 +399,13 @@ fn a_database_that_cannot_fit_is_refused_before_it_is_copied() {
         .unwrap();
     database.set_len(1 << 43).unwrap();
     let temporary = tempfile::tempdir().unwrap();
-    let error = dry_run_in(folder.path(), None, temporary.path()).unwrap_err();
+    let error = dry_run_in(
+        folder.path(),
+        None,
+        temporary.path(),
+        archive::Limits::default(),
+    )
+    .unwrap_err();
     let staged = std::fs::read_dir(temporary.path()).unwrap().count();
     assert_eq!(staged, 0, "the refusal left its stage behind");
     let refusal = error.to_string();

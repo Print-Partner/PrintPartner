@@ -11,7 +11,7 @@ npm --prefix web ci
 VITE_PRINT_PARTNER_DESKTOP=1 npm --prefix web run build
 python3 rust/scripts/build-desktop-manifest.py --web web --node "$(command -v node)" \
   --output rust/bundle-manifest.json --commit "$(git rev-parse HEAD)"
-cargo build --manifest-path rust/Cargo.toml --locked --release -p pp-server --features desktop_rebuild
+cargo build --manifest-path rust/Cargo.toml --locked --release -p pp-server
 python3 scripts/perf-baseline/baseline.py --binary rust/target/release/pp-server --out /tmp/pp-baseline
 ```
 

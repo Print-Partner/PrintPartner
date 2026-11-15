@@ -1,5 +1,6 @@
-# Print Partner Rust-only image: pp-server with desktop_rebuild compiled in and
-# PP_DESKTOP_REBUILD=1, serving the measured replacement UI (web/apps/ui). The
+# Print Partner Rust-only image. pp-server's default features include
+# desktop_rebuild. The process still reads PP_DESKTOP_REBUILD, so this image
+# sets it to 1. It serves the measured replacement UI (web/apps/ui). The
 # old UI (web/apps/web) still ships beside it. The runtime stage has no
 # Node, npm, Python, GUI or slicer. See docs/docker.md.
 #
@@ -46,8 +47,7 @@ COPY --from=web /out/bundle-manifest.json /src/bundle-manifest.json
 ENV PP_DESKTOP_RELEASE_MANIFEST=/src/bundle-manifest.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/rust/target \
-    cargo build --locked --release --manifest-path rust/Cargo.toml -p pp-server \
-      --features desktop_rebuild && \
+    cargo build --locked --release --manifest-path rust/Cargo.toml -p pp-server && \
     install -D -m 0755 rust/target/release/pp-server /out/pp-server
 
 # Stage 3: the runtime.
@@ -78,7 +78,8 @@ RUN echo "$PP_COMMIT" | grep -Eqx '[0-9a-f]{40}' && \
       "$PP_COMMIT" > /usr/local/bin/pp-server-start && \
     chmod 0755 /usr/local/bin/pp-server-start
 
-# Rust-only mode is on in this image only. Every other build keeps it off.
+# The process reads PP_DESKTOP_REBUILD at startup, so this image sets it.
+# pp-server compiles desktop_rebuild by default. --no-default-features builds the old path.
 ENV PP_DESKTOP_REBUILD=1 \
     PP_LISTEN_ADDR=0.0.0.0:8080 \
     HOME=/data \

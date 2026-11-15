@@ -608,6 +608,8 @@ cargo test --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast -
 cargo test --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --doc --features desktop_rebuild
 ```
 
+A plain workspace command compiles `desktop_rebuild` for the image crates. `--features desktop_rebuild` still turns that feature on for `pp-desktop` and `pp-drivers`. Those two stay off by default. `--no-default-features` builds the old path. Hosted CI still runs both commands.
+
 On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before you run the tests. The workflow step `Mount a short case-sensitive TMPDIR` has the commands. Also set `PP_TEST_NODE` to the Node executable, as CI does. Without it the runtime tests fall back to `/usr/bin/node`, which macOS does not have. To skip the same tests as CI, add `-E` with the `NEXTEST_FILTER` value of the macOS job. On Windows, the same `--workspace` commands apply. On Linux, the Tauri shell also needs the GTK and WebKit packages that the workflow installs with `apt-get`.
 
 Clippy and fmt do not read the manifest contents. For a lint-only run, `echo '{}' > rust/bundle-manifest.json` is enough. The tests need the real manifest.

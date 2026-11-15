@@ -7,7 +7,7 @@
 > web-app-shell scope and must not be re-scoped for the replacement UI. Track
 > any missing Rust-only product entry point separately.
 
-GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. Both default to off.
+GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. GRE-1646 makes the Cargo feature the default on the crates the Rust-only image builds. The runtime switch still defaults off. The image sets `PP_DESKTOP_REBUILD=1`. `pp-desktop` and `pp-drivers` keep the Cargo feature off unless you name it.
 
 The `desktop_rebuild` Cargo feature is available on `pp-core`, `pp-contracts`, `pp-domain`, `pp-storage`, and `pp-desktop`. The desktop feature enables the core feature. The contracts feature exposes the new `build_identity`, `reconciliation`, `publication`, and `working_drafts` modules. Existing autosave contracts stay available in both builds.
 
@@ -53,9 +53,9 @@ The contracts and core gates can be tested without a native shell:
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts --features desktop_rebuild
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts --no-default-features
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --features desktop_rebuild
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --no-default-features
 ```
 
 Core tests isolate environment changes in child processes. They cover absent, disabled, invalid, and enabled values with and without the Cargo feature. The existing autosave consumer tests run in both contract builds. The Rust runtime proof checks the existing authenticated endpoints, source creation, response shapes, and shutdown with the runtime opt-in absent or false.
@@ -367,7 +367,7 @@ Gap slices added in triage on 2026-10-13 cover commits that are not in the refer
 | D31 | GRE-626 | Reconcile CI ratchet commits from #155 with main | D1 |
 | D32 | GRE-627 | Coverage audit mapping #133 and #135 patches to slices | none; runs early, re-checked before cutover |
 
-Turning `desktop_rebuild` on by default is a separate decision for the maintainer after D26 and D32.
+GRE-1646 makes `desktop_rebuild` the default Cargo feature for the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off. The runtime switch stays off unless the process sets `PP_DESKTOP_REBUILD` to `1` or `true`.
 
 ### D12 observation core pull-forward
 

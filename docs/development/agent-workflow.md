@@ -112,11 +112,11 @@ The Rust commands for the last two rows, from the repository root, once per chan
 
 ```sh
 cargo fmt --manifest-path rust/Cargo.toml --all --check
-cargo clippy --manifest-path rust/Cargo.toml -p <crate> --all-targets --features desktop_rebuild -- -D warnings
-cargo nextest run --manifest-path rust/Cargo.toml -p <crate> --features desktop_rebuild   # review fix only
+cargo clippy --manifest-path rust/Cargo.toml -p <crate> --all-targets -- -D warnings
+cargo nextest run --manifest-path rust/Cargo.toml -p <crate>   # review fix only
 ```
 
-- Leave out `--features desktop_rebuild` for a crate that does not define the feature; cargo refuses it there.
+- Image crates compile `desktop_rebuild` by default, so leave the flag off for them. For `pp-desktop` and `pp-drivers`, pass `--features desktop_rebuild`. `--no-default-features` builds the old path of an image crate.
 - These commands do not build or check the desktop web assets, which `pp-compat` embeds and the runtime tests read. If the merge or the fix changed anything under `web/`, run `just ci --only web-assets` first.
 
 For the last two rows, hosted CI at the pushed head is the full check: do not rerun `just ci --fast` or `just ci`. Local runs share each machine's cargo queue and took 80 to 90 minutes when this was decided, and every landing on `main` made open PRs pay that again. If hosted CI fails, fix it and push again; that push is not a review round. Under Evidence, list the commands you ran, their summaries, and for the last two rows that hosted CI is the full check. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
@@ -407,17 +407,17 @@ Open the screenshot and confirm it shows the Builds page and the dialog, not a l
 
 `scripts/evidence/run.sh` runs every step below in one command and cleans up after itself; see [the harness README](../../scripts/evidence/README.md). The manual steps follow.
 
-`verify.py` builds `pp-server` without the `desktop_rebuild` feature, so its own build always runs the Node-backed runtime. For the replacement UI (`web/apps/ui`), build the server with the feature, then start it Rust-only on a copy of a synthetic dataset:
+`verify.py` builds `pp-server` without the `desktop_rebuild` feature, so its own build always runs the Node-backed runtime. For the replacement UI (`web/apps/ui`), build the server with its default features, which include `desktop_rebuild`, then start it Rust-only on a copy of a synthetic dataset:
 
 ```sh
-cargo build --locked --manifest-path rust/Cargo.toml -p pp-server --features desktop_rebuild
+cargo build --locked --manifest-path rust/Cargo.toml -p pp-server
 (cd web && npm run fixture:synthetic -- --seed 1138 "$SEED_DIR")
 PP_DESKTOP_REBUILD=1 python3 scripts/verify-rust-gateway/verify.py launch \
   --binary rust/target/debug/pp-server --seed "$SEED_DIR" \
   --credential-file "$PRIVATE_DIR/credential.json" >"$LOG" 2>&1 &
 ```
 
-`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-format) into that copy in the compact form. Rust-only startup refuses a non-empty directory without one. That start also needs a `desktop_rebuild` binary, and the helper's own build has no such feature, so `--seed` with `PP_DESKTOP_REBUILD` set requires `--binary` built with `--features desktop_rebuild`. The seed is never changed, and the copy is removed at shutdown.
+`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-format) into that copy in the compact form. Rust-only startup refuses a non-empty directory without one. That start also needs a `desktop_rebuild` binary, and the helper's own build has no such feature, so `--seed` with `PP_DESKTOP_REBUILD` set requires `--binary` from `cargo build -p pp-server`, whose default features include it. The seed is never changed, and the copy is removed at shutdown.
 
 The gateway serves the old `apps/web` build, not `apps/ui`. Serve the built replacement UI with Vite's preview server, which forwards `/api`, `/ws` and `/health` to the core:
 

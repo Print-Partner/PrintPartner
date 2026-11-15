@@ -5,7 +5,7 @@ This page describes how work moves from a ticket to a merged pull request. [Buil
 ## Sources of truth
 
 - **Goals and decisions.** The Notion page "Goals and decisions (2026-10-15)" under Print Partner Roadmap holds the product goals. Where an older document disagrees, that page wins.
-- **Plan and later decisions.** The plan is the Notion page "Print Partner: execution plan v17.1" (Chad, 2026-11-04). Chad's decisions since then are dated, newest first, on the Notion page [Agent handoff](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5). Where two pages disagree, the newer dated decision wins. If you can't tell which is newer, ask the owner. [Handoffs](agent-workflow.md#handoffs) says where live status and work in progress live.
+- **Plan and later decisions.** The plan is the Notion page "Print Partner: execution plan v17.1" (Chad, 2026-11-04). Chad's decisions since then are dated, newest first, on the Notion page [Agent handoff](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5). Where two pages disagree, the newer dated decision wins. If you can't tell which is newer, ask the owner. Live status is the open PR.
 - **Execution.** The Linear project "Print Partner Desktop (Rust core)". Milestones 1 to 9 are the delivery chunks. The desktop rebuild slices (D-slices) are sub-issues of GRE-595.
 - **Code and evidence.** The `main` branch of `Print-Partner/PrintPartner`.
 
@@ -42,7 +42,7 @@ The web ESLint config limits `complexity` to 20, nesting depth to 5 and paramete
 ## Open the pull request
 
 1. Meet the [definition of done](definition-of-done.md).
-2. Before your first push, run `just ci --fast` for a normal PR, or the full `just ci` for a sensitive PR as the [merge gate](definition-of-done.md#merge-gate) defines it. Fix every failure, and name the command under `## Evidence`. A later push, for a merge of `main` or a review fix, runs the short checks in [Set up and run checks](agent-workflow.md#set-up-and-run-checks) and relies on hosted CI. [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) describes both.
+2. Before your first push, run `just ci --fast` for a normal PR, or the full `just ci` for a data-loss change as [Who merges](definition-of-done.md#who-merges) defines it. Fix every failure, and name the command under `## Evidence`. A later push, for a merge of `main` or a review fix, runs the short checks in [Set up and run checks](agent-workflow.md#set-up-and-run-checks) and relies on hosted CI. [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) describes both.
 3. Fill in every section of the [pull request template](../../.github/pull_request_template.md). Put verification output under `## Evidence`.
 4. Start the PR description with `Fixes GRE-xxx`. Split unmet acceptance items into a child ticket that quotes them verbatim, as [Fixes only](definition-of-done.md#fixes-only) describes.
 5. Don't move the ticket yourself. `linear-pr-sync.yml` sets In Review, Done, and In Progress from PR events. If the PR is blocked or escalated, add a comment to the ticket.

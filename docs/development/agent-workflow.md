@@ -23,7 +23,7 @@ A brief needs these fields:
 
 ### Ticket spec
 
-A Linear ticket a lane can start from has these sections, in this order. A ticket missing one goes back to the coordinator before work starts.
+A Linear ticket to start from has these sections, in this order. A ticket missing one goes back to the owner before work starts.
 
 | Section | Contents |
 | --- | --- |
@@ -32,7 +32,7 @@ A Linear ticket a lane can start from has these sections, in this order. A ticke
 | Acceptance | Conditions a person or a test can observe at the operation's interface: a route, an MCP tool, a screen, a command. Name the state before and after |
 | Not in this ticket | Nearby work that is left out, and where it lives |
 | Interfaces | The routes, MCP tools, tables or files the change adds or alters, and the crate that owns each ([Architecture](../architecture.md#operation-families-and-write-ownership)) |
-| Merge class | Normal, sensitive or owner-merged, with the reason ([merge gate](definition-of-done.md#merge-gate)) |
+| Data-loss | Whether the change touches import, schema, backup and restore, Checkoff, send, or Accept and publication ([who merges](definition-of-done.md#who-merges)) |
 | Prerequisites | Tickets that must merge first |
 
 Acceptance describes what the owner or a caller can observe. It does not name test functions or require matching Node's output; [Parity scope](definition-of-done.md#parity-scope) says when Node's behaviour counts.
@@ -48,45 +48,7 @@ A brief is a snapshot. Stop and ask the owner before you continue when:
 
 Report the conflict and the facts on each side. The owner decides which wins and updates the source.
 
-When you stop with work in flight or hand it off, post a Handoff comment on the ticket as [Handoffs](#handoffs) describes.
-
-## Handoffs
-
-Any agent or person can take over Print Partner Desktop work: Claude Code, Codex, or you. Everything needed to continue lives in four places, never only in one agent's chat or machine:
-
-| What | Where |
-| --- | --- |
-| Plan | Notion "Print Partner: execution plan v17.1". Phases P1 to P7, in order. |
-| Live status | Notion "Execution status (live)". One row per lane with its PRs, tickets, and next step, plus a Landed list with shas and a "Needs Chad" list. |
-| Execution record | Linear, team GRE, project "Print Partner Desktop (Rust core)". The newest **Handoff** comment on a ticket says where its work stands. |
-| Code | GitHub `Print-Partner/PrintPartner`. All work in progress is on a pushed branch or an open PR. |
-
-The Notion page [Agent handoff: how to take over any lane](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5) holds the operating rules and Chad's decisions, newest first. Read it before you take over. [Sources of truth](contributing.md#sources-of-truth) says which page wins when they disagree. If it disagrees with this page or the code, stop and ask, as for a [task brief](#start-from-a-task-brief).
-
-### Pick up a ticket
-
-1. Open the ticket in Linear and read its newest comment that starts with **Handoff**.
-2. Check out the branch it names at the head sha it names. If the PR has moved past that sha, the PR is the truth.
-3. Comment "Claimed by [your agent or thread name]" on the ticket before you change anything.
-4. Follow AGENTS.md and this page for setup, checks, and evidence.
-
-### Post a Handoff
-
-Post a Handoff comment on the ticket whenever you stop with work in flight: you pause, end a turn with work still open, or hand the work over. Copy this template word for word and fill in each bracket:
-
-```text
-**Handoff** [date] by [agent or thread]
-Branch: [name] · PR: #[n] · Head: [full sha] · Base: main
-Done: [what is true at this head]
-Next: [the next concrete step]
-Verification: CI [green, red with the failing check, or pending] · cross-family review [clean at this sha, open findings, or not run] · open threads [n]
-Decisions and constraints: [anything a newcomer must not undo, such as a schema step number, or a decision of Chad's with its date]
-Blockers: [none, or who must do what]
-```
-
-Never leave work only on a machine. Push it to a branch before you stop. If you can't push, describe what is unpushed in the Handoff. Put every decision or constraint you rely on in the Handoff or the PR description; session notes, chat history, and `/tmp` files are gone for the next reader.
-
-Without Linear access, you still follow these steps through the task owner. The owner puts the newest Handoff in your [task brief](#start-from-a-task-brief) and posts your claim on the ticket. When you stop, write your Handoff in the PR description, or give it to the owner if there is no PR, and the owner posts it on the ticket.
+When you stop with work in flight, push the branch and say what is true at that head, the next step, and any decision a later session must not undo. Put that in the PR description. Session notes, chat history, and `/tmp` files are gone for the next reader.
 
 ## Set up and run checks
 
@@ -104,7 +66,7 @@ Local checks depend on the push (owner decision, 2026-11-12):
 
 | Push | Run locally before it |
 | --- | --- |
-| First push of a PR | A normal PR runs `just ci --fast`. A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full `just ci`. |
+| First push of a PR | A normal PR runs `just ci --fast`. A data-loss change, as [who merges](definition-of-done.md#who-merges) defines it, runs the full `just ci`. |
 | Merge of `main` that was clean, or resolved by keeping both sides without editing logic | Format check, and clippy for the crates the PR changes. For a web or UI PR, the lint and typecheck of the packages it changes. |
 | Review fix, or a merge of `main` where you edited logic to resolve a conflict | The row above, plus the tests of the crates or packages the fix touched. |
 
@@ -119,9 +81,9 @@ cargo nextest run --manifest-path rust/Cargo.toml -p <crate>   # review fix only
 - Image crates compile `desktop_rebuild` by default, so leave the flag off for them. For `pp-desktop` and `pp-drivers`, pass `--features desktop_rebuild`. `--no-default-features` builds the old path of an image crate.
 - These commands do not build or check the desktop web assets, which `pp-compat` embeds and the runtime tests read. If the merge or the fix changed anything under `web/`, run `just ci --only web-assets` first.
 
-For the last two rows, hosted CI at the pushed head is the full check: do not rerun `just ci --fast` or `just ci`. Local runs share each machine's cargo queue and took 80 to 90 minutes when this was decided, and every landing on `main` made open PRs pay that again. If hosted CI fails, fix it and push again; that push is not a review round. Under Evidence, list the commands you ran, their summaries, and for the last two rows that hosted CI is the full check. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
+For the last two rows, hosted CI at the pushed head is the full check: do not rerun `just ci --fast` or `just ci`. Local runs share each machine's cargo queue and took 80 to 90 minutes when this was decided, and every landing on `main` made open PRs pay that again. If hosted CI fails, fix it and push again; that push is not a review round. In the PR description, list the commands you ran, their summaries, and for the last two rows that hosted CI is the full check. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
 
-A full local CI run exits 0 even when steps print SKIP, because a tool or platform is missing. A SKIP is not a pass. List each one under Evidence. For steps that must run on your machine, add `--fail-on-skip`:
+A full local CI run exits 0 even when steps print SKIP, because a tool or platform is missing. A SKIP is not a pass. List each one in the PR description. For steps that must run on your machine, add `--fail-on-skip`:
 
 ```sh
 python3 scripts/local-ci.py --list
@@ -153,7 +115,9 @@ A hook adapter can send one JSON object on stdin to `python3 -B scripts/agent-gu
 
 The guard rejects other operations, missing or extra fields, a relative or missing `cwd`, an empty path, and a patch with no `*** Add File:`, `*** Update File:`, `*** Delete File:`, or `*** Move to:` line. A unified diff has none of those lines, so the guard rejects it rather than leave its paths unchecked. A `cwd` that contains `..` is resolved through symlinks first, as the kernel does when it enters the directory; any other `cwd` is used as given, like the shell's logical `$PWD`. Map your runner's shell tool to `command`, its file writes to `file`, and its patch tool to `patch`; never pass a tool through unchecked.
 
-The guard refuses merges (except the [coordinator's](#coordinator-merges)), force pushes, pushes to `main`, release publishing or editing, tag pushes, and hook bypasses. It also refuses edits to real `.env` files, Git metadata, generated manifests, and the Claude Code settings and hooks that run the guard: `.claude/settings.json`, `.claude/settings.local.json`, and `.claude/hooks/`.
+The guard refuses pull-request merges, force pushes, pushes to `main`, release publishing or editing, tag pushes, and hook bypasses. It also refuses edits to real `.env` files, Git metadata, generated manifests, and the Claude Code settings and hooks that run the guard: `.claude/settings.json`, `.claude/settings.local.json`, and `.claude/hooks/`.
+
+One checkout is exempt, and no guard rule was removed. `PP_COORDINATOR_WORKTREE` must be an absolute path, it must be the git top level of the checkout, and that top level must sit outside `/persist/worktrees/t3`. From that checkout, and only from there, the guard allows `gh pr merge <number> --squash --match-head-commit <40-character sha>` and a command that names `pp-review-gate` or `pp-score`. A path in the guard's sensitive class still needs the two scores `scripts/merge-classes.json` requires. This process does not use that checkout. Chad merges.
 
 - `git push` needs an explicit branch refspec and common options spelled in full. Write push destinations literally. The guard refuses a destination built from a shell expansion, the `:` matching refspec, and `HEAD` when the same command also switches branches.
 - When `push.followTags` is on, or a `remote.<name>.push` mapping exists, add `--no-follow-tags` or write `source:destination` refspecs. The guard treats both settings as unknown after a `git config` write or a `git remote` change in the same command.
@@ -161,10 +125,10 @@ The guard refuses merges (except the [coordinator's](#coordinator-merges)), forc
 - Run a `gh api` write that reads a request file (`-F key=@file` or `--input`) as its own command, after writing the file. `cd -P`, directory changes inside conditionals or groups, and a `cd` in a subshell, a pipeline, or under `env -C` leave the directory unknown, so relative `gh api` input files are refused.
 - Through `gh api`, agents may read, write PR or issue comments, submit comment-only or pending PR reviews, and reply to or resolve review threads. Other API writes need the maintainer, including writes to Actions variables.
 - `gh variable` may only `list`, `get`, or show help. Setting or deleting a variable needs the maintainer.
-- Outside the [coordinator worktree](#coordinator-merges), any command line that names `pp-review-gate`, in any case, raw or behind JSON, GraphQL, URL, or HTML escapes, is refused wherever the word appears, including a `grep` for it or an `echo` into a file. So is a `gh pr comment`, `gh issue comment`, or `gh api` comment body the guard cannot read literally, including a REST `--input` body that is not JSON: a variable (`$VAR`, `${...}`), a command substitution (`$(...)` or backticks), an ANSI-C `$'...'` string, stdin (`-F -`, `--input -`, a pipe, or a heredoc), a missing file, or a body file in a line with other commands. Write the body as a literal argument, or to a file passed with `--body-file` in a command of its own.
-- The `-c` scripts of `sh`, `bash`, `zsh`, and `dash` are classified like top-level commands, and they inherit the outer line's context: a `GIT_CONFIG_*` or `GIT_DIR` assignment, a config write, or a branch change before the shell applies to every `git` command in the script, and a wrapped merge never counts as the coordinator's merge. The guard knows the options that take a value (`--rcfile`, `--init-file`, `-o`, `-O`); any other unrecognised option before the script makes it unclassifiable, and such a command that mentions `git` or `gh` is refused outside the coordinator worktree. `eval` or `source` of anything that runs `git` or `gh`, or of text the guard cannot read, is refused.
+- Outside that checkout, any command line that names a review marker, in any case, raw or behind JSON, GraphQL, URL, or HTML escapes, is refused wherever the word appears, including a `grep` for it or an `echo` into a file. So is a `gh pr comment`, `gh issue comment`, or `gh api` comment body the guard cannot read literally, including a REST `--input` body that is not JSON: a variable (`$VAR`, `${...}`), a command substitution (`$(...)` or backticks), an ANSI-C `$'...'` string, stdin (`-F -`, `--input -`, a pipe, or a heredoc), a missing file, or a body file in a line with other commands. Write the body as a literal argument, or to a file passed with `--body-file` in a command of its own.
+- The `-c` scripts of `sh`, `bash`, `zsh`, and `dash` are classified like top-level commands, and they inherit the outer line's context: a `GIT_CONFIG_*` or `GIT_DIR` assignment, a config write, or a branch change before the shell applies to every `git` command in the script, and a wrapped merge is still a merge. The guard knows the options that take a value (`--rcfile`, `--init-file`, `-o`, `-O`); any other unrecognised option before the script makes it unclassifiable, and such a command that mentions `git` or `gh` is refused. `eval` or `source` of anything that runs `git` or `gh`, or of text the guard cannot read, is refused.
 - Put `gh` options after the subcommand. Before it, and between `pr`, `release`, `variable`, `alias`, or `extension` and their subcommand, the guard accepts only `-R`/`--repo`, `--help`/`-h`, and `--version`, with or without `=value`, and refuses any other option there. It still classifies the command, so `gh --help=false variable set` is refused as a variable write. It also refuses a shell expansion there, including in an option's value, as in `gh --help=$opts` or `gh -R "$repo" pr view`, because an unquoted expansion can split into the subcommand itself. Write `gh pr view -R "$repo"` instead.
-- Outside the [coordinator merge](#coordinator-merges), a PR merge is refused in the command positions, shells, runners, and interpreters the guard recognizes. The guard matches each command's words after shell unquoting: `gh`, then `pr` and `merge` with only `gh` options between them. So `me''rge`, `m\erge`, `"mer"ge`, and `$'m\x65rge'` still count, and so do the same words in `xargs` and `find -exec` arguments, `sh -c` scripts (also inside an alias value, a git alias value, or a runner), a runner's command string, a shell `alias` value, a `git -c alias.*` or `git config alias.*` value, and `python3 -c` or `node -e` code, which is split into words at quotes and call punctuation so `gh pr --repo=o/r merge` inside a string literal still counts. Inside an alias value or a runner, a `gh api` merge endpoint, `mergePullRequest`, or `enablePullRequestAutoMerge` counts too. An expansion or command substitution in program position followed by `pr merge`, as in `$(echo gh) pr merge`, counts too. A quoted argument that only mentions the command is data and stays allowed: a comment body, a commit message, a `grep` pattern, or `echo` text. The guard looks only where a program runs: program position after the wrappers it unwraps (`command`, `env`, `nice`, `timeout`), the program a runner such as `xargs` or `find -exec` runs, `-c` or `-e` code, alias values, and the command string of a runner that hands one to a shell (`script -c`, `su -c`, `flock -c`, `entr -s`, `ssh host`, `watch`, `tmux`, `parallel`). The arguments of the program a runner runs are data, so `find docs -exec grep -l 'gh pr merge' {} +` stays allowed. The arguments of an ordinary program are data, so `echo gh pr merge 12` and a top-level `grep -e gh -e pr -e merge` stay allowed (the same `grep` under `setsid` or another runner is refused; see the known limits below). Help is decided for each simple command: `gh pr merge` followed only by `--help` or `-h` stays allowed, with any `gh` options in its path and inside a compound line, as in `gh pr --repo=o/r merge --help | less`.
+- Outside that checkout, a pull-request merge is refused in the command positions, shells, runners, and interpreters the guard recognizes. The guard matches each command's words after shell unquoting: `gh`, then `pr` and `merge` with only `gh` options between them. So `me''rge`, `m\erge`, `"mer"ge`, and `$'m\x65rge'` still count, and so do the same words in `xargs` and `find -exec` arguments, `sh -c` scripts (also inside an alias value, a git alias value, or a runner), a runner's command string, a shell `alias` value, a `git -c alias.*` or `git config alias.*` value, and `python3 -c` or `node -e` code, which is split into words at quotes and call punctuation so `gh pr --repo=o/r merge` inside a string literal still counts. Inside an alias value or a runner, a `gh api` merge endpoint, `mergePullRequest`, or `enablePullRequestAutoMerge` counts too. An expansion or command substitution in program position followed by `pr merge`, as in `$(echo gh) pr merge`, counts too. A quoted argument that only mentions the command is data and stays allowed: a comment body, a commit message, a `grep` pattern, or `echo` text. The guard looks only where a program runs: program position after the wrappers it unwraps (`command`, `env`, `nice`, `timeout`), the program a runner such as `xargs` or `find -exec` runs, `-c` or `-e` code, alias values, and the command string of a runner that hands one to a shell (`script -c`, `su -c`, `flock -c`, `entr -s`, `ssh host`, `watch`, `tmux`, `parallel`). The arguments of the program a runner runs are data, so `find docs -exec grep -l 'gh pr merge' {} +` stays allowed. The arguments of an ordinary program are data, so `echo gh pr merge 12` and a top-level `grep -e gh -e pr -e merge` stay allowed (the same `grep` under `setsid` or another runner is refused; see the known limits below). Help is decided for each simple command: `gh pr merge` followed only by `--help` or `-h` stays allowed, with any `gh` options in its path and inside a compound line, as in `gh pr --repo=o/r merge --help | less`.
 - A `gh` command run through a program the guard does not unwrap (`xargs`, `find`, `setsid`, `flock`, `watch`, `script`, `parallel`, `tmux`, `ssh`, `su`, and the others in `UNWRAPPED_RUNNERS`) is also refused when it is a `gh api` call naming a merge endpoint or `mergePullRequest`, or when its arguments hold a shell expansion or command substitution. A literal `$` inside single quotes, such as a GraphQL `$id`, is data.
 - A line that sets a variable to `gh` (or a path ending in `gh`) and runs a program named by an expansion, or passes an expansion to a runner such as `flock FILE`, `watch -n 1`, `xargs -n 1`, or `ssh host`, is refused, as in `G=gh; P=pr; M=merge; $G $P $M` or `G=gh; watch -n 1 $G pr view`. An expansion used as data, as in `G=gh; echo $HOME`, is not.
 - A `gh` subcommand that is not one of gh's built-in commands, help topics, or gh's own command aliases is refused. gh's aliases are mapped to their commands before any check: `at` to `attestation`, `rs` to `ruleset`, `cs` to `codespace`, `agent`, `agents`, and `agent-tasks` to `agent-task`, `ext` and `extensions` to `extension`, and `skills` to `skill`; within a group, `ls` to `list` (except `gh variable ls` and `gh release ls`, which remain refused as on main) and, for `skill`, `show` to `preview`. Any other subcommand is refused because only an alias or an extension can answer to it; `gh co` counts, since it is a default alias (use `gh pr checkout`). `gh help`, with or without arguments, is refused too, because a gh alias named `help` could answer to it; use `gh <command> --help`.
@@ -176,7 +140,7 @@ The guard refuses merges (except the [coordinator's](#coordinator-merges)), forc
 - `gh alias set`, `gh alias import`, `gh extension install`, and `gh extension upgrade` are refused, and so are file edits under the `gh` config directory (`$GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`, `~/.config/gh/`), because an alias or extension runs commands the guard never sees. Relative paths, and a relative `GH_CONFIG_DIR`, resolve against the hook payload's `cwd` (the Claude Code adapter passes it for every file tool); a folder elsewhere that only looks like `.config/gh` is not the config. The CLI’s `file` and `patch` operations resolve relative paths against the guard process’s cwd; use absolute paths for these operations.
 - It refuses a git or gh command it cannot classify.
 
-The guard catches mistakes. Its threat model is a lane that runs a wrong or careless command, not one that hand-crafts gh config or shell tricks to get past it (design call on GRE-1280). It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control, and the owner merges them.
+The guard catches mistakes. Its threat model is an agent that runs a wrong or careless command, not one that hand-crafts gh config or shell tricks to get past it (design call on GRE-1280). It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control, and the owner merges them.
 
 Known limits of the merge refusals, accepted rather than fixed:
 
@@ -189,19 +153,19 @@ Known limits of the merge refusals, accepted rather than fixed:
 - A config redirect set inside a runner or alias boundary is not seen: `xargs sh -c 'HOME=/tmp gh pr view 12'`, `xargs env -i gh pr view 12`, `alias read='env -i gh pr view 12'`.
 - Scope isolation is deliberately conservative. `export GH_CONFIG_DIR=/tmp/x && true & gh pr view 12` and exports confined to groups or pipeline stages are refused even when bash would isolate the export. A config redirect hidden in an unrecognized runner or pre-existing alias remains outside the guard's parser.
 - A hand-edited gh config whose alias shadows a built-in command, and config set by sourcing a file, as in `. ./env.sh; gh pr view`, are not seen. gh's documentation says an extension cannot override a core command.
-- gh aliases and extensions are refused where they run, as an unknown `gh` subcommand, whatever config defines them and wherever it lives. A new gh release's built-in commands need adding to `GH_COMMANDS` in `scripts/agent-guard.py` before lanes can use them.
-- The added daily lane runners are `xvfb-run`, `pp-netns`, and `direnv exec`: the shared program resolver unwraps their options and operands, so gh config-redirect checks and git rules see the child program. `direnv exec X REST` checks both X as a program and REST as a command, without statting X. Either refused reading refuses the line. Literal `.` keeps cwd; other targets and expansions leave it unknown. Nested direnv wrappers fail closed. Python executable names match `python3(?:\.\d+)*[a-z]*(?:-\w+)*`, case-insensitively, including `python3-dbg`, `python3.14T`, and `python3.12-dbg-x86_64`.
-- `npx`, `npm exec`, `npm x`, `sg -c`, `ksh -c`, and `fish -c` can run command strings the guard does not parse. These forms and other unlisted runners and interpreters, including `awk 'BEGIN{system("gh pr merge 12")}'`, can hide a merge. Under GRE-1280's threat model the guard targets accidental and routine forms, not deliberate obfuscation. Merges still require the coordinator or owner under the merge gate.
+- gh aliases and extensions are refused where they run, as an unknown `gh` subcommand, whatever config defines them and wherever it lives. A new gh release's built-in commands need adding to `GH_COMMANDS` in `scripts/agent-guard.py` before agents can use them.
+- The added runners are `xvfb-run`, `pp-netns`, and `direnv exec`: the shared program resolver unwraps their options and operands, so gh config-redirect checks and git rules see the child program. `direnv exec X REST` checks both X as a program and REST as a command, without statting X. Either refused reading refuses the line. Literal `.` keeps cwd; other targets and expansions leave it unknown. Nested direnv wrappers fail closed. Python executable names match `python3(?:\.\d+)*[a-z]*(?:-\w+)*`, case-insensitively, including `python3-dbg`, `python3.14T`, and `python3.12-dbg-x86_64`.
+- `npx`, `npm exec`, `npm x`, `sg -c`, `ksh -c`, and `fish -c` can run command strings the guard does not parse. These forms and other unlisted runners and interpreters, including `awk 'BEGIN{system("gh pr merge 12")}'`, can hide a merge. Under GRE-1280's threat model the guard targets accidental and routine forms, not deliberate obfuscation. Chad merges.
 - A parsed `coproc` command with `git` or `gh` anywhere in the parsed words is refused as unclassifiable. Quotes and backslash-newline continuations are removed first; comments are ignored. Function definitions on a line with git or gh are also refused. The guard does not model their execution scope.
-- [GRE-1413: Guard known limits from #1620 review](https://linear.app/greetz/issue/GRE-1413/guard-known-limits-from-1620-review), a child of GRE-1280, records the remaining findings already present on main. The coordinator's findings are quoted verbatim: “the redirect-variable forms (`for HOME in`, `read`, `printf -v`, `+=`, `declare -n`, indirect export, `getopts`, `mapfile`), `GH_ENTERPRISE_TOKEN`, `GH_HOST` and `XDG_DATA_HOME`.” These are known limits under the threat model excluding deliberate obfuscation; they are not coverage claims or blockers for this PR.
+- [GRE-1413: Guard known limits from #1620 review](https://linear.app/greetz/issue/GRE-1413/guard-known-limits-from-1620-review), a child of GRE-1280, records the remaining findings already present on main. The recorded findings are quoted verbatim: “the redirect-variable forms (`for HOME in`, `read`, `printf -v`, `+=`, `declare -n`, indirect export, `getopts`, `mapfile`), `GH_ENTERPRISE_TOKEN`, `GH_HOST` and `XDG_DATA_HOME`.” These are known limits under the threat model excluding deliberate obfuscation; they are not coverage claims or blockers for this PR.
 - Python code supplied through stdin or a heredoc, such as `python3 - <<'PY'`, is not parsed as interpreter code. The interpreter matcher also refuses a literal merge string passed as data to `python3 scripts/agent-guard.py command '<merge string>'`; to check a command saved in a file, use `python3 scripts/agent-guard.py command - < file`.
-- The guard cannot see a merge run from a script file or `make`, a command an interpreter builds at run time, an alias, `gh` config, or extension that already exists, a git alias such as `git -c alias.p='push origin HEAD:main' p`, or a shell redirect into a hook or config file. Merges stay with the coordinator, under the merge gate.
+- The guard cannot see a merge run from a script file or `make`, a command an interpreter builds at run time, an alias, `gh` config, or extension that already exists, a git alias such as `git -c alias.p='push origin HEAD:main' p`, or a shell redirect into a hook or config file. Chad merges.
 
 ### Claude Code
 
 `.claude/hooks/guard.py` maps Claude Code's PreToolUse payload onto the guard. `Bash` becomes `check_command(command, cwd)`. `Write`, `Edit`, and `MultiEdit` check `file_path`, and `NotebookEdit` checks `notebook_path`. The adapter exits 2, which blocks the call, on a refusal and on any payload it cannot read: a non-object, a missing or empty field, a relative or missing `cwd`, an unknown tool, or an internal error.
 
-Grok and the Cursor CLI load hooks from Claude settings and match `Bash` to their own shell tools, so the matcher keeps Claude's names. The adapter treats Grok's `run_terminal_command` and Cursor's `Shell` like `Bash`: it checks `tool_input.command` with `check_command`. Both CLIs can keep one shell across calls, so the payload's `cwd`, the session's directory, may not be where the command runs. The adapter uses `tool_input.cwd` only when it is an absolute path. Otherwise the directory is unknown, and the guard applies its rules for that case: it refuses coordinator merges and any push whose branch or settings it can't read. The adapter refuses Grok input marked `toolInputTruncated`. Their file tools, such as Grok's `search_replace` and Cursor's `Write` with `path`, are still refused, because the adapter reads only Claude's file payloads.
+Grok and the Cursor CLI load hooks from Claude settings and match `Bash` to their own shell tools, so the matcher keeps Claude's names. The adapter treats Grok's `run_terminal_command` and Cursor's `Shell` like `Bash`: it checks `tool_input.command` with `check_command`. Both CLIs can keep one shell across calls, so the payload's `cwd`, the session's directory, may not be where the command runs. The adapter uses `tool_input.cwd` only when it is an absolute path. Otherwise the directory is unknown, and the guard applies its rules for that case: it refuses a pull-request merge and any push whose branch or settings it can't read. The adapter refuses Grok input marked `toolInputTruncated`. Their file tools, such as Grok's `search_replace` and Cursor's `Write` with `path`, are still refused, because the adapter reads only Claude's file payloads.
 
 The repository doesn't commit Claude Code settings. Add this to `.claude/settings.local.json` in your checkout (Git ignores that file). The guard then refuses later edits to it:
 
@@ -222,35 +186,6 @@ The repository doesn't commit Claude Code settings. Add this to `.claude/setting
 
 Claude Code reads hook settings when a session starts, so restart the session after changing them. Run `/hooks` to confirm the entry.
 
-### Coordinator merges
-
-The coordinator merges from one dedicated worktree, which must lie outside the lane worktrees in `/persist/worktrees/t3`. Its hook command sets `PP_COORDINATOR_WORKTREE` to that worktree's root. Lane hook configs never set it. The variable lives in the hook command, not in the agent's shell, so a command the agent runs cannot set it for the guard.
-
-The guard allows exactly one merge form, and only when `PP_COORDINATOR_WORKTREE` equals the Git top level of the command's directory and lies outside `/persist/worktrees/t3`:
-
-```sh
-gh pr merge <number> --squash --match-head-commit <40-character sha>
-```
-
-The command must stand alone: no other options such as `--admin`, `--auto`, or `-R`; no wrapper, environment assignment, `cd`, pipeline, or substitution; no `GIT_DIR` or `GIT_WORK_TREE` in the guard's environment; and a literal lowercase SHA. Every other merge, including the same command from a lane worktree, is refused. The coordinator runs it only after the [merge gate](definition-of-done.md#merge-gate) passes. Before it allows that command, the guard reads the PR's changed files (both paths of a rename) and its comments with `gh`, refuses owner-class PRs, and for a sensitive PR requires two qualifying `pp-score` records on the exact head (see [Merge gate](definition-of-done.md#merge-gate)). Those `gh` calls share a 45-second budget, and running out refuses the merge. The coordinator hook below therefore has a 60-second timeout: Claude Code lets a tool call run when its hook times out, so the timeout must outlast the budget. In the coordinator worktree, the Claude Code hook settings become:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [
-          {"type": "command", "command": "PP_COORDINATOR_WORKTREE=/persist/coordinator/PrintPartner python3 -B \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard.py", "timeout": 60}
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's absolute path.
-
 ## Writing and plans
 
 Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need.
@@ -259,15 +194,11 @@ Before large or risky work, write the plan down and challenge it. Risky work inc
 
 ## Review and merge
 
-Every ready PR needs the required `review-gate` check. It passes on the PR's head when Claude's code review together with its security review succeeded on that head, or when the coordinator recorded its own review of that head. The Claude reviews run only on the owner's own PRs from this repository. [Code review](definition-of-done.md#code-review) describes each path. If you work in another tool, the checks still run on your PR. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. The coordinator merges from its own worktree once the [merge gate](definition-of-done.md#merge-gate) passes; lanes and other agents report readiness and never merge. A score that a lane posts with `post-score.sh` is a record only.
+Required checks must be green on the head, and every review thread resolved. A second review is required only for a data-loss change. Chad merges. See [Who merges](definition-of-done.md#who-merges).
 
 Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that quotes them verbatim; see [Fixes only](definition-of-done.md#fixes-only). `linear-pr-sync.yml` sets the ticket states that follow a PR, so don't move them yourself.
 
-Only the coordinator records a review. It runs an independent model review on a checkout pinned to the PR's head SHA, waits until every finding is answered and its thread resolved, and then posts a comment with a `pp-review-gate` marker naming that head, the reviewer model, and the finding count. The steps are in [Coordinator review record](definition-of-done.md#coordinator-review-record). The safety guard refuses marker comments from any other worktree; lanes report readiness instead.
-
-### Design calls
-
-Design decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (history, immutable IDs, autosave, restart recovery, operation ownership) are pre-approved: the coordinator makes them and logs each one on the ticket with its reason. Lanes ask the coordinator instead of stopping for the owner. Anything else goes to the owner in one daily list: scope, cutover, defaults, data formats, and security posture. Work that depends on such a decision waits for the answer; pick other work meanwhile. See [Design calls](definition-of-done.md#design-calls).
+Decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (history, immutable IDs, autosave, restart recovery, operation ownership) can be made and named in the PR. Scope, cutover, defaults, data formats, and security posture go to the owner. Work that depends on an open decision waits.
 
 ## Verify in a running app
 
@@ -438,7 +369,7 @@ A browser screenshot is never native evidence. With no native display, report de
 
 1. Open every file. Confirm it shows the change itself, not just a page loading, and only the app: no terminals, other windows, tokens, or customer data. The repository is public.
 2. Drag the files into the PR description on GitHub, or publish them with `python3 scripts/evidence/publisher.py <pr-number> <files...>`, which runs the installed `evidence publish` with isolated git and a checked cache.
-3. Under `## Evidence`, give the head SHA and one line per file saying what it shows. When a UI path changed with no visible effect, such as a type-only refactor, give the reason on the `Exemption:` line. [Gate evidence](../contributing/gate-evidence.md) has the lint rules.
+3. In the PR description, give the head SHA and one line per file saying what it shows. When a UI path changed with no visible effect, such as a type-only refactor, give the reason. [Gate evidence](../contributing/gate-evidence.md) has the lint rules.
 
 ### Report and clean up
 

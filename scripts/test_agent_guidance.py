@@ -189,9 +189,9 @@ class AgentGuidanceTests(unittest.TestCase):
     def test_real_ignore_rules_allow_templates_but_not_secrets(self):
         cases = {
             "AGENTS.md": False,
-            ".claude/skills/pp-readiness/SKILL.md": False,
             ".claude/skills/pp-verify/SKILL.md": False,
-            ".claude/skills/pp-lane/SKILL.md": False,
+            ".claude/skills/pp-mission-qa/SKILL.md": False,
+            ".claude/skills/pp-send-once/SKILL.md": False,
             ".env.example": False,
             ".env.development.example": False,
             "web/apps/web/.env.example": False,

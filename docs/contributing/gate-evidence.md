@@ -89,8 +89,8 @@ list each skipped step under Evidence.
 
 Normal PRs run `just ci --fast` instead, which leaves out the full nextest and
 doctest passes and runs nextest with `desktop_rebuild` on for the crates the
-branch affects. Sensitive PRs, as the
-[merge gate](../development/definition-of-done.md#merge-gate) defines them, run
+branch affects. Data-loss changes, as
+[Who merges](../development/definition-of-done.md#who-merges) defines them, run
 the full `just ci`. Name the command you ran under Evidence.
 
 A later push, for a merge of `main` or a review fix, does not rerun either

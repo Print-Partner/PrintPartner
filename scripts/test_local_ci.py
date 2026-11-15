@@ -131,7 +131,7 @@ class LocalCiTests(unittest.TestCase):
     def test_full_run_executes_every_local_step_and_reports_host_only_steps_as_skipped(self):
         ci = LocalCi(self)
         self.assertEqual(ci(), 0)
-        for step in ["fmt", "clippy-off", "clippy-on", "nextest-off", "nextest-on", "doc-off", "doc-on",
+        for step in ["fmt", "clippy", "nextest",
                      "web-assets", "workaround-ratchet", "ast-grep", "boundaries", "selector-tests",
                      "node-fixtures", "actionlint", "zizmor", "rust-deps", "duplication", "ui-package"]:
             self.assertEqual(ci.summary[step], "PASS", step)
@@ -141,25 +141,24 @@ class LocalCiTests(unittest.TestCase):
         self.assertIn("rust-windows", ci.output.split("== local CI summary ==")[-1])
         self.assertIn("Windows runner", ci.output)
 
-    def test_macos_skip_hint_names_the_current_ci_label(self):
+    def test_macos_skip_hint_names_the_nightly_job(self):
         ci = LocalCi(self)
         self.assertEqual(ci("--only", "rust-macos"), 0)
         self.assertEqual(ci.summary["rust-macos"], "SKIP")
-        self.assertIn("add the ci:cross-os label", ci.output)
-        self.assertNotIn("add the macos label", ci.output)
+        self.assertIn("nightly job builds the workspace on macos-26", ci.output)
+        self.assertNotIn("ci:cross-os", ci.output)
 
     def test_historical_schema_commits_are_fetched_before_any_nextest_step(self):
         ci = LocalCi(self)
         self.assertEqual(ci(), 0)
         self.assertEqual(ci.summary["historical-schema"], "PASS")
         fetched = ci.ran.index("historical-schema")
-        self.assertLess(fetched, ci.ran.index("nextest-off"))
-        self.assertLess(fetched, ci.ran.index("nextest-on"))
+        self.assertLess(fetched, ci.ran.index("nextest"))
 
     def test_cargo_steps_refuse_to_write_snapshots(self):
         ci = LocalCi(self)
         self.assertEqual(ci(), 0)
-        for step in ["clippy-off", "clippy-on", "nextest-off", "nextest-on", "doc-off", "doc-on"]:
+        for step in ["clippy", "nextest"]:
             self.assertEqual(ci.envs[step].get("INSTA_UPDATE"), "no", step)
         self.assertNotIn("INSTA_UPDATE", ci.envs["node-fixtures"])
 
@@ -167,7 +166,7 @@ class LocalCiTests(unittest.TestCase):
         ci = LocalCi(self, fail={"fmt"})
         self.assertEqual(ci(), 1)
         self.assertEqual(ci.summary["fmt"], "FAIL")
-        self.assertEqual(ci.summary["doc-on"], "PASS")
+        self.assertEqual(ci.summary["nextest"], "PASS")
         self.assertIn("1 failed", ci.output)
 
     @unittest.skipUnless(local_ci.sys.platform == "linux", "Clippy baseline needs Linux")
@@ -175,8 +174,8 @@ class LocalCiTests(unittest.TestCase):
         ci = LocalCi(self, fail={"clippy-limits"})
         self.assertEqual(ci(), 1)
         self.assertEqual(ci.summary["clippy-limits"], "FAIL")
-        self.assertLess(ci.ran.index("clippy-on"), ci.ran.index("clippy-limits"))
-        self.assertIn("nextest-on", ci.ran)
+        self.assertLess(ci.ran.index("clippy"), ci.ran.index("clippy-limits"))
+        self.assertIn("nextest", ci.ran)
         self.assertIn("clippy-limits", ci.output)
 
     def test_a_missing_tool_skips_its_step_with_the_reason_and_runs_nothing_for_it(self):
@@ -250,14 +249,14 @@ class LocalCiTests(unittest.TestCase):
 
     def test_only_and_skip_select_steps_in_plan_order(self):
         ci = LocalCi(self)
-        self.assertEqual(ci("--only", "clippy-on,fmt"), 0)
-        self.assertEqual(ci.ran, ["fmt", "clippy-on"])
+        self.assertEqual(ci("--only", "clippy,fmt"), 0)
+        self.assertEqual(ci.ran, ["fmt", "clippy"])
         ci = LocalCi(self)
-        self.assertEqual(ci("--skip", "nextest-on,node-fixtures"), 0)
-        self.assertNotIn("nextest-on", ci.ran)
+        self.assertEqual(ci("--skip", "nextest,node-fixtures"), 0)
+        self.assertNotIn("nextest", ci.ran)
         self.assertNotIn("node-fixtures", ci.ran)
-        self.assertIn("nextest-off", ci.ran)
-        self.assertNotIn("nextest-on", ci.summary)
+        self.assertIn("clippy", ci.ran)
+        self.assertNotIn("nextest", ci.summary)
 
     def test_an_unknown_step_id_is_a_usage_error(self):
         ci = LocalCi(self)
@@ -269,7 +268,7 @@ class LocalCiTests(unittest.TestCase):
         ci = LocalCi(self)
         self.assertEqual(ci("--list"), 0)
         self.assertEqual(ci.ran, [])
-        for step in ["fmt", "nextest-on", "node-fixtures", "rust-windows"]:
+        for step in ["fmt", "nextest", "node-fixtures", "rust-windows"]:
             self.assertIn(step, ci.output)
 
     def test_the_ratchet_runs_between_the_two_installs_of_web_node_modules(self):
@@ -351,9 +350,9 @@ class LocalCiTests(unittest.TestCase):
         ci = LocalCi(self)
         self.assertEqual(ci("--fast"), 0)
         full = [step.id for step in local_ci.STEPS if not step.host_only]
-        left_out = ["nextest-off", "nextest-on", "doc-off", "doc-on"]
-        expected = [("nextest-affected" if step == "nextest-on" else step)
-                    for step in full if step == "nextest-on" or step not in left_out]
+        left_out = ["nextest"]
+        expected = [("nextest-affected" if step == "nextest" else step)
+                    for step in full if step == "nextest" or step not in left_out]
         expected.insert(expected.index("nextest-affected"), "release-artifacts")
         self.assertEqual(ci.ran, expected)
         for step in left_out:
@@ -363,7 +362,7 @@ class LocalCiTests(unittest.TestCase):
             self.assertEqual(ci.summary[step], "SKIP", step)
         self.assertLess(ci.ran.index("historical-schema"), ci.ran.index("nextest-affected"))
 
-    def test_fast_nextest_runs_desktop_rebuild_on_with_the_affected_filter(self):
+    def test_fast_nextest_runs_the_default_build_with_the_affected_filter(self):
         ci = LocalCi(self, affected="rdeps(=pp-storage) + rdeps(=pp-gateway)")
         self.assertEqual(ci("--fast"), 0)
         self.assertEqual(ci.affected_calls, 1)
@@ -371,24 +370,24 @@ class LocalCiTests(unittest.TestCase):
         self.assertEqual(env["NEXTEST_FILTER"], "rdeps(=pp-storage) + rdeps(=pp-gateway)")
         self.assertEqual(env["INSTA_UPDATE"], "no")
         step = next(step for step in local_ci.fast_steps() if step.id == "nextest-affected")
-        nextest_on = next(step for step in local_ci.STEPS if step.id == "nextest-on")
-        self.assertEqual(step.commands, nextest_on.commands)
-        self.assertIn("--features desktop_rebuild", step.commands[0])
+        nextest = next(step for step in local_ci.STEPS if step.id == "nextest")
+        self.assertEqual(step.commands, nextest.commands)
+        self.assertNotIn("--features desktop_rebuild", step.commands[0])
+        self.assertNotIn("--no-default-features", step.commands[0])
         self.assertIn('-E "$NEXTEST_FILTER"', step.commands[0])
 
     def test_fast_lists_its_own_steps_and_accepts_only_and_skip(self):
         ci = LocalCi(self)
         self.assertEqual(ci("--fast", "--list"), 0)
         self.assertIn("nextest-affected", ci.output)
-        for step in ["nextest-off", "nextest-on", "doc-off", "doc-on"]:
-            self.assertNotIn(step + " ", ci.output)
+        self.assertNotIn("\nnextest ", ci.output)
         ci = LocalCi(self)
         self.assertEqual(ci("--fast", "--only", "fmt,nextest-affected"), 0)
         self.assertEqual(ci.ran, ["web-assets", "fmt", "release-artifacts", "nextest-affected"])
         ci = LocalCi(self)
         self.assertEqual(ci("--fast", "--skip", "nextest-affected"), 0)
         self.assertEqual(ci.affected_calls, 0)
-        self.assertEqual(ci("--fast", "--only", "nextest-on"), 2)
+        self.assertEqual(ci("--fast", "--only", "nextest"), 2)
         self.assertEqual(ci("--only", "nextest-affected"), 2)
 
     def test_fast_skips_nextest_without_computing_a_filter_when_nextest_is_missing(self):
@@ -405,7 +404,7 @@ class LocalCiTests(unittest.TestCase):
         self.assertEqual(ci.summary["nextest-affected"], "FAIL")
 
     def test_targeted_nextest_prepares_assets_in_both_modes(self):
-        for args, step in [((), "nextest-off"), ((), "nextest-on"),
+        for args, step in [((), "nextest"),
                            (("--fast",), "nextest-affected")]:
             ci = LocalCi(self)
             self.assertEqual(ci(*args, "--only", step), 0)
@@ -413,20 +412,19 @@ class LocalCiTests(unittest.TestCase):
 
     def test_each_nextest_mode_checks_assets_but_prepares_them_once(self):
         ci = LocalCi(self)
-        self.assertEqual(ci("--only", "nextest-off,nextest-on"), 0)
-        self.assertEqual(ci.ran, ["web-assets", "release-artifacts", "nextest-off",
-                                  "release-artifacts", "nextest-on"])
+        self.assertEqual(ci("--only", "nextest"), 0)
+        self.assertEqual(ci.ran, ["web-assets", "release-artifacts", "nextest"])
 
     def test_stale_assets_stop_before_nextest_and_later_steps(self):
         ci = LocalCi(self, fail={"release-artifacts"})
-        self.assertEqual(ci("--only", "nextest-off,nextest-on,node-fixtures"), 1)
+        self.assertEqual(ci("--only", "nextest,node-fixtures"), 1)
         self.assertEqual(ci.ran, ["web-assets", "release-artifacts"])
         self.assertEqual(ci.summary["release-artifacts"], "FAIL")
         self.assertIn("nextest was not started", ci.output)
 
     def test_skipping_web_assets_still_checks_before_nextest(self):
         ci = LocalCi(self, fail={"release-artifacts"})
-        self.assertEqual(ci("--only", "nextest-off", "--skip", "web-assets"), 1)
+        self.assertEqual(ci("--only", "nextest", "--skip", "web-assets"), 1)
         self.assertEqual(ci.ran, ["release-artifacts"])
 
     def test_sccache_wraps_rustc_when_installed_and_changes_nothing_otherwise(self):

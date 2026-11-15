@@ -363,7 +363,7 @@ for (const [name, source] of [
   });
 }
 
-const webCI = { jobs: Object.fromEntries(['web', 'web-build'].map(name => [name, {
+const webCI = { jobs: Object.fromEntries(['ui'].map(name => [name, {
   steps: [
     { uses: setupNode, with: { 'node-version': '22.23.3' } },
     { run: 'test "$(node --version)" = "v22.23.3"' },
@@ -378,7 +378,7 @@ for (const filename of ['web-ci.yml', 'web-ci.yaml']) {
   });
 }
 
-for (const name of ['web', 'web-build']) {
+for (const name of ['ui']) {
   for (const version of ['22', '22.23', '22.x', 'lts/*', '^22.23.3', 'v22.23.3', '22.23.3-rc.1', '022.23.3', '24.21.0', '1.0.0', '${{ inputs.node }}', 22, null]) {
     test(`reject Web CI ${name} Node ${JSON.stringify(version)}`, t => {
       const source = JSON.parse(JSON.stringify(webCI));
@@ -389,7 +389,7 @@ for (const name of ['web', 'web-build']) {
     });
   }
   for (const [label, mutate, diagnostic] of [
-    ['missing lane', source => delete source.jobs[name], 'INVALID_WEB_NODE_SETUP'],
+    ['missing lane', source => { source.jobs.other = source.jobs[name]; delete source.jobs[name]; }, 'INVALID_WEB_NODE_SETUP'],
     ['conditional lane', source => { source.jobs[name].if = false; }, 'INVALID_WEB_NODE_SETUP'],
     ['tolerated lane failure', source => { source.jobs[name]['continue-on-error'] = true; }, 'INVALID_WEB_NODE_SETUP'],
     ['dependent lane', source => { source.jobs[name].needs = ['skipped']; }, 'INVALID_WEB_NODE_SETUP'],
@@ -418,18 +418,18 @@ for (const name of ['web', 'web-build']) {
   }
 }
 
-for (const name of ['web', 'web-build']) {
+for (const name of ['ui']) {
   test(`accept Web CI ${name} with exact changes dependency and selection`, t => {
     const source = JSON.parse(JSON.stringify(webCI));
     source.jobs[name].needs = ['changes'];
-    source.jobs[name].if = "(github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))";
+    source.jobs[name].if = "(github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ui != 'false'))";
     const result = run(t, JSON.stringify(source), [], 'web-ci.yml');
     assert.equal(result.status, 0, result.stderr);
   });
   for (const [label, needs, condition] of [
-    ['missing dependency', undefined, "web"],
-    ['extra dependency', ['changes', 'skipped'], "web"],
-    ['wrong output', ['changes'], "ui"],
+    ['missing dependency', undefined, "ui"],
+    ['extra dependency', ['changes', 'skipped'], "ui"],
+    ['wrong output', ['changes'], "web"],
   ]) {
     test(`reject Web CI ${name} selection with ${label}`, t => {
       const source = JSON.parse(JSON.stringify(webCI));
@@ -441,15 +441,6 @@ for (const name of ['web', 'web-build']) {
     });
   }
 }
-
-test('reject Web CI lane patch mismatch despite matching runtime checks', t => {
-  const source = JSON.parse(JSON.stringify(webCI));
-  source.jobs['web-build'].steps[0].with['node-version'] = '22.23.4';
-  source.jobs['web-build'].steps[1].run = 'test "$(node --version)" = "v22.23.4"';
-  const result = run(t, JSON.stringify(source), [], 'web-ci.yml');
-  assert.equal(result.status, 1, result.stdout);
-  assert.match(result.stderr, /MISMATCHED_WEB_NODE: expected 22.23.3, received 22.23.4/);
-});
 
 test('accept coordinated future Web CI patch bump', t => {
   const result = run(t, JSON.stringify(webCI).replaceAll('22.23.3', '22.23.4'), [], 'web-ci.yml');
@@ -471,7 +462,7 @@ for (const [filename, name, code, optional, major = 22] of [
   const source = () => ({ jobs: { [name]: {
     ...(optional ? { if: "github.event_name != 'workflow_dispatch' || inputs.postgres" }
       : ['E2E', 'WEBKIT'].includes(code) ? { if: "github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:desktop-smoke')" } : {}),
-    steps: JSON.parse(JSON.stringify(webCI.jobs.web.steps).replaceAll('22.23.3', `${major}.23.3`)),
+    steps: JSON.parse(JSON.stringify(webCI.jobs.ui.steps).replaceAll('22.23.3', `${major}.23.3`)),
   } } });
   for (const extension of ['yml', 'yaml', 'YML']) {
     test(`accept exact Node pin in ${filename} as ${extension}`, t => {

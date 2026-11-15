@@ -25,22 +25,23 @@ def job_runs(condition, contexts):
     if condition in ("", draft):
         return True
     prefix = f"({draft}) && ("
-    docker_guard = " && needs.web.result == 'success' && needs.web-build.result == 'success'"
-    if condition.endswith(docker_guard):
-        return (job_runs(condition[:-len(docker_guard)], contexts)
-                and all(contexts["needs"][job]["result"] == "success"
-                        for job in ("web", "web-build")))
     if not condition.startswith(prefix) or not condition.endswith(")"):
         raise ValueError(f"unsupported job condition: {condition!r}")
     rest = condition[len(prefix):-1]
-    known = {
-        "!cancelled() && needs.rust-linux-build.result != 'skipped'":
-            contexts["needs"]["rust-linux-build"]["result"] != "skipped",
-    }
+    event = contexts["github"]["event_name"]
+    linux_events = ("pull_request", "push", "merge_group")
+    linux_clause = " || ".join(f"github.event_name == '{name}'" for name in linux_events)
+    linux_guard = f"!cancelled() && ({linux_clause}) && "
+    if rest.startswith(linux_guard):
+        if event not in linux_events:
+            return False
+        rest = "!cancelled() && " + rest[len(linux_guard):]
+    known = {}
+    outputs = contexts["needs"]["changes"]["outputs"]
     for kind in ("relevant", "windows", "web", "ui"):
         known[f"!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.{kind} != 'false')"] = (
             contexts["needs"]["changes"]["result"] != "success"
-            or contexts["needs"]["changes"]["outputs"][kind] != "false")
+            or outputs.get(kind, "false") != "false")
     if rest not in known:
         raise ValueError(f"unsupported job condition: {condition!r}")
     return known[rest]
@@ -69,8 +70,9 @@ class MergeGroupWorkflowTests(unittest.TestCase):
 
     def test_required_workflows_still_emit_job_checks_for_drafts(self):
         for filename, names in (("actionlint.yml", {"actionlint", "zizmor"}),
-                                ("rust-cross-os.yml", {"rust (linux)", "rust (windows)"}),
-                                ("web-ci.yml", {"web", "web-build", "sidecar", "docker"})):
+                                ("rust-cross-os.yml", {"rust (linux)"}),
+                                ("web-ci.yml", {"release-audit", "ui"}),
+                                ("rust-image.yml", {"rust image"})):
             workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
                                  Loader=yaml.BaseLoader)
             self.assertNotIn("paths", workflow["on"]["pull_request"])
@@ -79,8 +81,8 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                                       for job_id, job in workflow["jobs"].items()})
 
     def test_required_workflows_accept_merge_group_fixture(self):
-        for filename in ("actionlint.yml", "rust-cross-os.yml", "desktop-native-macos.yml",
-                         "web-ci.yml"):
+        for filename in ("actionlint.yml", "rust-cross-os.yml", "web-ci.yml",
+                         "rust-image.yml"):
             with self.subTest(workflow=filename):
                 workflow = yaml.load(
                     (ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader
@@ -114,38 +116,34 @@ class MergeGroupWorkflowTests(unittest.TestCase):
             self.assertNotIn("paths", workflow["on"][event])
             self.assertNotIn("paths-ignore", workflow["on"][event])
 
-    def test_web_jobs_use_per_kind_selection_and_fail_closed(self):
+    def test_ui_job_uses_path_selection_and_fails_closed(self):
         workflow = yaml.load((ROOT / ".github/workflows/web-ci.yml").read_text(),
                              Loader=yaml.BaseLoader)
         jobs = workflow["jobs"]
         for event in ("push", "pull_request", "merge_group"):
             self.assertNotIn("paths", workflow["on"][event])
             self.assertNotIn("paths-ignore", workflow["on"][event])
-        for kind in ("web", "ui"):
-            step = next(step for step in jobs["changes"]["steps"] if step.get("id") == kind)
-            self.assertEqual(step["run"], f"python3 scripts/ci-path-filter.py {kind}")
-            self.assertEqual(jobs["changes"]["outputs"][kind],
-                             "${{ steps." + kind + ".outputs.relevant }}")
-            self.assertEqual(step["env"], {
-                "EVENT_NAME": "${{ github.event_name }}",
-                "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
-                "HEAD_SHA": "${{ github.event.pull_request.head.sha }}"})
+        step = next(step for step in jobs["changes"]["steps"] if step.get("id") == "ui")
+        self.assertEqual(step["run"], "python3 scripts/ci-path-filter.py ui")
+        self.assertEqual(jobs["changes"]["outputs"]["ui"], "${{ steps.ui.outputs.relevant }}")
+        self.assertEqual(step["env"], {
+            "EVENT_NAME": "${{ github.event_name }}",
+            "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+            "HEAD_SHA": "${{ github.event.pull_request.head.sha }}"})
         checkout = jobs["changes"]["steps"][0]
         self.assertEqual(checkout["with"]["fetch-depth"], "0")
         self.assertEqual(checkout["with"]["persist-credentials"], "false")
+        self.assertNotIn("web", jobs)
+        self.assertNotIn("web-build", jobs)
+        self.assertNotIn("sidecar", jobs)
+        self.assertNotIn("docker", jobs)
         for selected, result, runs in (("false", "success", False), ("true", "success", True),
                                        ("", "failure", True)):
             contexts = {"github": {"event_name": "merge_group"}, "needs": {
-                "changes": {"result": result, "outputs": {
-                    "web": selected, "ui": "true", "relevant": "true", "windows": "true"}},
-                "rust-linux-build": {"result": "success"},
-                "web": {"result": "success"}, "web-build": {"result": "success"}}}
-            for job_id in ("web", "web-build", "sidecar", "docker"):
-                job = jobs[job_id]
-                self.assertIn("changes", job["needs"])
-                self.assertEqual(job_runs(job["if"], contexts), runs, job_id)
-            contexts["needs"]["web"]["result"] = "failure"
-            self.assertFalse(job_runs(jobs["docker"]["if"], contexts))
+                "changes": {"result": result, "outputs": {"ui": selected, "relevant": "true"}}}}
+            job = jobs["ui"]
+            self.assertEqual(job["needs"], ["changes"])
+            self.assertEqual(job_runs(job["if"], contexts), runs)
 
     def test_every_required_check_reports_on_merge_groups(self):
         """Each required context comes from a job that a merge_group run starts and cannot skip."""
@@ -185,10 +183,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
     def test_required_lint_and_rust_jobs_use_the_filter(self):
         for filename, kind, contexts in (
             ("actionlint.yml", "actions", {"actionlint": "actionlint", "zizmor": "zizmor"}),
-            # Path filter runs on rust-linux-build; rust-linux is the required
-            # aggregate check over build + optional rebuild partitions.
-            ("rust-cross-os.yml", "rust", {"rust-linux-build": "rust (linux) build",
-                                           "rust-windows": "rust (windows)"}),
+            ("rust-cross-os.yml", "rust", {"rust-linux": "rust (linux)"}),
         ):
             with self.subTest(workflow=filename):
                 workflow = yaml.load(
@@ -210,109 +205,84 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     self.assertEqual(job.get("name", job_id), context)
                     self.assertEqual(job["needs"], "changes")
                     selected = "needs.changes.outputs.relevant != 'false'"
-                    if job_id == "rust-windows":
-                        selected = "needs.changes.outputs.windows != 'false'"
-                    label_guard = ""
-                    if job_id == "rust-windows":
-                        label_guard = "github.event_name != 'merge_group' && github.event_name != 'push' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os')) && "
+                    event_guard = ""
+                    if job_id == "rust-linux":
+                        event_guard = ("(github.event_name == 'pull_request' || "
+                                       "github.event_name == 'push' || "
+                                       "github.event_name == 'merge_group') && ")
+                        self.assertEqual(job["needs"], "changes")
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
-                                     f"{label_guard}(needs.changes.result != 'success' || {selected}))")
+                                     f"{event_guard}(needs.changes.result != 'success' || {selected}))")
                     checkout = next(step for step in job["steps"]
                                     if step.get("uses", "").startswith("actions/checkout@"))
                     self.assertNotIn("ref", checkout.get("with", {}))
                 if filename == "rust-cross-os.yml":
-                    windows = next(step for step in jobs["changes"]["steps"]
-                                   if step.get("id") == "windows")
-                    self.assertEqual(windows["run"], "python3 scripts/ci-path-filter.py windows")
-                    self.assertEqual(windows["env"], {
-                        **select["env"],
-                        "PR_LABELS": "${{ toJSON(github.event.pull_request.labels.*.name) }}",
-                    })
-                    self.assertEqual(jobs["changes"]["outputs"]["windows"],
-                                     "${{ steps.windows.outputs.windows }}")
+                    self.assertNotIn("windows", {step.get("id") for step in jobs["changes"]["steps"]})
                     self.assertIn("python3 scripts/ci-affected-nextest-filter.py",
                                   select["run"].splitlines())
                     self.assertEqual(jobs["changes"]["outputs"]["nextest_filter"],
                                      "${{ steps.select.outputs.nextest_filter }}")
-                    for job_id in ("rust-linux-build", "rust-macos", "rust-windows"):
-                        self.assertEqual(
-                            jobs[job_id]["env"]["NEXTEST_FILTER"],
-                            "${{ needs.changes.outputs.nextest_filter || 'all()' }}")
-                        # rdeps of a Windows-excluded crate (or pp-server) selects
-                        # no tests; nextest exits 4 on that unless told otherwise.
-                        filtered_runs = [step["run"] for step in jobs[job_id]["steps"]
-                                         if "cargo nextest run" in step.get("run", "")
-                                         and '-E "$NEXTEST_FILTER"' in step["run"]]
-                        self.assertEqual(len(filtered_runs), 2)
-                        for run in filtered_runs:
-                            self.assertIn("--no-tests=warn", run.split())
-                    self.assertEqual(jobs["rust-linux-rebuild"]["env"]["NEXTEST_FILTER"], "all()")
-                    rebuild = jobs["rust-linux-rebuild"]
-                    self.assertEqual(rebuild["needs"], ["rust-linux-build"])
-                    aggregate = jobs["rust-linux"]
-                    self.assertEqual(aggregate.get("name"), "rust (linux)")
-                    self.assertEqual(aggregate["needs"], ["rust-linux-build", "rust-linux-rebuild"])
+                    linux = jobs["rust-linux"]
+                    self.assertEqual(linux["needs"], "changes")
                     self.assertEqual(
-                        aggregate["if"],
-                        "(github.event_name != 'pull_request' || "
-                        "!github.event.pull_request.draft) && (!cancelled() && "
-                        "needs.rust-linux-build.result != 'skipped')",
-                    )
-                    require = next(
-                        step for step in aggregate["steps"]
-                        if step.get("name") == "Require linux build and rebuild partitions"
-                    )
-                    self.assertEqual(require["env"]["EVENT_NAME"], "${{ github.event_name }}")
-                    self.assertIn("push|workflow_dispatch)", require["run"])
-                    self.assertNotIn("merge_group", require["run"])
-                    self.assertIn('test "$REBUILD_RESULT" = success', require["run"])
-                    self.assertIn("success|skipped)", require["run"])
+                        linux["env"]["NEXTEST_FILTER"],
+                        "${{ needs.changes.outputs.nextest_filter || 'all()' }}")
+                    filtered_runs = [step["run"] for step in linux["steps"]
+                                     if "cargo nextest run" in step.get("run", "")
+                                     and '-E "$NEXTEST_FILTER"' in step["run"]]
+                    self.assertEqual(len(filtered_runs), 1)
+                    self.assertIn("--no-tests=warn", filtered_runs[0].split())
+                    self.assertNotIn("--features", filtered_runs[0])
+                    self.assertNotIn("--no-default-features", filtered_runs[0])
+                    clippy = [step["run"] for step in linux["steps"]
+                              if step.get("run", "").lstrip().startswith("cargo clippy")]
+                    self.assertEqual(clippy, [
+                        "cargo clippy --manifest-path rust/Cargo.toml --locked --workspace "
+                        "--all-targets --keep-going -- -D warnings"])
+                    self.assertFalse(any("check-clippy-limits.py" in step.get("run", "")
+                                         or "cargo test" in step.get("run", "")
+                                         for step in linux["steps"]))
+                    self.assertNotIn("rust-linux-build", jobs)
+                    self.assertNotIn("rust-linux-rebuild", jobs)
 
-    def test_merge_groups_run_the_short_rust_set(self):
-        """A merge group runs fmt and clippy on Linux: no tests, no partitions, no other OS."""
+    def test_merge_groups_run_linux_nextest_not_other_oses(self):
+        """A merge group runs the Linux fmt, clippy and nextest job, not the nightly builds."""
         jobs = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
                          Loader=yaml.BaseLoader)["jobs"]
-        not_queued = "github.event_name != 'merge_group'"
-        full_events = "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
-        for job_id in ("rust-windows", "rust-macos"):
-            self.assertIn(f"!cancelled() && {not_queued} && ", jobs[job_id]["if"], job_id)
-        self.assertIn(f"needs.rust-linux-build.result == 'success' && {full_events})",
-                      jobs["rust-linux-rebuild"]["if"])
-        self.assertNotIn("merge_group", jobs["rust-linux-rebuild"]["if"])
+        self.assertIn("github.event_name == 'merge_group'", jobs["rust-linux"]["if"])
+        self.assertNotIn("merge_group", jobs["rust-nightly"]["if"])
+        self.assertIn("github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'",
+                      jobs["rust-nightly"]["if"])
         tests, checks = [], []
-        for step in jobs["rust-linux-build"]["steps"]:
+        for step in jobs["rust-linux"]["steps"]:
             run = step.get("run", "")
-            if "cargo nextest" in run or "cargo test" in run:
+            if "cargo nextest" in run:
                 tests.append(step)
-            elif "cargo fmt" in run or "cargo clippy" in run or "check-clippy-limits.py" in run:
+            elif "cargo fmt" in run or "cargo clippy" in run:
                 checks.append(step)
-        self.assertEqual(len(tests), 5, [step["name"] for step in tests])
-        for step in tests:
-            self.assertTrue(f"&& {not_queued}" in step["if"] or step["if"].endswith(f"&& {full_events} }}}}"),
-                            step["name"])
-        self.assertEqual([step["name"] for step in checks],
-                         ["cargo fmt", "clippy (desktop_rebuild off)", "clippy (desktop_rebuild on)",
-                          "Check Rust Clippy limits"])
-        for step in checks:
-            self.assertNotIn("merge_group", step["if"], step["name"])
+        self.assertEqual([step["name"] for step in tests], ["nextest"])
+        self.assertNotIn("merge_group", tests[0].get("if", ""))
+        self.assertEqual([step["name"] for step in checks], ["cargo fmt", "clippy"])
 
     def test_pushes_to_main_run_linux_rust_only(self):
-        """A push to main must not wait on Windows or macOS runners: both move to the nightly run."""
+        """A push to main runs the Linux job. Windows and macOS stay on the nightly build."""
         workflow = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
                              Loader=yaml.BaseLoader)
         self.assertEqual(workflow["on"]["push"], {"branches": ["main"]})
         self.assertIn("schedule", workflow["on"])
         jobs = workflow["jobs"]
-        skipped = "!cancelled() && github.event_name != 'merge_group' && github.event_name != 'push' && "
-        for job_id in ("rust-windows", "rust-macos"):
-            self.assertIn(skipped, jobs[job_id]["if"], job_id)
-        for job_id in ("rust-linux-build", "rust-linux"):
-            self.assertNotIn("github.event_name != 'push'", jobs[job_id]["if"], job_id)
-        self.assertIn("github.event_name == 'push'", jobs["rust-linux-rebuild"]["if"])
+        self.assertIn("github.event_name == 'push'", jobs["rust-linux"]["if"])
+        self.assertNotIn("push", jobs["rust-nightly"]["if"])
         alert = jobs["alert-macos-main"]
-        self.assertEqual(alert["needs"], ["rust-linux", "rust-macos", "rust-windows"])
-        self.assertTrue(alert["if"].endswith("(failure() && github.event_name == 'schedule')"), alert["if"])
+        self.assertEqual(alert["needs"], "rust-nightly")
+        self.assertTrue(alert["if"].endswith(
+            "(failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'))"),
+            alert["if"])
+        self.assertEqual(jobs["rust-nightly"]["strategy"]["matrix"]["include"], [
+            {"os": "windows-latest", "name": "windows"},
+            {"os": "macos-26", "name": "macos"},
+        ])
 
     def test_native_macos_plan_respects_paths_and_event(self):
         workflow = yaml.load((ROOT / ".github/workflows/desktop-native-macos.yml").read_text(),
@@ -337,23 +307,14 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                                         "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
                     self.assertEqual(output.read_text(), f"macos={macos}\nintel={intel}\n")
 
-    def test_cross_os_requires_label_even_if_input_selection_fails(self):
-        workflow = yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
-                             Loader=yaml.BaseLoader)
-        label_guard = "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:cross-os'))"
-        for job in ("rust-windows", "rust-macos"):
-            condition = workflow["jobs"][job]["if"]
-            self.assertIn(f"{label_guard} && (needs.changes.result != 'success'", condition)
-
-    def test_macos_jobs_use_the_label_selector(self):
-        for filename in ("rust-cross-os.yml", "desktop-native-macos.yml"):
-            workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
-                                 Loader=yaml.BaseLoader)
-            self.assertTrue(any(step.get("run") == "python3 scripts/ci-path-filter.py macos"
-                                for step in workflow["jobs"]["changes"]["steps"]))
-        self.assertIn("needs.changes.outputs.macos != 'false'",
-                      yaml.load((ROOT / ".github/workflows/rust-cross-os.yml").read_text(),
-                                Loader=yaml.BaseLoader)["jobs"]["rust-macos"]["if"])
+    def test_nightly_builds_do_not_use_the_cross_os_label(self):
+        rust = (ROOT / ".github/workflows/rust-cross-os.yml").read_text()
+        self.assertNotIn("ci:cross-os", rust)
+        native = yaml.load((ROOT / ".github/workflows/desktop-native-macos.yml").read_text(),
+                           Loader=yaml.BaseLoader)
+        self.assertEqual(list(native["on"]), ["workflow_dispatch"])
+        self.assertTrue(any(step.get("run") == "python3 scripts/ci-path-filter.py macos"
+                            for step in native["jobs"]["changes"]["steps"]))
 
     def test_merge_group_runs_filters_even_for_docs_only_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -407,7 +368,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
 class MainPushConcurrencyTests(unittest.TestCase):
     """Main pushes never cancel a running run (GRE-1228) and queue at most one pending run per workflow."""
 
-    EACH_PUSH = {"desktop-fleet-rust.yml"}
+    EACH_PUSH = set()
     MAIN_GROUP = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main'"
 
     def test_only_pull_requests_cancel_and_other_events_get_their_own_group(self):
@@ -425,7 +386,7 @@ class MainPushConcurrencyTests(unittest.TestCase):
             checked += 1
             with self.subTest(workflow=path.name):
                 expected = "${{ github.event_name == 'pull_request' }}"
-                if path.name in {"rust-cross-os.yml", "desktop-native-macos.yml"}:
+                if path.name in {"rust-cross-os.yml", "rust-image.yml"}:
                     expected = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
                     self.assertIn("github.event_name == 'merge_group'", concurrency["group"])
                     self.assertIn("github.ref", concurrency["group"])
@@ -438,8 +399,10 @@ class MainPushConcurrencyTests(unittest.TestCase):
                     continue
                 bounded += 1
                 self.assertIn(self.MAIN_GROUP, concurrency["group"])
-        self.assertGreaterEqual(checked, 13)
-        self.assertGreaterEqual(bounded, 11)
+        # Desktop workflows no longer run on push (GRE-1649), so fewer workflows
+        # share the main-push group.
+        self.assertGreaterEqual(checked, 7)
+        self.assertGreaterEqual(bounded, 7)
 
 
 if __name__ == "__main__":

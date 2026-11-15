@@ -104,12 +104,12 @@ function checkNodeLanes(workflow, file, names, code = 'WEB', condition, major = 
     const steps = Array.isArray(job?.steps) ? job.steps : [];
     const setups = steps.filter(step => mapping(step) && typeof step.uses === 'string'
       && step.uses.split('@')[0].toLowerCase() === 'actions/setup-node');
-    const selectedWeb = code === 'WEB' && ['web', 'web-build'].includes(name)
+    const selectedUi = code === 'WEB' && name === 'ui'
       && JSON.stringify(job?.needs) === '["changes"]'
-      && job?.if === `(${draftGuard}) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))`;
+      && job?.if === `(${draftGuard}) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ui != 'false'))`;
     if (!mapping(job) || ['strategy', 'continue-on-error'].some(key => Object.hasOwn(job, key))
-      || (Object.hasOwn(job ?? {}, 'needs') && !selectedWeb)
-      || (!selectedWeb && (condition === undefined ? hasCondition : jobCondition !== condition))
+      || (Object.hasOwn(job ?? {}, 'needs') && !selectedUi)
+      || (!selectedUi && (condition === undefined ? hasCondition : jobCondition !== condition))
       || setups.length !== 1) {
       report(file, path, `INVALID_${code}_NODE_SETUP`, 'expected one setup-node step in each required lane with its permitted condition and without strategy or failure overrides');
       continue;
@@ -256,7 +256,7 @@ function checkWorkflow(file, source = readFileSync(file, 'utf8')) {
     if (!new RegExp(`^${name}\\.ya?ml$`, 'i').test(basename(file))) continue;
     checkDesktopNodeSetups(workflow, file, lanes);
   }
-  if (/^web-ci\.ya?ml$/.test(basename(file))) checkNodeLanes(workflow, file, ['web', 'web-build']);
+  if (/^web-ci\.ya?ml$/.test(basename(file))) checkNodeLanes(workflow, file, ['ui']);
   if (/^integration-smoke\.ya?ml$/i.test(basename(file))) checkNodeLanes(workflow, file, ['postgres'], 'INTEGRATION', "github.event_name != 'workflow_dispatch' || inputs.postgres");
   const seen = new Set();
   for (const [name, job] of Object.entries(workflow.jobs)) {
@@ -283,32 +283,20 @@ function checkWorkflow(file, source = readFileSync(file, 'utf8')) {
 }
 
 function checkDesktopExecution(workflow, file) {
-  const requiredPaths = [
-    'fixtures/http/routes-inventory.json', 'rust/**', 'rust-toolchain.toml',
-    'web/packages/contracts/**', 'web/packages/domain/**', 'web/packages/rust-client/**', 'web/apps/server/**',
-    'web/apps/web/src/api/planReview.ts', 'web/scripts/desktop-parity/**',
-    'web/scripts/desktop-contracts/**', 'web/scripts/rust-contracts/**',
-    'web/package*.json', 'docs/adr/0006-autosave-text-contract.md',
-    `.github/workflows/${basename(file)}`,
-  ];
-  for (const event of ['push', 'pull_request']) {
-    const trigger = workflow.on?.[event];
-    const allowed = event === 'push' ? ['branches', 'paths'] : ['paths', 'types'];
-    if (!mapping(trigger) || Object.keys(trigger).some(key => !allowed.includes(key))
-      || (event === 'pull_request' && Object.hasOwn(trigger, 'types')
-        && (!Array.isArray(trigger.types) || !['opened', 'synchronize', 'reopened', 'ready_for_review', 'converted_to_draft']
-          .every(type => trigger.types.includes(type))))
-      || !Array.isArray(trigger.paths) || !requiredPaths.every(path => trigger.paths.includes(path))
-      || trigger.paths.some(path => typeof path !== 'string' || path.startsWith('!'))
-      || (event === 'push' && (!Array.isArray(trigger.branches) || !trigger.branches.includes('main')
-        || trigger.branches.some(branch => typeof branch !== 'string' || branch.startsWith('!'))))) {
-      report(file, `on.${event}`, 'INVALID_DESKTOP_TRIGGERS', 'required automatic trigger coverage must remain enabled');
+  // GRE-1649: Node parity does not run on pull requests or main. The file stays
+  // so a manual dispatch can still run it until desktop CI returns.
+  for (const event of ['push', 'pull_request', 'merge_group', 'schedule']) {
+    if (Object.hasOwn(workflow.on ?? {}, event)) {
+      report(file, `on.${event}`, 'INVALID_DESKTOP_TRIGGERS', 'Node parity stays off pull requests and main until desktop CI returns');
     }
+  }
+  if (!Object.hasOwn(workflow.on ?? {}, 'workflow_dispatch')) {
+    report(file, 'on.workflow_dispatch', 'INVALID_DESKTOP_TRIGGERS', 'desktop contracts stays manually dispatchable');
   }
   const job = workflow.jobs.parity;
   if (!mapping(job) || ['needs', 'continue-on-error'].some(key => Object.hasOwn(job, key))
     || (Object.hasOwn(job, 'if') && job.if !== draftGuard)) {
-    report(file, 'jobs.parity', 'DISABLED_DESKTOP_JOB', 'parity must run on ready PRs and propagate failure');
+    report(file, 'jobs.parity', 'DISABLED_DESKTOP_JOB', 'the manual parity job must stay runnable and propagate failure');
     return;
   }
   for (const [index, step] of (Array.isArray(job.steps) ? job.steps : []).entries()) {

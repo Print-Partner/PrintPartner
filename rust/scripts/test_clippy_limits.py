@@ -141,6 +141,7 @@ class ClippyLimitsTests(unittest.TestCase):
             ):
                 self.assertIn(flag, command)
             self.assertEqual("--features" in command, mode == "on")
+            self.assertEqual("--no-default-features" in command, mode == "off")
             self.assertEqual(
                 command[command.index("--") + 1 :],
                 [arg for lint in limits.LINTS for arg in ("-W", lint)],

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["desktop_rebuild"]
 desktop_rebuild = ["serde_json/raw_value", "dep:serde_path_to_error", "dep:pp-domain", "pp-domain/desktop_rebuild", "dep:saphyr-parser", "dep:pp-contracts", "pp-contracts/desktop_rebuild"]
 # Weak features: codegen adds schemas without activating the gated edges.
 codegen = ["dep:schemars", "pp-contracts?/codegen", "pp-domain?/codegen"]
@@ -56,7 +56,7 @@ schemars = { version = "=0.8.22", optional = true }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-pp-storage = { path = ".", features = ["test-unmarked-writer"] }
+pp-storage = { path = ".", default-features = false, features = ["test-unmarked-writer"] }
 pp-testkit = { path = "../pp-testkit" }
 rusqlite = { workspace = true, features = ["hooks"] }
 tempfile = "=3.27.0"

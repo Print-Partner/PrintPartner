@@ -33,7 +33,7 @@ just guidance      # checks links in every .md, this file, the repo skills, and 
 
 ## Rules
 
-- Desktop rebuild work stays behind the default-off Cargo feature `desktop_rebuild` and the runtime switch `PP_DESKTOP_REBUILD=1` or `true`. See [Desktop rebuild flag](docs/desktop-rebuild.md). Never turn it on by default.
+- GRE-1646 turns the Cargo feature `desktop_rebuild` on by default for the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off unless the feature is named. A `--workspace` build still compiles `pp-core` with the feature, because Cargo unifies it from those image crates. `pp-desktop`'s own feature is what selects its Node path. The runtime switch `PP_DESKTOP_REBUILD` still defaults off. Only the Rust-only image sets it to `1`. `--no-default-features` builds the old path. See [Desktop rebuild flag](docs/desktop-rebuild.md).
 - One runtime owns each whole operation: routes, workers, tables, and files. No dual writes, shadow printer sends, or fallback from Rust to Node for mutations.
 - Keep history, immutable Plan/Plate/Required-unit IDs, autosave, and restart recovery intact. Rust owns its stored formats, and the import is the only reader of Node's ([ADR 0016](docs/adr/0016-rust-owns-its-data-formats.md)).
 - Build to the product contract in `docs/`. Match Node on the data a real library holds; its error strings, coercions and ordering are not requirements ([Parity scope](docs/development/definition-of-done.md#parity-scope)).

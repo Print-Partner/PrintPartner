@@ -31,6 +31,6 @@ These apply to new operations and new modules. Code that predates them changes w
 
 ## Guardrails
 
-- Do not enable `desktop_rebuild` or `PP_DESKTOP_REBUILD` by default.
+- GRE-1646 enables `desktop_rebuild` by default on the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off unless named. Do not enable `PP_DESKTOP_REBUILD` by default. The Rust-only image is the one place that sets it.
 - Do not add mutation fallback to Node or write SQL outside `pp-storage`.
 - Do not send real prints during tests.

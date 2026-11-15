@@ -14,5 +14,5 @@ Printed-count imports return `Plan draft update is unavailable` with code
 Run the response regression tests with:
 
 ```sh
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib checkoff_progress::tests
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --lib checkoff_progress::tests
 ```

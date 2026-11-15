@@ -19,9 +19,9 @@ Without Notion or Linear access, work from a task brief the task owner exports f
 
 Open one PR per ticket. If you find work that belongs to another ticket, add a comment to that ticket instead of changing it in your PR.
 
-## Keep rebuild code behind the flag
+## Rebuild feature default
 
-New Rust rebuild code compiles only with the `desktop_rebuild` Cargo feature, which is off by default. Code that a user can see also checks the `PP_DESKTOP_REBUILD` environment variable. Do not turn `desktop_rebuild` on by default; that is the maintainer's decision. [Desktop rebuild flag](../desktop-rebuild.md) describes the flag and the slice plan.
+GRE-1646 (M0) turns the `desktop_rebuild` Cargo feature on by default for the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off unless you name the feature. Code that a user can see also checks `PP_DESKTOP_REBUILD`, which still defaults off outside the Rust-only image. `--no-default-features` builds the old path. [Desktop rebuild flag](../desktop-rebuild.md) describes the flag and the slice plan.
 
 ## TypeScript naming
 

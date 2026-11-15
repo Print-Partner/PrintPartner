@@ -129,11 +129,12 @@ content and state also stay unchanged. The new entry point must not wire screens
 to Node or introduce a mutation fallback. Maintain the old app for correctness
 and data safety until cutover.
 
-Keep the default-off Cargo feature and exact runtime opt-in
-`PP_DESKTOP_REBUILD=1` or `true`. Test both gates independently and together.
-Neither this design nor cutover approval authorizes changing the default.
+GRE-1646 turns the Cargo feature on by default for the crates the Rust-only
+image builds. The runtime opt-in stays exact: `PP_DESKTOP_REBUILD=1` or `true`,
+and it still defaults off outside that image. Test the feature-off build with
+`--no-default-features`, and test the runtime switch on and off.
 [Desktop rebuild](desktop-rebuild.md) remains the implementation/flag reference;
-its parity-first sequencing and default-on proposal are superseded by these ADRs.
+its parity-first sequencing is superseded by these ADRs.
 
 ## Crates and allowed edges
 

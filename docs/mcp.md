@@ -26,10 +26,10 @@ Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge
 
 ### `propose_create_build`
 
-`propose_create_build` `{ name, request, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). `urls` must be absent, `null` or empty; URLs become brief evidence in a later change. The shared catalog's tool description still advertises `urls` and a verbatim request until that change.
+`propose_create_build` `{ name, request, urls?, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). Each URL in `urls` becomes one evidence item. Rust classifies it the way Node's `classifyBuildUrl` does, and does not guess a role from the request text. No Source is created.
 
-- **Propose** trims `name` and `idempotency_key` and removes surrounding whitespace from `request`, the way `PATCH /plans/{id}` stores a special request. It refuses a blank `name` or `request`, a key that is not a string of at most 200 characters, a name another Build has, and the cases confirm refuses below. It writes nothing.
-- **Confirm** runs one transaction: it creates the Build, sets its special request, stores a new brief and records the key. The brief holds the request and empty lists in phase `preparing`. Rust does not guess requirements from the request; record them with `propose_update_build_brief`. The Build has no layers, no Working Plan and no Accepted Plan. It answers `{ "ok": true, "result": { "plan_id", "name", "idempotent_replay" } }`.
+- **Propose** trims `name` and `idempotency_key` and removes surrounding whitespace from `request`, the way `PATCH /plans/{id}` stores a special request. It refuses a blank `name` or `request`, a `urls` value that is not a list of http or https URLs, a key that is not a string of at most 200 characters, a name another Build has, and the cases confirm refuses below. It writes nothing.
+- **Confirm** runs one transaction: it creates the Build, sets its special request, stores a new brief and records the key. The brief holds the request and those evidence items, and otherwise empty lists, in phase `preparing`. A GitHub URL, or a path ending `.git`, is a git repository (`kind` `mod`, `source_role` `addon`, `sync_status` `pending`). A Printables, MakerWorld, Thingiverse, Thangs, Cults3D or MyMiniFactory URL is a model page with `upload_required` true. Any other http or https URL is informational evidence. The stored `url` is the text that was sent. The evidence id is the first 20 hex digits of the SHA-256 of the normalized URL. A later entry with the same normalized URL is dropped. Rust does not guess requirements from the request; record them with `propose_update_build_brief`. The Build has no layers, no Working Plan and no Accepted Plan. It answers `{ "ok": true, "result": { "plan_id", "name", "idempotent_replay" } }`.
 - **Idempotency.** `build_planning.create.<key>` stores the Build id. Confirming another proposal with the same key answers that Build with `idempotent_replay: true` and writes nothing, while the Build exists. If the Build was deleted, confirm creates a new one and moves the key.
 - **Orders Module.** Propose and confirm both refuse while the Orders Module is off, as `PATCH /plans/{id}` refuses a special request. This is a provisional default until the owner decides.
 
@@ -40,7 +40,7 @@ A refused propose answers `{ "error": …, "code": … }` with `isError`. A refu
 | `blank_name` | `name` is missing, not a string, or blank. |
 | `name_too_long` | `name` is over 4,096 characters. |
 | `blank_request` | `request` is missing, not a string, or blank. |
-| `urls_not_supported` | `urls` is a non-empty list or not a list. |
+| `invalid_url` | `urls` is not a list, or an entry is not an http or https URL. |
 | `invalid_idempotency_key` | `idempotency_key` is not a string, or is over 200 characters after trimming. |
 | `name_taken` | Another Build has the name. |
 | `orders_module_off` | The Orders Module is off. |

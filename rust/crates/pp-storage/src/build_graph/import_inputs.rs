@@ -301,7 +301,7 @@ fn source_item(id: i64, name: &str, filenames: &[String], derived: Option<&str>)
 
 /// Node's evidence id: the first 20 hex digits of the SHA-256 of the
 /// normalized URL. Stored data, so it must match Node's.
-fn evidence_id(normalized_url: &str) -> String {
+pub(crate) fn evidence_id(normalized_url: &str) -> String {
     let mut id = hex::encode(Sha256::digest(normalized_url.as_bytes()));
     id.truncate(20);
     id

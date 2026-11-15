@@ -126,9 +126,9 @@ On a fresh copy of the seed-388 dataset with no workload before it, the task fee
 
 ## Thumbnail, Plan change and Checkoff, 2026-11-15
 
-GRE-1668. One default run of `baseline.py` on the seed-388 dataset, Rust-only against the Node runtime, on one machine. The 2026-11-08 table stays as captured. Its export rows stay there too. GRE-1535 owns the Rust export timing.
+GRE-1668. One default run of `baseline.py` on the seed-388 dataset, Rust-only against the Node runtime, on one machine. The 2026-11-08 table stays as captured. Its export rows stay there too. [Export downloads](#export-downloads-2026-11-15) records the Rust samples.
 
-Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from main at `8623d14ff` (sha256 `0e0ebaff…a41b`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the 2026-11-08 capture. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.05 and 0.53 (Node 0.05 to 0.29, Rust 0.11 to 0.53). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15.json](performance-baseline-2026-11-15.json). That file is the whole harness run, so it also holds the Node export timings the harness records every time. The published export rows remain the 2026-11-08 figures.
+Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from main at `8623d14ff` (sha256 `0e0ebaff…a41b`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the 2026-11-08 capture. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.05 and 0.53 (Node 0.05 to 0.29, Rust 0.11 to 0.53). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15.json](performance-baseline-2026-11-15.json). That file is the whole harness run, so it also holds the Node export timings the harness records every time. The Rust export rows are in [Export downloads](#export-downloads-2026-11-15).
 
 Requests this run timed:
 
@@ -161,3 +161,37 @@ What this run says:
 - Plan change: the three steps both serve (open draft, edit, Accept) take 26.2 ms on Rust and 55.5 ms on Node. The whole flow each UI sends takes 39.2 ms on Rust and 55.7 ms on Node. Rust's autosave is 8.7 ms and Accept preview is 3.9 ms. Node's one-request Save takes 88.7 ms.
 - Checkoff: the 15 bursts take 144 ms on Rust and 1558 ms on Node. A burst is 9.0 ms on Rust and 104 ms on Node. Node sends one request per unit; Rust sends one request per burst.
 - Where both columns have a median, the Rust median is lower than the Node median. That includes the whole Plan-change flow and both Checkoff rows, whose requests differ.
+
+## Export downloads, 2026-11-15
+
+GRE-1535. One default run of `baseline.py` on the seed-388 dataset. The 2026-11-08 table and the thumbnail, Plan and Checkoff capture above stay as captured.
+
+Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from `d2441f8fb` (sha256 `114fffcd…dfcb`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the earlier captures. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.05 and 0.56 (Node 0.05 to 0.38, Rust 0.09 to 0.56). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15-exports.json](performance-baseline-2026-11-15-exports.json).
+
+The four rows are one transfer each. Node starts `POST /jobs/export-stl-pack` or `POST /jobs/export-checklist-html` for "Synthetic Build Anchor 100u15p", polls `GET /jobs/:id` every 20 ms, and downloads the file. Rust reads `GET /api/v2/plans/{id}/exports/stl-pack` and `GET /api/v2/plans/{id}/exports/checklist` from the request to the last byte. The check rows are a later GET of the same path, stopped at the headers with the body unread, which is the request the Production tab aborts before the browser download. The click rows add the download that follows that check. Those rows run after the four GETs, so the files are already in the page cache.
+
+| Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| STL pack export, first in run | 164 ms | 210 ms (max) | 50.0 ms | 56.6 ms (max) | 0.30x | 10/10 |  |
+| HTML checklist export, first in run | 143 ms | 209 ms (max) | 7.1 ms | 9.6 ms (max) | 0.05x | 10/10 |  |
+| STL pack export, repeated | 181 ms | 227 ms (max) | 48.0 ms | 52.3 ms (max) | 0.27x | 10/10 |  |
+| HTML checklist export, repeated | 117 ms | 165 ms (max) | 7.2 ms | 9.1 ms (max) | 0.06x | 10/10 |  |
+| STL pack export, first GET until headers | - | - | 9.0 ms | 13.6 ms (max) | - | 0/10 | Rust only; each STL is opened and hashed before the first byte |
+| HTML checklist export, first GET until headers | - | - | 7.1 ms | 9.6 ms (max) | - | 0/10 | Rust only; the checklist is built before the first byte |
+| STL pack export, repeated GET until headers | - | - | 7.3 ms | 10.3 ms (max) | - | 0/10 | Rust only; each STL is opened and hashed before the first byte |
+| HTML checklist export, repeated GET until headers | - | - | 7.2 ms | 9.1 ms (max) | - | 0/10 | Rust only; the checklist is built before the first byte |
+| STL pack export, check request | - | - | 7.2 ms | 10.4 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| HTML checklist export, check request | - | - | 5.7 ms | 9.3 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| STL pack export, repeated check request | - | - | 6.7 ms | 9.3 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| HTML checklist export, repeated check request | - | - | 5.5 ms | 6.7 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| STL pack export, check then download | - | - | 14.4 ms | 19.7 ms (max) | - | 0/10 | Rust only; one click opens and hashes each STL twice |
+| HTML checklist export, check then download | - | - | 12.0 ms | 16.3 ms (max) | - | 0/10 | Rust only; one click builds the checklist twice |
+| STL pack export, repeated check then download | - | - | 13.6 ms | 17.1 ms (max) | - | 0/10 | Rust only; one click opens and hashes each STL twice |
+| HTML checklist export, repeated check then download | - | - | 11.6 ms | 16.3 ms (max) | - | 0/10 | Rust only; one click builds the checklist twice |
+
+What this run says:
+
+- Each of the four export rows has ten Rust samples, and each Rust median is lower than the Node median for that row. The STL pack is 50 ms first and 48 ms repeated, against Node's 164 ms and 181 ms. The HTML checklist is 7.1 ms and 7.2 ms, against 143 ms and 117 ms.
+- The STL pack opens and hashes each distinct STL before the first byte: 9.0 ms on the first GET and 7.3 ms on the repeat. The checklist does not open Source files. It is built before the headers, so the time to headers and the time to the last byte are the same 7.1 ms and 7.2 ms.
+- Six of the ten first STL reads, and six of the ten repeats, land between 47 ms and 57 ms. The other four finish between 7.5 ms and 13 ms, close to the headers. The response is chunked and sends no Content-Length, and the extra time is after the headers. The checklist, which sends Content-Length, has no such gap.
+- A Production-tab click pays for two opens. The check stops at the headers, after the core has opened and verified the files, and the browser download sends the GET again. On this run those samples follow the row GETs, so the files are in the page cache. The STL check is 7.2 ms and the click is 14.4 ms; the repeated click is 13.6 ms. The checklist check is 5.7 ms and the click is 12.0 ms; the repeated click is 11.6 ms. The check is the extra open, about 7 ms for the STL pack and about 6 ms for the checklist, on top of the download in that same click. A click stays under the Node median for the same file.

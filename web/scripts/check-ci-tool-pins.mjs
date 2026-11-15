@@ -42,7 +42,7 @@ const desktopNodeSetups = {
     'macos-storage-gate': [22, 24],
   },
 };
-const additionalNodeWorkflows = ['integration-smoke', 'pr-evidence', ...desktopNodeLanes.map(([name]) => name), ...Object.keys(desktopNodeSetups)];
+const additionalNodeWorkflows = ['integration-smoke', ...desktopNodeLanes.map(([name]) => name), ...Object.keys(desktopNodeSetups)];
 const desktopContracts = /^desktop-contracts\.ya?ml$/;
 const directory = resolve(process.argv[2] ?? join(root, '.github/workflows'));
 let declarations = 0;
@@ -258,7 +258,6 @@ function checkWorkflow(file, source = readFileSync(file, 'utf8')) {
   }
   if (/^web-ci\.ya?ml$/.test(basename(file))) checkNodeLanes(workflow, file, ['web', 'web-build']);
   if (/^integration-smoke\.ya?ml$/i.test(basename(file))) checkNodeLanes(workflow, file, ['postgres'], 'INTEGRATION', "github.event_name != 'workflow_dispatch' || inputs.postgres");
-  if (/^pr-evidence\.ya?ml$/i.test(basename(file))) checkNodeLanes(workflow, file, ['lint-pr-body'], 'EVIDENCE');
   const seen = new Set();
   for (const [name, job] of Object.entries(workflow.jobs)) {
     const path = `jobs.${name}`;

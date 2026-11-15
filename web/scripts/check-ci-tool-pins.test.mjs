@@ -146,7 +146,7 @@ for (const tracked of [false, true, 'symlink']) {
     copyFileSync(cli, join(directory, 'web/scripts/check-ci-tool-pins.mjs'));
     symlinkSync(fileURLToPath(new URL('../node_modules', import.meta.url)), join(directory, 'web/node_modules'));
     writeFileSync(join(directory, '.github/workflows/web-ci.yml'), JSON.stringify(webCI));
-    for (const name of ['integration-smoke', 'pr-evidence', 'desktop-e2e', 'desktop-webkit', 'desktop-runtime', 'desktop-native-macos']) {
+    for (const name of ['integration-smoke', 'desktop-e2e', 'desktop-webkit', 'desktop-runtime', 'desktop-native-macos']) {
       copyFileSync(fileURLToPath(new URL(`../../.github/workflows/${name}.yml`, import.meta.url)), join(directory, `.github/workflows/${name}.yml`));
     }
     const contracts = join(directory, '.github/workflows/desktop-contracts.yml');
@@ -154,7 +154,7 @@ for (const tracked of [false, true, 'symlink']) {
     else writeFileSync(contracts, desktop());
     for (const args of [
       ['init', '-q'],
-      ['add', '.github/workflows/web-ci.yml', '.github/workflows/integration-smoke.yml', '.github/workflows/pr-evidence.yml', '.github/workflows/desktop-e2e.yml', '.github/workflows/desktop-webkit.yml', '.github/workflows/desktop-runtime.yml', '.github/workflows/desktop-native-macos.yml'],
+      ['add', '.github/workflows/web-ci.yml', '.github/workflows/integration-smoke.yml', '.github/workflows/desktop-e2e.yml', '.github/workflows/desktop-webkit.yml', '.github/workflows/desktop-runtime.yml', '.github/workflows/desktop-native-macos.yml'],
       ['add', tracked ? '.github/workflows/desktop-contracts.yml' : 'web/scripts/check-ci-tool-pins.mjs'],
       ['-c', 'user.name=CI test', '-c', 'user.email=ci@example.invalid', 'commit', '-qm', 'fixture'],
     ]) {
@@ -465,7 +465,6 @@ test('repository Web CI has exact matching Node pins and runtime checks', t => {
 
 for (const [filename, name, code, optional, major = 22] of [
   ['integration-smoke.yml', 'postgres', 'INTEGRATION', true],
-  ['pr-evidence.yml', 'lint-pr-body', 'EVIDENCE', false],
   ['desktop-e2e.yml', 'linux-smoke', 'E2E', false],
   ['desktop-webkit.yml', 'webkit-stl', 'WEBKIT', false, 24],
 ]) {

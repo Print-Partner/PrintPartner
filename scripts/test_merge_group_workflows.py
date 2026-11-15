@@ -2,7 +2,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -14,22 +13,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 EVENT = json.loads((ROOT / "scripts/fixtures/merge_group/checks_requested.json").read_text())
 EVENT_NAME = "merge_group"
-
-
-def evaluate_if(expression, contexts):
-    """Evaluate an `a.b == 'x' && c != 'y'` step condition; reject any other shape."""
-    result = True
-    for clause in expression.split("&&"):
-        left, op, right = clause.strip().partition(" == ")
-        if not op:
-            left, op, right = clause.strip().partition(" != ")
-        if not op or not (right.startswith("'") and right.endswith("'")):
-            raise ValueError(f"unsupported condition clause: {clause!r}")
-        value = contexts
-        for key in left.split("."):
-            value = value.get(key, "") if isinstance(value, dict) else ""
-        result = result and ((value == right[1:-1]) == (op == " == "))
-    return result
 
 
 def job_runs(condition, contexts):
@@ -63,18 +46,6 @@ def job_runs(condition, contexts):
     return known[rest]
 
 
-def starts(workflow, event, base):
-    """Whether a trigger starts for a PR or merge group into `base` under an exact-name `branches` filter."""
-    trigger = workflow["on"].get(event)
-    if trigger is None:
-        return False
-    branches = (trigger or {}).get("branches")
-    if branches is None:
-        return True
-    assert all(set(branch).isdisjoint("*?[!+") for branch in branches), branches
-    return base.removeprefix("refs/heads/") in branches
-
-
 class MergeGroupWorkflowTests(unittest.TestCase):
     def test_drafts_skip_every_pr_ci_job_and_ready_events_restart_them(self):
         guard = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
@@ -99,7 +70,6 @@ class MergeGroupWorkflowTests(unittest.TestCase):
     def test_required_workflows_still_emit_job_checks_for_drafts(self):
         for filename, names in (("actionlint.yml", {"actionlint", "zizmor"}),
                                 ("rust-cross-os.yml", {"rust (linux)", "rust (windows)"}),
-                                ("pr-evidence.yml", {"Lint Evidence block"}),
                                 ("web-ci.yml", {"web", "web-build", "sidecar", "docker"})):
             workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
                                  Loader=yaml.BaseLoader)
@@ -110,7 +80,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
 
     def test_required_workflows_accept_merge_group_fixture(self):
         for filename in ("actionlint.yml", "rust-cross-os.yml", "desktop-native-macos.yml",
-                         "pr-evidence.yml", "review-gate.yml", "web-ci.yml"):
+                         "web-ci.yml"):
             with self.subTest(workflow=filename):
                 workflow = yaml.load(
                     (ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader
@@ -177,19 +147,10 @@ class MergeGroupWorkflowTests(unittest.TestCase):
             contexts["needs"]["web"]["result"] = "failure"
             self.assertFalse(job_runs(jobs["docker"]["if"], contexts))
 
-    def test_review_gate_starts_only_for_prs_into_main(self):
-        """A PR into another base runs that base's copy of the gate; main's copy never judges it."""
-        workflow = yaml.load((ROOT / ".github/workflows/review-gate.yml").read_text(), Loader=yaml.BaseLoader)
-        self.assertTrue(starts(workflow, "pull_request_target", "main"))
-        for base in ("release", "main-old", "feature/main"):
-            self.assertFalse(starts(workflow, "pull_request_target", base), base)
-        self.assertTrue(starts(workflow, "merge_group", EVENT["merge_group"]["base_ref"]))
-
     def test_every_required_check_reports_on_merge_groups(self):
         """Each required context comes from a job that a merge_group run starts and cannot skip."""
         required = {"actionlint": "actionlint.yml", "zizmor": "actionlint.yml",
-                    "rust (linux)": "rust-cross-os.yml", "Lint Evidence block": "pr-evidence.yml",
-                    "review-gate": "review-gate.yml"}
+                    "rust (linux)": "rust-cross-os.yml"}
         ruleset = json.loads((ROOT / "docs/development/main-ci-controls.ruleset.json").read_text())
         (checks,) = [rule["parameters"]["required_status_checks"] for rule in ruleset["rules"]
                      if rule["type"] == "required_status_checks"]
@@ -207,19 +168,6 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                           if job.get("name", job_id) == context]
                 self.assertTrue(job_runs(job.get("if", ""), contexts), f"{context} skips merge groups")
 
-    def test_review_gate_runs_exactly_one_judging_step_per_event(self):
-        workflow = yaml.load((ROOT / ".github/workflows/review-gate.yml").read_text(),
-                             Loader=yaml.BaseLoader)
-        job = workflow["jobs"]["review-gate"]
-        self.assertNotIn("if", job)
-        for event, expected in (("pull_request_target", "Require a finished review of the head commit"),
-                                ("merge_group", "Require a passed review-gate on every pull request "
-                                                "in the merge group")):
-            with self.subTest(event=event):
-                ran = [step["name"] for step in job["steps"]
-                       if evaluate_if(step["if"], {"github": {"event_name": event}})]
-                self.assertEqual(ran, [expected])
-
     def test_merge_groups_run_linux_rust_on_hosted_runners(self):
         spec = importlib.util.spec_from_file_location("ci_rust_runner", ROOT / "scripts/ci-rust-runner.py")
         runner = importlib.util.module_from_spec(spec)
@@ -231,59 +179,8 @@ class MergeGroupWorkflowTests(unittest.TestCase):
         for mode in ("", "local", "hosted"):
             with self.subTest(mode=mode):
                 runs_on, _ = runner.choose({"EVENT_NAME": EVENT_NAME, "PP_RUST_RUNNER": mode,
-                                            "PP_PR_RUNNER": "blacksmith", "REPOSITORY": "o/r",
-                                            "RUNNER_TOKEN": "admin"}, fetch, None)
+                                            "REPOSITORY": "o/r", "RUNNER_TOKEN": "admin"}, fetch, None)
                 self.assertEqual(runs_on, runner.HOSTED)
-
-    def test_merge_group_evidence_runs_and_passes_without_a_pr_body(self):
-        workflow = yaml.load((ROOT / ".github/workflows/pr-evidence.yml").read_text(),
-                             Loader=yaml.BaseLoader)
-        self.assertEqual(workflow["on"]["merge_group"], {"types": ["checks_requested"]})
-        self.assertEqual(workflow["concurrency"], {
-            "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-"
-                     "${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}",
-            "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
-        })
-        job = workflow["jobs"]["lint-pr-body"]
-        self.assertEqual(job["if"],
-                         "github.event_name != 'pull_request' || !github.event.pull_request.draft")
-        self.assertNotIn("needs", job)
-        steps = job["steps"]
-        self.assertEqual(steps[0]["if"], "github.event_name == 'merge_group'")
-        result = subprocess.run(["bash", "-e", "-c", steps[0]["run"]],
-                                env={"PATH": os.environ["PATH"]},
-                                capture_output=True, text=True, check=True)
-        self.assertIn("Merge group check passed.", result.stdout)
-        for step in steps[1:]:
-            if step.get("uses", "").startswith("actions/setup-node@") or step.get("name") == "Verify Node version":
-                # check-ci-tool-pins requires the Node pin and its assertion to run unconditionally.
-                self.assertNotIn("if", step)
-            elif step.get("name") == "Lint pull request Evidence block":
-                # Dependabot PRs carry generated bodies with no Evidence block, so only they skip the lint.
-                self.assertEqual(
-                    step["if"],
-                    "github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'",
-                )
-            else:
-                self.assertEqual(step["if"], "github.event_name == 'pull_request'")
-        for event in ("pull_request", "merge_group"):
-            self.assertNotIn("paths", workflow["on"][event])
-            self.assertNotIn("paths-ignore", workflow["on"][event])
-
-    def test_only_dependabot_pull_requests_skip_the_evidence_lint(self):
-        workflow = yaml.load((ROOT / ".github/workflows/pr-evidence.yml").read_text(),
-                             Loader=yaml.BaseLoader)
-        lint = next(step for step in workflow["jobs"]["lint-pr-body"]["steps"]
-                    if step.get("name") == "Lint pull request Evidence block")
-        for event, login, runs in (("pull_request", "dependabot[bot]", False),
-                                   ("pull_request", "poitee", True),
-                                   ("pull_request", "github-actions[bot]", True),
-                                   ("pull_request", "dependabot", True),
-                                   ("merge_group", "dependabot[bot]", False)):
-            with self.subTest(event=event, login=login):
-                contexts = {"github": {"event_name": event, "event": {
-                    "pull_request": {"user": {"login": login}}}}}
-                self.assertEqual(evaluate_if(lint["if"], contexts), runs)
 
     def test_required_lint_and_rust_jobs_use_the_filter(self):
         for filename, kind, contexts in (
@@ -507,27 +404,10 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         self.assertEqual(summary.read_text(), result.stdout)
 
 
-class PullRequestEditTests(unittest.TestCase):
-    """Edits to a PR must never turn a required check into a skipped one.
-
-    GitHub counts a skipped required job as a pass, and a newer run for the head replaces an
-    earlier failing one, so a job-level `if` that skips edits would let an edit clear a failure.
-    """
-
-    def workflow(self, name):
-        return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
-
-    def test_lint_evidence_reruns_on_edits_and_skips_only_drafts(self):
-        evidence = self.workflow("pr-evidence.yml")
-        self.assertIn("edited", evidence["on"]["pull_request"]["types"])
-        self.assertEqual(evidence["jobs"]["lint-pr-body"]["if"],
-                         "github.event_name != 'pull_request' || !github.event.pull_request.draft")
-
-
 class MainPushConcurrencyTests(unittest.TestCase):
     """Main pushes never cancel a running run (GRE-1228) and queue at most one pending run per workflow."""
 
-    EACH_PUSH = {"duplication.yml", "desktop-fleet-rust.yml"}
+    EACH_PUSH = {"desktop-fleet-rust.yml"}
     MAIN_GROUP = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main'"
 
     def test_only_pull_requests_cancel_and_other_events_get_their_own_group(self):
@@ -560,48 +440,6 @@ class MainPushConcurrencyTests(unittest.TestCase):
                 self.assertIn(self.MAIN_GROUP, concurrency["group"])
         self.assertGreaterEqual(checked, 13)
         self.assertGreaterEqual(bounded, 11)
-
-
-def workflow_triggers(text):
-    """Return the trigger names under a workflow's top-level on: key, read without a YAML library."""
-    lines = [line.split(" #")[0].rstrip() for line in text.splitlines() if not line.lstrip().startswith("#")]
-    for i, line in enumerate(lines):
-        match = re.match(r"""^["']?on["']?:\s*(.*)$""", line)
-        if not match:
-            continue
-        if match.group(1):
-            return set(re.findall(r"[A-Za-z_]+", match.group(1)))
-        found, indent = set(), None
-        for nested in lines[i + 1:]:
-            if not nested.strip():
-                continue
-            if not nested[0].isspace():
-                break
-            depth = len(nested) - len(nested.lstrip())
-            indent = depth if indent is None else indent
-            if depth == indent:
-                found.add(nested.strip().lstrip("- ").split(":")[0])
-        return found
-    return set()
-
-
-class RetiredLaneDispatchTests(unittest.TestCase):
-    # Moved from test_factory_hooks.py (deleted with Factory). Keeps the retired intake trigger locked.
-    def test_lane_dispatch_stays_disabled(self):
-        text = (ROOT / ".github/workflows/lane-dispatch.yml").read_text(encoding="utf-8")
-        self.assertEqual(workflow_triggers(text), {"workflow_dispatch"})
-        self.assertIn("disabled until the owner re-approves it", text)
-        self.assertRegex(text, r"(?m)^\s+exit 1$")
-        self.assertNotIn("secrets.", text)
-        # Re-enabling the push or schedule trigger, in block or inline form, must fail the first check.
-        for variant in (text.replace("on:\n", "on:\n  push:\n    branches: [main]\n"),
-                        text.replace("on:\n", 'on:\n  schedule:\n    - cron: "*/10 * * * *"\n'),
-                        text.replace("on:\n  workflow_dispatch:\n", "on: [push, workflow_dispatch]\n"),
-                        text.replace("on:\n  workflow_dispatch:\n", '"on":\n  workflow_dispatch:\n  schedule:\n'
-                                                                   '    - cron: "0 * * * *"\n')):
-            with self.subTest(variant=variant):
-                self.assertNotEqual(variant, text)
-                self.assertNotEqual(workflow_triggers(variant), {"workflow_dispatch"})
 
 
 if __name__ == "__main__":

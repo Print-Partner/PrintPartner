@@ -23,6 +23,7 @@ A second review, by someone other than the author, is required only when the cha
 - backup and restore
 - Checkoff
 - send
+- Accept and publication (`plan_publication`, `plates/initialize.rs`, `working_drafts/save.rs`; owner decision, 2026-11-12)
 
 Say that in the PR body. Other changes need the required checks green and the review threads resolved. Chad still merges those.
 

@@ -6,7 +6,9 @@ mod experiments;
 pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod create_with_brief;
-pub use create_with_brief::{CreateBuildError, CreatedBuild, InvalidNewBuild, NewBuild};
+pub use create_with_brief::{
+    CreateBuildError, CreateUrl, CreateUrlKind, CreatedBuild, InvalidNewBuild, NewBuild,
+};
 pub mod source_roles;
 pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
 pub mod import_inputs;

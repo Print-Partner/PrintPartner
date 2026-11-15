@@ -1,4 +1,5 @@
 use super::*;
+use crate::read_model::planning::{EvidenceInputKind, EvidenceKind, SourceRole, SyncStatus};
 use crate::{
     Limits, SettingSnapshot, WriterOwner,
     auth::{
@@ -154,6 +155,56 @@ fn create_stores_the_build_its_request_and_a_new_brief() {
     assert_eq!(
         fixture.stored("build_planning.create.sam-1"),
         Some(id.to_string())
+    );
+}
+
+#[test]
+fn create_stores_classified_urls_and_leaves_sources() {
+    let fixture = Fixture::new();
+    let sources: i64 = fixture.read("SELECT COUNT(*) FROM projects");
+    let created = fixture
+        .create(new_build("Voron for Sam", "request", None).with_urls(vec![
+            CreateUrl {
+                raw: "https://github.com/Owner/Repo/".into(),
+                normalized: "https://github.com/Owner/Repo".into(),
+                kind: CreateUrlKind::Git,
+            },
+            CreateUrl {
+                raw: "https://www.printables.com/model/12345-kit/files#comments".into(),
+                normalized: "https://www.printables.com/model/12345-kit/files".into(),
+                kind: CreateUrlKind::ModelPage,
+            },
+            CreateUrl {
+                raw: "https://github.com/Owner/Repo".into(),
+                normalized: "https://github.com/Owner/Repo".into(),
+                kind: CreateUrlKind::Git,
+            },
+        ]))
+        .unwrap();
+    let text = fixture
+        .stored(&format!("build_planning.v1.{}", created.id.get()))
+        .unwrap();
+    let brief = BuildPlanningBrief::parse(&text, created.id.get() as i64).unwrap();
+    assert_eq!(brief.requirements.len(), 0);
+    assert_eq!(brief.evidence.len(), 2, "{text}");
+    let git = &brief.evidence[0];
+    assert_eq!(git.id, "8d325f3875d513dbc4e3");
+    assert_eq!(git.url, "https://github.com/Owner/Repo/");
+    assert_eq!(git.kind, EvidenceKind::Mod);
+    assert_eq!(git.input_kind, Some(EvidenceInputKind::Url));
+    assert_eq!(git.source_role, Some(SourceRole::Addon));
+    assert_eq!(git.sync_status, Some(SyncStatus::Pending));
+    assert_eq!(git.upload_required, None);
+    assert_eq!(git.source_id, None);
+    let page = &brief.evidence[1];
+    assert_eq!(page.id, "e23eb2aaca54431c33ba");
+    assert_eq!(page.kind, EvidenceKind::ModelSource);
+    assert_eq!(page.input_kind, Some(EvidenceInputKind::ModelPage));
+    assert_eq!(page.upload_required, Some(true));
+    assert_eq!(page.source_id, None);
+    assert_eq!(
+        fixture.read::<i64>("SELECT COUNT(*) FROM projects"),
+        sources
     );
 }
 

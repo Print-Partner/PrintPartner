@@ -7,14 +7,20 @@
 //! special request, stores its new planning brief and records the
 //! idempotency key in one transaction. Both use the request's API key and
 //! refuse while the Orders Module is off (provisional owner default).
-//! `urls` must be absent or empty until PR 2.
+//! Each `urls` entry is classified with [`pp_services::build_url`] and stored
+//! as brief evidence. No Source is created.
 
 use super::{
     checkoff::CheckoffDomain,
     write_result::{Code, Refusal, writer_failure},
 };
-use pp_services::mcp_domain::{ProposedAction, ToolInvocation};
-use pp_storage::build_graph::{CreateBuildError, CreatedBuild, InvalidNewBuild, NewBuild};
+use pp_services::{
+    build_url::{self, UrlClass},
+    mcp_domain::{ProposedAction, ToolInvocation},
+};
+use pp_storage::build_graph::{
+    CreateBuildError, CreateUrl, CreateUrlKind, CreatedBuild, InvalidNewBuild, NewBuild,
+};
 use serde_json::{Map, Value, json};
 use std::sync::atomic::AtomicBool;
 
@@ -54,6 +60,15 @@ impl CheckoffDomain {
         params.insert(REQUEST.into(), new.request().into());
         if let Some(key) = new.idempotency_key() {
             params.insert(IDEMPOTENCY_KEY.into(), key.into());
+        }
+        if !new.urls().is_empty() {
+            params.insert(
+                URLS.into(),
+                new.urls()
+                    .iter()
+                    .map(|url| Value::String(url.raw.clone()))
+                    .collect(),
+            );
         }
         let action = ProposedAction::new(
             PROPOSE,
@@ -101,22 +116,55 @@ fn parse(args: &Map<String, Value>) -> Result<NewBuild, Refusal> {
     let Some(request) = text(REQUEST) else {
         return Err(invalid(InvalidNewBuild::BlankRequest));
     };
-    match args.get(URLS) {
-        None | Some(Value::Null) => {}
-        Some(Value::Array(urls)) if urls.is_empty() => {}
-        Some(_) => {
-            return Err(Refusal::new(
-                Code::UrlsNotSupported,
-                "urls are not supported yet. Create the Build without them, then add Sources.",
-            ));
-        }
-    }
+    let urls = read_urls(args)?;
     let key = match args.get(IDEMPOTENCY_KEY) {
         None | Some(Value::Null) => None,
         Some(Value::String(key)) => Some(key.as_str()),
         Some(_) => return Err(INVALID_KEY),
     };
-    NewBuild::parse(name, request, key).map_err(invalid)
+    NewBuild::parse(name, request, key)
+        .map(|new| new.with_urls(urls))
+        .map_err(invalid)
+}
+
+/// `urls` absent, null, or a list of http(s) URLs. Anything else is refused
+/// before a proposal exists.
+fn read_urls(args: &Map<String, Value>) -> Result<Vec<CreateUrl>, Refusal> {
+    let Some(value) = args.get(URLS) else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let Value::Array(urls) = value else {
+        return Err(Refusal::new(
+            Code::InvalidUrl,
+            "urls must be a list of http or https URLs.",
+        ));
+    };
+    urls.iter().map(one_url).collect()
+}
+
+fn one_url(value: &Value) -> Result<CreateUrl, Refusal> {
+    let raw = value.as_str().ok_or_else(invalid_url)?;
+    let classified = build_url::classify(raw).ok_or_else(invalid_url)?;
+    let kind = match classified.class {
+        UrlClass::Git { .. } => CreateUrlKind::Git,
+        UrlClass::ModelPage => CreateUrlKind::ModelPage,
+        UrlClass::Link => CreateUrlKind::Link,
+    };
+    Ok(CreateUrl {
+        raw: raw.to_owned(),
+        normalized: classified.normalized,
+        kind,
+    })
+}
+
+fn invalid_url() -> Refusal {
+    Refusal::new(
+        Code::InvalidUrl,
+        "Each urls entry must be an http or https URL.",
+    )
 }
 
 fn invalid(reason: InvalidNewBuild) -> Refusal {

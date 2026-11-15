@@ -144,10 +144,13 @@ problem_codes! {
     PrinterLimit = "printer_limit";
     PrintersUnreadable = "printers_unreadable";
     FilamentSlotInUse = "filament_slot_in_use";
-    // `GET /sources/{id}/files`.
+    // `GET /sources/{id}/files` and `GET /sources/{id}/thumbnail`.
     SourceNotFound = "source_not_found";
     SourceSnapshotUnavailable = "source_snapshot_unavailable";
     SourceTooManyFiles = "source_too_many_files";
+    SourceFileNotFound = "source_file_not_found";
+    SourceFileUnrenderable = "source_file_unrenderable";
+    SourceFilePathRequired = "source_file_path_required";
 }
 
 impl ProblemType {
@@ -327,7 +330,8 @@ mod tests {
             setup::INTEGRATION_NOT_EDITABLE, setup::INTEGRATIONS_UNREADABLE, setup::INVALID_PRINTER,
             setup::PRINTER_NOT_FOUND, setup::PRINTER_LIMIT, setup::PRINTERS_UNREADABLE,
             setup::FILAMENT_SLOT_IN_USE, files::SOURCE_NOT_FOUND, files::SNAPSHOT_UNAVAILABLE,
-            files::TOO_MANY_FILES, crate::problem::TRANSACTION_UNAVAILABLE,
+            files::TOO_MANY_FILES, files::FILE_NOT_FOUND, files::UNRENDERABLE, files::PATH_REQUIRED,
+            crate::problem::TRANSACTION_UNAVAILABLE,
             crate::problem::OUTCOME_UNKNOWN,
         ];
         for constant in constants {

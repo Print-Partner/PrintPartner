@@ -3769,6 +3769,7 @@ dependencies = [
  "hmac",
  "icu_collator",
  "libc",
+ "png 0.18.1",
  "pp-contracts",
  "pp-domain",
  "pp-os",

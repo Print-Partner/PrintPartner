@@ -1,9 +1,11 @@
 name: Rust cross-OS
 
-# Pull requests, pushes to main, and merge groups run one Linux job: fmt,
-# clippy, and nextest on the default Rust-only build. The nightly schedule and
-# a manual dispatch build the workspace on Windows and macOS and do not run
-# that Linux job. See docs/development/ci.md.
+# Pull requests, pushes to main, and merge groups run Linux fmt, clippy, and
+# nextest on the default Rust-only build. The required check stays `rust (linux)`,
+# an aggregate over the parts below. On ubuntu-latest, nextest is four hash
+# partitions and fmt/clippy are a separate part. On pp-local, one part runs all
+# three. The nightly schedule and a manual dispatch build the workspace on
+# Windows and macOS and do not run the Linux parts. See docs/development/ci.md.
 
 on:
   pull_request:
@@ -46,6 +48,7 @@ jobs:
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
       linux_kind: ${{ steps.runner.outputs.linux_kind }}
+      linux_parts: ${{ steps.runner.outputs.linux_parts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,12 +80,17 @@ jobs:
           python3 -B -m unittest discover -s scripts -p test_ci_rust_runner.py
           python3 scripts/ci-rust-runner.py
 
-  rust-linux:
-    name: rust (linux)
+  rust-linux-parts:
+    name: rust (linux) ${{ matrix.part }}
     needs: changes
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group') && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group') && needs.changes.result == 'success' && needs.changes.outputs.relevant != 'false')
     runs-on: ${{ fromJSON(needs.changes.outputs.linux_runs_on || '"ubuntu-latest"') }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # check: fmt and clippy. m/n: nextest hash partition. 1/1: all three.
+        part: ${{ fromJSON(needs.changes.outputs.linux_parts || '["1/1"]') }}
     env:
       PP_RUNNER_KIND: ${{ needs.changes.outputs.linux_kind }}
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}
@@ -96,9 +104,20 @@ jobs:
         run: |
           set -euo pipefail
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
-            "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/CodeQL"
-          df -h /
+          avail_g=$(df -P -BG / | awk 'NR==2 { gsub(/[^0-9]/, "", $4); print $4 }')
+          if [ -z "${avail_g}" ]; then
+            echo "could not read free space; deleting preinstalled toolchains"
+            avail_g=0
+          fi
+          # One default-feature tree fits when the image still has 50G free.
+          # Deleting the preinstalled SDKs took about two minutes on the GRE-1649 warm run.
+          if [ "${avail_g}" -lt 50 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+              "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/CodeQL"
+            df -h /
+          else
+            echo "free space ${avail_g}G is at least 50G; leaving preinstalled toolchains"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -124,9 +143,14 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: env.PP_RUNNER_KIND != 'pp-local'
         with:
+          # The action otherwise keys on the job id. `rust-linux` is the id
+          # that saved the warm cache before this job was split.
+          shared-key: rust-linux
           workspaces: rust -> target
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
+          # One part saves. The test parts compile the same binaries; four saves would race.
+          save-if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') && matrix.part == '1/4' }}
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        if: matrix.part != 'check'
         with:
           tool: nextest@0.9.148
       - name: cargo fmt
@@ -175,19 +199,36 @@ jobs:
           npm --prefix web run build
           "$MANIFEST_PYTHON" rust/scripts/build-desktop-manifest.py --web web --node "$node_path" --output rust/bundle-manifest.json --commit "$GITHUB_SHA"
       - name: clippy
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && (matrix.part == 'check' || matrix.part == '1/1') }}
         run: cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --keep-going -- -D warnings
       - name: nextest
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && matrix.part != 'check' }}
         timeout-minutes: 30
-        run: cargo nextest run --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
+        env:
+          NEXTEST_PARTITION: ${{ matrix.part }}
+        run: cargo nextest run --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --no-tests=warn --partition "hash:${NEXTEST_PARTITION}" -E "$NEXTEST_FILTER"
       - name: Disk after nextest
-        if: ${{ !cancelled() && steps.assets.outcome == 'success' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' && matrix.part != 'check' && runner.environment == 'github-hosted' }}
         run: df -h /
       - name: sccache stats
         if: always() && env.PP_RUNNER_KIND == 'pp-local'
         continue-on-error: true
         run: '"${RUSTC_WRAPPER:-sccache}" --show-stats'
+
+  rust-linux:
+    name: rust (linux)
+    needs: [changes, rust-linux-parts]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (always() && !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group') && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the Linux parts
+        env:
+          SELECTOR_RESULT: ${{ needs.changes.result }}
+          PARTS_RESULT: ${{ needs.rust-linux-parts.result }}
+        run: |
+          test "$SELECTOR_RESULT" = success
+          test "$PARTS_RESULT" = success
 
   rust-nightly:
     name: rust (${{ matrix.name }})

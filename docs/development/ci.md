@@ -3,7 +3,7 @@
 A pull request, a push to `main`, and a merge group run four parts (GRE-1649):
 
 1. `actionlint` and `zizmor` in `.github/workflows/actionlint.yml`, unchanged.
-2. `rust (linux)` in `.github/workflows/rust-cross-os.yml`: `cargo fmt`, `cargo clippy -D warnings`, and `cargo nextest run` on the default build. After GRE-1646 that default is the Rust-only build. The job does not pass `--features desktop_rebuild` or `--no-default-features`.
+2. `rust (linux)` in `.github/workflows/rust-cross-os.yml`: `cargo fmt`, `cargo clippy -D warnings`, and `cargo nextest run` on the default build. After GRE-1646 that default is the Rust-only build. The commands do not pass `--features desktop_rebuild` or `--no-default-features`. On `ubuntu-latest` (GRE-1664) nextest runs as four `hash` partitions, and fmt plus clippy run on a separate part. The required check is the aggregate, still named `rust (linux)`.
 3. `ui` in `.github/workflows/web-ci.yml`: tests and a build of the replacement UI and the generated Rust client, when those inputs change.
 4. `rust image` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in.
 
@@ -15,15 +15,15 @@ Draft pull requests skip CI jobs before runner allocation, while each job still 
 
 On a ready pull request, `rust (linux)` runs when `scripts/ci-path-filter.py rust` finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip it while keeping its check report present. The filter is a job `if`, not a workflow `paths:` list, so a skip still reports `skipped`. Markdown is not a Rust input, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed, and anything under `fixtures/`. A change under `web/apps/web/` still selects `rust (linux)` because the job builds that tree into the manifest.
 
-When the Linux job runs on a pull request, nextest uses the affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)`. A crate whose sources read another crate's files by path joins the selection when that crate changes. The nextest step passes `--no-tests=warn`. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy covers the whole workspace.
+When the Linux job runs on a pull request, nextest uses the affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)`. A crate whose sources read another crate's files by path joins the selection when that crate changes. The nextest step passes `--no-tests=warn`. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy covers the whole workspace. On `ubuntu-latest` that same filter is applied in four parts, `--partition hash:1/4` through `hash:4/4`. A part that matches nothing passes because of `--no-tests=warn`. pp-local runs one part, `hash:1/1`, which is the whole filter.
 
 #### Cross-OS PR label
 
-`ci:cross-os` does not select a pull-request job. Windows and macOS compile on the nightly build and on a manual dispatch of Rust cross-OS. The older `macos`, `ci:windows` and `ci:full` labels do not select a job either. The required-check set stays `actionlint`, `zizmor` and `rust (linux)`. Chad does not change ruleset 25285698 for this cut. `docs/development/main-ci-controls.ruleset.json` records that set. Chad removed `Lint Evidence block` and `review-gate` from the ruleset on 2026-11-15.
+`ci:cross-os` does not select a pull-request job. Windows and macOS compile on the nightly build and on a manual dispatch of Rust cross-OS. The older `macos`, `ci:windows` and `ci:full` labels do not select a job either. The required-check set stays `actionlint`, `zizmor` and `rust (linux)`. Chad does not change ruleset 25285698 for this cut or for GRE-1664. `docs/development/main-ci-controls.ruleset.json` records that set. Chad removed `Lint Evidence block` and `review-gate` from the ruleset on 2026-11-15. The part jobs are not required. Their workflow names are `rust (linux) check` and `rust (linux) 1/4` through `rust (linux) 4/4` on a hosted runner, and `rust (linux) 1/1` on pp-local.
 
 A push to `main` runs the same four parts, with nextest's filter `all()` (owner decision, 2026-11-12, GRE-1476, kept so a push does not wait on a macOS runner). A merge group runs the same Linux job, including nextest, on `ubuntu-latest` ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)).
 
-Hosted jobs restore `Swatinem/rust-cache`. A pull request and `main` save it, so a second run of the same PR can be warm. The Rust image job uses the GitHub Actions cache with scope `dockerfile-rust` and `mode=max`, including on pull requests. The first image build of a new cache is cold.
+Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`, the job id that saved the cache before the split. The `1/4` part saves that same key on a pull request and on `main`. The other parts only restore. pp-local skips this cache. The Rust image job uses the GitHub Actions cache with scope `dockerfile-rust` and `mode=max`, including on pull requests. The first image build of a new cache is cold.
 
 This page covers what the jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks.
 
@@ -289,29 +289,31 @@ The Linux job and the nightly matrix use the toolchain pinned in `rust-toolchain
 
 | Check name | When it runs | Runner | What it runs |
 |------------|--------------|--------|--------------|
-| `rust (linux)` | pull request, push to `main`, merge group, when Rust inputs changed | pp-local on a push or manual run of this job; `ubuntu-latest` on a pull request or merge group | fmt, clippy, nextest, default features, `--workspace` |
+| `rust (linux)` | pull request, push to `main`, merge group, when Rust inputs changed | pp-local on a push: one part (`1/1`) runs fmt, clippy and all of nextest. `ubuntu-latest` on a pull request, merge group, or hosted fallback: `check` plus four nextest partitions. The aggregate always runs on `ubuntu-latest` | fmt, clippy, nextest, default features, `--workspace` |
 | `rust (windows)` | nightly schedule or manual dispatch | `windows-latest` | `cargo build --locked --workspace` |
 | `rust (macos)` | nightly schedule or manual dispatch | `macos-26` | `cargo build --locked --workspace` |
 
-The Linux job does not run on the nightly schedule or on a manual dispatch. See [Linux Rust runner](#linux-rust-runner). There is no rebuild partition and no `CARGO_SCOPE`.
+The Linux parts do not run on the nightly schedule or on a manual dispatch. See [Linux Rust runner](#linux-rust-runner). There is no `desktop_rebuild` rebuild partition and no `CARGO_SCOPE`. Hosted nextest uses `hash` partitions instead.
 
 Build caching and linking:
 
-- Hosted jobs restore `Swatinem/rust-cache`. A pull request and `main` save it. pp-local Linux jobs skip it and use the container's sccache instead.
+- Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`. The `1/4` part saves that key on a pull request and on `main`. The other parts only restore. pp-local parts skip the action and use the container's sccache instead.
 - Linux installs `mold` and links with it through `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold`. The nightly Windows and macOS builds keep their default linkers.
-- On GitHub-hosted Linux runners only, the job deletes preinstalled toolchains it never uses: `/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/.ghcup` and CodeQL in the tool cache. It prints `df -h /` before that deletion and again after nextest. pp-local skips these steps.
+- On GitHub-hosted Linux runners only, a part prints `df -h /` and deletes preinstalled toolchains it never uses (`/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/.ghcup` and CodeQL in the tool cache) when fewer than 50G are free. The GRE-1649 warm run spent about two minutes on that delete while 80G were still free, and one default-feature tree fits without it. pp-local skips the step. A hosted part prints `df -h /` again after nextest.
 - The workflow sets `CARGO_PROFILE_DEV_DEBUG` and `CARGO_PROFILE_TEST_DEBUG` to `line-tables-only`.
 
-`rust (linux)` runs these steps in order:
+Each Linux part runs these steps. `check` stops after clippy. A `m/n` part skips clippy and runs nextest. `1/1` runs both.
 
-1. Install the toolchain and nextest 0.9.148.
-2. `cargo fmt --all --check`. A format failure skips the rest of the job.
+1. Install the toolchain. A part that runs nextest also installs nextest 0.9.148.
+2. `cargo fmt --all --check`. A format failure skips the rest of that part.
 3. Install the GTK and WebKit packages and `mold`.
 4. Install Node 22.23.3 for the storage fixtures and Node 24.21.0, then build the desktop web assets and write `rust/bundle-manifest.json`. `pp-compat` embeds this file at compile time.
-5. `cargo clippy --workspace --all-targets --keep-going -- -D warnings`, with default features.
-6. `cargo nextest run --workspace --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"`, with default features.
+5. On `check` and `1/1`: `cargo clippy --workspace --all-targets --keep-going -- -D warnings`, with default features.
+6. On `m/n` and `1/1`: `cargo nextest run --workspace --no-fail-fast --no-tests=warn --partition hash:m/n -E "$NEXTEST_FILTER"`, with default features.
 
-Clippy and nextest both run when the manifest step succeeds, so a clippy failure still reports nextest. The job does not run doctests and does not run `rust/scripts/check-clippy-limits.py`. That scan builds with the feature off and on, which is the feature-off pass this cut removes from pull-request CI. `just ci` still runs it on Linux.
+The `check` part does not run nextest, so a clippy failure does not cancel the partitions. A partition does not run clippy. On `1/1`, nextest still runs when clippy fails, because its `if` does not require the clippy step. The parts do not run doctests and do not run `rust/scripts/check-clippy-limits.py`. That scan builds with the feature off and on, which is the feature-off pass this cut removes from pull-request CI. `just ci` still runs it on Linux.
+
+`rust (linux)` is the aggregate. It runs on `ubuntu-latest` after the parts, with no checkout. It fails unless the `changes` job and every part succeeded. A failed selector still runs the aggregate, so the required check goes red instead of staying skipped. A docs-only pull request skips the parts and the aggregate. The warm run on GRE-1649 head `6bf5c6379` was 28m40s because nextest alone took 1170s inside one job. Four hosted partitions are what brings that wall under 20 minutes. pp-local stays one part: the fleet is six slots and the selector only requires one idle slot, so fanning a push out would queue.
 
 The nightly job installs the toolchain and Node 24.21.0, writes the same manifest, and runs `cargo build --locked --workspace`. It does not mount a case-sensitive volume and does not run tests. The macOS volume note below is for a local test run.
 
@@ -683,13 +685,15 @@ Pull request jobs run on GitHub-hosted runners. pp-local runs only pushes to `ma
 
 ### Linux Rust runner
 
-`rust (linux)` is one job. It runs on `[self-hosted, linux, x64, pp-local]` for a
-push to `main`. A pull request and a merge group run it on `ubuntu-latest`. A
-merge group holds PR code that has not landed, and the shared pp-local cache
-only sees code from `main`. The nightly schedule and a manual dispatch do not
-run this job. There are no rebuild partitions. pp-local is six ephemeral JIT
-slots, two on each of three VMs, and each job runs in a fresh `pp-slot-N`
-container. The check name stays `rust (linux)` on either runner.
+The Linux parts run on `[self-hosted, linux, x64, pp-local]` for a push to
+`main`. A pull request and a merge group run them on `ubuntu-latest`. A merge
+group holds PR code that has not landed, and the shared pp-local cache only
+sees code from `main`. The nightly schedule and a manual dispatch do not run
+these parts. pp-local is six ephemeral JIT slots, two on each of three VMs, and
+each job runs in a fresh `pp-slot-N` container. The required check name stays
+`rust (linux)` on either runner. That check is the hosted aggregate, not a
+part. Hosted runs use four nextest partitions because one job's nextest was
+the whole PR wall (1170s of tests on the GRE-1649 warm run, 28m40s end to end).
 
 PRs stay off pp-local because it ran the PR suite more slowly than hosted. On PR
 #1349, the old `rust (linux) build` job took 60m02s on pp-local with a 99.57 %
@@ -722,7 +726,7 @@ unset. It looks on `PATH`, then at `/opt/pp-sccache-bin`, `/opt/sccache-bin`, an
 `sccache` file under `/opt`, `/usr/local` or `$CARGO_HOME/bin`, and takes the first one
 whose `--version` reports sccache. It never downloads sccache or creates cache
 directories; with none found it warns and lists `/opt`. It also sets
-`CARGO_INCREMENTAL=0`. The Linux job ends with `sccache --show-stats` on pp-local. pp-local jobs skip `Swatinem/rust-cache`: the Actions cache
+`CARGO_INCREMENTAL=0`. The pp-local part ends with `sccache --show-stats`. pp-local parts skip `Swatinem/rust-cache`: the Actions cache
 is not needed there, and its post-job cleanup can delete registry sources that
 another container is compiling. `scripts/setup-ci-linux.sh` and
 `dtolnay/rust-toolchain` install the packages and Rust that hosted images ship.
@@ -731,8 +735,10 @@ another container is compiling. `scripts/setup-ci-linux.sh` and
 ### Actions cache
 
 The repository's Actions cache is limited to 10 GB, so older entries are evicted
-first when it fills. `rust (linux)` saves `Swatinem/rust-cache` on `main` and on
-pull requests, so a second run of the same PR can be warm. The Rust image job
+first when it fills. Hosted parts set `shared-key: rust-linux`, because the
+action otherwise includes the job id and a rename misses the saved entry. The
+`1/4` part saves that key on `main` and on pull requests. The other parts only
+restore. One save avoids four writers racing on the same key. pp-local does not use this cache. The Rust image job
 saves its Buildx cache (`scope=dockerfile-rust`, `mode=max`) on pull requests
 too. The Tauri CLI archive still saves only from `main`. `actions/setup-node`
 and `actions/setup-python` have no save switch; they save only when the lockfile
@@ -791,7 +797,7 @@ determine whether a disappeared queue entry merged; the canceller uses PR state.
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 
-The `ui` job times out at 20 minutes. `rust (linux)` and `rust image` time out at 45 minutes. The nightly build times out at 90 minutes.
+The `ui` job times out at 20 minutes. Each Linux part times out at 45 minutes, and the `rust (linux)` aggregate times out at 5. `rust image` times out at 45 minutes. The nightly build times out at 90 minutes.
 
 ## Merge queue
 
@@ -800,11 +806,11 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 | Required check | Workflow | On `merge_group` |
 | --- | --- | --- |
 | `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` selects the `actions` kind on merge groups, because the group's diff against `main` is not the PR's diff. |
-| `rust (linux)` | `rust-cross-os.yml` | fmt, clippy and nextest on the default build, on `ubuntu-latest`. The filter is `all()` because a merge group selects the `rust` kind without reading the PR diff. |
+| `rust (linux)` | `rust-cross-os.yml` | The aggregate. On `ubuntu-latest` it waits for fmt, clippy and four nextest hash partitions. The filter is `all()` because a merge group selects the `rust` kind without reading the PR diff. |
 
 `rust (windows)` and `rust (macos)` are the nightly build names. Neither runs on merge groups. `ui` and `rust image` also run on a merge group. They are not required checks.
 
-GRE-1466 (2026-11-12) kept merge groups to fmt and clippy because two measured groups took 47 and 49 minutes. GRE-1649 puts nextest back on the merge group. The Linux job is one default-feature pass, which is the run that has to finish in under 20 minutes on a warm pull request.
+GRE-1466 (2026-11-12) kept merge groups to fmt and clippy because two measured groups took 47 and 49 minutes. GRE-1649 puts nextest back on the merge group. GRE-1664 splits that hosted nextest into four hash partitions so a warm pull request finishes in under 20 minutes. The commands are still one default-feature pass.
 
 On its own head a PR runs clippy and the tests that `scripts/ci-affected-nextest-filter.py` selects: the changed crates and the crates that depend on them or read their sources, or `all()` when a shared input changed. A PR that changes no Rust input skips `rust (linux)`. The merge group runs `all()`.
 

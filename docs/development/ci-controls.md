@@ -82,8 +82,10 @@ Pull requests do not run Windows or macOS. The nightly schedule and a manual
 dispatch of Rust cross-OS build the workspace on `windows-latest` and `macos-26`.
 `ci:cross-os` does not select a job. A push to `main` and a merge group run
 `rust (linux)`, including nextest
-([Merge queue](ci.md#merge-queue)). The required contexts stay
-`actionlint`, `zizmor` and `rust (linux)`. See
+([Merge queue](ci.md#merge-queue)). Hosted nextest is four hash partitions; the
+required context is still the aggregate. The required contexts stay
+`actionlint`, `zizmor` and `rust (linux)`. Chad does not edit ruleset 25285698
+for GRE-1664. See
 [Cross-OS PR label](ci.md#cross-os-pr-label).
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch

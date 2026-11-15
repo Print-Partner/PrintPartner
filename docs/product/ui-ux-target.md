@@ -45,7 +45,7 @@ The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens 
 
 A Build workspace has tabs: **Overview, Sources, Plan, Production, Checkoff, History**. The Machine tab is parked with STEP conversion and is not part of this delivery.
 
-Domain words come from [CONTEXT.md](../../CONTEXT.md). Build is the container; Plan is the requirements at one accepted revision.
+Domain words come from [GLOSSARY.md](../../GLOSSARY.md). Build is the container; Plan is the requirements at one accepted revision.
 
 ### Dropped from the old UI
 

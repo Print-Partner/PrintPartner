@@ -27,7 +27,7 @@ use std::{
 };
 
 /// The installation a credential is admitted to: the Tenant of the glossary
-/// (`CONTEXT.md`). `tenant_id` is a legacy column name that holds the
+/// (`GLOSSARY.md`). `tenant_id` is a legacy column name that holds the
 /// installation's single value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Installation(String);

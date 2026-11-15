@@ -12,7 +12,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 
 | Topic | Authority |
 |-------|-----------|
-| Product words | [CONTEXT.md](../CONTEXT.md) |
+| Product words | [GLOSSARY.md](../GLOSSARY.md) |
 | Replacement UI: Today, Build tabs, History/Accept, Checkoff | [UI and UX target](product/ui-ux-target.md) |
 | Target runtime, crates, allowed edges, operation owners, cutover | [Architecture](architecture.md) |
 | Accepted decisions and what replaced them | [ADR index](adr/README.md) |
@@ -70,7 +70,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 ### Product workflow
 
 The [accepted replacement UI](product/ui-ux-target.md) defines Today, Build-local
-tabs, History/Accept and burst Checkoff. [CONTEXT.md](../CONTEXT.md) defines the
+tabs, History/Accept and burst Checkoff. [GLOSSARY.md](../GLOSSARY.md) defines the
 product words. For a replacement feature change, edit its page in the
 [UI target feature index](product/ui-ux-target.md#contracts-the-ui-needs); contract
 rows and delivery slices live there, rather than in the shared overview.

@@ -220,7 +220,7 @@ def start(image, name, volume):
     if f"{bootstrap.scheme}://{bootstrap.netloc}" != "http://127.0.0.1:8080" or bootstrap.path != "/__desktop/bootstrap":
         raise SystemExit("bootstrap-url printed an unexpected URL")
     status, _, cookies = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
-    if status != 303 or not cookies:
+    if status != 200 or not cookies:
         raise SystemExit(f"bootstrap answered {status}")
     status, _, _ = request(origin, "GET", f"{bootstrap.path}?{bootstrap.query}")
     if status != 401:

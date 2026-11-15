@@ -41,7 +41,7 @@ Requests use one keep-alive HTTP/1.1 connection per runtime, as a browser tab do
 | Thumbnails | per Part of the 100-unit Build: cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | none |
 | Plan change | `POST .../drafts/recompute`, `PATCH .../parts`, `POST .../apply` under `/api/v2/plans/{id}`; also `POST /plans/:id/save` | the same three, plus `POST .../drafts/save` and `GET .../accept-preview` |
 | Checkoff session | per unit `PATCH /parts/:id/progress`, then `GET /plans/:id/checkoff` per burst | per burst `POST /api/v2/plans/{id}/checkoff/bursts`, then `GET .../checkoff/units` |
-| Exports | `POST /jobs/export-stl-pack` or `/jobs/export-checklist-html`, `GET /jobs/:id` every 20 ms until done, then the download | none |
+| Exports | `POST /jobs/export-stl-pack` or `/jobs/export-checklist-html`, `GET /jobs/:id` every 20 ms until done, then the download | `GET /api/v2/plans/{id}/exports/stl-pack` and `GET /api/v2/plans/{id}/exports/checklist`, each from the request to the last byte |
 | Printer event | a simulator turns `printing` into `complete`; poll `GET /api/v1/integrations/{id}/status` every 50 ms | same |
 | Today refresh | All Production's reads at once: `/printer-checkoff`, `/printer-checkoff/unattributed` | Today's reads at once: `/api/v2/tasks`, `/api/v2/printer-checkoff`, `/api/v2/printers` |
 
@@ -53,6 +53,7 @@ What the numbers leave out:
 - Rows marked "different requests" have no ratio. Checkoff on Node is one request per unit and on Rust one per burst; Today and All Production are different screens.
 - When a server closes an idle keep-alive connection, the request is sent again once and only that attempt is timed. `http_retries` in the samples counts these: 0 on Node and 3 on Rust in the baseline below.
 - p95 is nearest-rank. Below 20 samples it is the maximum, and the table says "(max)". Per-request rows pool samples from all rounds.
+- The four export rows time one transfer each: Node's job, its 20 ms poll and the download, or one Rust GET read to the last byte. They leave out the replacement UI's check. That check is the same GET aborted at the headers, after the core has opened and verified the files, and the browser download sends the GET again. The `check request` and `check then download` rows time that pair. They run after the four row GETs, so those files are already in the page cache. The cold time to the first byte is the `until headers` sample of the first GET.
 
 ## Baseline, 2026-11-08
 

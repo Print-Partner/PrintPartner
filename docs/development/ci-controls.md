@@ -55,43 +55,36 @@ This keeps low-severity notices visible without adding the pedantic persona's st
 The pinned `zizmor-action` runs online audits and emits job annotations without a SARIF upload or write permission.
 Its default pin policy requires every external action, including `actions/*`, to use a full commit SHA.
 
-Web CI also uses job selection rather than workflow path filters. Its `changes`
-job publishes separate `web` and `ui` outputs. `web`, `web-build`, `sidecar` and
-`docker` use `web`; all four skip on merge groups, while the Rust, action,
-Windows, macOS and UI kinds stay selected. Rust cross-OS skips its Windows and
-macOS jobs on merge groups in their job conditions, whatever the selector says
-([Merge queue](ci.md#merge-queue)). Pushes and manual/call events
-select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
-and commands retained. This adds no required check and does not edit the
-ruleset snapshot. The independent `release-audit` job runs without path selection
-on every non-draft PR and on non-PR events, so documentation, license and
-screenshot audits remain covered when the heavy web jobs skip. The sitemap tests,
-design-token contrast check and workaround ratchet stay in `web`; their exact
-documentation inputs and all app-source Markdown select `web`. Every path with
-a ratchet-scanned extension (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`,
-`.cjs`, `.rs`, `.py`, `.sh`, `.yml`, `.yaml`, `.css`, `.html`) also selects `web`.
-A test loads the ratchet's declarations and requires the filter's list to match.
-The audit job's pinned Node setup, version assertion, read-only permissions and
-unconditional audit command
-are checked by `test_merge_group_workflows.py`.
+Web CI uses job selection rather than workflow path filters. Its `changes` job
+publishes a `ui` output. The `ui` job runs when that output is not `false`.
+There is no `web`, `web-build`, `sidecar` or Node `docker` job. The Rust image
+is a separate workflow. Rust cross-OS runs `rust (linux)` on a pull request, a
+push and a merge group, and builds Windows and macOS only on the nightly
+schedule or a manual dispatch ([Merge queue](ci.md#merge-queue)).
+[Web job selection](ci.md#web-job-selection) lists the `ui` paths and commands.
+This adds no required check and does not edit the ruleset snapshot. The
+independent `release-audit` job runs without path selection on every non-draft
+PR and on non-PR events. The workaround ratchet runs in `just ci`, not in a
+pull-request job. A test loads the ratchet's declarations and requires the
+filter's extension list to match. The audit job's pinned Node setup, version
+assertion, read-only permissions and unconditional audit command are checked by
+`test_merge_group_workflows.py`.
 
-This selection deliberately changes four CI guards, with regression tests:
-`checkNodeLanes` permits only the exact `needs: [changes]` and web-output
-condition for `web` and `web-build`; `job_runs()` understands per-kind outputs
-and Docker's success dependencies; the Markdown filter keeps embedded legal
-text, fixture trees and `web/DEPLOY.md` as web inputs; and merge groups are an
-exception to the rule that non-PR events select every kind. Chad approves these
+`checkNodeLanes` permits only the exact `needs: [changes]` and `ui` output
+condition for the `ui` job. `job_runs()` understands that condition, including
+the Linux event clause. Merge groups are an exception to the rule that non-PR
+events select every kind: they do not select `web`. Chad approves these
 CI-control changes and merges them.
 
 ## Cross-OS capacity
 
-Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
-labels do not select them. Job-level skips preserve check reports. Schedules
-and manual runs keep full coverage; a push to `main` runs the Linux Rust jobs
-only and a merge group runs the short Linux Rust set
-([Merge queue](ci.md#merge-queue)); Linux PR selection
-and the required contexts remain unchanged. See the
-[event table](ci.md#cross-os-pr-label).
+Pull requests do not run Windows or macOS. The nightly schedule and a manual
+dispatch of Rust cross-OS build the workspace on `windows-latest` and `macos-26`.
+`ci:cross-os` does not select a job. A push to `main` and a merge group run
+`rust (linux)`, including nextest
+([Merge queue](ci.md#merge-queue)). The required contexts stay
+`actionlint`, `zizmor` and `rust (linux)`. See
+[Cross-OS PR label](ci.md#cross-os-pr-label).
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch
 on main. Its minimum permissions are `actions: write` for cancellation,
@@ -180,12 +173,12 @@ The ruleset has these protections:
 - Block branch deletion and force pushes.
 - Require a pull request and allow only squash merges.
 - Require GitHub Actions checks `actionlint`, `zizmor` and `rust (linux)`.
-  `rust (windows)` is advisory and not required. Chad removed `Lint Evidence block` and `review-gate` on 2026-11-15. GRE-1647 deleted those workflows, the Claude review, and the evidence lint.
+  Those names are unchanged. `rust (windows)` and `rust (macos)` are the nightly workspace builds, not pull-request checks, and they are not required. Chad removed `Lint Evidence block` and `review-gate` on 2026-11-15. GRE-1647 deleted those workflows, the Claude review, and the evidence lint.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 
-`rust (macos)` and `rust (windows)` are absent, consistent with their advisory status in [Continuous integration](ci.md).
+`rust (macos)` and `rust (windows)` are absent from the ruleset. They are the nightly build names, not required checks. See [Continuous integration](ci.md).
 
 Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10. GRE-1647 then deleted `review-gate` and the Claude review.
 

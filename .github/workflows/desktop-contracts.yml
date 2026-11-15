@@ -1,69 +1,8 @@
 name: Desktop contracts
 
+# Node parity stays off pull requests and main until desktop CI returns (GRE-1649).
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master, "desktop/**"]
-    paths:
-      - "fixtures/http/routes-inventory.json"
-      - "fixtures/parity/auth-key/**"
-      - "fixtures/parity/auth-login/**"
-      - "fixtures/parity/auth-registration/**"
-      - "fixtures/parity/catalog-http/**"
-      - "fixtures/parity/drafts-http/**"
-      - "fixtures/parity/github-sync/**"
-      - "fixtures/parity/jobs-http/**"
-      - "fixtures/parity/jobs-ws/**"
-      - "fixtures/parity/layers-http/**"
-      - "fixtures/parity/manifest-http/**"
-      - "fixtures/parity/manifest-checkouts-http/**"
-      - "fixtures/parity/plans-http/**"
-      - "fixtures/parity/profile-sync/**"
-      - "rust/**"
-      - "rust-toolchain.toml"
-      - 'scripts/setup-ci-linux.sh'
-      - "web/packages/contracts/**"
-      - "web/packages/domain/**"
-      - "web/packages/rust-client/**"
-      - "web/apps/server/**"
-      - "web/apps/web/src/api/planReview.ts"
-      - "web/scripts/desktop-parity/**"
-      - "web/scripts/desktop-contracts/**"
-      - "web/scripts/rust-contracts/**"
-      - "web/package*.json"
-      - "docs/adr/0006-autosave-text-contract.md"
-      - ".github/workflows/desktop-contracts.yml"
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths:
-      - "fixtures/http/routes-inventory.json"
-      - "fixtures/parity/auth-key/**"
-      - "fixtures/parity/auth-login/**"
-      - "fixtures/parity/auth-registration/**"
-      - "fixtures/parity/catalog-http/**"
-      - "fixtures/parity/drafts-http/**"
-      - "fixtures/parity/github-sync/**"
-      - "fixtures/parity/jobs-http/**"
-      - "fixtures/parity/jobs-ws/**"
-      - "fixtures/parity/layers-http/**"
-      - "fixtures/parity/manifest-http/**"
-      - "fixtures/parity/manifest-checkouts-http/**"
-      - "fixtures/parity/plans-http/**"
-      - "fixtures/parity/profile-sync/**"
-      - "rust/**"
-      - "rust-toolchain.toml"
-      - 'scripts/setup-ci-linux.sh'
-      - "web/packages/contracts/**"
-      - "web/packages/domain/**"
-      - "web/packages/rust-client/**"
-      - "web/apps/server/**"
-      - "web/apps/web/src/api/planReview.ts"
-      - "web/scripts/desktop-parity/**"
-      - "web/scripts/desktop-contracts/**"
-      - "web/scripts/rust-contracts/**"
-      - "web/package*.json"
-      - "docs/adr/0006-autosave-text-contract.md"
-      - ".github/workflows/desktop-contracts.yml"
 
 permissions:
   contents: read

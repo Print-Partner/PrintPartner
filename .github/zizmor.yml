@@ -11,7 +11,6 @@ rules:
       - release.yml:23
       # The apt package cache action (GRE-1229) is a local composite action that runs at the
       # same commit as its caller; it holds no secrets and saves its cache only on main.
-      - desktop-e2e.yml:45
-      - desktop-webkit.yml:46
-      - rust-cross-os.yml:189
-      - rust-cross-os.yml:402
+      - desktop-e2e.yml:29
+      - desktop-webkit.yml:30
+      - rust-cross-os.yml:138

@@ -3011,6 +3011,8 @@ async fn ticket_t_61_autosave_refusals_write_nothing() {
 
 #[path = "tests/accept_header.rs"]
 mod accept_header;
+#[path = "tests/export_after_accept.rs"]
+mod export_after_accept;
 #[path = "tests/gre487_stale_patch.rs"]
 mod gre487_stale_patch;
 #[path = "tests/header.rs"]

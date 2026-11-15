@@ -6,14 +6,16 @@
 //! `read_model::stock` already accept. A row of another known kind is kept
 //! byte for byte and can only be deleted.
 //!
-//! The shape is strict (`deny_unknown_fields`) and has no version field: a
-//! stored document's shape changes only through a numbered schema step that
-//! rewrites it. A document that is not this shape takes no write. Values are
+//! The shape has no version field: a stored document's shape changes only
+//! through a numbered schema step that rewrites it. Every named field is
+//! typed strictly, and a document that is not this shape takes no write. A
+//! key the shape does not name, on a row or in its `config`, is kept in
+//! [`Unread`] and never read. Values are
 //! checked when they arrive, in [`Integration::apply`], and not again when a
 //! stored row is read or edited. A stored row may carry a credential field its
 //! kind does not use; the readers ignore it.
 
-use super::{DocumentFault, Field, InvalidDocument, InvalidField, Reason, SetupDocument};
+use super::{DocumentFault, Field, InvalidDocument, InvalidField, Reason, SetupDocument, Unread};
 use crate::auth::Secret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
@@ -57,7 +59,6 @@ impl ServiceKind {
 /// One stored row of a creatable kind. No `Debug`: a stored `base_url` that
 /// predates the checks can hold a password.
 #[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct Integration {
     pub(crate) id: String,
     #[serde(rename = "type")]
@@ -67,10 +68,12 @@ pub(crate) struct Integration {
     /// UTC, as `2026-11-12T03:04:05.678Z`.
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    /// Stored keys this shape does not name. Empty for a row Rust made.
+    #[serde(flatten)]
+    pub(crate) unread: Unread,
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct HostConfig {
     pub(crate) base_url: String,
     pub(crate) enabled: bool,
@@ -91,6 +94,8 @@ pub(crate) struct HostConfig {
     /// Where PrusaLink uploads go. The upload path reads it; no route sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) storage: Option<String>,
+    #[serde(flatten)]
+    pub(crate) unread: Unread,
 }
 
 /// The address a view shows. Rust's create refuses credentials in a URL, but a
@@ -355,9 +360,11 @@ impl Integration {
                 api_key: None,
                 password: None,
                 storage: None,
+                unread: Unread::default(),
             },
             created_at: now.clone(),
             updated_at: String::new(),
+            unread: Unread::default(),
         };
         let values = IntegrationPatch {
             name: Some(new.name),

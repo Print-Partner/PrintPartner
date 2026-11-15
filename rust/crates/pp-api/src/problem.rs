@@ -4,8 +4,8 @@
 //! [`Problem`] as `application/problem+json` with `Cache-Control: private, no-store`.
 //! [`layer`] is the backstop for errors the framework writes itself (axum
 //! extractor rejections, 405 and body-limit refusals): it drops their text and
-//! answers a problem for the same status. MCP keeps JSON-RPC errors and does not
-//! use this module.
+//! answers a problem for the same status. MCP keeps JSON-RPC errors and its own
+//! refusal codes; it shares only this module's sort of a storage failure.
 //!
 //! Callers pass fixed text or bounded user input, never `error.to_string()` of
 //! a storage, filesystem or network error. `problem_response_canary` checks that
@@ -36,7 +36,12 @@ pub fn duplicate_build_name(name: &str) -> Response {
     let mut extensions = Map::new();
     extensions.insert("name".into(), Value::String(name.to_owned()));
     build(
-        problem(StatusCode::CONFLICT, "", Some("duplicate_build_name")).without_detail(),
+        problem(
+            StatusCode::CONFLICT,
+            "",
+            Some(ProblemCode::DuplicateBuildName.as_str()),
+        )
+        .without_detail(),
         extensions,
     )
 }
@@ -65,38 +70,100 @@ pub fn overloaded(detail: &str) -> Response {
 }
 
 /// `code` of a write whose transaction could not start before its deadline.
-pub const TRANSACTION_UNAVAILABLE: &str = "transaction_unavailable";
+pub const TRANSACTION_UNAVAILABLE: &str = ProblemCode::TransactionUnavailable.as_str();
 /// `code` of a write that may or may not have committed.
-pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+pub const OUTCOME_UNKNOWN: &str = ProblemCode::OutcomeUnknown.as_str();
 const UNAVAILABLE: &str = "Service temporarily unavailable";
+
+/// A family's typed error as the problem its caller is told: status, type,
+/// fixed detail and code. A new family implements this for its error enum and
+/// serves it with [`refused`], so no family writes its own `Response`
+/// mapping. See `docs/problem-responses.md`.
+pub trait ToProblem {
+    fn to_problem(&self) -> Problem;
+}
+
+/// Serves the problem for a family's typed error.
+pub fn refused(error: &impl ToProblem) -> Response {
+    build(error.to_problem(), Map::new())
+}
+
+/// The seven answers a [`WriterFailure`] has. This is the one place `pp-api`
+/// sorts a `WriterFailure`: HTTP ([`ToProblem`]) and MCP
+/// (`mcp::write_result::writer_failure`) each give these rows their own
+/// answer, so a new `WriterFailure` variant fails to compile here and
+/// nowhere else. The two surfaces differ on purpose: `OwnerMappingRequired`
+/// is 403 on HTTP and `unauthorized` on MCP, and MCP answers `QueueFull`,
+/// `Busy` and `Stopped` alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriterFailureKind {
+    /// No session or API key that storage accepts.
+    Unauthenticated,
+    /// The account needs an explicit owner mapping.
+    OwnerMappingRequired,
+    /// The writer queue stayed full.
+    QueueFull,
+    /// The transaction could not start before its deadline.
+    Busy,
+    /// The write may or may not have committed.
+    CommitUnknown,
+    /// Storage is stopping, or the caller left before the write was queued.
+    Stopped,
+    /// A failure no caller can act on. Its cause is never sent.
+    Internal,
+}
+
+impl WriterFailureKind {
+    pub(crate) fn of(failure: &WriterFailure) -> Self {
+        use AuthFailure::{
+            CommitUnknown, CredentialChanged, InvalidCredentials, OwnerMappingRequired, QueueFull,
+            SessionRequired, Stopped, Storage,
+        };
+        match failure {
+            WriterFailure::Auth(SessionRequired | InvalidCredentials | CredentialChanged) => {
+                Self::Unauthenticated
+            }
+            WriterFailure::Auth(OwnerMappingRequired) => Self::OwnerMappingRequired,
+            WriterFailure::QueueFull | WriterFailure::Auth(QueueFull) => Self::QueueFull,
+            WriterFailure::Busy => Self::Busy,
+            WriterFailure::Auth(CommitUnknown) => Self::CommitUnknown,
+            WriterFailure::Stopped
+            | WriterFailure::Cancelled
+            | WriterFailure::Auth(Stopped | Storage) => Self::Stopped,
+            WriterFailure::Auth(_) | WriterFailure::Internal(_) => Self::Internal,
+        }
+    }
+}
+
+impl ToProblem for WriterFailure {
+    fn to_problem(&self) -> Problem {
+        use WriterFailureKind as Kind;
+        let unavailable = |kind| Problem::new(kind, 503, UNAVAILABLE);
+        match Kind::of(self) {
+            Kind::Unauthenticated => {
+                Problem::new(ProblemType::Unauthenticated, 401, "Authentication required")
+            }
+            Kind::OwnerMappingRequired => Problem::new(
+                ProblemType::Forbidden,
+                403,
+                "Explicit account owner mapping is required",
+            ),
+            Kind::QueueFull => unavailable(ProblemType::Overloaded),
+            Kind::Busy => unavailable(ProblemType::Unavailable)
+                .with_problem_code(ProblemCode::TransactionUnavailable),
+            Kind::CommitUnknown => unavailable(ProblemType::OutcomeUnknown)
+                .with_problem_code(ProblemCode::OutcomeUnknown),
+            Kind::Stopped => unavailable(ProblemType::Unavailable),
+            Kind::Internal => Problem::new(ProblemType::Internal, 500, "Internal Server Error"),
+        }
+    }
+}
 
 /// The problem for a [`WriterFailure`], the same for every storage family
 /// that writes through the write seam. A family maps its own error variants
 /// and hands this one here. The cause of an internal failure is never sent.
 pub fn writer_failure(failure: &WriterFailure) -> Response {
-    use AuthFailure::{
-        CommitUnknown, CredentialChanged, InvalidCredentials, OwnerMappingRequired, QueueFull,
-        SessionRequired, Stopped, Storage,
-    };
-    let unavailable = StatusCode::SERVICE_UNAVAILABLE;
-    match failure {
-        WriterFailure::Auth(SessionRequired | InvalidCredentials | CredentialChanged) => {
-            response(StatusCode::UNAUTHORIZED, "Authentication required")
-        }
-        WriterFailure::Auth(OwnerMappingRequired) => response(
-            StatusCode::FORBIDDEN,
-            "Explicit account owner mapping is required",
-        ),
-        WriterFailure::QueueFull | WriterFailure::Auth(QueueFull) => overloaded(UNAVAILABLE),
-        WriterFailure::Busy => coded(unavailable, UNAVAILABLE, TRANSACTION_UNAVAILABLE),
-        WriterFailure::Auth(CommitUnknown) => coded(unavailable, UNAVAILABLE, OUTCOME_UNKNOWN),
-        WriterFailure::Stopped
-        | WriterFailure::Cancelled
-        | WriterFailure::Auth(Stopped | Storage) => response(unavailable, UNAVAILABLE),
-        WriterFailure::Auth(_) | WriterFailure::Internal(_) => {
-            response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-        }
-    }
+    refused(failure)
 }
 
 pub fn problem(status: StatusCode, detail: &str, code: Option<&str>) -> Problem {

@@ -566,25 +566,13 @@ impl FilamentLookup for SnapshotFilamentLookup {
     }
 }
 
-struct FilamentDns(Arc<dyn pp_net::outbound::Resolver>);
-impl reqwest::dns::Resolve for FilamentDns {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let future = self.0.resolve(name.as_str().into());
-        Box::pin(async move {
-            let addresses = future.await?;
-            if addresses.is_empty()
-                || addresses.len() > 32
-                || !addresses.iter().all(|ip| pp_net::outbound::permitted(*ip))
-            {
-                return Err("Prohibited filament DNS answer".into());
-            }
-            Ok(Box::new(
-                addresses
-                    .into_iter()
-                    .map(|ip| std::net::SocketAddr::new(ip, 0)),
-            ) as reqwest::dns::Addrs)
-        })
-    }
+/// Filament provider DNS: every address must be one `pp_net` permits.
+fn filament_dns(resolver: Arc<dyn pp_net::outbound::Resolver>) -> crate::checked_dns::CheckedDns {
+    crate::checked_dns::CheckedDns::new(
+        resolver,
+        pp_net::outbound::permitted,
+        "Prohibited filament DNS answer",
+    )
 }
 
 async fn load_filament(
@@ -593,7 +581,7 @@ async fn load_filament(
 ) -> Result<SnapshotFilamentLookup> {
     let client = reqwest::Client::builder()
         .no_proxy()
-        .dns_resolver(Arc::new(FilamentDns(Arc::new(
+        .dns_resolver(Arc::new(filament_dns(Arc::new(
             pp_net::outbound::SystemResolver,
         ))))
         .redirect(reqwest::redirect::Policy::none())

@@ -3487,6 +3487,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower",
+ "zip",
 ]
 
 [[package]]
@@ -3560,6 +3561,7 @@ dependencies = [
  "pp-net",
  "pp-os",
  "pp-perf",
+ "pp-services",
  "pp-source",
  "pp-storage",
  "pp-testkit",
@@ -3767,6 +3769,7 @@ dependencies = [
  "hmac",
  "icu_collator",
  "libc",
+ "png 0.18.1",
  "pp-contracts",
  "pp-domain",
  "pp-os",

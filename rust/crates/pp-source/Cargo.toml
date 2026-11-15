@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["desktop_rebuild"]
 desktop_rebuild = ["dep:getrandom"]
 
 [dependencies]

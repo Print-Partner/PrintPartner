@@ -4,9 +4,9 @@
 //! `web/apps/server/src/routes/admin-routes.oracle.test.ts` records from Node.
 #![cfg(feature = "desktop_rebuild")]
 
-use pp_api::{admin::AdminHttpConfig, serving::Serving, settings::settings_router};
+use pp_api::{serving::Serving, settings::settings_router};
 use pp_storage::{
-    Limits, SettingSnapshot, WriterOwner,
+    SettingSnapshot, WriterOwner,
     auth::{
         self, AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy,
         rebuild::AuthLifetimes,
@@ -15,6 +15,10 @@ use pp_storage::{
 use reqwest::{Client, Method};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
+
+#[path = "support/settings_server.rs"]
+mod settings_server;
+use settings_server::SettingsServer;
 
 const COOKIE: (&str, &str) = ("cookie", "pp_session=read-fixture-secret");
 const CASES: &str = include_str!("../../../../fixtures/admin/settings-cases.json");
@@ -53,11 +57,15 @@ struct Server {
 
 impl Server {
     async fn start(directory: &Path, flag: Option<&str>) -> Self {
-        let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
-        let (listener, origin) = pp_testkit::http_listener().await.unwrap();
-        let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
-        let settings = owner.app_settings_with_policy(policy()).unwrap();
-        let router = settings_router(config, owner.accepted_reads().unwrap(), settings);
+        let SettingsServer {
+            owner,
+            listener,
+            origin,
+            config,
+            reads,
+            settings,
+        } = SettingsServer::open(directory, flag).await;
+        let router = settings_router(config, reads, settings);
         let cases: Value = serde_json::from_str(CASES).unwrap();
         Self {
             owner,

@@ -98,6 +98,15 @@ impl Gate {
         })
     }
 
+    /// [`Self::new`] plus the configured storage wait, which `new` consumes.
+    pub(crate) fn with_wait(
+        config: AdminHttpConfig,
+        client: ReadClient,
+    ) -> Option<(Self, Duration)> {
+        let wait = config.wait;
+        Self::new(config, client).map(|gate| (gate, wait))
+    }
+
     pub(crate) fn authentication_only(mut self) -> Self {
         self.release_after_auth = true;
         self

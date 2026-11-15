@@ -140,17 +140,43 @@ pub(super) fn category_save(body: &Value) -> Option<CategorySave> {
     Some((categories, replacements))
 }
 
-/// `String(body.name ?? "")`, with null and missing fields omitted on the other columns.
-pub(super) fn source_create(body: &Value) -> CreateSource {
-    CreateSource {
-        name: text(body, "name").unwrap_or_default(),
-        url: text(body, "url"),
-        branch: text(body, "branch"),
-        tag: text(body, "tag"),
-        source_kind: text(body, "source_kind"),
-        role: text(body, "role"),
-        metadata: object(body, "metadata"),
-        ..Default::default()
+/// `POST /sources` body, the generated client's `CreateSourceRequest`. Unknown
+/// fields are ignored and a field of the wrong type is refused; `null` is the
+/// same as leaving an optional field out. The handler refuses `local_path`
+/// before this is read, and sends a missing or null `name` on as empty so
+/// storage answers "Source name is required". The generated client's schema is
+/// strict, so the replacement UI never sends a field the core would ignore.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema, serde::Serialize))]
+#[cfg_attr(feature = "codegen", schemars(deny_unknown_fields))]
+pub(crate) struct CreateSourceRequest {
+    pub name: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Map<String, Value>>,
+}
+
+impl From<CreateSourceRequest> for CreateSource {
+    fn from(request: CreateSourceRequest) -> Self {
+        Self {
+            name: request.name,
+            url: request.url,
+            branch: request.branch,
+            tag: request.tag,
+            source_kind: request.source_kind,
+            role: request.role,
+            metadata: request.metadata,
+            ..Default::default()
+        }
     }
 }
 

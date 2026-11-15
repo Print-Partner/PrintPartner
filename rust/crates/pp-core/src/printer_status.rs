@@ -157,6 +157,36 @@ impl FarmObservations for WatchedFarm {
         }
         observed(&self.0, &integration.id)
     }
+
+    fn seen_entering(&self, integration: &PrinterIntegration) -> Option<std::time::SystemTime> {
+        watched(&integration.kind)
+            .then(|| self.0.observations()?.seen_entering(&integration.id))
+            .flatten()
+    }
+}
+
+/// The watchers' observations for routers composed before the gateway hands
+/// out its status port (MCP's `get_farm_status`). Until [`LateFarm::bind`],
+/// nothing is observed, as before the watchers' first answer.
+#[derive(Clone, Default)]
+pub(crate) struct LateFarm(Arc<std::sync::OnceLock<WatchedFarm>>);
+
+impl LateFarm {
+    pub(crate) fn bind(&self, status: MoonrakerStatus) {
+        let _ = self.0.set(WatchedFarm(status));
+    }
+}
+
+impl FarmObservations for LateFarm {
+    fn observe(&self, integration: &PrinterIntegration) -> Observation {
+        self.0
+            .get()
+            .map_or(Observation::Unavailable, |farm| farm.observe(integration))
+    }
+
+    fn seen_entering(&self, integration: &PrinterIntegration) -> Option<std::time::SystemTime> {
+        self.0.get()?.seen_entering(integration)
+    }
 }
 
 /// What the watchers last observed for integration `id`.

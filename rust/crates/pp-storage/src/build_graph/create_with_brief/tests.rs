@@ -1,4 +1,5 @@
 use super::*;
+use crate::read_model::planning::{EvidenceInputKind, EvidenceKind, SourceRole, SyncStatus};
 use crate::{
     Limits, SettingSnapshot, WriterOwner,
     auth::{
@@ -7,23 +8,43 @@ use crate::{
     write::test_support::{WAIT, first_session, seed_setting},
 };
 
-static IDLE: AtomicBool = AtomicBool::new(false);
+pub(in crate::build_graph) static IDLE: AtomicBool = AtomicBool::new(false);
+
+/// A Voron Build with the brief `create` stores, for the other brief writers.
+pub(in crate::build_graph) fn seeded_voron(created: &Fixture) -> PositiveId {
+    created
+        .create(NewBuild::parse("Voron", "A Voron 2.4", None).unwrap())
+        .unwrap()
+        .id
+}
+
+/// The brief `key` names, or a panic when that brief was never stored.
+pub(in crate::build_graph) fn read_stored_brief(
+    owner: &WriterOwner,
+    key: &str,
+) -> serde_json::Value {
+    let reader = owner.client().reader(WAIT).unwrap();
+    match reader.snapshot("default", key).unwrap() {
+        SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap(),
+        SettingSnapshot::Missing => panic!("no brief"),
+    }
+}
 const POLICY: AuthPolicy = AuthPolicy {
     registration: RegistrationPolicy::FirstAccountOnly,
     first_user: FirstUserTenant::NewUser,
     session_tenant: SessionTenantPolicy::SingleAccountDefault,
 };
 
-struct Fixture {
+pub(in crate::build_graph) struct Fixture {
     _directory: tempfile::TempDir,
-    owner: WriterOwner,
-    client: BuildGraphClient,
+    pub(in crate::build_graph) owner: WriterOwner,
+    pub(in crate::build_graph) client: BuildGraphClient,
     token: String,
 }
 
 impl Fixture {
     /// A fresh installation with the Orders Module on.
-    fn new() -> Self {
+    pub(in crate::build_graph) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
         let token = first_session(&owner);
@@ -36,11 +57,20 @@ impl Fixture {
         }
     }
 
-    fn session(&self) -> Credential {
+    /// A connection of its own to the installation's database, for seeding
+    /// rows no client writes in these tests.
+    pub(in crate::build_graph) fn database(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self._directory.path().join("print-partner.db")).unwrap()
+    }
+
+    pub(in crate::build_graph) fn session(&self) -> Credential {
         Credential::Session(Secret::new(self.token.clone()))
     }
 
-    fn create(&self, new: NewBuild) -> Result<CreatedBuild, CreateBuildError> {
+    pub(in crate::build_graph) fn create(
+        &self,
+        new: NewBuild,
+    ) -> Result<CreatedBuild, CreateBuildError> {
         self.client
             .create_with_brief(self.session(), new, &IDLE, WAIT)
     }
@@ -145,6 +175,56 @@ fn create_stores_the_build_its_request_and_a_new_brief() {
     assert_eq!(
         fixture.stored("build_planning.create.sam-1"),
         Some(id.to_string())
+    );
+}
+
+#[test]
+fn create_stores_classified_urls_and_leaves_sources() {
+    let fixture = Fixture::new();
+    let sources: i64 = fixture.read("SELECT COUNT(*) FROM projects");
+    let created = fixture
+        .create(new_build("Voron for Sam", "request", None).with_urls(vec![
+            CreateUrl {
+                raw: "https://github.com/Owner/Repo/".into(),
+                normalized: "https://github.com/Owner/Repo".into(),
+                kind: CreateUrlKind::Git,
+            },
+            CreateUrl {
+                raw: "https://www.printables.com/model/12345-kit/files#comments".into(),
+                normalized: "https://www.printables.com/model/12345-kit/files".into(),
+                kind: CreateUrlKind::ModelPage,
+            },
+            CreateUrl {
+                raw: "https://github.com/Owner/Repo".into(),
+                normalized: "https://github.com/Owner/Repo".into(),
+                kind: CreateUrlKind::Git,
+            },
+        ]))
+        .unwrap();
+    let text = fixture
+        .stored(&format!("build_planning.v1.{}", created.id.get()))
+        .unwrap();
+    let brief = BuildPlanningBrief::parse(&text, created.id.get() as i64).unwrap();
+    assert_eq!(brief.requirements.len(), 0);
+    assert_eq!(brief.evidence.len(), 2, "{text}");
+    let git = &brief.evidence[0];
+    assert_eq!(git.id, "8d325f3875d513dbc4e3");
+    assert_eq!(git.url, "https://github.com/Owner/Repo/");
+    assert_eq!(git.kind, EvidenceKind::Mod);
+    assert_eq!(git.input_kind, Some(EvidenceInputKind::Url));
+    assert_eq!(git.source_role, Some(SourceRole::Addon));
+    assert_eq!(git.sync_status, Some(SyncStatus::Pending));
+    assert_eq!(git.upload_required, None);
+    assert_eq!(git.source_id, None);
+    let page = &brief.evidence[1];
+    assert_eq!(page.id, "e23eb2aaca54431c33ba");
+    assert_eq!(page.kind, EvidenceKind::ModelSource);
+    assert_eq!(page.input_kind, Some(EvidenceInputKind::ModelPage));
+    assert_eq!(page.upload_required, Some(true));
+    assert_eq!(page.source_id, None);
+    assert_eq!(
+        fixture.read::<i64>("SELECT COUNT(*) FROM projects"),
+        sources
     );
 }
 

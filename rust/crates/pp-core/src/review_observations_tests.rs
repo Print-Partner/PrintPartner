@@ -596,7 +596,7 @@ async fn filament_dns_rejects_metadata_answers_and_pins_lan_answers() {
     }
     let allowed = "127.0.0.1".parse().unwrap();
     let denied = "169.254.169.254".parse().unwrap();
-    let dns = FilamentDns(Arc::new(Answers(vec![allowed, denied])));
+    let dns = filament_dns(Arc::new(Answers(vec![allowed, denied])));
     assert_eq!(
         dns.resolve("example.test".parse().unwrap())
             .await
@@ -605,7 +605,7 @@ async fn filament_dns_rejects_metadata_answers_and_pins_lan_answers() {
             .to_string(),
         "Prohibited filament DNS answer"
     );
-    let dns = FilamentDns(Arc::new(Answers(vec![allowed])));
+    let dns = filament_dns(Arc::new(Answers(vec![allowed])));
     let addresses = dns
         .resolve("example.test".parse().unwrap())
         .await

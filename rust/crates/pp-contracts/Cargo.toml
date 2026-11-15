@@ -7,12 +7,12 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["desktop_rebuild"]
 desktop_rebuild = ["pp-api-types/desktop_rebuild"]
 codegen = ["dep:schemars", "pp-api-types/codegen"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-pp-api-types = { path = "../pp-api-types" }
+pp-api-types = { path = "../pp-api-types", default-features = false }
 schemars = { version = "=0.8.22", optional = true }

@@ -87,9 +87,12 @@ mod tests {
             owner.clone(),
             &origin,
             None,
-            crate::rebuild_api::ServerOptions {
-                explicit_listener: listen.is_some(),
-                ..Default::default()
+            crate::rebuild_api::RuntimeInputs {
+                server: crate::rebuild_api::ServerOptions {
+                    explicit_listener: listen.is_some(),
+                    ..Default::default()
+                },
+                ..crate::rebuild_api::RuntimeInputs::detached()
             },
         )
         .unwrap()

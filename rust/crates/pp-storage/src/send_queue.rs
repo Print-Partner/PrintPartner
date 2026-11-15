@@ -21,7 +21,8 @@
 //!
 //! Readers call [`rows`]: `None` means the tenant still has the setting and
 //! the reader keeps its Node-compatible setting read; `Some` holds the table's
-//! items in Node's item JSON shape.
+//! items in Node's item JSON shape. [`mark_outcomes`] adds each item's
+//! computed `outcome_unknown` for the farm read and the write answers.
 //!
 //! [`writes`] holds the user actions on table items (GRE-365): Send now and
 //! Send ready dispatch an item as a durable `printer-upload` job in the same
@@ -102,6 +103,40 @@ pub(crate) fn rows(connection: &Connection, tenant: &str) -> Result<Option<Vec<V
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(Some(items))
+}
+
+/// Sets each item's computed `outcome_unknown`: true when it is `error` and
+/// its last send's printer outcome is unknown, the case Send now refuses
+/// with `send_outcome_unknown`. With a Rust upload job that job awaits
+/// reconciliation; with none (a send Node started) Node's restart marked
+/// it [`INTERRUPTED_ERROR`]. A quarantined upload job is not unknown here,
+/// since the writes cannot reconcile it; resolving one is a separate path.
+/// Nothing stores the key. `jobs` is `None` for items still in Node's
+/// setting, which no Rust job sent.
+pub(crate) fn mark_outcomes(
+    jobs: Option<&Connection>,
+    tenant: &str,
+    items: &mut [Value],
+) -> Result<()> {
+    for item in items {
+        let interrupted = item["error"] == INTERRUPTED_ERROR;
+        let unknown = item["state"] == "error"
+            && match (jobs, item["upload_job_id"].as_str()) {
+                (Some(connection), Some(job)) => connection
+                    .query_row(
+                        "SELECT state='reconciliation_required' FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3",
+                        params![job, tenant, crate::jobs::JobKind::PrinterUpload.name()],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or(interrupted),
+                _ => interrupted,
+            };
+        if let Value::Object(item) = item {
+            item.insert("outcome_unknown".into(), Value::Bool(unknown));
+        }
+    }
+    Ok(())
 }
 
 /// Replace each table item's `checkoff_units` with the remapped units Accept

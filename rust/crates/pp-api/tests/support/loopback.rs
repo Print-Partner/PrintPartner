@@ -5,7 +5,8 @@ use axum::{
     Router,
     body::Body,
     extract::ConnectInfo,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, request::Builder as RequestBuilder},
+    response::Response,
 };
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -46,11 +47,7 @@ pub async fn send_with_headers(
     cookie: Option<&str>,
     headers: &[(&str, &str)],
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("host", "127.0.0.1:4100")
-        .header("origin", ORIGIN);
+    let mut request = Request::builder().method(method).uri(path);
     if let Some(content_type) = content_type {
         request = request.header("content-type", content_type);
     }
@@ -60,11 +57,7 @@ pub async fn send_with_headers(
     if let Some(cookie) = cookie {
         request = request.header("cookie", cookie);
     }
-    let mut request = request.body(Body::from(body)).unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
-    let response = router.clone().oneshot(request).await.unwrap();
+    let response = respond(router, request, body).await;
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
         .await
@@ -73,4 +66,18 @@ pub async fn send_with_headers(
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+/// Sends `request` with `body` from the admitted Host, Origin and peer, and
+/// returns the whole answer, for a body that is not JSON.
+pub async fn respond(router: &Router, request: RequestBuilder, body: Vec<u8>) -> Response {
+    let mut request = request
+        .header("host", "127.0.0.1:4100")
+        .header("origin", ORIGIN)
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
+    router.clone().oneshot(request).await.unwrap()
 }

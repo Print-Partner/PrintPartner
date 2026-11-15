@@ -295,7 +295,9 @@ pub enum SendState {
     Cancelled,
 }
 
-/// One send queue item. The artifact path and error text stay server-side.
+/// One send queue item. The artifact path and host name stay server-side.
+/// `error` is the stored reason of the last failed send: the send worker
+/// writes the printer's refusal or a fixed text, never a credential.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct QueuedSend {
@@ -321,6 +323,28 @@ pub struct QueuedSend {
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub updated_at: Option<String>,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
+    pub error: Option<String>,
+    /// The durable job of the last send; Reconcile names it.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
+    pub upload_job_id: Option<String>,
+    /// True when the last send's result at the printer is unknown: Send now
+    /// refuses with `send_outcome_unknown` until the user reconciles it.
+    pub outcome_unknown: bool,
+}
+
+impl QueuedSend {
+    /// A stored item as the send routes answer it, or `None` when it is not
+    /// a valid item. `outcome_unknown` is the computed key storage adds.
+    pub fn from_item(item: &Value) -> Option<Self> {
+        queued_send(item)
+    }
 }
 
 /// `GET /api/v2/printer-send-queue` body, in stored order. A `sending` item
@@ -506,7 +530,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
         list("integrations")?,
         list("printer.checkoff_links")?,
         list("printer.unattributed_prints")?,
-        queue_list(&tx, &tenant)?,
+        marked_queue(&tx, &tenant)?,
     );
     if command.match_library {
         farm.library = Some(MatchLibrary::read(&tx, &tenant, &farm)?);
@@ -533,10 +557,11 @@ pub fn read_settings(client: &crate::SettingsClient, wait: Duration) -> Result<F
         .connection
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Reader connection missing"))?;
-    let queue = match crate::send_queue::rows(connection, "default")? {
-        Some(items) => items,
-        None => list(crate::send_queue::LEGACY_KEY)?,
+    let (jobs, mut queue) = match crate::send_queue::rows(connection, "default")? {
+        Some(items) => (Some(connection), items),
+        None => (None, list(crate::send_queue::LEGACY_KEY)?),
     };
+    crate::send_queue::mark_outcomes(jobs, "default", &mut queue)?;
     Ok(Farm::parse(
         list("printer.fleet")?,
         list("integrations")?,
@@ -563,6 +588,20 @@ pub(crate) fn queue_list(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value
         Some(items) => Ok(items),
         None => setting_list(tx, tenant, crate::send_queue::LEGACY_KEY),
     }
+}
+
+/// [`queue_list`] with each item's computed `outcome_unknown`, for reads.
+/// Only table items can have a Rust upload job.
+fn marked_queue(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
+    let (jobs, mut items) = match crate::send_queue::rows(tx, tenant)? {
+        Some(items) => (Some(&**tx), items),
+        None => (
+            None,
+            setting_list(tx, tenant, crate::send_queue::LEGACY_KEY)?,
+        ),
+    };
+    crate::send_queue::mark_outcomes(jobs, tenant, &mut items)?;
+    Ok(items)
 }
 
 pub(crate) fn setting_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
@@ -637,6 +676,39 @@ fn normalized_filename(name: &str) -> String {
     name.rsplit('/').next().unwrap_or_default().to_lowercase()
 }
 
+/// The integration and normalized file name of each watching, awaiting-verify
+/// or verified Checkoff result: the files whose open prints the reads hide.
+fn matching_files(results: &[CheckoffResult]) -> Vec<(&str, String)> {
+    results
+        .iter()
+        .filter(|link| {
+            matches!(
+                link.state,
+                CheckoffResultState::Watching
+                    | CheckoffResultState::AwaitingVerify
+                    | CheckoffResultState::Verified
+            )
+        })
+        .map(|link| {
+            (
+                link.integration_id.as_str(),
+                normalized_filename(&link.filename),
+            )
+        })
+        .collect()
+}
+
+/// Whether the stored `printer.checkoff_links` hold a watching,
+/// awaiting-verify or verified link for `filename` on `integration_id`: the
+/// rule by which the reads hide an open print.
+pub(crate) fn matched_by_link(links: &[Value], integration_id: &str, filename: &str) -> bool {
+    let results: Vec<_> = links.iter().filter_map(result).collect();
+    let name = normalized_filename(filename);
+    matching_files(&results)
+        .iter()
+        .any(|(integration, file)| *integration == integration_id && *file == name)
+}
+
 impl Farm {
     pub(crate) fn parse(
         fleet: Vec<Value>,
@@ -646,23 +718,7 @@ impl Farm {
         queue: Vec<Value>,
     ) -> Self {
         let results: Vec<_> = links.iter().filter_map(result).collect();
-        let linked: Vec<_> = results
-            .iter()
-            .filter(|link| {
-                matches!(
-                    link.state,
-                    CheckoffResultState::Watching
-                        | CheckoffResultState::AwaitingVerify
-                        | CheckoffResultState::Verified
-                )
-            })
-            .map(|link| {
-                (
-                    link.integration_id.as_str(),
-                    normalized_filename(&link.filename),
-                )
-            })
-            .collect();
+        let linked = matching_files(&results);
         let mut open: Vec<_> = unmatched
             .iter()
             .filter_map(unmatched_print)
@@ -1155,7 +1211,7 @@ fn unmatched_print(value: &Value) -> Option<OpenPrint> {
     Some(OpenPrint { print, objects })
 }
 
-/// Node's `parseItem`, without the artifact path and error text.
+/// Node's `parseItem`, without the artifact path and host name.
 fn queued_send(value: &Value) -> Option<QueuedSend> {
     let state = match value["state"].as_str()? {
         "queued" => SendState::Queued,
@@ -1177,6 +1233,9 @@ fn queued_send(value: &Value) -> Option<QueuedSend> {
         unit_count: count(&value["checkoff_units"]),
         created_at: text(value, "created_at"),
         updated_at: text(value, "updated_at"),
+        error: text(value, "error"),
+        upload_job_id: text(value, "upload_job_id"),
+        outcome_unknown: value["outcome_unknown"] == Value::Bool(true),
     })
 }
 

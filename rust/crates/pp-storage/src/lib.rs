@@ -14,6 +14,8 @@ pub mod archive;
 mod auth_scheduler;
 #[cfg(feature = "desktop_rebuild")]
 use auth_scheduler::*;
+#[cfg(feature = "desktop_rebuild")]
+pub mod accepted_artifacts;
 pub mod auth;
 mod backup_retention;
 #[cfg(feature = "desktop_rebuild")]
@@ -46,6 +48,8 @@ pub use pp_domain::printer_display_state;
 pub use pp_domain::slicer_grams;
 mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_activity;
+#[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;
@@ -63,6 +67,8 @@ pub mod restore;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
+#[cfg(feature = "desktop_rebuild")]
+pub mod source_files;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]

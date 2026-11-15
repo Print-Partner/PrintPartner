@@ -38,10 +38,6 @@ mod tests {
 
     #[test]
     fn parses_all_arguments_without_opening_paths() {
-        assert!(
-            std::env::var_os("PP_GRE_1649_EVIDENCE_MUST_FAIL").is_some(),
-            "GRE-1649 evidence",
-        );
         let parsed = parse_args(&[
             "--data",
             "test-data",

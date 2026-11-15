@@ -122,3 +122,41 @@ What changed:
 - Farm match suggestions interpreted every Part file name again for every unmatched print, and allocated per Levenshtein row and per collation comparison. `pp_domain::gcode_objects::FilenameIndex` keeps those keys once per read.
 
 On a fresh copy of the seed-388 dataset with no workload before it, the task feed answers in about 120 ms. After the harness workload it takes about 220 ms. The workload adds plan revisions, and the remaining time is mostly scans of `plan_revision_required_units`, `required_units`, `plan_revision_parts` and `parts` by columns that no index leads with, plus the per-Build digest and projection work. Going further needs indexes, which are a schema change.
+
+## Thumbnail, Plan change and Checkoff, 2026-11-15
+
+GRE-1668. One default run of `baseline.py` on the seed-388 dataset, Rust-only against the Node runtime, on one machine. The 2026-11-08 table stays as captured. Its export rows stay there too. GRE-1535 owns the Rust export timing.
+
+Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from main at `8623d14ff` (sha256 `0e0ebaff…a41b`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the 2026-11-08 capture. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.05 and 0.53 (Node 0.05 to 0.29, Rust 0.11 to 0.53). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15.json](performance-baseline-2026-11-15.json). That file is the whole harness run, so it also holds the Node export timings the harness records every time. The published export rows remain the 2026-11-08 figures.
+
+Requests this run timed:
+
+| Measure | Node request | Rust request |
+| --- | --- | --- |
+| Thumbnail load | per Part of "Synthetic Build Anchor 100u15p": cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | no route on main |
+| Plan change | on "Synthetic Build Anchor 47u6p": `POST /api/v2/plans/{id}/drafts/recompute`, `PATCH .../drafts/{draft_id}/parts`, `POST .../drafts/{draft_id}/apply`; also `POST /plans/:id/save` | the same three, plus `POST .../drafts/save` and `GET .../drafts/{draft_id}/accept-preview` |
+| Checkoff session | on "Synthetic Build Anchor 100u15p", 15 bursts, 100 units: per unit `PATCH /parts/:id/progress`, then `GET /plans/:id/checkoff` per burst | per burst `POST /api/v2/plans/{id}/checkoff/bursts`, then `GET .../checkoff/units` |
+
+| Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Thumbnails cold, whole Build | 519 ms | 639 ms (max) | - | - | - | 10/0 | GRE-1520 owes the route |
+| Thumbnail cold, per Part | 24.2 ms | 37.0 ms | - | - | - | 200/0 | GRE-1520 owes the route |
+| Thumbnails warm, whole Build | 148 ms | 162 ms | - | - | - | 30/0 | GRE-1520 owes the route |
+| Thumbnail warm, per Part | 7.0 ms | 10.8 ms | - | - | - | 600/0 | GRE-1520 owes the route |
+| Plan change: open draft (recompute) | 20.7 ms | 35.8 ms | 10.3 ms | 11.5 ms | 0.50x | 60/60 |  |
+| Plan change: edit Part quantity | 14.4 ms | 24.7 ms | 7.3 ms | 8.5 ms | 0.50x | 60/60 |  |
+| Plan change: autosave | - | - | 8.7 ms | 9.8 ms | - | 0/60 | Node has no draft-only autosave |
+| Plan change: Accept preview | - | - | 3.9 ms | 4.6 ms | - | 0/60 | Node has no Accept preview |
+| Plan change: Accept | 18.2 ms | 32.2 ms | 8.8 ms | 11.3 ms | 0.48x | 60/60 |  |
+| Plan change: open + edit + Accept | 55.5 ms | 84.7 ms | 26.2 ms | 31.2 ms | 0.47x | 60/60 |  |
+| Plan change: whole flow as each UI sends it | 55.7 ms | 85.1 ms | 39.2 ms | 45.2 ms | - | 60/60 | different requests per runtime; see the notes |
+| Plan change: Node one-request Save | 88.7 ms | 102 ms | - | - | - | 60/0 | Node only; Rust has no `/plans/:id/save` |
+| Checkoff burst, write + screen refresh | 104 ms | 134 ms | 9.0 ms | 11.6 ms | - | 150/150 | different requests per runtime; see the notes |
+| Checkoff session, 15 bursts, 100 units | 1558 ms | 1995 ms (max) | 144 ms | 157 ms (max) | - | 10/10 | different requests per runtime; see the notes |
+
+What this run says:
+
+- Thumbnail load stays unclaimed. Node's cold thumbnails for the 20 Parts take 519 ms for the Build and 24.2 ms per Part; the warm reads take 148 ms and 7.0 ms. Rust recorded no thumbnail samples. Main has no `GET /sources/{id}/thumbnail`. [GRE-1520](https://linear.app/greetz/issue/GRE-1520) (part of [GRE-430](https://linear.app/greetz/issue/GRE-430)) still owes that route.
+- Plan change: the three steps both serve (open draft, edit, Accept) take 26.2 ms on Rust and 55.5 ms on Node. The whole flow each UI sends takes 39.2 ms on Rust and 55.7 ms on Node. Rust's autosave is 8.7 ms and Accept preview is 3.9 ms. Node's one-request Save takes 88.7 ms.
+- Checkoff: the 15 bursts take 144 ms on Rust and 1558 ms on Node. A burst is 9.0 ms on Rust and 104 ms on Node. Node sends one request per unit; Rust sends one request per burst.
+- Where both columns have a median, the Rust median is lower than the Node median. That includes the whole Plan-change flow and both Checkoff rows, whose requests differ.

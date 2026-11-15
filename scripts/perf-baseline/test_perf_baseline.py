@@ -266,6 +266,22 @@ class ScenarioHelpers(unittest.TestCase):
     def test_renderer_version_is_read_from_the_contract(self):
         self.assertRegex(scenarios.renderer_version(), r"^\w+$")
 
+    def test_source_layer_names_its_source(self):
+        layers = [
+            {"layer_type": "addon", "project_id": 9, "project_name": "Extra"},
+            {"layer_type": "base", "project_id": 4, "project_name": "Kit"},
+            {"layer_type": "addon", "project_id": None, "project_name": None},
+        ]
+        self.assertEqual(scenarios.source_id_for_layer(layers, "base:Kit"), 4)
+        self.assertEqual(scenarios.source_id_for_layer(layers, "addon:Extra"), 9)
+        with self.assertRaises(RuntimeError):
+            scenarios.source_id_for_layer(layers, "base:Missing")
+
+    def test_thumbnail_url_encodes_the_path(self):
+        self.assertEqual(scenarios.thumbnail_url(4, "stl/a.stl"),
+                         "/sources/4/thumbnail?path=stl%2Fa.stl")
+        self.assertEqual(scenarios.thumbnail_url(9, "b.stl"), "/sources/9/thumbnail?path=b.stl")
+
 
 class DataGuards(unittest.TestCase):
     def test_copy_refuses_a_directory_without_the_synthetic_manifest(self):
@@ -281,6 +297,95 @@ class DataGuards(unittest.TestCase):
             self.assertRegex(marker["created_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
             with self.assertRaises(FileExistsError):
                 runtime.mark_rust_owned(temp)
+
+
+class RecordingThumbnailSession:
+    """Checkoff units and layers, then a PNG for every thumbnail GET."""
+
+    def __init__(self, status=200, content_type="image/png", body=None, parts=None):
+        self.calls = []
+        self.status = status
+        self.content_type = content_type
+        self.body = PNG if body is None else body
+        self.parts = parts if parts is not None else [
+            {"relative_path": "stl/a.stl", "source_layer": "base:Kit", "filename": "a.stl"},
+            {"relative_path": "", "source_layer": "addon:Extra", "filename": "b.stl"},
+        ]
+
+    def json(self, method, path, body=None, headers=None, expect=(200,)):
+        self.calls.append((method, path))
+        if path.endswith("/checkoff/units"):
+            return {"parts": self.parts}, 1.0
+        if path.endswith("/layers"):
+            return {"layers": [
+                {"layer_type": "base", "project_id": 4, "project_name": "Kit"},
+                {"layer_type": "addon", "project_id": 9, "project_name": "Extra"},
+            ]}, 1.0
+        raise AssertionError(path)
+
+    def request(self, method, path, body=None, headers=None):
+        self.calls.append((method, path))
+        return self.status, {"content-type": self.content_type}, self.body, 5.0
+
+
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+class ThumbnailTiming(unittest.TestCase):
+    def test_rust_times_one_get_per_part_cold_then_warm(self):
+        session = RecordingThumbnailSession()
+        out = {}
+        scenarios.thumbnails(session, "rust", out, 7)
+        self.assertEqual(out["thumbnail_cold_part_ms"], [5.0, 5.0])
+        self.assertEqual(len(out["thumbnail_cold_build_ms"]), 1)
+        self.assertEqual(out["thumbnail_warm_part_ms"], [5.0] * 6)
+        self.assertEqual(len(out["thumbnail_warm_build_ms"]), 3)
+        self.assertEqual(out["thumbnail_parts"], [2])
+        gets = [path for method, path in session.calls if method == "GET" and "/thumbnail" in path]
+        self.assertEqual(gets, [
+            "/sources/4/thumbnail?path=stl%2Fa.stl",
+            "/sources/9/thumbnail?path=b.stl",
+        ] * 4)
+        self.assertEqual(session.calls[0][1], "/api/v2/plans/7/checkoff/units")
+        self.assertEqual(session.calls[1][1], "/api/v2/plans/7/layers")
+
+    def test_rust_refuses_a_missing_source_or_a_non_png(self):
+        missing = RecordingThumbnailSession(parts=[
+            {"relative_path": "x.stl", "source_layer": "base:Other", "filename": "x.stl"}])
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(missing, "rust", {}, 7)
+        self.assertFalse(any("/thumbnail" in path for _method, path in missing.calls))
+        bad = RecordingThumbnailSession(status=404, content_type="application/problem+json", body=b"{}")
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(bad, "rust", {}, 7)
+        empty = RecordingThumbnailSession()
+        empty.parts = []
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(empty, "rust", {}, 7)
+
+    def test_node_records_nothing_when_the_part_route_is_absent(self):
+        class Missing:
+            def request(self, method, path, body=None, headers=None):
+                self.path = path
+                return 404, {}, b"no", 1.0
+
+        session = Missing()
+        out = {}
+        scenarios.thumbnails(session, "node", out, 7)
+        self.assertEqual(out, {})
+        self.assertEqual(session.path, "/parts/1/thumbnail")
+
+    def test_thumbnail_rows_compare_when_both_runtimes_have_samples(self):
+        samples = {
+            "node": {"thumbnail_cold_part_ms": [20, 30], "thumbnail_cold_build_ms": [80]},
+            "rust": {"thumbnail_cold_part_ms": [10, 12], "thumbnail_cold_build_ms": [40]},
+        }
+        rows = {row["measure"]: row for row in baseline.report(samples)}
+        cold = rows["Thumbnail cold, per Part"]
+        self.assertEqual(cold["note"], "")
+        self.assertTrue(cold["comparable"])
+        self.assertEqual((cold["node"]["median"], cold["rust"]["median"]), (25, 11))
+        self.assertLessEqual(cold["rust"]["median"], cold["node"]["median"])
 
 
 class RecordingExportSession:

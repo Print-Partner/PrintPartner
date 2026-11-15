@@ -38,7 +38,7 @@ Requests use one keep-alive HTTP/1.1 connection per runtime, as a browser tab do
 | --- | --- | --- |
 | App open | spawn to the origin line, plus the first `GET /api/v2/plans` | same |
 | Idle memory and CPU | 5 s settle, then 30 s of process-tree CPU ticks and Linux PSS (`smaps_rollup`) | same |
-| Thumbnails | per Part of the 100-unit Build: cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | none |
+| Thumbnails | per Part of the 100-unit Build: cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | per Part of that Build: `GET /sources/{id}/thumbnail?path=` for the Part's STL. Cold is the first read, which renders the PNG; warm is the same GET from the cache |
 | Plan change | `POST .../drafts/recompute`, `PATCH .../parts`, `POST .../apply` under `/api/v2/plans/{id}`; also `POST /plans/:id/save` | the same three, plus `POST .../drafts/save` and `GET .../accept-preview` |
 | Checkoff session | per unit `PATCH /parts/:id/progress`, then `GET /plans/:id/checkoff` per burst | per burst `POST /api/v2/plans/{id}/checkoff/bursts`, then `GET .../checkoff/units` |
 | Exports | `POST /jobs/export-stl-pack` or `/jobs/export-checklist-html`, `GET /jobs/:id` every 20 ms until done, then the download | `GET /api/v2/plans/{id}/exports/stl-pack` and `GET /api/v2/plans/{id}/exports/checklist`, each from the request to the last byte |
@@ -47,8 +47,8 @@ Requests use one keep-alive HTTP/1.1 connection per runtime, as a browser tab do
 
 What the numbers leave out:
 
-- No browser. Rendering, the WebGL thumbnail render and React work are not timed. A cold thumbnail is the server's share only.
-- Neither the old Builds list nor the replacement Builds list requests thumbnails, so the thumbnail rows time a Build's Part thumbnails, which the old app shows on the Build's Sources and Review steps.
+- No browser, and no React work. On Node the WebGL render is not timed, so a cold thumbnail is the server's share only: the placeholder, the mesh and the uploaded PNG. On Rust, `GET /sources/{id}/thumbnail` draws the PNG, so the cold time includes that render.
+- Neither the old Builds list nor the replacement Builds list requests thumbnails. The rows time the Parts of one Build. Node sends what the old app sends on that Build's Sources and Review steps. Rust sends `GET /sources/{id}/thumbnail` for each of those Parts.
 - The printer event row times the gateway's Rust Moonraker watcher in both modes; it polls every 2 s, so the row shows where the event fell in that cycle. It is not a Node-versus-Rust comparison.
 - Rows marked "different requests" have no ratio. Checkoff on Node is one request per unit and on Rust one per burst; Today and All Production are different screens.
 - When a server closes an idle keep-alive connection, the request is sent again once and only that attempt is timed. `http_retries` in the samples counts these: 0 on Node and 3 on Rust in the baseline below.

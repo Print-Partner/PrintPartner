@@ -7,7 +7,7 @@ description: Check that a printer send with an unknown outcome is not handed to 
 
 A send whose printer effect was admitted, and whose outcome is still unknown, must not be handed to the printer again. Send now stays refused until the user reconciles. A second copy on the printer cannot be undone.
 
-The check is a TLA+ model of one queue item, run with TLC 1.7.4 (TLC2 2.19). The question is whether the steps can happen in a bad order. The model is small enough to check every order, up to two uploads. Read every TLC result with `/statechart`. It states each broken invariant as the shortest path, in plain words.
+The check is a TLA+ model of one queue item, run with TLC 1.7.4 (TLC2 2.19). The question is whether the steps can happen in a bad order. The model is small enough to check every order, up to two uploads. Read TLC's own trace, below. If the pstack `/statechart` skill is installed, it can draw that same trace. This check does not need it.
 
 ## When to run
 
@@ -28,9 +28,9 @@ rust/verify/printer-send-once/check.sh
 rust/verify/printer-send-once/check.sh broken
 ```
 
-The first command is the product. It must exit 0. The second removes the `sendable` guard (`faithful = FALSE` in `SendOnceBroken.cfg`), which is `outcome_unknown` no longer refusing Send now. It must exit non-zero and name `SendNowRefusesUnknown`. The script downloads `tla2tools-1.7.4.jar` into `~/.cache/print-partner/` on first use. `TLA2TOOLS_JAR` overrides that path.
+The first command is the product. It must exit 0. The second removes the `sendable` guard (`faithful = FALSE` in `SendOnceBroken.cfg`), which is `outcome_unknown` no longer refusing Send now. It must exit non-zero and name `SendNowRefusesUnknown`. The script uses `tla2tools-1.7.4.jar` only when its SHA-256 is `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88` (the v1.7.4 asset whose published SHA-1 is `bee4a54f3ee3d4afc347c3240ec2d9e93b075104`). A missing jar is downloaded to a temporary file, checked, then moved into `~/.cache/print-partner/`. A cached jar or `TLA2TOOLS_JAR` that does not match is refused. A cached mismatch is deleted and downloaded again. A `TLA2TOOLS_JAR` mismatch is left in place and the check stops.
 
-A faithful failure is a finding. Say it as the path `/statechart` prints: which action ran, and what `item`, `unknown`, and `uploads` were. Do not drop an invariant or set `faithful` to false to make it pass. Do not change the send code unless the user asked.
+A faithful failure is a finding. TLC prints `Invariant <name> is violated` and then `State N: <Action>`. Read the states in order. Each state shows `item`, `unknown`, `uploads`, `frozen`, and `handed`. The action name on the state is the step that got there. Report that sequence. `NoResendWhileUnknown` means `uploads` moved while `unknown` was still true. `SendNowRefusesUnknown` means `item` became `running` while `unknown` was still true. Do not drop an invariant or set `faithful` to false to make it pass. Do not change the send code unless the user asked.
 
 A broken run that exits 0 means the model no longer encodes the guard. That is a modeling error. Repair `SendNow` so it refuses an unknown outcome when `faithful` is true, and allows it when `faithful` is false.
 

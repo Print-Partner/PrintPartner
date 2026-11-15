@@ -24,6 +24,8 @@ mod progress_reads;
 mod reads;
 #[path = "tests/rebuild_plan.rs"]
 mod rebuild_plan;
+#[path = "tests/role_filament.rs"]
+mod role_filament;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
 #[path = "tests/writer_failures.rs"]

@@ -11,6 +11,8 @@ pub use create_with_brief::{
 };
 pub mod source_roles;
 pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
+pub mod role_filament;
+pub use role_filament::{AssignedRole, RoleFilamentError};
 pub mod import_inputs;
 pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, Target};
 pub mod header;

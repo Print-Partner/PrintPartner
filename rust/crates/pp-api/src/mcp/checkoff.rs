@@ -167,6 +167,9 @@ impl DomainPort for CheckoffDomain {
         if name == super::source_roles::PROPOSE {
             return self.source_roles_propose(args);
         }
+        if name == super::role_filament::PROPOSE {
+            return self.role_filament_propose(args);
+        }
         if name == super::import_inputs::PROPOSE {
             return self.import_inputs_propose(args);
         }
@@ -188,6 +191,9 @@ impl DomainPort for CheckoffDomain {
         }
         if action.action_type == super::source_roles::PROPOSE {
             return self.source_roles_apply(action);
+        }
+        if action.action_type == super::role_filament::PROPOSE {
+            return self.role_filament_apply(action);
         }
         if action.action_type == super::import_inputs::PROPOSE {
             return self.import_inputs_apply(action);

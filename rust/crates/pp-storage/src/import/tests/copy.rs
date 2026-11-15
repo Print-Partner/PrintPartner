@@ -458,7 +458,8 @@ fn a_destination_inside_the_source_is_refused() {
     // The dry run says so too, and creates nothing.
     let temporary = tempfile::tempdir().unwrap();
     let child = source.path().join("child");
-    let report = dry_run_in(source.path(), Some(&child), temporary.path()).unwrap();
+    let limits = archive::Limits::default();
+    let report = dry_run_in(source.path(), Some(&child), temporary.path(), limits).unwrap();
     assert_eq!(report.destination, Some(inside));
     let text = report.to_string();
     assert!(text.contains("lies inside the source folder"), "{text}");

@@ -73,7 +73,11 @@ def clippy_command(mode):
         "--keep-going",
         "--message-format=json",
     ]
-    if mode == "on":
+    # GRE-1646 makes desktop_rebuild the default on the image crates. The off
+    # scan has to opt out, or it counts the same findings as the on scan.
+    if mode == "off":
+        command.append("--no-default-features")
+    elif mode == "on":
         command += ["--features", "desktop_rebuild"]
     command += ["--"]
     for lint in LINTS:

@@ -10,7 +10,7 @@
 
 use crate::accepted::{AcceptedHttpConfig, Gate};
 use crate::loopback::PresentedCredential;
-use crate::problem;
+use crate::problem::{self, Problem, ProblemCode, ProblemType, ToProblem};
 use axum::{
     Extension, Router,
     extract::{Path, Query, State},
@@ -26,13 +26,15 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 
+/// Every `code` the route answers, as its [`ProblemCode`]'s wire value.
 pub mod code {
-    pub const SOURCE_NOT_FOUND: &str = "source_not_found";
-    pub const SNAPSHOT_UNAVAILABLE: &str = "source_snapshot_unavailable";
-    pub const TOO_MANY_FILES: &str = "source_too_many_files";
-    pub const FILE_NOT_FOUND: &str = "source_file_not_found";
-    pub const UNRENDERABLE: &str = "source_file_unrenderable";
-    pub const PATH_REQUIRED: &str = "source_file_path_required";
+    use crate::problem::ProblemCode;
+    pub const SOURCE_NOT_FOUND: &str = ProblemCode::SourceNotFound.as_str();
+    pub const SNAPSHOT_UNAVAILABLE: &str = ProblemCode::SourceSnapshotUnavailable.as_str();
+    pub const TOO_MANY_FILES: &str = ProblemCode::SourceTooManyFiles.as_str();
+    pub const FILE_NOT_FOUND: &str = ProblemCode::SourceFileNotFound.as_str();
+    pub const UNRENDERABLE: &str = ProblemCode::SourceFileUnrenderable.as_str();
+    pub const PATH_REQUIRED: &str = ProblemCode::SourceFilePathRequired.as_str();
 }
 
 /// The response body. `revision_id` is null, and `files` empty, for a Source
@@ -184,10 +186,10 @@ async fn thumbnail(
     headers: HeaderMap,
 ) -> Response {
     let Some(path) = query.path.filter(|path| !path.is_empty()) else {
-        return problem::coded(
-            StatusCode::BAD_REQUEST,
-            "path is required",
-            code::PATH_REQUIRED,
+        return problem::build(
+            Problem::new(ProblemType::Validation, 400, "path is required")
+                .with_problem_code(ProblemCode::SourceFilePathRequired),
+            Default::default(),
         );
     };
     // The blocking task owns the permit, so a render keeps it until it ends,
@@ -235,36 +237,43 @@ fn png_response(thumbnail: SourceThumbnail, headers: &HeaderMap) -> Response {
         .into_response()
 }
 
-/// The one mapping from the family's error to a response.
-fn refused(error: &SourceFilesError) -> Response {
-    match error {
-        SourceFilesError::NotFound => problem::coded(
-            StatusCode::NOT_FOUND,
-            "Source not found",
-            code::SOURCE_NOT_FOUND,
-        ),
-        SourceFilesError::SnapshotUnavailable => problem::coded(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "The Source's current revision cannot be read",
-            code::SNAPSHOT_UNAVAILABLE,
-        ),
-        SourceFilesError::TooManyFiles => problem::coded(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("The revision holds more than {MAX_FILES} files"),
-            code::TOO_MANY_FILES,
-        ),
-        SourceFilesError::FileNotFound => problem::coded(
-            StatusCode::NOT_FOUND,
-            "The current revision has no STL file at that path",
-            code::FILE_NOT_FOUND,
-        ),
-        SourceFilesError::Unrenderable => problem::coded(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "The STL file cannot be rendered",
-            code::UNRENDERABLE,
-        ),
-        SourceFilesError::Writer(failure) => problem::writer_failure(failure),
+/// The one mapping from the family's error to a problem.
+impl ToProblem for SourceFilesError {
+    fn to_problem(&self) -> Problem {
+        match self {
+            Self::NotFound => Problem::new(ProblemType::NotFound, 404, "Source not found")
+                .with_problem_code(ProblemCode::SourceNotFound),
+            Self::SnapshotUnavailable => Problem::new(
+                ProblemType::Internal,
+                500,
+                "The Source's current revision cannot be read",
+            )
+            .with_problem_code(ProblemCode::SourceSnapshotUnavailable),
+            Self::TooManyFiles => Problem::new(
+                ProblemType::Validation,
+                422,
+                &format!("The revision holds more than {MAX_FILES} files"),
+            )
+            .with_problem_code(ProblemCode::SourceTooManyFiles),
+            Self::FileNotFound => Problem::new(
+                ProblemType::NotFound,
+                404,
+                "The current revision has no STL file at that path",
+            )
+            .with_problem_code(ProblemCode::SourceFileNotFound),
+            Self::Unrenderable => Problem::new(
+                ProblemType::Validation,
+                422,
+                "The STL file cannot be rendered",
+            )
+            .with_problem_code(ProblemCode::SourceFileUnrenderable),
+            Self::Writer(failure) => failure.to_problem(),
+        }
     }
+}
+
+fn refused(error: &SourceFilesError) -> Response {
+    problem::refused(error)
 }
 
 #[cfg(test)]

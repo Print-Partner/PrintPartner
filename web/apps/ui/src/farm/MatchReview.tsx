@@ -93,6 +93,8 @@ const listParts = (claim: number, dismiss: number, claimWord: string, dismissWor
  * claimed or dismissed until a group's Apply is pressed. Each group has one Apply: it claims
  * each checked Exact or Likely print for its suggested Build, or dismisses each checked print
  * with no suggestion, one request per print, through the Rust claim and dismiss routes.
+ * The last Apply's dismissals can be undone from this screen until you leave it. A claim is
+ * never in that list, and a new Apply replaces it.
  */
 export function MatchReview() {
   const connection = useConnection();
@@ -110,9 +112,11 @@ export function MatchReview() {
       : queryScreenState(suggestions, connection, (d) => open(d).length === 0);
   const [checked, setChecked] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map());
-  // Set while Apply runs, so a second press waits instead of sending twice.
+  // Set while Apply or Undo runs, so a second press waits instead of sending twice.
   const applying = useRef(false);
   const [result, setResult] = useState("");
+  // Dismissals from the last Apply only. A claim is never here. Leaving the screen drops it.
+  const [dismissedIds, setDismissedIds] = useState<readonly string[]>([]);
 
   const isChecked = (s: Suggestion) => checked.get(s.print_id) ?? s.starts_checked;
   const setMany = (rows: readonly Suggestion[], on: boolean) =>
@@ -127,6 +131,7 @@ export function MatchReview() {
     let claimed = 0;
     let already = 0;
     let dismissed = 0;
+    const dismissedNow: string[] = [];
     const rows = suggestions.data?.suggestions ?? [];
     // A claim claims every open print of the same file on the same integration, so reprints
     // of one file are claimed together. A failed read keeps the last list; the printer
@@ -172,6 +177,7 @@ export function MatchReview() {
         } else {
           await writeCore("dismissUnattributedPrint", { id: s.print_id }, {});
           dismissed += 1;
+          dismissedNow.push(s.print_id);
           done.push(s.print_id);
         }
       } catch (error) {
@@ -202,6 +208,62 @@ export function MatchReview() {
         .join(" "),
     );
     setResolved((now) => new Set([...now, ...done]));
+    setDismissedIds(dismissedNow);
+    applying.current = false;
+    await client.invalidateQueries({ queryKey: ["core"] });
+  };
+
+  const undo = async () => {
+    if (applying.current || dismissedIds.length === 0) return;
+    applying.current = true;
+    const back: string[] = [];
+    const retry: string[] = [];
+    let restored = 0;
+    let gone = 0;
+    let matched = 0;
+    for (const id of dismissedIds) {
+      try {
+        await writeCore("undoDismissUnattributedPrint", { id }, {});
+        restored += 1;
+        back.push(id);
+      } catch (error) {
+        if (error instanceof CoreError && error.status === 404 && error.code === "print_not_found")
+          gone += 1;
+        else if (
+          error instanceof CoreError &&
+          error.status === 409 &&
+          error.code === "print_already_matched"
+        )
+          matched += 1;
+        else retry.push(id);
+      }
+    }
+    setDismissedIds(retry);
+    setResolved((now) => {
+      const next = new Set(now);
+      for (const id of back) next.delete(id);
+      return next;
+    });
+    setChecked((now) => {
+      const next = new Map(now);
+      for (const id of back) next.set(id, false);
+      return next;
+    });
+    const stayed =
+      matched === 0
+        ? ""
+        : `${matched} ${matched === 1 ? "stays" : "stay"} dismissed: matched to a Build since.`;
+    setResult(
+      [
+        restored > 0 && `Restored ${plural(restored, "print")}.`,
+        gone > 0 && `${gone} could not be restored: no longer kept.`,
+        stayed,
+        retry.length > 0 &&
+          `${retry.length} could not be restored. Press Undo to try again.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
     applying.current = false;
     await client.invalidateQueries({ queryKey: ["core"] });
   };
@@ -210,6 +272,13 @@ export function MatchReview() {
   const status = (
     <div role="status" aria-label="Match review result" className="pp-tally">
       {result && <p>{result}</p>}
+      {dismissedIds.length > 0 && (
+        <p>
+          <MutationButton onClick={() => void undo()}>
+            {`Undo ${plural(dismissedIds.length, "dismissal")}`}
+          </MutationButton>
+        </p>
+      )}
     </div>
   );
 

@@ -1,23 +1,7 @@
 name: Desktop WebKitGTK WebGL smoke
 
+# WebKit smoke stays off pull requests and main until desktop CI returns (GRE-1649).
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
-    paths:
-      - 'rust/**'
-      - 'rust-toolchain.toml'
-      - 'web/apps/**'
-      - 'web/packages/**'
-      - 'web/package*.json'
-      - 'web/tsconfig.base.json'
-      - 'web/scripts/atomic-package-build.mjs'
-      - 'scripts/setup-ci-linux.sh'
-      - '.github/workflows/desktop-webkit.yml'
-      - '.github/actions/linux-gui-deps/**'
-  push:
-    branches: [main]
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 permissions:

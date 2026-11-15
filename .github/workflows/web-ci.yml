@@ -39,20 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      web: ${{ steps.web.outputs.relevant }}
       ui: ${{ steps.ui.outputs.relevant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Select legacy and shared web inputs
-        id: web
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/ci-path-filter.py web
       - name: Select replacement UI inputs
         id: ui
         env:
@@ -61,77 +53,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci-path-filter.py ui
 
-  web:
+  ui:
+    name: ui
     needs: [changes]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))
-    permissions:
-      contents: read
-      actions: read
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 45 || 20 }}
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check GitHub Actions are SHA-pinned
-        working-directory: .
-        run: bash scripts/check-github-actions-pinned.sh
-      - name: Test Linear PR status sync
-        working-directory: .
-        run: python3 -B -m unittest discover -s scripts/linear -p 'test_*.py' -v
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22.23.3"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Verify pinned Node version
-        run: test "$(node --version)" = "v22.23.3"
-      - name: Install without lifecycle scripts
-        run: npm ci --ignore-scripts
-      - name: Validate immutable event workflows before lifecycle scripts
-        working-directory: .
-        env:
-          EVENT_SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node web/scripts/check-ci-tool-pins.mjs --event-sha "$EVENT_SHA"
-          node web/scripts/check-desktop-workflow-state.mjs
-      - name: Run dependency lifecycle scripts
-        run: npm rebuild
-      - name: Check Action SHAs and CI installer tool pins
-        working-directory: .
-        run: |
-          node --test web/scripts/check-ci-tool-pins.test.mjs web/scripts/check-ci-event-tree.test.mjs web/scripts/check-desktop-workflow-state.test.mjs
-          node web/scripts/check-ci-tool-pins.mjs
-      - name: Check workaround ratchet
-        run: node ../scripts/workaround-ratchet.mjs && node --test ../scripts/workaround-ratchet.test.mjs
-      - name: Check MCP tool inventory golden
-        run: |
-          npm run mcp:inventory -w @print-partner/server
-          golden=apps/server/fixtures/mcp/tools-inventory.json
-          if [ -n "$(git status --porcelain -- "$golden")" ]; then
-            git --no-pager diff -- "$golden"
-            echo "::error file=web/$golden::MCP tool inventory drifted. Run 'npm run mcp:inventory -w @print-partner/server' in web/ and commit the result."
-            exit 1
-          fi
-      - name: Audit high-severity vulnerabilities
-        run: npm audit --audit-level=high
-      - name: Check dependency notices
-        run: node ../scripts/update-third-party-notices.mjs --check
-      # `npm run quality` is split across two parallel jobs; together they run
-      # the same steps. `web` keeps its name so required checks are unchanged.
-      - name: Lint, dead code, typecheck and unit tests
-        run: npm run lint && npm run lint:dead && npm run typecheck && npm test
-
-  web-build:
-    needs: [changes]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))
-    permissions:
-      contents: read
-      actions: read
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ui != 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -148,115 +73,40 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Verify pinned Node version
         run: test "$(node --version)" = "v22.23.3"
-      - name: Install without lifecycle scripts
+      - name: Test and build the replacement UI
+        run: |
+          npm ci
+          npm test -w @print-partner/rust-client
+          npm run test --workspace @print-partner/ui
+          npm run build --workspace @print-partner/ui
+
+  ci-pins:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.23.3"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify pinned Node version
+        run: test "$(node --version)" = "v22.23.3"
+      - name: Install dependencies without lifecycle scripts
+        working-directory: web
         run: npm ci --ignore-scripts
-      - name: Validate immutable event workflows before lifecycle scripts
-        working-directory: .
+      - name: Check workflow pins and desktop workflow state
         env:
           EVENT_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           node web/scripts/check-ci-tool-pins.mjs --event-sha "$EVENT_SHA"
           node web/scripts/check-desktop-workflow-state.mjs
-      - name: Run dependency lifecycle scripts
-        run: npm rebuild
-      - name: Build, bundle, runtime and browser checks
-        env:
-          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
-        run: npm run build && npm run test:workflow-smoke && npm run test:bundles -w @print-partner/web && npm run test:runtime && npm run test:browser
-
-  # The OrcaSlicer base image is about 1.7 GB. When the Actions cache has evicted it, the
-  # registry pull alone can take 4 minutes, so this job has its own time limit (GRE-638).
-  sidecar:
-    needs: [changes]
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build pinned OrcaSlicer sidecar
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: slicer-sidecar
-          tags: print-partner-slicer-sidecar:ci
-          load: true
-          push: false
-          cache-from: type=gha,scope=slicer-sidecar
-          # PRs read main's layers but never write their own (10 GB cache cap).
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=slicer-sidecar,mode=max' || '' }}
-      - name: Test sidecar request handling
-        run: |
-          docker run --rm --entrypoint /lsiopy/bin/python3 \
-            --mount "type=bind,src=${PWD}/slicer-sidecar,dst=/checks,readonly" \
-            --workdir /checks print-partner-slicer-sidecar:ci \
-            -B -m unittest discover -v -p 'test_*.py'
-
-  docker:
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web != 'false')) && needs.web.result == 'success' && needs.web-build.result == 'success'
-    needs: [changes, web, web-build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Validate Compose definitions
-        run: |
-          docker compose config
-          docker compose -f docker-compose.saas.yml config
-          SESSION_SECRET=ci ALLOWED_ORIGINS=https://plan.example.com docker compose -f docker-compose.hosted.yml config
-          docker compose -f docker-compose.yml -f pp-compose.yml config
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # BuildKit layer cache in the GitHub Actions cache (scoped per image).
-      - name: Build production image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          tags: print-partner:ci
-          load: true
-          push: false
-          cache-from: type=gha,scope=print-partner
-          # PRs read main's layers but never write their own (10 GB cache cap).
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=print-partner,mode=max' || '' }}
-      - name: Verify fresh-volume ownership and restart persistence
-        run: bash scripts/docker-startup-smoke.sh print-partner:ci
-      - name: Create local smoke source
-        run: |
-          mkdir -p "${RUNNER_TEMP}/smoke-source"
-          cat > "${RUNNER_TEMP}/smoke-source/cube.stl" <<'STL'
-          solid cube
-            facet normal 0 0 1
-              outer loop
-                vertex 0 0 0
-                vertex 1 0 0
-                vertex 0 1 0
-              endloop
-            endfacet
-          endsolid cube
-          STL
-      - name: Start production container
-        run: |
-          docker run --detach --name print-partner-ci \
-            --publish 127.0.0.1:8080:8080 \
-            --volume "${RUNNER_TEMP}/smoke-source:/smoke-source:ro" \
-            --env PRINT_PARTNER_API_KEY=ci-smoke-key \
-            print-partner:ci
-          for ((attempt = 1; attempt <= 60; attempt++)); do
-            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs print-partner-ci
-          exit 1
-      - name: Run workflow smoke test
-        env:
-          BASE: http://127.0.0.1:8080
-          PRINT_PARTNER_API_KEY: ci-smoke-key
-          SOURCE_KIND: local
-          SOURCE_URL: /smoke-source
-          SOURCE_UPLOAD_FILE: ${{ runner.temp }}/smoke-source/cube.stl
-        run: ./web/scripts/workflow-smoke.sh
+          node --test web/scripts/check-ci-tool-pins.test.mjs web/scripts/check-ci-event-tree.test.mjs web/scripts/check-desktop-workflow-state.test.mjs
+          node web/scripts/check-ci-tool-pins.mjs

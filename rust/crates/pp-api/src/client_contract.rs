@@ -327,6 +327,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "DismissUnattributedReceipt",
         )
     },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "undoDismissUnattributedPrint",
+            "POST",
+            "/api/v2/printer-checkoff/unattributed/{id}/dismiss/undo",
+            Some("DismissUnattributedRequest"),
+            "UndoDismissUnattributedReceipt",
+        )
+    },
     route(
         "readSendQueue",
         "GET",
@@ -490,7 +500,7 @@ pub use codegen::{document, document_bytes};
 #[cfg(feature = "codegen")]
 pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
-    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
+    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemCode, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
         FarmLogEntry, FarmLogKind, FarmLogPage, FarmLogUndo, FarmUndoReason,
     };
@@ -745,11 +755,16 @@ pub(crate) mod codegen {
             schemars::schema_for!(DismissUnattributedReceipt),
         )?;
         schema(
+            "UndoDismissUnattributedReceipt",
+            schemars::schema_for!(crate::checkoff::UndoDismissUnattributedReceipt),
+        )?;
+        schema(
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
         )?;
         schema("Problem", schemars::schema_for!(Problem))?;
         schema("ProblemType", schemars::schema_for!(ProblemType))?;
+        schema("ProblemCode", schemars::schema_for!(ProblemCode))?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -2239,6 +2254,9 @@ pub(crate) mod codegen {
             cases.push(served("Problem", &name, Problem::new(kind, 400, UNICODE))?);
             cases.push(served("ProblemType", &name, kind)?);
         }
+        for &code in ProblemCode::ALL {
+            cases.push(served("ProblemCode", code.as_str(), code)?);
+        }
         let bare = Problem::new(ProblemType::Conflict, 409, "").without_detail();
         cases.push(served("Problem", "no-detail", bare.with_code("not_open"))?);
         let errors = (0..MAX_FIELD_ERRORS)
@@ -2614,7 +2632,7 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
-    /// Unattributed claim and dismiss bodies and the receipts their routes serve.
+    /// Unattributed claim, dismiss and undo bodies and the receipts their routes serve.
     fn unattributed_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let mut cases = vec![
             served(
@@ -2635,6 +2653,22 @@ pub(crate) mod codegen {
                 "DismissUnattributedReceipt",
                 "dismissed",
                 DismissUnattributedReceipt { ok: true },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "restored",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: true,
+                },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "not-dismissed",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: false,
+                },
             )?,
         ];
         for (name, value) in [

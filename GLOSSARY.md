@@ -99,8 +99,12 @@ An optional product area that can be off: farm and printers, Spoolman, orders, B
 _Avoid_: Feature flag, plugin, add-on
 
 **Share on network**:
-Off by default. When on, other devices on the LAN reach the same install with a signed-in session or a paired device.
+A desktop-app switch, off by default. When on, other devices on the LAN reach that install with a signed-in session or a paired device. A Docker install is always on the network and always asks for sign-in, so it has no such switch. Access stays inside the home network.
 _Avoid_: LAN mode, remote access, server mode
+
+**Connected app**:
+The desktop app pointed at another install (a Docker server or another computer's shared install). It remembers the address and shows that install's screens; it holds no data directory, printers or offline copy. Data lives in exactly one install and installs never sync; moving means a Backup restored elsewhere.
+_Avoid_: Thin client, client mode, remote mode
 
 **Job**:
 Background work the app runs and tracks to completion, such as an export or a printer upload. Distinct from a print job on a printer.

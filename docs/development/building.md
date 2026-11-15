@@ -27,10 +27,10 @@ cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets 
 cargo build --manifest-path rust/Cargo.toml --locked -p pp-server
 ```
 
-To compile the flagged rebuild code, select a crate and add `--features desktop_rebuild`. For example:
+The image crates compile `desktop_rebuild` by default, so `cargo build -p pp-server` and `cargo test -p pp-core` run the Rust-only route. `pp-desktop` and `pp-drivers` stay off unless you pass `--features desktop_rebuild`. `--no-default-features` still builds the old path:
 
 ```sh
-cargo check --manifest-path rust/Cargo.toml --locked -p pp-storage --features desktop_rebuild
+cargo check --manifest-path rust/Cargo.toml --locked -p pp-server --no-default-features
 ```
 
 The workspace also has these checks:

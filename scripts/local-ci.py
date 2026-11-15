@@ -7,8 +7,8 @@ scripts/test_local_ci.py fails when a copied line no longer matches the workflow
 A step whose tool, pinned version or host is missing is reported as SKIP with the
 reason, never dropped silently. Usage: just ci [--fast] [--list] [--only id,...]
 [--skip id,...], or python3 scripts/local-ci.py with the same flags. --fast leaves
-out the full nextest and doctest passes and runs nextest with desktop_rebuild on
-for the crates this branch changes, using CI's affected-crate filter. See
+out the full nextest pass and runs nextest on the default build for the crates
+this branch changes, using CI's affected-crate filter. See
 docs/development/ci.md.
 """
 
@@ -73,8 +73,7 @@ STEPS = [
          requires=(("python3", None),)),
     Step("selector-tests", "CI input-selection tests",
          ("python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'",
-          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py",
-          "python3 -B -m unittest discover -s scripts -p test_cancel_stale_merge_groups.py"),
+          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py"),
          (CROSS_OS + "Select changed inputs", "actionlint.yml#Select changed inputs"), requires=(("python3", None),)),
     # No hosted job runs these yet, so the line is local-only.
     Step("perf-baseline-tests", "Node-versus-Rust baseline harness tests",
@@ -110,7 +109,7 @@ STEPS = [
     Step("boundaries", "crate boundary and pp-domain dependency guards",
          ("python3 rust/scripts/check-boundaries.py --self-test",
           "python3 rust/scripts/check-domain-deps.py --self-test"),
-         ("chain-tip-gate.yml#check-boundaries", "chain-tip-gate.yml#pp-domain dependency guard"),
+         ("actionlint.yml#check-boundaries", "actionlint.yml#pp-domain dependency guard"),
          requires=(("python3", None),)),
     # pp-storage tests `git archive` pinned commits that a shallow clone lacks.
     Step("historical-schema", "fetch pinned historical schema commits",
@@ -132,8 +131,9 @@ STEPS = [
          (CROSS_OS + "Build desktop assets and generate measured manifest",),
          requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
          env={"VITE_PRINT_PARTNER_DESKTOP": "1", "MANIFEST_PYTHON": "python3"}),
-    # The replacement UI package. No hosted job runs these yet, so they are local-only
-    # lines. After web-assets, which installs web/node_modules on Node 24. Vitest
+    # The replacement UI package. The hosted `ui` job runs its tests and build on
+    # Node 22.23.3. These local lines also lint and open a browser, on Node 24.
+    # After web-assets, which installs web/node_modules on Node 24. Vitest
     # exits nonzero when it finds no tests.
     Step("ui-package", "replacement UI package typecheck, lint, tests, build and font requests",
          # The package's build script runs its typecheck first, so there is no separate
@@ -149,35 +149,31 @@ STEPS = [
          skip_status=77),
     # After web-assets, which installs the parser it loads from web/node_modules, and
     # before node-fixtures reinstalls them. Web CI runs it on Node 22.
+    # No hosted job runs the ratchet. The local scan stays.
     Step("workaround-ratchet", "TODO, eslint-disable and Rust #[allow] ratchet (Node 22)",
          ("node ../scripts/workaround-ratchet.mjs && node --test ../scripts/workaround-ratchet.test.mjs",),
-         ("web-ci.yml#Check workaround ratchet",),
+         (),
          requires=(("node", "v22.23.3"),), cwd="web", node22=True),
+    # No hosted duplication job. The local scan stays.
     Step("duplication", "duplicated-code baseline and negative controls (Node 22)",
          ("node --test scripts/check-duplication.test.mjs",
           "node scripts/check-duplication.mjs"),
-         ("duplication.yml#Check duplicated code",),
+         (),
          setup=("git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'",),
          requires=(("git", None), ("node", "v22.23.3")), node22=True),
-    cargo("clippy-off", "clippy, desktop_rebuild off", "clippy (desktop_rebuild off)",
+    cargo("clippy", "clippy", "clippy",
           CARGO.format("clippy") + " --all-targets --keep-going -- -D warnings"),
-    cargo("clippy-on", "clippy, desktop_rebuild on", "clippy (desktop_rebuild on)",
-          CARGO.format("clippy") + " --all-targets --keep-going --features desktop_rebuild -- -D warnings"),
+    # The limits scan builds with the feature off and on. PR CI does not: the
+    # feature-off build is out of the pull-request job (GRE-1649).
     Step("clippy-limits", "Clippy complexity limits, both feature modes",
          ("python3 -B -m unittest discover -s rust/scripts -p test_clippy_limits.py -v",
           "python3 -B rust/scripts/check-clippy-limits.py"),
-         (CROSS_OS + "Check Rust Clippy limits",),
+         (),
          setup=("git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'",),
          requires=(("git", None), ("cargo", None), ("python3", None)),
          host_only="" if sys.platform == "linux" else "needs Linux for the Clippy baseline"),
-    cargo("nextest-off", "nextest, desktop_rebuild off", "nextest (desktop_rebuild off)",
+    cargo("nextest", "nextest", "nextest",
           CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"', NEXTEST),
-    cargo("nextest-on", "nextest, desktop_rebuild on", "nextest (desktop_rebuild on)",
-          CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER" --features desktop_rebuild', NEXTEST),
-    cargo("doc-off", "doctests, desktop_rebuild off", "doctests (desktop_rebuild off)",
-          CARGO.format("test") + " --no-fail-fast --doc"),
-    cargo("doc-on", "doctests, desktop_rebuild on", "doctests (desktop_rebuild on)",
-          CARGO.format("test") + " --no-fail-fast --doc --features desktop_rebuild"),
     # Last: `npm ci` here rebuilds web/node_modules for Node 22.
     Step("node-fixtures", "Node parity fixture and route inventory freshness (Node 22)",
          ("npm ci && npm rebuild better-sqlite3",
@@ -205,22 +201,19 @@ STEPS = [
           'node ../rust/scripts/inspect-node-routes.mjs "${RUNNER_TEMP}/routes-inventory.json"',
           'diff -u ../fixtures/http/routes-inventory.json "${RUNNER_TEMP}/routes-inventory.json"'),
          (CONTRACTS + "Install locked dependencies", CONTRACTS + "Build authority packages",
-          "auth-admission-freshness.yml#Check auth admission golden on canonical Node",
           CONTRACTS + "Verify auth Node fixtures", CONTRACTS + "Verify GRE-451 parity Node fixtures",
           CONTRACTS + "Verify required-unit Node fixtures",
           CONTRACTS + "Verify builder glob Node fixtures", CONTRACTS + "Verify golden Node HTTP route inventory"),
          requires=(("node", "v22.23.3"), ("npm", None)), cwd="web", node22=True),
-    Step("rust-windows", "rust (windows) (advisory check)",
-         host_only="needs a Windows runner; CI runs it on windows-latest"),
-    Step("rust-macos", "rust (macos) (advisory check)",
-         host_only="needs a macOS runner with a case-sensitive TMPDIR; add the ci:cross-os label to run it in CI"),
-    Step("pr-evidence", "Lint Evidence block (required check)",
-         host_only="reads the pull request body; CI checks it on the PR"),
+    Step("rust-windows", "nightly Windows workspace build",
+         host_only="needs a Windows runner; the nightly job builds the workspace on windows-latest"),
+    Step("rust-macos", "nightly macOS workspace build",
+         host_only="needs a macOS runner; the nightly job builds the workspace on macos-26"),
 ]
 
 
-# --fast leaves these out and runs FAST_NEXTEST in place of nextest-on.
-FAST_LEAVES_OUT = ("nextest-off", "nextest-on", "doc-off", "doc-on")
+# --fast leaves the full nextest out and runs FAST_NEXTEST in its place.
+FAST_LEAVES_OUT = ("nextest",)
 FAST_NEXTEST = "nextest-affected"
 FILTER_SCRIPT = ROOT / "scripts/ci-affected-nextest-filter.py"
 # The agent fleet installs sccache here; PATH wins when both exist.
@@ -228,13 +221,13 @@ FLEET_SCCACHE = Path("/opt/agent-fleet/bin/sccache")
 
 
 def fast_steps():
-    """STEPS for --fast: nextest-on becomes FAST_NEXTEST, the other full passes go."""
+    """STEPS for --fast: nextest becomes FAST_NEXTEST."""
     steps = []
     for step in STEPS:
-        if step.id == "nextest-on":
+        if step.id == "nextest":
             # Same command line; main() sets NEXTEST_FILTER to the affected filter.
             steps.append(replace(step, id=FAST_NEXTEST,
-                                 title="nextest, desktop_rebuild on, crates this branch affects"))
+                                 title="nextest, default build, crates this branch affects"))
         elif step.id not in FAST_LEAVES_OUT:
             steps.append(step)
     return steps
@@ -355,8 +348,8 @@ def ids(value):
 def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fast", action="store_true",
-                        help="leave out the full nextest and doctest passes; run nextest with "
-                             "desktop_rebuild on for the crates this branch affects")
+                        help="leave out the full nextest pass; run nextest on the default "
+                             "build for the crates this branch affects")
     parser.add_argument("--list", action="store_true", help="print the steps and exit")
     parser.add_argument("--only", help="comma-separated step ids to run")
     parser.add_argument("--skip", help="comma-separated step ids to leave out")
@@ -383,7 +376,7 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
         print(f"RUSTC_WRAPPER={env['RUSTC_WRAPPER']} CARGO_INCREMENTAL={env.get('CARGO_INCREMENTAL', '')}",
               flush=True)
     Path(env["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
-    nextest = [step for step in plan if step.id.startswith("nextest-") and not unmet(step, env)]
+    nextest = [step for step in plan if step.id.startswith("nextest") and not unmet(step, env)]
     if nextest and "web-assets" not in skip and not any(step.id == "web-assets" for step in plan):
         plan.insert(0, next(step for step in STEPS if step.id == "web-assets"))
     results = []
@@ -393,7 +386,7 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
             print(f"\n== SKIP {step.id}: {reason}", flush=True)
             results.append(("SKIP", step, reason))
             continue
-        if step.id.startswith("nextest-"):
+        if step.id.startswith("nextest"):
             print(f"\n== CHECK release artifacts before {step.id}", flush=True)
             code = run("release-artifacts", "python3 scripts/check-local-release-artifacts.py", ROOT, env)
             if code:

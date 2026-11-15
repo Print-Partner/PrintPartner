@@ -1,7 +1,7 @@
 //! `propose_edit_plan_draft_parts` as an MCP client sees it. The fixture's
 //! Build 1 has Accepted Plan version 1, consumed draft 1 (Parts 1 to 3) and
 //! open draft 2 (Parts 4 to 6). Tests check codes and data, never messages.
-use super::reads::{call, session};
+use super::reads::{assert_needs_key, confirm, session, tool};
 use super::*;
 
 const TOOL: &str = "propose_edit_plan_draft_parts";
@@ -11,15 +11,6 @@ async fn fixture() -> (McpServer, Vec<(String, String)>, std::path::PathBuf) {
     let headers = session(&server, &format!("Bearer {}", server.create_key().await.1)).await;
     let database = server._directory.join("print-partner.db");
     (server, headers, database)
-}
-async fn tool(
-    server: &McpServer,
-    headers: &[(String, String)],
-    name: &str,
-    args: Value,
-) -> (Value, bool) {
-    let (text, failed) = call(server, headers, name, args).await;
-    (serde_json::from_str(&text).unwrap(), failed)
 }
 async fn propose(server: &McpServer, headers: &[(String, String)], parts: Value) -> String {
     let (proposed, failed) = tool(
@@ -230,13 +221,8 @@ async fn mcp_draft_part_edit_refuses_bad_proposals_with_a_code() {
 async fn mcp_draft_part_edit_needs_an_api_key() {
     let (server, _, database) = fixture().await;
     let before = parts(&database);
-    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":TOOL,
-        "arguments":{"plan_id":1,"draft_id":2,"parts":[{"part_id":4,"included":false}]}}});
-    let (status, body, session) = server
-        .post("/api/v1/mcp", &[("origin", SELF)], &request)
-        .await;
-    assert_eq!(status, 401, "{body}");
-    assert!(session.is_none());
+    let args = json!({"plan_id":1,"draft_id":2,"parts":[{"part_id":4,"included":false}]});
+    assert_needs_key(&server, TOOL, args).await;
     assert_eq!(parts(&database), before);
 }
 
@@ -254,11 +240,8 @@ async fn mcp_draft_part_edit_takes_the_ids_get_plan_draft_returns() {
         "expected_snapshot_digest": draft["snapshot_digest"],
         "parts": [{"part_id": part_id, "included": !part["included"].as_bool().unwrap()}],
     });
-    let (proposed, failed) = tool(&server, &headers, TOOL, args).await;
-    assert!(!failed, "{proposed}");
-    let id = proposed["action"]["id"].as_str().unwrap();
-    let (confirmed, failed) =
-        tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+    let (proposed, _) = tool(&server, &headers, TOOL, args).await;
+    let (confirmed, failed) = confirm(&server, &headers, &proposed).await;
     assert!(!failed, "{confirmed}");
     assert_eq!(confirmed["result"]["draft_id"], draft["draft_id"]);
     assert_eq!(confirmed["result"]["parts"][0]["part_id"], part_id);

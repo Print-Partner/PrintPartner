@@ -18,9 +18,9 @@ Generate and verify from the repository root with Node 22.18 or newer and the in
 node fixtures/parity/auth-key-regenerate/generate.mjs
 node fixtures/parity/auth-key-regenerate/generate.mjs --check
 cd rust
-CARGO_BUILD_JOBS=3 cargo test -p pp-api --features desktop_rebuild --test auth_key_regenerate_parity
+CARGO_BUILD_JOBS=3 cargo test -p pp-api --test auth_key_regenerate_parity
 ```
 
 When `web/node_modules` points to another checkout, run Node with `--preserve-symlinks` so workspace package imports stay in this checkout.
 
-The Rust tests are gated by `desktop_rebuild`, which is off by default. The generator prints case counts only. Neither artifact stores generated secrets or credential digests.
+`pp-api` compiles `desktop_rebuild` by default (GRE-1646). `--no-default-features` builds the old path and does not run these tests. The generator prints case counts only. Neither artifact stores generated secrets or credential digests.

@@ -25,12 +25,12 @@ These apply to new operations and new modules. Code that predates them changes w
   - Never match on an error's text.
   - A handle constructor that only validates startup configuration may return `anyhow::Result`.
 - **One way in to storage.** A write runs through the crate-private `write` helper (`crates/pp-storage/src/write.rs`), on the writer thread, in one transaction. A read runs through the crate-private `read` helper (`crates/pp-storage/src/read.rs`), on the reader pool, in one read transaction. Both run the caller's closure inside that transaction and report failure as `WriterFailure`. The closure checks the credential first, with `authorize`, so the check and the work see the same data. The older read families that run on the writer thread are not a model for new reads.
-- **Transport shapes live in `pp-api`.** Storage and services return domain results and typed errors. `pp-api` turns them into status codes, response bodies and MCP results, once, for HTTP and MCP alike.
+- **Transport shapes live in `pp-api`.** Storage and services return domain results and typed errors. `pp-api` turns them into status codes, response bodies and MCP results, once, for HTTP and MCP alike. A new family implements `ToProblem` for its error enum and sets its `code` with a `ProblemCode` ([Map a new family's error](../docs/problem-responses.md#map-a-new-familys-error)).
 - **Product contract.** Behaviour comes from the pages under `docs/`. Where Node did something by accident of JavaScript, choose the simpler correct behaviour and say so in the PR ([ADR 0016](../docs/adr/0016-rust-owns-its-data-formats.md)).
 - **Sized for one user.** Print Partner runs for one person on one machine. Use simple caps and standard platform mechanisms for limits, locks and recovery.
 
 ## Guardrails
 
-- Do not enable `desktop_rebuild` or `PP_DESKTOP_REBUILD` by default.
+- GRE-1646 enables `desktop_rebuild` by default on the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off unless named. Do not enable `PP_DESKTOP_REBUILD` by default. The Rust-only image is the one place that sets it.
 - Do not add mutation fallback to Node or write SQL outside `pp-storage`.
 - Do not send real prints during tests.

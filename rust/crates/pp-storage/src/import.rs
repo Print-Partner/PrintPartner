@@ -682,7 +682,8 @@ struct Files {
 /// With a `destination`, the report also says whether the import would
 /// accept that folder. The folder is read, never created.
 pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport, ImportError> {
-    dry_run_in(source, destination, &std::env::temp_dir())
+    let limits = archive::Limits::default();
+    dry_run_in(source, destination, &std::env::temp_dir(), limits)
 }
 
 /// Refuses when `temporary` is `folder` or lies inside it, with links and
@@ -731,10 +732,13 @@ fn ensure_space(stage: &Path, needed: u64) -> Result<(), ImportError> {
 
 /// [`dry_run`] with its scratch copy under `temporary`, which is also where
 /// the startup check copies the database when it is the system's directory.
+/// `limits` applies to an archive only: a folder is read in place, so no
+/// expanded-size cap applies to it.
 fn dry_run_in(
     source: &Path,
     destination: Option<&Path>,
     temporary: &Path,
+    limits: archive::Limits,
 ) -> Result<DryRunReport, ImportError> {
     let metadata = source.metadata().map_err(|error| io_error(source, error))?;
     // Before any scratch exists: a dry run writes nothing into the source or
@@ -756,7 +760,10 @@ fn dry_run_in(
     let (kind, files) = if metadata.is_dir() {
         (SourceKind::Directory, stage_directory(source, &scratch.0)?)
     } else if metadata.is_file() {
-        (SourceKind::Archive, stage_archive(source, &scratch.0)?)
+        (
+            SourceKind::Archive,
+            stage_archive(source, &scratch.0, limits)?,
+        )
     } else {
         let kind = std::io::Error::new(ErrorKind::InvalidInput, "neither a folder nor a file");
         return Err(io_error(source, kind));
@@ -893,9 +900,14 @@ fn repo_files(root: &Path) -> Result<Vec<String>, ImportError> {
 
 /// Validates a backup archive and extracts its database and single-file
 /// roots into `scratch`.
-fn stage_archive(source: &Path, scratch: &Path) -> Result<Files, ImportError> {
-    let (metadata, paths) = archive::extract_documents(source, archive::Limits::default(), scratch)
-        .map_err(|error| match error.downcast_ref::<std::io::Error>() {
+fn stage_archive(
+    source: &Path,
+    scratch: &Path,
+    limits: archive::Limits,
+) -> Result<Files, ImportError> {
+    let extracted = archive::extract_documents(source, limits, scratch);
+    let (metadata, paths) =
+        extracted.map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
             Some(io) if io.kind() == ErrorKind::StorageFull => io_error(scratch, io.kind().into()),
             _ => ImportError::InvalidArchive(format!("{error:#}")),

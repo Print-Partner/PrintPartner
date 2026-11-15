@@ -1,5 +1,5 @@
 use super::*;
-use crate::integrations::tests::refusal;
+use crate::integrations::{code, tests::refusal};
 use pp_storage::printer_setup::{
     DocumentFault, Field, InvalidDocument, InvalidField, LoadedFilament, PrinterSetupError, Reason,
     SetupDocument, Unread,
@@ -116,5 +116,37 @@ fn an_edit_reads_absent_and_null_integration_id_apart() {
         let errors = problem::parse_body::<UpdatePrinterRequest>(body.to_string().as_bytes());
         let errors = errors.err().expect("the body parsed");
         assert_eq!(errors[0].pointer, "/bed_width_mm");
+    }
+}
+
+/// The whole body of each answer the printer wording changes.
+#[tokio::test]
+async fn each_printer_error_answers_one_whole_body() {
+    use crate::integrations::tests::body;
+    let mut invalid = body(
+        "validation",
+        "Validation Failed",
+        400,
+        "Request is invalid",
+        "invalid_printer",
+    );
+    invalid["errors"] = json!([{"pointer": "/model", "detail": "must not be empty"}]);
+    let empty_model = InvalidField {
+        field: Field::Model,
+        reason: Reason::Empty,
+    };
+    #[rustfmt::skip]
+    let cases = [
+        (PrinterSetupError::NotFound,
+            body("not-found", "Not Found", 404, "Printer not found", "printer_not_found")),
+        (PrinterSetupError::LimitReached,
+            body("conflict", "Conflict", 409, "The printer limit is reached. Delete one first.", "printer_limit")),
+        (PrinterSetupError::Invalid(vec![empty_model]), invalid),
+    ];
+    for (error, expected) in cases {
+        let label = format!("{error:?}");
+        let (status, answered) = refusal(error, &WORDING).await;
+        assert_eq!(json!(status), expected["status"], "{label}");
+        assert_eq!(answered, expected, "{label}");
     }
 }

@@ -22,8 +22,14 @@ mod print_stats;
 mod progress_reads;
 #[path = "tests/reads.rs"]
 mod reads;
+#[path = "tests/rebuild_plan.rs"]
+mod rebuild_plan;
+#[path = "tests/role_filament.rs"]
+mod role_filament;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
+#[path = "tests/writer_failures.rs"]
+mod writer_failures;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";

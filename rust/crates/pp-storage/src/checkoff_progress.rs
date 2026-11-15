@@ -41,6 +41,8 @@ mod manual;
 pub mod print_file;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;
+#[cfg(feature = "desktop_rebuild")]
+pub use unattributed::{DismissUndo, UndoDismissError};
 mod verify;
 pub mod wire;
 

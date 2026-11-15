@@ -16,7 +16,7 @@ The import lands in six steps. Step 1 and the first half of step 2 exist today.
 
 Two decisions shape the later steps:
 
-- Step 2 gives a usable copy before every converter exists. Its report says `complete: false` and names the unconverted rows, and such a copy is disposable.
+- Step 2 gives a usable copy before every converter exists. Its report says `complete: false` and names the unconverted rows, and such a copy is disposable. Confirmed by the owner, 2026-11-12 (GRE-412 Owner decisions).
 - A Node send that was `queued` or `sending` arrives as `error` and is sent again by hand, so a copy never prints while Node is live (owner decision, 2026-11-12).
 
 ## Dry run
@@ -36,11 +36,36 @@ What it does:
 
 The dry run refuses before it creates anything when `TMPDIR` is the source folder or the destination, or lies inside one: it must write nothing there.
 
+The check in step 3 holds the copied database files in memory: it reads the copies of `print-partner.db`, its `-wal` and its `-journal` whole, and reads them a second time to confirm they did not change. So beside the disk space below, the run needs free memory of about twice the size of those three files together. Nothing checks memory before the run starts. The size of `repos/` does not count. A run that is killed during that check can also leave `pp-preflight-*` under `TMPDIR`; delete it.
+
 It checks free space in the temporary directory once and refuses with the bytes needed and the bytes free. For a folder the check comes before the copy and needs twice the database files plus 64 MB: the copy, and beside it the larger of the startup check's short-lived copy and the upgrade's write-ahead log. For an archive the check comes after extraction. The dry run extracts only the database and the single-file roots, so the archive's own size does not count; once they are extracted, it needs the database's size plus 64 MB more for the same two things. Nothing checks space before extraction, so an archive whose database does not fit fails during extraction with `import failed:`, not with a refusal. The temporary copy is removed and the archive is not touched. The documented Docker run mounts `/tmp` as a 1 GB tmpfs ([Docker image](docker.md#run)), enough for a database of about 450 MB. To stage elsewhere, set `TMPDIR` to a directory on a disk, for example `docker run -e TMPDIR=/stage -v <volume>:/stage ...`.
 
 The counts describe the upgraded copy, not the source file. The upgrade adds again any starter slicer profile that was deleted, and applies Node's Source revision repair.
 
 It exits 0 with the report on stdout. It exits 1 with `import refused: <reason>` on stderr when the source is refused, or `import failed: <reason>` when a read fails.
+
+### Dry-running a large installation from a snapshot
+
+A backup archive is refused with `Invalid backup archive: <reason>` when it breaks any of the archive limits:
+
+| Limit | Reason in the message |
+| --- | --- |
+| More than 20 GiB expanded in total | `Backup archive decompressed byte limit exceeded (21474836480)` |
+| One entry over 8 GiB, for example a large `print-partner.db` | `Backup entry exceeds decompressed size limit` |
+| More than 100,000 entries | `Backup archive entry limit exceeded (100000)` |
+| Expanded size over 200 times the archive's size | `Backup archive exceeds the decompression ratio limit (200)` |
+
+An installation that breaks any of them is dry-run from a folder instead: a filesystem snapshot of the data folder, or a copy of it. The folder path copies the database files to a private folder under `TMPDIR` and lists `repos/` in place, and none of these limits applies to it.
+
+```sh
+PP_DESKTOP_REBUILD=1 pp-server import --from <copy> --dry-run
+```
+
+- Point `--from` at the snapshot or copy, never at the live `/data` while Node runs. The dry run writes nothing to its source, but it refuses a folder whose database files change while it copies them, and a copy taken while Node runs keeps any `.desktop-lease`, which is refused under [Refusals](#refusals).
+- `TMPDIR` needs twice the size of the database files plus 64 MB free, and must lie outside the copy (see the free-space rule above). The size of `repos/` does not count: it is listed, not copied.
+- The host needs free memory of about twice the size of `print-partner.db`, its `-wal` and its `-journal` together, because the run holds its copies of the database files in memory while it checks them (see the memory rule above). The size of `repos/` does not count here either. Check the size first with `ls -l <copy>/print-partner.db*`.
+
+The test `a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused` in `rust/crates/pp-storage/src/import/tests.rs` checks both paths with a lowered cap.
 
 ### Report
 
@@ -116,7 +141,7 @@ What it does:
 5. Moves the database and the roots into the destination with a rename that fails if the name exists, so it never replaces a file. It saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
 6. Writes `.pp-rust-owned.json` last, into the folder it resolved in step 1 and only while the given path still leads there, and syncs it and its directory.
 
-Memory: the check in step 3 is the startup check, and it holds the staged database in memory. It reads `print-partner.db`, its `-wal` and its `-journal` whole, and reads them a second time to confirm they did not change. So the import needs free memory of about twice the size of `print-partner.db` plus its `-wal`, beside the disk space at the destination and one short-lived copy of the database under `TMPDIR`. Nothing checks memory before the import starts, and the size of `repos/` does not count. An import that is killed during that check can leave `pp-preflight-*` under `TMPDIR`; delete it.
+Memory: the check in step 3 is the startup check, and it holds the staged database in memory. It reads the staged copies of `print-partner.db`, its `-wal` and its `-journal` whole, and reads them a second time to confirm they did not change. So the import needs free memory of about twice the size of those three files together, as the dry run does, beside the disk space at the destination and one short-lived copy of the database under `TMPDIR`. Nothing checks memory before the import starts, and the size of `repos/` does not count. An import that is killed during that check can leave `pp-preflight-*` under `TMPDIR`; delete it.
 
 A destination with a marker is complete and durable; one without a marker is discarded. Two rules enforce the second half: the Rust runtime refuses to open a folder that holds data and no marker (`ownership_marker::admit_writer`), and the import refuses a destination that is not empty (`inspect_destination`).
 

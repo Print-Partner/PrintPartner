@@ -223,7 +223,14 @@ def checkoff_session(session, runtime, out, build_id):
     out.setdefault("checkoff_units", []).append(len(units))
 
 
-# Exports (Node only) -----------------------------------------------------------
+# Exports ------------------------------------------------------------------------
+
+# (sample prefix, path leaf, content-type marker, body prefix)
+RUST_EXPORTS = (
+    ("export_stl_pack", "exports/stl-pack", "application/zip", b"PK"),
+    ("export_checklist_html", "exports/checklist", "text/html", b"<!doctype html"),
+)
+
 
 def _run_job(session, path, body):
     """Starts an export job, polls it every 20 ms as JobContext polls, then
@@ -252,18 +259,97 @@ def _run_job(session, path, body):
     return (time.perf_counter() - started) * 1000
 
 
-def exports(session, out, build_id, repeats):
-    """The STL pack and the HTML checklist of the 100-unit Build. The first
-    export in a run writes the file; Node names exports by content, so a
-    repeat of an unchanged Build can reuse it and is recorded apart."""
+def _export_suffix(attempt):
+    return "ms" if attempt == 0 else "repeat_ms"
+
+
+def _record(out, key, value):
+    out.setdefault(key, []).append(value)
+
+
+def _export_url(build_id, leaf):
+    return f"/api/v2/plans/{build_id}/{leaf}"
+
+
+def _require_export(path, status, headers, data, marker, prefix):
+    got = headers.get("content-type", "")
+    if status != 200 or marker not in got or not data.startswith(prefix):
+        raise RuntimeError(f"{path} answered {status} {got}: {data[:120]!r}")
+
+
+def _rust_get(session, path, marker, prefix):
+    """One GET read to the last byte. Returns (ms to headers, ms to the last
+    byte), or None when the route is absent."""
+    status, headers, data, header_ms, total_ms = session.exchange(
+        "GET", path, headers={"Accept": "*/*"})
+    if status in (404, 405):
+        return None
+    _require_export(path, status, headers, data, marker, prefix)
+    return header_ms, total_ms
+
+
+def _rust_check(session, path, marker):
+    """The replacement UI's check: stop at the headers and close, without
+    reading the body. Returns milliseconds, or None when the route is absent."""
+    status, headers, elapsed = session.request_headers("GET", path, headers={"Accept": "*/*"})
+    if status in (404, 405):
+        return None
+    got = headers.get("content-type", "")
+    if status != 200 or marker not in got:
+        raise RuntimeError(f"{path} check answered {status} {got}")
+    return elapsed
+
+
+def _rust_exports(session, out, build_id, repeats):
+    """Times each Rust export GET from the request to the last byte, first
+    and repeated. Those four samples are the rows compared with Node.
+
+    Then times the Production tab's click, which is a second pair of GETs:
+    one aborted at the headers (the core has already opened and verified the
+    files) and one read to the last byte. The click samples follow the row
+    GETs, so the files are already in the page cache. The cold cost of
+    reaching the first byte is the headers sample of the first GET."""
+    routes = tuple((name, _export_url(build_id, leaf), marker, prefix)
+                   for name, leaf, marker, prefix in RUST_EXPORTS)
     for attempt in range(repeats):
-        suffix = "ms" if attempt == 0 else "repeat_ms"
+        suffix = _export_suffix(attempt)
+        for name, path, marker, prefix in routes:
+            timed = _rust_get(session, path, marker, prefix)
+            if timed is None:
+                raise RuntimeError(f"{path} is not served")
+            header_ms, total_ms = timed
+            _record(out, f"{name}_{suffix}", total_ms)
+            _record(out, f"{name}_headers_{suffix}", header_ms)
+    for attempt in range(repeats):
+        suffix = _export_suffix(attempt)
+        for name, path, marker, prefix in routes:
+            check_ms = _rust_check(session, path, marker)
+            timed = _rust_get(session, path, marker, prefix)
+            if check_ms is None or timed is None:
+                raise RuntimeError(f"{path} is not served")
+            _record(out, f"{name}_check_{suffix}", check_ms)
+            _record(out, f"{name}_click_{suffix}", check_ms + timed[1])
+
+
+def exports(session, runtime, out, build_id, repeats):
+    """The STL pack and the HTML checklist of the 100-unit Build.
+
+    Node starts a job, polls it every 20 ms and downloads the file. The first
+    export in a run writes the file; Node names exports by content, so a
+    repeat of an unchanged Build can reuse it and is recorded apart.
+    Rust reads `GET /api/v2/plans/{id}/exports/stl-pack` and `.../checklist`
+    to the last byte. See `_rust_exports` for the check-then-download rows."""
+    if runtime == "rust":
+        _rust_exports(session, out, build_id, repeats)
+        return
+    for attempt in range(repeats):
+        suffix = _export_suffix(attempt)
         for name, path in (("export_stl_pack", "/jobs/export-stl-pack"),
                            ("export_checklist_html", "/jobs/export-checklist-html")):
             elapsed = _run_job(session, path, {"profile_id": build_id})
             if elapsed is None:
                 return
-            out.setdefault(f"{name}_{suffix}", []).append(elapsed)
+            _record(out, f"{name}_{suffix}", elapsed)
 
 
 # Today ---------------------------------------------------------------------

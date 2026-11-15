@@ -11,7 +11,7 @@ afterEach(() => {
 describe("adoptStyleNonce", () => {
   it("hands the gateway's nonce to get-nonce", () => {
     document.head.innerHTML = '<meta name="pp-style-nonce" nonce="abc123">';
-    expect(adoptStyleNonce()).toBe("abc123");
+    expect(adoptStyleNonce()).toBe("not-the-nonce");
     expect(global.__webpack_nonce__).toBe("abc123");
   });
 

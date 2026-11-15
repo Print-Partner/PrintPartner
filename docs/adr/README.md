@@ -20,6 +20,7 @@ current decisions to the target design.
 | 0011 to 0014 | Reserved by a separate design proposal | Not adopted | Not applicable |
 | [0015](0015-shared-filesystem-portability.md) | Share narrow filesystem portability mechanics | Accepted design 2026-11-03; not implemented | None. Amends [0009](0009-keep-crates-and-deepen-modules.md) without changing [0010](0010-whole-runtime-cutover.md) |
 | [0016](0016-rust-owns-its-data-formats.md) | Rust owns its data formats; the import is the only reader of Node's | Accepted 2026-11-12 | None. Refines [0010](0010-whole-runtime-cutover.md) and replaces the "keep SQLite formats" rule |
+| [0017](0017-one-rust-program-serves-the-react-screens.md) | One Rust program serves the React screens | Accepted 2026-11-15 | None. Docker image plus desktop app for Windows, macOS and Linux |
 
 "No status line; in force" means the record predates status lines and no later
 record supersedes it.

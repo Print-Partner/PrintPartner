@@ -22,3 +22,7 @@ production approval. Unsupported-schema refusal remains mandatory. The
 `desktop_rebuild` gates stay default-off until separately approved retirement.
 Strangler removal is scheduled scope after replacement evidence, not repair of
 broken machinery.
+
+## Acceptance window (2026-11-15)
+
+Chad set the window: Node, the old UI and pp-compat are deleted after 7 days of real printing on Rust with no fallback. The pre-cutover copy is kept for 90 days. Within the 7 days, rollback restores that copy and loses post-cutover changes.

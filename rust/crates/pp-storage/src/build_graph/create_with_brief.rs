@@ -394,6 +394,22 @@ pub(crate) trait BriefError: From<rusqlite::Error> {
     fn invalid() -> Self;
 }
 
+/// Proves `credential` and reads `build`'s brief in the caller's transaction.
+pub(super) fn authorized_brief<E>(
+    tx: &Transaction<'_>,
+    credential: &Credential,
+    policy: auth::AuthPolicy,
+    build: PositiveId,
+) -> Result<(String, BuildPlanningBrief), E>
+where
+    E: BriefError + From<WriterFailure>,
+{
+    let installation = authorize(tx, credential, policy)?;
+    let tenant = installation.id().to_owned();
+    let brief = stored_brief::<E>(tx, &tenant, build)?;
+    Ok((tenant, brief))
+}
+
 /// `build`'s stored planning brief, read in `tx`.
 pub(crate) fn stored_brief<E: BriefError>(
     tx: &Transaction<'_>,

@@ -728,7 +728,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         guide = (ROOT / "docs/development/agent-workflow.md").read_text(encoding="utf-8")
         blocks = [json.loads(block) for block in re.findall(r"```json\n(.*?)```", guide, re.S)
                   if ".claude/hooks/guard.py" in block]
-        self.assertEqual(len(blocks), 2)
+        self.assertEqual(len(blocks), 1)
         adapter = load(CLAUDE, "claude_guard")
         self.assertEqual(set(adapter.PATH_FIELDS) | {"Bash"}, CLAUDE_TOOLS)
         # Grok and Cursor match the Bash entry to these, so the matcher keeps Claude's names.

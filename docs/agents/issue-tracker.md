@@ -27,4 +27,4 @@ Used by `/wayfinder`.
 - **Blocking**: native "blocked by" relations.
 - **Frontier query**: the map's open children with no open blocker and no assignee; first in map order wins.
 - **Claim**: assign to `me`, the session's first write.
-- **Resolve**: comment the answer, set Done, then add a gist and link to the map's Decisions-so-far.
+- **Resolve**: comment the answer, set Done only when no pull request will close the ticket, then add a gist and link to the map's Decisions-so-far.

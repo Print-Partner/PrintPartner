@@ -18,8 +18,8 @@ Single-context repo (most repos):
 /
 ├── GLOSSARY.md
 ├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
+│   ├── 0001-model-build-workflow-as-preparation-and-making.md
+│   └── 0002-keep-sources-and-plan-state-contextual.md
 └── src/
 ```
 
@@ -48,4 +48,4 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
-> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+> _Contradicts [ADR 0007](../adr/0007-rust-crate-layout.md) (Rust crate layout), but worth reopening because…_

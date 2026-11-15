@@ -37,7 +37,7 @@ Plan change, a Checkoff session, and an STL pack or HTML checklist export.
 
 ## After cutover
 
-Approved 2026-11-15 ([ADR 0017](../adr/0017-one-rust-program-serves-the-react-screens.md)).
+Approved 2026-11-15. [ADR 0017](../adr/0017-one-rust-program-serves-the-react-screens.md) records the shipping shape: one Rust program serves the React screens, as a Docker image and as a desktop app.
 Cutover is to the Docker install. After it, in this order: the Connected app
 on Windows, macOS and Linux; then the desktop app running its own install with
 Share on network, on each of those systems, Windows last. Node, the old UI and

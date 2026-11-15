@@ -13,7 +13,7 @@
 
 use super::{
     BuildGraphClient,
-    create_with_brief::{BriefError, save, store_changed_brief, stored_brief},
+    create_with_brief::{BriefError, authorized_brief, save, store_changed_brief, stored_brief},
 };
 use crate::{
     WriterFailure,
@@ -92,13 +92,12 @@ impl BuildGraphClient {
         let policy = self.policy;
         let name = "build_graph.assign_role_filament";
         self.shared.write(name, cancelled, wait, move |tx, _| {
-            let installation = authorize(tx, &credential, policy)?;
-            let tenant = installation.id();
-            let mut brief = stored_brief::<RoleFilamentError>(tx, tenant, build)?;
+            let (tenant, mut brief) =
+                authorized_brief::<RoleFilamentError>(tx, &credential, policy, build)?;
             let role = assignment.role.clone();
             apply(&mut brief, &assignment);
-            store_changed_brief(tx, tenant, build, brief)?;
-            save_default(tx, tenant, build, &assignment)?;
+            store_changed_brief(tx, &tenant, build, brief)?;
+            save_default(tx, &tenant, build, &assignment)?;
             Ok(AssignedRole { role })
         })?
     }
@@ -207,9 +206,8 @@ pub(super) mod tests {
     use super::*;
     use crate::{
         SettingSnapshot,
-        build_graph::{
-            NewBuild,
-            create_with_brief::tests::{Fixture as Created, IDLE},
+        build_graph::create_with_brief::tests::{
+            Fixture as Created, IDLE, read_stored_brief, seeded_voron,
         },
         write::test_support::{WAIT, seed_setting},
     };
@@ -223,8 +221,7 @@ pub(super) mod tests {
     impl Fixture {
         fn new() -> Self {
             let created = Created::new();
-            let new = NewBuild::parse("Voron", "A Voron 2.4", None).unwrap();
-            let build = created.create(new).unwrap().id;
+            let build = seeded_voron(&created);
             let fixture = Self { created, build };
             let mut brief = fixture.brief();
             brief["requirements"] = json!([
@@ -247,11 +244,7 @@ pub(super) mod tests {
         }
 
         fn brief(&self) -> Value {
-            let reader = self.created.owner.client().reader(WAIT).unwrap();
-            match reader.snapshot("default", &self.key()).unwrap() {
-                SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap(),
-                SettingSnapshot::Missing => panic!("no brief"),
-            }
+            read_stored_brief(&self.created.owner, &self.key())
         }
 
         fn store_brief(&self, brief: &Value) {

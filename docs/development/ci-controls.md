@@ -179,18 +179,15 @@ The ruleset has these protections:
 
 - Block branch deletion and force pushes.
 - Require a pull request and allow only squash merges.
-- Require GitHub Actions checks `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block`,
-  and `review-gate`. `rust (windows)` is advisory and not required.
+- Require GitHub Actions checks `actionlint`, `zizmor` and `rust (linux)`.
+  `rust (windows)` is advisory and not required. Chad removed `Lint Evidence block` and `review-gate` on 2026-11-15. GRE-1647 deleted those workflows, the Claude review, and the evidence lint.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
-- `review-gate` runs on `pull_request_target` from the default branch and only reads the API; see `.github/workflows/review-gate.yml` for what it checks.
-  Dependabot's weekly `github-actions` PRs change `.github/workflows/`, and their author is not the owner, so they need both a passing Claude review and the owner's marker for the head. The Claude jobs run for Dependabot PRs once the owner stores `CLAUDE_CODE_OAUTH_TOKEN` in the Dependabot secrets too, because Dependabot runs receive only those.
-- `claude-review.yml` stays on `pull_request`, not `pull_request_target`. On `pull_request`, fork PRs receive no secrets, and the Claude jobs also require a same-repository head and the owner or Dependabot as author. Anyone who can push a same-repository branch already has write access, which lets them run any workflow with secrets through a push or a manual dispatch, so these workflows grant nothing beyond write access. `pull_request_target` would hand secrets to a run that checks out PR code, the classic pwn-request pattern. After reviewing such a PR's head, Chad can post the `pp-review-gate` marker for that head. The marker is an input to that check. Chad merges whether or not the marker is posted.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 
 `rust (macos)` and `rust (windows)` are absent, consistent with their advisory status in [Continuous integration](ci.md).
 
-Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10; `review-gate`, which passes on a Claude review or the owner's marker, now covers that role.
+Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10. GRE-1647 then deleted `review-gate` and the Claude review.
 
 No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
 self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.
@@ -252,22 +249,7 @@ Phase 2 remains Chad's work and keeps GRE-635 open:
 
 ## Edits to a pull request
 
-An edit to a pull request body, title or base can start workflows. This matrix comes from the `on:` blocks and job conditions, and from the run history of PR #1547 (heads 91478f2 and 8ac5680), where `pr-evidence.yml` ran on every body edit.
-
-| Event | `review-gate` | `Lint Evidence block` | `linear-pr-sync.yml` |
-| --- | --- | --- | --- |
-| Push (`synchronize`) | runs and waits for the Claude review; cancels the older run | runs, except on a draft PR, where the job skips | do not start |
-| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
-| Base change (`edited`) | edit run: judges the head against the new base and cancels an older run that read the old one | runs, except on a draft PR | same as above |
-| Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | do not start |
-| Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |
-
-Neither required check can safely skip an edit on a ready PR. A draft PR is the one exception for `Lint Evidence block`, by existing design: its job skips while the PR is a draft, and that skip does replace an earlier failure, including on `converted_to_draft`. GitHub does not merge a draft, and marking the PR ready runs the lint again on the current body, so the failure cannot reach `main`. `review-gate` has no draft skip.
-
-- `Lint Evidence block` lints the whole body: Evidence lines and `Exemption:` lines both decide the verdict, and fixing a failing Evidence section by editing the body is the normal path. A job-level `if` that skips an edit would leave a skipped required check, which GitHub counts as a pass, and the newer run replaces an earlier failure, so an unrelated edit would clear a failing lint. Not listening to `edited` would keep an old success after a body edit that breaks Evidence. A short job that repeats the previous verdict avoids neither the runner slot nor the queue.
-- `review-gate` has to run on a base change, because a review of a head against one base does not cover the same head against `main`. GitHub does not filter `edited` events by field, and a job-level `if` has the same skipped-required-check problem, so every edit starts an edit run. It reads the API and takes seconds unless a Claude job is running or has not appeared yet, and it cancels the older run for the same PR, so the newest run decides.
-
-`scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `linear-pr-sync.yml` cell. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
+GRE-1647 deleted `review-gate`, the evidence lint and the Claude review, which used to start on body, title and base edits. An edit can still start `linear-pr-sync.yml` for a same-repository pull request into the default branch. That workflow does not cancel a superseded run.
 
 ## Emergency path
 

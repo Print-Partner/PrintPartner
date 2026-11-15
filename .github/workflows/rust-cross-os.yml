@@ -17,8 +17,8 @@ name: Rust cross-OS
 # runners. Schedule keeps the in-job monolithic desktop_rebuild nextest.
 # The Linux jobs run on the pp-local fleet for main pushes and manual runs, and on
 # ubuntu-latest for merge groups, the schedule, PP_RUST_RUNNER=hosted or an
-# unavailable fleet. Pull requests follow PP_PR_RUNNER: blacksmith (default), hosted or
-# pp-iso (scripts/ci-rust-runner.py; docs/development/ci.md).
+# unavailable fleet. Pull requests stay on ubuntu-latest
+# (scripts/ci-rust-runner.py; docs/development/ci.md).
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
@@ -104,10 +104,8 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           RUN_ID: ${{ github.run_id }}
           PP_RUST_RUNNER: ${{ vars.PP_RUST_RUNNER }}
-          PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}
           # Optional: a read-only token that can list self-hosted runners.
           RUNNER_TOKEN: ${{ secrets.PP_RUNNER_READ_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -157,10 +155,10 @@ jobs:
       # pp-local containers bring sccache (SCCACHE_DIR, size) and a host-mounted
       # CARGO_HOME registry; hosted images bring the rest of these prerequisites.
       - name: Set up self-hosted Linux prerequisites
-        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local')
         run: bash "$GITHUB_WORKSPACE/scripts/setup-ci-linux.sh"
       - name: Set up Rust on self-hosted Linux
-        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local')
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: '1.99.0'
@@ -388,10 +386,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up self-hosted Linux prerequisites
-        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local')
         run: bash "$GITHUB_WORKSPACE/scripts/setup-ci-linux.sh"
       - name: Set up Rust on self-hosted Linux
-        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local')
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: '1.99.0'

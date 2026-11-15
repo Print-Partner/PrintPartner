@@ -52,14 +52,6 @@
           {
             "context": "rust (linux)",
             "integration_id": 15368
-          },
-          {
-            "context": "Lint Evidence block",
-            "integration_id": 15368
-          },
-          {
-            "context": "review-gate",
-            "integration_id": 15368
           }
         ],
         "strict_required_status_checks_policy": false

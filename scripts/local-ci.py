@@ -73,8 +73,7 @@ STEPS = [
          requires=(("python3", None),)),
     Step("selector-tests", "CI input-selection tests",
          ("python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'",
-          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py",
-          "python3 -B -m unittest discover -s scripts -p test_cancel_stale_merge_groups.py"),
+          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py"),
          (CROSS_OS + "Select changed inputs", "actionlint.yml#Select changed inputs"), requires=(("python3", None),)),
     # No hosted job runs these yet, so the line is local-only.
     Step("perf-baseline-tests", "Node-versus-Rust baseline harness tests",
@@ -110,7 +109,7 @@ STEPS = [
     Step("boundaries", "crate boundary and pp-domain dependency guards",
          ("python3 rust/scripts/check-boundaries.py --self-test",
           "python3 rust/scripts/check-domain-deps.py --self-test"),
-         ("chain-tip-gate.yml#check-boundaries", "chain-tip-gate.yml#pp-domain dependency guard"),
+         ("actionlint.yml#check-boundaries", "actionlint.yml#pp-domain dependency guard"),
          requires=(("python3", None),)),
     # pp-storage tests `git archive` pinned commits that a shallow clone lacks.
     Step("historical-schema", "fetch pinned historical schema commits",
@@ -153,10 +152,11 @@ STEPS = [
          ("node ../scripts/workaround-ratchet.mjs && node --test ../scripts/workaround-ratchet.test.mjs",),
          ("web-ci.yml#Check workaround ratchet",),
          requires=(("node", "v22.23.3"),), cwd="web", node22=True),
+    # No hosted duplication job. The local scan stays.
     Step("duplication", "duplicated-code baseline and negative controls (Node 22)",
          ("node --test scripts/check-duplication.test.mjs",
           "node scripts/check-duplication.mjs"),
-         ("duplication.yml#Check duplicated code",),
+         (),
          setup=("git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'",),
          requires=(("git", None), ("node", "v22.23.3")), node22=True),
     cargo("clippy-off", "clippy, desktop_rebuild off", "clippy (desktop_rebuild off)",
@@ -205,7 +205,6 @@ STEPS = [
           'node ../rust/scripts/inspect-node-routes.mjs "${RUNNER_TEMP}/routes-inventory.json"',
           'diff -u ../fixtures/http/routes-inventory.json "${RUNNER_TEMP}/routes-inventory.json"'),
          (CONTRACTS + "Install locked dependencies", CONTRACTS + "Build authority packages",
-          "auth-admission-freshness.yml#Check auth admission golden on canonical Node",
           CONTRACTS + "Verify auth Node fixtures", CONTRACTS + "Verify GRE-451 parity Node fixtures",
           CONTRACTS + "Verify required-unit Node fixtures",
           CONTRACTS + "Verify builder glob Node fixtures", CONTRACTS + "Verify golden Node HTTP route inventory"),
@@ -214,8 +213,6 @@ STEPS = [
          host_only="needs a Windows runner; CI runs it on windows-latest"),
     Step("rust-macos", "rust (macos) (advisory check)",
          host_only="needs a macOS runner with a case-sensitive TMPDIR; add the ci:cross-os label to run it in CI"),
-    Step("pr-evidence", "Lint Evidence block (required check)",
-         host_only="reads the pull request body; CI checks it on the PR"),
 ]
 
 

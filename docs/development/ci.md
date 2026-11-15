@@ -27,8 +27,9 @@ than leaving missing contexts. Draft PRs skip every PR CI job as before.
 still run all cross-OS jobs. A push to `main` runs the Linux Rust jobs only, and
 a merge group runs the short Linux set; neither starts a Windows or macOS Rust
 job ([Merge queue](#merge-queue)). Windows and macOS remain
-advisory; the required-check set stays `actionlint`, `zizmor`, `rust (linux)`,
-`Lint Evidence block` and `review-gate`. The ruleset snapshot is unchanged.
+advisory; the required-check set stays `actionlint`, `zizmor` and `rust (linux)`.
+Chad removed `Lint Evidence block` and `review-gate` from the ruleset on 2026-11-15.
+`docs/development/main-ci-controls.ruleset.json` records that set.
 
 | Event (ready PRs) | Before: Windows / Rust macOS / native arm64 | After: Windows / Rust macOS / native arm64 |
 | --- | --- | --- |
@@ -185,14 +186,12 @@ PATH="$PWD/.venv/bin:$PATH" just ci --only python-lint
 
 ## Duplicated code
 
-The `duplication` job in `duplication.yml` caps duplicated tokens with jscpd 5.4.2.
+`just ci` caps duplicated tokens with jscpd 5.4.2. There is no hosted duplication job.
 It scans the whole Node server and React UI app directories, shared web packages,
 all Rust crates including `pp-server` and `pp-desktop`, and the Python sidecar.
 It reads JavaScript, TypeScript, Rust and Python. Tests count as source,
 including the UI's `test/` tree.
 Generated TypeScript, fixtures, snapshots, dependencies and build outputs do not.
-It runs on ready PRs and main pushes that change those inputs, on merge groups,
-and on manual dispatch. It does not change required-check settings.
 
 Install the locked web dependencies, then run:
 
@@ -329,7 +328,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 | `rust (macos)` | `macos-26` | The whole workspace | All; see [macOS test filter](#macos-test-filter) |
 | `rust (windows)` | `windows-latest` | The whole workspace | All |
 
-`rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events; on pull requests and merge groups only the build and the aggregate run (the rebuild partitions do not). Pull requests run them on `blacksmith-4vcpu-ubuntu-2404` (default), `ubuntu-latest` (`hosted`) or pp-iso ([the switch](#pull-request-runner-switch)); see [Linux Rust runner](#linux-rust-runner).
+`rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events; on pull requests and merge groups only the build and the aggregate run (the rebuild partitions do not). Pull requests run them on `ubuntu-latest`. See [Linux Rust runner](#linux-rust-runner).
 
 Build caching and linking differ by OS:
 
@@ -403,23 +402,23 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | Step | What it runs | CI source |
 |------|--------------|-----------|
 | `local-ci-self-test` | `scripts/test_local_ci.py` | None. This test fails when a copied command no longer matches its workflow step. |
-| `selector-tests` | The path-filter, macOS-alert and stale merge-group canceller unit tests | `rust-cross-os.yml` and `actionlint.yml` `changes` |
+| `selector-tests` | The path-filter and macOS-alert unit tests | `rust-cross-os.yml` and `actionlint.yml` `changes` |
 | `perf-baseline-tests` | The unit tests of the Node-versus-Rust baseline harness in `scripts/perf-baseline` | None yet. A local-only line; see [Performance](performance.md). |
 | `actionlint` | `actionlint -color` | `actionlint` (required) |
 | `agent-guidance` | `test_agent_guidance.py` and `check-agent-guidance.py`: local links and anchors in every tracked Markdown page, and the guidance title and skill rules | `agent-guidance` in `actionlint.yml` |
 | `zizmor` | `zizmor --min-severity informational --config .github/zizmor.yml .` | `zizmor` (required) |
 | `ast-grep` | `ast-grep test`, `test_ast_grep.py` and `check-ast-grep.py` against `origin/main` | `ast-grep ratchet` |
-| `boundaries` | `check-boundaries.py --self-test` and `check-domain-deps.py --self-test` | `chain-tip-gate.yml` |
+| `boundaries` | `check-boundaries.py --self-test` and `check-domain-deps.py --self-test` | `actionlint.yml` |
 | `historical-schema` | `rust/scripts/fetch-historical-schema-commits.sh`, which fetches the pinned commits that the pp-storage tests archive. It runs before nextest. | `rust (linux)` (required) |
 | `fmt` | Step 4 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `rust-deps` | Scanner negative controls and `cargo machete rust`, pinned to 0.9.2 | `cargo-machete` in `rust-deps-weekly.yml` |
 | `web-assets` | Desktop web build and `rust/bundle-manifest.json` | `rust (linux)` (required) |
 | `ui-package` | `typecheck`, `lint`, `test`, `build` and `test:browser` for the replacement UI workspace `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. `test:browser` exits 77 for a missing browser engine, which the step reports as SKIP. | None yet. These are local-only lines; see [Replacement UI package](#replacement-ui-package). |
 | `workaround-ratchet` | `scripts/workaround-ratchet.mjs` and its tests, which cap `TODO`, `eslint-disable` and Rust `#[allow]` markers, on Node 22.23.3. It runs after `web-assets`, which installs its parser. | `web` job of `web-ci.yml` |
-| `duplication` | jscpd negative controls and the five-area duplicated-token baseline, on Node 22.23.3 | `duplication.yml` |
+| `duplication` | jscpd negative controls and the five-area duplicated-token baseline, on Node 22.23.3 | None. Local only; there is no hosted duplication job. |
 | `clippy-off`, `clippy-on`, `nextest-off`, `nextest-on`, `doc-off`, `doc-on` | Steps 5 to 10 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `clippy-limits` | Clippy complexity negative controls and baseline check, with both feature modes on Linux | `rust (linux)` (required) |
-| `node-fixtures` | The `--check` mode of each Node parity fixture generator, and the HTTP route inventory diff, on Node 22.23.3 | `desktop-contracts.yml` and `auth-admission-freshness.yml` |
+| `node-fixtures` | The `--check` mode of each Node parity fixture generator, and the HTTP route inventory diff, on Node 22.23.3 | `desktop-contracts.yml` |
 
 The `ast-grep` step counts `cfg(..desktop_rebuild..)` and `cfg_attr`
 attributes across every crate, including tests. It recursively inspects
@@ -495,7 +494,6 @@ Except where noted below, each step runs the command lines of its workflow step 
 The command does not cover these checks:
 
 - `rust (windows)` and `rust (macos)`. They need Windows and macOS runners. The command reports both as `SKIP`.
-- `Lint Evidence block`. It reads the pull request body. The command reports it as `SKIP`.
 - `cargo deny check` (`desktop-deny.yml`). It runs on changes to `rust/**`. To run it locally, use `cargo deny --manifest-path rust/Cargo.toml --all-features check`. CI also runs `cargo deny --manifest-path rust/fuzz/Cargo.toml --all-features --locked check`.
 - The Linux rebuild partitions, the Desktop runtime, Native macOS bundle and Docker workflows, the `web-ci.yml` steps other than the workaround ratchet, and the `contracts:verify` and `test:desktop-parity` steps of `desktop-contracts.yml`.
 
@@ -531,7 +529,7 @@ Every row compares the two whole trees. When `main` has moved past the branch's 
 Two parts need `gh` and change with every CI run, so each prints a "sample taken" row with the UTC time:
 
 - `--ci` samples the wall times of the successful runs among the last 10 completed `rust-cross-os.yml` and `web-ci.yml` runs, for pull requests and for `main`. A run under 6 minutes is excluded as too short to have run a job's suites.
-- PR numbers print one row per PR head: its changed paths, whether the diff touches only `web/apps/ui`, the minutes from the first check run's start until every required check was green, the span of all completed check runs, and any check not green. The required set defaults to `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block` and `review-gate`. `--required a,b,c` replaces it, for example once `ui-package` becomes required.
+- PR numbers print one row per PR head: its changed paths, whether the diff touches only `web/apps/ui`, the minutes from the first check run's start until every required check was green, the span of all completed check runs, and any check not green. The required set defaults to `actionlint`, `zizmor` and `rust (linux)`. `--required a,b,c` replaces it, for example once `ui-package` becomes required.
 
 ## Replacement UI package
 
@@ -713,12 +711,12 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
 
 ## Other Rust workflows
 
-- **Desktop Rust (hosted)** (`desktop-fleet-rust.yml`) runs only the ast-grep ratchet, in the `ast-grep ratchet` job. It runs on pull requests and pushes to `main` that change `rust/**`. Every push to `main` gets its own run, so a merge of two individually green pull requests is still checked. Like the duplication check, it does not cancel superseded runs: a cancelled run would skip the ratchet for that push's diff, and the job is short. On a push, the ratchet compares against the `main` commit that push replaced. It does not build or test Rust; `rust (linux)` does that once per push.
+- **Desktop Rust (hosted)** (`desktop-fleet-rust.yml`) runs only the ast-grep ratchet, in the `ast-grep ratchet` job. It runs on pull requests and pushes to `main` that change `rust/**`. Every push to `main` gets its own run, so a merge of two individually green pull requests is still checked. It does not cancel superseded runs: a cancelled run would skip the ratchet for that push's diff, and the job is short. On a push, the ratchet compares against the `main` commit that push replaced. It does not build or test Rust; `rust (linux)` does that once per push.
 - **Native macOS bundle** (`desktop-native-macos.yml`) builds the unsigned macOS app and runs the macOS storage tests. Its `changes` job selects them by event and label:
   - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `ci:cross-os` label and is not a draft. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups share their queue ref and head SHA and cancel older runs of that same pair. Nightly and manual runs keep their own group. The scheduled canceller below handles refs that disappear.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups share their queue ref and head SHA and cancel older runs of that same pair. Nightly and manual runs keep their own group.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -734,31 +732,13 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 
 ## Ephemeral PR runners
 
-Pull request jobs run on GitHub-hosted runners, which cost nothing for this public repository,
-and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main` and manual runs, never a pull request or a merge group. Two workflows' jobs run on Blacksmith
-by default because their speed pays for the per-minute price: `rust (linux) build` and its
-aggregate, and the Linux packaged smoke job (a two-job matrix, `default` and `desktop_rebuild`). Nothing else runs on
-Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, docs, `rust (windows)`, macOS, release,
-Pages, schedules, merge groups and `main` pushes stay on GitHub-hosted runners (`main` pushes may use pp-local), and the
-workflows use no Blacksmith Docker layer cache, sticky disk or cross-PR cache. Each hosted or Blacksmith job
-gets a fresh VM. The workflows that a push to a pull request re-triggers cancel a superseded run (`cancel-in-progress` on
-`pull_request`), so a new push stops the jobs still paying for the old head (`linear-pr-sync.yml`, which must not be cancelled, runs on a free runner and has no cancelling group); `main` pushes keep
-the one-running, one-pending rule instead.
-
-Three jobs were tried on Blacksmith and are not kept there. `release-signing-check.yml` failed because
-`docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` printed the whole manifest instead of
-the digest and `cosign verify` got a malformed reference. The `rust-verify` job of
-`desktop-runtime.yml` failed because its LAN guard rejects new connections to `192.168.0.0/16` and counted
-2630 blocked packets on Blacksmith (the runner's own services appear to use that range) before the artifact
-upload failed with `ECONNREFUSED`. `rust (windows)` ran on `blacksmith-4vcpu-windows-2025` and failed two tests that pass on
-`windows-latest` (a Node loopback `ECONNRESET` in `node_auth_admission_snapshot_is_current` and a timestamp-window assertion at
-`import_worker_policy.rs:269`, run 42437330789), so it stays on GitHub's free Windows runner until GRE-1271 resolves them.
+Pull request jobs run on GitHub-hosted runners. pp-local runs only pushes to `main` and manual runs, never a pull request or a merge group. The runner selector has no Blacksmith or pp-iso path. Each hosted job gets a fresh VM. A new push to a pull request cancels the older run (`cancel-in-progress` on `pull_request`), except `linear-pr-sync.yml`, which must not be cancelled. `main` pushes keep the one-running, one-pending rule.
 
 ### Linux Rust runner
 
 `rust (linux) build`, `rust (linux) rebuild m/3` and the `rust (linux)` aggregate
 run on `[self-hosted, linux, x64, pp-local]` for pushes to `main` and
-manual runs. A merge group runs the build job and the aggregate on `ubuntu-latest` and has no rebuild partitions: a merge group holds PR code that has not landed, and the shared pp-local cache only sees code from `main`. A pull request runs the build and the aggregate (there are no rebuild partitions on pull requests) on `blacksmith-4vcpu-ubuntu-2404` unless `PP_PR_RUNNER` says otherwise ([the switch](#pull-request-runner-switch) below). pp-local
+manual runs. A merge group runs the build job and the aggregate on `ubuntu-latest` and has no rebuild partitions: a merge group holds PR code that has not landed, and the shared pp-local cache only sees code from `main`. A pull request runs the build and the aggregate on `ubuntu-latest`. There are no rebuild partitions on pull requests. pp-local
 is six ephemeral JIT slots, two on each of three VMs, and each job runs in a fresh
 `pp-slot-N` container. Job names do not change with the runner, so the required
 checks stay the same.
@@ -773,7 +753,7 @@ there, instead of after the 13-17 minute hosted waits seen on main pushes.
 The `changes` job picks the runner with `scripts/ci-rust-runner.py` and passes it
 on as a job output. It picks `ubuntu-latest` when:
 
-- the event is the nightly schedule (pull requests use the [runner switch](#pull-request-runner-switch));
+- the event is a pull request, a merge group, or the nightly schedule;
 - the `PP_RUST_RUNNER` repository variable is `hosted` (unset or `local` means pp-local;
   any other value means hosted);
 - the optional `PP_RUNNER_READ_TOKEN` secret can list runners and no online pp-local
@@ -800,37 +780,6 @@ is not needed there, and its post-job cleanup can delete registry sources that
 another container is compiling. `scripts/setup-ci-linux.sh` and
 `dtolnay/rust-toolchain` install the packages and Rust that hosted images ship.
 [Cargo cache trust](cargo-cache-trust.md) covers the shared registry.
-[pp-iso](pp-iso.md) is the separate pool of isolated, one-job runners for jobs that
-run PR-editable code.
-
-### Pull request runner switch
-
-The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It is read only on `pull_request` events, so `main` pushes, merge groups, manual runs and the nightly schedule keep the routing above and `PP_RUST_RUNNER`. Unset, empty or any other value means `blacksmith`. Set it under Settings, Secrets and variables, Actions, Variables; the next run, or a label change on the PR, uses the new value, and `hosted` puts both paid jobs back on GitHub's free runners at once. `rust (windows)` always runs on `windows-latest`. `main` pushes, merge groups, manual runs and the nightly schedule never use Blacksmith.
-
-| `PP_PR_RUNNER` | `rust (linux)` build and aggregate (pull requests) | `packaged smoke (linux, …)` |
-| --- | --- | --- |
-| `blacksmith` (default) | `blacksmith-4vcpu-ubuntu-2404` | `blacksmith-4vcpu-ubuntu-2404` |
-| `hosted` | `ubuntu-latest` | `ubuntu-24.04` |
-| `pp-iso` | `[self-hosted, linux, x64, pp-iso]` ([pp-iso](pp-iso.md)) | `blacksmith-4vcpu-ubuntu-2404` |
-
-- Every job keeps its name, so the required checks do not change, and a PR that skips a job still reports it. `scripts/ci-rust-runner.py` makes the choice in the `changes` job of `rust-cross-os.yml` and `desktop-packaged-smoke.yml` and has tests for every value and event. A PR runs its own copy of that script, so the script and its test are in CODEOWNERS: a change to the routing requests Chad's review, like a workflow change. Under `pp-iso`, the script sends a pull request from a fork to Blacksmith, but a pull request runs its own copy of the workflow and script, so what actually keeps fork code off the self-hosted pool is the pp-iso runner group's fork-run settings, not the script. The packaged smoke job uses Blacksmith only on `pull_request` events when the variable is not `hosted`; every other event uses `ubuntu-24.04`. The selector jobs, lint, review gates and Web CI always use GitHub's free runners.
-- Sizing: the hosted 4 vCPU medians over the last PR runs are `rust (linux) build` 36.6 min (8 runs) and packaged smoke 7.6 min (4 runs), against job timeouts of 90 minutes each. Both paid jobs get 4 vCPU, the smallest size that keeps the slower job, the Linux build, well under its timeout: Blacksmith claims about twice the speed of a hosted runner of the same size, and one measured 4 vCPU run (head bcc519d on #1600) took 20.6 min for `rust (linux) build` and 4.5 and 5.5 min for the two smoke jobs. 2 vCPU is not used because it has no measurement behind it.
-- Cost: Blacksmith's pricing page lists $0.004 per minute for Ubuntu x64 at 2 vCPU and 3,000 free minutes per month; this document assumes the price scales linearly with vCPU, which the page does not state, so 4 vCPU is $0.008 per minute. The measured run above cost about $0.16 for `rust (linux) build` and $0.08 for the smoke workflow (its `default` and `desktop_rebuild` matrix jobs run in parallel and are billed separately), plus a few seconds of the `rust (linux)` aggregate, which Blacksmith may bill as a minute: about $0.24 per PR run, against $0 on GitHub's runners. If Blacksmith were no faster than the hosted medians, the bound is about $0.29 and $0.12. The one-day measurement after merge replaces these figures with actual minutes per job and wall time per PR.
-- Jobs get the same permissions and secrets as on hosted runners; the switch adds none. The existing cache steps are unchanged: `Swatinem/rust-cache` saves only on `main`, and the apt package cache of `linux-gui-deps` runs only on GitHub-hosted runners, so Blacksmith jobs run a plain `apt-get install` and the "Free disk" step is skipped. Only the packaged smoke job on Blacksmith uses `actions/setup-node` with `cache: npm`, which saves on any ref, so a PR run writes an npm cache entry under its own ref. Blacksmith's "Branch Protected Caches" setting scopes each cache entry to its branch; it must stay on, because turning it off shares entries across branches and a PR-written npm entry could be restored by another PR. This repository does not verify the setting; Chad checked it is on in the Blacksmith dashboard on 2026-11-07.
-- The setup, Rust toolchain, sccache and `Swatinem/rust-cache` steps adapt to the runner kind (`PP_RUNNER_KIND`), not to `runner.environment`; the disk-space steps and `linux-gui-deps` still check `runner.environment`. pp-local runs the self-hosted setup, Rust toolchain and sccache steps; pp-iso runs the self-hosted setup and Rust toolchain steps and then `Swatinem/rust-cache` from `actions/cache`, with no shared registry or sccache; Blacksmith and hosted runners use their images and `Swatinem/rust-cache`.
-- pp-iso covers only the Linux Rust jobs: it has no GUI session or system package control for the packaged smoke, and no Windows runner. If no pp-iso runner is online, the jobs queue until one is, so set `hosted` first when a host is down.
-
-### Reading Blacksmith usage
-
-Blacksmith bills by the minute and GitHub's runners are free here, so check the spend after any change to the paid jobs and every week while the switch is new.
-
-- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month after converting: the allowance is counted in 2 vCPU x64 minutes, so each 4 vCPU minute uses two of them (the Linux build and smoke jobs of the measured PR run total about 31 job-minutes and use about 61).
-- Per run, from GitHub: this prints each Blacksmith job of a run with its size and minutes (replace RUN_ID):
-
-  `gh api repos/Print-Partner/PrintPartner/actions/runs/RUN_ID/jobs --jq '.jobs[]|select(.completed_at != null and .conclusion != "skipped" and any(.labels[]; startswith("blacksmith-")))|[.name,.labels[0],(((.completed_at|fromdate)-(.started_at|fromdate))/60|.*10|round/10)]|@tsv'`
-
-  Multiply minutes by the per-minute price above. A job that appears with a `blacksmith-` label outside `rust (linux)` and `packaged smoke` is a regression: move it back to a GitHub-hosted runner.
-- Cancelled runs still bill the minutes they ran. A new push cancels the superseded run, but cancelling is not instant and the last run bills in full, so a burst of pushes still costs the minutes each run reached before it was cancelled, across the parallel paid jobs.
 
 ### Actions cache
 
@@ -856,7 +805,7 @@ missed: pushes and manual runs of `desktop-e2e` and `desktop-webkit` (always hos
 `main` that `scripts/ci-rust-runner.py` sends to a hosted runner (the schedule does not run the rebuild
 job, so only these runs save its package set). A run on pp-local skips the cache steps and saves nothing.
 Pull requests restore only. Each install logs
-`apt install took N s (cache hit: ...)`. `chain-tip-gate` keeps its inline install.
+`apt install took N s (cache hit: ...)`.
 
 ### Superseded runs
 
@@ -876,9 +825,8 @@ run; a newer push replaces the older **pending** run, which never started. So th
 load is one running plus one pending run per workflow, and the newest run tests
 every merge that was replaced, but a replaced merge gets no run of its own.
 
-Two kinds of check still run once per push, because each compares a push with the
-commit it replaced: the duplication check and the ast-grep ratchet in
-`desktop-fleet-rust.yml`. The clippy-limits ratchet inside `rust-cross-os` also
+The ast-grep ratchet in `desktop-fleet-rust.yml` still runs once per push, because it
+compares a push with the commit it replaced. The clippy-limits ratchet inside `rust-cross-os` also
 compares a push with `github.event.before`; it is bounded like the rest, and the
 merge-group run of the same commit and the PR runs compare against current `main`.
 Tag pushes, other branches, merge groups, the schedule and manual runs keep their
@@ -890,7 +838,7 @@ never replaces the pending run and, because the original has finished, does not 
 | --- | --- | --- |
 | `pull_request` (except `linear-pr-sync.yml`) | workflow and ref (or PR number) | `true` |
 | first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
-| `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
+| `push` to `main` of the ast-grep ratchet | `run_id` | `false` |
 | `push` of a tag or another branch, other `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
 | Rust cross-OS / Native macOS bundle `merge_group`, including reruns | workflow, queue ref and merge-group head SHA | `true` |
 | rerun of another non-PR run | the original run's `run_id` | `false` |
@@ -901,48 +849,11 @@ rerun with the same ref and merge-group head SHA still shares the original group
 and cancels an older run of that same pair. This concurrency behavior does not
 determine whether a disappeared queue entry merged; the canceller uses PR state.
 
-`cancel-stale-merge-groups.yml` runs every ten minutes and supports manual
-dispatch on main. It downloads only main's public Python script, checks out
-nothing, and receives only `GITHUB_TOKEN` with the minimum permissions:
-`actions: write` for cancellation, `contents: read` for refs, and
-`pull-requests: read` to distinguish merged PRs from dropped or superseded groups.
-Startup requires a successful read of the expected `refs/heads/main`; even a
-main-ref 404 aborts. It paginates queued/in-progress runs of the two cross-OS
-workflows and accepts only `merge_group` runs on
-`gh-readonly-queue/main/pr-<number>-<40-character-sha>` branches.
-For a missing queue ref (404), it reads `pulls/<number>`. A PR with `merged_at`
-is preserved: squash merges do not preserve queue-commit ancestry, so there is
-no commit comparison. Open or closed-unmerged PRs qualify only when the run is
-more than ten minutes old. Younger runs and live queue refs are preserved.
-Unparseable refs, unexpected PR states, and read errors abort preflight before
-any cancellation. All preflight reads finish before writes. Immediately before
-each cancellation it rechecks the queue ref and skips a reappeared ref. A failure
-at this final probe stops further writes; prior cancellations cannot be undone.
-A cancel 409 skips the finished run and continues; other cancel errors stop writes.
-Other workflows and PR/main runs are never selected.
-GitHub schedules can be delayed, so ten minutes is an interval, not a guarantee.
-The workflow and main script must land before the scheduled job can run.
-
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 
 The web validation job keeps its 45-minute limit on same-repository PRs; fork
 PRs and non-PR runs keep 20 minutes.
-
-## Review checks
-
-| Hosted check | Workflow | Local command |
-| --- | --- | --- |
-| `review-gate` (required) | `review-gate.yml` on `pull_request_target` and `merge_group`, rerun by `review-gate-rerun.yml` | `python3 -B -m unittest discover -s scripts -p test_review_gate.py -v` |
-| `claude-code-review`, `claude-security-review` | `claude-review.yml` | none; needs the `CLAUDE_CODE_OAUTH_TOKEN` secret, or `ANTHROPIC_API_KEY` as a fallback |
-
-`scripts/test_review_gate.py` runs the gate's Python step unchanged against a fake `gh` and checks each pass and fail case: a Claude code review with its security review, an owner marker for the head, markers for another head or from another account, same-named checks from another workflow, event, or app, a review from a workflow file the PR changes, and a non-owner PR that changes workflows, `.github/zizmor.yml`, or the safety guard. It also checks that the gate runs on `pull_request_target` with no checkout or secrets, that its expected origins match the review workflows, and that the Claude jobs keep their author filter, permissions, and tool lists. The `changes` job in `actionlint.yml` runs it on every PR.
-
-The gate waits up to 30 minutes for the head's `claude-code-review` and `claude-security-review` jobs to finish before it judges the head, so a new push no longer shows a red gate while the review is still running. It reads the final state, so waiting cannot create a pass. A job that never appears within two minutes counts as not running, and a run that is still waiting stops if the PR head or base moves. The run also re-reads the head and base right before it can pass and fails if either moved, which closes the gap between the last cancellation point and the pass. The `pull_request_target` trigger carries `branches: [main]`. A PR into another base, such as a stacked PR, runs that base's copy of `review-gate.yml`, which could always pass, and gets no run of `main`'s copy. `main`'s copy fails a PR whose base is not `main` (a rerun after a retarget), and fails when any `review-gate` check run on the head lists a PR into another base. GitHub lists the PRs open from a run's head branch now, so that check sees a PR into another base only while it is open; see the remaining risk in `.github/workflows/review-gate.yml`. Only a PR into `main` can pass on a Claude run, because a review of a head against another base does not cover the same head against `main`. The gate also runs on `edited` events. Retargeting a PR to `main` runs the gate against `main`. Retargeting it away from `main` starts no run of `main`'s copy, so an earlier green `review-gate` check stays on that head. That is harmless: the PR no longer targets `main` and cannot merge into it, and retargeting it back to `main` runs the gate again. While waiting it follows only the latest run of each Claude job, so an older run from another PR that shares the head does not delay it. An edit run is a full run in the same group as a push run, so a newer edit or push run cancels an older one and the newest run decides. The gate has no job-level `if`, so an edit can never replace a failing gate with a skipped one, because GitHub counts a skipped required job as a pass. After a review workflow finishes, `review-gate-rerun.yml` waits up to about 40 minutes, longer than the gate's 30-minute wait, for the gate run to end and reruns it. It reruns only the newest gate run that lists this PR and lists only PRs into the default branch, never a run that also lists a PR into another base on the same head. It reads the default branch from the event, not a hardcoded name. A fork PR's runs list no PR, so for a fork PR it reruns nothing; rerun `review-gate` from the PR's Checks tab after the marker or review.
-
-`review-gate.yml` has one `concurrency` group per PR number with `cancel-in-progress: true` for every PR run, reruns included, so a push cancels the previous head's gate run and at most one run per PR is queued behind it. Reruns used to get a group per run id, which nothing ever superseded, so they piled up in the queue (GRE-1242). `review-gate-rerun.yml` therefore puts its concurrency group on the job, after the job `if`, so an ordinary PR comment that the `if` rejects never joins the group or cancels a useful rerun. The group is the PR number for owner comments and the head SHA for review runs, with `cancel-in-progress: true`, so a newer event for the same target replaces an older one that would do the same work. A review run for a head that is no longer the PR's head exits at once without rerunning anything; a review run that ended `cancelled` on the current head still refreshes the gate, while one that ended `skipped` produces no evidence and is filtered out by the job `if`, which needs no runner. The rerun job re-reads the PR's head on every poll and right before it reruns, and exits if the head moved, so it does not rerun an old head's gate run into the PR-wide group; a push in the few seconds between that last read and the rerun request can still lose the new head's gate run to a cancel, and the next event or a manual rerun recovers it. A manual rerun of an old head's gate run shares the group and cancels the current run; rerun the current head afterwards. Every other `pull_request` workflow except `linear-pr-sync.yml` already cancels superseded PR runs. This change adds no cancellation for `main` pushes, merge groups or tags; see [Superseded runs](#superseded-runs) for how existing workflows treat `main`. `linear-pr-sync.yml` keeps `cancel-in-progress: false` so a state sync always finishes.
-
-`.github/workflows/review-gate.yml` is that check. Chad merges; see [Who merges](definition-of-done.md#who-merges).
 
 ## Merge queue
 
@@ -951,9 +862,7 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 | Required check | Workflow | On `merge_group` |
 | --- | --- | --- |
 | `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` selects the `actions` kind on merge groups, because the group's diff against `main` is not the PR's diff. |
-| `rust (linux)` | `rust-cross-os.yml` | The short set on `ubuntu-latest`: `cargo fmt`, clippy with `desktop_rebuild` off and on, and the Clippy limits. No nextest, no doctests and no rebuild partitions. Merge groups never use pp-local or Blacksmith. |
-| `Lint Evidence block` | `pr-evidence.yml` | Passes without a PR body; the body was linted on the PR. |
-| `review-gate` | `review-gate.yml` | Passes only when every PR in the group passed `review-gate` on its current head. |
+| `rust (linux)` | `rust-cross-os.yml` | The short set on `ubuntu-latest`: `cargo fmt`, clippy with `desktop_rebuild` off and on, and the Clippy limits. No nextest, no doctests and no rebuild partitions. Merge groups use GitHub-hosted runners. |
 
 `rust (windows)` and `rust (macos)` are advisory, not required. Neither runs on merge groups.
 
@@ -966,13 +875,7 @@ The merge group now checks only that the queued PRs still format, compile and li
 - a test that fails only when two PRs meet;
 - a test outside a PR's selection that the PR breaks.
 
-On a merge group, `review-gate` does not judge a review again. Its second step reads the queue through GraphQL (`repository.mergeQueue(branch: "main").entries`), finds the one entry whose `headCommit` is the group's head SHA, and checks that the entry's PR number matches the `pr-<n>` in the group ref. Every entry at or ahead of that position is in the group. For each of those PRs it requires base `main` and checks the `review-gate` check runs on the PR's current head. Every one of them must come from `.github/workflows/review-gate.yml` on `pull_request_target`; a same-named check from any other workflow or event fails the group. Of those, only runs whose Actions run lists this PR, with every listed PR into `main`, count, and the latest of them must have concluded `success`. A `pull_request_target` run executes the base branch's copy of the file, so a run for another PR with the same head into another branch, whose copy of the gate might always pass, does not count. A fork PR's run lists no PR, so a fork PR fails the merge group; queue fork changes from a same-repository branch. These also fail the group: no matching entry within two minutes, a group ref or base other than `main`, more than 100 queue entries, or a failed API call. An owner marker alone does not pass a merge group, because the PR's own `review-gate` already decides when a marker is enough. The step checks out nothing, reads the API only, and gets no secrets.
-
-A merge group runs the workflow files from the group commit, so a PR that changes `review-gate.yml` runs its own copy on its merge group. The same holds for any other workflow file: the ruleset pins `review-gate` to GitHub Actions, not to one file, so a PR that adds a job named `review-gate` elsewhere also reports that context on its merge group. Such a PR already passed `review-gate` on its head, where the base branch's copy decided and, for an author other than the owner, required the owner's marker because it changes `.github/workflows/`. The merge-group check repeats that decision; the PR-head check is the review.
-
-The job has no job-level `if`. GitHub counts a skipped required job as a pass, so each step carries the event condition instead and the job always reports. Merge-group runs get their own `concurrency` group (`github.ref` is unique per group) and never cancel each other; only `pull_request_target` runs cancel older runs for the same PR.
-
-`scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on the required workflows and Web CI and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
+`scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on the required workflows and Web CI and the merge-group runner routing.
 
 [CI controls](ci-controls.md#turn-on-the-merge-queue) records the merge_queue rule that turned the queue on.
 

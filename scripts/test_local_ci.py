@@ -135,7 +135,7 @@ class LocalCiTests(unittest.TestCase):
                      "web-assets", "workaround-ratchet", "ast-grep", "boundaries", "selector-tests",
                      "node-fixtures", "actionlint", "zizmor", "rust-deps", "duplication", "ui-package"]:
             self.assertEqual(ci.summary[step], "PASS", step)
-        for step in ["rust-windows", "rust-macos", "pr-evidence"]:
+        for step in ["rust-windows", "rust-macos"]:
             self.assertEqual(ci.summary[step], "SKIP", step)
             self.assertNotIn(step, ci.ran)
         self.assertIn("rust-windows", ci.output.split("== local CI summary ==")[-1])
@@ -147,18 +147,6 @@ class LocalCiTests(unittest.TestCase):
         self.assertEqual(ci.summary["rust-macos"], "SKIP")
         self.assertIn("add the ci:cross-os label", ci.output)
         self.assertNotIn("add the macos label", ci.output)
-
-    def test_canceller_safety_tests_run_locally_and_after_hosted_yaml_setup(self):
-        command = "python3 -B -m unittest discover -s scripts -p test_cancel_stale_merge_groups.py"
-        selector = next(step for step in local_ci.STEPS if step.id == "selector-tests")
-        self.assertIn(command, selector.commands)
-        workflow = yaml.load((ROOT / ".github/workflows/actionlint.yml").read_text(),
-                             Loader=yaml.BaseLoader)
-        select = next(step for step in workflow["jobs"]["changes"]["steps"]
-                      if step.get("id") == "select")
-        lines = select["run"].splitlines()
-        self.assertIn(command, lines)
-        self.assertLess(lines.index("python3 -m pip install PyYAML==6.0.3"), lines.index(command))
 
     def test_historical_schema_commits_are_fetched_before_any_nextest_step(self):
         ci = LocalCi(self)
@@ -371,7 +359,7 @@ class LocalCiTests(unittest.TestCase):
         for step in left_out:
             self.assertNotIn(step, ci.summary)
         self.assertEqual(ci.summary["nextest-affected"], "PASS")
-        for step in ["rust-windows", "rust-macos", "pr-evidence"]:
+        for step in ["rust-windows", "rust-macos"]:
             self.assertEqual(ci.summary[step], "SKIP", step)
         self.assertLess(ci.ran.index("historical-schema"), ci.ran.index("nextest-affected"))
 

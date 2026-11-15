@@ -102,6 +102,7 @@ jobs:
         run: |
           case "$(node --version)" in
             v22.*)
+              node --conditions=development ../fixtures/parity/auth-admission/generate.mjs --check
               node ../fixtures/parity/auth-key/generate.mjs --check
               node ../fixtures/parity/auth-login/generate.mjs --check
               node ../fixtures/parity/auth-registration/generate.mjs --check

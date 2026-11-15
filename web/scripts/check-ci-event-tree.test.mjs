@@ -31,7 +31,7 @@ console.log(JSON.stringify({ path: '.github/workflows/desktop-contracts.yml', st
   symlinkSync(join(root, 'web/node_modules'), join(directory, 'web/node_modules'));
   writeFileSync(join(directory, contracts), original);
   writeFileSync(join(directory, '.github/workflows/web-ci.yml'), YAML.stringify(webCI));
-  for (const name of ['integration-smoke', 'pr-evidence', 'desktop-e2e', 'desktop-webkit', 'desktop-runtime', 'desktop-native-macos']) {
+  for (const name of ['integration-smoke', 'desktop-e2e', 'desktop-webkit', 'desktop-runtime', 'desktop-native-macos']) {
     copyFileSync(join(root, `.github/workflows/${name}.yml`), join(directory, `.github/workflows/${name}.yml`));
   }
   const git = (...args) => {
@@ -367,7 +367,6 @@ test('event tree rejects gitlink at required Web CI path', t => {
 
 for (const [name, job, diagnostic] of [
   ['integration-smoke', 'postgres', 'UNPINNED_INTEGRATION_NODE'],
-  ['pr-evidence', 'lint-pr-body', 'UNPINNED_EVIDENCE_NODE'],
   ['desktop-e2e', 'linux-smoke', 'UNPINNED_E2E_NODE'],
   ['desktop-webkit', 'webkit-stl', 'UNPINNED_WEBKIT_NODE'],
   ['desktop-runtime', 'runtime', 'UNPINNED_DESKTOP_NODE'],

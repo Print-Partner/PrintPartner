@@ -60,3 +60,17 @@ Follow the [definition of done](docs/development/definition-of-done.md):
 [Agent and contributor workflow](docs/development/agent-workflow.md) is the shared procedure for any agent or person: task briefs exported from Notion, checks, the safety guard, running the app, evidence, and handoffs. The repo skills in `.claude/skills/` link to it: [pp-verify](.claude/skills/pp-verify/SKILL.md) for screenshots and video, [pp-mission-qa](.claude/skills/pp-mission-qa/SKILL.md) for user testing of a migration slice, and [pp-readiness](.claude/skills/pp-readiness/SKILL.md) for agent-readiness work. Lanes follow [pp-lane](.claude/skills/pp-lane/SKILL.md), the standard procedure from ticket to readiness report.
 
 `scripts/agent-guard.py` refuses common maintainer-only actions. Claude Code runs it through `.claude/hooks/guard.py` once you add the [hook settings](docs/development/agent-workflow.md#claude-code). Other runners must call it themselves. It does not replace review.
+
+## Agent skills
+
+### Issue tracker
+
+Linear, team GRE, through the Linear MCP. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Defaults, except `ready-for-human` is `needs-chad-action` and `wontfix` is `pp:later`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.

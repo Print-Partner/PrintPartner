@@ -143,6 +143,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: env.PP_RUNNER_KIND != 'pp-local'
         with:
+          # The action otherwise keys on the job id. `rust-linux` is the id
+          # that saved the warm cache before this job was split.
+          shared-key: rust-linux
           workspaces: rust -> target
           # One part saves. The test parts compile the same binaries; four saves would race.
           save-if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') && matrix.part == '1/4' }}

@@ -23,7 +23,7 @@ When the Linux job runs on a pull request, nextest uses the affected-crate filte
 
 A push to `main` runs the same four parts, with nextest's filter `all()` (owner decision, 2026-11-12, GRE-1476, kept so a push does not wait on a macOS runner). A merge group runs the same Linux job, including nextest, on `ubuntu-latest` ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)).
 
-Hosted parts restore `Swatinem/rust-cache`. The `1/4` part saves it on a pull request and on `main`, so a second run of the same PR can be warm. The other parts only restore. pp-local skips this cache. The Rust image job uses the GitHub Actions cache with scope `dockerfile-rust` and `mode=max`, including on pull requests. The first image build of a new cache is cold.
+Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`, the job id that saved the cache before the split. The `1/4` part saves that same key on a pull request and on `main`. The other parts only restore. pp-local skips this cache. The Rust image job uses the GitHub Actions cache with scope `dockerfile-rust` and `mode=max`, including on pull requests. The first image build of a new cache is cold.
 
 This page covers what the jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks.
 
@@ -297,7 +297,7 @@ The Linux parts do not run on the nightly schedule or on a manual dispatch. See 
 
 Build caching and linking:
 
-- Hosted parts restore `Swatinem/rust-cache`. The `1/4` part saves it on a pull request and on `main`. The other parts only restore. pp-local parts skip the action and use the container's sccache instead.
+- Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`. The `1/4` part saves that key on a pull request and on `main`. The other parts only restore. pp-local parts skip the action and use the container's sccache instead.
 - Linux installs `mold` and links with it through `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold`. The nightly Windows and macOS builds keep their default linkers.
 - On GitHub-hosted Linux runners only, a part prints `df -h /` and deletes preinstalled toolchains it never uses (`/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/.ghcup` and CodeQL in the tool cache) when fewer than 50G are free. The GRE-1649 warm run spent about two minutes on that delete while 80G were still free, and one default-feature tree fits without it. pp-local skips the step. A hosted part prints `df -h /` again after nextest.
 - The workflow sets `CARGO_PROFILE_DEV_DEBUG` and `CARGO_PROFILE_TEST_DEBUG` to `line-tables-only`.
@@ -735,8 +735,10 @@ another container is compiling. `scripts/setup-ci-linux.sh` and
 ### Actions cache
 
 The repository's Actions cache is limited to 10 GB, so older entries are evicted
-first when it fills. The `1/4` part saves `Swatinem/rust-cache` on `main` and on
-pull requests, so a second run of the same PR can be warm. The other parts only restore. One save avoids four writers racing on the same key. pp-local does not use this cache. The Rust image job
+first when it fills. Hosted parts set `shared-key: rust-linux`, because the
+action otherwise includes the job id and a rename misses the saved entry. The
+`1/4` part saves that key on `main` and on pull requests. The other parts only
+restore. One save avoids four writers racing on the same key. pp-local does not use this cache. The Rust image job
 saves its Buildx cache (`scope=dockerfile-rust`, `mode=max`) on pull requests
 too. The Tauri CLI archive still saves only from `main`. `actions/setup-node`
 and `actions/setup-python` have no save switch; they save only when the lockfile

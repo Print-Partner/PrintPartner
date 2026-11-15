@@ -266,6 +266,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     self.assertNotIn("ref", checkout.get("with", {}))
                     cache = next(step for step in parts["steps"]
                                  if step.get("uses", "").startswith("Swatinem/rust-cache@"))
+                    self.assertEqual(cache["with"]["shared-key"], "rust-linux")
                     self.assertEqual(
                         cache["with"]["save-if"],
                         "${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') "

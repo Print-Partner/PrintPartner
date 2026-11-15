@@ -95,6 +95,7 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 | `catalog_brand_mismatch` | `requested_brand` is not that color's product line. |
 | `spoolman_module_off` | The Spoolman Module is off. |
 | `spoolman_unavailable` | Spoolman is on, and this port cannot verify the item, so it does not write. |
+| `module_settings_invalid` | A `spoolman` assignment, and the stored Module settings don't parse, so the Spoolman state is unknown. |
 | `no_planning_brief` | The Build has no planning brief. |
 | `planning_brief_invalid` | The stored brief does not parse. |
 

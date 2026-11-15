@@ -637,7 +637,8 @@ No compile-time, runtime or memory improvement has been measured.
 - Platform minima, signing/update channels and release cadence; Linux package
   set/GPU matrix; reference performance hardware and measured budgets.
 
-The glossary remains [GLOSSARY.md](../GLOSSARY.md); no term changes are needed.
+The glossary is [GLOSSARY.md](../GLOSSARY.md). ADR 0017 added Connected app
+and narrowed Share on network to the desktop app.
 Keep this existing URL canonical, as the planning research recommends when an
 existing explanation can remain in place. It avoids a second competing target
 page and preserves root guidance links. [Storage](storage.md),

@@ -35,7 +35,7 @@ record supersedes it.
 
 ## Adding a record
 
-1. Take the next unused number. 0011 to 0014 are reserved, so the next is 0017.
+1. Take the next unused number. 0011 to 0014 are reserved, and 0015 to 0017 are taken, so the next is 0018.
 2. Start the file with the title, then a `Status:` line with the date and who
    accepted it.
 3. Link any record it refines, amends or supersedes, and add a row to the table

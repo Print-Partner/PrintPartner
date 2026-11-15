@@ -7,7 +7,8 @@ Pull requests, merge groups and the nightly schedule stay on GitHub-hosted
 runners. A merge group holds PR code that has not landed, and the shared
 pp-local cache must only see code from main. rust (windows) always runs on
 windows-latest. The packaged smoke job stays on ubuntu-24.04. Required check
-names do not depend on the runner. GITHUB_TOKEN cannot list runners, so the
+names do not depend on the runner. Hosted Linux nextest is four hash
+partitions; pp-local stays one part. GITHUB_TOKEN cannot list runners, so the
 idle-runner check needs the optional PP_RUNNER_READ_TOKEN secret. Without it,
 a pp-local Rust job queued for STALE_MINUTES or more marks the fleet as
 unavailable. See docs/development/ci.md.
@@ -28,6 +29,8 @@ LOCAL_EVENTS = {"push", "workflow_dispatch"}
 STALE_MINUTES = 15
 # Only these jobs run on pp-local; their names keep the required check names.
 LOCAL_JOBS = ("rust (linux)",)
+# Hosted nextest is this many hash partitions. One pp-local job runs 1/1.
+HOSTED_TEST_PARTITIONS = 4
 
 
 def idle_runners(runners):
@@ -61,6 +64,21 @@ def runner_kind(runs_on):
     if isinstance(runs_on, list):
         return "pp-local" if "pp-local" in runs_on else "hosted"
     return "hosted"
+
+
+def linux_parts(runs_on):
+    """Matrix parts for the Linux job.
+
+    A hosted run (pull request, merge group, or a push that fell back to
+    ubuntu-latest) splits nextest into HOSTED_TEST_PARTITIONS hash parts and
+    keeps fmt and clippy on a `check` part. pp-local has a handful of slots
+    and the selector only requires one idle slot, so a push stays one part
+    that runs fmt, clippy and the whole filter (`1/1`).
+    """
+    if runner_kind(runs_on) != "hosted":
+        return ["1/1"]
+    count = HOSTED_TEST_PARTITIONS
+    return ["check", *[f"{index}/{count}" for index in range(1, count + 1)]]
 
 
 def choose(env, fetch, now):
@@ -129,11 +147,13 @@ def github_fetch(path, token):
 def main():
     runs_on, reason = choose(os.environ, github_fetch, datetime.now(timezone.utc))
     value = json.dumps(runs_on, separators=(",", ":"))
+    parts = json.dumps(linux_parts(runs_on), separators=(",", ":"))
     smoke = json.dumps(SMOKE)
-    message = f"Linux Rust runner: {value} ({reason}); packaged smoke {smoke}\n"
+    message = f"Linux Rust runner: {value} ({reason}); parts {parts}; packaged smoke {smoke}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write(f"linux_runs_on={value}\nlinux_kind={runner_kind(runs_on)}\n"
+                     f"linux_parts={parts}\n"
                      f"smoke_runs_on={smoke}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)

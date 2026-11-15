@@ -19,8 +19,9 @@ def rebuild_edge_is_gated(package, dependency):
     if not dependency.get("optional", False):
         return False
     features = package.get("features", {})
-    # `default = ["desktop_rebuild"]` is the Rust-only build. Any other path from
-    # default to that feature, or a direct default activation of the dependency, stays refused.
+    # GRE-1646: `default = ["desktop_rebuild"]` is the Rust-only image build.
+    # Any other path from default to that feature, or a direct default
+    # activation of the dependency, stays refused.
     reachable, pending = set(), [
         member for member in features.get("default", []) if member != "desktop_rebuild"
     ]

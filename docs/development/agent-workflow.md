@@ -281,7 +281,7 @@ Run the real app at the PR head and look at the change. Mocked tests passing doe
 - `rust/crates/pp-desktop` needs native execution for window, tray, protocol, and OS behavior. Browser evidence is not native acceptance.
 - `slicer-sidecar` uses a synthetic slicer in tests. Never send a real print.
 
-Before launching, write down the exact HEAD, operation owner, fixture, expected result, feature modes, time budget, and cleanup. Use fresh data and free loopback ports. Keep `desktop_rebuild` off unless the task tests its on mode.
+Before launching, write down the exact HEAD, operation owner, fixture, expected result, feature modes, time budget, and cleanup. Use fresh data and free loopback ports. Leave `PP_DESKTOP_REBUILD` unset unless the task tests the Rust-only runtime. The image crates already compile `desktop_rebuild`.
 
 ### Web UI
 
@@ -407,7 +407,7 @@ Open the screenshot and confirm it shows the Builds page and the dialog, not a l
 
 `scripts/evidence/run.sh` runs every step below in one command and cleans up after itself; see [the harness README](../../scripts/evidence/README.md). The manual steps follow.
 
-`verify.py` builds `pp-server` without the `desktop_rebuild` feature, so its own build always runs the Node-backed runtime. For the replacement UI (`web/apps/ui`), build the server with its default features, which include `desktop_rebuild`, then start it Rust-only on a copy of a synthetic dataset:
+`verify.py` builds `pp-server` with its default features, which include `desktop_rebuild` (GRE-1646). That binary stays on the Node-backed runtime unless `PP_DESKTOP_REBUILD` is `1` or `true`. For the replacement UI (`web/apps/ui`), start it Rust-only on a copy of a synthetic dataset:
 
 ```sh
 cargo build --locked --manifest-path rust/Cargo.toml -p pp-server
@@ -417,7 +417,7 @@ PP_DESKTOP_REBUILD=1 python3 scripts/verify-rust-gateway/verify.py launch \
   --credential-file "$PRIVATE_DIR/credential.json" >"$LOG" 2>&1 &
 ```
 
-`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-format) into that copy in the compact form. Rust-only startup refuses a non-empty directory without one. That start also needs a `desktop_rebuild` binary, and the helper's own build has no such feature, so `--seed` with `PP_DESKTOP_REBUILD` set requires `--binary` from `cargo build -p pp-server`, whose default features include it. The seed is never changed, and the copy is removed at shutdown.
+`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-format) into that copy in the compact form. Rust-only startup refuses a non-empty directory without one. The helper's own build includes `desktop_rebuild`, so `--seed` with `PP_DESKTOP_REBUILD` set can use that build. Pass `--binary` only to start a binary you already built. A binary from `--no-default-features` lacks the feature and refuses the marked copy. The seed is never changed, and the copy is removed at shutdown.
 
 The gateway serves the old `apps/web` build, not `apps/ui`. Serve the built replacement UI with Vite's preview server, which forwards `/api`, `/ws` and `/health` to the core:
 

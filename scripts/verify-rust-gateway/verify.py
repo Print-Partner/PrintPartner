@@ -742,10 +742,9 @@ def main():
         parser.error(f"--binary is not an executable file: {args.binary}")
     if args.seed is not None and args.mode != "launch":
         parser.error("--seed applies only to launch")
-    if args.seed is not None and args.binary is None and os.environ.get("PP_DESKTOP_REBUILD") in ("1", "true"):
-        # The marker is only right for a Rust-only start, which needs a desktop_rebuild binary;
-        # build() compiles without that feature, and its server would refuse the marked copy.
-        parser.error("--seed with PP_DESKTOP_REBUILD needs --binary built with --features desktop_rebuild")
+    # build() compiles pp-server with its default features, which include
+    # desktop_rebuild (GRE-1646). --seed with PP_DESKTOP_REBUILD can use that
+    # build. A --binary from --no-default-features still lacks the feature.
     if args.seed is not None:
         check_seed(args.seed)
     root = args.repo.resolve() if args.repo is not None else default_repo_root()

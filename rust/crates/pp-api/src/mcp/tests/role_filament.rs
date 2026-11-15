@@ -58,16 +58,7 @@ async fn mcp_assign_role_filament_saves_the_default_and_satisfies_the_requiremen
     assert_eq!(brief["requirements"][1]["status"], "unverified");
     assert_eq!(brief["role_filaments"].as_array().unwrap().len(), 1);
     assert_eq!(brief["role_filaments"][0]["inventory_id"], COLOR);
-    let defaults: Value = serde_json::from_str(
-        &database(&seeded.server)
-            .query_row(
-                "SELECT value FROM app_settings WHERE key=?1",
-                [format!("role_filaments_{}", seeded.build)],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-    )
-    .unwrap();
+    let defaults = role_defaults(&seeded);
     assert_eq!(defaults["Accent"]["filament_color_id"], COLOR);
     assert!(defaults["Accent"]["filament_custom_hex"].is_null());
     assert!(defaults["Accent"]["spoolman_spool_id"].is_null());
@@ -103,16 +94,7 @@ async fn mcp_assign_role_filament_saves_the_default_and_satisfies_the_requiremen
     let brief = seeded.brief();
     assert_eq!(brief["role_filaments"].as_array().unwrap().len(), 1);
     assert_eq!(brief["role_filaments"][0]["inventory_kind"], "substitute");
-    let defaults: Value = serde_json::from_str(
-        &database(&seeded.server)
-            .query_row(
-                "SELECT value FROM app_settings WHERE key=?1",
-                [format!("role_filaments_{}", seeded.build)],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-    )
-    .unwrap();
+    let defaults = role_defaults(&seeded);
     assert!(defaults["Accent"]["filament_color_id"].is_null());
     assert_eq!(defaults["Accent"]["filament_custom_hex"], "#112233");
 }
@@ -180,7 +162,11 @@ async fn mcp_assign_role_filament_refusals_write_nothing() {
             .iter()
             .any(|action| action["id"] == id)
     );
+}
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_assign_role_filament_catalog_and_spoolman_refusals_write_nothing() {
+    let seeded = seeded().await;
     let cases = [
         (catalog_id("missing"), "catalog_filament_not_found"),
         (
@@ -205,42 +191,50 @@ async fn mcp_assign_role_filament_refusals_write_nothing() {
         ),
     ];
     for (assignment, code) in cases {
-        let (proposal, error) = json_call(
-            &seeded.server,
-            &seeded.headers,
-            TOOL,
-            json!({ "plan_id": seeded.build, "assignment": assignment }),
-        )
-        .await;
-        assert!(!error, "{proposal}");
-        let (refused, error) = confirm(
-            &seeded.server,
-            &seeded.headers,
-            proposal["action"]["id"].as_str().unwrap(),
-        )
-        .await;
-        assert!(error, "{refused}");
-        assert_eq!(refused["code"], code, "{refused}");
-        assert_eq!(before, seeded.state());
+        refused_confirm(&seeded, assignment, code).await;
     }
 
     execute(
         &seeded.server,
         "UPDATE app_settings SET value='{\"orders\":true,\"spoolman\":true}' WHERE key='feature_toggles';",
     );
+    refused_confirm(
+        &seeded,
+        json!({
+            "role": "accent",
+            "inventory_kind": "spoolman",
+            "inventory_id": "spoolman:1",
+            "color_hex": "#112233",
+        }),
+        "spoolman_unavailable",
+    )
+    .await;
+    assert_eq!(
+        seeded.brief()["role_filaments"].as_array().unwrap().len(),
+        0
+    );
+}
+
+fn role_defaults(seeded: &Seeded) -> Value {
+    serde_json::from_str(
+        &database(&seeded.server)
+            .query_row(
+                "SELECT value FROM app_settings WHERE key=?1",
+                [format!("role_filaments_{}", seeded.build)],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn refused_confirm(seeded: &Seeded, assignment: Value, code: &str) {
+    let before = seeded.state();
     let (proposal, error) = json_call(
         &seeded.server,
         &seeded.headers,
         TOOL,
-        json!({
-            "plan_id": seeded.build,
-            "assignment": {
-                "role": "accent",
-                "inventory_kind": "spoolman",
-                "inventory_id": "spoolman:1",
-                "color_hex": "#112233",
-            }
-        }),
+        json!({ "plan_id": seeded.build, "assignment": assignment }),
     )
     .await;
     assert!(!error, "{proposal}");
@@ -251,11 +245,8 @@ async fn mcp_assign_role_filament_refusals_write_nothing() {
     )
     .await;
     assert!(error, "{refused}");
-    assert_eq!(refused["code"], "spoolman_unavailable");
-    assert_eq!(
-        seeded.brief()["role_filaments"].as_array().unwrap().len(),
-        0
-    );
+    assert_eq!(refused["code"], code, "{refused}");
+    assert_eq!(before, seeded.state());
 }
 
 fn catalog_id(id: &str) -> Value {

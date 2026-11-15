@@ -7,7 +7,7 @@ name: Claude Review
 # review comments, so each finding is a thread that the ruleset requires to be
 # resolved. `review-gate` accepts a head when `claude-code-review` succeeded on
 # it and `claude-security-review` succeeded or was neutral.
-# See docs/development/definition-of-done.md#code-review.
+# Chad merges. See docs/development/definition-of-done.md#who-merges.
 #
 # The action is not hardened against prompt injection, so the jobs run only for
 # PRs from this repository authored by poitee (pinned by login, so an org transfer changes nothing) or by Dependabot.

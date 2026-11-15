@@ -32,7 +32,7 @@ pub(crate) fn parse(mut args: impl Iterator<Item = String>) -> Result<Arguments>
 mod tests {
     use super::*;
 
-    fn parse_args(args: &[&str]) -> Result<Arguments> {
+    fn parse_args( args: &[&str] ) -> Result<Arguments> {
         parse(args.iter().map(|arg| (*arg).to_owned()))
     }
 

@@ -4,7 +4,7 @@ With the default-off `desktop_rebuild` feature compiled, these routes are mounte
 at the root and `/api/v1` only when the stored `PP_DESKTOP_REBUILD` value is
 exactly `1` or `true`. Otherwise they answer 404 and do not open the catalog.
 Sync and location stay unregistered; loose-file and ZIP upload are
-`POST /sources/{id}/upload-files` and `POST /sources/{id}/upload-zip` (see [Source uploads](source-uploads.md)). The desktop gateway does not mount
+`POST /sources/{id}/upload-files` and `POST /sources/{id}/upload-zip` (see [Source uploads](source-uploads.md)). The generated client names the ZIP route `uploadSourceZip`: no request DTO, and the 202 body is `SourceUploadAccepted` (`{job_id}`). The desktop gateway does not mount
 this router.
 
 | Method | Path | Catalog request |

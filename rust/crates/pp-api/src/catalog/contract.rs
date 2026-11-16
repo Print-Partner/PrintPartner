@@ -1,11 +1,11 @@
-//! Generated-client metadata for Library's Source create and job read
-//! (GRE-1365 PR 1). It sits beside the catalog routes so `client_contract.rs`
+//! Generated-client metadata for Library's Source create, job read and ZIP
+//! upload (GRE-1365). It sits beside the catalog routes so `client_contract.rs`
 //! does not grow; `export-rust-client` composes it with the base contract.
 use crate::client_contract::{ClientAuth, ClientRoute};
 
-/// `createSource` and `readJob`. `pp-core`'s mounted-route test checks them
-/// against the composed routers with the base routes.
-pub const CLIENT_ROUTES: [ClientRoute; 2] = [
+/// `createSource`, `readJob` and `uploadSourceZip`. `pp-core`'s mounted-route
+/// test checks them against the composed routers with the base routes.
+pub const CLIENT_ROUTES: [ClientRoute; 3] = [
     ClientRoute {
         name: "createSource",
         method: "POST",
@@ -26,6 +26,18 @@ pub const CLIENT_ROUTES: [ClientRoute; 2] = [
         text_params: &["id"],
         headers: &[],
     },
+    // The body is multipart/form-data, one ZIP, so there is no request DTO.
+    // The route answers 202 with `SourceUploadAccepted`.
+    ClientRoute {
+        name: "uploadSourceZip",
+        method: "POST",
+        path: "/api/v1/sources/{id}/upload-zip",
+        auth: ClientAuth::Credential,
+        request: None,
+        response: "SourceUploadAccepted",
+        text_params: &[],
+        headers: &[],
+    },
 ];
 
 /// Adds [`CLIENT_ROUTES`], their DTO schemas and fixtures to `document`.
@@ -33,7 +45,7 @@ pub const CLIENT_ROUTES: [ClientRoute; 2] = [
 pub fn client_document(
     mut document: serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Error> {
-    use super::wire::CreateSourceRequest;
+    use super::wire::{CreateSourceRequest, SourceUploadAccepted};
     use pp_storage::{
         catalog::SourceSummary,
         jobs::{JobKind, JobSnapshot, SourceSyncResult},
@@ -46,6 +58,10 @@ pub fn client_document(
         ),
         ("SourceSummary", schemars::schema_for!(SourceSummary)),
         ("JobSnapshot", schemars::schema_for!(JobSnapshot)),
+        (
+            "SourceUploadAccepted",
+            schemars::schema_for!(SourceUploadAccepted),
+        ),
     ] {
         document["dtos"][name] = to_value(schema)?;
     }
@@ -188,6 +204,12 @@ pub fn client_document(
             "finished_at": "2026-11-13T00:01:00.000Z",
         }}),
     );
+    fixtures.push(json!({
+        "dto": "SourceUploadAccepted",
+        "name": "accepted",
+        "value": to_value(SourceUploadAccepted { job_id: "job-import".into() })?,
+        "rust_accepts": true,
+    }));
     if let Some(all) = document["fixtures"].as_array_mut() {
         all.extend(fixtures);
     }

@@ -1310,6 +1310,18 @@ impl ServerWorkerClient {
         }
     }
 
+    /// The import free-space reserve for `tenant`, using the stored byte count
+    /// or 5 GiB when the row is missing or not a whole number.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn import_reserve(&self, tenant: &str) -> Result<u64> {
+        let reader = self.storage.reader(Duration::from_secs(5))?;
+        let stored = match reader.snapshot(tenant, crate::app_settings::IMPORT_RESERVE_KEY)? {
+            crate::SettingSnapshot::Stored { value } => Some(value),
+            crate::SettingSnapshot::Missing => None,
+        };
+        Ok(crate::app_settings::import_reserve_bytes(stored.as_deref()))
+    }
+
     /// Records one claimed target's local read failure and the Source failure
     /// observation. The reservation stays held. A refusal writes nothing.
     pub fn fail_source_sync_target(

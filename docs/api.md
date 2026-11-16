@@ -83,6 +83,16 @@ or empty `project_ids` is a 400 problem. The sync worker publishes each
 Source's revision. Sync and scanning operations use background jobs when the
 work may outlive one request.
 
+While files download, `GET /jobs/{id}` and `/ws/jobs/{id}` show `progress`
+between 0 and 100. A failed sync's `error` is the reason: the repository is
+gone, GitHub truncated the tree, a download failed, or the sync would leave
+less free space than the import reserve. The Source keeps its previous
+revision. An id that is unknown or not a GitHub Source is listed in
+`result.failures`; the other Sources still sync and the job ends `done`.
+Stopping the server while a sync is `running` leaves that job. The next start
+runs the same `job_id` again, and a following sync of the Source is not refused
+as busy. Shutdown stops the sync worker inside the mutation drain (5 seconds).
+
 `local_path` is an operator-facing capability for trusted, single-tenant
 self-host deployments. SaaS and multi-user deployments reject it on Source
 create and update requests, confine content to the Source's managed workspace,

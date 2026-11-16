@@ -862,10 +862,11 @@ impl JobRecord {
     pub(crate) fn awaits_owner_cleanup(&self) -> bool {
         false
     }
-    /// A failed import names its reason (GRE-428).
+    /// A failed import or sync names its reason (GRE-428, GRE-1726).
     #[cfg(feature = "desktop_rebuild")]
     fn stated_reason(&self) -> Option<&str> {
-        (self.kind == JobKind::SuppliedSourceImport && self.state == PersistentState::Failed)
+        (matches!(self.kind, JobKind::SuppliedSourceImport | JobKind::Sync)
+            && self.state == PersistentState::Failed)
             .then_some(self.recovery.as_deref())
             .flatten()
     }

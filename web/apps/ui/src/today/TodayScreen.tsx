@@ -589,6 +589,11 @@ export function TodayScreen() {
         const top = tasks.data?.tasks[0];
         return (
           <>
+            {tasks.data?.disk_notice ? (
+              <p role="status" className="pp-banner">
+                {tasks.data.disk_notice}
+              </p>
+            ) : null}
             <CheckoffStatus checkoff={checkoff} />
             {beds.length > 0 ? (
               <ClearBeds

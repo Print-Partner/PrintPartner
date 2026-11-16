@@ -10,19 +10,20 @@ use pp_storage::read_model::planning::{self, BuildPlanningPhase, SourceRole};
 const TOOL: &str = "propose_set_build_source_roles";
 const DRAFT: i64 = 7;
 
-struct Seeded {
-    server: McpServer,
-    headers: Vec<(String, String)>,
-    build: u64,
+/// Shared with the `propose_import_build_inputs` tests.
+pub(super) struct Seeded {
+    pub(super) server: McpServer,
+    pub(super) headers: Vec<(String, String)>,
+    pub(super) build: u64,
     /// Library Sources S1 and S2.
-    sources: [i64; 2],
+    pub(super) sources: [i64; 2],
 }
 
 impl Seeded {
     /// Build B from `propose_create_build`, Library Sources S1 (role `mod`)
     /// and S2 (role `overlay`), one layer of B on S1, and B's brief given
     /// evidence E1 (S1) and E2 (S2) with no roles and selected draft D.
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let (server, headers) = orders_on().await;
         let args = json!({ "name": "Voron for Sam", "request": "Voron 2.4, black ABS" });
         let (proposal, _) = json_call(&server, &headers, "propose_create_build", args).await;
@@ -61,11 +62,11 @@ impl Seeded {
         seeded
     }
 
-    fn key(&self) -> String {
+    pub(super) fn key(&self) -> String {
         format!("build_planning.v1.{}", self.build)
     }
 
-    fn brief(&self) -> Value {
+    pub(super) fn brief(&self) -> Value {
         let text: String = database(&self.server)
             .query_row(
                 "SELECT value FROM app_settings WHERE tenant_id='default' AND key=?1",
@@ -76,7 +77,7 @@ impl Seeded {
         serde_json::from_str(&text).unwrap()
     }
 
-    fn store(&self, brief: &Value) {
+    pub(super) fn store(&self, brief: &Value) {
         database(&self.server)
             .execute(
                 "UPDATE app_settings SET value=?2 WHERE tenant_id='default' AND key=?1",
@@ -86,13 +87,13 @@ impl Seeded {
     }
 
     /// Layers, every setting (the brief among them) and decisions.
-    fn state(&self) -> Vec<Vec<Vec<String>>> {
+    pub(super) fn state(&self) -> Vec<Vec<Vec<String>>> {
         pp_testkit::mcp_planning::state(&self.server._directory.join("print-partner.db")).unwrap()
     }
 
     /// The Library role of each Source and B's Plan revision count: the
     /// Accepted Plan is none and stays none.
-    fn untouched(&self) -> (Vec<String>, i64) {
+    pub(super) fn untouched(&self) -> (Vec<String>, i64) {
         let database = database(&self.server);
         let roles = self
             .sources
@@ -123,8 +124,47 @@ impl Seeded {
     /// Proposes `roles`, checks that propose wrote nothing, and returns the
     /// action id.
     async fn proposed(&self, roles: Value) -> String {
+        self.proposed_call(TOOL, json!({ "plan_id": self.build, "roles": roles }))
+            .await
+    }
+
+    /// B's planning, as `GET /plans/{id}/build-planning` serves it.
+    pub(super) async fn planning(&self) -> planning::BuildPlanning {
+        let planning::Outcome::BuildPlanning(response) =
+            build_planning(&self.server, self.build).await
+        else {
+            panic!("the brief reads");
+        };
+        response.planning.expect("B has a brief")
+    }
+
+    /// Calls `tool` with each case's arguments and checks that it is refused
+    /// with the case's code.
+    pub(super) async fn refuses_propose(&self, tool: &str, cases: Vec<(Value, &str)>) {
+        for (args, code) in cases {
+            let (refused, error) = json_call(&self.server, &self.headers, tool, args.clone()).await;
+            assert!(error, "{args}: {refused}");
+            assert_eq!(refused["code"], code, "{args}: {refused}");
+        }
+    }
+
+    /// Calls `tool` without the API key: 401, no proposal, nothing written.
+    pub(super) async fn unkeyed_proposes_nothing(&self, tool: &str, arguments: Value) {
         let before = self.state();
-        let (proposal, error) = self.propose(roles).await;
+        let status = self
+            .server
+            .unkeyed_call_status(&self.headers, tool, arguments)
+            .await;
+        assert_eq!(status, 401);
+        assert!(pending(&self.server, &self.headers).await.is_empty());
+        assert_eq!(self.state(), before);
+    }
+
+    /// Calls `tool` with `args`, checks that it proposed and wrote nothing,
+    /// and returns the action id.
+    pub(super) async fn proposed_call(&self, tool: &str, args: Value) -> String {
+        let before = self.state();
+        let (proposal, error) = json_call(&self.server, &self.headers, tool, args).await;
         assert!(!error, "{proposal}");
         assert_eq!(proposal["status"], "proposed", "{proposal}");
         assert_eq!(self.state(), before, "propose wrote nothing");
@@ -158,12 +198,7 @@ async fn mcp_source_roles_set_the_roles_and_clear_the_selected_draft() {
         )
         .unwrap();
     assert_eq!(b_layers, 1, "B has one layer");
-    let planning::Outcome::BuildPlanning(response) =
-        build_planning(&seeded.server, seeded.build).await
-    else {
-        panic!("the brief reads");
-    };
-    assert_eq!(response.planning.unwrap().brief.draft_id, Some(DRAFT));
+    assert_eq!(seeded.planning().await.brief.draft_id, Some(DRAFT));
     let id = seeded
         .proposed(json!([
             { "evidence_id": "E1", "role": "structural_base" },
@@ -182,12 +217,7 @@ async fn mcp_source_roles_set_the_roles_and_clear_the_selected_draft() {
     );
     assert!(pending(&seeded.server, &seeded.headers).await.is_empty());
 
-    let planning::Outcome::BuildPlanning(response) =
-        build_planning(&seeded.server, seeded.build).await
-    else {
-        panic!("the brief reads");
-    };
-    let planning = response.planning.expect("B has a brief");
+    let planning = seeded.planning().await;
     let roles: Vec<_> = planning
         .brief
         .evidence
@@ -260,7 +290,7 @@ async fn mcp_source_roles_confirm_refuses_with_a_code_and_changes_nothing() {
 async fn mcp_source_roles_propose_refuses_with_a_code() {
     let seeded = Seeded::new().await;
     let roles = json!([{ "evidence_id": "E1", "role": "addon" }]);
-    let cases = [
+    let cases = vec![
         (json!({ "roles": roles }), "invalid_plan_id"),
         (json!({ "plan_id": 0, "roles": roles }), "invalid_plan_id"),
         (
@@ -277,11 +307,7 @@ async fn mcp_source_roles_propose_refuses_with_a_code() {
             "no_planning_brief",
         ),
     ];
-    for (args, code) in cases {
-        let (refused, error) = json_call(&seeded.server, &seeded.headers, TOOL, args.clone()).await;
-        assert!(error, "{args}: {refused}");
-        assert_eq!(refused["code"], code, "{args}: {refused}");
-    }
+    seeded.refuses_propose(TOOL, cases).await;
 
     // A Build with no brief is refused before anything is proposed.
     execute(
@@ -297,14 +323,7 @@ async fn mcp_source_roles_propose_refuses_with_a_code() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_source_roles_without_a_key_is_refused_and_proposes_nothing() {
     let seeded = Seeded::new().await;
-    let before = seeded.state();
     let arguments =
         json!({ "plan_id": seeded.build, "roles": [{ "evidence_id": "E1", "role": "addon" }] });
-    let status = seeded
-        .server
-        .unkeyed_call_status(&seeded.headers, TOOL, arguments)
-        .await;
-    assert_eq!(status, 401);
-    assert!(pending(&seeded.server, &seeded.headers).await.is_empty());
-    assert_eq!(seeded.state(), before);
+    seeded.unkeyed_proposes_nothing(TOOL, arguments).await;
 }

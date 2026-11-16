@@ -91,10 +91,11 @@ impl MediaLimits {
             (self.max_objects as u64, hard.max_objects as u64),
             (self.max_vertices as u64, hard.max_vertices as u64),
             (self.max_triangles as u64, hard.max_triangles as u64),
-            (self.max_output_bytes, hard.max_output_bytes),
-            (self.max_total_bytes, hard.max_total_bytes),
         ];
-        if bounds.iter().any(|&(value, max)| value == 0 || value > max) {
+        if bounds.iter().any(|&(value, max)| value == 0 || value > max)
+            || self.max_output_bytes == 0
+            || self.max_total_bytes == 0
+        {
             return Err(MediaError::Invalid("media-limit"));
         }
         Ok(())
@@ -426,7 +427,16 @@ fn read_model(
         bytes: 0,
         seeks: 0,
     };
-    let entries = archive::inspect_index(&mut reader, length, ArchiveLimits::default(), cancelled)?;
+    let entries = archive::inspect_index(
+        &mut reader,
+        length,
+        ArchiveLimits {
+            max_compressed_bytes: limits.max_total_bytes,
+            max_inflated_bytes: limits.max_total_bytes,
+            max_entries: crate::MAX_ENTRIES,
+        },
+        cancelled,
+    )?;
     let (index, inflated_bytes) = entries
         .entries
         .iter()

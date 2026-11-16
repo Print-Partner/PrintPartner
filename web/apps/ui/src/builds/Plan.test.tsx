@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
-import { DRAFT_OPEN, NO_DRAFT } from "./planCopy";
+import { DRAFT_OPEN, NO_DRAFT, PLATES_CLEARED } from "./planCopy";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -828,8 +828,20 @@ describe("UI6-02 Accept gate", () => {
     expect(within(gate).getByText("gear.stl: Quantity none to 4")).toBeTruthy();
     expect(within(gate).getByText("gear.stl, unit 1: printed")).toBeTruthy();
     expect(within(gate).getByText("Plate 1 on Voron 2.4 is cleared (3 units)")).toBeTruthy();
+    expect(within(gate).getByText(PLATES_CLEARED)).toBeTruthy();
     expect(within(gate).getByText(/Spoolman is off/)).toBeTruthy();
     expect(within(gate).getByText("Order PO-7 is also on Other kit")).toBeTruthy();
+  });
+
+  it("says why Plates go only when the preview clears some (GRE-1530)", async () => {
+    const kept = preview(1);
+    if (kept.kind === "changed") kept.changes.plates.cleared = [];
+    renderAt(core({ preview: () => json(kept) }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    expect(within(gate).getByText("No plates change.")).toBeTruthy();
+    expect(within(gate).queryByText(PLATES_CLEARED)).toBeNull();
   });
 
   it("keeps Accept off with the reason while work blocks it", async () => {

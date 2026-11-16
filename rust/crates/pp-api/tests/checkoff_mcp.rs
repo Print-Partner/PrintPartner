@@ -79,6 +79,12 @@ impl Served {
                     .unwrap(),
                 progress,
                 accepted: owner.accepted_reads_with_policy(mcp_rpc::policy()).unwrap(),
+                farm: pp_api::mcp::McpFarm {
+                    reads: owner.farm_reads(mcp_rpc::policy()).unwrap(),
+                    observations: Arc::new(pp_api::farm::Unwatched),
+                    modules: owner.client(),
+                    activity: owner.print_activity(mcp_rpc::policy()).unwrap(),
+                },
             },
         ));
         let bearer = match bearer {

@@ -10,6 +10,9 @@ The owner-delegated research choice on 2026-11-03 keeps that design and adds
 sharing. The amendment is chosen design, not implemented portability.
 [ADR 0016](adr/0016-rust-owns-its-data-formats.md), accepted 2026-11-12, makes
 the import the only reader of Node's stored formats.
+[ADR 0017](adr/0017-one-rust-program-serves-the-react-screens.md), accepted
+2026-11-15, records that one Rust program serves the React screens, as a Docker
+image and as a desktop app for Windows, macOS and Linux.
 
 ## Product and system shape
 
@@ -126,11 +129,12 @@ content and state also stay unchanged. The new entry point must not wire screens
 to Node or introduce a mutation fallback. Maintain the old app for correctness
 and data safety until cutover.
 
-Keep the default-off Cargo feature and exact runtime opt-in
-`PP_DESKTOP_REBUILD=1` or `true`. Test both gates independently and together.
-Neither this design nor cutover approval authorizes changing the default.
+GRE-1646 turns the Cargo feature on by default for the crates the Rust-only
+image builds. The runtime opt-in stays exact: `PP_DESKTOP_REBUILD=1` or `true`,
+and it still defaults off outside that image. Test the feature-off build with
+`--no-default-features`, and test the runtime switch on and off.
 [Desktop rebuild](desktop-rebuild.md) remains the implementation/flag reference;
-its parity-first sequencing and default-on proposal are superseded by these ADRs.
+its parity-first sequencing is superseded by these ADRs.
 
 ## Crates and allowed edges
 
@@ -239,12 +243,12 @@ use the same operation interface. A transport must not repeat its policy.
 | --- | --- |
 | Authentication, sessions, API keys, pairing | `pp-api` admission; `pp-storage::auth` owns credential/session transactions; gateway owns listener admission |
 | Product Module choices and settings | `pp-storage` feature/settings modules; `pp-api` exposes effective state and off reasons; recheck before worker effects |
-| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
+| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam, and `GET /sources/{id}/thumbnail` renders and caches one STL (`pp-storage::source_files`, GRE-430); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
 | Builds, drafts, parts, order/customer/due-date fields | `pp-storage` build/draft modules own lifecycle, autosave receipts and order authority; `pp-services` holds extracted pure policy where useful |
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |
 | Workflow, readiness, Today tasks, History | `pp-storage::read_model` owns consistent projections; task feed extends the GRE-415 workflow projection, not a second ranking engine (served by `read_model::build_workflow`, [Build workflow](build-workflow.md)); History includes legacy assistant decisions |
-| Exports and production setup | Pure encoding/packing modules in `pp-domain` or existing `pp-services`, storage owns revision-bound artifact/job metadata, core runs workers and publishes staged files |
+| Exports and production setup | Exports are on-request downloads: one authenticated GET reads the accepted Plan once on the reader pool and answers the file, with no job, stored file or table (owner decision 2026-11-12, GRE-423). `pp-services::exports` renders as pure functions; `pp-api::exports` owns the routes, status codes and problems. `GET /api/v2/plans/{id}/exports/checklist` serves the HTML checklist and `.../exports/stl-pack` the STL pack, streamed from Source files verified through `pp-storage::accepted_artifacts` ([HTTP API](api.md#plates-and-exports)) |
 | Printers, queue, discovery, Bambu | Storage owns admitted queue/effect records; `pp-drivers` owns protocols through `pp-net`; core owns watchers; Bambu remains status-only. Farm reads join stored printers, results and queue (`pp-storage::read_model::farm`) with the watchers' observation port, read-only ([Farm reads](farm-reads.md)); `GET /ws/printers` streams the same projection from the watchers' ordered transitions ([Printer stream](printer-stream.md)); Moonraker connection test, capabilities, file browse and camera list are on-demand driver reads through the gateway ([Printer-host reads](printer-host-reads.md)); first-run `POST /api/v2/printers/probe` checks a typed Moonraker or PrusaLink address without saving, through the same guarded drivers (GRE-1127; LAN discovery remains GRE-1370) |
 | Stock and Spoolman shortfalls | `pp-drivers` provides Spoolman reads/effects; storage projects readiness/tasks and owns deduction intent/reconciliation. Spoolman alone owns stock counts. Today `pp-storage::read_model::stock` computes shortfalls (the workflow input for Today, Build Overview and the task feed) and `pp-core::spoolman` reads inventory through `pp_net` checked connections, injected into `pp-api` because `pp-core` may not depend on `pp-drivers` |
 | Native slicers and profiles | `pp-services` owns discovery/profile/handoff operations; storage binds artifacts to accepted revisions; shell/core invokes native adapters |
@@ -331,10 +335,12 @@ Add method/path/auth/request/response metadata tied to actual Rust registration,
 including the existing `/api/v2` draft routes. `web/packages/rust-client` is
 that package for Builds list and detail, layers, `/api/v2` drafts and health. Its
 exported route table combines `pp_api::client_contract::CLIENT_ROUTES` with
-`pp_api::printer_host::probe::CLIENT_ROUTE`. The `export-rust-client` binary
+`pp_api::printer_host::probe::CLIENT_ROUTE` and
+`pp_api::send_queue::CLIENT_ROUTES`. The `export-rust-client` binary
 composes their metadata, DTO schemas and serialized fixtures; the base
-`document()` and `document_bytes()` omit the probe extension. A `pp-core` test
-checks both route inventories against the composed routers. Its
+`document()` and `document_bytes()` omit the probe and send queue extensions.
+A `pp-core` test checks all three route inventories against the composed
+routers. Its
 [README](../web/packages/rust-client/README.md) lists the coverage and wire rules. REST shape may change for the new
 UI; do not invent `/api/v3` or promise old aliases for screen parity. Preserve
 external MCP paths/tool names and verify the actual inventory before retirement.
@@ -479,8 +485,10 @@ approves production cutover after a timed, versioned runbook rehearsal.
    artifact.
 5. Validate readiness, authentication, persistence and restart before normal
    mutations or effects. Chad records the go/no-go and authority switch.
-6. Observe through an owner-set acceptance window, including an evening Checkoff
-   session and restart. Retain recovery copies for a separately declared period.
+6. Observe through the acceptance window in
+   [ADR 0010](adr/0010-whole-runtime-cutover.md): 7 days of real printing on Rust
+   with no fallback, including an evening Checkoff session and restart. Keep the
+   pre-cutover copy for 90 days.
 
 Rollback stops Rust, preserves its state/evidence, and restores the verified
 pre-cutover database **and matching files** for the pinned old runtime. It loses
@@ -616,9 +624,11 @@ No compile-time, runtime or memory improvement has been measured.
 - Release signing identity/provider, publisher name, key custodians and recovery.
   Evaluate Microsoft Artifact Signing and SignPath eligibility rather than
   assuming EV signing removes SmartScreen warnings.
-- Acceptance/rollback window length, backup retention/free-space requirements,
-  supported input schemas, timed abort/recovery budgets, and explicit production
-  go/no-go. A window never promises lossless rollback.
+- Backup free-space requirements, supported input schemas, timed
+  abort/recovery budgets, and explicit production go/no-go. The acceptance
+  window and the 90-day pre-cutover copy are set in
+  [ADR 0010](adr/0010-whole-runtime-cutover.md). A window never promises
+  lossless rollback.
 - Flag retirement conditions/date and responsible issue; `desktop_rebuild` stays
   default-off until separately approved removal.
 - Final UI/client package names and router; contract exporter after one-family
@@ -628,7 +638,8 @@ No compile-time, runtime or memory improvement has been measured.
 - Platform minima, signing/update channels and release cadence; Linux package
   set/GPU matrix; reference performance hardware and measured budgets.
 
-The glossary remains [CONTEXT.md](../CONTEXT.md); no term changes are needed.
+The glossary is [GLOSSARY.md](../GLOSSARY.md). ADR 0017 added Connected app
+and narrowed Share on network to the desktop app.
 Keep this existing URL canonical, as the planning research recommends when an
 existing explanation can remain in place. It avoids a second competing target
 page and preserves root guidance links. [Storage](storage.md),

@@ -26,7 +26,7 @@ import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTempl
 import { plural } from "../today/beds";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { planKey, useMatchStep } from "./PlanReconcile";
-import { DRAFT_OPEN, NO_DRAFT } from "./planCopy";
+import { DRAFT_OPEN, NO_DRAFT, PLATES_CLEARED } from "./planCopy";
 import {
   acceptBody,
   fieldName,
@@ -477,6 +477,7 @@ function Changes({ changes }: { changes: PreviewChanges }) {
               `Plate ${p.ordinal} on ${p.printer_name} is cleared (${plural(p.unit_count, "unit")})`,
           )}
         />
+        {changes.plates.cleared.length > 0 && <p>{PLATES_CLEARED}</p>}
       </Section>
       <Section title="Stock">
         {changes.stock.kind === "off" ? (

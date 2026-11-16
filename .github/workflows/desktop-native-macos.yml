@@ -1,18 +1,9 @@
 name: Native macOS bundle
 
+# Native macOS stays off pull requests, main, and the nightly schedule until
+# desktop CI returns (GRE-1649).
 on:
   workflow_dispatch:
-  # Job conditions keep skipped check reports present. Hosted macOS runs on
-  # ready PRs only with the ci:cross-os label. Main, merge groups, nightly and manual
-  # runs select every macOS job, including Intel, regardless of changed paths.
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
-  push:
-    branches: [main, master]
-  merge_group:
-    types: [checks_requested]
-  schedule:
-    - cron: '17 7 * * *'
 
 permissions:
   contents: read

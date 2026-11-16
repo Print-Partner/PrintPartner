@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
+import { firstStlPath } from "../screen/sourceThumb";
+import { firstSourceId } from "./buildThumb";
 import { normalizeOrderNumber } from "./BuildsList";
 
 const json = (body: unknown, status = 200) =>
@@ -303,7 +305,9 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
     expect(screen.queryByRole("table", { name: "Builds" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show all Builds" }));
     expect(names()).toHaveLength(7);
-    expect(screen.getByRole("radio", { name: "All (7)" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "All (7)" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
   });
 
   it("normalizes order numbers as order_authority::normalize does", () => {
@@ -665,15 +669,160 @@ describe("UI2-02 Build Overview", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Layers" })).toBeTruthy();
   });
 
-  it("other tabs say what they will hold in a later slice and keep the tab bar", async () => {
+  it("the Production tab replaces its placeholder and keeps the tab bar", async () => {
     renderAt("/builds/2/production", core(plans));
     expect(screen.getByRole("heading", { level: 1, name: "Production" })).toBeTruthy();
-    expect(screen.getByText(/This tab arrives in a later slice/)).toBeTruthy();
+    expect(screen.queryByText(/This tab arrives in a later slice/)).toBeNull();
     const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole(
       "link",
     );
     expect(tabs.find((t) => t.getAttribute("aria-current") === "page")?.textContent).toBe(
       "Production",
     );
+  });
+});
+
+interface RecordedObserver {
+  callback: IntersectionObserverCallback;
+}
+
+const thumbObservers: RecordedObserver[] = [];
+
+function installBuildViewport() {
+  thumbObservers.length = 0;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function rect(
+    this: HTMLElement,
+  ) {
+    const top = this.dataset.build === "9" ? 5000 : 8;
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 40,
+      bottom: top + 40,
+      width: 40,
+      height: 40,
+      toJSON() {
+        return {};
+      },
+    } as DOMRect;
+  });
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        this.callback = callback;
+        thumbObservers.push(this);
+      }
+      callback: IntersectionObserverCallback;
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+      root = null;
+      rootMargin = "";
+      thresholds = [];
+    },
+  );
+}
+
+const SOURCE_FILES = {
+  source_id: 4,
+  revision_id: 44,
+  files: [
+    { path: "readme.md", kind: "document", size_bytes: 20 },
+    { path: "stl/box.stl", kind: "stl", size_bytes: 2048 },
+  ],
+};
+
+describe("Build list Source thumbnails", () => {
+  it("uses the lowest layer's first STL, and waits to read a row below the fold", async () => {
+    installBuildViewport();
+    const fetchMock = core((path) => {
+      if (path === "/api/v1/sources/4/files") return json(SOURCE_FILES);
+      return plans(path);
+    });
+    renderAt("/builds", fetchMock);
+    const image = await waitFor(() => {
+      const found = document.querySelector('img[src*="/api/v1/sources/4/thumbnail?path=stl%2Fbox.stl"]');
+      if (!found) throw new Error("thumbnail not requested");
+      return found;
+    });
+    expect(image.getAttribute("src")).toBe("/api/v1/sources/4/thumbnail?path=stl%2Fbox.stl");
+    const calls = requested(fetchMock);
+    expect(calls).toContain("/api/v2/plans/2/layers");
+    expect(calls).toContain("/api/v1/sources/4/files");
+    expect(calls).not.toContain("/api/v2/plans/9/layers");
+    expect(calls.some((path) => String(path).includes("/sources/7/"))).toBe(false);
+    const observer = thumbObservers[0];
+    if (!observer) throw new Error("below-fold row did not observe");
+    const target = document.querySelector('[data-build="9"]');
+    if (!target) throw new Error("below-fold row has no box");
+    observer.callback(
+      [{ isIntersecting: true, target } as IntersectionObserverEntry],
+      observer as unknown as IntersectionObserver,
+    );
+    await waitFor(() => expect(requested(fetchMock)).toContain("/api/v2/plans/9/layers"));
+  });
+
+  it("shows a placeholder when the thumbnail fails", async () => {
+    installBuildViewport();
+    const fetchMock = core((path) => {
+      if (path === "/api/v1/sources/4/files") return json(SOURCE_FILES);
+      return plans(path);
+    });
+    renderAt("/builds", fetchMock);
+    await waitFor(() => {
+      if (!document.querySelector('[data-path="stl/box.stl"] img')) {
+        throw new Error("thumbnail not requested");
+      }
+    });
+    for (const image of document.querySelectorAll('[data-path="stl/box.stl"] img')) {
+      fireEvent.error(image);
+    }
+    expect(screen.getAllByRole("img", { name: "No thumbnail" }).length).toBeGreaterThan(0);
+    expect(document.querySelector('[data-path="stl/box.stl"] img')).toBeNull();
+  });
+
+  it("shows a placeholder when the Build has no Source, and does not ask for a thumbnail", async () => {
+    installBuildViewport();
+    const fetchMock = core((path) => {
+      if (path.endsWith("/layers")) {
+        return json({
+          profile_id: 2,
+          layers: [
+            { id: 1, layer_order: 0, layer_type: "base", project_id: null, project_name: null },
+          ],
+        });
+      }
+      return plans(path);
+    });
+    renderAt("/builds", fetchMock);
+    await waitFor(() =>
+      expect(screen.getAllByRole("img", { name: "No thumbnail" })).toHaveLength(2),
+    );
+    expect(requested(fetchMock).some((path) => String(path).includes("/sources/"))).toBe(false);
+  });
+
+  it("picks the lowest layer and the first STL in the file list", () => {
+    expect(
+      firstSourceId([
+        { layer_order: 2, project_id: 7 },
+        { layer_order: 0, project_id: null },
+        { layer_order: 1, project_id: 4 },
+      ]),
+    ).toBe(4);
+    expect(firstSourceId([{ layer_order: 0, project_id: null }])).toBeNull();
+    expect(
+      firstStlPath([
+        { path: "readme.md", kind: "document" },
+        { path: "b.stl", kind: "stl" },
+        { path: "a.stl", kind: "stl" },
+      ]),
+    ).toBe("b.stl");
+    expect(firstStlPath([{ path: "readme.md", kind: "document" }])).toBeNull();
   });
 });

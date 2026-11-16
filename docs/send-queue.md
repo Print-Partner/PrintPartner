@@ -52,6 +52,15 @@ own Node-compatible parsing:
   remapped `checkoff_units` back to the table rows, or to the setting while
   the setting exists
 
+The import does this move itself, before any Rust process opens the folder.
+It deletes `printer.send_queue` after copying its items into the table,
+rewrites an `artifact_path` that lies under the Node folder onto the
+destination, and stores `queued` and `sending` items as `error`. `queued`
+uses the not-started text, so nothing was sent and Send now is still allowed.
+`sending` uses the interrupted text, so the printer outcome stays unknown.
+No upload job is created, and `recover` does not see a queue left in the
+setting. See [Checkoff and the send queue](node-import.md#checkoff-and-the-send-queue).
+
 ## When items move
 
 `WriterOwner::open` runs `send_queue::recover` after job recovery, in one
@@ -176,11 +185,21 @@ status routes.
 
 | Route | Answer |
 | --- | --- |
-| `POST /printer-send-queue` (Add to queue) | 200 `{item}` with `state: "queued"`. A `multipart/form-data` upload; see [Add to queue](#add-to-queue-gre-1227). |
-| `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `{item, job_id}`. Body `{"force": true}` skips the idle check. |
+| `POST /printer-send-queue` (Add to queue) | 200 `QueuedSendReceipt` with `state: "queued"`. A `multipart/form-data` upload; see [Add to queue](#add-to-queue-gre-1227). |
+| `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `SendNowReceipt`. Body `{"force": true}` skips the idle check; the replacement UI never sends it. |
 | `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`, or one 403 `FEATURE_DISABLED` / 500 `FEATURE_TOGGLES_INVALID` when Farm refuses a ready item. Optional `printer_id` must be a non-empty string. |
-| `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a missing or non-boolean `printed`, or a non-string `job_id`, is 400. |
-| `DELETE /printer-send-queue/{id}` (Remove) | 200 `{item}`, and the item's staged directory is deleted. |
+| `POST /printer-send-queue/{id}/reconcile` | 200 `QueuedSendReceipt`. Body `ReconcileSendRequest`, `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a body that is not that shape is 400. |
+| `DELETE /printer-send-queue/{id}` (Remove) | 200 `QueuedSendReceipt`, and the item's staged directory is deleted. |
+
+`QueuedSendReceipt` is `{item}` and `SendNowReceipt` is `{item, job_id}`,
+where `item` is the `QueuedSend` the queue read lists
+([Farm reads](farm-reads.md#checkoff-results-unmatched-prints-and-the-send-queue)):
+it has the item's `error`, `upload_job_id` and computed `outcome_unknown`, and
+leaves out the staged file path, host name, match and Checkoff units. These
+four routes are `addQueuedSend`, `sendQueuedNow`, `reconcileQueuedSend` and
+`removeQueuedSend` in the generated client (`pp_api::send_queue::CLIENT_ROUTES`);
+Send ready answers untyped JSON and is not in the client. Add has no request
+DTO because its body is a form.
 
 Send now checks storage first, so an unknown outcome is always 409
 `send_outcome_unknown`. Storage also requires the Farm feature for the item's
@@ -326,4 +345,14 @@ Checkoff units creates no link and records nothing.
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(ticket_t_26) | test(remapped_queue_rows_match_literal_node_results)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core --features pp-api/desktop_rebuild,pp-core/desktop_rebuild -E 'test(ticket_t_26) | test(add_to_queue)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(the_form)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(outcome_unknown) | test(farm_lists_skip)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild -E 'test(send_queue_rust_only_runtime) | test(client_routes_match_registrations)'
 ```
+
+`send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome`
+runs the Rust-only runtime against three loopback Moonraker simulators: one
+accepts the upload (one `POST /server/files/upload`, no start), one closes the
+connection without answering (`outcome_unknown`, refused Send now, unchanged
+after a restart, no second upload), and one refuses it (`error` with the
+printer's reason and no API key). The status watchers poll each simulator
+with GETs, so the test counts every other request as a send.

@@ -19,7 +19,12 @@ def rebuild_edge_is_gated(package, dependency):
     if not dependency.get("optional", False):
         return False
     features = package.get("features", {})
-    reachable, pending = set(), ["default"]
+    # GRE-1646: `default = ["desktop_rebuild"]` is the Rust-only image build.
+    # Any other path from default to that feature, or a direct default
+    # activation of the dependency, stays refused.
+    reachable, pending = set(), [
+        member for member in features.get("default", []) if member != "desktop_rebuild"
+    ]
     while pending:
         member = pending.pop()
         if member not in reachable:
@@ -117,7 +122,8 @@ def planted_edges_rejected():
             cases += (([gated], []),
                       ([{**gated, "dependencies": [{"name": dependency, "optional": False}]}], refused),
                       ([{**gated, "features": {**gated["features"], "default": [f"dep:{dependency}"]}}], refused),
-                      ([{**gated, "features": {**gated["features"], "default": ["desktop_rebuild"]}}], refused),
+                      ([{**gated, "features": {**gated["features"], "default": ["desktop_rebuild"]}}], []),
+                      ([{**gated, "features": {**gated["features"], "default": ["other"], "other": ["desktop_rebuild"]}}], refused),
                       ([{**gated, "features": {**gated["features"], "other": [f"{dependency}/other"]}}], refused))
     return all(violations(packages) == expected for packages, expected in cases)
 

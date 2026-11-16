@@ -10,7 +10,7 @@ publish = false
 serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 serde_path_to_error.workspace = true
-pp-domain = { path = "../pp-domain" }
+pp-domain = { path = "../pp-domain", default-features = false }
 jsonschema = { version = "=0.33.0", default-features = false }
 regress = "=0.10.4"
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
@@ -20,6 +20,7 @@ syn = { version = "=2.0.119", features = ["visit"], optional = true }
 prettyplease = { version = "=0.2.37", optional = true }
 
 [features]
+default = ["desktop_rebuild"]
 desktop_rebuild = ["pp-domain/desktop_rebuild"]
 codegen = ["pp-domain/codegen","dep:typify", "dep:schemars", "dep:syn", "dep:prettyplease"]
 

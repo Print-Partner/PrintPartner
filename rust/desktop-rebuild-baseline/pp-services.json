@@ -2,7 +2,7 @@
   "version": 2,
   "crates": {
     "pp-services": {
-      "module": 2,
+      "module": 3,
       "item": 0,
       "statement": 0
     }

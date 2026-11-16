@@ -9,7 +9,8 @@
 //! `outcome_unknown`, which also carries `"outcome_unknown": true` so the
 //! session drops the proposal instead of risking a second apply.
 
-use pp_storage::{WriterFailure, auth::AuthFailure};
+use pp_services::mcp_domain::ToolInvocation;
+use pp_storage::WriterFailure;
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,13 +27,26 @@ pub(super) enum Code {
     BlankName,
     NameTooLong,
     BlankRequest,
-    UrlsNotSupported,
     InvalidIdempotencyKey,
     NameTaken,
     OrdersModuleOff,
     ModuleSettingsInvalid,
     IdempotencyRecordInvalid,
-    // get_build_planning_state, get_plan_draft, propose_set_build_source_roles
+    // propose_edit_plan_draft_parts
+    ArgumentsRequired,
+    NotFound,
+    NotOpen,
+    PartsRequired,
+    InvalidEdit,
+    PartNotFound,
+    EditEmpty,
+    InvalidDigest,
+    DraftChanged,
+    BaseChanged,
+    AcceptedBaselineRequired,
+    EditRefused,
+    // get_build_planning_state, get_plan_draft, propose_set_build_source_roles,
+    // propose_import_build_inputs
     InvalidPlanId,
     PlanNotFound,
     NoPlanningBrief,
@@ -43,6 +57,34 @@ pub(super) enum Code {
     InvalidSourceRole,
     EvidenceNotFound,
     MultipleStructuralBases,
+    // farm tools
+    FarmModuleOff,
+    // propose_assign_role_filament
+    InvalidFilamentAssignment,
+    SubstitutionUnconfirmed,
+    CatalogFilamentNotFound,
+    CatalogColorMismatch,
+    CatalogNameMismatch,
+    CatalogBrandMismatch,
+    SpoolmanModuleOff,
+    SpoolmanUnavailable,
+    // propose_import_build_inputs
+    InvalidInputs,
+    InvalidInput,
+    UrlInputsNotSupported,
+    InvalidEvidenceKind,
+    InvalidUrl,
+    SourceNotFound,
+    DerivedEvidenceNotFound,
+    // get_print_stats
+    InvalidHours,
+    // propose_rebuild_plan
+    NoStructuralBase,
+    SourceChoicesUnsupported,
+    LayerConflict,
+    NoStls,
+    WouldWipe,
+    IdempotencyConflict,
 }
 
 impl Code {
@@ -55,12 +97,23 @@ impl Code {
             Self::BlankName => "blank_name",
             Self::NameTooLong => "name_too_long",
             Self::BlankRequest => "blank_request",
-            Self::UrlsNotSupported => "urls_not_supported",
             Self::InvalidIdempotencyKey => "invalid_idempotency_key",
             Self::NameTaken => "name_taken",
             Self::OrdersModuleOff => "orders_module_off",
             Self::ModuleSettingsInvalid => "module_settings_invalid",
             Self::IdempotencyRecordInvalid => "idempotency_record_invalid",
+            Self::ArgumentsRequired => "arguments_required",
+            Self::NotFound => "not_found",
+            Self::NotOpen => "not_open",
+            Self::PartsRequired => "parts_required",
+            Self::InvalidEdit => "invalid_edit",
+            Self::PartNotFound => "part_not_found",
+            Self::EditEmpty => "edit_empty",
+            Self::InvalidDigest => "invalid_digest",
+            Self::DraftChanged => "draft_changed",
+            Self::BaseChanged => "base_changed",
+            Self::AcceptedBaselineRequired => "accepted_baseline_required",
+            Self::EditRefused => "edit_refused",
             Self::InvalidPlanId => "invalid_plan_id",
             Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",
@@ -70,6 +123,29 @@ impl Code {
             Self::InvalidSourceRole => "invalid_source_role",
             Self::EvidenceNotFound => "evidence_not_found",
             Self::MultipleStructuralBases => "multiple_structural_bases",
+            Self::FarmModuleOff => "farm_module_off",
+            Self::InvalidFilamentAssignment => "invalid_filament_assignment",
+            Self::SubstitutionUnconfirmed => "substitution_unconfirmed",
+            Self::CatalogFilamentNotFound => "catalog_filament_not_found",
+            Self::CatalogColorMismatch => "catalog_color_mismatch",
+            Self::CatalogNameMismatch => "catalog_name_mismatch",
+            Self::CatalogBrandMismatch => "catalog_brand_mismatch",
+            Self::SpoolmanModuleOff => "spoolman_module_off",
+            Self::SpoolmanUnavailable => "spoolman_unavailable",
+            Self::InvalidInputs => "invalid_inputs",
+            Self::InvalidInput => "invalid_input",
+            Self::UrlInputsNotSupported => "url_inputs_not_supported",
+            Self::InvalidEvidenceKind => "invalid_evidence_kind",
+            Self::InvalidUrl => "invalid_url",
+            Self::SourceNotFound => "source_not_found",
+            Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
+            Self::InvalidHours => "invalid_hours",
+            Self::NoStructuralBase => "no_structural_base",
+            Self::SourceChoicesUnsupported => "source_choices_unsupported",
+            Self::LayerConflict => "layer_conflict",
+            Self::NoStls => "no_stls",
+            Self::WouldWipe => "would_wipe",
+            Self::IdempotencyConflict => "idempotency_conflict",
         }
     }
 }
@@ -91,6 +167,14 @@ impl Refusal {
         json!({ "error": self.detail, "code": self.code.as_str() }).to_string()
     }
 
+    /// A refused propose, as the tool's invocation.
+    pub(super) fn invocation(self) -> ToolInvocation {
+        ToolInvocation {
+            content: self.proposal(),
+            proposed_action: None,
+        }
+    }
+
     /// The result of a refused confirm.
     pub(super) fn confirmation(self) -> Value {
         let mut result = json!({ "ok": false, "code": self.code.as_str(), "detail": self.detail });
@@ -101,30 +185,35 @@ impl Refusal {
     }
 }
 
+/// The refusal for a failed read through a client that reports a full or
+/// stopped writer queue as a plain message: `problem::writer_admission`
+/// classifies it, as the HTTP routes do, so it answers `unavailable`.
+pub(super) fn read_failure(error: anyhow::Error) -> Refusal {
+    use crate::problem::{Admission, writer_admission};
+    writer_failure(&match writer_admission(&error) {
+        Some(Admission::Full) => WriterFailure::QueueFull,
+        Some(Admission::Stopped) => WriterFailure::Stopped,
+        None => WriterFailure::from(error),
+    })
+}
+
 /// The refusal for a failure every write through the write seam shares.
+/// `problem::WriterFailureKind` sorts the failure, once for HTTP and MCP;
+/// this gives each of its rows the MCP answer.
 pub(super) fn writer_failure(failure: &WriterFailure) -> Refusal {
-    use AuthFailure::{
-        CommitUnknown, CredentialChanged, InvalidCredentials, OwnerMappingRequired, QueueFull,
-        SessionRequired, Stopped, Storage,
-    };
-    match failure {
-        WriterFailure::Auth(
-            SessionRequired | InvalidCredentials | CredentialChanged | OwnerMappingRequired,
-        ) => Refusal::new(Code::Unauthorized, "The API key was not accepted."),
-        WriterFailure::QueueFull
-        | WriterFailure::Busy
-        | WriterFailure::Stopped
-        | WriterFailure::Cancelled
-        | WriterFailure::Auth(QueueFull | Stopped | Storage) => Refusal::new(
+    use crate::problem::WriterFailureKind as Kind;
+    match Kind::of(failure) {
+        Kind::Unauthenticated | Kind::OwnerMappingRequired => {
+            Refusal::new(Code::Unauthorized, "The API key was not accepted.")
+        }
+        Kind::QueueFull | Kind::Busy | Kind::Stopped => Refusal::new(
             Code::Unavailable,
             "Storage is busy. Nothing was written; try again.",
         ),
-        WriterFailure::Auth(CommitUnknown) => Refusal::new(
+        Kind::CommitUnknown => Refusal::new(
             Code::OutcomeUnknown,
             "The result is unknown. Check the Builds before proposing again.",
         ),
-        WriterFailure::Auth(_) | WriterFailure::Internal(_) => {
-            Refusal::new(Code::Internal, "Storage failed. Nothing was written.")
-        }
+        Kind::Internal => Refusal::new(Code::Internal, "Storage failed. Nothing was written."),
     }
 }

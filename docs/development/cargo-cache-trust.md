@@ -2,9 +2,8 @@
 
 The Linux Rust jobs in Rust cross-OS run on pp-local again for pushes to `main`
 and manual runs (GRE-1042). Merge groups ran there too until GRE-1277 moved them to
-`ubuntu-latest`, because a merge group holds PR code that has not landed yet. Pull requests run on Blacksmith runners by
-default, or on GitHub-hosted or [pp-iso](pp-iso.md) runners when `PP_PR_RUNNER` selects
-them (never pp-local), so PR code does not run on the hosts that share the containers'
+`ubuntu-latest`, because a merge group holds PR code that has not landed yet. Pull requests run on GitHub-hosted
+runners (never pp-local), so PR code does not run on the hosts that share the containers'
 host-mounted Cargo registry and sccache. This assessment, written for the earlier
 local-runner configuration that ran PRs locally, describes the risk that keeping
 PRs off pp-local avoids.
@@ -23,9 +22,7 @@ merged. It changes no runner, cache, workflow, permissions, or application behav
 [Rust cross-OS](../../.github/workflows/rust-cross-os.yml) selects pp-local only on
 `push` to `main` and `workflow_dispatch`, never on a `pull_request`. At the assessed
 commit it also selected pp-local for `merge_group`; since GRE-1277 merge groups use
-`ubuntu-latest`. A pull request
-uses Blacksmith, hosted or, when the head repository equals `github.repository`, pp-iso, as
-`PP_PR_RUNNER` says; the nightly schedule uses `ubuntu-latest`.
+`ubuntu-latest`. A pull request uses a GitHub-hosted runner; the nightly schedule uses `ubuntu-latest`.
 There is no actor exception, so a same-repository Dependabot PR satisfies the
 same routing predicate as a human-authored PR. The label selects a runner pool,
 not a cache namespace.
@@ -36,8 +33,7 @@ lockfile updates for `/rust`. Those updates can introduce new dependency code.
 [Embedded-driver smoke](../../.github/workflows/desktop-e2e.yml) and
 [WebKit smoke](../../.github/workflows/desktop-webkit.yml) run on
 `ubuntu-24.04`, hardcoded in their `runs-on` lines. Embedded-driver smoke and WebKit smoke run `Swatinem/rust-cache` on every runner; Rust cross-OS skips it
-only when the runner kind is pp-local (`PP_RUNNER_KIND`). Hosted, Blacksmith and pp-iso
-runners and the shared Rust steps on macOS and Windows retain that action.
+only when the runner kind is pp-local (`PP_RUNNER_KIND`). Hosted runners and the shared Rust steps on macOS and Windows retain that action.
 
 [Desktop runtime and source-artifact jobs](../../.github/workflows/desktop-runtime.yml)
 run Cargo on hosted `ubuntu-24.04`. More generally, any local job can modify a cache
@@ -80,7 +76,7 @@ A private target directory does not isolate a shared dependency source directory
 Ephemeral runner teardown removes private state but leaves a persistent host
 cache available to later jobs.
 
-The current routing sends pull requests to Blacksmith, hosted or pp-iso runners and
+The current routing sends pull requests to GitHub-hosted runners and
 keeps pp-local for main pushes and manual runs (merge groups too until GRE-1277,
 which moved them to `ubuntu-latest`). There is no
 repository-configured host-volume path from PR jobs to pp-local. It

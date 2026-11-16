@@ -125,6 +125,8 @@ const optionalMembers = {
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
   // Create takes `enabled` (default true) and only the credential fields its kind uses; an edit sends only the fields it changes.
   CreateIntegrationRequest: new Set(["enabled", "username", "api_key", "password"]),
+  // Source create needs only a name; the core stores defaults for the rest (GRE-1490).
+  CreateSourceRequest: new Set(["url", "branch", "tag", "source_kind", "role", "metadata"]),
   UpdateIntegrationRequest: new Set(["name", "base_url", "enabled", "username", "api_key", "password"]),
   // Create defaults the margin and slot count; an edit sends only the fields it changes.
   CreatePrinterRequest: new Set(["margin_mm", "max_filament_slots", "integration_id"]),
@@ -166,6 +168,14 @@ for (const fixture of document.fixtures) {
     }
   });
 }
+
+test("readJob parses the job a Source upload answers with", () => {
+  const fixture = document.fixtures.find((entry) => entry.dto === "JobSnapshot" && entry.name === "source-import-failed");
+  assert(fixture);
+  const parsed = routes.readJob.response.safeParse(fixture.value);
+  assert.equal(parsed.success, true, JSON.stringify(parsed.error?.issues));
+  assert.equal(parsed.data.kind, "supplied-source-import");
+});
 
 test("Health decodes Node's captured /health bodies and Rust-only bodies with and without modules", () => {
   const nodeCases = JSON.parse(readFileSync(new URL("../../../fixtures/parity/auth-health/node.json", import.meta.url), "utf8")).cases.filter((entry) => entry.node.status === 200);

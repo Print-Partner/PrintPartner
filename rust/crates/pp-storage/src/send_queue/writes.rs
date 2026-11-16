@@ -272,12 +272,17 @@ fn transact(
     Ok(reply)
 }
 
-/// The table item in Node's item shape, or `None`.
+/// The table item in Node's item shape with its computed
+/// `outcome_unknown`, or `None`.
 fn item(tx: &Connection, tenant: &str, id: &str) -> Result<Option<Value>> {
-    Ok(rows(tx, tenant)?
+    let mut found: Vec<Value> = rows(tx, tenant)?
         .unwrap_or_default()
         .into_iter()
-        .find(|item| item["id"] == id))
+        .filter(|item| item["id"] == id)
+        .take(1)
+        .collect();
+    super::mark_outcomes(Some(tx), tenant, &mut found)?;
+    Ok(found.pop())
 }
 
 struct Stored {

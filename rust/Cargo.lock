@@ -3487,6 +3487,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower",
+ "zip",
 ]
 
 [[package]]
@@ -3579,6 +3580,7 @@ dependencies = [
  "tower",
  "tracing",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -3768,6 +3770,7 @@ dependencies = [
  "hmac",
  "icu_collator",
  "libc",
+ "png 0.18.1",
  "pp-contracts",
  "pp-domain",
  "pp-os",

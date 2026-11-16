@@ -20,6 +20,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(feature = "desktop_rebuild")]
+pub(super) mod upload;
+
 #[derive(Clone)]
 pub struct CatalogHttpConfig {
     origin: String,
@@ -94,7 +97,8 @@ struct App {
 /// Source activity, Source category settings, Source naming get/put, global STL
 /// naming get/put, and STL naming preview at `/` and `/api/v1` when
 /// `PP_DESKTOP_REBUILD` was exactly `1` or `true` at startup. Otherwise nothing
-/// is mounted. Sync, upload, and location stay unregistered.
+/// is mounted. Loose-file and ZIP upload are [`upload::admit_upload_routes`].
+/// Location stays unregistered. Sync is `POST /jobs/sync`.
 pub fn admit_catalog_routes(config: CatalogHttpConfig, owner: Arc<Mutex<WriterOwner>>) -> Router {
     if !config.enabled {
         return Router::new();
@@ -262,12 +266,20 @@ async fn create(
     if let Some(response) = refused_local_path(&body) {
         return response;
     }
+    // A missing or null name reaches storage, which answers Node's "Source name
+    // is required"; a name of another type is refused here.
+    let mut body = body;
+    if body.get("name").is_none_or(serde_json::Value::is_null) {
+        body["name"] = "".into();
+    }
+    let source = match serde_json::from_value::<wire::CreateSourceRequest>(body) {
+        Ok(request) => request.into(),
+        Err(error) => return reject(StatusCode::BAD_REQUEST, format!("Invalid Source: {error}")),
+    };
     execute(
         &app,
         credentials(principal),
-        CatalogRequest::CreateCatalogSource {
-            source: wire::source_create(&body),
-        },
+        CatalogRequest::CreateCatalogSource { source },
     )
     .await
 }

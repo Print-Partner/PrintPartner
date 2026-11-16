@@ -193,6 +193,18 @@ impl Queue {
         (count("printer_send_queue"), count("durable_jobs"))
     }
 
+    /// The item's stored artifact path, host name, match and Checkoff units.
+    fn stored(&self, id: &str) -> [String; 4] {
+        rusqlite::Connection::open(self.root.join("print-partner.db"))
+            .unwrap()
+            .query_row(
+                "SELECT artifact_path,host_name,match,coalesce(checkoff_units,'') FROM printer_send_queue WHERE id=?1",
+                [id],
+                |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?]),
+            )
+            .unwrap()
+    }
+
     /// The item's state and error, and its upload job's state.
     fn item(&self, id: &str) -> (String, Option<String>, Option<String>) {
         rusqlite::Connection::open(self.root.join("print-partner.db"))
@@ -259,8 +271,10 @@ async fn ticket_t_26_send_now_enqueues_one_upload_and_waits_for_an_idle_printer(
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["item"]["state"], "sending");
-    assert_eq!(body["item"]["host_name"], "p-a host");
+    assert_eq!(body["item"]["upload_job_id"], body["job_id"]);
+    assert_eq!(body["item"]["outcome_unknown"], false);
     assert!(body["job_id"].is_string());
+    assert_eq!(queue.stored("q1")[1], "p-a host");
     assert_eq!(
         queue.item("q1"),
         ("sending".into(), None, Some("queued".into()))
@@ -443,6 +457,7 @@ async fn ticket_t_26_an_unknown_outcome_is_refused_until_the_user_reconciles() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["item"]["state"], "error");
     assert_eq!(body["item"]["error"], NOT_PRINTED);
+    assert_eq!(body["item"]["outcome_unknown"], false);
     // Only a new, explicit Send now sends it again.
     assert_eq!(queue.item("lost").0, "error");
     let (status, body) = queue
@@ -546,24 +561,35 @@ async fn add_to_queue_stages_the_file_and_queues_an_item_without_sending() {
     assert_eq!(item["printer_id"], "p-b");
     assert_eq!(item["filename"], "Plate 1.gcode");
     assert_eq!(item["profile_id"], 1);
-    assert_eq!(item["host_name"], "p-b host");
+    assert_eq!(item["unit_count"], 1);
     assert_eq!(
-        (&item["start"], &item["wait_for_idle"], &item["match"]),
-        (&json!(true), &json!(true), &json!("pinned"))
+        (&item["start"], &item["wait_for_idle"]),
+        (&json!(true), &json!(true))
     );
     assert_eq!(
-        item["checkoff_units"],
-        json!([{ "part_id": 3, "unit_index": 1 }])
+        (
+            &item["error"],
+            &item["upload_job_id"],
+            &item["outcome_unknown"]
+        ),
+        (&Value::Null, &Value::Null, &json!(false))
     );
+    // The staged path and host name stay server-side.
+    assert!(item.get("artifact_path").is_none() && item.get("host_name").is_none());
+    let id = item["id"].as_str().unwrap();
     assert_eq!(
-        item["artifact_path"],
-        "/data/exports/printer-uploads/1/Plate 1.gcode"
+        queue.stored(id),
+        [
+            "/data/exports/printer-uploads/1/Plate 1.gcode",
+            "p-b host",
+            "pinned",
+            r#"[{"part_id":3,"unit_index":1}]"#,
+        ]
     );
     assert_eq!(
         *queue.targets.staged.lock().unwrap(),
         [("Plate 1.gcode".to_owned(), GCODE.to_vec())]
     );
-    let id = item["id"].as_str().unwrap();
     assert_eq!(queue.item(id), ("queued".into(), None, None));
     assert_eq!(queue.counts(), (before.0 + 1, before.1), "no upload job");
     assert_eq!(

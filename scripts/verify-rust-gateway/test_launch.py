@@ -413,7 +413,7 @@ class SeedTest(unittest.TestCase):
                 self.assertEqual(sorted(p.name for p in seed.iterdir()),
                                  ["SYNTHETIC-DATASET.json", "print-partner.db"])
 
-    def test_rust_only_seed_without_a_prebuilt_binary_is_refused(self):
+    def test_rust_only_seed_without_a_prebuilt_binary_starts_the_default_build(self):
         with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
             temp = Path(temporary)
             seed = self.make_seed(temp)
@@ -421,8 +421,10 @@ class SeedTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(HELPER), "launch", "--repo", str(root), "--seed", str(seed)],
                                     capture_output=True, text=True, timeout=60,
                                     env={**os.environ, "PP_DESKTOP_REBUILD": "1"})
-            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-            self.assertIn("needs --binary built with --features desktop_rebuild", result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("needs --binary built with --features desktop_rebuild", combined)
+            self.assertNotEqual(result.returncode, 2, combined)
+            self.assertIn("BUILD: npm", combined)
 
     def test_seed_without_synthetic_manifest_is_refused_before_start(self):
         with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:

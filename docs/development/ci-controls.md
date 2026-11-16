@@ -34,7 +34,7 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `rust/ast-grep-baseline.json`, `rust/clippy-limits-baseline.json`,
   `scripts/workaround-baseline.json`, and Rust snapshot directories under `rust/crates/`.
 
-Who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus things CODEOWNERS does not list: the Rust-only image `Dockerfile.rust` (GRE-1458), the release signing key `cosign.pub` and the Git hooks under `.githooks/` (owner decision, 2026-11-11), the safety guard, its classifier and its hook adapters (`scripts/agent-guard.py`, `scripts/merge_class.py` and `scripts/merge-classes.json` (owner decision, 2026-11-11), `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. The coordinator merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) and the rules documents (`AGENTS.md`, `docs/development/definition-of-done.md` and this page; owner decision, 2026-11-11) as sensitive PRs after two scorer seats score the exact head 9 or more, except a PR that weakens a security boundary: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py` stays with Chad. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
+Who merges is decided by [Who merges](definition-of-done.md#who-merges). Chad merges the CI controls and the release path: the `.github/` paths, the CI selectors and the checks on the workflows themselves (the path filter, the Rust runner, the PR evidence checker, and the action-pin, CI tool-pin, desktop-workflow-state and CI event-tree checks), `scripts/linear/`, the release and image files, `rust/deny.toml` and `rust/scripts/check-macos-bundle.py`, plus things CODEOWNERS does not list: the Rust-only image `Dockerfile.rust` (GRE-1458), the release signing key `cosign.pub` and the Git hooks under `.githooks/` (owner decision, 2026-11-11), the safety guard, its classifier and its hook adapters (`scripts/agent-guard.py`, `scripts/merge_class.py` and `scripts/merge-classes.json` (owner decision, 2026-11-11), `.claude/`, and `.factory/` if a runner config is added there again), `docs/development/main-ci-controls.ruleset.json` and `scripts/test_merge_group_workflows.py`. Chad also merges the lint, boundary and size checkers and baselines (`check-ast-grep.py` with `rust/rules/` and the ast-grep baseline, `check-boundaries.py`, `check-clippy-limits.py` with its baseline, `check-domain-deps.py` and `check-react-routes.mjs` under `rust/scripts/`, the workaround and duplication baselines with their checkers, and the Rust snapshot directories) and the rules documents (`AGENTS.md`, `docs/development/definition-of-done.md` and this page; owner decision, 2026-11-11). A change that weakens a security boundary stays with Chad too: raising the `runtime-process-command` count or editing its rule, widening `ALLOWED`, or shrinking `DEV_ONLY` or `TEST_ONLY_FEATURES` in `check-boundaries.py`. CODEOWNERS requests Chad's review on those paths, and the merge does not wait for it (decided 2026-11-09). `rust/rules/` is not in CODEOWNERS today; adding it is a `.github/` change for Chad.
 
 The workflow `.github/workflows/actionlint.yml` starts on every `pull_request`, on pushes to `main` and `master`, on merge groups and on manual dispatch.
 Its `changes` job selects the `actionlint` and `zizmor` jobs.
@@ -55,43 +55,38 @@ This keeps low-severity notices visible without adding the pedantic persona's st
 The pinned `zizmor-action` runs online audits and emits job annotations without a SARIF upload or write permission.
 Its default pin policy requires every external action, including `actions/*`, to use a full commit SHA.
 
-Web CI also uses job selection rather than workflow path filters. Its `changes`
-job publishes separate `web` and `ui` outputs. `web`, `web-build`, `sidecar` and
-`docker` use `web`; all four skip on merge groups, while the Rust, action,
-Windows, macOS and UI kinds stay selected. Rust cross-OS skips its Windows and
-macOS jobs on merge groups in their job conditions, whatever the selector says
-([Merge queue](ci.md#merge-queue)). Pushes and manual/call events
-select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
-and commands retained. This adds no required check and does not edit the
-ruleset snapshot. The independent `release-audit` job runs without path selection
-on every non-draft PR and on non-PR events, so documentation, license and
-screenshot audits remain covered when the heavy web jobs skip. The sitemap tests,
-design-token contrast check and workaround ratchet stay in `web`; their exact
-documentation inputs and all app-source Markdown select `web`. Every path with
-a ratchet-scanned extension (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`,
-`.cjs`, `.rs`, `.py`, `.sh`, `.yml`, `.yaml`, `.css`, `.html`) also selects `web`.
-A test loads the ratchet's declarations and requires the filter's list to match.
-The audit job's pinned Node setup, version assertion, read-only permissions and
-unconditional audit command
-are checked by `test_merge_group_workflows.py`.
+Web CI uses job selection rather than workflow path filters. Its `changes` job
+publishes a `ui` output. The `ui` job runs when that output is not `false`.
+There is no `web`, `web-build`, `sidecar` or Node `docker` job. The Rust image
+is a separate workflow. Rust cross-OS runs `rust (linux)` on a pull request, a
+push and a merge group, and builds Windows and macOS only on the nightly
+schedule or a manual dispatch ([Merge queue](ci.md#merge-queue)).
+[Web job selection](ci.md#web-job-selection) lists the `ui` paths and commands.
+This adds no required check and does not edit the ruleset snapshot. The
+independent `release-audit` job runs without path selection on every non-draft
+PR and on non-PR events. The workaround ratchet runs in `just ci`, not in a
+pull-request job. A test loads the ratchet's declarations and requires the
+filter's extension list to match. The audit job's pinned Node setup, version
+assertion, read-only permissions and unconditional audit command are checked by
+`test_merge_group_workflows.py`.
 
-This selection deliberately changes four CI guards, with regression tests:
-`checkNodeLanes` permits only the exact `needs: [changes]` and web-output
-condition for `web` and `web-build`; `job_runs()` understands per-kind outputs
-and Docker's success dependencies; the Markdown filter keeps embedded legal
-text, fixture trees and `web/DEPLOY.md` as web inputs; and merge groups are an
-exception to the rule that non-PR events select every kind. Chad approves these
-CI-control changes and merges after two scorer seats score the head 9 or more.
+`checkNodeLanes` permits only the exact `needs: [changes]` and `ui` output
+condition for the `ui` job. `job_runs()` understands that condition, including
+the Linux event clause. Merge groups are an exception to the rule that non-PR
+events select every kind: they do not select `web`. Chad approves these
+CI-control changes and merges them.
 
 ## Cross-OS capacity
 
-Ready PRs select Windows and macOS jobs only with `ci:cross-os`; paths and older
-labels do not select them. Job-level skips preserve check reports. Schedules
-and manual runs keep full coverage; a push to `main` runs the Linux Rust jobs
-only and a merge group runs the short Linux Rust set
-([Merge queue](ci.md#merge-queue)); Linux PR selection
-and the required contexts remain unchanged. See the
-[event table](ci.md#cross-os-pr-label).
+Pull requests do not run Windows or macOS. The nightly schedule and a manual
+dispatch of Rust cross-OS build the workspace on `windows-latest` and `macos-26`.
+`ci:cross-os` does not select a job. A push to `main` and a merge group run
+`rust (linux)`, including nextest
+([Merge queue](ci.md#merge-queue)). Hosted nextest is four hash partitions; the
+required context is still the aggregate. The required contexts stay
+`actionlint`, `zizmor` and `rust (linux)`. Chad does not edit ruleset 25285698
+for GRE-1664. See
+[Cross-OS PR label](ci.md#cross-os-pr-label).
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch
 on main. Its minimum permissions are `actions: write` for cancellation,
@@ -179,18 +174,15 @@ The ruleset has these protections:
 
 - Block branch deletion and force pushes.
 - Require a pull request and allow only squash merges.
-- Require GitHub Actions checks `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block`,
-  and `review-gate`. `rust (windows)` is advisory and not required.
+- Require GitHub Actions checks `actionlint`, `zizmor` and `rust (linux)`.
+  Those names are unchanged. `rust (windows)` and `rust (macos)` are the nightly workspace builds, not pull-request checks, and they are not required. Chad removed `Lint Evidence block` and `review-gate` on 2026-11-15. GRE-1647 deleted those workflows, the Claude review, and the evidence lint.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
-- `review-gate` runs on `pull_request_target` from the default branch and only reads the API; see [Code review](definition-of-done.md#code-review) for what it checks and its remaining risk.
-  Dependabot's weekly `github-actions` PRs change `.github/workflows/`, and their author is not the owner, so they need both a passing Claude review and the owner's marker for the head. The Claude jobs run for Dependabot PRs once the owner stores `CLAUDE_CODE_OAUTH_TOKEN` in the Dependabot secrets too, because Dependabot runs receive only those.
-- `claude-review.yml` stays on `pull_request`, not `pull_request_target`. On `pull_request`, fork PRs receive no secrets, and the Claude jobs also require a same-repository head and the owner or Dependabot as author. Anyone who can push a same-repository branch already has write access, which lets them run any workflow with secrets through a push or a manual dispatch, so these workflows grant nothing beyond write access. `pull_request_target` would hand secrets to a run that checks out PR code, the classic pwn-request pattern. After reviewing such a PR's head, the owner or the coordinator posts the `pp-review-gate` marker for that head, which passes it.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 
-`rust (macos)` and `rust (windows)` are absent, consistent with their advisory status in [Continuous integration](ci.md).
+`rust (macos)` and `rust (windows)` are absent from the ruleset. They are the nightly build names, not required checks. See [Continuous integration](ci.md).
 
-Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10; `review-gate`, which passes on a Claude review or the owner's marker, now covers that role.
+Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10. GRE-1647 then deleted `review-gate` and the Claude review.
 
 No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
 self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.
@@ -252,22 +244,7 @@ Phase 2 remains Chad's work and keeps GRE-635 open:
 
 ## Edits to a pull request
 
-An edit to a pull request body, title or base can start workflows. This matrix comes from the `on:` blocks and job conditions, and from the run history of PR #1547 (heads 91478f2 and 8ac5680), where `pr-evidence.yml` ran on every body edit.
-
-| Event | `review-gate` | `Lint Evidence block` | `linear-pr-sync.yml` |
-| --- | --- | --- | --- |
-| Push (`synchronize`) | runs and waits for the Claude review; cancels the older run | runs, except on a draft PR, where the job skips | do not start |
-| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
-| Base change (`edited`) | edit run: judges the head against the new base and cancels an older run that read the old one | runs, except on a draft PR | same as above |
-| Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | do not start |
-| Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |
-
-Neither required check can safely skip an edit on a ready PR. A draft PR is the one exception for `Lint Evidence block`, by existing design: its job skips while the PR is a draft, and that skip does replace an earlier failure, including on `converted_to_draft`. GitHub does not merge a draft, and marking the PR ready runs the lint again on the current body, so the failure cannot reach `main`. `review-gate` has no draft skip.
-
-- `Lint Evidence block` lints the whole body: Evidence lines and `Exemption:` lines both decide the verdict, and fixing a failing Evidence section by editing the body is the normal path. A job-level `if` that skips an edit would leave a skipped required check, which GitHub counts as a pass, and the newer run replaces an earlier failure, so an unrelated edit would clear a failing lint. Not listening to `edited` would keep an old success after a body edit that breaks Evidence. A short job that repeats the previous verdict avoids neither the runner slot nor the queue.
-- `review-gate` has to run on a base change, because a review of a head against one base does not cover the same head against `main`. GitHub does not filter `edited` events by field, and a job-level `if` has the same skipped-required-check problem, so every edit starts an edit run. It reads the API and takes seconds unless a Claude job is running or has not appeared yet, and it cancels the older run for the same PR, so the newest run decides.
-
-`scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `linear-pr-sync.yml` cell. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
+GRE-1647 deleted `review-gate`, the evidence lint and the Claude review, which used to start on body, title and base edits. An edit can still start `linear-pr-sync.yml` for a same-repository pull request into the default branch. That workflow does not cancel a superseded run.
 
 ## Emergency path
 

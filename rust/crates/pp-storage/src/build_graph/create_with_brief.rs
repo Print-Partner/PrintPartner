@@ -11,11 +11,18 @@
 //! Errors are [`CreateBuildError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.
 
+use super::import_inputs::evidence_id;
 use super::{BuildGraphClient, BuildName, header};
 use crate::{
     WriterFailure, auth,
     features::{self, InvalidLayer},
-    read_model::{Credential, planning::BuildPlanningBrief},
+    read_model::{
+        Credential,
+        planning::{
+            BuildEvidence, BuildPlanningBrief, EvidenceInputKind, EvidenceKind, SourceRole,
+            SyncStatus,
+        },
+    },
     write::{Installation, authorize},
 };
 use pp_domain::{PositiveId, build_identity::trim_js, features::Feature};
@@ -25,12 +32,36 @@ use std::{sync::atomic::AtomicBool, time::Duration};
 /// The longest idempotency key, in characters, after trimming.
 pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 200;
 
+/// One URL the new brief keeps as evidence. The caller has already
+/// classified it. This module stores that result and does not parse URLs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateUrl {
+    /// The URL as the caller sent it.
+    pub raw: String,
+    /// The normalized URL. The evidence id is its hash.
+    pub normalized: String,
+    pub kind: CreateUrlKind,
+}
+
+/// How [`CreateUrl`] is stored on the brief. These are Node's
+/// `classifyBuildUrl` results, without guessing a role from the request text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateUrlKind {
+    /// A git repository: kind `mod`, role `addon`, sync `pending`.
+    Git,
+    /// A model-library page: kind `model_source`, `upload_required`.
+    ModelPage,
+    /// Any other page: kind `informational_evidence`.
+    Link,
+}
+
 /// A checked request to create a Build with its brief.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewBuild {
     name: BuildName,
     request: String,
     idempotency_key: Option<String>,
+    urls: Vec<CreateUrl>,
 }
 
 /// Why a create request is refused before it reaches storage.
@@ -73,7 +104,20 @@ impl NewBuild {
             name,
             request,
             idempotency_key,
+            urls: Vec::new(),
         })
+    }
+
+    /// Evidence for the new brief, in this order. A later URL whose
+    /// normalized form was already kept is dropped, so the brief has one
+    /// item per normalized URL.
+    pub fn with_urls(mut self, urls: Vec<CreateUrl>) -> Self {
+        self.urls = urls;
+        self
+    }
+
+    pub fn urls(&self) -> &[CreateUrl] {
+        &self.urls
     }
 
     pub fn name(&self) -> &str {
@@ -180,7 +224,8 @@ impl BuildGraphClient {
                 .ok()
                 .and_then(|id| PositiveId::new(id).ok())
                 .ok_or_else(|| anyhow::anyhow!("new Build id {row} is not positive"))?;
-            let brief = BuildPlanningBrief::new(row, new.request.clone(), now);
+            let mut brief = BuildPlanningBrief::new(row, new.request.clone(), now);
+            brief.evidence = brief_evidence(&new.urls);
             save(tx, tenant, &brief_key(id), &brief.stored_text()?)?;
             if let Some(key) = new.idempotency_key() {
                 save(tx, tenant, &record_key(key), &id.get().to_string())?;
@@ -192,6 +237,62 @@ impl BuildGraphClient {
             })
         })?
     }
+}
+
+/// One evidence item per normalized URL, in the caller's order.
+fn brief_evidence(urls: &[CreateUrl]) -> Vec<BuildEvidence> {
+    let mut items = Vec::new();
+    for url in urls {
+        if items
+            .iter()
+            .any(|kept: &BuildEvidence| kept.normalized_url == url.normalized)
+        {
+            continue;
+        }
+        let (kind, input_kind, source_role, sync_status, upload_required) = match url.kind {
+            CreateUrlKind::Git => (
+                EvidenceKind::Mod,
+                EvidenceInputKind::Url,
+                Some(SourceRole::Addon),
+                Some(SyncStatus::Pending),
+                None,
+            ),
+            CreateUrlKind::ModelPage => (
+                EvidenceKind::ModelSource,
+                EvidenceInputKind::ModelPage,
+                None,
+                None,
+                Some(true),
+            ),
+            CreateUrlKind::Link => (
+                EvidenceKind::InformationalEvidence,
+                EvidenceInputKind::Url,
+                None,
+                None,
+                None,
+            ),
+        };
+        items.push(BuildEvidence {
+            id: evidence_id(&url.normalized),
+            url: url.raw.clone(),
+            normalized_url: url.normalized.clone(),
+            kind,
+            input_kind: Some(input_kind),
+            filenames: None,
+            artifacts: None,
+            upload_required,
+            derived_from_evidence_id: None,
+            source_id: None,
+            source_role,
+            title: None,
+            extract: None,
+            retrieved_at: None,
+            content_hash: None,
+            sync_status,
+            pinned_revision: None,
+        });
+    }
+    items
 }
 
 /// The checks create and its dry run share, in order: Orders, the recorded
@@ -264,7 +365,7 @@ fn recorded(
     }))
 }
 
-pub(super) fn brief_key(build: PositiveId) -> String {
+pub(crate) fn brief_key(build: PositiveId) -> String {
     format!("build_planning.v1.{}", build.get())
 }
 
@@ -272,7 +373,7 @@ fn record_key(key: &str) -> String {
     format!("build_planning.create.{key}")
 }
 
-pub(super) fn save(
+pub(crate) fn save(
     tx: &Transaction<'_>,
     tenant: &str,
     key: &str,
@@ -285,6 +386,63 @@ pub(super) fn save(
     Ok(())
 }
 
-/// Shared with `source_roles` tests, which start from a created brief.
+/// The two ways a Build's stored planning brief is unusable, as each brief
+/// writer's own error enum names them.
+pub(crate) trait BriefError: From<rusqlite::Error> {
+    fn no_brief() -> Self;
+    /// The stored brief does not parse or names another Build.
+    fn invalid() -> Self;
+}
+
+/// Proves `credential` and reads `build`'s brief in the caller's transaction.
+pub(super) fn authorized_brief<E>(
+    tx: &Transaction<'_>,
+    credential: &Credential,
+    policy: auth::AuthPolicy,
+    build: PositiveId,
+) -> Result<(String, BuildPlanningBrief), E>
+where
+    E: BriefError + From<WriterFailure>,
+{
+    let installation = authorize(tx, credential, policy)?;
+    let tenant = installation.id().to_owned();
+    let brief = stored_brief::<E>(tx, &tenant, build)?;
+    Ok((tenant, brief))
+}
+
+/// `build`'s stored planning brief, read in `tx`.
+pub(crate) fn stored_brief<E: BriefError>(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: PositiveId,
+) -> Result<BuildPlanningBrief, E> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+            params![tenant, brief_key(build)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let raw = raw.ok_or_else(E::no_brief)?;
+    let id = i64::try_from(build.get()).map_err(|_| E::invalid())?;
+    BuildPlanningBrief::parse(&raw, id).map_err(|_| E::invalid())
+}
+
+/// Stores `brief` as a brief writer's change: clears its selected draft,
+/// which the change may no longer match, and stamps `updated_at`.
+pub(super) fn store_changed_brief(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: PositiveId,
+    mut brief: BuildPlanningBrief,
+) -> Result<(), WriterFailure> {
+    brief.draft_id = None;
+    brief.updated_at = auth::catalog_timestamp();
+    let text = brief.stored_text().map_err(WriterFailure::from)?;
+    save(tx, tenant, &brief_key(build), &text)?;
+    Ok(())
+}
+
+/// Shared with the brief writers' tests, which start from a created brief.
 #[cfg(test)]
 pub(super) mod tests;

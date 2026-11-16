@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, ensure};
 use pp_source::{
     ArtifactBudget, ContentFile, LocalFiles, MAX_ENTRIES, Selection, SnapshotRequest, SourcePath,
     TenantRepos,
+    archive::{ArchiveError, ArchiveLabelPolicy, ArchiveLimits, ZipInput},
     local_selection::{self, InputFile},
     media::MediaLimits,
     retained_capture::{FrozenCapture, RetainedInputTransfer},
@@ -45,7 +46,7 @@ impl SourceImports {
     pub fn new(owner: &WriterOwner, policy: AuthPolicy, quota: u64) -> Result<Self> {
         Ok(Self {
             client: owner.imports(policy, quota)?,
-            worker: owner.job_worker_with_policy(policy, source_worker_admission())?,
+            worker: owner.job_worker_with_policy(policy, worker_admission())?,
             repos: owner.import_repos_root()?,
         })
     }
@@ -58,10 +59,6 @@ impl SourceImports {
         supplied: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Operation> {
-        ensure!(
-            request.max_input_bytes > 0 && request.max_input_bytes <= 256 * 1024 * 1024,
-            "Invalid import input limit"
-        );
         let requested = match &request.input {
             Input::Files { paths } => paths.clone(),
             Input::Zip { path } => vec![path.clone()],
@@ -289,6 +286,21 @@ impl SourceImports {
         })
     }
 
+    /// Claims the next queued supplied import without working it.
+    pub fn claim_next(&self) -> Result<Option<ClaimedAttempt>> {
+        self.worker.claim_kind(JobKind::SuppliedSourceImport)
+    }
+
+    /// Works a claim from [`SourceImports::claim_next`] through `through`.
+    pub fn work_claim(
+        &self,
+        claim: ClaimedAttempt,
+        through: Through,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Operation>> {
+        self.work_claimed(claim, None, None, through, cancelled)
+    }
+
     fn work(
         &self,
         job_id: Option<&str>,
@@ -326,7 +338,9 @@ impl SourceImports {
         let mut unverified = false;
         let result = (|| -> Result<()> {
             if job.cancel_requested && op.receipt.is_none() {
-                op = self.worker.import_phase(&lease, &live, Phase::Fail)?;
+                op = self
+                    .worker
+                    .import_phase(&lease, &live, Phase::Fail("Cancelled".into()))?;
                 self.cleanup(&op)?;
                 op = self.worker.import_phase(&lease, &live, Phase::Cleanup)?;
                 return Ok(());
@@ -414,15 +428,40 @@ impl SourceImports {
                 );
                 let mut root = TenantRepos::open(op.tenant.clone(), &self.repos)?
                     .source(op.source_id.try_into()?)?;
+                // A captured ZIP is unpacked first, in the order
+                // `pp-source-media` uses, and its files and folders are
+                // prepared in place of the upload itself (GRE-1444).
+                let extracted = match op.input.captured_zip_path() {
+                    Some(path) => Some(root.extract_zip_with_label_policy(
+                        ZipInput::open(&local, &SourcePath::try_from(path.to_owned())?)?,
+                        ArchiveLimits {
+                            max_compressed_bytes: op.max_input_bytes,
+                            max_inflated_bytes: op.max_prepared_bytes,
+                            max_entries: MAX_ENTRIES,
+                        },
+                        ArchiveLabelPolicy::NfcAtAcquisition,
+                        cancelled,
+                    )?),
+                    None => None,
+                };
+                let (media, media_paths, directories) = match &extracted {
+                    Some(archive) => (
+                        archive.files(),
+                        archive
+                            .receipt()
+                            .files
+                            .iter()
+                            .map(|file| file.path.clone())
+                            .collect(),
+                        archive.receipt().directories.as_slice(),
+                    ),
+                    None => (&local, local.paths()?, &[][..]),
+                };
                 let prepared = root.prepare_media(
-                    &local,
-                    &local.paths()?,
-                    &[],
-                    MediaLimits {
-                        max_total_bytes: op.max_prepared_bytes,
-                        max_output_bytes: op.max_prepared_bytes.min(256 * 1024 * 1024),
-                        ..Default::default()
-                    },
+                    media,
+                    &media_paths,
+                    directories,
+                    prepared_media_limits(op.max_prepared_bytes),
                     cancelled,
                 )?;
                 let (key, files) = prepared.files().local_snapshot_selection(
@@ -461,6 +500,9 @@ impl SourceImports {
                     .worker
                     .import_phase(&lease, &live, Phase::Published(artifact))?;
                 prepared.discard()?;
+                if let Some(archive) = extracted {
+                    archive.discard()?;
+                }
             }
             if through == Through::Published {
                 return Ok(());
@@ -476,7 +518,17 @@ impl SourceImports {
                 return Ok(());
             }
             self.cleanup(&op)?;
-            op = self.worker.import_phase(&lease, &live, Phase::Cleanup)?;
+            let input_bytes = op
+                .requested_files
+                .iter()
+                .fold(0u64, |total, file| total.saturating_add(file.size));
+            let repos_bytes = local_selection::stored_bytes(&self.repos, cancelled).unwrap_or(0);
+            op = self.worker.import_phase_reporting(
+                &lease,
+                &live,
+                Phase::Cleanup,
+                import_size_warnings(input_bytes, repos_bytes),
+            )?;
             Ok(())
         })();
         // A captured import that is still admitted keeps its retained capture
@@ -488,12 +540,15 @@ impl SourceImports {
         // precedence: a deterministic failure seen by a cancelled attempt
         // fails on the next attempt instead. A published import retries
         // activation, unless its artifact is missing or no longer matches.
-        if result.is_err()
+        if let Err(error) = &result
             && !cancelled.load(Ordering::Acquire)
             && !(op.state == State::Admitted && matches!(op.input, Input::Captured(_)))
             && op.receipt.is_none()
             && (op.state != State::Published || unverified)
-            && self.worker.import_phase(&lease, &live, Phase::Fail).is_ok()
+            && self
+                .worker
+                .import_phase(&lease, &live, Phase::Fail(failure_reason(error)))
+                .is_ok()
             && self.cleanup(&op).is_ok()
         {
             let _ = self.worker.import_phase(&lease, &live, Phase::Cleanup);
@@ -537,12 +592,86 @@ impl SourceImports {
     }
 }
 
-fn source_worker_admission() -> WorkerAdmission {
+/// Says in words why an import failed, for its job's `error`. The Source
+/// engine's refusals name the rule; other causes give their top message.
+fn failure_reason(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .find_map(|cause| {
+            cause
+                .downcast_ref::<ArchiveError>()
+                .and_then(archive_reason)
+                .or_else(|| {
+                    cause
+                        .downcast_ref::<pp_source::Error>()
+                        .and_then(source_reason)
+                })
+        })
+        .unwrap_or_else(|| error.to_string())
+}
+
+/// Why a captured ZIP was refused, naming the rule it broke. Packed and
+/// unpacked sizes are this import's budgets, not a fixed ceiling.
+fn archive_reason(error: &ArchiveError) -> Option<String> {
+    let reason = match error {
+        ArchiveError::Source(error) => return source_reason(error),
+        ArchiveError::Cleanup { operation, .. } => return archive_reason(operation),
+        ArchiveError::UnsafeEntry => {
+            "A ZIP entry has a path that is not allowed, such as one that leaves its folder (../)"
+        }
+        ArchiveError::DuplicateEntry => "Two ZIP entries have the same path",
+        ArchiveError::TooManyEntries => "The ZIP holds more than 10,000 entries",
+        ArchiveError::TooLarge => "The ZIP unpacks to more than this import allows",
+        ArchiveError::Limit => {
+            "The ZIP is larger than this import allows, or its file list is too long"
+        }
+        ArchiveError::CompressionRatio => "A ZIP entry is compressed more than the import allows",
+        ArchiveError::Unsupported => {
+            "The ZIP uses a feature the import does not support, such as encryption"
+        }
+        ArchiveError::InvalidArchive
+        | ArchiveError::Zip(_)
+        | ArchiveError::MalformedExtraField
+        | ArchiveError::ReaderMismatch(_) => "The file is not a readable ZIP",
+        ArchiveError::Cancelled | ArchiveError::Busy => return None,
+    };
+    Some(reason.into())
+}
+
+/// Why `pp_source` refused an import, in words.
+fn source_reason(error: &pp_source::Error) -> Option<String> {
+    let reason = match error {
+        pp_source::Error::UnsafePath | pp_source::Error::UnsafeAncestor => {
+            "A file path is not allowed in a Source"
+        }
+        pp_source::Error::DuplicatePath => "Two files have the same path",
+        pp_source::Error::Limit => "The import is over its size or file-count limit",
+        pp_source::Error::CorruptSnapshot => "The import's stored files are damaged",
+        pp_source::Error::EmptySelection => "The upload holds no files",
+        // A leftover working folder or an invalid ID; never the files' types.
+        pp_source::Error::InvalidIdentity => "The import could not set up its working files",
+        pp_source::Error::StoredPathTooLong { .. } | pp_source::Error::AmbiguousRevision(_) => {
+            return Some(error.to_string());
+        }
+        _ => return None,
+    };
+    Some(reason.into())
+}
+
+/// The one worker admission a storage owner accepts, shared by the printer
+/// send worker, the Source import worker, and the GitHub sync worker
+/// (GRE-428, GRE-1724). Each worker claims only its own kind. `total` is one
+/// higher than the send and import caps so one sync can run beside them.
+pub(crate) fn worker_admission() -> WorkerAdmission {
     WorkerAdmission {
-        kinds: vec![(JobKind::SuppliedSourceImport, 1)],
-        total: 1,
+        kinds: vec![
+            (JobKind::PrinterUpload, 4),
+            (JobKind::SuppliedSourceImport, 1),
+            (JobKind::Sync, 1),
+        ],
+        total: 6,
         per_resource: 1,
-        lease_seconds: 60,
+        lease_seconds: crate::send_worker::LEASE_SECONDS,
     }
 }
 
@@ -580,4 +709,47 @@ fn scanned<T>(cancelled: &AtomicBool, result: Result<T, pp_source::Error>) -> Re
         "Cancelled before admission"
     );
     Ok(result?)
+}
+
+/// Media budgets for one import. Output and total follow the prepared limit.
+/// Mesh counts and the 64 MiB model-document cap stay at their defaults.
+pub fn prepared_media_limits(prepared: u64) -> MediaLimits {
+    MediaLimits {
+        max_total_bytes: prepared,
+        max_output_bytes: prepared,
+        ..MediaLimits::default()
+    }
+}
+
+const IMPORT_SIZE_WARNING: u64 = 256 * 1024 * 1024;
+const REPOS_SIZE_WARNING: u64 = 64 * 1024 * 1024 * 1024;
+
+/// Alerts for a finished import. Equal to a threshold is not a warning.
+pub fn import_size_warnings(input_bytes: u64, repos_bytes: u64) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if input_bytes > IMPORT_SIZE_WARNING {
+        warnings.push("This import is over 256 MiB.".to_owned());
+    }
+    if repos_bytes > REPOS_SIZE_WARNING {
+        warnings.push("The repos folder is over 64 GiB.".to_owned());
+    }
+    warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_size_warnings;
+
+    #[test]
+    fn size_warnings_start_above_the_old_caps() {
+        assert!(import_size_warnings(256 * 1024 * 1024, 64 * 1024 * 1024 * 1024).is_empty());
+        assert_eq!(
+            import_size_warnings(256 * 1024 * 1024 + 1, 0),
+            ["This import is over 256 MiB."]
+        );
+        assert_eq!(
+            import_size_warnings(0, 64 * 1024 * 1024 * 1024 + 1),
+            ["The repos folder is over 64 GiB."]
+        );
+    }
 }

@@ -30,6 +30,10 @@ mod watcher_proof;
 mod farm_reads;
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/send_queue.rs"]
+mod send_queue;
+
+#[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/printer_stream.rs"]
 mod printer_stream;
 

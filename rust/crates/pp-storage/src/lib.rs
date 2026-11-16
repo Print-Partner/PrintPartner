@@ -14,6 +14,8 @@ pub mod archive;
 mod auth_scheduler;
 #[cfg(feature = "desktop_rebuild")]
 use auth_scheduler::*;
+#[cfg(feature = "desktop_rebuild")]
+pub mod accepted_artifacts;
 pub mod auth;
 mod backup_retention;
 #[cfg(feature = "desktop_rebuild")]
@@ -46,6 +48,8 @@ pub use pp_domain::printer_display_state;
 pub use pp_domain::slicer_grams;
 mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_activity;
+#[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;
@@ -63,6 +67,8 @@ pub mod restore;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
+#[cfg(feature = "desktop_rebuild")]
+pub mod source_files;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
@@ -920,17 +926,13 @@ impl WriterOwner {
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Uploads { command, reply } => {
-                        let changes_accounting = command.changes_accounting();
-                        let changes_before = connection.total_changes();
-                        let result =
-                            uploads::execute(&mut connection, &catalog_state, command, admission);
-                        if result.is_ok()
-                            && changes_accounting
-                            && connection.total_changes() != changes_before
-                        {
-                            worker.import_epoch.fetch_add(1, Ordering::AcqRel);
-                        }
-                        let _ = reply.send(result);
+                        let _ = reply.send(uploads::run(
+                            &mut connection,
+                            &catalog_state,
+                            command,
+                            admission,
+                            &worker,
+                        ));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Checkoff { command, reply } => {

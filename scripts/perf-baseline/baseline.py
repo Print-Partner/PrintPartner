@@ -37,6 +37,11 @@ SEED = 388
 
 NO_RUST = "not available in Rust"
 DIFFERENT = "different requests per runtime; see the notes"
+STL_HEADERS = "Rust only; each STL is opened and hashed before the first byte"
+HTML_HEADERS = "Rust only; the checklist is built before the first byte"
+RUST_CHECK = "Rust only; aborted at the headers, body not read"
+STL_CLICK = "Rust only; one click opens and hashes each STL twice"
+HTML_CLICK = "Rust only; one click builds the checklist twice"
 
 
 def measure(key, label, unit="ms", note="", comparable=True):
@@ -73,6 +78,28 @@ MEASURES = [
     measure("export_checklist_html_ms", "HTML checklist export, first in run", note=NO_RUST),
     measure("export_stl_pack_repeat_ms", "STL pack export, repeated", note=NO_RUST),
     measure("export_checklist_html_repeat_ms", "HTML checklist export, repeated", note=NO_RUST),
+    measure("export_stl_pack_headers_ms", "STL pack export, first GET until headers",
+            note=STL_HEADERS),
+    measure("export_checklist_html_headers_ms", "HTML checklist export, first GET until headers",
+            note=HTML_HEADERS),
+    measure("export_stl_pack_headers_repeat_ms", "STL pack export, repeated GET until headers",
+            note=STL_HEADERS),
+    measure("export_checklist_html_headers_repeat_ms",
+            "HTML checklist export, repeated GET until headers", note=HTML_HEADERS),
+    measure("export_stl_pack_check_ms", "STL pack export, check request", note=RUST_CHECK),
+    measure("export_checklist_html_check_ms", "HTML checklist export, check request",
+            note=RUST_CHECK),
+    measure("export_stl_pack_check_repeat_ms", "STL pack export, repeated check request",
+            note=RUST_CHECK),
+    measure("export_checklist_html_check_repeat_ms",
+            "HTML checklist export, repeated check request", note=RUST_CHECK),
+    measure("export_stl_pack_click_ms", "STL pack export, check then download", note=STL_CLICK),
+    measure("export_checklist_html_click_ms", "HTML checklist export, check then download",
+            note=HTML_CLICK),
+    measure("export_stl_pack_click_repeat_ms", "STL pack export, repeated check then download",
+            note=STL_CLICK),
+    measure("export_checklist_html_click_repeat_ms",
+            "HTML checklist export, repeated check then download", note=HTML_CLICK),
     measure("today_event_visible_ms", "Printer event to status route",
             note="the Rust gateway watcher in both runtimes; 2 s poll", comparable=False),
     measure("today_refresh_ms", "Today refresh reads", note=DIFFERENT, comparable=False),
@@ -184,7 +211,7 @@ def one_run(runtime, run, seeded, work, binary, node, commit, printers, integrat
         scenarios.thumbnails(session, runtime, out, ids[scenarios.CHECKOFF_BUILD])
         scenarios.plan_change(session, runtime, out, ids[scenarios.PLAN_BUILD], args.plan_iterations)
         scenarios.checkoff_session(session, runtime, out, ids[scenarios.CHECKOFF_BUILD])
-        scenarios.exports(session, out, ids[scenarios.CHECKOFF_BUILD], args.export_repeats)
+        scenarios.exports(session, runtime, out, ids[scenarios.CHECKOFF_BUILD], args.export_repeats)
         scenarios.today(server, session, runtime, out, printers[0], integration_ids[0])
         time.sleep(2)
         out["workload_pss_bytes"] = [perfstats.tree_pss_bytes(server.process.pid)[0]]

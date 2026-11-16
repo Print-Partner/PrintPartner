@@ -3,6 +3,7 @@ use inventory::Status;
 use pp_testkit::{Fixture, Installation, node_installation as synthetic, node_schema};
 use std::time::SystemTime;
 
+mod convert;
 mod copy;
 
 fn node_folder() -> Installation {
@@ -142,7 +143,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 2))
+        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 3))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
@@ -178,7 +179,10 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let text = report.to_string();
     let holds = |line: &str| assert!(text.contains(line), "{line} is not in:\n{text}");
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
-    holds("step 3 pending: setting printer.fleet = 2");
+    holds("step 3 converted: setting printer.fleet = 2");
+    holds("printer.fleet id: 1 -> \"1\" = 1");
+    holds("printer.fleet bed_width_mm: \"250\" -> 250 = 1");
+    holds("addresses with a username or password, kept as stored: 0");
     holds("Stored JSON the inventory does not name:\n  none");
     holds("Installation value \"default\"; accounts stored: 1.");
     holds("Kept, not used by Rust:\n  setting filename_grouping:* = 1");
@@ -742,6 +746,32 @@ fn the_dry_run_counts_a_source_with_a_current_revision_as_the_import_treats_it()
     assert!(report.to_string().contains(line), "{report}");
     let line = "Sources whose current revision is missing in the copy: 0.\n";
     assert!(from_folder.to_string().contains(line), "{from_folder}");
+}
+
+#[test]
+fn a_file_at_the_snapshot_path_is_not_counted_as_the_snapshot_folder() {
+    let folder = node_folder();
+    std::fs::write(folder.path().join("repos/not-a-dir"), "synthetic").unwrap();
+    give_revision(&folder, "not-a-dir");
+    let from_folder = run(folder.path()).unwrap();
+    assert_eq!(from_folder.source_paths.missing_revisions, 1);
+    let archive = archive_of(folder.path(), 2, "full");
+    let from_archive = run(archive.path()).unwrap();
+    assert_eq!(
+        from_archive.source_paths.missing_revisions, 1,
+        "{from_archive}"
+    );
+}
+
+#[test]
+fn a_snapshot_name_that_is_not_a_plain_path_does_not_end_the_dry_run() {
+    let folder = node_folder();
+    give_revision(&folder, r"..\..\synthetic");
+    let report = run(folder.path()).unwrap();
+    assert_eq!(report.source_paths.bad_locators, 1);
+    let line = "Sources whose snapshot name is not a plain path: 1. The import would refuse this installation.\n";
+    assert!(report.to_string().contains(line), "{report}");
+    assert!(report.to_string().contains("3 Builds"), "{report}");
 }
 
 #[test]

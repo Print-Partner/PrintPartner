@@ -8,6 +8,7 @@
 //! in the source for writing, and SQLite never opens the source database, so
 //! no `-shm` or `-wal` file appears there.
 
+mod convert;
 mod copy;
 pub mod inventory;
 mod verify;
@@ -118,6 +119,9 @@ pub enum ImportError {
         temporary: PathBuf,
         folder: PathBuf,
     },
+    /// `printer.fleet` or `integrations` cannot become the typed document.
+    /// The reasons name fields and counts, never a stored value.
+    Settings(Vec<convert::Counted>),
 }
 
 impl fmt::Display for ImportError {
@@ -182,7 +186,8 @@ impl fmt::Display for ImportError {
             | Self::SourceEscapes(_)
             | Self::SourceRebase(_)
             | Self::CopyMismatch(_)
-            | Self::Flush { .. } => self.fmt_write_step(f),
+            | Self::Flush { .. }
+            | Self::Settings(_) => self.fmt_write_step(f),
             Self::NoSpace {
                 directory,
                 needed,
@@ -276,6 +281,17 @@ impl ImportError {
                 "The imported files could not be flushed to disk in {}: {source}. Empty the destination and retry",
                 path.display()
             ),
+            Self::Settings(faults) => {
+                let faults: Vec<String> = faults
+                    .iter()
+                    .map(|fault| format!("{} = {}", fault.name, fault.count))
+                    .collect();
+                write!(
+                    f,
+                    "The stored printer or integration document is not the typed shape ({}). The import stops",
+                    faults.join(", ")
+                )
+            }
             _ => Ok(()),
         }
     }
@@ -673,6 +689,8 @@ pub struct DryRunReport {
     /// outside the installation, or whose folder is missing, keeps its
     /// record but its files are not in the copy.
     pub source_paths: SourcePaths,
+    /// What converting `printer.fleet` and `integrations` would do.
+    pub settings: convert::SettingsReport,
 }
 
 impl DryRunReport {
@@ -716,6 +734,15 @@ impl DryRunReport {
             f,
             "Sources whose current revision is missing in the copy: {}.{refused}",
             self.source_paths.missing_revisions
+        )?;
+        let refused = match self.source_paths.bad_locators {
+            0 => "",
+            _ => " The import would refuse this installation.",
+        };
+        writeln!(
+            f,
+            "Sources whose snapshot name is not a plain path: {}.{refused}",
+            self.source_paths.bad_locators
         )
     }
 }
@@ -820,7 +847,7 @@ impl fmt::Display for DryRunReport {
         if self.unnamed.is_empty() {
             writeln!(f, "  none")?;
         }
-        Ok(())
+        self.settings.write(f)
     }
 }
 
@@ -858,16 +885,23 @@ enum Held {
     /// an extracted archive.
     Folder(PathBuf),
     /// The entries of an archive a dry run listed and did not extract.
-    Listed(BTreeSet<String>),
+    /// `directories` are the entries the archive marks as directories.
+    Listed {
+        paths: BTreeSet<String>,
+        directories: BTreeSet<String>,
+    },
 }
 
 impl Held {
     fn holds(&self, inside: &str) -> bool {
         match self {
             Self::Folder(folder) => folder.join("repos").join(inside).is_dir(),
-            Self::Listed(paths) => {
-                let (folder, below) = (format!("repos/{inside}"), format!("repos/{inside}/"));
-                (paths.iter()).any(|path| *path == folder || path.starts_with(&below))
+            // A file at exactly `repos/<name>` is not the snapshot folder.
+            // A listed child, or an entry marked as a directory, is.
+            Self::Listed { paths, directories } => {
+                let folder = format!("repos/{inside}");
+                let below = format!("repos/{inside}/");
+                directories.contains(&folder) || paths.iter().any(|path| path.starts_with(&below))
             }
         }
     }
@@ -1132,7 +1166,7 @@ fn stage_archive(
     limits: archive::Limits,
 ) -> Result<Files, ImportError> {
     let extracted = archive::extract_documents(source, limits, scratch);
-    let (metadata, paths) =
+    let (metadata, paths, directories) =
         extracted.map_err(|error| match error.downcast_ref::<std::io::Error>() {
             // The temporary directory filled up; the archive is not at fault.
             Some(io) if io.kind() == ErrorKind::StorageFull => io_error(scratch, io.kind().into()),
@@ -1159,7 +1193,7 @@ fn stage_archive(
         roots: listed_roots(&paths),
         database: staged_sizes(scratch),
         root: None,
-        held: Held::Listed(paths),
+        held: Held::Listed { paths, directories },
     })
 }
 
@@ -1326,7 +1360,8 @@ fn measure(
     // `repos` the import copies or extracts.
     let held = |inside: &str| files.held.holds(inside);
     let rows = verify::source_rows(connection)?;
-    let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held)?);
+    let converted = convert::rewrite(connection)?;
+    let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held));
     let (tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
     let tenants: BTreeSet<&String> = (["build_profiles", "projects"].into_iter())
@@ -1408,6 +1443,7 @@ fn measure(
         roots: files.roots.clone(),
         database_files: files.database.clone(),
         source_paths,
+        settings: converted,
         tables,
     })
 }

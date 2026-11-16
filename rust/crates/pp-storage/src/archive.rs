@@ -623,7 +623,7 @@ pub(crate) fn extract_documents(
     archive: &Path,
     limits: Limits,
     destination: &Path,
-) -> Result<(Metadata, BTreeSet<String>)> {
+) -> Result<(Metadata, BTreeSet<String>, BTreeSet<String>)> {
     let compressed = archive
         .metadata()
         .with_context(|| format!("Open backup archive {}", archive.display()))?
@@ -674,11 +674,11 @@ fn validate_into(
     limits: Limits,
     scratch: &Path,
     extract: fn(&str) -> bool,
-) -> Result<(Metadata, BTreeSet<String>)> {
+) -> Result<(Metadata, BTreeSet<String>, BTreeSet<String>)> {
     // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
     // and leaves anything after it there, so `check_stream_end` can see it.
     let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
-    let mut seen = BTreeSet::new();
+    let (mut seen, mut directories) = (BTreeSet::new(), BTreeSet::new());
     let (mut entries, mut total) = (0u64, 0u64);
     let mut metadata = None;
     for entry in reader.entries()? {
@@ -713,6 +713,9 @@ fn validate_into(
             limits.max_decompression_ratio
         );
         let path = checked_entry_path(&entry.path_bytes(), entry_type, &mut seen)?;
+        if entry_type == EntryType::Directory {
+            directories.insert(path.clone());
+        }
         if path == METADATA_FILE {
             ensure!(
                 size <= MAX_METADATA_BYTES,
@@ -776,7 +779,7 @@ fn validate_into(
         integrity == "ok",
         "Backup SQLite integrity_check failed: SQLite integrity_check returned: {integrity}"
     );
-    Ok((metadata, seen))
+    Ok((metadata, seen, directories))
 }
 
 #[cfg(all(test, unix))]

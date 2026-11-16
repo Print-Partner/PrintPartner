@@ -79,8 +79,8 @@ const fn pending(step: u8, shapes: &'static [Shape], target: &'static str) -> Ro
 #[rustfmt::skip]
 pub const ROWS: [Row; 16] = [
     Row { status: Status::Converted, ..pending(2, &[Column("projects", "local_path")], "<data>/repos/<snapshot_locator>") },
-    pending(3, &[Setting("printer.fleet")], "typed fleet document"),
-    pending(3, &[Setting("integrations")], "typed integrations document"),
+    Row { status: Status::Converted, ..pending(3, &[Setting("printer.fleet")], "typed fleet document") },
+    Row { status: Status::Converted, ..pending(3, &[Setting("integrations")], "typed integrations document") },
     pending(4, &[Setting("printer.checkoff_links")], "Vec<CheckoffLink>"),
     pending(4, &[Setting("printer.send_queue")], "printer_send_queue rows"),
     pending(4, &[Setting("printer.unattributed_prints"), Setting("printer.plan_bindings")], "Vec<UnattributedPrint>, Vec<PlanBinding>"),

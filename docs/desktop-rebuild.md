@@ -1623,7 +1623,8 @@ it, behind `desktop_rebuild`. Nothing claims or runs an admitted import yet; the
 import phases arrive in D14 (d) and captured inputs in D14 (e).
 
 `WriterOwner::imports(policy, quota)` returns an `ImportClient` for the owner's import
-quota, at most 64 GiB. Every client of one owner must name the same quota.
+quota. Any quota above zero is valid (GRE-1445 lifted the 64 GiB ceiling). The
+runtime names `u64::MAX`. Every client of one owner must name the same quota.
 `ImportClient::admit` takes a credential, an `Admission` (operation key, an existing
 Source or one to create, `Input::Files` or `Input::Zip`, the reserved bytes and the
 input and prepared limits), the expected input files, the bytes already on disk, and
@@ -1634,8 +1635,9 @@ the `accounting_epoch` read before measuring them. In one writer transaction it:
    files and the input limit;
 3. returns the prior operation for a replay of the same request by the same actor,
    and refuses any other reuse of the key ("Import idempotency conflict");
-4. checks the target, the limits (input at most 256 MiB, prepared at most 1 GiB, and a
-   reservation of at least input + 3 × prepared + 16 MiB, within the quota), and that
+4. checks the target, the limits (input and prepared at least 1 byte, no fixed
+   ceiling, and a reservation of at least input + 3 × prepared + 16 MiB that fits
+   an `i64` and the quota), and that
    the bytes on disk plus every unsettled reservation plus this one fit the quota
    ("Owner import quota exceeded");
 5. creates the Source if asked, enqueues the internal `SuppliedSourceImport` job with the
@@ -1655,7 +1657,9 @@ reservation and retained bytes.
 Node writes supplied files with `writeUploadedFiles` and has no journal, quota or
 idempotency. `fixtures/parity/uploads/generate.mjs` records its limits and, for each
 of 22 file sets, either its refusal or the paths it wrote. The journal matches
-Node's 256 MiB and 10,000-file limits and acceptance of those path cases.
+Node's 10,000-file limit and acceptance of those path cases. The fixture's own
+requests still name a 256 MiB input budget; the journal no longer refuses a
+larger budget that meets the reservation formula.
 Admission rewrites backslashes as `/`, drops leading slashes, and collapses empty
 and `.` segments before validation and hashing. It preserves `..` segments for
 rejection, even when resolving them would leave a path inside the upload root.

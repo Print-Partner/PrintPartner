@@ -655,7 +655,7 @@ async fn start_imports(
     writer: &Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
     origin: &str,
 ) -> Result<(Arc<source_acquisition::SourceAcquisitions>, axum::Router)> {
-    let (imports, data_dir) = {
+    let (imports, data_dir, settings) = {
         let owner = writer
             .lock()
             .map_err(|_| anyhow::anyhow!("Storage owner lock poisoned"))?;
@@ -665,8 +665,9 @@ async fn start_imports(
             source_uploads::IMPORT_QUOTA,
             source_uploads::IMPORT_SLOTS,
         )?;
+        let settings = owner.app_settings_with_policy(rebuild_api::desktop_policy())?;
         let lease = owner.lease().context("Storage lease unavailable")?;
-        (Arc::new(imports), lease.data_dir().to_owned())
+        (Arc::new(imports), lease.data_dir().to_owned(), settings)
     };
     let recovering = Arc::clone(&imports);
     let recovered = tokio::task::spawn_blocking(move || {
@@ -680,7 +681,7 @@ async fn start_imports(
     let uploads = Arc::new(source_uploads::SourceUploadService::new(
         Arc::clone(&imports),
         data_dir,
-        source_uploads::FREE_SPACE_RESERVE,
+        settings,
     ));
     let router = rebuild_api::upload_router(Arc::clone(writer), origin, uploads)?;
     Ok((imports, router))

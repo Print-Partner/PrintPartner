@@ -1,6 +1,8 @@
-//! `GET`/`PUT` `/settings/date-format`, `/settings/build-tracking` and
-//! `/settings/spoolman-default`, as Node's `routes/settings.ts` serves them
-//! (GRE-1357). `fixtures/admin/settings-oracle.json` records Node's replies.
+//! `GET`/`PUT` `/settings/date-format`, `/settings/build-tracking`,
+//! `/settings/spoolman-default`, and `/settings/import-free-space-reserve`.
+//! The first three match Node's `routes/settings.ts` (GRE-1357).
+//! `fixtures/admin/settings-oracle.json` records Node's replies. The import
+//! reserve is Rust-only (GRE-1445).
 
 mod secrets;
 
@@ -16,7 +18,7 @@ use axum::{
     routing::get,
 };
 use pp_storage::{
-    app_settings::{AppSettingsClient, Key, Outcome, Write},
+    app_settings::{self, AppSettingsClient, Key, Outcome, Write},
     build_graph::variants::json_body_refused,
     read_model::ReadClient,
 };
@@ -70,6 +72,10 @@ pub fn settings_router(
         .route(
             "/settings/spoolman-default",
             get(get_spoolman_default).put(put_spoolman_default),
+        )
+        .route(
+            "/settings/import-free-space-reserve",
+            get(get_import_reserve).put(put_import_reserve),
         );
     gate.guard(
         Router::new()
@@ -170,6 +176,42 @@ async fn put_spoolman_default(
             "integration_id must be a Spoolman connector",
         ),
         Ok(_) => ok(&json!({ "integration_id": (!id.is_empty()).then_some(id) })),
+        Err(refused) => *refused,
+    }
+}
+
+async fn get_import_reserve(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+) -> Response {
+    match read(&app, presented, Key::ImportReserve).await {
+        Ok(value) => ok(&json!({
+            "reserve_bytes": app_settings::import_reserve_bytes(value.as_deref())
+        })),
+        Err(refused) => *refused,
+    }
+}
+
+async fn put_import_reserve(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let bytes = match field(&headers, &body, "reserve_bytes") {
+        Ok(value) => match value.as_u64() {
+            Some(bytes) => bytes,
+            None => {
+                return failure(
+                    StatusCode::BAD_REQUEST,
+                    "reserve_bytes must be a whole number of bytes",
+                );
+            }
+        },
+        Err(refused) => return *refused,
+    };
+    match write(&app, presented, Write::ImportReserve(bytes)).await {
+        Ok(_) => ok(&json!({ "reserve_bytes": bytes })),
         Err(refused) => *refused,
     }
 }

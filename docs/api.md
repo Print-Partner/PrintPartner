@@ -327,7 +327,7 @@ Typical status codes:
 
 JSON request bodies are limited to 1 MiB. Routes that take bulk Plan edits or manifests accept up to 8 MiB: `POST /plans/{id}/save`, `PATCH /plans/{id}/drafts/{draftId}/parts`, `PUT /plans/{id}/drafts/{draftId}/reconciliation`, `POST /plans/{id}/progress/import`, `POST /plans/{id}/plates/initialize`, `PATCH /plans/{id}/production-setup`, `PUT /plans/{id}/kit-manifest`, and `PUT /sources/{id}/repo-manifest`. Reference-sharing routes accept 4 MiB. Assistant action apply and dismiss, and HTTP MCP, accept 96 MiB so a 64 MiB inline base64 file fits.
 
-Multipart uploads have their own limits: Source uploads 256 MiB, kit bundles and print files 64 MiB, rendered Part thumbnails 1 MiB, and backups 20 GiB. Source uploads stream to disk while the limit is enforced.
+Multipart uploads have their own limits: Source uploads are bounded by free disk and the import reserve (`/settings/import-free-space-reserve`, default 5 GiB), kit bundles and print files 64 MiB, rendered Part thumbnails 1 MiB, and backups 20 GiB. Source uploads stream to disk. The reserve is checked before any byte is staged.
 
 ## MCP
 

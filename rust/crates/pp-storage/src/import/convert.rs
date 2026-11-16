@@ -2,7 +2,8 @@
 //! typed shapes Settings reads. Checkoff links, unmatched prints and the send
 //! queue are converted beside them in [`super::checkoff`]. Source metadata,
 //! import rules, categories, activity and custom filaments are converted in
-//! [`super::sources`]. A key the typed shape has no place for is dropped and
+//! [`super::sources`]. Builds, Plans, toggles and API keys are converted in
+//! [`super::builds`]. A key the typed shape has no place for is dropped and
 //! named, never valued. A value the typed shape cannot hold refuses the
 //! import; the dry run counts it and still prints the rest.
 
@@ -58,7 +59,10 @@ pub struct SettingsReport {
 
 impl SettingsReport {
     pub(super) fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "\nPrinters, integrations, Checkoff, sends and Sources:")?;
+        writeln!(
+            f,
+            "\nPrinters, integrations, Checkoff, sends, Sources, Builds and Plans:"
+        )?;
         writeln!(f, "  changes (field, stored, converted, count):")?;
         if self.changes.is_empty() {
             writeln!(f, "    none")?;
@@ -97,6 +101,52 @@ impl SettingsReport {
     }
 }
 
+/// Counts for a converter that does not record field changes. Sources and
+/// Builds share it.
+pub(super) struct Counts {
+    notes: BTreeMap<String, u64>,
+    faults: BTreeMap<String, u64>,
+}
+
+impl Counts {
+    pub(super) fn new() -> Self {
+        Self {
+            notes: BTreeMap::new(),
+            faults: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn note(&mut self, name: &str) {
+        *self.notes.entry(name.to_owned()).or_default() += 1;
+    }
+
+    pub(super) fn fault(&mut self, name: &str) {
+        *self.faults.entry(name.to_owned()).or_default() += 1;
+    }
+
+    pub(super) fn failed(&self) -> bool {
+        !self.faults.is_empty()
+    }
+
+    pub(super) fn report(&self) -> SettingsReport {
+        SettingsReport {
+            changes: Vec::new(),
+            notes: counted(&self.notes),
+            credential_addresses: 0,
+            faults: counted(&self.faults),
+        }
+    }
+}
+
+fn counted(map: &BTreeMap<String, u64>) -> Vec<Counted> {
+    map.iter()
+        .map(|(name, count)| Counted {
+            name: name.clone(),
+            count: *count,
+        })
+        .collect()
+}
+
 struct Notes {
     changes: BTreeMap<(String, String, String), u64>,
     notes: BTreeMap<String, u64>,
@@ -121,14 +171,6 @@ impl Notes {
     }
 
     fn report(&self) -> SettingsReport {
-        let list = |map: &BTreeMap<String, u64>| {
-            map.iter()
-                .map(|(name, count)| Counted {
-                    name: name.clone(),
-                    count: *count,
-                })
-                .collect()
-        };
         SettingsReport {
             changes: self
                 .changes
@@ -140,9 +182,9 @@ impl Notes {
                     count: *count,
                 })
                 .collect(),
-            notes: list(&self.notes),
+            notes: counted(&self.notes),
             credential_addresses: self.credentials,
-            faults: list(&self.faults),
+            faults: counted(&self.faults),
         }
     }
 }
@@ -174,6 +216,7 @@ pub(super) fn rewrite(
     }
     let (checkoff, drop_queue) = super::checkoff::convert(connection, source)?;
     let (sources, filaments) = super::sources::convert(connection, documents)?;
+    let builds = super::builds::convert(connection, documents)?;
     let mut report = notes.report();
     report.changes.extend(checkoff.changes);
     report.notes.extend(checkoff.notes);
@@ -181,6 +224,9 @@ pub(super) fn rewrite(
     report.changes.extend(sources.changes);
     report.notes.extend(sources.notes);
     report.faults.extend(sources.faults);
+    report.changes.extend(builds.changes);
+    report.notes.extend(builds.notes);
+    report.faults.extend(builds.faults);
     report.changes.sort_by(|left, right| {
         (&left.field, &left.stored, &left.converted).cmp(&(
             &right.field,
@@ -208,7 +254,7 @@ fn stored(connection: &Connection, key: &str) -> Result<Option<String>, ImportEr
     Ok(text.filter(|text: &String| !text.is_empty()))
 }
 
-fn store(connection: &Connection, key: &str, text: &str) -> Result<(), ImportError> {
+pub(super) fn store(connection: &Connection, key: &str, text: &str) -> Result<(), ImportError> {
     connection.execute(
         "UPDATE app_settings SET value = ?1 WHERE tenant_id = 'default' AND key = ?2",
         (text, key),

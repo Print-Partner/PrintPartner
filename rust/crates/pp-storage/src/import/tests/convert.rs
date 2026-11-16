@@ -684,3 +684,211 @@ fn metadata_that_is_not_an_object_is_kept_as_raw_and_not_printed() {
     let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
     assert_eq!(metadata["raw"], raw);
 }
+
+const RAW_KEY: &str = "ppk_synthetic_not_a_real_key";
+const ROLE_NOTE: &str = "hidden-role-note";
+const MODULE_NOTE: &str = "hidden-module";
+const SPOOL: &str = "4242";
+
+fn builds_source() -> Installation {
+    let folder = node_folder();
+    let legacy = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(RAW_KEY)
+    };
+    let setup = serde_json::json!({
+        "format": "production-setup-v1",
+        "profile_id": 1,
+        "preferred_slicer_instance_id": "bench-slicer",
+        "selection": {"mode": "all_incomplete"},
+        "printer_assignments": [],
+        "route": "stl",
+        "rules": [],
+        "updated_at": "2026-01-01T00:00:00.000Z",
+    });
+    let role = format!(
+        r#"{{"Primary":{{"filament_color_id":"filament-red-kept","spoolman_spool_id":{SPOOL},"note":"{ROLE_NOTE}"}}}}"#
+    );
+    let kit = format!(
+        r#"{{"name":"Bench kit","selections":{{"group":"variant-a"}},"modules":"{MODULE_NOTE}"}}"#
+    );
+    let keys = serde_json::json!([{
+        "id": "key_synthetic",
+        "keyHash": legacy,
+        "createdAt": "2026-10-02T00:00:00.000Z",
+        "lastUsedAt": null,
+        "expiresAt": null,
+        "isActive": true,
+    }]);
+    execute(
+        &folder,
+        &format!(
+            "UPDATE app_settings SET value = '{setup}' WHERE key = 'production_setup:1';
+             UPDATE app_settings SET value = '{{\"farm\":true,\"not-a-module\":true}}' WHERE key = 'feature_toggles';
+             INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'role_filaments_1', '{role}');
+             INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'plan_variant_selection_1', '{{\"size\":3,\"color\":\"red\"}}');
+             UPDATE app_settings SET value = '{kit}' WHERE key = 'kit_manifest_2';
+             UPDATE plan_snapshots SET payload_json = '{{\"parts\":[],\"layers\":[{{\"source_name\":\"Synthetic Source 01\",\"layer_type\":\"base\",\"project_id\":1}}],\"accepted_plan_revision_id\":7}}' WHERE name = 'Synthetic snapshot';
+             INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'api_keys_v1', '{keys}');"
+        ),
+    );
+    std::fs::write(
+        folder
+            .path()
+            .join("repos/2")
+            .join(".printpartner-source-snapshot.json"),
+        r#"{"version":1,"upstreamRevisionKey":"synthetic-b","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","selection":{"maxStlFiles":0,"maxDocumentationBytes":0,"omittedFiles":[]},"files":[]}"#,
+    )
+    .unwrap();
+    folder
+}
+
+#[test]
+fn builds_plans_toggles_and_api_keys_convert_and_read_back() {
+    let folder = builds_source();
+    let dry = run(folder.path()).unwrap();
+    let text = dry.to_string();
+    assert!(
+        text.contains("dropped feature_toggles not-a-module = 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("role_filaments spool id stored as text = 1"),
+        "{text}"
+    );
+    assert!(text.contains("dropped role_filaments note = 1"), "{text}");
+    assert!(
+        text.contains("plan_variant_selection value stored as text = 1"),
+        "{text}"
+    );
+    assert!(text.contains("dropped kit_manifest modules = 1"), "{text}");
+    assert!(text.contains("api_keys_v1 re-hashed = 1"), "{text}");
+    assert!(
+        text.contains("plan_snapshots payload stored as SnapshotPayload = 1"),
+        "{text}"
+    );
+    assert!(!text.contains("would refuse"), "{text}");
+    assert!(!text.contains(RAW_KEY), "{text}");
+    assert!(!text.contains(ROLE_NOTE), "{text}");
+    assert!(!text.contains(MODULE_NOTE), "{text}");
+    assert!(!text.contains(SPOOL), "{text}");
+    assert!(!text.contains("filament-red-kept"), "{text}");
+
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let imported = import(folder.path(), &destination).unwrap();
+    assert!(imported.complete, "{imported}");
+    assert!(imported.rows.iter().all(|row| row.status != "pending"));
+    assert_eq!(imported.rows.last().unwrap().status, "checked");
+    imported_build_reads_back(&destination);
+}
+
+fn imported_build_reads_back(destination: &Path) {
+    let database = destination.join("print-partner.db");
+    let setup = setting_at(&database, "production_setup:1");
+    let setup = crate::production::setup::stored_setup(Some(&setup), 1).unwrap();
+    assert_eq!(setup["preferred_slicer_instance_id"], "bench-slicer");
+    assert_eq!(setup["route"], "stl");
+    assert_eq!(setup["profile_id"], 1);
+
+    let roles: serde_json::Value =
+        serde_json::from_str(&setting_at(&database, "role_filaments_1")).unwrap();
+    assert_eq!(roles["Primary"]["filament_color_id"], "filament-red-kept");
+    assert_eq!(roles["Primary"]["spoolman_spool_id"], SPOOL);
+    assert!(roles["Primary"]["filament_custom_hex"].is_null());
+    assert!(roles["Primary"].get("note").is_none(), "{roles}");
+
+    let selection: serde_json::Value =
+        serde_json::from_str(&setting_at(&database, "plan_variant_selection_1")).unwrap();
+    assert_eq!(selection["size"], "3");
+    assert_eq!(selection["color"], "red");
+
+    let kit_raw = setting_at(&database, "kit_manifest_2");
+    crate::manifest_options::KitManifest::from_stored(&kit_raw).unwrap();
+    let kit: serde_json::Value = serde_json::from_str(&kit_raw).unwrap();
+    assert_eq!(kit["name"], "Bench kit");
+    assert_eq!(kit["selections"]["group"], "variant-a");
+    assert!(kit.get("modules").is_none(), "{kit}");
+
+    let toggles: pp_domain::features::Toggles =
+        serde_json::from_str(&setting_at(&database, "feature_toggles")).unwrap();
+    assert_eq!(toggles.get(pp_domain::features::Feature::Farm), Some(true));
+    assert!(toggles.get(pp_domain::features::Feature::Orders).is_none());
+    let plan: pp_domain::features::Toggles =
+        serde_json::from_str(&setting_at(&database, "feature_toggles:plan:1")).unwrap();
+    assert_eq!(plan.get(pp_domain::features::Feature::Bambu), Some(false));
+
+    let connection = Connection::open(&database).unwrap();
+    let payload: String = connection
+        .query_row("SELECT payload_json FROM plan_snapshots", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        crate::working_drafts::restore::snapshot_revision(&payload),
+        Some(7)
+    );
+    let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(payload["layers"][0]["source_name"], "Synthetic Source 01");
+    assert_eq!(payload["layers"][0]["project_id"], 1);
+    assert_eq!(payload["parts"], serde_json::json!([]));
+
+    let keys = setting_at(&database, "api_keys_v1");
+    assert!(crate::auth::collection_accepts(&keys, RAW_KEY).unwrap());
+    assert!(!keys.contains(RAW_KEY), "{keys}");
+    assert_eq!(
+        setting_at(&database, "build_planning.create.synthetic-key-7"),
+        "1"
+    );
+    let manifest = destination
+        .join("repos/2")
+        .join(".printpartner-source-snapshot.json");
+    assert!(
+        std::fs::read_to_string(manifest)
+            .unwrap()
+            .contains(r#""version":1"#)
+    );
+}
+
+#[test]
+fn a_build_document_the_typed_shape_cannot_store_is_refused() {
+    let folder = node_folder();
+    execute(
+        &folder,
+        "UPDATE app_settings SET value = '{\"farm\":\"yes-not-a-bool\"}' WHERE key = 'feature_toggles';
+         INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'build_planning.v1.1', '{\"secret\":\"brief-secret-not-real\"}');
+         INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'build_planning.create.create-key-token-not-real', 'create-value-not-a-build');",
+    );
+    std::fs::write(
+        folder
+            .path()
+            .join("repos/1/revisions/synthetic-a")
+            .join(".printpartner-source-snapshot.json"),
+        r#"{"version":2,"token":"snapshot-secret-not-real"}"#,
+    )
+    .unwrap();
+    let text = run(folder.path()).unwrap().to_string();
+    for line in [
+        "feature_toggles choice is not a boolean = 1",
+        "build_planning.v1 did not pass the typed reader = 1",
+        "build_planning.create is not a Build id = 1",
+        "source snapshot manifest version is not 1 = 1",
+        "The import would refuse this installation.",
+    ] {
+        assert!(text.contains(line), "{line} missing from:\n{text}");
+    }
+    for hidden in [
+        "yes-not-a-bool",
+        "brief-secret-not-real",
+        "create-key-token-not-real",
+        "create-value-not-a-build",
+        "snapshot-secret-not-real",
+    ] {
+        assert!(!text.contains(hidden), "{hidden} is in the report:\n{text}");
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+}

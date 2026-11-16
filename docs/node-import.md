@@ -2,7 +2,7 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)), and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Steps 1 to 5 exist today.
+The import lands in six steps. All six exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
@@ -11,7 +11,7 @@ The import lands in six steps. Steps 1 to 5 exist today.
 | 3 | Printers and integrations | in this release, see [Printers and integrations](#printers-and-integrations) |
 | 4 | Checkoff links, unmatched prints and the send queue | in this release, see [Checkoff and the send queue](#checkoff-and-the-send-queue) |
 | 5 | Sources: metadata, import rules, categories, activity and custom filaments | in this release, see [Sources](#sources) |
-| 6 | Builds and Plans; the report says `complete: true` | not written |
+| 6 | Builds and Plans; the report says `complete: true` | in this release, see [Builds and Plans](#builds-and-plans) |
 
 Two decisions shape the later steps:
 
@@ -84,7 +84,7 @@ Then it lists:
 - **Printers and integrations:** each id or size the conversion changed, with the stored value and the converted value, and a count for each field it dropped or moved. A dropped or moved field is named, never given its value. An address that holds a username or password is a count only. See [Printers and integrations](#printers-and-integrations).
 - **Backup roots:** for each backup root the source holds, the number of its files and folders, counted as a backup counts entries, and for a folder source the bytes of its files; then the total for all roots. A backup is bounded by its number of entries, so this line says how far an installation is from that bound.
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
-- **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the import has the row's converter, then `converted`. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
+- **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `converted` when the import rewrites the row, `checked` when it reads the row with today's reader and leaves the bytes, and `pending` when it does neither. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
 - **Copied unchanged:** the shapes under [Copied unchanged](#copied-unchanged) that hold data, and the keys of the other settings whose value is not a JSON object or array. Digits in a key print as `#`, so per-Build keys group.
 - **Kept, not used by Rust:** the shapes under [Kept, not used by Rust](#kept-not-used-by-rust) that hold data.
 - **Stored JSON the inventory does not name:** every other setting or column that holds a JSON object or array, as `setting <key>` or `table.column` with its count. The inventory below was built by reading code and may be incomplete. The dry run lists them and still exits 0. The import itself will refuse while any line is here: every stored JSON shape must be named as converted, copied unchanged, kept unused or dropped. So run the dry run on a copy of the real data, report every line, and import after the inventory names them.
@@ -186,14 +186,14 @@ It leaves out only what the import or the upgrade changes on purpose:
 | --- | --- |
 | Tables `sessions` and `password_reset_tokens` | The import empties them. |
 | Setting `schema_version` | The upgrade writes Rust's schema number. |
-| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet`, `integrations`, `printer.checkoff_links`, `printer.unattributed_prints`, `printer.plan_bindings`, `printer.send_queue`, `projects.metadata_json`, `projects.imported_paths`, `source_categories`, `app_events.payload_json` and `custom_filaments.json` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the printer settings see [Printers and integrations](#printers-and-integrations) and [Checkoff and the send queue](#checkoff-and-the-send-queue). For Sources see [Sources](#sources). |
+| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet`, `integrations`, `printer.checkoff_links`, `printer.unattributed_prints`, `printer.plan_bindings`, `printer.send_queue`, `projects.metadata_json`, `projects.imported_paths`, `source_categories`, `app_events.payload_json`, `custom_filaments.json`, `feature_toggles`, `feature_toggles:plan:`, `production_setup:`, `role_filaments_`, `plan_variant_selection_`, `kit_manifest_`, `plan_snapshots.payload_json` and `api_keys_v1` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the printer settings see [Printers and integrations](#printers-and-integrations) and [Checkoff and the send queue](#checkoff-and-the-send-queue). For Sources see [Sources](#sources). For Builds and Plans see [Builds and Plans](#builds-and-plans). A row marked `checked` stays in the digest. |
 | Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 
-The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists.
+The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: true` when every inventory row is `converted` or `checked` and every Source path leads into the copy. It says `complete: false` while any row is `pending`, or while a Source path is outside the installation or missing in the copy. A copy that says `complete: false` is disposable.
 
 ## Printers and integrations
 
@@ -233,6 +233,26 @@ An activity `payload_json` is stored as an object. `source_id` stays when it is 
 
 The dry run reads the filament file and does not write it. The import writes the converted file in the stage after the inventory has counted the copied file, and after that copy's bytes were checked.
 
+## Builds and Plans
+
+After Sources, the import rewrites feature toggles, each Build's production setup, role filaments, variant selection and kit manifest, each named snapshot, and `api_keys_v1`. It then reads the rows marked `checked` and leaves their bytes as stored.
+
+`feature_toggles` and `feature_toggles:plan:{id}` are stored as `Toggles`. A known key must be a boolean. An unknown key is dropped and named. A plan key whose suffix is not the Build id is a refusal. A layer that is not an object, or a known key that is not a boolean, is a refusal: the reader treats that layer as unreadable, and the import does not replace it with `{}`.
+
+`production_setup:{build}` is stored as the document `stored_setup` returns. A document that reader ignores is stored as that Build's default setup, and the report says `production_setup ignored`. A key whose suffix is not the Build id is a refusal. The report does not print the suffix.
+
+`role_filaments_{build}` is stored as one object per role, with `filament_color_id`, `filament_custom_hex` and `spoolman_spool_id`. A spool id Node stored as a JSON number is stored as text, and the report says so without the id. A color or hex that is not text becomes null, which is what the reader already does. An extra key is dropped and named. Text that is not a JSON object becomes `{}`.
+
+`plan_variant_selection_{build}` is stored as a record of strings. A number becomes text. Any other value refuses the import, because the loose reader would keep it and the record cannot. Text that is not a JSON object becomes `{}`.
+
+`kit_manifest_{build}` is stored with `KitManifest::write_json`. A key the struct does not have is dropped and named. A document `from_stored` rejects is stored as the empty kit, which is what the reader returns, and the report says `kit_manifest ignored`.
+
+`plan_snapshots.payload_json` is stored as `SnapshotPayload`. `layers`, when present, must be an array of objects. `recipe_summary` and `captured_at`, when present, must be text or null. `accepted_plan_revision_id` and `accepted_plan_version`, when present, must be null or an integer the restore reader can hold. Any other key stays. A payload that is not a JSON object, or that breaks one of those rules, refuses the import.
+
+`api_keys_v1` is stored as the `StoredKey` collection `load` keeps. A legacy `keyHash` is re-hashed once, and the report gives the count, not the key or the hash. A collection `load` rejects refuses the import. A missing row stays missing.
+
+The checked rows are `stl_naming_defaults`, `build_planning.v1.{build}`, `build_planning.create.{key}`, `plan_decisions.params_json`, `plan_decisions.result_json`, both reconciliation JSON columns, and `.printpartner-source-snapshot.json` under `repos/`. The naming reader and the decision reader accept the stored text, so those bytes stay. A planning brief the reader rejects refuses the import. A `build_planning.create` value that is not a Build id refuses the import. The report counts those keys and does not print them: the create key ends in free text. A reconciliation the reader rejects refuses the import. A snapshot file is left as stored. `{}` is the stub a synthetic installation writes, and it passes. Any other object must be version 1 and must carry `upstreamRevisionKey`, a 64-character lowercase `manifestDigest`, `files` and `selection.omittedFiles`. A folder dry run reads the files. An archive dry run only lists them, because it does not extract `repos/`; the import checks them after extraction. The report does not print a path.
+
 ## Conversion inventory
 
 `rust/crates/pp-storage/src/import/inventory.rs` holds this table as data; a test fails when a shape there is not named here. `ps/` is `rust/crates/pp-storage/src/`. A later step that finds a new shape adds its row here and there.
@@ -249,12 +269,12 @@ The dry run reads the filament file and does not write it. The import writes the
 | 5 | `projects.imported_paths` | four readers that trim JavaScript whitespace, such as `ps/manifest_options/observation.rs` | `Vec<String>`, normalized once | converted |
 | 5 | setting `source_categories`; `app_events.payload_json` | `ps/catalog/categories.rs`, `ps/catalog/activity.rs` | `Vec<String>`; `SourceEventPayload` | converted |
 | 5 | file `custom_filaments.json` | `ps/admin.rs`, `ps/filaments/runtime.rs` | `Vec<CustomFilament>` | converted |
-| 6 | settings `feature_toggles`, `feature_toggles:plan:{id}` | `ps/features.rs` | `pp_domain::features::Toggles` | pending |
-| 6 | setting `production_setup:{build}` | `ps/production/setup.rs` | `ProductionSetup` | pending |
-| 6 | settings `role_filaments_{build}`, `plan_variant_selection_{build}`, `kit_manifest_{build}` | `ps/working_drafts/preparation.rs`, `ps/build_graph/variants.rs`, `ps/manifest_options/model.rs` | one struct each; spool id one type | pending |
-| 6 | `plan_snapshots.payload_json` | `ps/working_drafts/restore.rs`, `ps/catalog.rs` | `SnapshotPayload` | pending |
-| 6 | setting `api_keys_v1` | `ps/auth/keys.rs`, re-hashes a legacy `keyHash` on load | `StoredKey`, re-hashed once | pending |
-| 6 | Checked, not rewritten: settings `stl_naming_defaults`, `build_planning.v1.{build}`, `build_planning.create.{key}` (a Build id as text, read by `ps/build_graph/create_with_brief.rs`; its key ends in free text, so the report counts these keys and does not print them); `plan_decisions.params_json`, `plan_decisions.result_json`; `plan_draft_required_unit_reconciliations.selection_basis_json`, `plan_draft_required_unit_reconciliations.result_json`; files `.printpartner-source-snapshot.json` under `repos/` | already typed, or stored without reading | must pass today's typed reader | pending |
+| 6 | settings `feature_toggles`, `feature_toggles:plan:{id}` | `ps/features.rs` | `pp_domain::features::Toggles` | converted |
+| 6 | setting `production_setup:{build}` | `ps/production/setup.rs` | `ProductionSetup` | converted |
+| 6 | settings `role_filaments_{build}`, `plan_variant_selection_{build}`, `kit_manifest_{build}` | `ps/working_drafts/preparation.rs`, `ps/build_graph/variants.rs`, `ps/manifest_options/model.rs` | one struct each; spool id one type | converted |
+| 6 | `plan_snapshots.payload_json` | `ps/working_drafts/restore.rs`, `ps/catalog.rs` | `SnapshotPayload` | converted |
+| 6 | setting `api_keys_v1` | `ps/auth/keys.rs`, re-hashes a legacy `keyHash` on load | `StoredKey`, re-hashed once | converted |
+| 6 | Checked, not rewritten: settings `stl_naming_defaults`, `build_planning.v1.{build}`, `build_planning.create.{key}` (a Build id as text, read by `ps/build_graph/create_with_brief.rs`; its key ends in free text, so the report counts these keys and does not print them); `plan_decisions.params_json`, `plan_decisions.result_json`; `plan_draft_required_unit_reconciliations.selection_basis_json`, `plan_draft_required_unit_reconciliations.result_json`; files `.printpartner-source-snapshot.json` under `repos/` | already typed, or stored without reading | must pass today's typed reader | checked |
 
 ### Copied unchanged
 

@@ -186,7 +186,14 @@ The script needs Linux and Docker. It checks that the runtime has no Node, npm, 
 
 ## Importing Node data
 
-Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. `pp-server import --from <folder or archive> --data <new folder>` copies a stopped Node data folder or a full backup archive into a new Rust-owned folder, and `--dry-run` reports first what it would convert. The import is not complete yet: its report says `complete: false`, and such a copy is disposable. See [Node import](node-import.md).
+Node and Rust never share a live data directory. Stop Node, keep that data folder, and import into a new folder. The cutover in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) is the same: the pre-cutover copy stays where it is.
+
+```sh
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --dry-run
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --data <new folder>
+```
+
+The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a format 2 full backup. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
 
 ## To be written
 

@@ -69,7 +69,7 @@ impl SyncWorker {
     pub fn spawn(self, cancelled: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             while !cancelled.load(Ordering::Acquire) {
-                match self.claim_and_run(&cancelled).await {
+                match self.run_next(&cancelled).await {
                     Ok(true) => {}
                     Ok(false) => {
                         let _ = tokio::time::timeout(IDLE, self.wake.notified()).await;
@@ -84,11 +84,7 @@ impl SyncWorker {
     }
 
     /// Claims one waiting sync and runs it. `Ok(false)` means the queue was empty.
-    pub async fn run_next(&self) -> Result<bool> {
-        self.claim_and_run(&Arc::new(AtomicBool::new(false))).await
-    }
-
-    async fn claim_and_run(&self, cancelled: &Arc<AtomicBool>) -> Result<bool> {
+    async fn run_next(&self, cancelled: &Arc<AtomicBool>) -> Result<bool> {
         let worker = self.worker.clone();
         let flag = Arc::clone(cancelled);
         let claimed = tokio::task::spawn_blocking(move || {
@@ -796,7 +792,13 @@ mod tests {
         assert_eq!(status, 202, "{job}");
         let job_id = job["job_id"].as_str().unwrap();
         assert_eq!(job_id.len(), 64);
-        assert!(worker.run_next().await.unwrap(), "sync job was not claimed");
+        assert!(
+            worker
+                .run_next(&Arc::new(AtomicBool::new(false)))
+                .await
+                .unwrap(),
+            "sync job was not claimed"
+        );
         let (status, snapshot) = app
             .exchange(Method::GET, &format!("/api/v1/jobs/{job_id}"), None)
             .await;
@@ -967,7 +969,13 @@ mod tests {
             )
             .await;
         assert_eq!(status, 202, "{job}");
-        assert!(worker.run_next().await.unwrap(), "sync job was not claimed");
+        assert!(
+            worker
+                .run_next(&Arc::new(AtomicBool::new(false)))
+                .await
+                .unwrap(),
+            "sync job was not claimed"
+        );
         let job_id = job["job_id"].as_str().unwrap();
         let (status, snapshot) = app
             .exchange(Method::GET, &format!("/api/v1/jobs/{job_id}"), None)

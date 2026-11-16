@@ -5,7 +5,7 @@
 
 use axum::http::StatusCode;
 use pp_api::{
-    catalog::{SourceUploads, UploadFailure, UploadParts},
+    catalog::{SourceUploads, UploadFailure, UploadKind, UploadParts},
     problem::writer_failure,
 };
 use pp_core::{
@@ -58,7 +58,9 @@ fn refused(service: &SourceUploadService, credentials: Credentials) -> (WriterFa
         Box::new(io::Cursor::new(b"solid a\nendsolid a\n")),
     );
     let parts: UploadParts = Box::new([Ok(file)].into_iter());
-    let Err(UploadFailure::Storage(failure)) = service.upload(credentials, 9_999, parts) else {
+    let Err(UploadFailure::Storage(failure)) =
+        service.upload(credentials, 9_999, UploadKind::Files, parts)
+    else {
         panic!("expected a storage failure")
     };
     let status = writer_failure(&failure).status();

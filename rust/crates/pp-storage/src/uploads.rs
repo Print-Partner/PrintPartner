@@ -350,6 +350,15 @@ pub enum Input {
 }
 
 impl Input {
+    /// The path of the one ZIP a captured import holds, which the worker
+    /// unpacks before preparing media (GRE-1444).
+    pub fn captured_zip_path(&self) -> Option<&str> {
+        match self {
+            Self::Captured(captured) => captured.payload.zip_path(),
+            Self::Files { .. } | Self::Zip { .. } => None,
+        }
+    }
+
     pub fn version(&self) -> u32 {
         match self {
             Self::Files { .. } | Self::Zip { .. } => 1,

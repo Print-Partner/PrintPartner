@@ -1,8 +1,10 @@
-//! `POST /sources/{id}/upload-files` (GRE-428): loose files become a new
-//! revision of an existing Source. Each multipart file part's file name is
-//! its path inside the Source. The body streams to disk through
-//! [`SourceUploads`]; the route answers `202 {job_id}` once the files are
-//! stored and the import is recorded, and the import job reports the rest.
+//! `POST /sources/{id}/upload-files` (GRE-428) and
+//! `POST /sources/{id}/upload-zip` (GRE-1444): uploads become a new revision
+//! of an existing Source. Each multipart file part's file name is its path
+//! inside the Source; a ZIP upload is one part that the import unpacks. The
+//! body streams to disk through [`SourceUploads`]; the route answers
+//! `202 {job_id}` once the upload is stored and the import is recorded, and
+//! the import job reports the rest.
 
 use super::{App, Principal, credentials, dispatch, guard, reject, source_id};
 use axum::{
@@ -55,6 +57,15 @@ pub enum UploadFailure {
     Failed,
 }
 
+/// What an upload's file parts hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadKind {
+    /// Loose files, each stored at its part's file name.
+    Files,
+    /// One ZIP the import unpacks. A second part is refused.
+    Zip,
+}
+
 /// What the upload route needs from the Source import service.
 pub trait SourceUploads: Send + Sync + 'static {
     /// Refuses an upload of `bytes` that would leave less free space on the
@@ -71,11 +82,13 @@ pub trait SourceUploads: Send + Sync + 'static {
         &self,
         credential: Credentials,
         source_id: i64,
+        kind: UploadKind,
         files: UploadParts,
     ) -> Result<String, UploadFailure>;
 }
 
-/// Mounts `POST /sources/{id}/upload-files` at `/` and `/api/v1` behind the
+/// Mounts `POST /sources/{id}/upload-files` and `POST /sources/{id}/upload-zip`
+/// at `/` and `/api/v1` behind the
 /// catalog's guard when `PP_DESKTOP_REBUILD` was on at startup. The body has
 /// no fixed limit; [`SourceUploads::check_space`] bounds it.
 pub fn admit_upload_routes(
@@ -86,7 +99,9 @@ pub fn admit_upload_routes(
     if !config.enabled {
         return Router::new();
     }
-    let routes = Router::new().route("/sources/{id}/upload-files", post(upload_files));
+    let routes = Router::new()
+        .route("/sources/{id}/upload-files", post(upload_files))
+        .route("/sources/{id}/upload-zip", post(upload_zip));
     let app = App { config, owner };
     Router::new()
         .merge(routes.clone())
@@ -105,7 +120,28 @@ async fn upload_files(
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
-    let Some(id) = source_id(&id) else {
+    receive(app, principal, uploads, &id, request, UploadKind::Files).await
+}
+
+async fn upload_zip(
+    State(app): State<App>,
+    Extension(principal): Extension<Principal>,
+    Extension(uploads): Extension<Arc<dyn SourceUploads>>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    receive(app, principal, uploads, &id, request, UploadKind::Zip).await
+}
+
+async fn receive(
+    app: App,
+    principal: Principal,
+    uploads: Arc<dyn SourceUploads>,
+    id: &str,
+    request: Request,
+    kind: UploadKind,
+) -> Response {
+    let Some(id) = source_id(id) else {
         return reject(StatusCode::NOT_FOUND, "Source not found");
     };
     // The Source and the credential are checked before any byte is read.
@@ -138,7 +174,7 @@ async fn upload_files(
     let service = Arc::clone(&uploads);
     let stored = tokio::task::spawn_blocking(move || {
         let parts = Parts(received, Arc::clone(&service));
-        service.upload(credential, id, Box::new(parts))
+        service.upload(credential, id, kind, Box::new(parts))
     });
     // Answer as soon as the blocking side refuses, even while a stalled
     // client is still mid-body, so a slow client cannot hold the drain.

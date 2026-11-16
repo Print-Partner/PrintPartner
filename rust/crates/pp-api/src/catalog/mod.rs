@@ -4,7 +4,7 @@ pub(crate) mod wire;
 
 #[cfg(feature = "desktop_rebuild")]
 pub use http::upload::{
-    SourceUploads, UploadFailure, UploadPart, UploadParts, admit_upload_routes,
+    SourceUploads, UploadFailure, UploadKind, UploadPart, UploadParts, admit_upload_routes,
 };
 pub use http::{CatalogHttpConfig, admit_catalog_routes};
 #[cfg(test)]

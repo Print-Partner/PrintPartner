@@ -1,6 +1,9 @@
 use super::*;
 use crate::import::import;
 use crate::printer_setup::{integrations, printers};
+use crate::read_model::farm::{CheckoffResultState, Farm, FarmTasks, SendState};
+use crate::send_queue::{INTERRUPTED_ERROR, NOT_STARTED_ERROR};
+use rusqlite::OptionalExtension;
 
 fn setting_at(database: &Path, key: &str) -> String {
     let connection = Connection::open(database).unwrap();
@@ -114,6 +117,346 @@ fn an_unknown_integration_type_refuses_the_import_and_the_dry_run_still_reports(
     let error = import(folder.path(), &destination).unwrap_err();
     assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
     assert!(error.to_string().contains("not the typed shape"));
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+}
+
+fn put(folder: &Installation, key: &str, value: &serde_json::Value) {
+    Connection::open(folder.database_path())
+        .unwrap()
+        .execute(
+            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', ?1, ?2)
+             ON CONFLICT(tenant_id, key) DO UPDATE SET value = excluded.value",
+            (key, value.to_string()),
+        )
+        .unwrap();
+}
+
+const SENTINEL: &str = "sentinel-not-in-report";
+const BINDING_SECRET: &str = "binding-secret-not-in-report";
+const OUTSIDE: &str = "/outside/sending.gcode";
+
+/// GRE-412 part 4: one kept link whose `part_id` is text, a link Node drops,
+/// 18 open prints, and a queue of `done`, `queued` and `sending`.
+fn checkoff_source() -> Installation {
+    let folder = node_folder();
+    let root = folder.path().to_path_buf();
+    let sentinel = SENTINEL;
+    let binding_secret = BINDING_SECRET;
+    put(
+        &folder,
+        "printer.checkoff_links",
+        &serde_json::json!([
+            {
+                "id": "link-1",
+                "profile_id": 1,
+                "integration_id": "moon",
+                "printer_id": "p-moon",
+                "filename": "linked.gcode",
+                "state": "watching",
+                "created_at": "2026-11-05T12:00:00.000Z",
+                "units": [{"part_id": "15", "unit_index": 2}],
+                "note": sentinel
+            },
+            {"id": "dropped", "state": "bogus"}
+        ]),
+    );
+    let prints: Vec<_> = (0..18)
+        .map(|index| {
+            serde_json::json!({
+                "id": format!("p{index}"),
+                "integration_id": "moon",
+                "printer_id": "p-moon",
+                "filename": if index == 0 { "fresh.gcode".to_owned() } else { format!("print-{index}.gcode") },
+                "completed_at": "2026-11-05T12:00:00.000Z",
+            })
+        })
+        .collect();
+    put(
+        &folder,
+        "printer.unattributed_prints",
+        &serde_json::Value::Array(prints),
+    );
+    put(
+        &folder,
+        "printer.plan_bindings",
+        &serde_json::json!([{
+            "integration_id": "moon",
+            "profile_id": 1,
+            "updated_at": "2026-11-05T00:00:00.000Z",
+            "token": binding_secret
+        }]),
+    );
+    let outside = OUTSIDE;
+    put(
+        &folder,
+        "printer.send_queue",
+        &serde_json::json!([
+            {
+                "id": "q-done",
+                "filename": "done.gcode",
+                "artifact_path": root.join("exports/done.gcode"),
+                "printer_id": "p-moon",
+                "state": "done",
+                "checkoff_units": [{"part_id": 12, "unit_index": 0}],
+                "created_at": "2026-11-05T12:00:00.000Z",
+                "updated_at": "2026-11-05T12:00:00.000Z"
+            },
+            {
+                "id": "q-queued",
+                "filename": "fresh.gcode",
+                "artifact_path": root.join("exports/queued.gcode"),
+                "printer_id": "p-moon",
+                "profile_id": "1",
+                "state": "queued",
+                "created_at": "2026-11-05T12:00:00.000Z",
+                "updated_at": "2026-11-05T12:00:00.000Z"
+            },
+            {
+                "id": "q-sending",
+                "filename": "sending.gcode",
+                "artifact_path": outside,
+                "printer_id": "p-moon",
+                "state": "sending",
+                "created_at": "2026-11-05T12:00:00.000Z",
+                "updated_at": "2026-11-05T12:00:00.000Z"
+            }
+        ]),
+    );
+    folder
+}
+
+#[test]
+fn checkoff_prints_and_the_send_queue_convert() {
+    let folder = checkoff_source();
+    let report = run(folder.path()).unwrap();
+    let text = report.to_string();
+    assert_eq!(report.unmatched_prints, 18, "{text}");
+    for line in [
+        "printer.checkoff_links index 1: state is not a link state = 1",
+        "printer.checkoff_links units.part_id stored as text = 1",
+        "dropped printer.checkoff_links note = 1",
+        "dropped printer.plan_bindings token = 1",
+        "printer.send_queue state: queued -> error = 1",
+        "printer.send_queue state: sending -> error = 1",
+        "printer.send_queue profile_id stored as text = 1",
+        "rebased printer.send_queue artifact_path = 2",
+        "kept printer.send_queue artifact_path = 1",
+    ] {
+        assert!(text.contains(line), "{line} missing from:\n{text}");
+    }
+    assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
+    assert!(!text.contains("would refuse"), "{text}");
+    for hidden in [SENTINEL, BINDING_SECRET, OUTSIDE, "15"] {
+        assert!(!text.contains(hidden), "{hidden} is in the report:\n{text}");
+    }
+}
+
+#[test]
+fn the_imported_queue_is_error_and_farm_reads_the_table() {
+    let folder = checkoff_source();
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let imported = import(folder.path(), &destination).unwrap();
+    let database = destination.join("print-partner.db");
+    let mut connection = Connection::open(&database).unwrap();
+    let queue_setting: Option<String> = connection
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'printer.send_queue'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(queue_setting, None);
+    let uploads: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM durable_jobs WHERE kind = 'printer-upload'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(uploads, 0);
+    let settings: i64 = connection
+        .query_row("SELECT COUNT(*) FROM app_settings", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(imported.tables["app_settings"], settings as u64);
+    let units: String = connection
+        .query_row(
+            "SELECT checkoff_units FROM printer_send_queue WHERE id = 'q-done'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(units, r#"[{"part_id":12,"unit_index":0}]"#);
+    let stored: Vec<(String, String, Option<String>)> = connection
+        .prepare(
+            "SELECT state, artifact_path, error FROM printer_send_queue
+             WHERE tenant_id = 'default' ORDER BY position",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let canonical = destination.canonicalize().unwrap();
+    let path = |name: &str| canonical.join(name).to_string_lossy().into_owned();
+    assert_eq!(
+        stored,
+        vec![
+            ("done".into(), path("exports/done.gcode"), None),
+            (
+                "error".into(),
+                path("exports/queued.gcode"),
+                Some(NOT_STARTED_ERROR.into())
+            ),
+            (
+                "error".into(),
+                OUTSIDE.into(),
+                Some(INTERRUPTED_ERROR.into())
+            ),
+        ]
+    );
+    let links = serde_json::from_str(&setting_at(&database, "printer.checkoff_links")).unwrap();
+    let prints =
+        serde_json::from_str(&setting_at(&database, "printer.unattributed_prints")).unwrap();
+    let queue = crate::send_queue::rows(&connection, "default")
+        .unwrap()
+        .unwrap();
+    let farm = Farm::parse(Vec::new(), Vec::new(), links, prints, queue);
+    let results = farm.checkoff().results;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "link-1");
+    assert_eq!(results[0].state, CheckoffResultState::Watching);
+    assert_eq!(results[0].units[0].part_id, 15);
+    assert_eq!(results[0].units[0].unit_index, 2);
+    assert_eq!(farm.unmatched().prints.len(), 18);
+    let queued = farm.send_queue().items;
+    assert_eq!(
+        queued.iter().map(|item| item.state).collect::<Vec<_>>(),
+        [SendState::Done, SendState::Error, SendState::Error]
+    );
+    assert!(queued.iter().all(|item| item.upload_job_id.is_none()));
+    let tx = connection.transaction().unwrap();
+    let tasks = FarmTasks::read(&tx, "default").unwrap();
+    assert_eq!(tasks.matches(1), 1);
+    let bindings = setting_at(&database, "printer.plan_bindings");
+    assert!(!bindings.contains(BINDING_SECRET), "{bindings}");
+    assert!(bindings.contains("\"profile_id\":1"), "{bindings}");
+}
+
+#[test]
+fn a_bad_plan_binding_or_a_repeated_send_id_refuses_the_import() {
+    let folder = node_folder();
+    put(
+        &folder,
+        "printer.plan_bindings",
+        &serde_json::json!([{"integration_id": "  ", "profile_id": 1, "updated_at": "2026-11-05T00:00:00.000Z"}]),
+    );
+    let report = run(folder.path()).unwrap();
+    let text = report.to_string();
+    assert!(
+        text.contains("printer.plan_bindings index 0: is not a binding = 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The import would refuse this installation."),
+        "{text}"
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
+    assert!(error.to_string().contains("not the typed shape"));
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+
+    let folder = node_folder();
+    let item = serde_json::json!({
+        "id": "same",
+        "filename": "a.gcode",
+        "artifact_path": "/outside/a.gcode",
+        "printer_id": "p-moon",
+        "state": "done",
+        "created_at": "2026-11-05T12:00:00.000Z",
+        "updated_at": "2026-11-05T12:00:00.000Z"
+    });
+    put(
+        &folder,
+        "printer.send_queue",
+        &serde_json::json!([item, item]),
+    );
+    let report = run(folder.path()).unwrap();
+    assert!(
+        report
+            .to_string()
+            .contains("printer.send_queue index 1: repeated id = 1"),
+        "{report}"
+    );
+    let destination = parent.path().join("again");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+
+    let folder = node_folder();
+    let climbed = folder.path().join("exports/../secret.gcode");
+    put(
+        &folder,
+        "printer.send_queue",
+        &serde_json::json!([{
+            "id": "climbs",
+            "filename": "secret.gcode",
+            "artifact_path": climbed,
+            "printer_id": "p-moon",
+            "state": "done",
+            "created_at": "2026-11-05T12:00:00.000Z",
+            "updated_at": "2026-11-05T12:00:00.000Z"
+        }]),
+    );
+    let report = run(folder.path()).unwrap();
+    assert!(
+        report
+            .to_string()
+            .contains("artifact_path leaves the installation = 1"),
+        "{report}"
+    );
+    assert!(!report.to_string().contains("secret.gcode"), "{report}");
+    let destination = parent.path().join("climbed");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+}
+
+#[test]
+fn a_drive_relative_artifact_path_refuses_the_import() {
+    let folder = node_folder();
+    let drive = folder.path().join("exports/C:secret-not-in-report");
+    put(
+        &folder,
+        "printer.send_queue",
+        &serde_json::json!([{
+            "id": "drive",
+            "filename": "drive.gcode",
+            "artifact_path": drive,
+            "printer_id": "p-moon",
+            "state": "done",
+            "created_at": "2026-11-05T12:00:00.000Z",
+            "updated_at": "2026-11-05T12:00:00.000Z"
+        }]),
+    );
+    let report = run(folder.path()).unwrap();
+    assert!(
+        report
+            .to_string()
+            .contains("artifact_path leaves the installation = 1"),
+        "{report}"
+    );
+    assert!(
+        !report.to_string().contains("secret-not-in-report"),
+        "{report}"
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("drive");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
     assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
 }
 

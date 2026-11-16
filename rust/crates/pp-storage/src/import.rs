@@ -8,6 +8,7 @@
 //! in the source for writing, and SQLite never opens the source database, so
 //! no `-shm` or `-wal` file appears there.
 
+mod checkoff;
 mod convert;
 mod copy;
 pub mod inventory;
@@ -119,8 +120,8 @@ pub enum ImportError {
         temporary: PathBuf,
         folder: PathBuf,
     },
-    /// `printer.fleet` or `integrations` cannot become the typed document.
-    /// The reasons name fields and counts, never a stored value.
+    /// A printer, Checkoff, print or send document cannot become the typed
+    /// shape. The reasons name fields, indexes and counts, never a stored value.
     Settings(Vec<convert::Counted>),
 }
 
@@ -288,7 +289,7 @@ impl ImportError {
                     .collect();
                 write!(
                     f,
-                    "The stored printer or integration document is not the typed shape ({}). The import stops",
+                    "A stored printer, Checkoff, print or send document is not the typed shape ({}). The import stops",
                     faults.join(", ")
                 )
             }
@@ -1349,6 +1350,56 @@ fn count_shape(
     Ok((*shape, items))
 }
 
+fn classify_settings(
+    settings: &[(String, String)],
+    named: &[&Shape],
+) -> (BTreeSet<String>, Vec<Unnamed>) {
+    let mut scalar = BTreeSet::new();
+    let mut documents = BTreeMap::<String, u64>::new();
+    for (key, value) in settings {
+        if key == "schema_version" || named.iter().any(|shape| shape.names_setting(key)) {
+            continue;
+        }
+        match serde_json::from_str::<Value>(value) {
+            Ok(Value::Array(_) | Value::Object(_)) => {
+                *documents.entry(key_pattern(key)).or_default() += 1;
+            }
+            _ => drop(scalar.insert(key_pattern(key))),
+        }
+    }
+    let unnamed = documents
+        .into_iter()
+        .map(|(key, items)| Unnamed {
+            shape: format!("setting {key}"),
+            items,
+        })
+        .collect();
+    (scalar, unnamed)
+}
+
+/// Deletes the send-queue setting after the report has counted it, and takes
+/// that row out of the table census so the saved count matches the database.
+fn forget_queue(
+    connection: &Connection,
+    tables: &mut [TableCount],
+    drop_queue: bool,
+) -> Result<(), ImportError> {
+    if !drop_queue {
+        return Ok(());
+    }
+    let deleted = checkoff::drop_send_queue(connection)?;
+    if let Some(table) = tables
+        .iter_mut()
+        .find(|table| table.table == "app_settings")
+    {
+        table.rows = table.rows.saturating_sub(deleted);
+        if let Some(count) = table.by_tenant.get_mut("default") {
+            *count = count.saturating_sub(deleted);
+        }
+    }
+    Ok(())
+}
+
 fn measure(
     connection: &Connection,
     source: SourceKind,
@@ -1360,9 +1411,9 @@ fn measure(
     // `repos` the import copies or extracts.
     let held = |inside: &str| files.held.holds(inside);
     let rows = verify::source_rows(connection)?;
-    let converted = convert::rewrite(connection)?;
+    let (converted, drop_queue) = convert::rewrite(connection, files.root.as_deref())?;
     let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held));
-    let (tables, mut unnamed) = count_tables(connection, &named)?;
+    let (mut tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
     let tenants: BTreeSet<&String> = (["build_profiles", "projects"].into_iter())
         .filter_map(table)
@@ -1384,23 +1435,8 @@ fn measure(
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    let mut scalar_settings = BTreeSet::new();
-    let mut unnamed_settings = BTreeMap::<String, u64>::new();
-    for (key, value) in &settings {
-        if key == "schema_version" || named.iter().any(|shape| shape.names_setting(key)) {
-            continue;
-        }
-        match serde_json::from_str(value) {
-            Ok(Value::Array(_) | Value::Object(_)) => {
-                *unnamed_settings.entry(key_pattern(key)).or_default() += 1;
-            }
-            _ => drop(scalar_settings.insert(key_pattern(key))),
-        }
-    }
-    unnamed.extend(unnamed_settings.into_iter().map(|(key, items)| Unnamed {
-        shape: format!("setting {key}"),
-        items,
-    }));
+    let (scalar_settings, extra) = classify_settings(&settings, &named);
+    unnamed.extend(extra);
 
     let count = |shape: &Shape| count_shape(connection, &settings, files, shape);
     let rows = (inventory::ROWS.iter())
@@ -1419,12 +1455,16 @@ fn measure(
         .filter_map(|(_, value)| serde_json::from_str::<Vec<Value>>(value).ok())
         .map(|prints| prints.iter().filter(open).count() as u64)
         .sum();
+    let builds = table("build_profiles").map_or(0, |table| table.rows);
+    let sources = table("projects").map_or(0, |table| table.rows);
+    let users = table("users").map_or(0, |table| table.rows);
+    forget_queue(connection, &mut tables, drop_queue)?;
     Ok(DryRunReport {
         source,
         schema_version: ready.previous_version,
         upgraded_schema: ready.version,
-        builds: table("build_profiles").map_or(0, |table| table.rows),
-        sources: table("projects").map_or(0, |table| table.rows),
+        builds,
+        sources,
         // Node reads a fleet that is not an array as no printers.
         printers: (settings.iter())
             .filter(|(key, _)| key == "printer.fleet")
@@ -1432,7 +1472,7 @@ fn measure(
             .sum(),
         unmatched_prints,
         installations,
-        users: table("users").map_or(0, |table| table.rows),
+        users,
         destination: None,
         rows,
         copied: (inventory::COPIED.iter().map(count)).collect::<Result<_, _>>()?,

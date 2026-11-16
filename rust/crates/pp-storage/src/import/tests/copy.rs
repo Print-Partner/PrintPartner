@@ -121,12 +121,11 @@ fn the_import_report_is_saved_without_stored_values() {
     );
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let statuses: Vec<&str> = report.rows.iter().map(|row| row.status.as_str()).collect();
-    assert_eq!(statuses[0], "converted");
-    assert_eq!(&statuses[1..3], &["converted", "converted"]);
-    assert!(statuses[3..].iter().all(|status| *status == "pending"));
+    assert_eq!(&statuses[..6], &["converted"; 6]);
+    assert!(statuses[6..].iter().all(|status| *status == "pending"));
     let summary = report.to_string();
     assert!(
-        summary.contains("complete: false. 13 inventory rows are not converted yet."),
+        summary.contains("complete: false. 10 inventory rows are not converted yet."),
         "{summary}"
     );
 
@@ -381,9 +380,10 @@ fn a_changed_row_in_any_table_is_named() {
         .filter(|(table, _)| stored.contains_key(*table))
         .map(|(_, count)| count)
         .sum();
-    // All rows but the schema number, which the upgrade writes, and the two
-    // settings the import converts before the comparison.
-    assert_eq!(compared as i64, held - 3);
+    // All rows but the schema number, which the upgrade writes, and the
+    // settings this folder holds that the import converts: the fleet, the
+    // integrations and the unmatched prints.
+    assert_eq!(compared as i64, held - 4);
 
     // What the upgrade does on purpose changes nothing: a new column, a new
     // table, the schema number and a rebased Source path.

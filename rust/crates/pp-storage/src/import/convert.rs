@@ -1,7 +1,9 @@
 //! Converts the stored `printer.fleet` and `integrations` documents into the
-//! typed shapes Settings reads. A key the typed shape has no place for is
-//! dropped and named, never valued. A value the typed shape cannot hold
-//! refuses the import; the dry run counts it and still prints the rest.
+//! typed shapes Settings reads. Checkoff links, unmatched prints and the send
+//! queue are converted beside them in [`super::checkoff`]. A key the typed
+//! shape has no place for is dropped and named, never valued. A value the
+//! typed shape cannot hold refuses the import; the dry run counts it and
+//! still prints the rest.
 
 use super::ImportError;
 use crate::{
@@ -15,7 +17,7 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, path::Path};
 
 const FLEET: &str = "printer.fleet";
 const INTEGRATIONS: &str = "integrations";
@@ -55,7 +57,7 @@ pub struct SettingsReport {
 
 impl SettingsReport {
     pub(super) fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "\nPrinters and integrations:")?;
+        writeln!(f, "\nPrinters, integrations, Checkoff and sends:")?;
         writeln!(f, "  changes (field, stored, converted, count):")?;
         if self.changes.is_empty() {
             writeln!(f, "    none")?;
@@ -147,7 +149,10 @@ impl Notes {
 /// Rewrites the two settings on the upgraded copy when they can become the
 /// typed documents. A document that cannot is left as stored, and the report
 /// says why.
-pub(super) fn rewrite(connection: &Connection) -> Result<SettingsReport, ImportError> {
+pub(super) fn rewrite(
+    connection: &Connection,
+    source: Option<&Path>,
+) -> Result<(SettingsReport, bool), ImportError> {
     let mut notes = Notes {
         changes: BTreeMap::new(),
         notes: BTreeMap::new(),
@@ -165,7 +170,25 @@ pub(super) fn rewrite(connection: &Connection) -> Result<SettingsReport, ImportE
     {
         store(connection, INTEGRATIONS, &written)?;
     }
-    Ok(notes.report())
+    let (checkoff, drop_queue) = super::checkoff::convert(connection, source)?;
+    let mut report = notes.report();
+    report.changes.extend(checkoff.changes);
+    report.notes.extend(checkoff.notes);
+    report.faults.extend(checkoff.faults);
+    report.changes.sort_by(|left, right| {
+        (&left.field, &left.stored, &left.converted).cmp(&(
+            &right.field,
+            &right.stored,
+            &right.converted,
+        ))
+    });
+    report
+        .notes
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    report
+        .faults
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    Ok((report, drop_queue))
 }
 
 fn stored(connection: &Connection, key: &str) -> Result<Option<String>, ImportError> {

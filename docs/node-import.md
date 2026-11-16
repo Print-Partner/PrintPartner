@@ -2,14 +2,14 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)), and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Steps 1 and 2, and the printer and integration conversion, exist today.
+The import lands in six steps. Steps 1 to 4 exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
 | 1 | The dry run and this inventory | in this release |
 | 2 | The import: copy, schema upgrade, `projects.local_path` rebase, verification, report, ownership marker | in this release, see [Import](#import) |
 | 3 | Printers and integrations | in this release, see [Printers and integrations](#printers-and-integrations) |
-| 4 | Checkoff links, unmatched prints and the send queue | not written |
+| 4 | Checkoff links, unmatched prints and the send queue | in this release, see [Checkoff and the send queue](#checkoff-and-the-send-queue) |
 | 5 | Sources | not written |
 | 6 | Builds and Plans; the report says `complete: true` | not written |
 
@@ -186,16 +186,14 @@ It leaves out only what the import or the upgrade changes on purpose:
 | --- | --- |
 | Tables `sessions` and `password_reset_tokens` | The import empties them. |
 | Setting `schema_version` | The upgrade writes Rust's schema number. |
-| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet` and `integrations` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the two settings see [Printers and integrations](#printers-and-integrations). |
+| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet`, `integrations`, `printer.checkoff_links`, `printer.unattributed_prints`, `printer.plan_bindings` and `printer.send_queue` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the printer settings see [Printers and integrations](#printers-and-integrations) and [Checkoff and the send queue](#checkoff-and-the-send-queue). |
 | Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 
-The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. One more limit applies to a copy made today:
-
-- Node's send queue arrives as stored. The Rust runtime turns `sending` items into `error` when it opens the folder and never starts an upload on its own, so nothing prints without a Send action. Step 4 will turn `queued` items into `error` too.
+The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists.
 
 ## Printers and integrations
 
@@ -209,6 +207,16 @@ A key the typed shape has no place for, including one inside `config` or a loade
 
 An address that holds a username or password (`user:pass@host`) is counted and kept as stored. The report gives the count only. Such an address has never connected on either runtime.
 
+## Checkoff and the send queue
+
+After the printer documents, the import rewrites `printer.checkoff_links`, `printer.unattributed_prints` and `printer.plan_bindings`, and moves `printer.send_queue` into `printer_send_queue`. A Checkoff link goes through `links::parse`. An unmatched print or a plan binding is kept when Node's reader would keep it. A send-queue item follows Node's `parseItem`. An item that reader discards is left out and named by its index and the reason. A value that reader would keep, and the typed shape or the table cannot store, refuses the import. The dry run counts the reason and says the import would refuse; the import refuses and writes no marker. The report names keys, indexes and counts. It does not print a stored value, a path or a secret.
+
+A Checkoff link Node's reader drops (not an object, a state it does not know, or a missing id, integration, printer, filename or positive `profile_id`) is absent. `applied` is stored as `verified`. A `part_id` stored as text becomes a number when it is a positive integer, and the report says so. A key the typed link has no place for is dropped and named.
+
+An unmatched print Node's reader drops (not an object, or an id or filename that is not text) is absent. A document that is not a list becomes an empty list, which is what that reader returns. A known field of another type, including a `claimed_profile_id` that is not a positive integer, refuses the import. Unknown keys are dropped and named. Plan bindings are stricter, as Node's reader is: empty text becomes an empty list, and invalid JSON, a non-list, or a row that is not a binding refuses the import. Extra keys are dropped and named.
+
+Each send-queue item Node's reader keeps is inserted in stored order. Its unit list is stored in `printer_send_queue.checkoff_units`. The inventory names that column, so the JSON is not an unknown document. `queued` becomes `error` with the not-started text, and `sending` becomes `error` with the interrupted text, so a copy never prints while Node is live (owner decision, 2026-11-12). Nothing inserts a `printer-upload` job. The setting is deleted after the report has counted it. `FarmTasks::read` then reads the queue through `queue_list`, which uses the table once the setting is gone. A repeated id, an id longer than 128 characters, or an `artifact_path` that sits under the installation and then climbs out refuses the import. A path under the Node folder, with no empty, `.`, `..` or drive part below it, is rewritten to the same path below the destination. A path outside the folder, and every path from an archive, is kept. The report counts rebased paths and kept paths, and does not print them.
+
 ## Conversion inventory
 
 `rust/crates/pp-storage/src/import/inventory.rs` holds this table as data; a test fails when a shape there is not named here. `ps/` is `rust/crates/pp-storage/src/`. A later step that finds a new shape adds its row here and there.
@@ -218,9 +226,9 @@ An address that holds a username or password (`user:pass@host`) is counted and k
 | 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>`, or `<data>/repos/` and the stored path below the installation's `repos`; any other path is kept | converted |
 | 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document | converted |
 | 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; unknown kinds kept as they are | converted |
-| 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | pending |
-| 4 | setting `printer.send_queue` | `ps/send_queue.rs` adopts it at every open; `ps/read_model/farm.rs`, `history.rs` | rows in `printer_send_queue`; setting deleted; `artifact_path` rebased | pending |
-| 4 | settings `printer.unattributed_prints`, `printer.plan_bindings` | `ps/checkoff_progress/unattributed.rs` | `Vec<UnattributedPrint>`, `Vec<PlanBinding>` | pending |
+| 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | converted |
+| 4 | setting `printer.send_queue` | `ps/send_queue.rs` adopts it at every open; `ps/read_model/farm.rs`, `history.rs` | rows in `printer_send_queue`; setting deleted; `artifact_path` rebased | converted |
+| 4 | settings `printer.unattributed_prints`, `printer.plan_bindings` | `ps/checkoff_progress/unattributed.rs` | `Vec<UnattributedPrint>`, `Vec<PlanBinding>` | converted |
 | 5 | `projects.metadata_json` | `ps/catalog.rs`, `ps/source_scan/node_json.rs` | `SourceMetadata`; unread keys kept in a map | pending |
 | 5 | `projects.imported_paths` | four readers that trim JavaScript whitespace, such as `ps/manifest_options/observation.rs` | `Vec<String>`, normalized once | pending |
 | 5 | setting `source_categories`; `app_events.payload_json` | `ps/catalog/categories.rs`, `ps/catalog/activity.rs` | `Vec<String>`; `SourceEventPayload` | pending |

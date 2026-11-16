@@ -1,6 +1,7 @@
 #![cfg(feature = "desktop_rebuild")]
-//! `POST /sources/{id}/upload-files` over real storage (GRE-428 PR 1), with
-//! synthetic STL files only.
+//! `POST /sources/{id}/upload-files` (GRE-428 PR 1) and
+//! `POST /sources/{id}/upload-zip` (GRE-1444) over real storage, with
+//! synthetic files only.
 
 use pp_api::{
     catalog::{CatalogHttpConfig, SourceUploads, admit_upload_routes},
@@ -117,10 +118,15 @@ impl Server {
         created["id"].as_i64().unwrap()
     }
 
-    /// Uploads `files` after the previous import has returned its slot, which
-    /// happens just after its job shows `done`.
     async fn upload(&self, source: i64, files: &[(&str, &[u8])]) -> (u16, Value) {
-        let path = format!("/api/v1/sources/{source}");
+        self.upload_to(source, "upload-files", files).await
+    }
+
+    /// Posts `files` to the `route` upload of `source` after the previous
+    /// import has returned its slot, which happens just after its job shows
+    /// `done`.
+    async fn upload_to(&self, source: i64, route: &str, files: &[(&str, &[u8])]) -> (u16, Value) {
+        let path = format!("/api/v1/sources/{source}/{route}");
         for _ in 0..200 {
             let answer = self.post_body(&path, multipart(files)).await;
             if answer.0 != 409 {
@@ -131,9 +137,9 @@ impl Server {
         panic!("the import slot stayed busy");
     }
 
-    async fn post_body(&self, source: &str, body: Vec<u8>) -> (u16, Value) {
+    async fn post_body(&self, path: &str, body: Vec<u8>) -> (u16, Value) {
         let content_type = format!("multipart/form-data; boundary={BOUNDARY}");
-        let request = self.request(Method::POST, &format!("{source}/upload-files"));
+        let request = self.request(Method::POST, path);
         reply(request.header("Content-Type", content_type).body(body)).await
     }
 
@@ -313,6 +319,18 @@ fn stl(name: &str) -> Vec<u8> {
     format!("solid {name}\nendsolid {name}\n").into_bytes()
 }
 
+/// A ZIP holding `entries`, written in memory.
+fn zipped(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, bytes) in entries {
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file(*name, options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upload_files_publishes_and_reuses_revisions() {
     let server = Server::start(IMPORT_SLOTS, 0).await;
@@ -394,7 +412,8 @@ async fn upload_refusals_create_no_job() {
     ];
     for (target, body, expected) in refusals {
         // The root alias, answered with an RFC 9457 problem.
-        let (status, problem) = server.post_body(&format!("/sources/{target}"), body).await;
+        let path = format!("/sources/{target}/upload-files");
+        let (status, problem) = server.post_body(&path, body).await;
         assert_eq!(status, expected, "{problem}");
         assert!(problem["detail"].is_string(), "{problem}");
     }
@@ -424,7 +443,7 @@ async fn overlapping_uploads_are_refused_as_busy() {
     let mut held = server.held_upload(first, body.len(), head).await;
     let second = multipart(&[("b.stl", &stl("b"))]);
     for source in [other, first] {
-        let path = format!("/sources/{source}");
+        let path = format!("/sources/{source}/upload-files");
         let (status, problem) = server.post_body(&path, second.clone()).await;
         assert_eq!(status, 409, "{problem}");
     }
@@ -499,15 +518,57 @@ async fn shutdown_discards_a_streaming_upload() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_import_names_its_reason() {
+async fn upload_zip_imports_one_zip_and_other_types_stay() {
     let server = Server::start(IMPORT_SLOTS, 0).await;
     let source = server.source().await;
-    // A file type the engine does not take yet (GRE-428 PR 2 keeps it).
+    let kit = zipped(&[
+        ("body/frame.stl", &stl("frame")),
+        ("guide.pdf", b"%PDF-1.4 synthetic"),
+    ]);
     let (status, accepted) = server
-        .upload(
+        .upload_to(source, "upload-zip", &[("kit.zip", &kit)])
+        .await;
+    assert_eq!(status, 202, "{accepted}");
+    let job = server.finished(accepted["job_id"].as_str().unwrap()).await;
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["kind"], "supplied-source-import", "{job}");
+    let files = revision_files(&server.data);
+    assert!(
+        files.iter().any(|file| file.ends_with("/body/frame.stl")),
+        "{files:?}"
+    );
+    // A loose file of another type is kept, not refused.
+    server
+        .imported(
             source,
             &[("a.stl", &stl("a")), ("photo.png", b"not a model")],
         )
+        .await;
+    // A second part is refused before the import is recorded.
+    let jobs = server.job_count().await;
+    let (status, problem) = server
+        .upload_to(
+            source,
+            "upload-zip",
+            &[("kit.zip", &kit), ("more.zip", &kit)],
+        )
+        .await;
+    assert_eq!(status, 400, "{problem}");
+    assert_eq!(
+        problem["detail"], "A ZIP upload takes one file",
+        "{problem}"
+    );
+    assert_eq!(server.job_count().await, jobs);
+    assert_eq!(server.staged(), 0);
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_import_names_its_reason() {
+    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let source = server.source().await;
+    let (status, accepted) = server
+        .upload_to(source, "upload-zip", &[("kit.zip", b"not a zip archive")])
         .await;
     assert_eq!(status, 202, "{accepted}");
     let job = accepted["job_id"].as_str().unwrap();
@@ -523,7 +584,7 @@ async fn failed_import_names_its_reason() {
         assert!(matches!(status, 404 | 405), "{path}: {status} {body}");
     }
     assert_eq!(
-        failed["error"], "A file has a type the import does not accept",
+        failed["error"], "The file is not a readable ZIP",
         "{failed}"
     );
     assert_eq!(server.revision(source).await, Value::Null);

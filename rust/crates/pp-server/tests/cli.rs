@@ -130,7 +130,7 @@ fn import_dry_run_exits_0_with_the_report_and_1_with_the_reason() {
         .expect("run pp-server import");
     let summary = String::from_utf8(output.stdout).unwrap();
     assert!(
-        output.status.success() && summary.contains("complete: false."),
+        output.status.success() && summary.contains("complete: true."),
         "{summary}"
     );
     assert!(destination.join(".pp-rust-owned.json").is_file());

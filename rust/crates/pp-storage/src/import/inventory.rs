@@ -44,6 +44,9 @@ pub enum Status {
     Pending,
     /// The import converts the row.
     Converted,
+    /// The import reads the row with today's reader and leaves the bytes.
+    /// The row is not pending, and the digest still covers it.
+    Checked,
 }
 
 impl fmt::Display for Status {
@@ -51,6 +54,7 @@ impl fmt::Display for Status {
         match self {
             Self::Pending => f.write_str("pending"),
             Self::Converted => f.write_str("converted"),
+            Self::Checked => f.write_str("checked"),
         }
     }
 }
@@ -89,12 +93,12 @@ pub const ROWS: [Row; 16] = [
     Row { status: Status::Converted, ..pending(5, &[Setting("source_categories"), Column("app_events", "payload_json")], "Vec<String>, SourceEventPayload") },
     // ast-grep-ignore: no-writer-family-literal -- Names the Node file the import reads; this module writes nothing.
     Row { status: Status::Converted, ..pending(5, &[File("custom_filaments.json")], "Vec<CustomFilament>") },
-    pending(6, &[Setting("feature_toggles"), SettingPrefix("feature_toggles:plan:")], "pp_domain::features::Toggles"),
-    pending(6, &[SettingPrefix("production_setup:")], "ProductionSetup"),
-    pending(6, &[SettingPrefix("role_filaments_"), SettingPrefix("plan_variant_selection_"), SettingPrefix("kit_manifest_")], "one struct per setting"),
-    pending(6, &[Column("plan_snapshots", "payload_json")], "SnapshotPayload"),
-    pending(6, &[Setting("api_keys_v1")], "StoredKey"),
-    pending(6, &[
+    Row { status: Status::Converted, ..pending(6, &[Setting("feature_toggles"), SettingPrefix("feature_toggles:plan:")], "pp_domain::features::Toggles") },
+    Row { status: Status::Converted, ..pending(6, &[SettingPrefix("production_setup:")], "ProductionSetup") },
+    Row { status: Status::Converted, ..pending(6, &[SettingPrefix("role_filaments_"), SettingPrefix("plan_variant_selection_"), SettingPrefix("kit_manifest_")], "one struct per setting") },
+    Row { status: Status::Converted, ..pending(6, &[Column("plan_snapshots", "payload_json")], "SnapshotPayload") },
+    Row { status: Status::Converted, ..pending(6, &[Setting("api_keys_v1")], "StoredKey") },
+    Row { status: Status::Checked, ..pending(6, &[
         Setting("stl_naming_defaults"),
         SettingPrefix("build_planning.v1."),
         // The key ends in free text; the report counts these keys and never prints them.
@@ -104,7 +108,7 @@ pub const ROWS: [Row; 16] = [
         Column("plan_draft_required_unit_reconciliations", "selection_basis_json"),
         Column("plan_draft_required_unit_reconciliations", "result_json"),
         SourceFile(".printpartner-source-snapshot.json"),
-    ], "checked with today's typed reader, not rewritten"),
+    ], "checked with today's typed reader, not rewritten") },
 ];
 
 /// What the import copies byte for byte and no converter may rewrite: slicer

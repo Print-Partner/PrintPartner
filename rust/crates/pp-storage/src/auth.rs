@@ -8,6 +8,10 @@ pub(crate) use authority::queries::{
 };
 mod crypto;
 mod keys;
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) use keys::canonical_collection;
+#[cfg(all(feature = "desktop_rebuild", test))]
+pub(crate) use keys::collection_accepts;
 mod policy;
 #[cfg(feature = "desktop_rebuild")]
 pub mod rebuild;

@@ -4,11 +4,12 @@
 //! store, refuses the import. The report names keys, indexes and counts. It
 //! does not print a stored value.
 
+use super::convert::Counts as Notes;
 use super::{ImportError, convert::SettingsReport, io_error};
 use crate::read_model::views::js_trim;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 const CATEGORIES: &str = "source_categories";
 const FILE: &str = "custom_filaments.json";
@@ -24,42 +25,6 @@ const METADATA_KEYS: [&str; 7] = [
 const EVENT_KEYS: [&str; 3] = ["source_id", "source_name", "error"];
 const FILAMENT_KEYS: [&str; 5] = ["id", "display_name", "product_line", "hex", "combo_label"];
 
-struct Notes {
-    notes: BTreeMap<String, u64>,
-    faults: BTreeMap<String, u64>,
-}
-
-impl Notes {
-    fn note(&mut self, name: &str) {
-        *self.notes.entry(name.to_owned()).or_default() += 1;
-    }
-
-    fn fault(&mut self, name: &str) {
-        *self.faults.entry(name.to_owned()).or_default() += 1;
-    }
-
-    fn failed(&self) -> bool {
-        !self.faults.is_empty()
-    }
-
-    fn report(&self) -> SettingsReport {
-        let list = |map: &BTreeMap<String, u64>| {
-            map.iter()
-                .map(|(name, count)| super::convert::Counted {
-                    name: name.clone(),
-                    count: *count,
-                })
-                .collect()
-        };
-        SettingsReport {
-            changes: Vec::new(),
-            notes: list(&self.notes),
-            credential_addresses: 0,
-            faults: list(&self.faults),
-        }
-    }
-}
-
 /// Rewrites the Source rows on the upgraded copy. `documents` is the folder
 /// the filament file is read from. The converted file, when there is one, is
 /// returned and not written: the inventory counts the copied bytes first.
@@ -67,10 +32,7 @@ pub(super) fn convert(
     connection: &Connection,
     documents: &Path,
 ) -> Result<(SettingsReport, Option<String>), ImportError> {
-    let mut notes = Notes {
-        notes: BTreeMap::new(),
-        faults: BTreeMap::new(),
-    };
+    let mut notes = Notes::new();
     projects(connection, &mut notes)?;
     categories(connection, &mut notes)?;
     events(connection, &mut notes)?;

@@ -143,7 +143,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status == Status::Pending, row.step > 5))
+        .inspect(|(row, _)| assert_ne!(row.status, Status::Pending))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
@@ -180,6 +180,10 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let holds = |line: &str| assert!(text.contains(line), "{line} is not in:\n{text}");
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
     holds("step 3 converted: setting printer.fleet = 2");
+    holds("step 6 converted: setting feature_toggles = 1");
+    holds("step 6 checked:");
+    holds("production_setup ignored = 1");
+    holds("dropped kit_manifest modules = 1");
     holds("printer.fleet id: 1 -> \"1\" = 1");
     holds("printer.fleet bed_width_mm: \"250\" -> 250 = 1");
     holds("addresses with a username or password, kept as stored: 0");

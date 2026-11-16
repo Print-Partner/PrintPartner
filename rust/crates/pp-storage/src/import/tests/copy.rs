@@ -105,7 +105,7 @@ fn a_folder_imports_into_a_new_rust_owned_folder() {
 #[test]
 fn the_import_report_is_saved_without_stored_values() {
     let (_source, parent, report) = imported();
-    assert!(!report.complete, "most converters do not exist yet");
+    assert!(report.complete, "{report}");
     assert_eq!(
         (report.source_schema, report.schema),
         (34, versions::RUST_SCHEMA)
@@ -121,11 +121,11 @@ fn the_import_report_is_saved_without_stored_values() {
     );
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let statuses: Vec<&str> = report.rows.iter().map(|row| row.status.as_str()).collect();
-    assert_eq!(&statuses[..10], &["converted"; 10]);
-    assert!(statuses[10..].iter().all(|status| *status == "pending"));
+    assert_eq!(&statuses[..15], &["converted"; 15]);
+    assert_eq!(statuses[15], "checked");
     let summary = report.to_string();
     assert!(
-        summary.contains("complete: false. 6 inventory rows are not converted yet."),
+        summary.contains("complete: true. 0 inventory rows are not converted yet."),
         "{summary}"
     );
 
@@ -133,7 +133,7 @@ fn the_import_report_is_saved_without_stored_values() {
     let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
         (&saved["complete"], &saved["builds"]),
-        (&false.into(), &synthetic::BUILDS.into())
+        (&true.into(), &synthetic::BUILDS.into())
     );
     assert_eq!(
         saved["rows"][0]["shapes"][0]["shape"],
@@ -143,6 +143,13 @@ fn the_import_report_is_saved_without_stored_values() {
         !text.contains(synthetic::INTEGRATION_SECRET),
         "the saved report holds a stored value"
     );
+    let payload: String = Connection::open(parent.path().join("rust").join("print-partner.db"))
+        .unwrap()
+        .query_row("SELECT payload_json FROM plan_snapshots", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(payload, r#"{"parts":[]}"#);
 }
 
 #[test]
@@ -168,9 +175,11 @@ fn a_full_archive_imports_the_same_data() {
         "SELECT local_path FROM projects WHERE id = 2",
     );
     assert_eq!(Path::new(&kept), source.path().join("repos/2"));
+    // `complete` follows the outside count. This comparison sets that count aside.
     let from_archive = ImportReport {
         rebased_sources: from_folder.rebased_sources,
         sources_outside: 0,
+        complete: from_folder.complete,
         ..from_archive
     };
     assert_eq!(from_archive, from_folder);
@@ -380,10 +389,10 @@ fn a_changed_row_in_any_table_is_named() {
         .filter(|(table, _)| stored.contains_key(*table))
         .map(|(_, count)| count)
         .sum();
-    // All rows but the schema number, which the upgrade writes, and the
-    // settings this folder holds that the import converts: the fleet, the
-    // integrations and the unmatched prints.
-    assert_eq!(compared as i64, held - 4);
+    // All rows but the schema number and the settings this folder holds that
+    // the import converts: the fleet, the integrations, the unmatched prints,
+    // both feature layers, the production setup and the kit manifest.
+    assert_eq!(compared as i64, held - 8);
 
     // What the upgrade does on purpose changes nothing: a new column, a new
     // table, the schema number and a rebased Source path.

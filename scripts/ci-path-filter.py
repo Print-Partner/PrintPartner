@@ -45,8 +45,8 @@ def relevant(path, kind):
                               ".github/actionlint.yaml", ".github/actionlint.yml"})
         if kind == "ui":
             return shared or path.startswith(("web/apps/ui/", "web/packages/"))
-        # lint covers apps/ui and npm test/typecheck cover rust-client too. Keep those
-        # inputs selected until their commands move to the replacement UI job.
+        # The old web kind still matches the paths the removed web job used.
+        # The ui job is the one that runs.
         return (shared or path.startswith(("web/", "slicer-sidecar/", "rust/"))
                 or path in {"Caddyfile", "Dockerfile", ".dockerignore", "docker-entrypoint.sh",
                             "pp-compose.yml", "rust-toolchain.toml", "LICENSE", "LICENSE-SUMMARY.md",

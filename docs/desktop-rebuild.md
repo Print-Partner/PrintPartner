@@ -7,7 +7,7 @@
 > web-app-shell scope and must not be re-scoped for the replacement UI. Track
 > any missing Rust-only product entry point separately.
 
-GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. Both default to off.
+GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. GRE-1646 makes the Cargo feature the default on the crates the Rust-only image builds. The runtime switch still defaults off. The image sets `PP_DESKTOP_REBUILD=1`. `pp-desktop` and `pp-drivers` keep the Cargo feature off unless you name it.
 
 The `desktop_rebuild` Cargo feature is available on `pp-core`, `pp-contracts`, `pp-domain`, `pp-storage`, and `pp-desktop`. The desktop feature enables the core feature. The contracts feature exposes the new `build_identity`, `reconciliation`, `publication`, and `working_drafts` modules. Existing autosave contracts stay available in both builds.
 
@@ -53,9 +53,9 @@ The contracts and core gates can be tested without a native shell:
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts --features desktop_rebuild
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts --no-default-features
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --features desktop_rebuild
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --no-default-features
 ```
 
 Core tests isolate environment changes in child processes. They cover absent, disabled, invalid, and enabled values with and without the Cargo feature. The existing autosave consumer tests run in both contract builds. The Rust runtime proof checks the existing authenticated endpoints, source creation, response shapes, and shutdown with the runtime opt-in absent or false.
@@ -164,7 +164,8 @@ Only the server entry point allows environment-driven update checks. By coordina
   open print of that file on that integration claimed, records the printer's
   plan binding and appends `checkoff.unattributed_resolved`.
   `POST .../unattributed/{id}/dismiss` marks the print dismissed with the same
-  event. Refusals keep Node's status and detail (400 `profile_id is required`,
+  event, and `.../dismiss/undo` (GRE-1549) opens it again; see
+  [Match suggestions](farm-reads.md#match-suggestions). Refusals keep Node's status and detail (400 `profile_id is required`,
   404 `Unattributed print not found`, 409 `Print already claimed`, `That print
   file is already assigned`, and the rest of `materializeProblem`) and write
   nothing. A Build that does not exist is a 500, as in Node (GRE-1217). Node's per-IP rate limit is not carried over because the routes are
@@ -322,7 +323,7 @@ The rebuild ships as small PRs to `main`, each under about 1.5k lines and checka
 Each slice is done when:
 
 - the existing suites pass with the feature off and on, and the default build is unchanged;
-- it passes the [merge gate](development/definition-of-done.md#merge-gate) on the exact head, with all checks green: `review-gate` for a normal slice, plus the coordinator's scorer run when the gate passed only through the coordinator record, and two scorer seats at 9 or more for a sensitive one.
+- required checks are green on the exact head, and a data-loss change has had a second review ([Who merges](development/definition-of-done.md#who-merges)).
 
 Slices land in this order. Linear tracks each one under GRE-595. A slice is one Linear item and may ship as several PRs (D16 ships as four, D14 as five). Some modules already exist on main from earlier PRs (for example #129 to #131); a slice ports only the delta from the reference branch.
 
@@ -366,7 +367,7 @@ Gap slices added in triage on 2026-10-13 cover commits that are not in the refer
 | D31 | GRE-626 | Reconcile CI ratchet commits from #155 with main | D1 |
 | D32 | GRE-627 | Coverage audit mapping #133 and #135 patches to slices | none; runs early, re-checked before cutover |
 
-Turning `desktop_rebuild` on by default is a separate decision for the maintainer after D26 and D32.
+GRE-1646 makes `desktop_rebuild` the default Cargo feature for the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off. The runtime switch stays off unless the process sets `PP_DESKTOP_REBUILD` to `1` or `true`.
 
 ### D12 observation core pull-forward
 
@@ -1232,9 +1233,9 @@ GRE-785 extends that client with captured preparation. `SourceImports::new` also
 
 GRE-786 adds the input-copy stage. `write_retained_inputs` takes a claimed frozen capture and copies its retained files into `repos/.pp-imports/{job_id}` through directory capabilities with `O_NOFOLLOW` and `O_EXCL`. Case-folded path collisions are rejected before any destination file is opened. An existing destination operation directory is refused without overwriting. On success the journal advances to `OwnedInputReady` and the frozen capture is removed. The client still does not publish or activate (GRE-787). No route, CLI or startup path calls these methods, so they need no `PP_DESKTOP_REBUILD` check yet.
 
-GRE-787 adds publish and activate. `work_frozen` claims an exact admitted frozen capture. `work_operation` claims a job by id, and `work_next` claims the next supplied import. Each runs the claimed attempt through the journal phases and stops after the `Through` phase it is given (`OwnedInput`, `Published`, `Activated` or `Settled`). From `OwnedInputReady` the client re-verifies the owned inventory, prepares media, and materializes an immutable Source revision within the reservation. It then records `Published` with the artifact. `Activate` runs in storage under the claim's generation and fence, and `Cleanup` removes staging and the owned directory before it settles the job. A stopped attempt keeps its job until restart recovery requeues it under a new generation and fence. Until then a retry claims nothing and changes no row or file. After recovery the retry resumes at the journaled phase. It does not recopy input, republish, or record a second activation, and it returns the recorded receipt. A captured import that is still `Admitted` is refused without its frozen capture and is not failed, so `work_frozen` can still run it; once the retained capture is consumed a deterministic failure reaches `Fail` and `Cleanup` instead of requeueing forever. A refused call leaves `repos/.pp-imports` untouched. The snapshot selection takes its byte budgets from the operation's prepared reservation and refuses files it cannot classify instead of silently omitting them. `get` now verifies a published artifact against its stored revision. No route, CLI or startup path calls these methods, so they need no `PP_DESKTOP_REBUILD` check yet.
+GRE-787 adds publish and activate. `work_frozen` claims an exact admitted frozen capture. `work_operation` claims a job by id, and `work_next` claims the next supplied import. Each runs the claimed attempt through the journal phases and stops after the `Through` phase it is given (`OwnedInput`, `Published`, `Activated` or `Settled`). From `OwnedInputReady` the client re-verifies the owned inventory, prepares media, and materializes an immutable Source revision within the reservation. It then records `Published` with the artifact. `Activate` runs in storage under the claim's generation and fence, and `Cleanup` removes staging and the owned directory before it settles the job. A stopped attempt keeps its job until restart recovery requeues it under a new generation and fence. Until then a retry claims nothing and changes no row or file. After recovery the retry resumes at the journaled phase. It does not recopy input, republish, or record a second activation, and it returns the recorded receipt. A captured import that is still `Admitted` is refused without its frozen capture and is not failed, so `work_frozen` can still run it; once the retained capture is consumed a deterministic failure reaches `Fail` and `Cleanup` instead of requeueing forever. A refused call leaves `repos/.pp-imports` untouched. The snapshot selection takes its byte budgets from the operation's prepared reservation and refuses files it cannot classify instead of silently omitting them. `get` now verifies a published artifact against its stored revision. The Rust-only runtime's uploads and startup recovery call these methods, behind `desktop_rebuild` ([Source uploads](source-uploads.md)).
 
-GRE-788 adds `pp_core::source_acquisition::SourceAcquisitions` behind `desktop_rebuild`. It owns a `SourceImports` client and an ingress gate that starts closed. `admit_captured` refuses while ingress is closed and writes no journal row. `recover_before_accepting` closes ingress, finishes interrupted vault deletions, and runs each frozen retained capture through `work_frozen` to `Settled`. An exact admitted match is published, activated and cleaned up. A capture whose journal row is owned or later, or which has no journal row, is removed. A capture that conflicts with its journal row, and any candidate or malformed capture, stays byte-for-byte unchanged with its journal row; other captures still settle. A malformed slot does not stop the frozen captures beside it from settling. While any capture remains, the call returns `Retained captures require repair (N remaining): <capture id>: <cause>; ...`, naming every remaining capture with its cause (for example a conflicting journal row, a candidate that was never frozen, a malformed slot, or an import job still held by a stopped attempt until restart recovery requeues it), and ingress stays closed. Otherwise it opens ingress and returns the number of captures reconciled. Journal-only work whose retained capture was already consumed is not resumed here. GRE-789 adds bounded acquisition work on top of this gate. `SourceAcquisitions::new` takes a positive `capacity`, and `acquire(CaptureRequest, cancelled)` first reserves the operation key. A key that another acquisition holds, from preflight until its operation is recorded, is refused with `Source acquisition already in progress for this key`. Keys are reserved across tenants, so two tenants using one key at the same moment see the later one refused. Then the request is preflighted: a key whose operation is already recorded replies with that operation as recorded, which may not be settled yet, without reading input or writing anything, even when every slot is held. Otherwise the request takes one capacity slot. With ingress closed it is refused with `Source acquisition ingress is closed`, and with every slot held with `Source acquisition capacity exhausted`. A refused request reads no input and writes no capture, journal row or job. An accepted request writes its files into an owned candidate, binds the capture manifest to the preflighted admission, and freezes it; any failure before the freeze removes the candidate, and a candidate that cannot be removed closes ingress until recovery repairs it. A worker thread then admits the frozen capture and settles it through `work_frozen`; the slot is held until the operation is recorded, and the returned `AcquisitionReply::wait` yields that recorded operation. `recover_before_accepting` refuses with `Source acquisitions are active` while any key is reserved, and leaves ingress as it was. GRE-790 adds `shutdown(budget)`, which returns an `AcquisitionDrain { idle, interrupted, pending }`. Shutdown closes ingress for good. Later acquisitions are refused with `Source acquisition is shutting down` before preflight, including replies for recorded keys, so they read no input and write nothing. Recovery on that instance is refused with `Source acquisitions are shut down`. One budget covers every in-flight acquisition, not one per worker. An acquisition still capturing its input finishes the capture unless its caller cancels it. Every worker is told to stop. A worker that admitted its capture but has not settled it stops without failing the import. It leaves the journal row admitted and the frozen capture retained, records its key in `interrupted`, and its reply is `Source acquisition interrupted by shutdown; retained for recovery`. Shutdown returns when no key is reserved or the budget runs out. Keys still in flight are then listed in `pending` and `idle` is false. Nothing replays interrupted work automatically. A new instance's `recover_before_accepting` settles a retained capture, after a restart when a stopped attempt still holds the import job. A worker stopped after its capture became owned input resumes through import job restart recovery instead. No route, CLI or startup path calls these methods, so they need no `PP_DESKTOP_REBUILD` check yet.
+GRE-788 adds `pp_core::source_acquisition::SourceAcquisitions` behind `desktop_rebuild`. It owns a `SourceImports` client and an ingress gate that starts closed. `admit_captured` refuses while ingress is closed and writes no journal row. `recover_before_accepting` closes ingress, finishes interrupted vault deletions, and runs each frozen retained capture through `work_frozen` to `Settled`. An exact admitted match is published, activated and cleaned up. A capture whose journal row is owned or later, or which has no journal row, is removed. A candidate that a stopped process left half-written is discarded, since admission follows the freeze and no journal row refers to it. A capture that conflicts with its journal row, and any malformed capture, stays byte-for-byte unchanged with its journal row; other captures still settle. A malformed slot does not stop the frozen captures beside it from settling. While any capture remains, the call returns `Retained captures require repair (N remaining): <capture id>: <cause>; ...`, naming every remaining capture with its cause (for example a conflicting journal row, a malformed slot, or an import job still held by a stopped attempt until restart recovery requeues it), and ingress stays closed. Otherwise it opens ingress and returns the number of captures reconciled. Journal-only work whose retained capture was already consumed is not resumed here; `resume_imports` settles it. GRE-789 adds bounded acquisition work on top of this gate. `SourceAcquisitions::new` takes a positive `capacity`, and `acquire(CaptureRequest, cancelled)` first reserves the operation key. A key that another acquisition holds, from preflight until its operation is recorded, is refused with `Source acquisition already in progress for this key`. Keys are reserved across tenants, so two tenants using one key at the same moment see the later one refused. Then the request is preflighted: a key whose operation is already recorded replies with that operation as recorded, which may not be settled yet, without reading input or writing anything, even when every slot is held. Otherwise the request takes one capacity slot. With ingress closed it is refused with `Source acquisition ingress is closed`, and with every slot held with `Source acquisition capacity exhausted`. A refused request reads no input and writes no capture, journal row or job. An accepted request writes its files into an owned candidate, binds the capture manifest to the preflighted admission, and freezes it; any failure before the freeze removes the candidate, and a candidate that cannot be removed closes ingress until recovery repairs it. A worker thread then admits the frozen capture and settles it through `work_frozen`; the slot is held until the operation is recorded, and the returned `AcquisitionReply::wait` yields that recorded operation. `recover_before_accepting` refuses with `Source acquisitions are active` while any key is reserved, and leaves ingress as it was. GRE-790 adds `shutdown(budget)`, which returns an `AcquisitionDrain { idle, interrupted, pending }`. Shutdown closes ingress for good. Later acquisitions are refused with `Source acquisition is shutting down` before preflight, including replies for recorded keys, so they read no input and write nothing. Recovery on that instance is refused with `Source acquisitions are shut down`. One budget covers every in-flight acquisition, not one per worker. An acquisition still capturing its input finishes the capture unless its caller cancels it. Every worker is told to stop. A worker that admitted its capture but has not settled it stops without failing the import. It leaves the journal row admitted and the frozen capture retained, records its key in `interrupted`, and its reply is `Source acquisition interrupted by shutdown; retained for recovery`. Shutdown returns when no key is reserved or the budget runs out. Keys still in flight are then listed in `pending` and `idle` is false. Nothing replays interrupted work automatically. A new instance's `recover_before_accepting` settles a retained capture, after a restart when a stopped attempt still holds the import job. A worker stopped after its capture became owned input resumes through import job restart recovery instead. The Rust-only runtime calls these methods at start and stop and from the upload route, all behind `desktop_rebuild`; [Source uploads](source-uploads.md) describes that wiring.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --test source_import_client
@@ -1521,10 +1522,11 @@ schema arrives in D14 (b), and the journal and capture paths in (c) to (e).
 `JobKind::SuppliedSourceImport` carries `Payload::SuppliedSourceImport { project_id,
 operation_key, input_version }` and reserves `source:{project_id}`. Only the upload
 journal enqueues it: `AtomicJobClient::submit` refuses the payload with "Supplied
-imports require atomic domain admission". The public job API never shows one. A public
-read or stream of an import returns `JobAccessFailure::NotFound`, the retained list
-skips it, and its saves are never published to a stream. The internal `Get` still
-reads it.
+imports require atomic domain admission". Since GRE-428 the public job API shows
+imports like any other kind: `GET /jobs/{id}`, the retained list and `/ws/jobs/{id}`
+serve them, and import journal commands publish their job saves to streams. A failed
+import's `error` is the reason the worker gave to `Phase::Fail`, in words, instead of
+the fixed "Job failed".
 
 `ServerWorkerClient::claim_import(job_id)` claims that queued import and no other job.
 If its original authority is refused, the refusal commits with phase `targeted_claim`
@@ -1537,9 +1539,9 @@ apply to these cleanup claims, and recovery never fails a cancelled import for i
 attempt count; other import attempts and other job kinds keep the limit.
 
 Node has no supplied-import kind. `fixtures/parity/jobs-engine/generate.mjs` records
-that Node refuses to start one ("Unsupported job kind: supplied-source-import") and that
-a job it never started cannot be read, streamed or listed. The Rust parity test asserts
-that a durable import looks the same to its own tenant. The claim, advance and
+that Node refuses to start one ("Unsupported job kind: supplied-source-import"). Rust
+refuses it on the public client too, but serves an existing import to its own tenant:
+the parity test asserts it can be read, streamed and listed. The claim, advance and
 cancellation cases port the reference engine:
 
 ```sh
@@ -1621,7 +1623,8 @@ it, behind `desktop_rebuild`. Nothing claims or runs an admitted import yet; the
 import phases arrive in D14 (d) and captured inputs in D14 (e).
 
 `WriterOwner::imports(policy, quota)` returns an `ImportClient` for the owner's import
-quota, at most 64 GiB. Every client of one owner must name the same quota.
+quota. Any quota above zero is valid (GRE-1445 lifted the 64 GiB ceiling). The
+runtime names `u64::MAX`. Every client of one owner must name the same quota.
 `ImportClient::admit` takes a credential, an `Admission` (operation key, an existing
 Source or one to create, `Input::Files` or `Input::Zip`, the reserved bytes and the
 input and prepared limits), the expected input files, the bytes already on disk, and
@@ -1632,8 +1635,9 @@ the `accounting_epoch` read before measuring them. In one writer transaction it:
    files and the input limit;
 3. returns the prior operation for a replay of the same request by the same actor,
    and refuses any other reuse of the key ("Import idempotency conflict");
-4. checks the target, the limits (input at most 256 MiB, prepared at most 1 GiB, and a
-   reservation of at least input + 3 × prepared + 16 MiB, within the quota), and that
+4. checks the target, the limits (input and prepared at least 1 byte, no fixed
+   ceiling, and a reservation of at least input + 3 × prepared + 16 MiB that fits
+   an `i64` and the quota), and that
    the bytes on disk plus every unsettled reservation plus this one fit the quota
    ("Owner import quota exceeded");
 5. creates the Source if asked, enqueues the internal `SuppliedSourceImport` job with the
@@ -1653,7 +1657,9 @@ reservation and retained bytes.
 Node writes supplied files with `writeUploadedFiles` and has no journal, quota or
 idempotency. `fixtures/parity/uploads/generate.mjs` records its limits and, for each
 of 22 file sets, either its refusal or the paths it wrote. The journal matches
-Node's 256 MiB and 10,000-file limits and acceptance of those path cases.
+Node's 10,000-file limit and acceptance of those path cases. The fixture's own
+requests still name a 256 MiB input budget; the journal no longer refuses a
+larger budget that meets the reservation formula.
 Admission rewrites backslashes as `/`, drops leading slashes, and collapses empty
 and `.` segments before validation and hashing. It preserves `..` segments for
 rejection, even when resolving them would leave a path inside the upload root.
@@ -2024,3 +2030,15 @@ never replaces one, and only `POST /api/v1/integrations/{id}/tls-pin/reset`
 deletes one ([Bambu LAN driver](bambu-lan.md#pinning-in-settings)).
 
 See [Filament grams per send (GRE-1165, part a: GRE-1237)](records/filament-grams-per-send.md).
+
+## STL pack differences from Node (GRE-1525)
+
+`GET /api/v2/plans/{id}/exports/stl-pack` replaces Node's `POST /jobs/export-stl-pack` job and its `GET /exports/*` download. These differences are deliberate:
+
+- **On request.** The pack is built when it is downloaded and streamed from the verified Source files. Node runs a job, stages a copy of every file and publishes a stored ZIP under `exports/`. Rust writes no file and starts no job, so nothing is left to clean up after a cancelled download or a restart.
+- **Whole-pack refusal.** A missing or altered Source file refuses the pack with a 409 naming each such file (owner decision, 2026-11-12). Node skips the file, records a warning and packs the rest.
+- **Name collisions.** A name already used, ignoring case, gains `_2`, `_3` and so on, so no unit's STL overwrites another on a case-insensitive file system. Node first prefixes the folder or part key, then numbers, and compares names case-sensitively.
+- **Cleaned file stems.** The file stem is cleaned like the role and folder segments, so a stored name holding `/`, `\` or `..` cannot leave the extraction folder. Node used the stem as stored.
+- **Folders.** Every pack uses `<role>/<folder>/`. Node's colour-only folders, filename grouping and single-unit selection are not ported (GRE-393).
+- **Stored entries.** Every entry is stored uncompressed, so each is byte-identical to its Source file and the archive size is known before it is written.
+

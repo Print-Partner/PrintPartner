@@ -5,8 +5,9 @@ import {
   type QueuedSendReceipt,
   type SendQueue,
 } from "@print-partner/rust-client";
-import { fetchCore } from "../core/client";
+import { CoreError, fetchCore } from "../core/client";
 import { ContractError, readCore } from "../core/rust";
+import { lostSend } from "../core/writes";
 
 export type QueuedSend = SendQueue["items"][number];
 export type SendPrinter = FarmPrinterList["printers"][number];
@@ -49,6 +50,29 @@ export function sendStatus(item: QueuedSend): SendStatus {
       return "Sent";
     default:
       return "Failed";
+  }
+}
+
+/**
+ * Whether a failed write's effect is unknown: no answer reached the UI, or the core answered
+ * 5xx, which it can do after the write committed. Only a 4xx is a refusal that wrote nothing.
+ */
+export const uncertain = (error: unknown) =>
+  error instanceof Error &&
+  (lostSend(error) || (error instanceof CoreError && error.status >= 500));
+
+/** What a row offers: none while a send is in flight or after it is Sent. */
+export type RowAction = "send-now" | "remove" | "printed" | "not-printed";
+
+export function actionsFor(item: QueuedSend): RowAction[] {
+  switch (sendStatus(item)) {
+    case "Not sent":
+    case "Failed":
+      return ["send-now", "remove"];
+    case "Outcome unknown":
+      return ["printed", "not-printed", "remove"];
+    default:
+      return [];
   }
 }
 

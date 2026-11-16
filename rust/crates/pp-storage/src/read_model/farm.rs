@@ -676,6 +676,39 @@ fn normalized_filename(name: &str) -> String {
     name.rsplit('/').next().unwrap_or_default().to_lowercase()
 }
 
+/// The integration and normalized file name of each watching, awaiting-verify
+/// or verified Checkoff result: the files whose open prints the reads hide.
+fn matching_files(results: &[CheckoffResult]) -> Vec<(&str, String)> {
+    results
+        .iter()
+        .filter(|link| {
+            matches!(
+                link.state,
+                CheckoffResultState::Watching
+                    | CheckoffResultState::AwaitingVerify
+                    | CheckoffResultState::Verified
+            )
+        })
+        .map(|link| {
+            (
+                link.integration_id.as_str(),
+                normalized_filename(&link.filename),
+            )
+        })
+        .collect()
+}
+
+/// Whether the stored `printer.checkoff_links` hold a watching,
+/// awaiting-verify or verified link for `filename` on `integration_id`: the
+/// rule by which the reads hide an open print.
+pub(crate) fn matched_by_link(links: &[Value], integration_id: &str, filename: &str) -> bool {
+    let results: Vec<_> = links.iter().filter_map(result).collect();
+    let name = normalized_filename(filename);
+    matching_files(&results)
+        .iter()
+        .any(|(integration, file)| *integration == integration_id && *file == name)
+}
+
 impl Farm {
     pub(crate) fn parse(
         fleet: Vec<Value>,
@@ -685,23 +718,7 @@ impl Farm {
         queue: Vec<Value>,
     ) -> Self {
         let results: Vec<_> = links.iter().filter_map(result).collect();
-        let linked: Vec<_> = results
-            .iter()
-            .filter(|link| {
-                matches!(
-                    link.state,
-                    CheckoffResultState::Watching
-                        | CheckoffResultState::AwaitingVerify
-                        | CheckoffResultState::Verified
-                )
-            })
-            .map(|link| {
-                (
-                    link.integration_id.as_str(),
-                    normalized_filename(&link.filename),
-                )
-            })
-            .collect();
+        let linked = matching_files(&results);
         let mut open: Vec<_> = unmatched
             .iter()
             .filter_map(unmatched_print)

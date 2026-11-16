@@ -11,7 +11,7 @@ See [the definition of done](https://github.com/Print-Partner/PrintPartner/blob/
 - [ ] One job, under about 1,500 lines. Work for other tickets is noted on those tickets.
 - [ ] Unslop pass run on code, comments and docs. No filler comments, dead code or speculative abstractions.
 - [ ] Docs updated in this PR, or the PR changes no behavior, setup or interface.
-- [ ] `review-gate` passed on the head commit, every review thread is resolved, and CI is green.
+- [ ] Required checks are green on the head, every review thread is resolved, and a data-loss change has a second review. Chad merges.
 - [ ] UI or desktop change: a screenshot or video is under Evidence.
 
 ## Evidence

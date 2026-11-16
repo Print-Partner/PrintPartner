@@ -83,6 +83,7 @@ impl Served {
                     reads: owner.farm_reads(mcp_rpc::policy()).unwrap(),
                     observations: Arc::new(pp_api::farm::Unwatched),
                     modules: owner.client(),
+                    activity: owner.print_activity(mcp_rpc::policy()).unwrap(),
                 },
             },
         ));

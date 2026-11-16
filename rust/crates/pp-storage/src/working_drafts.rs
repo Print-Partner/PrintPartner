@@ -34,6 +34,7 @@ mod preparation;
 #[cfg(test)]
 mod preparation_tests;
 mod rebase;
+pub mod rebuild;
 pub mod restore;
 pub mod save;
 pub use rebase::{
@@ -1585,28 +1586,18 @@ fn recompute(
     tx.commit()?;
     let mut budget = observation::PreparationBudget::new(cancelled, observations.limits)?;
     let options = request.options();
-    let prepared = preparation::prepare(
+    let prepared = prepare_draft(
         connection,
         &tenant,
         profile,
         base.clone(),
-        preparation::PreparationContext {
-            options: &options,
-            repos: &observations.repos,
-        },
-        observations.reads.as_ref(),
+        &options,
+        observations,
         &mut budget,
-    );
+    )?;
     let mut prepared = match prepared {
         Ok(prepared) => prepared,
-        Err(error) => {
-            return match error.downcast_ref() {
-                Some(preparation::Failure::NoLayers) => finished(RecomputeOutcome::NoLayers),
-                Some(preparation::Failure::NoStls) => finished(RecomputeOutcome::NoStls),
-                Some(preparation::Failure::WouldWipe) => finished(RecomputeOutcome::WouldWipe),
-                None => Err(error),
-            };
-        }
+        Err(refused) => return finished(refused),
     };
     // Node's write transaction waits for the writer lock on its own.
     let admission = writer_admission::Deadline::at_dequeue();
@@ -1672,6 +1663,33 @@ fn recompute(
             draft: snapshot(&created)?,
         })
     })
+}
+
+/// Prepares a draft snapshot from the Build's layers, or the recompute
+/// outcome a preparation refusal answers.
+fn prepare_draft(
+    connection: &mut impl preparation::PreparationSql,
+    tenant: &str,
+    profile: i64,
+    base: Value,
+    options: &preparation::PreparationOptions,
+    observations: &Observations,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<std::result::Result<preparation::PreparedDraftSnapshot, RecomputeOutcome>> {
+    let context = preparation::PreparationContext {
+        options,
+        repos: &observations.repos,
+    };
+    let reads = observations.reads.as_ref();
+    match preparation::prepare(connection, tenant, profile, base, context, reads, budget) {
+        Ok(prepared) => Ok(Ok(prepared)),
+        Err(error) => Ok(Err(match error.downcast_ref() {
+            Some(preparation::Failure::NoLayers) => RecomputeOutcome::NoLayers,
+            Some(preparation::Failure::NoStls) => RecomputeOutcome::NoStls,
+            Some(preparation::Failure::WouldWipe) => RecomputeOutcome::WouldWipe,
+            None => return Err(error),
+        })),
+    }
 }
 
 fn winner(

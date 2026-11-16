@@ -1,18 +1,8 @@
 name: Desktop Rust (hosted)
 
-# Builds and tests run once, in Rust cross-OS. This workflow only runs the
-# ast-grep ratchet, which reads Rust sources and the rules under rust/.
+# ast-grep stays off pull requests and main until desktop CI returns (GRE-1649).
+# just ci still runs the ratchet locally.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths: &fleet-paths
-      - 'rust/**'
-      - 'scripts/setup-ci-linux.sh'
-      - '.github/workflows/desktop-fleet-rust.yml'
-  # Same inputs on main, so a merge of two individually green PRs gets checked.
-  push:
-    branches: [main]
-    paths: *fleet-paths
   workflow_dispatch:
 
 permissions:

@@ -6,6 +6,8 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { ExportActions } from "./ExportActions";
+import { SendRowActions } from "./SendRowActions";
 import { SendSheet, type SendOutcome } from "./SendSheet";
 import {
   buildSends,
@@ -14,6 +16,7 @@ import {
   sendQueueQuery,
   sendStatus,
   type QueuedSend,
+  type SendPrinter,
 } from "./sends";
 
 function When({ iso }: { iso: string | null }) {
@@ -24,7 +27,13 @@ function When({ iso }: { iso: string | null }) {
   return <time dateTime={date.toISOString()}>{text.format(date)}</time>;
 }
 
-function SendRows({ sends, printers }: { sends: QueuedSend[]; printers: Map<string, string> }) {
+function SendRows({
+  sends,
+  printers,
+}: {
+  sends: QueuedSend[];
+  printers: Map<string, SendPrinter>;
+}) {
   return (
     <table className="pp-farm-table" aria-label="Sends">
       <thead>
@@ -34,6 +43,7 @@ function SendRows({ sends, printers }: { sends: QueuedSend[]; printers: Map<stri
           <th scope="col">What happens</th>
           <th scope="col">Time</th>
           <th scope="col">State</th>
+          <th scope="col">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -42,7 +52,7 @@ function SendRows({ sends, printers }: { sends: QueuedSend[]; printers: Map<stri
           return (
             <tr key={item.id}>
               <td>{item.filename}</td>
-              <td>{printers.get(item.printer_id) ?? item.printer_id}</td>
+              <td>{printers.get(item.printer_id)?.name ?? item.printer_id}</td>
               <td>{item.start ? "Upload and start print" : "Upload only"}</td>
               <td>
                 <When iso={item.updated_at ?? item.created_at} />
@@ -52,6 +62,9 @@ function SendRows({ sends, printers }: { sends: QueuedSend[]; printers: Map<stri
                 {status === "Failed" && item.error && (
                   <span className="pp-fact-detail">{item.error}</span>
                 )}
+              </td>
+              <td>
+                <SendRowActions item={item} />
               </td>
             </tr>
           );
@@ -101,7 +114,7 @@ export function BuildProduction() {
         : false,
   });
   const printers = useQuery({ ...sendPrintersQuery, enabled: farm?.state === "on" });
-  const names = new Map((printers.data?.printers ?? []).map((p) => [p.id, p.name]));
+  const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
 
   const sendButton = (
     <MutationButton
@@ -128,13 +141,18 @@ export function BuildProduction() {
     <>
       <ScreenTemplate
         title="Production"
-        subnav={<BuildTabs id={id} />}
+        subnav={
+          <>
+            <BuildTabs id={id} />
+            <ExportActions build={id} />
+          </>
+        }
         state={state}
         renderData={(sends) => (
           <>
             <OutcomeNotice outcome={outcome} />
             {sendButton}
-            <SendRows sends={sends} printers={names} />
+            <SendRows sends={sends} printers={byId} />
           </>
         )}
         empty={{

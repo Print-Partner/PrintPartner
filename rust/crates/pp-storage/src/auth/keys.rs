@@ -71,12 +71,43 @@ fn load(tx: &Transaction<'_>, tenant: &str) -> Result<(Vec<StoredKey>, bool)> {
     let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
         return Ok((Vec::new(), false));
     };
+    let (keys, rehashed) = parse_collection(&raw)?;
+    Ok((keys, rehashed > 0))
+}
+
+/// The checks in [`load`], then the collection `save` would write. A legacy
+/// `keyHash` is re-hashed. The count is how many hashes changed.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn canonical_collection(raw: &str) -> Result<(String, u64)> {
+    let (keys, rehashed) = parse_collection(raw)?;
+    let value = serde_json::to_string(&keys)?;
+    ensure!(value.len() <= 1024 * 1024, "API key collection too large");
+    Ok((value, rehashed))
+}
+
+/// Whether `stored` is a collection [`resolve`] would accept `raw_key` for.
+/// It does not record use. The import test uses it; the writer still goes
+/// through [`resolve`].
+#[cfg(all(feature = "desktop_rebuild", test))]
+pub(crate) fn collection_accepts(stored: &str, raw_key: &str) -> Result<bool> {
+    let keys: Vec<StoredKey> = serde_json::from_str(stored)?;
+    let hash = digest(raw_key)?;
+    Ok(keys.iter().any(|key| key_matches(key, &hash)))
+}
+
+fn key_matches(key: &StoredKey, hash: &str) -> bool {
+    key.is_active
+        && unexpired(&key.expires_at)
+        && bool::from(key.key_hash.as_bytes().ct_eq(hash.as_bytes()))
+}
+
+fn parse_collection(raw: &str) -> Result<(Vec<StoredKey>, u64)> {
     ensure!(raw.len() <= 1024 * 1024, "API key collection too large");
     let mut keys: Vec<StoredKey> =
-        serde_json::from_str(&raw).map_err(|_| anyhow!("Corrupt API key collection"))?;
+        serde_json::from_str(raw).map_err(|_| anyhow!("Corrupt API key collection"))?;
     ensure!(keys.len() <= 4096, "API key collection too large");
     let mut ids = std::collections::HashSet::new();
-    let mut migrated = false;
+    let mut rehashed = 0;
     for key in &mut keys {
         ensure!(
             !key.id.is_empty()
@@ -88,10 +119,10 @@ fn load(tx: &Transaction<'_>, tenant: &str) -> Result<(Vec<StoredKey>, bool)> {
         );
         if !is_digest(&key.key_hash) {
             key.key_hash = migrate(&key.key_hash)?;
-            migrated = true;
+            rehashed += 1;
         }
     }
-    Ok((keys, migrated))
+    Ok((keys, rehashed))
 }
 fn save(tx: &Transaction<'_>, tenant: &str, keys: &[StoredKey]) -> Result<()> {
     let value = serde_json::to_string(keys)?;
@@ -247,9 +278,5 @@ pub(super) fn proves(tx: &Transaction<'_>, tenant: &str, secret: &Secret) -> Res
     ensure!(bytes <= 1024 * 1024, "API key collection too large");
     let (keys, _) = load(tx, tenant)?;
     let hash = digest(secret.expose())?;
-    Ok(keys.iter().any(|key| {
-        key.is_active
-            && unexpired(&key.expires_at)
-            && bool::from(key.key_hash.as_bytes().ct_eq(hash.as_bytes()))
-    }))
+    Ok(keys.iter().any(|key| key_matches(key, &hash)))
 }

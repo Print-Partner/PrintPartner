@@ -3,10 +3,10 @@
 GRE-886 assessment, 2026-10-18. Repository baseline
 `852337c440ac38e86606aa776ac204dccde18df0`.
 
-Superseded note (2026-11-10): this is a dated snapshot. The current ruleset
-`25285698` requires `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block`
-and `review-gate`. `rust (windows)` was removed from required checks on 2026-11-08.
-The Droid review path was removed in the same change.
+Superseded note (2026-11-15): GRE-1647 deleted the evidence workflow, the
+review gate and the Claude review. The ruleset `25285698` requires `actionlint`,
+`zizmor` and `rust (linux)`. The text below is the 2026-10-18 assessment of the
+workflow that was removed.
 
 The Evidence check is a PR-author-controlled reporting aid. It does not provide
 independent validation of the PR or its claimed evidence. Closing that trust gap
@@ -14,7 +14,7 @@ requires a maintainer decision about enforcement outside the PR-owned workflow.
 
 ## Current behavior
 
-[pr-evidence.yml](../../.github/workflows/pr-evidence.yml) runs on `pull_request`
+The removed `pr-evidence.yml` ran on `pull_request`
 opened, edited, synchronize, and reopened events. GitHub takes a `pull_request`
 workflow from the PR merge ref. An author can replace its lint steps with a
 successful command while preserving the job name `Lint Evidence block`.

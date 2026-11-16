@@ -127,7 +127,7 @@ A downgrade refuses the live schema before restore cleanup. It preserves the dat
 - `pp-storage` owns the SQLite connection, migrations, the bounded settings writer, the read-only pool, the storage lease and safe backups.
 - The Node server still runs the application SQL, startup migrations and jobs.
 - The desktop rebuild slices move these operations into `pp-storage` behind `desktop_rebuild`. See [Desktop rebuild flag](desktop-rebuild.md).
-- `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. Today it holds the dry run and the conversion inventory. See [Node import](node-import.md).
+- `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. Today it holds the dry run, the import into a new Rust-owned folder (`import(source, destination)`), and the conversion inventory. See [Node import](node-import.md).
 
 ## Synthetic installations
 
@@ -231,6 +231,12 @@ Threat model for `.pp-restore`: staging checks the work directory with `symlink_
 
 Tests: `pp-storage/src/restore/tests.rs` (`ticket_t_8_restore_*`, on pp-testkit installations with a copied schema-34 database).
 
+## Source thumbnail cache
+
+`GET /sources/{id}/thumbnail?path=` (GRE-430) renders a 256 x 256 PNG of one STL in a Source's current revision and caches it at `thumbs/sources/<revision id>/<SHA-256 of the path>-v<renderer version>.png`. Rust writes nothing else under `thumbs/`. Node writes only flat files directly in `thumbs/`: part thumbnails and previews as `thumbs/<16-hex digest>.png` (`globalThumbnailPath`, `globalPreviewPath` in `web/apps/server/src/lib/thumbnails.ts`) and the accepted-media cache as `thumbs/<basis>.png` (`web/apps/server/src/lib/accepted-media-cache.ts`). Node never creates a folder there, so its files and `thumbs/sources/` cannot collide.
+
+The cache is regenerable: a revision never changes, and the renderer version is in the name, so any file there can be deleted, or the whole `thumbs/sources` folder, and the next request renders it again. `thumbs/` stays a backup root (`archive::FULL_ROOTS` and Node's format 1), so backups carry these PNGs along with Node's; restoring them is harmless and never required. A file is written under a temporary name, synced, then renamed into place, so a crash leaves at most a `.tmp` file, which is also safe to delete. A cached file that does not start with the PNG signature is rendered again and replaced.
+
 ## Whole-installation backup export
 
 With the `desktop_rebuild` feature, `InstallationClient::backup_to_temporary(app_version)` writes a full backup archive (format 2, every root in `archive::FULL_ROOTS`) for the `WriterOwner` that made the client. The caller names no path. The archive is written on the writer thread, as `WriterOwner::create_archive` writes one, so the database snapshot and the files are read while no other write runs.
@@ -255,7 +261,7 @@ The storage milestone fills in these sections:
 
 Schema 49, compiled only with `desktop_rebuild`, adds `spoolman_deductions` and
 `spoolman_deduction_units` (GRE-411). A confirmed Checkoff burst writes, in its
-own transaction, one row per pinned spool in state `pending` (link grams divided
+own transaction, one `pending` row per bed and pinned spool (link grams divided
 by link units, times the confirmed units whose Part pins that spool) or one
 `skipped` row per bed and reason. Each `pending` row claims its units in
 `spoolman_deduction_units`, keyed by link, Part and unit, so a unit is deducted

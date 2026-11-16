@@ -158,8 +158,20 @@ impl DomainPort for CheckoffDomain {
         if name == super::farm_status::TOOL {
             return Ok(self.farm_status());
         }
+        if name == super::print_stats::TOOL {
+            return Ok(self.print_stats(args));
+        }
+        if name == super::rebuild_plan::PROPOSE {
+            return self.rebuild_plan_propose(args);
+        }
         if name == super::source_roles::PROPOSE {
             return self.source_roles_propose(args);
+        }
+        if name == super::role_filament::PROPOSE {
+            return self.role_filament_propose(args);
+        }
+        if name == super::import_inputs::PROPOSE {
+            return self.import_inputs_propose(args);
         }
         Err(format!("{name} has no Rust port yet"))
     }
@@ -174,8 +186,17 @@ impl DomainPort for CheckoffDomain {
         if action.action_type == super::create_build::PROPOSE {
             return self.create_build_apply(action);
         }
+        if action.action_type == super::rebuild_plan::PROPOSE {
+            return self.rebuild_plan_apply(action);
+        }
         if action.action_type == super::source_roles::PROPOSE {
             return self.source_roles_apply(action);
+        }
+        if action.action_type == super::role_filament::PROPOSE {
+            return self.role_filament_apply(action);
+        }
+        if action.action_type == super::import_inputs::PROPOSE {
+            return self.import_inputs_apply(action);
         }
         if action.action_type != VERIFY {
             return Ok(

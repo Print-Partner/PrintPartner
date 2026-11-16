@@ -30,7 +30,7 @@ Checkoff is not a Plan change, so it does not pass the Accept gate. It is undoab
 
 ## Handle prints the app could not match
 
-A Match prints review lists the backlog with confidence in words (Exact, Likely, No suggestion), bulk select, and one press per confident group. Low-confidence rows start unchecked. Nothing is ever ticked automatically: verify-first is a product rule, and 18 unresolved prints are the evidence that matching is not reliable enough to skip confirmation.
+A Match prints review lists the backlog with confidence in words (Exact, Likely, No suggestion), bulk select, and one press per confident group. Low-confidence rows start unchecked. Nothing is ever ticked automatically: verify-first is a product rule, and 18 unresolved prints are the evidence that matching is not reliable enough to skip confirmation. After Apply dismisses prints, the result offers Undo for those dismissals only, until you leave the screen. A claim is not undone from here.
 
 ## Contracts
 
@@ -42,6 +42,7 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | Checkoff tab units and manual bursts | `GET /api/v2/plans/{id}/checkoff/units`, `POST /plans/{id}/checkoff/bursts` and `/bursts/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1191); see [Manual Checkoff bursts](../../records/d19-publication-client.md#manual-checkoff-bursts-gre-1191) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
+| Undo a dismissed unmatched print | `POST /api/v2/printer-checkoff/unattributed/{id}/dismiss/undo` | Exists in Rust (GRE-1549). Match review offers it for the last Apply's dismissals until you leave the screen (GRE-1551). |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../../farm-reads.md#match-suggestions) |
 

@@ -131,14 +131,18 @@ fn ticket_t_28_streams_restart_maps_interrupted_attempts_to_contract_statuses() 
     assert_eq!(
         (
             requeued.status,
-            requeued.error,
+            requeued.error.as_deref(),
             requeued.finished_at.as_deref()
         ),
         ("pending", None, None)
     );
     let interrupted = get(&owner, &effect);
     assert_eq!(
-        (interrupted.status, interrupted.message, interrupted.error),
+        (
+            interrupted.status,
+            interrupted.message,
+            interrupted.error.as_deref()
+        ),
         (
             "error",
             "Check the printer or Spoolman outcome before retrying",
@@ -332,7 +336,7 @@ mod rebuild {
         let (owner, _) = WriterOwner::open(&path, Limits::default()).unwrap();
         let polled = poll(&owner, &token, &id).unwrap();
         assert_eq!(
-            (polled.status, polled.error),
+            (polled.status, polled.error.as_deref()),
             ("error", Some("Check the previous outcome before retrying"))
         );
         for _ in 0..2 {

@@ -439,12 +439,12 @@ fn make_supplied_import(path: &Path, job_id: &str) {
     .unwrap();
 }
 
-/// Node has no supplied-import kind: starting one is refused, and the tenant
-/// can read, list and stream nothing. A durable supplied import belongs to the
-/// upload journal, so the public client refuses to enqueue one, and an existing
-/// one looks to its own tenant exactly like a job Node never started.
+/// Node has no supplied-import kind: starting one is refused. A durable
+/// supplied import belongs to the upload journal, so the public client refuses
+/// to enqueue one too. Unlike Node, an existing one is the tenant's upload job:
+/// it reads, lists and streams like any other kind (GRE-428).
 #[test]
-fn supplied_imports_stay_invisible_like_jobs_node_never_started() {
+fn supplied_imports_are_journal_owned_and_publicly_visible() {
     let node = &golden()["internal"];
     assert_eq!(
         node["start_error"],
@@ -497,24 +497,16 @@ fn supplied_imports_stay_invisible_like_jobs_node_never_started() {
             &AtomicBool::new(false),
             Duration::from_secs(5),
         )
-        .expect_err("public read returned a supplied import");
-    assert_eq!(
-        read.downcast_ref::<JobAccessFailure>(),
-        Some(&JobAccessFailure::NotFound)
-    );
-    assert_eq!(read.to_string(), "Job not found");
-    let stream = jobs
-        .subscribe(
+        .unwrap();
+    assert_eq!(read.kind, JobKind::SuppliedSourceImport);
+    assert!(
+        jobs.subscribe(
             copy(&tenant),
-            job_id,
+            job_id.clone(),
             &AtomicBool::new(false),
             Duration::from_secs(5),
         )
-        .err()
-        .expect("public stream opened on a supplied import");
-    assert_eq!(
-        stream.downcast_ref::<JobAccessFailure>(),
-        Some(&JobAccessFailure::NotFound)
+        .is_ok()
     );
     let listed = jobs
         .list_retained(
@@ -524,10 +516,7 @@ fn supplied_imports_stay_invisible_like_jobs_node_never_started() {
             Duration::from_secs(5),
         )
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(&*listed).unwrap(),
-        node["list"],
-        "public list included a supplied import"
-    );
+    let listed = serde_json::to_value(&*listed).unwrap();
+    assert_eq!(listed[0]["job_id"], job_id.as_str(), "{listed}");
     owner.shutdown().unwrap();
 }

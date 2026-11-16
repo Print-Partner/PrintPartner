@@ -48,6 +48,8 @@ pub use pp_domain::printer_display_state;
 pub use pp_domain::slicer_grams;
 mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_activity;
+#[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;
@@ -926,17 +928,13 @@ impl WriterOwner {
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Uploads { command, reply } => {
-                        let changes_accounting = command.changes_accounting();
-                        let changes_before = connection.total_changes();
-                        let result =
-                            uploads::execute(&mut connection, &catalog_state, command, admission);
-                        if result.is_ok()
-                            && changes_accounting
-                            && connection.total_changes() != changes_before
-                        {
-                            worker.import_epoch.fetch_add(1, Ordering::AcqRel);
-                        }
-                        let _ = reply.send(result);
+                        let _ = reply.send(uploads::run(
+                            &mut connection,
+                            &catalog_state,
+                            command,
+                            admission,
+                            &worker,
+                        ));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Checkoff { command, reply } => {

@@ -1,151 +1,20 @@
-import type { FarmPrinterList, Health, SendQueue } from "@print-partner/rust-client";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { createMemoryRouter } from "react-router";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
-import { routes } from "../routes";
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-
-const health = (farm: "on" | "off"): Health => ({
-  ok: true,
-  authenticated: true,
-  authentication_required: true,
-  capabilities: [],
-  degraded_detail: null,
-  discord_oauth_configured: false,
-  github_oauth_configured: false,
-  multi_user: false,
-  owner_mapping_required: false,
-  registration_open: false,
-  single_user_auth: true,
-  single_user_setup_required: false,
-  modules: [
-    farm === "on"
-      ? { module: "farm", state: "on" }
-      : { module: "farm", state: "off", reason: "default_off" },
-  ],
-});
-
-type Printer = FarmPrinterList["printers"][number];
-type State = Printer["state"];
-const printer = (id: string, name: string, state: State): Printer => ({
-  id,
-  name,
-  model: "Voron Micron",
-  integration: { id: `${id}-host`, kind: "moonraker" },
-  state,
-  reason: null,
-  last_heard_at: null,
-  progress_percent: null,
-  loaded_filaments: [],
-});
-const READY: State = { execution: "idle", bed_clear: "clear", display: "ready" };
-const BED: State = { execution: "idle", bed_clear: "needs_clearing", display: "bed_to_clear" };
-const PRINTING: State = { execution: "printing", bed_clear: "needs_clearing", display: "printing" };
-const UNREACHABLE: State = {
-  execution: "unreachable",
-  bed_clear: "unknown",
-  display: "unreachable",
-};
-
-type Item = SendQueue["items"][number];
-const item = (id: string, overrides: Partial<Item> = {}): Item => ({
-  id,
-  filename: "plate.gcode",
-  printer_id: "p1",
-  profile_id: 2,
-  state: "queued",
-  start: false,
-  wait_for_idle: false,
-  unit_count: 0,
-  created_at: "2026-11-12T20:00:00.000Z",
-  updated_at: "2026-11-12T20:00:00.000Z",
-  error: null,
-  upload_job_id: null,
-  outcome_unknown: false,
-  ...overrides,
-});
-
-/**
- * A fake core with a send queue. Add queues an item; Send now marks it `sending` and the
- * next queue read `done`, unless `dispatch` answers otherwise.
- */
-function fakeCore({
-  farm = "on",
-  printers = [printer("p1", "Micron", READY)],
-  items = [] as Item[],
-  dispatch,
-}: {
-  farm?: "on" | "off";
-  printers?: Printer[];
-  items?: Item[];
-  dispatch?: (id: string) => Response | Promise<Response>;
-} = {}) {
-  const queue = [...items];
-  let next = 1;
-  const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === "/health") return json(health(farm));
-    if (path === "/api/v2/printers") return json({ printers });
-    if (path === "/api/v2/printer-send-queue" && !init?.method) {
-      const answer = { items: queue.map((i) => ({ ...i })) };
-      for (const i of queue) if (i.state === "sending") i.state = "done";
-      return json(answer);
-    }
-    if (path === "/api/v2/printer-send-queue" && init?.method === "POST") {
-      const form = init.body as FormData;
-      const added = item(`q${next++}`, {
-        printer_id: String(form.get("printer_id")),
-        start: form.get("start") === "true",
-        wait_for_idle: form.get("wait_for_idle") === "true",
-        filename: (form.get("file") as File).name,
-      });
-      queue.push(added);
-      return json({ item: added });
-    }
-    const sendNow = /^\/api\/v2\/printer-send-queue\/([^/]+)\/dispatch$/.exec(path);
-    if (sendNow && init?.method === "POST") {
-      if (dispatch) return dispatch(sendNow[1]!);
-      const found = queue.find((i) => i.id === sendNow[1])!;
-      found.state = "sending";
-      found.upload_job_id = "job-1";
-      return json({ item: found, job_id: "job-1" });
-    }
-    return json(
-      { type: "urn:print-partner:problem:not-found", title: "Not Found", status: 404 },
-      404,
-    );
-  });
-  return { fetchMock, queue };
-}
-
-function renderAt(fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) {
-  vi.stubGlobal("fetch", fetchMock);
-  const router = createMemoryRouter(routes, { initialEntries: ["/builds/2/production"] });
-  const queryClient = createQueryClient();
-  queryClient.setDefaultOptions({
-    queries: { ...queryClient.getDefaultOptions().queries, retryDelay: 0 },
-  });
-  render(<App router={router} queryClient={queryClient} />);
-}
-
-const writes = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
-  fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== "GET");
-
-async function openSheet(file = "plate.gcode", printerName = "Micron") {
-  fireEvent.click(await screen.findByRole("button", { name: "Send a file" }));
-  const sheet = await screen.findByRole("dialog", { name: "Send a file" });
-  fireEvent.change(within(sheet).getByLabelText("Sliced file"), {
-    target: { files: [new File(["G28\n"], file)] },
-  });
-  const select = within(sheet).getByLabelText<HTMLSelectElement>("Printer");
-  await within(sheet).findByRole("option", { name: printerName });
-  const option = within(sheet).getByRole<HTMLOptionElement>("option", { name: printerName });
-  fireEvent.change(select, { target: { value: option.value } });
-  return sheet;
-}
+import {
+  BED,
+  fakeCore,
+  item,
+  json,
+  openSheet,
+  printer,
+  PRINTING,
+  renderAt,
+  UNREACHABLE,
+  writes,
+  type State,
+} from "./sendQueueFake.test-utils";
 
 afterEach(() => {
   cleanup();

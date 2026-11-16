@@ -168,6 +168,14 @@ impl CapturedPayloadV1 {
         })
     }
 
+    /// The captured ZIP's path inside the capture, when the input is one ZIP.
+    pub fn zip_path(&self) -> Option<&str> {
+        match &self.0 {
+            CapturedPayloadKindV1::Zip { path, .. } => Some(path),
+            CapturedPayloadKindV1::Files { .. } => None,
+        }
+    }
+
     pub fn input_version(&self) -> u32 {
         2
     }

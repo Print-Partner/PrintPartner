@@ -2,9 +2,9 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`],
-//! [`crate::integrations`], [`crate::printers`] or [`crate::auth`]. `pp-core`'s
-//! `client_routes_match_registrations` test sends every entry to the composed
+//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
+//! [`crate::modules`], [`crate::integrations`], [`crate::printers`] or [`crate::auth`].
+//! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
 //! The document's `descriptors` list holds constant tables the generator writes
@@ -334,6 +334,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "DismissUnattributedReceipt",
         )
     },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "undoDismissUnattributedPrint",
+            "POST",
+            "/api/v2/printer-checkoff/unattributed/{id}/dismiss/undo",
+            Some("DismissUnattributedRequest"),
+            "UndoDismissUnattributedReceipt",
+        )
+    },
     route(
         "readSendQueue",
         "GET",
@@ -348,6 +358,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "/api/v1/sources/activity",
         None,
         "SourceActivity",
+    ),
+    route(
+        "listSourceFiles",
+        "GET",
+        "/api/v1/sources/{id}/files",
+        None,
+        "SourceFileList",
     ),
     ClientRoute {
         text_params: &["module"],
@@ -497,7 +514,7 @@ pub use codegen::{document, document_bytes};
 #[cfg(feature = "codegen")]
 pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
-    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
+    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemCode, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
         FarmLogEntry, FarmLogKind, FarmLogPage, FarmLogUndo, FarmUndoReason,
     };
@@ -730,6 +747,10 @@ pub(crate) mod codegen {
             "SourceActivity",
             schemars::schema_for!(crate::catalog::wire::SourceActivity),
         )?;
+        schema(
+            "SourceFileList",
+            schemars::schema_for!(crate::source_files::SourceFileList),
+        )?;
         schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
         schema("FarmLogEntry", schemars::schema_for!(FarmLogEntry))?;
         schema(
@@ -768,11 +789,16 @@ pub(crate) mod codegen {
             schemars::schema_for!(DismissUnattributedReceipt),
         )?;
         schema(
+            "UndoDismissUnattributedReceipt",
+            schemars::schema_for!(crate::checkoff::UndoDismissUnattributedReceipt),
+        )?;
+        schema(
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
         )?;
         schema("Problem", schemars::schema_for!(Problem))?;
         schema("ProblemType", schemars::schema_for!(ProblemType))?;
+        schema("ProblemCode", schemars::schema_for!(ProblemCode))?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -1652,6 +1678,49 @@ pub(crate) mod codegen {
         ])
     }
 
+    /// A revision's files, including one path per kind the list uses, and a
+    /// Source that has no revision yet.
+    fn source_file_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::source_files::{SourceFileEntry, SourceFileKind, SourceFileList};
+        let file = |path: &str, kind: SourceFileKind, size_bytes: u64| SourceFileEntry {
+            path: path.into(),
+            kind,
+            size_bytes,
+        };
+        Ok(vec![
+            served(
+                "SourceFileList",
+                "grouped",
+                SourceFileList {
+                    source_id: MAX_SAFE,
+                    revision_id: Some(4),
+                    files: vec![
+                        file("README.md", SourceFileKind::Document, 5),
+                        file("notes.txt", SourceFileKind::Document, 0),
+                        file("photo.png", SourceFileKind::Image, 12),
+                        file("part.3mf", SourceFileKind::Model, 40),
+                        file("stl/arms/arm.stl", SourceFileKind::Stl, 1_024),
+                        file(
+                            &format!("stl/{UNICODE}.stl"),
+                            SourceFileKind::Stl,
+                            MAX_SAFE as u64,
+                        ),
+                        file("unknown.bin", SourceFileKind::Other, 7),
+                    ],
+                },
+            )?,
+            served(
+                "SourceFileList",
+                "no-revision",
+                SourceFileList {
+                    source_id: 2,
+                    revision_id: None,
+                    files: vec![],
+                },
+            )?,
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -2229,6 +2298,7 @@ pub(crate) mod codegen {
         )?);
         cases.push(served("SendQueue", "every-state", queue)?);
         cases.extend(catalog_fixtures()?);
+        cases.extend(source_file_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);
@@ -2288,6 +2358,9 @@ pub(crate) mod codegen {
             cases.push(served("Problem", &name, Problem::new(kind, 400, UNICODE))?);
             cases.push(served("ProblemType", &name, kind)?);
         }
+        for &code in ProblemCode::ALL {
+            cases.push(served("ProblemCode", code.as_str(), code)?);
+        }
         let bare = Problem::new(ProblemType::Conflict, 409, "").without_detail();
         cases.push(served("Problem", "no-detail", bare.with_code("not_open"))?);
         let errors = (0..MAX_FIELD_ERRORS)
@@ -2327,6 +2400,7 @@ pub(crate) mod codegen {
             TaskFeed {
                 tasks: vec![],
                 unavailable: vec![],
+                disk_notice: None,
             },
         )?);
         for (index, value) in workflows.into_iter().enumerate() {
@@ -2663,7 +2737,7 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
-    /// Unattributed claim and dismiss bodies and the receipts their routes serve.
+    /// Unattributed claim, dismiss and undo bodies and the receipts their routes serve.
     fn unattributed_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let mut cases = vec![
             served(
@@ -2684,6 +2758,22 @@ pub(crate) mod codegen {
                 "DismissUnattributedReceipt",
                 "dismissed",
                 DismissUnattributedReceipt { ok: true },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "restored",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: true,
+                },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "not-dismissed",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: false,
+                },
             )?,
         ];
         for (name, value) in [

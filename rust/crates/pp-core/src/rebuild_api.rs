@@ -286,10 +286,14 @@ impl RuntimeInputs {
     }
 }
 
-/// What MCP's farm tools read: the farm projection, the printer watchers'
-/// observations and the Module settings.
+/// What MCP's farm tools read: the farm projection with the print activity
+/// `get_print_stats` counts, the printer watchers' observations and the
+/// Module settings.
 fn mcp_farm(
-    reads: pp_storage::read_model::farm::FarmClient,
+    (reads, activity): (
+        pp_storage::read_model::farm::FarmClient,
+        pp_storage::print_activity::PrintActivityClient,
+    ),
     observations: Arc<dyn pp_api::farm::FarmObservations>,
     modules: SettingsClient,
 ) -> McpFarm {
@@ -297,6 +301,7 @@ fn mcp_farm(
         reads,
         observations,
         modules,
+        activity,
     }
 }
 
@@ -401,7 +406,7 @@ fn read_router_with_updates(
         events_client,
         (checkoff_client, settings),
         plates_client,
-        farm_client,
+        farm_clients,
     ) = {
         let guard = owner
             .lock()
@@ -424,7 +429,7 @@ fn read_router_with_updates(
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
-            guard.farm_reads(policy)?,
+            (guard.farm_reads(policy)?, guard.print_activity(policy)?),
         )
     };
     let endpoint = (origin, api_key_tenant);
@@ -467,7 +472,7 @@ fn read_router_with_updates(
             planning: planning_client,
             progress: checkoff_client,
             accepted: accepted_client,
-            farm: mcp_farm(farm_client, runtime.farm, settings),
+            farm: mcp_farm(farm_clients, runtime.farm, settings),
         },
     );
     Ok(Some(
@@ -629,6 +634,21 @@ pub(crate) fn product_router_with_updates(
         .zip(drafts)
         .zip(jobs)
         .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
+}
+
+/// `POST /sources/{id}/upload-files` for the Rust-only runtime, over its one
+/// Source upload service (GRE-428). Mounted beside [`product_router`], with
+/// the catalog's guard and no fixed body limit.
+pub(crate) fn upload_router(
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    uploads: Arc<dyn pp_api::catalog::SourceUploads>,
+) -> Result<Router> {
+    Ok(pp_api::catalog::admit_upload_routes(
+        CatalogHttpConfig::from_startup(origin, DESKTOP_TENANT, desktop_policy(), Some("1"))?,
+        owner,
+        uploads,
+    ))
 }
 
 /// API keys route to the default tenant under the single-account policy.
@@ -919,6 +939,7 @@ mod tests {
             }
             "SetModuleRequest" => json!({"on": true}),
             "CreateSourceRequest" => json!({"name": "Client contract", "source_kind": "archive"}),
+            "StartSourceSyncRequest" => json!({"project_ids": [1]}),
             "CreateIntegrationRequest" => {
                 json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
             }
@@ -1082,23 +1103,41 @@ mod tests {
         // Add to queue reads only a multipart form.
         let no_form =
             status == 415 && body["detail"] == "Send the print file as multipart/form-data";
+        // A Source ZIP upload answers 202 once the import is recorded. The
+        // sample names no Source and sends no multipart body, so the handler
+        // refuses before that: unknown Source, missing length, or not a form.
+        let upload = route.name == "uploadSourceZip"
+            && (status == 202
+                || (status == 404 && body["detail"] == "Source not found")
+                || (status == 411 && body["detail"] == "Content-Length is required")
+                || (status == 400 && body["detail"] == "Expected a multipart/form-data body"));
+        // POST /jobs/sync answers 202 with the job to follow.
+        let sync_accepted =
+            status == 202 && body["job_id"].as_str().is_some_and(|id| !id.is_empty());
+        // The branch-list sample omits ?url=, so the handler answers before GitHub.
+        let branch_list = status == 400 && body["detail"] == "url query parameter is required";
         status == 200
             || handler_not_found(status, body)
             || stale
             || no_layers
             || no_form
+            || upload
+            || sync_accepted
+            || branch_list
             || owner_exists(route, status, body)
     }
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
     /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 5] = [
+        const CODES: [&str; 7] = [
             "integration_not_found",
             "printer_not_found",
             "draft_not_found",
             "snapshot_not_found",
             "farm_log_entry_not_found",
+            "print_not_found",
+            "source_not_found",
         ];
         const DETAILS: [&str; 6] = [
             "beds[0]: Checkoff link not found",
@@ -1111,6 +1150,36 @@ mod tests {
         status == 404
             && (CODES.iter().any(|code| body["code"] == *code)
                 || DETAILS.iter().any(|detail| body["detail"] == *detail))
+    }
+
+    /// Upload checks for the contract test. The sample names no Source, so
+    /// `upload` is not called; it still drains parts if a later sample does.
+    struct NoUploads;
+
+    impl pp_api::catalog::SourceUploads for NoUploads {
+        fn check_space(
+            &self,
+            _: pp_storage::catalog::Credentials,
+            _: u64,
+        ) -> Result<(), pp_api::catalog::UploadFailure> {
+            Ok(())
+        }
+        fn closing(&self) -> bool {
+            false
+        }
+        fn upload(
+            &self,
+            _: pp_storage::catalog::Credentials,
+            _: i64,
+            _: pp_api::catalog::UploadKind,
+            _: u64,
+            files: pp_api::catalog::UploadParts,
+        ) -> Result<String, pp_api::catalog::UploadFailure> {
+            for part in files {
+                part.map_err(|_| pp_api::catalog::UploadFailure::Failed)?;
+            }
+            Ok("job-contract".into())
+        }
     }
 
     #[tokio::test]
@@ -1131,6 +1200,7 @@ mod tests {
             None,
         );
         let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
+        let uploads = upload_router(Arc::clone(&owner), &origin, Arc::new(NoUploads)).unwrap();
         let mut server = serve(
             listener,
             reads
@@ -1138,7 +1208,8 @@ mod tests {
                 .unwrap()
                 .merge(drafts.unwrap().unwrap())
                 .merge(jobs.unwrap().unwrap())
-                .merge(farm),
+                .merge(farm)
+                .merge(uploads),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {

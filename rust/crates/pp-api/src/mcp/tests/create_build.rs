@@ -4,7 +4,7 @@ use super::reads::{call, session};
 use super::*;
 use pp_storage::read_model::{
     Credential,
-    planning::{self, BuildPlanningPhase},
+    planning::{self, BuildPlanningPhase, EvidenceInputKind, EvidenceKind, SourceRole, SyncStatus},
 };
 
 const ORDERS_ON: &str = "INSERT INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"orders\":true}') ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value;";
@@ -181,6 +181,64 @@ async fn mcp_create_build_creates_the_build_with_its_brief() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_create_build_records_url_evidence_and_leaves_sources() {
+    let (server, headers) = orders_on().await;
+    let sources = library(&server);
+    let github = "https://github.com/Owner/Repo/";
+    let printables = "https://www.printables.com/model/12345-kit/files#comments";
+    let id = propose(
+        &server,
+        &headers,
+        json!({
+            "name": "Voron for Sam",
+            "request": "r",
+            "urls": [github, printables],
+        }),
+    )
+    .await;
+    let (confirmed, error) = confirm(&server, &headers, &id).await;
+    assert!(!error, "{confirmed}");
+    let build = confirmed["result"]["plan_id"].as_u64().unwrap();
+    let planning::Outcome::BuildPlanning(response) = build_planning(&server, build).await else {
+        panic!("the brief reads");
+    };
+    let evidence = response.planning.expect("a brief").brief.evidence;
+    assert_eq!(evidence.len(), 2);
+    assert_eq!(evidence[0].url, github);
+    assert_eq!(evidence[0].normalized_url, "https://github.com/Owner/Repo");
+    assert_eq!(evidence[0].id, "8d325f3875d513dbc4e3");
+    assert_eq!(evidence[0].kind, EvidenceKind::Mod);
+    assert_eq!(evidence[0].input_kind, Some(EvidenceInputKind::Url));
+    assert_eq!(evidence[0].source_role, Some(SourceRole::Addon));
+    assert_eq!(evidence[0].sync_status, Some(SyncStatus::Pending));
+    assert_eq!(evidence[0].upload_required, None);
+    assert_eq!(evidence[0].source_id, None);
+    assert_eq!(evidence[1].url, printables);
+    assert_eq!(
+        evidence[1].normalized_url,
+        "https://www.printables.com/model/12345-kit/files"
+    );
+    assert_eq!(evidence[1].id, "e23eb2aaca54431c33ba");
+    assert_eq!(evidence[1].kind, EvidenceKind::ModelSource);
+    assert_eq!(evidence[1].input_kind, Some(EvidenceInputKind::ModelPage));
+    assert_eq!(evidence[1].upload_required, Some(true));
+    assert_eq!(evidence[1].source_role, None);
+    assert_eq!(evidence[1].source_id, None);
+    assert_eq!(library(&server), sources);
+}
+
+fn library(server: &McpServer) -> String {
+    database(server)
+        .query_row(
+            "SELECT json_group_array(json_array(id,name,url,role,local_path)) \
+             FROM (SELECT * FROM projects ORDER BY id)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_create_build_replays_a_confirmed_idempotency_key() {
     let (server, headers) = orders_on().await;
     let args = json!({ "name": "Voron for Sam", "request": "r", "idempotency_key": "sam-1" });
@@ -211,8 +269,16 @@ async fn mcp_create_build_propose_refuses_with_a_code() {
         (json!({ "name": "A", "request": " \n " }), "blank_request"),
         (json!({ "name": "A", "request": 7 }), "blank_request"),
         (
-            json!({ "name": "A", "request": "r", "urls": ["https://github.com/x/y"] }),
-            "urls_not_supported",
+            json!({ "name": "A", "request": "r", "urls": ["ftp://example.com/kit"] }),
+            "invalid_url",
+        ),
+        (
+            json!({ "name": "A", "request": "r", "urls": [7] }),
+            "invalid_url",
+        ),
+        (
+            json!({ "name": "A", "request": "r", "urls": "https://github.com/x/y" }),
+            "invalid_url",
         ),
         (
             json!({ "name": "A", "request": "r", "idempotency_key": 7 }),

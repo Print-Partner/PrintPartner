@@ -52,6 +52,15 @@ own Node-compatible parsing:
   remapped `checkoff_units` back to the table rows, or to the setting while
   the setting exists
 
+The import does this move itself, before any Rust process opens the folder.
+It deletes `printer.send_queue` after copying its items into the table,
+rewrites an `artifact_path` that lies under the Node folder onto the
+destination, and stores `queued` and `sending` items as `error`. `queued`
+uses the not-started text, so nothing was sent and Send now is still allowed.
+`sending` uses the interrupted text, so the printer outcome stays unknown.
+No upload job is created, and `recover` does not see a queue left in the
+setting. See [Checkoff and the send queue](node-import.md#checkoff-and-the-send-queue).
+
 ## When items move
 
 `WriterOwner::open` runs `send_queue::recover` after job recovery, in one

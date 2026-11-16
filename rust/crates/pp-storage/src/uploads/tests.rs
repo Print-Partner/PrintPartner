@@ -1407,7 +1407,8 @@ mod capture_manifest {
         assert!(inspect_capture_manifest(br#"[]"#).is_err());
 
         let mut bad_limits = value.clone();
-        bad_limits["admission_limits"]["max_input_bytes"] = Value::from(268_435_457u64);
+        // A budget of zero is still invalid. One byte past the old 256 MiB cap is not.
+        bad_limits["admission_limits"]["max_input_bytes"] = Value::from(0u64);
         let error =
             inspect_capture_manifest(&serde_json::to_vec(&bad_limits).unwrap()).unwrap_err();
         assert!(
@@ -1798,6 +1799,8 @@ mod capture_preflight {
             cleanup_settled: false,
             authority_revision: None,
             observation_cursor: None,
+            commit_sha: None,
+            revision_key: None,
         };
         let connection = Connection::open(root.join("print-partner.db")).unwrap();
         connection

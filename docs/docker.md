@@ -11,7 +11,7 @@ The rest of this page describes the Rust-only image.
 
 - One user. No multi-user accounts, hosted SaaS mode or Postgres.
 - The image runs `pp-server`. There is no launchd, systemd or Windows Service mode.
-- `PP_DESKTOP_REBUILD=1` is set in this image only. Every other build keeps the Cargo feature and the runtime switch off ([Desktop rebuild flag](desktop-rebuild.md)).
+- `PP_DESKTOP_REBUILD=1` is set in this image only. The image crates compile `desktop_rebuild` by default. The runtime switch stays off unless you set it. `pp-desktop` and `pp-drivers` keep the Cargo feature off unless you name it ([Desktop rebuild flag](desktop-rebuild.md)).
 
 ## Build
 
@@ -24,7 +24,7 @@ Without `PP_COMMIT`, the build records the all-zero commit. That is an unversion
 The build has three stages:
 
 1. `web` (Node 24.21.0): `npm ci`, then the desktop web build (`VITE_PRINT_PARTNER_DESKTOP=1 npm run build`). `rust/scripts/build-desktop-manifest.py` then builds the replacement UI (`@print-partner/ui`) and writes the measured release manifest, which lists `apps/ui/dist` as `replacement_frontend`. The stage fails if `web/apps/ui/dist/index.html` is missing.
-2. `rust` (Rust 1.99.0): `cargo build --release -p pp-server --features desktop_rebuild`, with that manifest embedded through `PP_DESKTOP_RELEASE_MANIFEST`.
+2. `rust` (Rust 1.99.0): `cargo build --release -p pp-server`. That crate's default features include `desktop_rebuild`. The manifest is embedded through `PP_DESKTOP_RELEASE_MANIFEST`. The process still reads `PP_DESKTOP_REBUILD`, and the runtime stage sets it to `1`.
 3. `runtime` (Debian bookworm-slim): the `pp-server` binary, the measured replacement UI (`apps/ui/dist`, which it serves), the measured old frontend (`apps/web/dist`, still shipped), the community manifests (`apps/server/dist/current/data/manifests`), `web/package.json` for the version, `ca-certificates`, `tini`, and the license and notice files in `/usr/share/doc/print-partner/`.
 
 The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-rust-smoke.py` checks this. Every base image is pinned by tag and digest. Release builds of the Node image pass `PP_APP_VERSION` and `PP_BUILD_DATE` the same way, and the Rust-only image takes the same build arguments for its OCI labels.
@@ -186,7 +186,14 @@ The script needs Linux and Docker. It checks that the runtime has no Node, npm, 
 
 ## Importing Node data
 
-Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. `pp-server import --from <folder or archive> --data <new folder>` copies a stopped Node data folder or a full backup archive into a new Rust-owned folder, and `--dry-run` reports first what it would convert. The import is not complete yet: its report says `complete: false`, and such a copy is disposable. See [Node import](node-import.md).
+Node and Rust never share a live data directory. Stop Node, keep that data folder, and import into a new folder. The cutover in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) is the same: the pre-cutover copy stays where it is.
+
+```sh
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --dry-run
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --data <new folder>
+```
+
+The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a format 2 full backup. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
 
 ## To be written
 

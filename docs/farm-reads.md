@@ -148,6 +148,18 @@ its suggested Build or dismisses it only when its group's Apply is pressed, thro
 launcher test checks that production rows and settings are value-identical
 after the read.
 
+`POST .../unattributed/{id}/dismiss/undo` (GRE-1549) opens a dismissed print
+again. It removes `dismissed` and `dismissed_at` and keeps every other stored
+field, so the print reads and is suggested as before the dismiss. It answers
+`{"ok": true, "restored": true}`, or `"restored": false` with nothing written
+when the print is not dismissed, so a repeat is safe. A print no longer stored
+(pruned 7 days after its dismissal, dropped by the 100-entry cap, or never
+stored) is a 404 problem with code `print_not_found`. A print whose file a
+watching, awaiting-verify or verified Checkoff link on the same integration
+matched since stays dismissed: a 409 problem with code
+`print_already_matched`, because the reads would hide it while that link
+lives. The Match prints screen has no Undo button yet.
+
 Each row has `print_id`, `printer_id`, `filename`, `completed_at`,
 `confidence`, `starts_checked`, `build` (`{id, name}` or `null`), `plate`
 (`{plate_id, ordinal}` or `null`) and `evidence`:

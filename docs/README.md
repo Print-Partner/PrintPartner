@@ -12,7 +12,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 
 | Topic | Authority |
 |-------|-----------|
-| Product words | [CONTEXT.md](../CONTEXT.md) |
+| Product words | [GLOSSARY.md](../GLOSSARY.md) |
 | Replacement UI: Today, Build tabs, History/Accept, Checkoff | [UI and UX target](product/ui-ux-target.md) |
 | Target runtime, crates, allowed edges, operation owners, cutover | [Architecture](architecture.md) |
 | Accepted decisions and what replaced them | [ADR index](adr/README.md) |
@@ -70,7 +70,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 ### Product workflow
 
 The [accepted replacement UI](product/ui-ux-target.md) defines Today, Build-local
-tabs, History/Accept and burst Checkoff. [CONTEXT.md](../CONTEXT.md) defines the
+tabs, History/Accept and burst Checkoff. [GLOSSARY.md](../GLOSSARY.md) defines the
 product words. For a replacement feature change, edit its page in the
 [UI target feature index](product/ui-ux-target.md#contracts-the-ui-needs); contract
 rows and delivery slices live there, rather than in the shared overview.
@@ -98,7 +98,7 @@ will autosave into a draft and require an explicit Accept.
 | [Network sharing](network-sharing.md) | "Share on network" in the desktop app. |
 | [Desktop app](desktop.md) | The Tauri app, its tray, and its data. |
 | [Docker image](docker.md) | The single-user headless image. |
-| [Node import](node-import.md) | The one-time import of a Node installation: the dry run and the conversion inventory. |
+| [Node import](node-import.md) | The one-time import of a Node installation: the dry run, the import into a new Rust-owned folder, and the conversion inventory. |
 | [Release](release.md) | How releases are built, signed, and published. |
 | [Domain](domain/README.md) | The core model and one page per product area. |
 | [Desktop rebuild flag and slice plan](desktop-rebuild.md) | The `desktop_rebuild` feature and its slices. |

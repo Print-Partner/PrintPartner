@@ -86,6 +86,13 @@ pub enum SourceFilesError {
     SnapshotUnavailable,
     #[error("the revision holds more than {MAX_FILES} files")]
     TooManyFiles,
+    /// The path names no regular STL file of the current revision, or the
+    /// Source has no revision.
+    #[error("the current revision has no STL file at that path")]
+    FileNotFound,
+    /// The STL is corrupt or over the reader's caps. Nothing was cached.
+    #[error("the STL cannot be rendered")]
+    Unrenderable,
     #[error(transparent)]
     Writer(#[from] WriterFailure),
 }
@@ -101,6 +108,8 @@ pub struct SourceFilesClient {
     readers: SettingsClient,
     policy: AuthPolicy,
     repos: PathBuf,
+    /// The data folder; the thumbnail cache is under `thumbs/sources`.
+    data: PathBuf,
     /// Names at a revision's root that belong to the snapshot writer.
     internal: Vec<String>,
 }
@@ -116,6 +125,7 @@ impl WriterOwner {
             readers: self.client(),
             policy,
             repos: lease.data_dir().join("repos"),
+            data: lease.data_dir().to_path_buf(),
             internal: Vec::new(),
         })
     }
@@ -144,29 +154,46 @@ impl SourceFilesClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<SourceFiles, SourceFilesError> {
-        let current = self
-            .readers
-            .read("source_files.list", cancelled, wait, |tx| {
-                let installation = authorize(tx, &credential, self.policy)?;
-                current(tx, &installation, source_id)
-            })??;
-        let Some(revision_id) = current.revision_id else {
+        let snapshot =
+            self.snapshot("source_files.list", credential, source_id, cancelled, wait)?;
+        let Some((revision_id, root)) = snapshot else {
             return Ok(SourceFiles {
                 source_id,
                 revision_id: None,
                 files: Vec::new(),
             });
         };
-        let locator = current
-            .locator
-            .ok_or(SourceFilesError::SnapshotUnavailable)?;
-        let root = revision_root(&self.repos, source_id, &locator)
-            .ok_or(SourceFilesError::SnapshotUnavailable)?;
         Ok(SourceFiles {
             source_id,
             revision_id: Some(revision_id),
             files: walk(&root, &self.internal)?,
         })
+    }
+
+    /// The current revision's id and snapshot directory, or `None` for a
+    /// Source with no revision. One read transaction checks the credential
+    /// and reads the Source; the directory is resolved after it.
+    fn snapshot(
+        &self,
+        name: &'static str,
+        credential: Credential,
+        source_id: i64,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Option<(i64, PathBuf)>, SourceFilesError> {
+        let current = self.readers.read(name, cancelled, wait, |tx| {
+            let installation = authorize(tx, &credential, self.policy)?;
+            current(tx, &installation, source_id)
+        })??;
+        let Some(revision_id) = current.revision_id else {
+            return Ok(None);
+        };
+        let locator = current
+            .locator
+            .ok_or(SourceFilesError::SnapshotUnavailable)?;
+        let root = revision_root(&self.repos, source_id, &locator)
+            .ok_or(SourceFilesError::SnapshotUnavailable)?;
+        Ok(Some((revision_id, root)))
     }
 }
 
@@ -229,6 +256,9 @@ fn walk(root: &Path, internal: &[String]) -> Result<Vec<SourceFile>, SourceFiles
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
 }
+
+mod thumbnail;
+pub use thumbnail::{SourceThumbnail, THUMBNAIL_CONCURRENCY};
 
 #[cfg(test)]
 mod tests;

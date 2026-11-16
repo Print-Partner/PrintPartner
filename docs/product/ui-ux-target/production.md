@@ -11,7 +11,7 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | --- | --- | --- |
 | Plates workspace, initialize, arrange, edits and restore | `GET /plans/{id}/plates`, `POST /plans/{id}/plates/initialize`, `/arrange`, `/restore`, and the unit routes under `/plans/{id}/plates/{plateId}/units/{token}` (also at `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-419); see [Accepted Plate routes in Rust](../../records/d19-publication-client.md#accepted-plate-routes-in-rust-gre-419) |
 | Production setup | `GET` and `PATCH /plans/{id}/production-setup` (root only, as in Node) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1209); see [Production setup in Rust](../../records/d19-publication-client.md#production-setup-in-rust-gre-1209) |
-| Send queue | `GET /api/v2/printer-send-queue`; `POST /api/v2/printer-send-queue` (Add, a `multipart/form-data` upload); `POST .../{id}/dispatch`, `.../drain`, `.../{id}/reconcile`, `DELETE .../{id}` | Exists in Rust behind `desktop_rebuild`: the read (GRE-1125), Add (GRE-1227), and Send now, Send ready, Reconcile and Remove with the upload worker (GRE-365). Add, Send now, Reconcile and Remove are typed routes in the generated client (GRE-1460). Reconcile has no UI yet. See [Send queue](../../send-queue.md) |
+| Send queue | `GET /api/v2/printer-send-queue`; `POST /api/v2/printer-send-queue` (Add, a `multipart/form-data` upload); `POST .../{id}/dispatch`, `.../drain`, `.../{id}/reconcile`, `DELETE .../{id}` | Exists in Rust behind `desktop_rebuild`: the read (GRE-1125), Add (GRE-1227), and Send now, Send ready, Reconcile and Remove with the upload worker (GRE-365). Add, Send now, Reconcile and Remove are typed routes in the generated client (GRE-1460). Reconcile is on the Production tab's Outcome unknown rows (GRE-1524). See [Send queue](../../send-queue.md) |
 
 ## Delivery slices
 
@@ -31,3 +31,32 @@ Numbers preserve the [product build order](../ui-ux-target.md#build-order); Line
 - **Upload and start print:** offered only when the printer's execution state is idle (Ready, or Bed to clear after a finished print), which is what the route accepts for a start. Otherwise it is disabled and says why. Send opens a confirmation naming the file and the printer, whose first line says when the bed needs clearing. Only its Start print runs Add with `start` and `wait_for_idle` on, then Send now.
 
 The UI never sends `force`. Nothing is sent when the tab or sheet opens, when a file is chosen, on reload or on reconnect. A refusal from Send now leaves a Not sent row and shows the core's reason. A lost answer, or a 5xx from Add or Send now (the write may have committed), re-reads the queue and repeats nothing.
+
+## Row actions (GRE-1524)
+
+Each send row offers actions for its state. Only Send now on an Upload and start print row asks first; every other action writes on one press.
+
+| Row state | Actions |
+| --- | --- |
+| Not sent | Send now, Remove |
+| Failed | Send now, Remove |
+| Outcome unknown | It printed, It did not print, Remove (no Send now) |
+| Sending, Sent | None |
+
+- **Send now** on an Upload and start print row reads the printers again, then opens the same "Start this print?" confirmation as the sheet, with the bed warning first when the printer now shows Bed to clear. When the printer's state cannot be read, the confirmation says so and asks to check the bed. On an Upload only row it sends at once.
+- **It printed** and **It did not print** are separate, explicitly labelled buttons. Neither is styled or focused as the default, so a mis-tap or Enter never records an answer. Each sends Reconcile with `{printed, job_id}`, where `job_id` is the row's `upload_job_id`. It printed makes the row Sent; It did not print makes it Failed, and Send now sends it again only when pressed.
+- **Answers from the core:** a 4xx, including 409 `send_changed` for an answer about an earlier send, re-reads the queue and shows the problem's detail on the row. A 5xx or no answer re-reads and says Print Partner could not confirm what the core did. Nothing is repeated on its own.
+- **One write at a time:** a row's buttons are off, and say so, from the press until the queue has been read again. Offline, they say why. A row's last notice stays until its next action, so a refusal's reason is still shown after the re-read changes the row.
+
+## Downloads (GRE-1534, GRE-426 part 1)
+
+At the top of the Production tab, above the sends: **Download STL pack**, with **Remaining units only**, and **Download checklist**. They call `GET /api/v2/plans/{id}/exports/stl-pack` (`?scope=remaining` when ticked) and `GET /api/v2/plans/{id}/exports/checklist`. Both answer a file, so neither is in the generated client.
+
+Each download takes two steps, so the page never holds the file:
+
+1. The UI requests the route with `fetchCore` and an `AbortController`. A refusal is shown under the action and nothing is saved; a 401 opens sign-in, as any read does. On success the UI aborts the request without reading the body.
+2. The UI starts a browser download of the same path with an anchor and `download`. The session cookie authenticates the same-origin GET, and the browser saves the file under the server's name (`<build-slug>-vN-stl.zip`, `<build-slug>-vN-checklist.html`) with its own progress.
+
+The action reads "Preparing download" until step 1 answers, and can be used again after a refusal. A refusal shows the problem's `detail`. For `source_files_unavailable` it also lists each file from the problem's `files` member (`CoreError.files`) as "Source: path reason", with the reason in words; an unknown reason reads "is unavailable". Under the STL pack action: "If the download fails part-way, a Source file changed while it was being packed. Download again." A Build with no accepted Plan shows one line instead of the actions.
+
+The core builds the file twice for one download, once for the check and once for the browser. GRE-426 accepts that cost, and its PR 2 measures it.

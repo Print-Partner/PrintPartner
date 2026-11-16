@@ -1157,6 +1157,12 @@ impl PreparationSql for Transaction<'_> {
         read(self)
     }
 }
+/// A caller's transaction, shared: every read runs inside it.
+impl PreparationSql for &Transaction<'_> {
+    fn read<T>(&mut self, read: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        read(self)
+    }
+}
 
 #[cfg_attr(test, derive(serde::Deserialize))]
 pub(super) struct PartChoice {

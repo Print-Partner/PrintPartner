@@ -24,7 +24,7 @@ pub(super) const PROPOSE: &str = "propose_set_build_source_roles";
 
 const PLAN_ID: &str = "plan_id";
 const ROLES: &str = "roles";
-const INVALID_PLAN: Refusal = Refusal::new(
+pub(super) const INVALID_PLAN: Refusal = Refusal::new(
     Code::InvalidPlanId,
     "plan_id must name a Build by its positive number.",
 );
@@ -32,6 +32,15 @@ const INVALID_PLAN: Refusal = Refusal::new(
 const EVIDENCE_NOT_FOUND: Refusal = Refusal::new(
     Code::EvidenceNotFound,
     "An evidence_id names no evidence in this Build's planning brief.",
+);
+/// Shared by the planning-brief writers.
+pub(super) const NO_BRIEF: Refusal = Refusal::new(
+    Code::NoPlanningBrief,
+    "This Build has no planning brief. Create the Build with propose_create_build.",
+);
+pub(super) const BRIEF_INVALID: Refusal = Refusal::new(
+    Code::PlanningBriefInvalid,
+    "This Build's stored planning brief is invalid.",
 );
 const INVALID_ROLES: Refusal = Refusal::new(
     Code::InvalidRoles,
@@ -43,35 +52,23 @@ impl CheckoffDomain {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolInvocation, String> {
-        let refused = |refusal: Refusal| ToolInvocation {
-            content: refusal.proposal(),
-            proposed_action: None,
-        };
         let Some(build) = plan(args) else {
-            return Ok(refused(INVALID_PLAN));
+            return Ok(INVALID_PLAN.invocation());
         };
         let Some(roles) = args.get(ROLES).and_then(Value::as_array) else {
-            return Ok(refused(INVALID_ROLES));
+            return Ok(INVALID_ROLES.invocation());
         };
         let credential = self.caller()?.into_credential();
         if let Err(error) = self.builds.check_source_roles(credential, build, self.wait) {
-            return Ok(refused(storage_refusal(&error)));
+            return Ok(storage_refusal(&error).invocation());
         }
-        let mut params = Map::new();
-        params.insert(PLAN_ID.into(), build.get().into());
-        params.insert(ROLES.into(), Value::Array(roles.clone()));
-        let plan_id = i64::try_from(build.get()).map_err(|error| error.to_string())?;
-        let action = ProposedAction::new(
+        brief_proposal(
             PROPOSE,
-            plan_id,
-            format!("Set Source roles on Build {plan_id}"),
+            build,
+            (ROLES, Value::Array(roles.clone())),
+            "Set Source roles on Build",
             "Set the Build's own Source roles and clear its selected draft. Library roles do not change.",
-            params,
-        );
-        Ok(ToolInvocation {
-            content: action.proposed_content(),
-            proposed_action: Some(action),
-        })
+        )
     }
 
     pub(super) fn source_roles_apply(&self, action: &ProposedAction) -> Result<Value, String> {
@@ -106,9 +103,29 @@ impl CheckoffDomain {
     }
 }
 
+/// A planning-brief writer's proposal for `build`, with params `plan_id`
+/// and `(key, value)`, labelled `label` and the Build's id.
+pub(super) fn brief_proposal(
+    tool: &str,
+    build: PositiveId,
+    (key, value): (&str, Value),
+    label: &str,
+    summary: &str,
+) -> Result<ToolInvocation, String> {
+    let mut params = Map::new();
+    params.insert(PLAN_ID.into(), build.get().into());
+    params.insert(key.into(), value);
+    let plan_id = i64::try_from(build.get()).map_err(|error| error.to_string())?;
+    let action = ProposedAction::new(tool, plan_id, format!("{label} {plan_id}"), summary, params);
+    Ok(ToolInvocation {
+        content: action.proposed_content(),
+        proposed_action: Some(action),
+    })
+}
+
 /// `plan_id` as every MCP planning tool reads it: a JSON whole number from 1
 /// up, never a numeric string.
-fn plan(args: &Map<String, Value>) -> Option<PositiveId> {
+pub(super) fn plan(args: &Map<String, Value>) -> Option<PositiveId> {
     super::positive_id(&json!({ PLAN_ID: args.get(PLAN_ID)? }), PLAN_ID)
 }
 
@@ -143,14 +160,8 @@ fn item(set: &RoleSet) -> Value {
 
 fn storage_refusal(error: &SourceRolesError) -> Refusal {
     match error {
-        SourceRolesError::NoBrief => Refusal::new(
-            Code::NoPlanningBrief,
-            "This Build has no planning brief. Create the Build with propose_create_build.",
-        ),
-        SourceRolesError::BriefInvalid => Refusal::new(
-            Code::PlanningBriefInvalid,
-            "This Build's stored planning brief is invalid.",
-        ),
+        SourceRolesError::NoBrief => NO_BRIEF,
+        SourceRolesError::BriefInvalid => BRIEF_INVALID,
         SourceRolesError::EvidenceNotFound(_) => EVIDENCE_NOT_FOUND,
         SourceRolesError::MultipleStructuralBases => Refusal::new(
             Code::MultipleStructuralBases,

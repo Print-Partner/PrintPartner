@@ -110,6 +110,11 @@ pub struct TaskFeed {
     pub tasks: Vec<Task>,
     /// Open Builds that could not be read, in id order.
     pub unavailable: Vec<UnavailableBuild>,
+    /// Set when free space on the data volume is below the import reserve.
+    /// Absent from JSON when there is nothing to say, so older clients still
+    /// parse the feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_notice: Option<String>,
 }
 
 #[derive(Debug)]
@@ -142,6 +147,7 @@ pub(crate) type Read = Option<(
     String,
     Vec<(Facts, Option<time::Date>)>,
     Vec<UnavailableBuild>,
+    u64,
 )>;
 
 impl WriterOwner {
@@ -184,7 +190,7 @@ impl WorkflowClient {
             },
             reply,
         })?;
-        let Some((tenant, facts, unavailable)) = read else {
+        let Some((tenant, facts, unavailable, reserve)) = read else {
             return Ok(Outcome::MissingBuild);
         };
         let mut resolved = Vec::with_capacity(facts.len());
@@ -199,7 +205,13 @@ impl WorkflowClient {
                     .ok_or_else(|| anyhow!("Build workflow missing"))?
                     .0,
             )),
-            Request::Tasks => Outcome::Tasks(rank(resolved, unavailable)),
+            Request::Tasks => {
+                let volume = self.repos.parent().unwrap_or(self.repos.as_path());
+                let free = fs2::available_space(volume).ok();
+                let mut feed = rank(resolved, unavailable);
+                feed.disk_notice = import_disk_notice(free, reserve);
+                Outcome::Tasks(feed)
+            }
         })
     }
 }
@@ -236,6 +248,7 @@ pub fn rank(
     TaskFeed {
         tasks: ranked.into_iter().map(|(_, task)| task).collect(),
         unavailable,
+        disk_notice: None,
     }
 }
 
@@ -307,8 +320,27 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
             Err(error) => return Err(error),
         }
     }
+    let reserve = import_reserve(&tx, &tenant)?;
     tx.commit()?;
-    Ok(Some((tenant, facts, unavailable)))
+    Ok(Some((tenant, facts, unavailable, reserve)))
+}
+
+/// The caller's import reserve, read in the same transaction as the Builds.
+fn import_reserve(tx: &Transaction<'_>, tenant: &str) -> Result<u64> {
+    let stored = match crate::snapshot(tx, tenant, crate::app_settings::IMPORT_RESERVE_KEY)? {
+        crate::SettingSnapshot::Stored { value } if !value.is_empty() => Some(value),
+        _ => None,
+    };
+    Ok(crate::app_settings::import_reserve_bytes(stored.as_deref()))
+}
+
+/// Today's notice when `free` is below `reserve`. A missing measurement says
+/// nothing. Equal to the reserve is still enough.
+pub fn import_disk_notice(free: Option<u64>, reserve: u64) -> Option<String> {
+    match free {
+        Some(free) if free < reserve => Some("Free space is below the import reserve.".to_owned()),
+        _ => None,
+    }
 }
 
 /// The Build's `due_date` from `build_profile_details`, which Accept writes and
@@ -326,4 +358,20 @@ fn due_date(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Option<tim
     stored
         .map(|date| time::Date::parse(&date, &format).context("Invalid stored due date"))
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_disk_notice;
+
+    #[test]
+    fn disk_notice_appears_only_below_the_reserve() {
+        let reserve = 5 * 1024 * 1024 * 1024;
+        assert_eq!(import_disk_notice(None, reserve), None);
+        assert_eq!(import_disk_notice(Some(reserve), reserve), None);
+        assert_eq!(
+            import_disk_notice(Some(reserve - 1), reserve).as_deref(),
+            Some("Free space is below the import reserve.")
+        );
+    }
 }

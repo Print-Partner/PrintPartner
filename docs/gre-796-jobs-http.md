@@ -11,8 +11,8 @@ remains as in GRE-791–GRE-794.
 Admission matches GRE-791 (loopback Host/Origin, session cookie or API key with
 the configured tenant) through the shared `loopback` module. Each admitted
 request runs `AtomicJobClient::read_public`. Success is `200` with a bare
-`JobSnapshot` (status, public `result`, and the other public fields). Missing,
-cross-tenant, and internal-only ids answer `404` `"Job not found"`.
+`JobSnapshot` (status, public `result`, and the other public fields). Missing and
+cross-tenant ids answer `404` `"Job not found"`.
 Unauthenticated requests answer `401` `"Authentication required"`. HEAD shares
 status and auth with GET and returns an empty body. Rows and files stay
 unchanged on refusal. Serializer permits for these responses are specified in

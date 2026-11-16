@@ -8,18 +8,28 @@ mod create_build;
 mod draft_parts;
 #[path = "tests/farm_status.rs"]
 mod farm_status;
+#[path = "tests/import_inputs.rs"]
+mod import_inputs;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
 #[path = "tests/planning.rs"]
 mod planning;
 #[path = "tests/planning_reads.rs"]
 mod planning_reads;
+#[path = "tests/print_stats.rs"]
+mod print_stats;
 #[path = "tests/progress_reads.rs"]
 mod progress_reads;
 #[path = "tests/reads.rs"]
 mod reads;
+#[path = "tests/rebuild_plan.rs"]
+mod rebuild_plan;
+#[path = "tests/role_filament.rs"]
+mod role_filament;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
+#[path = "tests/writer_failures.rs"]
+mod writer_failures;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";

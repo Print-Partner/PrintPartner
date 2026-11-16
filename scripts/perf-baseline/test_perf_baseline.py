@@ -6,8 +6,11 @@ python3 -B -m unittest discover -s scripts/perf-baseline -p 'test_*.py' -v
 """
 
 import json
+import socket
 import struct
 import tempfile
+import threading
+import time
 import unittest
 import urllib.request
 import zlib
@@ -171,6 +174,24 @@ class Report(unittest.TestCase):
         order = [row["label"] for row in baseline.MEASURES if row["label"] in rows]
         self.assertEqual(order, list(rows))
 
+    def test_export_rows_compare_when_both_runtimes_have_samples(self):
+        samples = {
+            "node": {"export_stl_pack_ms": [100, 80], "export_checklist_html_ms": [40]},
+            "rust": {"export_stl_pack_ms": [20, 30], "export_checklist_html_ms": [10],
+                     "export_stl_pack_click_ms": [25], "export_stl_pack_headers_ms": [5]},
+        }
+        rows = {row["measure"]: row for row in baseline.report(samples)}
+        pack = rows["STL pack export, first in run"]
+        self.assertEqual(pack["note"], "")
+        self.assertTrue(pack["comparable"])
+        self.assertEqual(pack["rust"]["median"], 25)
+        click = rows["STL pack export, check then download"]
+        self.assertEqual(click["note"], baseline.STL_CLICK)
+        self.assertIsNone(click["node"])
+        headers = rows["STL pack export, first GET until headers"]
+        self.assertEqual(headers["note"], baseline.STL_HEADERS)
+        self.assertIsNone(headers["node"])
+
     def test_results_json_round_trips_with_one_line_per_measure(self):
         meta = {"complete": True, "machine": {"cpus": 12}}
         samples = {"node": {"b": [1.23456, 2], "a": [3]}, "rust": {}}
@@ -245,6 +266,22 @@ class ScenarioHelpers(unittest.TestCase):
     def test_renderer_version_is_read_from_the_contract(self):
         self.assertRegex(scenarios.renderer_version(), r"^\w+$")
 
+    def test_source_layer_names_its_source(self):
+        layers = [
+            {"layer_type": "addon", "project_id": 9, "project_name": "Extra"},
+            {"layer_type": "base", "project_id": 4, "project_name": "Kit"},
+            {"layer_type": "addon", "project_id": None, "project_name": None},
+        ]
+        self.assertEqual(scenarios.source_id_for_layer(layers, "base:Kit"), 4)
+        self.assertEqual(scenarios.source_id_for_layer(layers, "addon:Extra"), 9)
+        with self.assertRaises(RuntimeError):
+            scenarios.source_id_for_layer(layers, "base:Missing")
+
+    def test_thumbnail_url_encodes_the_path(self):
+        self.assertEqual(scenarios.thumbnail_url(4, "stl/a.stl"),
+                         "/sources/4/thumbnail?path=stl%2Fa.stl")
+        self.assertEqual(scenarios.thumbnail_url(9, "b.stl"), "/sources/9/thumbnail?path=b.stl")
+
 
 class DataGuards(unittest.TestCase):
     def test_copy_refuses_a_directory_without_the_synthetic_manifest(self):
@@ -260,6 +297,236 @@ class DataGuards(unittest.TestCase):
             self.assertRegex(marker["created_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
             with self.assertRaises(FileExistsError):
                 runtime.mark_rust_owned(temp)
+
+
+class RecordingThumbnailSession:
+    """Checkoff units and layers, then a PNG for every thumbnail GET."""
+
+    def __init__(self, status=200, content_type="image/png", body=None, parts=None):
+        self.calls = []
+        self.status = status
+        self.content_type = content_type
+        self.body = PNG if body is None else body
+        self.parts = parts if parts is not None else [
+            {"relative_path": "stl/a.stl", "source_layer": "base:Kit", "filename": "a.stl"},
+            {"relative_path": "", "source_layer": "addon:Extra", "filename": "b.stl"},
+        ]
+
+    def json(self, method, path, body=None, headers=None, expect=(200,)):
+        self.calls.append((method, path))
+        if path.endswith("/checkoff/units"):
+            return {"parts": self.parts}, 1.0
+        if path.endswith("/layers"):
+            return {"layers": [
+                {"layer_type": "base", "project_id": 4, "project_name": "Kit"},
+                {"layer_type": "addon", "project_id": 9, "project_name": "Extra"},
+            ]}, 1.0
+        raise AssertionError(path)
+
+    def request(self, method, path, body=None, headers=None):
+        self.calls.append((method, path))
+        return self.status, {"content-type": self.content_type}, self.body, 5.0
+
+
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+class ThumbnailTiming(unittest.TestCase):
+    def test_rust_times_one_get_per_part_cold_then_warm(self):
+        session = RecordingThumbnailSession()
+        out = {}
+        scenarios.thumbnails(session, "rust", out, 7)
+        self.assertEqual(out["thumbnail_cold_part_ms"], [5.0, 5.0])
+        self.assertEqual(len(out["thumbnail_cold_build_ms"]), 1)
+        self.assertEqual(out["thumbnail_warm_part_ms"], [5.0] * 6)
+        self.assertEqual(len(out["thumbnail_warm_build_ms"]), 3)
+        self.assertEqual(out["thumbnail_parts"], [2])
+        gets = [path for method, path in session.calls if method == "GET" and "/thumbnail" in path]
+        self.assertEqual(gets, [
+            "/sources/4/thumbnail?path=stl%2Fa.stl",
+            "/sources/9/thumbnail?path=b.stl",
+        ] * 4)
+        self.assertEqual(session.calls[0][1], "/api/v2/plans/7/checkoff/units")
+        self.assertEqual(session.calls[1][1], "/api/v2/plans/7/layers")
+
+    def test_rust_refuses_a_missing_source_or_a_non_png(self):
+        missing = RecordingThumbnailSession(parts=[
+            {"relative_path": "x.stl", "source_layer": "base:Other", "filename": "x.stl"}])
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(missing, "rust", {}, 7)
+        self.assertFalse(any("/thumbnail" in path for _method, path in missing.calls))
+        bad = RecordingThumbnailSession(status=404, content_type="application/problem+json", body=b"{}")
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(bad, "rust", {}, 7)
+        empty = RecordingThumbnailSession()
+        empty.parts = []
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(empty, "rust", {}, 7)
+
+    def test_node_records_nothing_when_the_part_route_is_absent(self):
+        class Missing:
+            def request(self, method, path, body=None, headers=None):
+                self.path = path
+                return 404, {}, b"no", 1.0
+
+        session = Missing()
+        out = {}
+        scenarios.thumbnails(session, "node", out, 7)
+        self.assertEqual(out, {})
+        self.assertEqual(session.path, "/parts/1/thumbnail")
+
+    def test_thumbnail_rows_compare_when_both_runtimes_have_samples(self):
+        samples = {
+            "node": {"thumbnail_cold_part_ms": [20, 30], "thumbnail_cold_build_ms": [80]},
+            "rust": {"thumbnail_cold_part_ms": [10, 12], "thumbnail_cold_build_ms": [40]},
+        }
+        rows = {row["measure"]: row for row in baseline.report(samples)}
+        cold = rows["Thumbnail cold, per Part"]
+        self.assertEqual(cold["note"], "")
+        self.assertTrue(cold["comparable"])
+        self.assertEqual((cold["node"]["median"], cold["rust"]["median"]), (25, 11))
+        self.assertLessEqual(cold["rust"]["median"], cold["node"]["median"])
+
+
+class RecordingExportSession:
+    """Answers the two Rust export routes. `exchange` stands in for a GET
+    read to the last byte; `request_headers` stands in for the aborted check."""
+
+    def __init__(self, status=200, content_type=None, body=None):
+        self.calls = []
+        self.status = status
+        self.content_type = content_type
+        self.body = body
+
+    def _payload(self, path, read):
+        self.calls.append((path, "body" if read else "headers"))
+        if path.endswith("stl-pack"):
+            ctype, data = "application/zip", b"PK\x03\x04pack"
+        else:
+            ctype, data = "text/html; charset=utf-8", b"<!doctype html><html></html>"
+        if self.content_type is not None:
+            ctype = self.content_type
+        if self.body is not None:
+            data = self.body
+        return self.status, {"content-type": ctype}, data if read else b""
+
+    def exchange(self, method, path, body=None, headers=None, read=True):
+        status, response_headers, data = self._payload(path, read)
+        return status, response_headers, data, 3.0, 12.0
+
+    def request_headers(self, method, path, body=None, headers=None):
+        status, response_headers, _data = self._payload(path, False)
+        return status, response_headers, 4.0
+
+
+class ExportTiming(unittest.TestCase):
+    def test_rust_rows_are_full_gets_before_the_check(self):
+        session = RecordingExportSession()
+        out = {}
+        scenarios.exports(session, "rust", out, 7, 2)
+        self.assertEqual(out["export_stl_pack_ms"], [12.0])
+        self.assertEqual(out["export_stl_pack_repeat_ms"], [12.0])
+        self.assertEqual(out["export_checklist_html_ms"], [12.0])
+        self.assertEqual(out["export_checklist_html_repeat_ms"], [12.0])
+        self.assertEqual(out["export_stl_pack_headers_ms"], [3.0])
+        self.assertEqual(out["export_checklist_html_headers_repeat_ms"], [3.0])
+        self.assertEqual(out["export_stl_pack_check_ms"], [4.0])
+        self.assertEqual(out["export_stl_pack_check_repeat_ms"], [4.0])
+        self.assertEqual(out["export_checklist_html_check_ms"], [4.0])
+        self.assertEqual(out["export_stl_pack_click_ms"], [16.0])
+        self.assertEqual(out["export_checklist_html_click_repeat_ms"], [16.0])
+        kinds = [kind for _path, kind in session.calls]
+        # Both row GETs, first and repeated, are read to the last byte
+        # before any check.
+        self.assertEqual(kinds[:4], ["body", "body", "body", "body"])
+        self.assertEqual(session.calls[0][0], "/api/v2/plans/7/exports/stl-pack")
+        self.assertEqual(session.calls[1][0], "/api/v2/plans/7/exports/checklist")
+        self.assertEqual(kinds[4:8], ["headers", "body", "headers", "body"])
+
+    def test_rust_export_refuses_a_missing_route_or_a_wrong_body(self):
+        missing = RecordingExportSession(status=404)
+        with self.assertRaises(RuntimeError):
+            scenarios.exports(missing, "rust", {}, 7, 1)
+        wrong = RecordingExportSession(content_type="text/plain")
+        with self.assertRaises(RuntimeError):
+            scenarios.exports(wrong, "rust", {}, 7, 1)
+        empty = RecordingExportSession(body=b"")
+        with self.assertRaises(RuntimeError):
+            scenarios.exports(empty, "rust", {}, 7, 1)
+
+    def test_node_export_records_nothing_when_the_job_route_is_absent(self):
+        class MissingJob:
+            def request(self, method, path, body=None, headers=None):
+                self.path = path
+                return 404, {}, b"no", 1.0
+
+        session = MissingJob()
+        out = {}
+        scenarios.exports(session, "node", out, 7, 2)
+        self.assertEqual(out, {})
+        self.assertEqual(session.path, "/jobs/export-stl-pack")
+
+
+def _serve_once(payload, hold_body=False):
+    """One HTTP response on loopback. When hold_body is set, the body is
+    withheld until the client closes or two seconds pass."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    released = threading.Event()
+
+    def serve():
+        conn, _addr = listener.accept()
+        try:
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                buf += conn.recv(4096)
+            head, _sep, rest = payload.partition(b"\r\n\r\n")
+            conn.sendall(head + b"\r\n\r\n")
+            if hold_body:
+                released.wait(2)
+            try:
+                conn.sendall(rest)
+            except OSError:
+                pass
+        finally:
+            conn.close()
+            listener.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return port, released
+
+
+class HttpSession(unittest.TestCase):
+    def test_request_reads_the_body(self):
+        port, released = _serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nbody")
+        session = runtime.Session(f"http://127.0.0.1:{port}")
+        try:
+            status, headers, data, elapsed = session.request("GET", "/file")
+        finally:
+            released.set()
+            session.close()
+        self.assertEqual((status, data), (200, b"body"))
+        self.assertEqual(headers["content-type"], "text/plain")
+        self.assertGreaterEqual(elapsed, 0)
+
+    def test_request_headers_returns_before_the_body(self):
+        port, released = _serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 4\r\n\r\n"
+            b"PK\x03\x04", hold_body=True)
+        session = runtime.Session(f"http://127.0.0.1:{port}")
+        started = time.perf_counter()
+        try:
+            status, headers, elapsed = session.request_headers("GET", "/pack")
+        finally:
+            released.set()
+            session.close()
+        self.assertLess(time.perf_counter() - started, 0.5)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "application/zip")
+        self.assertLess(elapsed, 500)
 
 
 if __name__ == "__main__":

@@ -610,6 +610,14 @@ impl RetainedCaptureVault {
         Ok(result)
     }
 
+    /// Removes a candidate that a stopped process left half-written. Admission
+    /// follows the freeze, so no journal row refers to a candidate.
+    pub fn discard_candidate(&self, id: &RetainedCaptureId) -> Result<()> {
+        require_only_entry(&self.parent.child(id.as_str(), false)?, CANDIDATE)?;
+        self.parent.remove_tree(id.as_str())?;
+        self.parent.sync()
+    }
+
     pub fn finish_deleting(&self) -> Result<usize> {
         let mut removed = 0;
         for name in self.parent.entries()? {

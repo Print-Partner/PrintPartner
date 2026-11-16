@@ -158,7 +158,8 @@ describe("UI14-01 Library lists Sources with revision, sync state and activity",
     expect(within(fresh).getByText("None recorded")).toBeTruthy();
     const recent = screen.getByRole("region", { name: "Recent activity" });
     expect(within(recent).getAllByRole("listitem")).toHaveLength(3);
-    // Read only: no buttons in the list.
+    // These rows are source_kind "git", so each offers Upload ZIP. GitHub rows do not.
+    expect(within(table).getAllByLabelText(/Upload ZIP for /)).toHaveLength(3);
     expect(within(table).queryByRole("button")).toBeNull();
   });
 

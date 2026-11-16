@@ -77,7 +77,23 @@ PUT    /sources/:id/import-rules
 POST   /jobs/sync
 ```
 
-Sync and scanning operations use background jobs when the work may outlive one request.
+`POST /jobs/sync` with `{ "project_ids": [<id>, ...] }` enqueues a sync of those
+GitHub Sources. The Rust runtime answers `202` with `{ "job_id" }`. The
+replacement UI calls this `startSourceSync`, and reads branches with
+`listGithubBranches` (`GET /api/v1/sources/github-branches?url=`). A missing
+or empty `project_ids` is a 400 problem. The sync worker publishes each
+Source's revision. Sync and scanning operations use background jobs when the
+work may outlive one request.
+
+While files download, `GET /jobs/{id}` and `/ws/jobs/{id}` show `progress`
+between 0 and 100. A failed sync's `error` is the reason: the repository is
+gone, GitHub truncated the tree, a download failed, or the sync would leave
+less free space than the import reserve. The Source keeps its previous
+revision. An id that is unknown or not a GitHub Source is listed in
+`result.failures`; the other Sources still sync and the job ends `done`.
+Stopping the server while a sync is `running` leaves that job. The next start
+runs the same `job_id` again, and a following sync of the Source is not refused
+as busy. Shutdown stops the sync worker inside the mutation drain (5 seconds).
 
 `local_path` is an operator-facing capability for trusted, single-tenant
 self-host deployments. SaaS and multi-user deployments reject it on Source
@@ -198,9 +214,16 @@ The Rust core answers exports on request instead, with no job and no stored file
 
 ```text
 GET   /api/v2/plans/:id/exports/checklist
+GET   /api/v2/plans/:id/exports/stl-pack[?scope=remaining]
 ```
 
 It returns one self-contained HTML page as an attachment named `<build-slug>-v<plan version>-checklist.html`. The page shows the Build name, order number, Plan version and generated time, then every included Part grouped by Source and folder: file name, role, colour swatch, quantity, printed units out of quantity, and notes. Quantities and printed counts are those of `GET /api/v2/plans/:id/checkoff/units` at the same moment. The page has no script and its Content Security Policy allows only its inline style sheet, so opening it from disk makes no request; all Plan text is escaped. Without a valid session or API key it answers 401, for an unknown Build 404, and for a Build with no accepted Plan 409 with code `no_accepted_plan`. An accepted Plan that needs compatibility repair or was never initialized answers 409 with code `accepted_plan_unavailable`, and busy or stopped storage answers 503. The response also sends the page's Content Security Policy as a header and `Cache-Control: no-store`.
+
+The STL pack returns a ZIP attachment named `<build-slug>-v<plan version>-stl.zip`. It holds one stored (uncompressed) entry per Required unit of each included Part, named `<role>/<folder>/<file stem>_<NN>.stl`: `<folder>` is the folder of the Part's Source-relative path, `_root` at the top level, and `<NN>` the unit's number from 01. Each segment keeps ASCII letters, digits, `_`, `-` and `.` and turns any other run of characters, `/` and `\` among them, into one `_`, so no entry name leaves the folder it is extracted into. A name already used, compared without regard to case so no entry overwrites another when the archive is extracted on a case-insensitive file system, gains `_2`, `_3` and so on. Each entry is byte-identical to its Source file. `scope=remaining` leaves out units already checked off; `scope=all` is the default, and any other value answers 400 `invalid_scope`.
+
+Before the first byte, every Source file the pack needs is opened without following links and checked against its accepted SHA-256. If any is missing or altered, the whole pack is refused: 409 `source_files_unavailable` with a `files` list of `relative_path`, `source` and `reason` for each such file. `scope=remaining` with nothing left answers 409 `nothing_to_pack`, and a pack over 65,535 entries or 4 GiB, the limits of a plain ZIP, answers 422 `pack_too_large`. Credentials, unknown Builds and Builds without an accepted Plan answer as for the checklist.
+
+The archive streams as it is written, so the response is chunked and has no Content-Length. Each file is hashed again as it streams; if one changed after its check, the transfer stops, the client keeps a broken archive rather than wrong bytes, and the server logs a warning naming the Source file.
 
 ### Printers and integrations
 
@@ -320,7 +343,7 @@ Typical status codes:
 
 JSON request bodies are limited to 1 MiB. Routes that take bulk Plan edits or manifests accept up to 8 MiB: `POST /plans/{id}/save`, `PATCH /plans/{id}/drafts/{draftId}/parts`, `PUT /plans/{id}/drafts/{draftId}/reconciliation`, `POST /plans/{id}/progress/import`, `POST /plans/{id}/plates/initialize`, `PATCH /plans/{id}/production-setup`, `PUT /plans/{id}/kit-manifest`, and `PUT /sources/{id}/repo-manifest`. Reference-sharing routes accept 4 MiB. Assistant action apply and dismiss, and HTTP MCP, accept 96 MiB so a 64 MiB inline base64 file fits.
 
-Multipart uploads have their own limits: Source uploads 256 MiB, kit bundles and print files 64 MiB, rendered Part thumbnails 1 MiB, and backups 20 GiB. Source uploads stream to disk while the limit is enforced.
+Multipart uploads have their own limits: Source uploads are bounded by free disk and the import reserve (`/settings/import-free-space-reserve`, default 5 GiB), kit bundles and print files 64 MiB, rendered Part thumbnails 1 MiB, and backups 20 GiB. Source uploads stream to disk. The reserve is checked before any byte is staged.
 
 ## MCP
 

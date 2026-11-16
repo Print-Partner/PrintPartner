@@ -2,9 +2,9 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`],
-//! [`crate::integrations`], [`crate::printers`] or [`crate::auth`]. `pp-core`'s
-//! `client_routes_match_registrations` test sends every entry to the composed
+//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
+//! [`crate::modules`], [`crate::integrations`], [`crate::printers`] or [`crate::auth`].
+//! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
 //! The document's `descriptors` list holds constant tables the generator writes
@@ -351,6 +351,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "/api/v1/sources/activity",
         None,
         "SourceActivity",
+    ),
+    route(
+        "listSourceFiles",
+        "GET",
+        "/api/v1/sources/{id}/files",
+        None,
+        "SourceFileList",
     ),
     ClientRoute {
         text_params: &["module"],
@@ -716,6 +723,10 @@ pub(crate) mod codegen {
         schema(
             "SourceActivity",
             schemars::schema_for!(crate::catalog::wire::SourceActivity),
+        )?;
+        schema(
+            "SourceFileList",
+            schemars::schema_for!(crate::source_files::SourceFileList),
         )?;
         schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
         schema("FarmLogEntry", schemars::schema_for!(FarmLogEntry))?;
@@ -1644,6 +1655,49 @@ pub(crate) mod codegen {
         ])
     }
 
+    /// A revision's files, including one path per kind the list uses, and a
+    /// Source that has no revision yet.
+    fn source_file_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::source_files::{SourceFileEntry, SourceFileKind, SourceFileList};
+        let file = |path: &str, kind: SourceFileKind, size_bytes: u64| SourceFileEntry {
+            path: path.into(),
+            kind,
+            size_bytes,
+        };
+        Ok(vec![
+            served(
+                "SourceFileList",
+                "grouped",
+                SourceFileList {
+                    source_id: MAX_SAFE,
+                    revision_id: Some(4),
+                    files: vec![
+                        file("README.md", SourceFileKind::Document, 5),
+                        file("notes.txt", SourceFileKind::Document, 0),
+                        file("photo.png", SourceFileKind::Image, 12),
+                        file("part.3mf", SourceFileKind::Model, 40),
+                        file("stl/arms/arm.stl", SourceFileKind::Stl, 1_024),
+                        file(
+                            &format!("stl/{UNICODE}.stl"),
+                            SourceFileKind::Stl,
+                            MAX_SAFE as u64,
+                        ),
+                        file("unknown.bin", SourceFileKind::Other, 7),
+                    ],
+                },
+            )?,
+            served(
+                "SourceFileList",
+                "no-revision",
+                SourceFileList {
+                    source_id: 2,
+                    revision_id: None,
+                    files: vec![],
+                },
+            )?,
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -2195,6 +2249,7 @@ pub(crate) mod codegen {
         )?);
         cases.push(served("SendQueue", "every-state", queue)?);
         cases.extend(catalog_fixtures()?);
+        cases.extend(source_file_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);

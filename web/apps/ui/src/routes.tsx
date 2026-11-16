@@ -84,6 +84,7 @@ export const routes: RouteObject[] = [
           })),
         ],
       },
+      { path: "library/:sourceId", element: <LibraryScreen /> },
       { path: "farm/match", element: <MatchReview /> },
       { path: "farm/log", element: <FarmLog /> },
       { path: "states/printers", element: <PrinterStates /> },

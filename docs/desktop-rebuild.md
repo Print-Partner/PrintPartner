@@ -7,7 +7,7 @@
 > web-app-shell scope and must not be re-scoped for the replacement UI. Track
 > any missing Rust-only product entry point separately.
 
-GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. Both default to off.
+GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. GRE-1646 makes the Cargo feature the default on the crates the Rust-only image builds. The runtime switch still defaults off. The image sets `PP_DESKTOP_REBUILD=1`. `pp-desktop` and `pp-drivers` keep the Cargo feature off unless you name it.
 
 The `desktop_rebuild` Cargo feature is available on `pp-core`, `pp-contracts`, `pp-domain`, `pp-storage`, and `pp-desktop`. The desktop feature enables the core feature. The contracts feature exposes the new `build_identity`, `reconciliation`, `publication`, and `working_drafts` modules. Existing autosave contracts stay available in both builds.
 
@@ -53,9 +53,9 @@ The contracts and core gates can be tested without a native shell:
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts --features desktop_rebuild
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-contracts --no-default-features
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --features desktop_rebuild
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --no-default-features
 ```
 
 Core tests isolate environment changes in child processes. They cover absent, disabled, invalid, and enabled values with and without the Cargo feature. The existing autosave consumer tests run in both contract builds. The Rust runtime proof checks the existing authenticated endpoints, source creation, response shapes, and shutdown with the runtime opt-in absent or false.
@@ -164,7 +164,8 @@ Only the server entry point allows environment-driven update checks. By coordina
   open print of that file on that integration claimed, records the printer's
   plan binding and appends `checkoff.unattributed_resolved`.
   `POST .../unattributed/{id}/dismiss` marks the print dismissed with the same
-  event. Refusals keep Node's status and detail (400 `profile_id is required`,
+  event, and `.../dismiss/undo` (GRE-1549) opens it again; see
+  [Match suggestions](farm-reads.md#match-suggestions). Refusals keep Node's status and detail (400 `profile_id is required`,
   404 `Unattributed print not found`, 409 `Print already claimed`, `That print
   file is already assigned`, and the rest of `materializeProblem`) and write
   nothing. A Build that does not exist is a 500, as in Node (GRE-1217). Node's per-IP rate limit is not carried over because the routes are
@@ -322,7 +323,7 @@ The rebuild ships as small PRs to `main`, each under about 1.5k lines and checka
 Each slice is done when:
 
 - the existing suites pass with the feature off and on, and the default build is unchanged;
-- it passes the [merge gate](development/definition-of-done.md#merge-gate) on the exact head, with all checks green: `review-gate` for a normal slice, plus the coordinator's scorer run when the gate passed only through the coordinator record, and two scorer seats at 9 or more for a sensitive one.
+- required checks are green on the exact head, and a data-loss change has had a second review ([Who merges](development/definition-of-done.md#who-merges)).
 
 Slices land in this order. Linear tracks each one under GRE-595. A slice is one Linear item and may ship as several PRs (D16 ships as four, D14 as five). Some modules already exist on main from earlier PRs (for example #129 to #131); a slice ports only the delta from the reference branch.
 
@@ -366,7 +367,7 @@ Gap slices added in triage on 2026-10-13 cover commits that are not in the refer
 | D31 | GRE-626 | Reconcile CI ratchet commits from #155 with main | D1 |
 | D32 | GRE-627 | Coverage audit mapping #133 and #135 patches to slices | none; runs early, re-checked before cutover |
 
-Turning `desktop_rebuild` on by default is a separate decision for the maintainer after D26 and D32.
+GRE-1646 makes `desktop_rebuild` the default Cargo feature for the crates the Rust-only image builds. `pp-desktop` and `pp-drivers` stay off. The runtime switch stays off unless the process sets `PP_DESKTOP_REBUILD` to `1` or `true`.
 
 ### D12 observation core pull-forward
 
@@ -2025,3 +2026,15 @@ never replaces one, and only `POST /api/v1/integrations/{id}/tls-pin/reset`
 deletes one ([Bambu LAN driver](bambu-lan.md#pinning-in-settings)).
 
 See [Filament grams per send (GRE-1165, part a: GRE-1237)](records/filament-grams-per-send.md).
+
+## STL pack differences from Node (GRE-1525)
+
+`GET /api/v2/plans/{id}/exports/stl-pack` replaces Node's `POST /jobs/export-stl-pack` job and its `GET /exports/*` download. These differences are deliberate:
+
+- **On request.** The pack is built when it is downloaded and streamed from the verified Source files. Node runs a job, stages a copy of every file and publishes a stored ZIP under `exports/`. Rust writes no file and starts no job, so nothing is left to clean up after a cancelled download or a restart.
+- **Whole-pack refusal.** A missing or altered Source file refuses the pack with a 409 naming each such file (owner decision, 2026-11-12). Node skips the file, records a warning and packs the rest.
+- **Name collisions.** A name already used, ignoring case, gains `_2`, `_3` and so on, so no unit's STL overwrites another on a case-insensitive file system. Node first prefixes the folder or part key, then numbers, and compares names case-sensitively.
+- **Cleaned file stems.** The file stem is cleaned like the role and folder segments, so a stored name holding `/`, `\` or `..` cannot leave the extraction folder. Node used the stem as stored.
+- **Folders.** Every pack uses `<role>/<folder>/`. Node's colour-only folders, filename grouping and single-unit selection are not ported (GRE-393).
+- **Stored entries.** Every entry is stored uncompressed, so each is byte-identical to its Source file and the archive size is known before it is written.
+

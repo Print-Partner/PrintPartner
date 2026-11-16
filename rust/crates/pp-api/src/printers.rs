@@ -9,9 +9,9 @@
 //! with the integration routes; this module only supplies its own wording.
 
 use crate::accepted::AcceptedHttpConfig;
-use crate::integrations::{App, Wording, answer, code, mounted, sent, unreadable};
+use crate::integrations::{App, Wording, answer, mounted, sent, unreadable};
 use crate::loopback::PresentedCredential;
-use crate::problem;
+use crate::problem::{self, ProblemCode};
 use axum::{
     Extension, Router,
     body::Bytes,
@@ -28,11 +28,11 @@ use std::{sync::atomic::AtomicBool, time::Duration};
 
 const BODY_LIMIT: usize = 16 * 1024;
 const WORDING: Wording = Wording {
-    invalid: code::INVALID_PRINTER,
-    not_found: ("Printer not found", code::PRINTER_NOT_FOUND),
+    invalid: ProblemCode::InvalidPrinter,
+    not_found: ("Printer not found", ProblemCode::PrinterNotFound),
     limit: (
         "The printer limit is reached. Delete one first.",
-        code::PRINTER_LIMIT,
+        ProblemCode::PrinterLimit,
     ),
 };
 

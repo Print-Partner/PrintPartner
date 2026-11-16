@@ -217,6 +217,17 @@ impl ReadClient {
     /// thread. `None` names no Build: the credential is still checked, and
     /// the answer is [`AcceptedRead::Missing`], as for a Build the caller's
     /// tenant does not have.
+    /// Opens an accepted Part's STL under this client's Source snapshots with
+    /// [`crate::accepted_artifacts::open_verified`]. It reads files only, not
+    /// storage, so it holds no reader while it hashes.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn open_artifact(
+        &self,
+        artifact: &Artifact,
+    ) -> Result<(std::fs::File, u64), crate::accepted_artifacts::ArtifactFailure> {
+        crate::accepted_artifacts::open_verified(&self.repos, artifact)
+    }
+
     #[cfg(feature = "desktop_rebuild")]
     pub fn read_plan(
         &self,

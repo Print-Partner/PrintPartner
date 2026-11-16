@@ -26,10 +26,10 @@ Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge
 
 ### `propose_create_build`
 
-`propose_create_build` `{ name, request, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). `urls` must be absent, `null` or empty; URLs become brief evidence in a later change. The shared catalog's tool description still advertises `urls` and a verbatim request until that change.
+`propose_create_build` `{ name, request, urls?, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). Each URL in `urls` becomes one evidence item. Rust classifies it the way Node's `classifyBuildUrl` does, and does not guess a role from the request text. No Source is created. The shared catalog's tool description still says the request is verbatim and normalized. Rust trims surrounding whitespace from `request` and stores no separate normalized form. That catalog is exported from Node's tool description (`npm run mcp:catalog -w @print-partner/server`), so regenerating it copies the same sentence until Node's description changes.
 
-- **Propose** trims `name` and `idempotency_key` and removes surrounding whitespace from `request`, the way `PATCH /plans/{id}` stores a special request. It refuses a blank `name` or `request`, a key that is not a string of at most 200 characters, a name another Build has, and the cases confirm refuses below. It writes nothing.
-- **Confirm** runs one transaction: it creates the Build, sets its special request, stores a new brief and records the key. The brief holds the request and empty lists in phase `preparing`. Rust does not guess requirements from the request; record them with `propose_update_build_brief`. The Build has no layers, no Working Plan and no Accepted Plan. It answers `{ "ok": true, "result": { "plan_id", "name", "idempotent_replay" } }`.
+- **Propose** trims `name` and `idempotency_key` and removes surrounding whitespace from `request`, the way `PATCH /plans/{id}` stores a special request. It refuses a blank `name` or `request`, a `urls` value that is not a list of http or https URLs, a key that is not a string of at most 200 characters, a name another Build has, and the cases confirm refuses below. It writes nothing.
+- **Confirm** runs one transaction: it creates the Build, sets its special request, stores a new brief and records the key. The brief holds the request and those evidence items, and otherwise empty lists, in phase `preparing`. A GitHub URL, or a path ending `.git`, is a git repository (`kind` `mod`, `source_role` `addon`, `sync_status` `pending`). A Printables, MakerWorld, Thingiverse, Thangs, Cults3D or MyMiniFactory URL is a model page with `upload_required` true. Any other http or https URL is informational evidence. The stored `url` is the text that was sent. The evidence id is the first 20 hex digits of the SHA-256 of the normalized URL. A later entry with the same normalized URL is dropped. Rust does not guess requirements from the request; record them with `propose_update_build_brief`. The Build has no layers, no Working Plan and no Accepted Plan. It answers `{ "ok": true, "result": { "plan_id", "name", "idempotent_replay" } }`.
 - **Idempotency.** `build_planning.create.<key>` stores the Build id. Confirming another proposal with the same key answers that Build with `idempotent_replay: true` and writes nothing, while the Build exists. If the Build was deleted, confirm creates a new one and moves the key.
 - **Orders Module.** Propose and confirm both refuse while the Orders Module is off, as `PATCH /plans/{id}` refuses a special request. This is a provisional default until the owner decides.
 
@@ -40,7 +40,7 @@ A refused propose answers `{ "error": …, "code": … }` with `isError`. A refu
 | `blank_name` | `name` is missing, not a string, or blank. |
 | `name_too_long` | `name` is over 4,096 characters. |
 | `blank_request` | `request` is missing, not a string, or blank. |
-| `urls_not_supported` | `urls` is a non-empty list or not a list. |
+| `invalid_url` | `urls` is not a list, or an entry is not an http or https URL. |
 | `invalid_idempotency_key` | `idempotency_key` is not a string, or is over 200 characters after trimming. |
 | `name_taken` | Another Build has the name. |
 | `orders_module_off` | The Orders Module is off. |
@@ -75,12 +75,45 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 
 It also answers the four shared codes above.
 
+### `propose_assign_role_filament`
+
+`propose_assign_role_filament` `{ plan_id, assignment }` saves one role's filament default and records it on the Build's planning brief (GRE-1435). `assignment` is `{ role, inventory_kind, inventory_id?, requested_name?, requested_brand?, color_hex, substitution_confirmed? }`. `inventory_kind` is `catalog`, `spoolman`, `custom` or `substitute`. The call does not accept a Plan, pin a spool, or add an HTTP route.
+
+- **Propose** checks that `plan_id` is a JSON whole number from 1 up and that the assignment has a non-blank `role`, one of the four kinds, and a `#` plus six hex digits. `custom` and `substitute` require `substitution_confirmed: true`. A `spoolman` assignment also requires the Spoolman Module to be on. It then finds the Build's planning brief with the request's API key. It writes nothing and makes no network call.
+- **Confirm** checks the assignment again. A `catalog` assignment must name a built-in catalog color, and `color_hex` must match that color. A non-blank `requested_name` must match the color's display name, and a non-blank `requested_brand` its product line, ignoring case. A `spoolman` assignment is checked against the Spoolman Module again. This port has no Spoolman inventory reader on the MCP domain, so a module that is on still answers `spoolman_unavailable` and writes nothing. Confirm then runs one transaction: it replaces that role's entry in `role_filaments`, marks an existing `color_<role>` requirement satisfied (the role lowercased, with each run of non-alphanumeric characters becoming `_`), clears the selected draft, and merges `role_filaments_<plan_id>`. A second confirm for the same role replaces the first. The setting keeps `filament_color_id` for a catalog or Spoolman item, `filament_custom_hex` for a custom or substitute color, and `spoolman_spool_id` null. It answers `{ "ok": true, "result": { "role" } }`.
+
+A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
+| `invalid_filament_assignment` | `assignment` is missing or not an object with a role, a known kind, and a `#rrggbb` color. |
+| `substitution_unconfirmed` | `custom` or `substitute` without `substitution_confirmed: true`. |
+| `catalog_filament_not_found` | The catalog id names no built-in color. |
+| `catalog_color_mismatch` | `color_hex` is not that color's hex. |
+| `catalog_name_mismatch` | `requested_name` is not that color's display name. |
+| `catalog_brand_mismatch` | `requested_brand` is not that color's product line. |
+| `spoolman_module_off` | The Spoolman Module is off. |
+| `spoolman_unavailable` | Spoolman is on, and this port cannot verify the item, so it does not write. |
+| `module_settings_invalid` | A `spoolman` assignment, and the stored Module settings don't parse, so the Spoolman state is unknown. |
+| `no_planning_brief` | The Build has no planning brief. |
+| `planning_brief_invalid` | The stored brief does not parse. |
+
+It also answers the four shared codes above.
+
 ### `propose_import_build_inputs`
 
-`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id, kind?, title?, filenames?, derived_from_evidence_id? }] }` attaches existing Library Sources to the Build's planning brief as evidence (GRE-1300 part 2, GRE-1521). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A `url` input is refused until GRE-1300 part 3.
+`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), and model pages and other links by `url` (part 3a, GRE-1526). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A git repository URL is refused until GRE-1300 part 3b.
 
-- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing.
-- **Confirm** runs the same checks and then one transaction: one evidence item per Source goes in the brief, the selected draft is cleared, and the brief is stored. The item's `url` is `printpartner:source:<id>` and its `id` is the first 20 hex digits of that URL's SHA-256, as Node makes them. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files. Importing a Source the brief already holds updates that one item in place and keeps its `source_role`; Node drops the role there. It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required": false }], "created_source_ids": [] } }`, one item per input in input order.
+- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing and makes no network call.
+- **Confirm** runs the same checks and then one transaction: one evidence item per input goes in the brief, the selected draft is cleared, and the brief is stored. The inputs of one confirm are attached together or not at all. Each item's `id` is the first 20 hex digits of the SHA-256 of its normalized URL, as Node makes it. Importing an input the brief already holds, by that URL, updates its one item in place and keeps its `source_role`; Node drops the role there.
+  - **A Source** gets the URL `printpartner:source:<id>`. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files.
+  - **A URL** is classified as Node's `classifyBuildUrl` does (`pp_services::build_url`). It must be http or https. The normalized URL is the trimmed URL without its fragment and without trailing slashes on its path; `url` keeps the value as sent.
+    - A page on Printables, MakerWorld, Thingiverse, Thangs, Cults3D or MyMiniFactory, or one of their subdomains, is a model page: `kind` defaults to `model_source`, `input_kind` is `model_page`, and `upload_required` is `true`. Upload its files into a Source, then attach that Source by `source_id`.
+    - Any other non-git URL is a link: `kind` defaults to `informational_evidence` and `input_kind` is `url`.
+    - `title` is stored when given. `derived_from_evidence_id` is checked but, as in Node, not stored on a URL's item.
+  - **`extract`**, on any input, is stored trimmed with its SHA-256 as `content_hash` and the time as `retrieved_at`.
+- It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required" }], "created_source_ids": [] } }`, one item per input in input order. `source_id` is `null` for a URL.
 
 A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
 
@@ -88,8 +121,9 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 | --- | --- |
 | `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
 | `invalid_inputs` | `inputs` is missing, not a list, or empty. |
-| `invalid_input` | An input is not an object, or its `source_id` is not a positive whole number. |
-| `url_inputs_not_supported` | An input has a `url`. |
+| `invalid_input` | An input is not an object, has both or neither of `source_id` and `url`, or its `source_id` is not a positive whole number. |
+| `invalid_url` | A `url` is not an http or https URL. |
+| `url_inputs_not_supported` | A `url` is a git repository: a `github.com` URL or a path ending `.git` (until GRE-1300 part 3b). |
 | `invalid_evidence_kind` | A `kind` is not `canonical_design`, `vendor_overlay`, `mod`, `component`, `model_source` or `informational_evidence`. |
 | `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
 | `planning_brief_invalid` | The stored brief does not parse. |
@@ -146,7 +180,7 @@ It answers:
 
 Like `get_farm_status`, it is listed and callable only while the Farm Module is on. Storage failures answer the shared codes `unauthorized`, `unavailable` and `internal`.
 
-These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` and `propose_import_build_inputs` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
+These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, for `propose_assign_role_filament` it waits on GRE-1353 and closes GRE-1435, and for `propose_set_build_source_roles` and `propose_import_build_inputs` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
 ### `propose_edit_plan_draft_parts`
 
@@ -163,7 +197,7 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 | `not_found` | The key's account has no such Build or draft. |
 | `not_open` | The draft is not open. |
 | `parts_required` | `parts` is missing or empty. |
-| `invalid_edit` | An edit has a wrong field type or a negative or fractional quantity, or lists a Part twice. |
+| `invalid_edit` | An edit has a wrong field type, a `quantity_override` that isn't a whole number from 1 to 10,000, or lists a Part twice. `parts` is not a list or has more than 10,000 edits. |
 | `part_not_found` | A `part_id` is not in the draft. |
 | `edit_empty` | An edit sets neither `included` nor `quantity_override`. |
 | `invalid_digest` | `expected_snapshot_digest` is not 64 lowercase hex characters. |
@@ -173,6 +207,35 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 | `edit_refused` | Confirm: the edit refused for another reason. |
 
 `unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`.
+
+### `propose_rebuild_plan`
+
+`propose_rebuild_plan` `{ plan_id, idempotency_key? }` prepares the Build's Working Plan from the Source roles in its planning brief (GRE-1539; the storage operation is GRE-1518).
+
+- **Propose** checks `plan_id` and `idempotency_key`, proves the API key and finds the brief. It writes nothing. The brief is read again at confirm, so a role set in between is used.
+- **Confirm** runs one transaction. It requires exactly one evidence item with role `structural_base` and makes its Source the base layer, then attaches each `overlay` and `addon` Source as an addon layer. Layers that already hold those Sources stay as they are. It prepares a draft from the layers the way `POST /plans/{id}/drafts/recompute` does, stores it, and records `draft_id`, `managed_source_ids` and `draft_source_revisions` in the brief. It never accepts or publishes a Plan.
+- It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "recompute", "sources": [{ "source_id", "role", "revision" }] } }`. `recompute` is `created`, or `existing` when the same key and the same Sources and revisions found the draft an earlier rebuild made. The key is `idempotency_key`, or else the action id. Read the draft's Parts with `get_plan_draft`. The result lists no Parts (provisional).
+- Path choices are not applied yet: a brief that resolves a difference or scopes a confirmed contribution to paths is refused. Removing layers an earlier rebuild attached also comes later (GRE-1434 PR 2).
+
+Refusals have the shape described for `propose_create_build`. Every refusal leaves layers, drafts and brief unchanged, and confirm keeps the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is not a positive whole number. |
+| `invalid_idempotency_key` | `idempotency_key` is not a non-blank string of at most 143 characters. |
+| `no_planning_brief` | The Build has no planning brief. |
+| `planning_brief_invalid` | The stored brief does not parse. |
+| `no_structural_base` | No evidence item has role `structural_base`. |
+| `multiple_structural_bases` | More than one evidence item has role `structural_base`. |
+| `source_choices_unsupported` | The brief resolves a difference or scopes a confirmed contribution to paths. |
+| `source_not_found` | A role Source does not exist. The result adds `source_id`. |
+| `layer_conflict` | The structural base Source is already attached as an addon layer. The result adds `source_id`. |
+| `accepted_baseline_required` | The Build needs an Accepted Plan first. |
+| `no_stls` | The Sources have no printable files. |
+| `would_wipe` | The draft would have no Parts left. |
+| `idempotency_conflict` | The key already made a draft that is not this rebuild, or one a later recompute abandoned. Use another key. |
+
+`unauthorized`, `unavailable`, `outcome_unknown` and `internal` apply as for `propose_create_build`. Preparation reads the Source files inside the write transaction, so other writes wait while it runs.
 
 Every other product tool still answers that it has no Rust port.
 

@@ -54,3 +54,22 @@ pub fn draft_parts(path: &Path, draft_id: i64) -> rusqlite::Result<Vec<(i64, boo
         })?
         .collect()
 }
+/// A Build's layers as `(layer_type, project_id)`, in layer order.
+pub fn layers(path: &Path, build: i64) -> rusqlite::Result<Vec<(String, i64)>> {
+    let db = Connection::open(path)?;
+    let mut query = db.prepare(
+        "SELECT layer_type,project_id FROM profile_layers WHERE profile_id=?1 ORDER BY layer_order,id",
+    )?;
+    query
+        .query_map([build], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+/// A Build's drafts as `(id, state)`, in id order.
+pub fn drafts(path: &Path, build: i64) -> rusqlite::Result<Vec<(i64, String)>> {
+    let db = Connection::open(path)?;
+    let mut query =
+        db.prepare("SELECT id,state FROM plan_drafts WHERE profile_id=?1 ORDER BY id")?;
+    query
+        .query_map([build], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}

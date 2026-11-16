@@ -58,12 +58,11 @@ The observation timestamp must fall within the phase call's measured clock
 bounds. All other cells, including quota and job state, must match the snapshot.
 
 The integration target has `#![cfg(feature = "desktop_rebuild")]`.
-`pp-storage` keeps that Cargo feature off by default. A feature-off run of this
-target executes zero tests and does not establish the worker-policy behavior.
-Run the two evidence tests with the feature enabled:
+`pp-storage` compiles that feature by default. `--no-default-features` executes
+zero tests for this target and does not establish the worker-policy behavior.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml --locked -p pp-storage --features desktop_rebuild --test import_worker_policy
+cargo test --manifest-path rust/Cargo.toml --locked -p pp-storage --test import_worker_policy
 ```
 
 These are library tests. They do not enable product behavior or change feature

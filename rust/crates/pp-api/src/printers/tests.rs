@@ -1,8 +1,8 @@
 use super::*;
-use crate::integrations::tests::refusal;
+use crate::integrations::{code, tests::refusal};
 use pp_storage::printer_setup::{
     DocumentFault, Field, InvalidDocument, InvalidField, LoadedFilament, PrinterSetupError, Reason,
-    SetupDocument,
+    SetupDocument, Unread,
 };
 use serde_json::{Value, json};
 
@@ -82,13 +82,22 @@ fn a_printer_answers_as_its_configuration() {
         device_id: Some("ha-device".into()),
         preset_id: None,
         preferred_slicer: Some("orca".into()),
+        unread: Unread::default(),
     };
-    assert_eq!(
-        serde_json::to_value(PrinterConfig::from(stored)).unwrap(),
-        json!({"id": "p-1", "name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
-            "bed_depth_mm": 300, "bed_height_mm": null, "margin_mm": 4,
-            "max_filament_slots": 2, "integration_id": "moon-1"})
-    );
+    let answer = json!({"id": "p-1", "name": "Voron", "model": "voron-2.4-350", "bed_width_mm": 350,
+        "bed_depth_mm": 300, "bed_height_mm": null, "margin_mm": 4,
+        "max_filament_slots": 2, "integration_id": "moon-1"});
+    // A stored row can also carry keys the shape does not name. The
+    // answer is the same without a trace of them.
+    let mut imported = serde_json::to_value(&stored).unwrap();
+    imported["nozzle_mm"] = json!(0.4);
+    imported["notes"] = json!({"token": "unread-canary"});
+    let imported: Printer = serde_json::from_value(imported).unwrap();
+    assert_ne!(imported, stored);
+    for printer in [stored, imported] {
+        let body = serde_json::to_value(PrinterConfig::from(printer)).unwrap();
+        assert_eq!(body, answer);
+    }
 }
 
 /// An edit tells an absent `integration_id` (keep) from a null one (unlink).
@@ -107,5 +116,37 @@ fn an_edit_reads_absent_and_null_integration_id_apart() {
         let errors = problem::parse_body::<UpdatePrinterRequest>(body.to_string().as_bytes());
         let errors = errors.err().expect("the body parsed");
         assert_eq!(errors[0].pointer, "/bed_width_mm");
+    }
+}
+
+/// The whole body of each answer the printer wording changes.
+#[tokio::test]
+async fn each_printer_error_answers_one_whole_body() {
+    use crate::integrations::tests::body;
+    let mut invalid = body(
+        "validation",
+        "Validation Failed",
+        400,
+        "Request is invalid",
+        "invalid_printer",
+    );
+    invalid["errors"] = json!([{"pointer": "/model", "detail": "must not be empty"}]);
+    let empty_model = InvalidField {
+        field: Field::Model,
+        reason: Reason::Empty,
+    };
+    #[rustfmt::skip]
+    let cases = [
+        (PrinterSetupError::NotFound,
+            body("not-found", "Not Found", 404, "Printer not found", "printer_not_found")),
+        (PrinterSetupError::LimitReached,
+            body("conflict", "Conflict", 409, "The printer limit is reached. Delete one first.", "printer_limit")),
+        (PrinterSetupError::Invalid(vec![empty_model]), invalid),
+    ];
+    for (error, expected) in cases {
+        let label = format!("{error:?}");
+        let (status, answered) = refusal(error, &WORDING).await;
+        assert_eq!(json!(status), expected["status"], "{label}");
+        assert_eq!(answered, expected, "{label}");
     }
 }

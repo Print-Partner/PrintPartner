@@ -1,10 +1,8 @@
 use super::*;
 use crate::{
-    SettingSnapshot,
     auth::Secret,
-    build_graph::{
-        NewBuild,
-        create_with_brief::tests::{Fixture as Created, IDLE},
+    build_graph::create_with_brief::tests::{
+        Fixture as Created, IDLE, read_stored_brief, seeded_voron,
     },
     write::test_support::{WAIT, seed_setting},
 };
@@ -28,8 +26,7 @@ impl Deref for Fixture {
 impl Fixture {
     pub(in crate::build_graph) fn new() -> Self {
         let created = Created::new();
-        let new = NewBuild::parse("Voron", "A Voron 2.4", None).unwrap();
-        let build = created.create(new).unwrap().id;
+        let build = seeded_voron(&created);
         let fixture = Self { created, build };
         let mut brief = fixture.brief();
         brief["evidence"] = json!([evidence("e1", 11), evidence("e2", 12)]);
@@ -45,11 +42,7 @@ impl Fixture {
     }
 
     pub(in crate::build_graph) fn brief(&self) -> Value {
-        let reader = self.owner.client().reader(WAIT).unwrap();
-        match reader.snapshot("default", &self.key()).unwrap() {
-            SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap(),
-            SettingSnapshot::Missing => panic!("no brief"),
-        }
+        read_stored_brief(&self.owner, &self.key())
     }
 
     fn store(&self, brief: &Value) {

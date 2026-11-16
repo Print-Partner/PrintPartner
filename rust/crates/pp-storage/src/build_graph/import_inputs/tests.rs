@@ -26,23 +26,38 @@ fn fixture() -> Fixture {
     fixture
 }
 
-fn source(id: u64) -> SourceInput {
-    SourceInput {
-        source_id: PositiveId::new(id).unwrap(),
+fn source(id: u64) -> ImportInput {
+    ImportInput {
+        target: Target::Source {
+            id: PositiveId::new(id).unwrap(),
+            filenames: Vec::new(),
+        },
         kind: None,
         title: None,
-        filenames: Vec::new(),
+        extract: None,
         derived_from_evidence_id: None,
     }
 }
 
-fn import(fixture: &Fixture, inputs: Vec<SourceInput>) -> Result<Vec<Imported>, ImportInputsError> {
+/// A URL input; `normalized` stands in for what the caller's rules give.
+fn page(url: &str, normalized: &str, page: Page) -> ImportInput {
+    ImportInput {
+        target: Target::Url {
+            url: url.into(),
+            normalized: normalized.into(),
+            page,
+        },
+        ..source(1)
+    }
+}
+
+fn import(fixture: &Fixture, inputs: Vec<ImportInput>) -> Result<Vec<Imported>, ImportInputsError> {
     fixture
         .client
         .import_inputs(fixture.session(), fixture.build, inputs, &IDLE, WAIT)
 }
 
-fn check(fixture: &Fixture, inputs: Vec<SourceInput>) -> Result<(), ImportInputsError> {
+fn check(fixture: &Fixture, inputs: Vec<ImportInput>) -> Result<(), ImportInputsError> {
     fixture
         .client
         .check_import_inputs(fixture.session(), fixture.build, inputs, WAIT)
@@ -65,9 +80,12 @@ fn library(fixture: &Fixture) -> String {
 fn import_inputs_attaches_a_source_and_clears_the_selected_draft() {
     let fixture = fixture();
     let (before, sources) = (fixture.brief(), library(&fixture));
-    let input = SourceInput {
+    let input = ImportInput {
+        target: Target::Source {
+            id: PositiveId::new(3).unwrap(),
+            filenames: vec![" a.stl ".into(), "a.stl".into(), " ".into(), "b.stl".into()],
+        },
         kind: Some(EvidenceKind::Mod),
-        filenames: vec![" a.stl ".into(), "a.stl".into(), " ".into(), "b.stl".into()],
         derived_from_evidence_id: Some(" e1 ".into()),
         ..source(3)
     };
@@ -80,8 +98,9 @@ fn import_inputs_attaches_a_source_and_clears_the_selected_draft() {
         [Imported {
             evidence_id: S3_EVIDENCE.into(),
             kind: EvidenceKind::Mod,
-            source_id: 3,
+            source_id: Some(3),
             url: "printpartner:source:3".into(),
+            upload_required: false,
         }]
     );
     let after = fixture.brief();
@@ -118,7 +137,7 @@ fn import_inputs_again_updates_the_one_item_and_keeps_its_role() {
     assert_eq!(fixture.brief()["evidence"][2]["kind"], "model_source");
     fixture.set(&[(S3_EVIDENCE, SourceRole::Overlay)]).unwrap();
 
-    let again = SourceInput {
+    let again = ImportInput {
         kind: Some(EvidenceKind::Component),
         title: Some("Kit".into()),
         ..source(3)
@@ -141,7 +160,7 @@ fn import_inputs_again_updates_the_one_item_and_keeps_its_role() {
 fn import_inputs_refuses_and_stores_nothing() {
     let fixture = fixture();
     let before = fixture.brief();
-    let unknown_derived = SourceInput {
+    let unknown_derived = ImportInput {
         derived_from_evidence_id: Some("e9".into()),
         ..source(3)
     };
@@ -177,4 +196,68 @@ fn import_inputs_refuses_and_stores_nothing() {
         Err(ImportInputsError::Writer(WriterFailure::Auth(_)))
     ));
     assert_eq!(fixture.brief(), before);
+}
+
+#[test]
+fn import_inputs_attaches_model_pages_and_links_by_url() {
+    let fixture = fixture();
+    let sources = library(&fixture);
+    let printables = "https://www.printables.com/model/12345-kit/files";
+    let extract = ImportInput {
+        title: Some("Guide".into()),
+        extract: Some("  Print the frame first.  ".into()),
+        derived_from_evidence_id: Some("e1".into()),
+        ..page(
+            "https://Example.COM/Docs/Guide///?q=Ab#frag",
+            "https://example.com/Docs/Guide?q=Ab",
+            Page::Link,
+        )
+    };
+    let imported = import(
+        &fixture,
+        vec![
+            page(&format!("{printables}#comments"), printables, Page::Model),
+            extract,
+        ],
+    )
+    .unwrap();
+    // Ids from Node's analyzeBuildRequest for the same URLs (pp-services
+    // build_url pins the normalized strings).
+    let ids: Vec<_> = imported
+        .iter()
+        .map(|item| item.evidence_id.as_str())
+        .collect();
+    assert_eq!(ids, ["e23eb2aaca54431c33ba", "73c6eab824d58a05cc41"]);
+    assert!(imported[0].upload_required && !imported[1].upload_required);
+    assert_eq!(imported[0].source_id, None);
+
+    let evidence = fixture.brief()["evidence"].clone();
+    assert_eq!(
+        evidence[2],
+        json!({
+            "id": "e23eb2aaca54431c33ba",
+            "url": format!("{printables}#comments"),
+            "normalized_url": printables,
+            "kind": "model_source",
+            "input_kind": "model_page",
+            "upload_required": true,
+        })
+    );
+    let link = evidence[3].as_object().unwrap();
+    assert_eq!(link["kind"], "informational_evidence");
+    assert_eq!(link["input_kind"], "url");
+    assert_eq!(link["url"], "https://Example.COM/Docs/Guide///?q=Ab#frag");
+    assert_eq!(link["title"], "Guide");
+    assert_eq!(link["extract"], "Print the frame first.");
+    // sha256("Print the frame first.")
+    assert_eq!(
+        link["content_hash"],
+        "8a59b5bfc58ba8baf8e26fece6b3fd9bbe768c98773b1cdf772da15e06bdb1a4"
+    );
+    assert!(
+        link["retrieved_at"].as_str().unwrap().ends_with('Z'),
+        "{link:?}"
+    );
+    assert!(!link.contains_key("derived_from_evidence_id"), "{link:?}");
+    assert_eq!(library(&fixture), sources, "a page creates no Source");
 }

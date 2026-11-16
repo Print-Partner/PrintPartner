@@ -305,8 +305,15 @@ fn a_fleet_document_that_is_not_the_typed_shape_refuses_every_operation_untouche
     };
     let cases = [
         (json!({"id": "p-1"}), None, NotAList),
+        (json!([row, with("name", json!(7))]), Some(1), WrongShape),
         (
-            json!([row, with("nozzle", json!(0.4))]),
+            json!([
+                row,
+                with(
+                    "loaded_filaments",
+                    json!([{"slot": 1, "label": "", "spool": 3}])
+                )
+            ]),
             Some(1),
             WrongShape,
         ),
@@ -344,6 +351,49 @@ fn a_fleet_document_that_is_not_the_typed_shape_refuses_every_operation_untouche
         }
         assert_eq!(fixture.stored_at(FLEET).as_deref(), Some(text.as_str()));
     }
+}
+
+/// A stored row with keys the shape does not name. Rust made
+/// neither key, reads neither, and shows neither; an edit stores both back.
+#[test]
+fn keys_the_shape_does_not_name_are_never_shown_and_an_edit_keeps_them_byte_for_byte() {
+    let fixture = Fixture::new();
+    let unread = r#""nozzle_mm":0.4,"notes":{"token":"unread-canary","list":[1,2.5,null,"é\n"]}"#;
+    let row = |id: &str, name: &str, slots: u8| {
+        format!(
+            r#"{{"id":"{id}","name":"{name}","model":"v","bed_width_mm":350,"bed_depth_mm":350,"bed_height_mm":340,"margin_mm":4,"max_filament_slots":{slots},"loaded_filaments":[],{unread}}}"#
+        )
+    };
+    let other = row("p-2", "Other", 1);
+    let stored = format!("[{},{other}]", row("p-1", "Voron", 1));
+    seed_setting(&fixture.owner, FLEET, &stored);
+    let hidden = |printer: &Printer| {
+        let shown = format!("{printer:?}");
+        assert!(shown.contains("Unread(2 keys)"), "{shown}");
+        assert!(
+            !shown.contains("nozzle") && !shown.contains("canary"),
+            "{shown}"
+        );
+    };
+    hidden(&fixture.read("p-1").unwrap());
+    let patch = PrinterPatch {
+        name: Some("Renamed".into()),
+        max_filament_slots: Some(2),
+        ..PrinterPatch::default()
+    };
+    hidden(&fixture.edit("p-1", patch).unwrap());
+    // Only what the edit set differs; both rows keep their keys as stored.
+    let edited = row("p-1", "Renamed", 2);
+    assert_eq!(
+        fixture.stored_at(FLEET),
+        Some(format!("[{edited},{other}]"))
+    );
+    // A printer Rust makes has none.
+    let made = fixture.add(voron(None)).unwrap();
+    assert!(format!("{made:?}").contains("Unread(0 keys)"));
+    hidden(&fixture.remove("p-2").unwrap());
+    let left = fixture.stored_at(FLEET).unwrap();
+    assert!(left.starts_with(&format!("[{edited},")), "{left}");
 }
 
 #[test]

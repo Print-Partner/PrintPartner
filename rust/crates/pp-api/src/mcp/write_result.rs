@@ -10,7 +10,7 @@
 //! session drops the proposal instead of risking a second apply.
 
 use pp_services::mcp_domain::ToolInvocation;
-use pp_storage::{WriterFailure, auth::AuthFailure};
+use pp_storage::WriterFailure;
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,7 +27,6 @@ pub(super) enum Code {
     BlankName,
     NameTooLong,
     BlankRequest,
-    UrlsNotSupported,
     InvalidIdempotencyKey,
     NameTaken,
     OrdersModuleOff,
@@ -60,15 +59,32 @@ pub(super) enum Code {
     MultipleStructuralBases,
     // farm tools
     FarmModuleOff,
+    // propose_assign_role_filament
+    InvalidFilamentAssignment,
+    SubstitutionUnconfirmed,
+    CatalogFilamentNotFound,
+    CatalogColorMismatch,
+    CatalogNameMismatch,
+    CatalogBrandMismatch,
+    SpoolmanModuleOff,
+    SpoolmanUnavailable,
     // propose_import_build_inputs
     InvalidInputs,
     InvalidInput,
     UrlInputsNotSupported,
     InvalidEvidenceKind,
+    InvalidUrl,
     SourceNotFound,
     DerivedEvidenceNotFound,
     // get_print_stats
     InvalidHours,
+    // propose_rebuild_plan
+    NoStructuralBase,
+    SourceChoicesUnsupported,
+    LayerConflict,
+    NoStls,
+    WouldWipe,
+    IdempotencyConflict,
 }
 
 impl Code {
@@ -81,7 +97,6 @@ impl Code {
             Self::BlankName => "blank_name",
             Self::NameTooLong => "name_too_long",
             Self::BlankRequest => "blank_request",
-            Self::UrlsNotSupported => "urls_not_supported",
             Self::InvalidIdempotencyKey => "invalid_idempotency_key",
             Self::NameTaken => "name_taken",
             Self::OrdersModuleOff => "orders_module_off",
@@ -109,13 +124,28 @@ impl Code {
             Self::EvidenceNotFound => "evidence_not_found",
             Self::MultipleStructuralBases => "multiple_structural_bases",
             Self::FarmModuleOff => "farm_module_off",
+            Self::InvalidFilamentAssignment => "invalid_filament_assignment",
+            Self::SubstitutionUnconfirmed => "substitution_unconfirmed",
+            Self::CatalogFilamentNotFound => "catalog_filament_not_found",
+            Self::CatalogColorMismatch => "catalog_color_mismatch",
+            Self::CatalogNameMismatch => "catalog_name_mismatch",
+            Self::CatalogBrandMismatch => "catalog_brand_mismatch",
+            Self::SpoolmanModuleOff => "spoolman_module_off",
+            Self::SpoolmanUnavailable => "spoolman_unavailable",
             Self::InvalidInputs => "invalid_inputs",
             Self::InvalidInput => "invalid_input",
             Self::UrlInputsNotSupported => "url_inputs_not_supported",
             Self::InvalidEvidenceKind => "invalid_evidence_kind",
+            Self::InvalidUrl => "invalid_url",
             Self::SourceNotFound => "source_not_found",
             Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
             Self::InvalidHours => "invalid_hours",
+            Self::NoStructuralBase => "no_structural_base",
+            Self::SourceChoicesUnsupported => "source_choices_unsupported",
+            Self::LayerConflict => "layer_conflict",
+            Self::NoStls => "no_stls",
+            Self::WouldWipe => "would_wipe",
+            Self::IdempotencyConflict => "idempotency_conflict",
         }
     }
 }
@@ -168,29 +198,22 @@ pub(super) fn read_failure(error: anyhow::Error) -> Refusal {
 }
 
 /// The refusal for a failure every write through the write seam shares.
+/// `problem::WriterFailureKind` sorts the failure, once for HTTP and MCP;
+/// this gives each of its rows the MCP answer.
 pub(super) fn writer_failure(failure: &WriterFailure) -> Refusal {
-    use AuthFailure::{
-        CommitUnknown, CredentialChanged, InvalidCredentials, OwnerMappingRequired, QueueFull,
-        SessionRequired, Stopped, Storage,
-    };
-    match failure {
-        WriterFailure::Auth(
-            SessionRequired | InvalidCredentials | CredentialChanged | OwnerMappingRequired,
-        ) => Refusal::new(Code::Unauthorized, "The API key was not accepted."),
-        WriterFailure::QueueFull
-        | WriterFailure::Busy
-        | WriterFailure::Stopped
-        | WriterFailure::Cancelled
-        | WriterFailure::Auth(QueueFull | Stopped | Storage) => Refusal::new(
+    use crate::problem::WriterFailureKind as Kind;
+    match Kind::of(failure) {
+        Kind::Unauthenticated | Kind::OwnerMappingRequired => {
+            Refusal::new(Code::Unauthorized, "The API key was not accepted.")
+        }
+        Kind::QueueFull | Kind::Busy | Kind::Stopped => Refusal::new(
             Code::Unavailable,
             "Storage is busy. Nothing was written; try again.",
         ),
-        WriterFailure::Auth(CommitUnknown) => Refusal::new(
+        Kind::CommitUnknown => Refusal::new(
             Code::OutcomeUnknown,
             "The result is unknown. Check the Builds before proposing again.",
         ),
-        WriterFailure::Auth(_) | WriterFailure::Internal(_) => {
-            Refusal::new(Code::Internal, "Storage failed. Nothing was written.")
-        }
+        Kind::Internal => Refusal::new(Code::Internal, "Storage failed. Nothing was written."),
     }
 }

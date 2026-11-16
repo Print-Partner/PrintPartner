@@ -30,12 +30,15 @@ impl FarmTasks {
                 ))
             })
             .collect();
+        // The import deletes `printer.send_queue` after moving its items into
+        // the table. The setting read would then see an empty queue, and a
+        // sent file would no longer count toward a match.
         let farm = Farm::parse(
             list("printer.fleet")?,
             list("integrations")?,
             list("printer.checkoff_links")?,
             unattributed,
-            list("printer.send_queue")?,
+            super::queue_list(tx, tenant)?,
         );
         let mut matches = BTreeMap::new();
         if !farm.unmatched.is_empty() {

@@ -10,6 +10,8 @@ cargo nextest run --manifest-path rust/Cargo.toml --locked -p pp-api -p pp-drive
 npm --prefix web run test --workspace @print-partner/rust-client
 ```
 
+`pp-api` compiles `desktop_rebuild` by default. The flag stays because `pp-drivers` does not.
+
 The mounted route contract is covered by
 `rebuild_api::tests::client_routes_match_registrations`. Its probe request uses
 an unsupported kind so it opens no outbound connection. The API test compares

@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["desktop_rebuild"]
 desktop_rebuild = ["dep:zip", "dep:ryu-js", "dep:crc32fast"]
 
 [dependencies]

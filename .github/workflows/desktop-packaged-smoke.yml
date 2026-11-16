@@ -6,15 +6,9 @@ name: Desktop packaged smoke
 # unchanged Plan and Plate rows after migration. Not a required check.
 # docs/development/packaged-smoke.md explains each step.
 
+# Packaged smoke stays off pull requests, main, and the nightly schedule until
+# desktop CI returns (GRE-1649).
 on:
-  pull_request:
-    # No paths filter: the changes job decides, so the ci:packaged-smoke label
-    # works on any ready PR.
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
-  push:
-    branches: [main]
-  schedule:
-    - cron: '41 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -57,8 +51,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}
         run: python3 scripts/ci-rust-runner.py
 
   linux:

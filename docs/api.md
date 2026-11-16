@@ -77,7 +77,11 @@ PUT    /sources/:id/import-rules
 POST   /jobs/sync
 ```
 
-Sync and scanning operations use background jobs when the work may outlive one request.
+`POST /jobs/sync` with `{ "project_ids": [<id>, ...] }` enqueues a sync of those
+GitHub Sources. The Rust runtime answers `202` with `{ "job_id" }`. A missing
+or empty `project_ids` is a 400 problem. The sync worker publishes each
+Source's revision. Sync and scanning operations use background jobs when the
+work may outlive one request.
 
 `local_path` is an operator-facing capability for trusted, single-tenant
 self-host deployments. SaaS and multi-user deployments reject it on Source

@@ -214,11 +214,6 @@ fn validate_journal(connection: &Connection, preclaim: bool) -> Result<()> {
     for document in documents {
         let op: Operation = serde_json::from_str(&document)?;
         validate_operation(&op)?;
-        let payload = jobs::Payload::SuppliedSourceImport {
-            project_id: u64::try_from(op.source_id)?,
-            operation_key: op.key.clone(),
-            input_version: op.input_version,
-        };
         let job = connection
             .query_row(
                 "SELECT document FROM durable_jobs WHERE id=?1 UNION ALL SELECT archived_document FROM durable_job_keys WHERE job_id=?1 AND archived_document IS NOT NULL LIMIT 1",
@@ -228,17 +223,39 @@ fn validate_journal(connection: &Connection, preclaim: bool) -> Result<()> {
             .optional()?
             .map(|job| jobs::decode(&job))
             .transpose()?;
-        ensure!(
-            job.as_ref().is_some_and(|job| job.payload_version == 1
-                && job.job_id == op.job_id
-                && job.tenant == op.tenant
-                && job.payload == payload),
-            "Import job binding mismatch"
-        );
-        ensure!(
-            !op.cleanup_settled || job.as_ref().is_some_and(|job| job.state.terminal()),
-            "Import completion job mismatch"
-        );
+        // A GitHub sync publishes through this journal with a synthetic job id.
+        // The Sync job is a different row; this import does not enqueue one.
+        let github = op
+            .authority_revision
+            .as_ref()
+            .is_some_and(|revision| revision.producer_version == GITHUB_PRODUCER);
+        if github {
+            ensure!(
+                op.commit_sha.is_some()
+                    && op.revision_key.is_some()
+                    && op.state == State::Activated
+                    && op.cleanup_settled
+                    && job.is_none(),
+                "GitHub sync import binding mismatch"
+            );
+        } else {
+            let payload = jobs::Payload::SuppliedSourceImport {
+                project_id: u64::try_from(op.source_id)?,
+                operation_key: op.key.clone(),
+                input_version: op.input_version,
+            };
+            ensure!(
+                job.as_ref().is_some_and(|job| job.payload_version == 1
+                    && job.job_id == op.job_id
+                    && job.tenant == op.tenant
+                    && job.payload == payload),
+                "Import job binding mismatch"
+            );
+            ensure!(
+                !op.cleanup_settled || job.as_ref().is_some_and(|job| job.state.terminal()),
+                "Import completion job mismatch"
+            );
+        }
         if preclaim && let Some(job) = job {
             validate_preclaim_refusal(connection, &op, &job)?;
         }
@@ -731,6 +748,26 @@ pub struct Operation {
     pub authority_revision: Option<SourceAuthorityRevision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation_cursor: Option<i64>,
+    /// The 40-character commit a GitHub sync publishes. Absent on a supplied
+    /// import, which still records its content hash as `last_commit_sha`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+    /// The snapshot key, which is the commit or `{commit}.snapshot-v2` /
+    /// `{commit}.snapshot-v3`. When set, it is `artifact.upstream_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_key: Option<String>,
+}
+
+/// A GitHub snapshot already on disk. Activation records it as a Source
+/// revision and writes [`GithubSnapshot::commit_sha`] to `last_commit_sha`.
+#[derive(Clone, Debug)]
+pub struct GithubSnapshot {
+    pub commit_sha: String,
+    pub revision_key: String,
+    pub manifest_digest: String,
+    pub locator: String,
+    pub stored_bytes: u64,
+    pub files: Vec<File>,
 }
 
 /// A step of a claimed import attempt. Every step but `Read` records a Source
@@ -1888,7 +1925,7 @@ fn activate(
             op.source_id,
             id,
             local_path,
-            artifact.upstream_key,
+            op.commit_sha.as_deref().unwrap_or(artifact.upstream_key.as_str()),
             synced_at,
             basis.current_source_revision_id,
             basis.url,
@@ -2208,6 +2245,8 @@ fn admit(
         cleanup_settled: false,
         authority_revision: Some(authority_revision),
         observation_cursor: Some(0),
+        commit_sha: None,
+        revision_key: None,
     };
     validate_operation(&op)?;
     tx.execute(
@@ -2222,6 +2261,155 @@ fn admit(
 }
 
 const PRODUCER: &str = "supplied-source-import-v1";
+const GITHUB_PRODUCER: &str = "github-source-sync-v1";
+
+/// Publishes one claimed GitHub target through the import engine. The snapshot
+/// is already on disk. The sync reservation stays held; the caller settles it.
+/// The import row uses a synthetic job id so it does not collide with the Sync
+/// job, and its quota is settled so the Source is not left busy.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn activate_github(
+    tx: &Transaction<'_>,
+    catalog_state: &catalog::State,
+    lease: &jobs::AttemptLease,
+    candidate: &crate::source_sync::SyncCandidate,
+    snapshot: GithubSnapshot,
+) -> Result<i64> {
+    let bound = crate::source_sync::bind(tx, catalog_state, lease, candidate)?;
+    ensure!(
+        commit_text(&snapshot.commit_sha) && revision_text(&snapshot.revision_key),
+        "Invalid GitHub revision"
+    );
+    ensure!(
+        !snapshot.files.is_empty(),
+        "GitHub Source has no snapshot files"
+    );
+    let actor: String = tx.query_row(
+        "SELECT authority_actor FROM source_sync_targets WHERE job_id=?1 AND ordinal=?2",
+        params![bound.key.job_id, bound.key.ordinal],
+        |row| row.get(0),
+    )?;
+    let basis = basis(tx, lease.tenant(), bound.source_id)?;
+    ensure!(
+        basis.source_kind == "github",
+        "Source is not a GitHub Source"
+    );
+    let configuration_version: i64 = tx.query_row(
+        "SELECT source_configuration_version FROM projects WHERE tenant_id=?1 AND id=?2",
+        params![lease.tenant(), bound.source_id],
+        |row| row.get(0),
+    )?;
+    let requested_files = snapshot
+        .files
+        .iter()
+        .map(|file| File {
+            path: file.path.clone(),
+            size: file.size,
+            sha256: file.sha256.clone(),
+            kind: "input".into(),
+        })
+        .collect::<Vec<_>>();
+    let requested_digest = serialized_digest(&requested_files)?;
+    let content = requested_files
+        .iter()
+        .try_fold(0u64, |total, file| total.checked_add(file.size))
+        .ok_or_else(|| anyhow!("Input size overflow"))?;
+    let reserved = snapshot.stored_bytes.max(content).max(1);
+    let limit = content.max(1);
+    let job_id = hex::encode(Sha256::digest(
+        format!("github-sync:{}:{}", bound.key.job_id, bound.key.ordinal).as_bytes(),
+    ));
+    let paths = requested_files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let artifact = Artifact {
+        tenant: lease.tenant().to_owned(),
+        source_id: bound.source_id,
+        upstream_key: snapshot.revision_key.clone(),
+        manifest_digest: snapshot.manifest_digest,
+        locator: snapshot.locator,
+        stored_bytes: snapshot.stored_bytes,
+        files: snapshot.files,
+        suggested_rules: Vec::new(),
+    };
+    ensure!(
+        artifact.locator == format!("{}/revisions/{}", bound.source_id, artifact.upstream_key),
+        "Artifact locator mismatch"
+    );
+    let mut op = Operation {
+        tenant: lease.tenant().to_owned(),
+        actor,
+        key: job_id.clone(),
+        intent_digest: serialized_digest(&(
+            &snapshot.commit_sha,
+            &snapshot.revision_key,
+            bound.source_id,
+        ))?,
+        source_id: bound.source_id,
+        job_id: job_id.clone(),
+        input_version: 1,
+        input: Input::Files { paths },
+        requested_files: requested_files.clone(),
+        requested_digest: requested_digest.clone(),
+        state: State::Published,
+        basis: basis.clone(),
+        default_rules: false,
+        original_rules: None,
+        reserved_bytes: reserved,
+        max_input_bytes: limit,
+        max_prepared_bytes: limit,
+        owned: Some(OwnedInput {
+            locator: format!(".pp-imports/{job_id}"),
+            digest: requested_digest.clone(),
+            files: requested_files,
+        }),
+        artifact: Some(artifact),
+        receipt: None,
+        cleanup_settled: false,
+        authority_revision: Some(SourceAuthorityRevision {
+            version: 1,
+            source_configuration_version: configuration_version,
+            activation_observation_digest: serialized_digest(&basis)?,
+            input_digest: requested_digest,
+            producer_version: GITHUB_PRODUCER.into(),
+        }),
+        observation_cursor: Some(0),
+        commit_sha: Some(snapshot.commit_sha),
+        revision_key: Some(snapshot.revision_key),
+    };
+    validate_operation(&op)?;
+    tx.execute(
+        "INSERT INTO source_import_operations(tenant,operation_key,actor,intent_digest,source_id,job_id,state,document_version,document) VALUES(?1,?2,?3,?4,?5,?6,'published',1,?7)",
+        params![op.tenant, op.key, op.actor, op.intent_digest, op.source_id, op.job_id, serde_json::to_string(&op)?],
+    )?;
+    tx.execute(
+        "INSERT INTO source_import_quota VALUES(?1,?2,0,?3,1)",
+        params![op.tenant, op.key, i64::try_from(snapshot.stored_bytes)?],
+    )?;
+    activate(tx, catalog_state, &mut op, lease)?;
+    let revision_id = op
+        .receipt
+        .as_ref()
+        .filter(|receipt| receipt.activated)
+        .map(|receipt| receipt.revision_id)
+        .ok_or_else(|| anyhow!("Source changed during sync"))?;
+    op.cleanup_settled = true;
+    store(tx, &op)?;
+    Ok(revision_id)
+}
+
+fn commit_text(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn revision_text(value: &str) -> bool {
+    let (sha, suffix) = value.split_once('.').unwrap_or((value, ""));
+    commit_text(sha) && matches!(suffix, "" | "snapshot-v2" | "snapshot-v3")
+}
 
 fn validate_limits(request: &Admission, quota: u64) -> Result<()> {
     ensure!(
@@ -2441,7 +2629,10 @@ fn validate_operation(op: &Operation) -> Result<()> {
         ensure!(
             revision.version == 1
                 && revision.source_configuration_version > 0
-                && revision.producer_version == PRODUCER
+                && matches!(
+                    revision.producer_version.as_str(),
+                    PRODUCER | GITHUB_PRODUCER
+                )
                 && revision.input_digest == op.requested_digest
                 && revision.activation_observation_digest == serialized_digest(&op.basis)?,
             "Invalid Source authority revision"
@@ -2498,8 +2689,25 @@ fn validate_operation(op: &Operation) -> Result<()> {
             "Owned input binding mismatch"
         );
     }
+    ensure!(
+        match (&op.revision_key, &op.commit_sha) {
+            (None, None) => true,
+            (Some(key), Some(commit)) => {
+                revision_text(key)
+                    && commit_text(commit)
+                    && op
+                        .artifact
+                        .as_ref()
+                        .is_some_and(|artifact| artifact.upstream_key == *key)
+            }
+            _ => false,
+        },
+        "Invalid GitHub revision"
+    );
     if let Some(artifact) = &op.artifact {
-        digest(&artifact.upstream_key)?;
+        if op.revision_key.is_none() {
+            digest(&artifact.upstream_key)?;
+        }
         digest(&artifact.manifest_digest)?;
         files(&artifact.files, op.max_prepared_bytes)?;
         ensure!(

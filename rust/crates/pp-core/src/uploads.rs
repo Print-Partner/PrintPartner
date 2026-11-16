@@ -659,14 +659,17 @@ fn source_reason(error: &pp_source::Error) -> Option<String> {
 }
 
 /// The one worker admission a storage owner accepts, shared by the printer
-/// send worker and the Source import worker (GRE-428).
+/// send worker, the Source import worker, and the GitHub sync worker
+/// (GRE-428, GRE-1724). Each worker claims only its own kind. `total` is one
+/// higher than the send and import caps so one sync can run beside them.
 pub(crate) fn worker_admission() -> WorkerAdmission {
     WorkerAdmission {
         kinds: vec![
             (JobKind::PrinterUpload, 4),
             (JobKind::SuppliedSourceImport, 1),
+            (JobKind::Sync, 1),
         ],
-        total: 5,
+        total: 6,
         per_resource: 1,
         lease_seconds: crate::send_worker::LEASE_SECONDS,
     }

@@ -1799,6 +1799,8 @@ mod capture_preflight {
             cleanup_settled: false,
             authority_revision: None,
             observation_cursor: None,
+            commit_sha: None,
+            revision_key: None,
         };
         let connection = Connection::open(root.join("print-partner.db")).unwrap();
         connection

@@ -14,6 +14,7 @@ import time
 import uuid
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
 
 from runtime import ROOT, Session
 
@@ -78,15 +79,73 @@ def builds_list(session, out, repeats):
         out.setdefault("builds_list_warm_ms", []).append(ms)
 
 
-# Thumbnails (Node only) --------------------------------------------------------
+# Thumbnails ---------------------------------------------------------------------
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def source_id_for_layer(layers, source_layer):
+    """The Source whose `layer_type:project_name` equals `source_layer`."""
+    for layer in layers:
+        project_id, name = layer.get("project_id"), layer.get("project_name")
+        if project_id and name and source_layer == f"{layer.get('layer_type')}:{name}":
+            return project_id
+    known = [f"{layer.get('layer_type')}:{layer.get('project_name')}" for layer in layers]
+    raise RuntimeError(f"no Source for {source_layer!r}; layers are {known}")
+
+
+def thumbnail_url(source_id, path):
+    """`GET /sources/{id}/thumbnail?path=` for one STL of that Source."""
+    return f"/sources/{source_id}/thumbnail?path={quote(path, safe='')}"
+
+
+def _require_png(source_id, path, status, headers, data):
+    kind = headers.get("content-type", "").split(";", 1)[0].strip()
+    if status != 200 or kind != "image/png" or not data.startswith(PNG_SIGNATURE):
+        raise RuntimeError(
+            f"source {source_id} {path}: thumbnail answered {status} {kind}: {data[:80]!r}")
+
+
+def _thumbnail_pass(session, out, parts, part_key, build_key):
+    started = time.perf_counter()
+    for source_id, path in parts:
+        status, headers, data, ms = session.request("GET", thumbnail_url(source_id, path))
+        _require_png(source_id, path, status, headers, data)
+        out.setdefault(part_key, []).append(ms)
+    out.setdefault(build_key, []).append((time.perf_counter() - started) * 1000)
+
+
+def rust_thumbnails(session, out, build_id):
+    """One `GET /sources/{id}/thumbnail` per Part of the Build. Cold is the
+    first read: the cache is empty, so the server renders the STL and stores
+    the PNG. Warm is the same GET, answered from that cache. Finding the
+    Parts and their Sources is not timed."""
+    units, _ = session.json("GET", f"/api/v2/plans/{build_id}/checkoff/units")
+    listed, _ = session.json("GET", f"/api/v2/plans/{build_id}/layers")
+    parts = []
+    for part in units["parts"]:
+        path = part["relative_path"] or part["filename"]
+        parts.append((source_id_for_layer(listed["layers"], part["source_layer"]), path))
+    if not parts:
+        raise RuntimeError(f"build {build_id} has no parts to thumbnail")
+    _thumbnail_pass(session, out, parts, "thumbnail_cold_part_ms", "thumbnail_cold_build_ms")
+    for _ in range(3):
+        _thumbnail_pass(session, out, parts, "thumbnail_warm_part_ms", "thumbnail_warm_build_ms")
+    out.setdefault("thumbnail_parts", []).append(len(parts))
+
 
 def thumbnails(session, runtime, out, build_id):
-    """The old app's Part thumbnails for one Build. Cold: the server has no
-    cached PNG, so each Part answers the placeholder, the browser fetches
-    the mesh, renders it and uploads the PNG (the render itself is browser
-    work and not timed). Warm: each Part answers its cached PNG."""
+    """Part thumbnails for one Build.
+
+    Node, the old app: cold is the placeholder, the mesh and the uploaded
+    PNG (the browser's WebGL render is not timed). Warm is the cached PNG.
+    Rust: cold and warm are `GET /sources/{id}/thumbnail` for that Part's
+    STL. Cold renders it; warm reads the cache."""
+    if runtime == "rust":
+        rust_thumbnails(session, out, build_id)
+        return
     status, _h, _d, _ms = session.request("GET", "/parts/1/thumbnail")
-    if runtime == "rust" or status == 404:
+    if status == 404:
         return
     checkoff, _ = session.json("GET", f"/plans/{build_id}/checkoff")
     parts = [part["id"] for part in checkoff["parts"]]

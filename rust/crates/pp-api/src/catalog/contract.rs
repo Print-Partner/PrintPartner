@@ -1,11 +1,13 @@
-//! Generated-client metadata for Library's Source create, job read and ZIP
-//! upload (GRE-1365). It sits beside the catalog routes so `client_contract.rs`
-//! does not grow; `export-rust-client` composes it with the base contract.
+//! Generated-client metadata for Library's Source create, job read, ZIP
+//! upload, GitHub branch list and sync (GRE-1365). It sits beside the catalog
+//! routes so `client_contract.rs` does not grow; `export-rust-client` composes
+//! it with the base contract.
 use crate::client_contract::{ClientAuth, ClientRoute};
 
-/// `createSource`, `readJob` and `uploadSourceZip`. `pp-core`'s mounted-route
-/// test checks them against the composed routers with the base routes.
-pub const CLIENT_ROUTES: [ClientRoute; 3] = [
+/// `createSource`, `readJob`, `uploadSourceZip`, `listGithubBranches` and
+/// `startSourceSync`. `pp-core`'s mounted-route test checks them against the
+/// composed routers with the base routes.
+pub const CLIENT_ROUTES: [ClientRoute; 5] = [
     ClientRoute {
         name: "createSource",
         method: "POST",
@@ -38,6 +40,28 @@ pub const CLIENT_ROUTES: [ClientRoute; 3] = [
         text_params: &[],
         headers: &[],
     },
+    // `url` is a query parameter, passed by the caller, not a path segment.
+    ClientRoute {
+        name: "listGithubBranches",
+        method: "GET",
+        path: "/api/v1/sources/github-branches",
+        auth: ClientAuth::Credential,
+        request: None,
+        response: "GithubBranchList",
+        text_params: &[],
+        headers: &[],
+    },
+    // Answers 202 with `SourceSyncAccepted`.
+    ClientRoute {
+        name: "startSourceSync",
+        method: "POST",
+        path: "/api/v1/jobs/sync",
+        auth: ClientAuth::Credential,
+        request: Some("StartSourceSyncRequest"),
+        response: "SourceSyncAccepted",
+        text_params: &[],
+        headers: &[],
+    },
 ];
 
 /// Adds [`CLIENT_ROUTES`], their DTO schemas and fixtures to `document`.
@@ -46,6 +70,8 @@ pub fn client_document(
     mut document: serde_json::Value,
 ) -> Result<serde_json::Value, serde_json::Error> {
     use super::wire::{CreateSourceRequest, SourceUploadAccepted};
+    use crate::jobs::{SourceSyncAccepted, StartSourceSyncRequest};
+    use crate::sources_github::GithubBranchList;
     use pp_storage::{
         catalog::SourceSummary,
         jobs::{JobKind, JobSnapshot, SourceSyncResult},
@@ -61,6 +87,15 @@ pub fn client_document(
         (
             "SourceUploadAccepted",
             schemars::schema_for!(SourceUploadAccepted),
+        ),
+        ("GithubBranchList", schemars::schema_for!(GithubBranchList)),
+        (
+            "StartSourceSyncRequest",
+            schemars::schema_for!(StartSourceSyncRequest),
+        ),
+        (
+            "SourceSyncAccepted",
+            schemars::schema_for!(SourceSyncAccepted),
         ),
     ] {
         document["dtos"][name] = to_value(schema)?;
@@ -210,10 +245,40 @@ pub fn client_document(
         "value": to_value(SourceUploadAccepted { job_id: "job-import".into() })?,
         "rust_accepts": true,
     }));
+    let branches = GithubBranchList {
+        owner: "maker".into(),
+        repo: "kit".into(),
+        default_branch: "trunk".into(),
+        url_branch: None,
+        branches: vec!["trunk".into(), "dev".into()],
+    };
+    let sync_request = StartSourceSyncRequest {
+        project_ids: vec![1],
+    };
+    fixtures.push(round_trip("GithubBranchList", "listed", &branches)?);
+    fixtures.push(round_trip("StartSourceSyncRequest", "one", &sync_request)?);
+    fixtures.push(round_trip(
+        "SourceSyncAccepted",
+        "accepted",
+        &SourceSyncAccepted {
+            job_id: "job-sync".into(),
+        },
+    )?);
     if let Some(all) = document["fixtures"].as_array_mut() {
         all.extend(fixtures);
     }
     Ok(document)
+}
+
+/// A fixture Rust's own deserializer reads back.
+#[cfg(feature = "codegen")]
+fn round_trip<T>(dto: &str, name: &str, value: &T) -> Result<serde_json::Value, serde_json::Error>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    let value = serde_json::to_value(value)?;
+    let rust_accepts = serde_json::from_value::<T>(value.clone()).is_ok();
+    Ok(serde_json::json!({"dto": dto, "name": name, "value": value, "rust_accepts": rust_accepts}))
 }
 
 /// A request fixture Rust's own deserializer reads back.

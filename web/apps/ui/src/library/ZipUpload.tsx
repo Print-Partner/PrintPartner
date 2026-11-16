@@ -2,7 +2,8 @@ import { routePath, routes } from "@print-partner/rust-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { CoreError, fetchCore } from "../core/client";
-import { ContractError, readCore } from "../core/rust";
+import { ContractError, readCore, writeCore } from "../core/rust";
+import { syncFailure, syncStartFailure } from "./GithubSync";
 import { revisionText, syncText, type Line, type Source } from "./sources";
 
 // LibraryScreen exports LineCell for Build Sources. A second copy here keeps
@@ -16,10 +17,10 @@ function LineCell({ line }: { line: Line }) {
   );
 }
 
-/** Source id to the import job this browser started. A reload reads it back. */
+/** Source id to the import or sync job this browser started. A reload reads it back. */
 export const JOBS_KEY = "pp.library.jobs";
 
-/** How often a pending or running import is read. No other status is polled. */
+/** How often a pending or running import or sync is read. No other status is polled. */
 export const IMPORT_POLL_MS = 2000;
 
 type JobMap = Record<string, string>;
@@ -84,10 +85,17 @@ function uploadFailure(error: unknown): string {
 
 export function useLibraryJobs() {
   const [jobs, setJobs] = useState(readJobs);
+  const [refusals, setRefusals] = useState<Record<string, string>>({});
   const remember = useCallback((sourceId: number, jobId: string) => {
     const next = { ...readJobs(), [String(sourceId)]: jobId };
     writeJobs(next);
     setJobs(next);
+    setRefusals((current) => {
+      if (!(String(sourceId) in current)) return current;
+      const rest = { ...current };
+      delete rest[String(sourceId)];
+      return rest;
+    });
   }, []);
   const forget = useCallback((sourceId: number) => {
     const next = readJobs();
@@ -96,7 +104,10 @@ export function useLibraryJobs() {
     writeJobs(next);
     setJobs({ ...next });
   }, []);
-  return { jobs, remember, forget };
+  const refuse = useCallback((sourceId: number, message: string) => {
+    setRefusals((current) => ({ ...current, [String(sourceId)]: message }));
+  }, []);
+  return { jobs, refusals, remember, forget, refuse };
 }
 
 type Phase =
@@ -108,16 +119,20 @@ type Phase =
   | { kind: "done"; warnings: string[] };
 
 function syncLine(source: Source, phase: Phase): Line {
+  const github = source.source_kind === "github";
   switch (phase.kind) {
     case "uploading":
       return { label: "Uploading", detail: null };
     case "importing":
       return {
-        label: "Importing",
+        label: github ? "Syncing" : "Importing",
         detail: phase.progress == null ? null : `${phase.progress}%`,
       };
     case "failed":
-      return { label: "Import failed", detail: phase.message || null };
+      return {
+        label: github ? "Sync failed" : "Import failed",
+        detail: phase.message || null,
+      };
     case "refused":
       return { label: phase.message, detail: null };
     default:
@@ -138,18 +153,24 @@ export function SourceRows({
   source,
   activity,
   jobId,
+  note,
   remember,
   forget,
 }: {
   source: Source;
   activity: ReactNode;
   jobId: string | undefined;
+  note: string | undefined;
   remember: (sourceId: number, jobId: string) => void;
   forget: (sourceId: number) => void;
 }) {
   const client = useQueryClient();
-  const [phase, setPhase] = useState<Phase>(
-    jobId ? { kind: "importing", progress: null } : { kind: "idle" },
+  const [phase, setPhase] = useState<Phase>(() =>
+    jobId
+      ? { kind: "importing", progress: null }
+      : note
+        ? { kind: "refused", message: note }
+        : { kind: "idle" },
   );
   const sending = useRef(false);
   const busy = phase.kind === "uploading" || phase.kind === "importing";
@@ -181,7 +202,13 @@ export function SourceRows({
           if (job.status === "error") {
             setPhase({ kind: "failed", message: job.error ?? "" });
           } else if (job.status === "done") {
-            setPhase({ kind: "done", warnings: importWarnings(job.result) });
+            const named =
+              source.source_kind === "github" ? syncFailure(source.id, job.result) : null;
+            setPhase(
+              named
+                ? { kind: "failed", message: named }
+                : { kind: "done", warnings: importWarnings(job.result) },
+            );
             void client.invalidateQueries({ queryKey: ["core", "sources"] });
           } else {
             setPhase({ kind: "idle" });
@@ -202,7 +229,7 @@ export function SourceRows({
     };
     read();
     return stop;
-  }, [jobId, source.id, forget, client]);
+  }, [jobId, source.id, source.source_kind, forget, client]);
 
   const send = (file: File) => {
     if (sending.current || busy) return;
@@ -226,7 +253,25 @@ export function SourceRows({
     );
   };
 
+  const sync = () => {
+    if (sending.current || busy) return;
+    sending.current = true;
+    setPhase({ kind: "importing", progress: null });
+    void writeCore("startSourceSync", {}, { project_ids: [source.id] }).then(
+      (accepted) => {
+        // Stored before any further await, so a reload follows this job and does not sync again.
+        remember(source.id, accepted.job_id);
+        sending.current = false;
+      },
+      (error: unknown) => {
+        setPhase({ kind: "refused", message: syncStartFailure(error) });
+        sending.current = false;
+      },
+    );
+  };
+
   const live = phase.kind === "idle" || phase.kind === "done" ? undefined : "status";
+  const github = source.source_kind === "github";
   return (
     <>
       <tr>
@@ -241,9 +286,22 @@ export function SourceRows({
           <LineCell line={revisionText(source)} />
         </td>
         <td>
-          <span role={live}>
-            <LineCell line={syncLine(source, phase)} />
-          </span>
+          <div className={github ? "pp-sync-cell" : undefined}>
+            <span role={live}>
+              <LineCell line={syncLine(source, phase)} />
+            </span>
+            {github && (
+              <button
+                type="button"
+                className="pp-button"
+                aria-label={`Sync ${source.name}`}
+                disabled={busy}
+                onClick={sync}
+              >
+                Sync
+              </button>
+            )}
+          </div>
         </td>
         <td>{activity}</td>
         <td>

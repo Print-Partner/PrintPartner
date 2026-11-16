@@ -78,7 +78,9 @@ POST   /jobs/sync
 ```
 
 `POST /jobs/sync` with `{ "project_ids": [<id>, ...] }` enqueues a sync of those
-GitHub Sources. The Rust runtime answers `202` with `{ "job_id" }`. A missing
+GitHub Sources. The Rust runtime answers `202` with `{ "job_id" }`. The
+replacement UI calls this `startSourceSync`, and reads branches with
+`listGithubBranches` (`GET /api/v1/sources/github-branches?url=`). A missing
 or empty `project_ids` is a 400 problem. The sync worker publishes each
 Source's revision. Sync and scanning operations use background jobs when the
 work may outlive one request.

@@ -933,6 +933,7 @@ mod tests {
             }
             "SetModuleRequest" => json!({"on": true}),
             "CreateSourceRequest" => json!({"name": "Client contract", "source_kind": "archive"}),
+            "StartSourceSyncRequest" => json!({"project_ids": [1]}),
             "CreateIntegrationRequest" => {
                 json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
             }
@@ -1104,12 +1105,19 @@ mod tests {
                 || (status == 404 && body["detail"] == "Source not found")
                 || (status == 411 && body["detail"] == "Content-Length is required")
                 || (status == 400 && body["detail"] == "Expected a multipart/form-data body"));
+        // POST /jobs/sync answers 202 with the job to follow.
+        let sync_accepted =
+            status == 202 && body["job_id"].as_str().is_some_and(|id| !id.is_empty());
+        // The branch-list sample omits ?url=, so the handler answers before GitHub.
+        let branch_list = status == 400 && body["detail"] == "url query parameter is required";
         status == 200
             || handler_not_found(status, body)
             || stale
             || no_layers
             || no_form
             || upload
+            || sync_accepted
+            || branch_list
             || owner_exists(route, status, body)
     }
 

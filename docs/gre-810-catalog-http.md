@@ -3,7 +3,8 @@
 With the default-off `desktop_rebuild` feature compiled, these routes are mounted
 at the root and `/api/v1` only when the stored `PP_DESKTOP_REBUILD` value is
 exactly `1` or `true`. Otherwise they answer 404 and do not open the catalog.
-Sync, upload, and location stay unregistered. The desktop gateway does not mount
+Sync, ZIP upload, and location stay unregistered; loose-file upload is
+`POST /sources/{id}/upload-files` (see [Source uploads](source-uploads.md)). The desktop gateway does not mount
 this router.
 
 | Method | Path | Catalog request |

@@ -173,6 +173,21 @@ pub fn client_document(
         fixtures.push(json!({"dto": "JobSnapshot", "name": status, "value": value,
             "rust_accepts": true}));
     }
+    // The job a Source upload answers with, failed with its reason in words.
+    fixtures.push(
+        json!({"dto": "JobSnapshot", "name": "source-import-failed", "rust_accepts": true,
+        "value": {
+            "job_id": "job-import",
+            "kind": to_value(JobKind::SuppliedSourceImport)?,
+            "status": "error",
+            "message": "Job failed",
+            "progress": null,
+            "result": null,
+            "error": "The upload holds no file the import accepts",
+            "created_at": "2026-11-13T00:00:00.000Z",
+            "finished_at": "2026-11-13T00:01:00.000Z",
+        }}),
+    );
     if let Some(all) = document["fixtures"].as_array_mut() {
         all.extend(fixtures);
     }

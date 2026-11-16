@@ -45,7 +45,7 @@ impl SourceImports {
     pub fn new(owner: &WriterOwner, policy: AuthPolicy, quota: u64) -> Result<Self> {
         Ok(Self {
             client: owner.imports(policy, quota)?,
-            worker: owner.job_worker_with_policy(policy, source_worker_admission())?,
+            worker: owner.job_worker_with_policy(policy, worker_admission())?,
             repos: owner.import_repos_root()?,
         })
     }
@@ -289,6 +289,21 @@ impl SourceImports {
         })
     }
 
+    /// Claims the next queued supplied import without working it.
+    pub fn claim_next(&self) -> Result<Option<ClaimedAttempt>> {
+        self.worker.claim_kind(JobKind::SuppliedSourceImport)
+    }
+
+    /// Works a claim from [`SourceImports::claim_next`] through `through`.
+    pub fn work_claim(
+        &self,
+        claim: ClaimedAttempt,
+        through: Through,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Operation>> {
+        self.work_claimed(claim, None, None, through, cancelled)
+    }
+
     fn work(
         &self,
         job_id: Option<&str>,
@@ -326,7 +341,9 @@ impl SourceImports {
         let mut unverified = false;
         let result = (|| -> Result<()> {
             if job.cancel_requested && op.receipt.is_none() {
-                op = self.worker.import_phase(&lease, &live, Phase::Fail)?;
+                op = self
+                    .worker
+                    .import_phase(&lease, &live, Phase::Fail("Cancelled".into()))?;
                 self.cleanup(&op)?;
                 op = self.worker.import_phase(&lease, &live, Phase::Cleanup)?;
                 return Ok(());
@@ -488,12 +505,15 @@ impl SourceImports {
         // precedence: a deterministic failure seen by a cancelled attempt
         // fails on the next attempt instead. A published import retries
         // activation, unless its artifact is missing or no longer matches.
-        if result.is_err()
+        if let Err(error) = &result
             && !cancelled.load(Ordering::Acquire)
             && !(op.state == State::Admitted && matches!(op.input, Input::Captured(_)))
             && op.receipt.is_none()
             && (op.state != State::Published || unverified)
-            && self.worker.import_phase(&lease, &live, Phase::Fail).is_ok()
+            && self
+                .worker
+                .import_phase(&lease, &live, Phase::Fail(failure_reason(error)))
+                .is_ok()
             && self.cleanup(&op).is_ok()
         {
             let _ = self.worker.import_phase(&lease, &live, Phase::Cleanup);
@@ -537,12 +557,42 @@ impl SourceImports {
     }
 }
 
-fn source_worker_admission() -> WorkerAdmission {
+/// Says in words why an import failed, for its job's `error`. The Source
+/// engine's refusals name the rule; other causes give their top message.
+fn failure_reason(error: &anyhow::Error) -> String {
+    let refusal = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<pp_source::Error>());
+    match refusal {
+        Some(pp_source::Error::UnsafePath | pp_source::Error::UnsafeAncestor) => {
+            "A file path is not allowed in a Source".into()
+        }
+        Some(pp_source::Error::DuplicatePath) => "Two files have the same path".into(),
+        Some(pp_source::Error::Limit) => "The import is over its size or file-count limit".into(),
+        Some(pp_source::Error::CorruptSnapshot) => "The import's stored files are damaged".into(),
+        // Until GRE-428 PR 2 keeps other files as artifacts.
+        Some(pp_source::Error::InvalidIdentity) => {
+            "A file has a type the import does not accept".into()
+        }
+        Some(
+            refusal @ (pp_source::Error::StoredPathTooLong { .. }
+            | pp_source::Error::AmbiguousRevision(_)),
+        ) => refusal.to_string(),
+        _ => error.to_string(),
+    }
+}
+
+/// The one worker admission a storage owner accepts, shared by the printer
+/// send worker and the Source import worker (GRE-428).
+pub(crate) fn worker_admission() -> WorkerAdmission {
     WorkerAdmission {
-        kinds: vec![(JobKind::SuppliedSourceImport, 1)],
-        total: 1,
+        kinds: vec![
+            (JobKind::PrinterUpload, 4),
+            (JobKind::SuppliedSourceImport, 1),
+        ],
+        total: 5,
         per_resource: 1,
-        lease_seconds: 60,
+        lease_seconds: crate::send_worker::LEASE_SECONDS,
     }
 }
 

@@ -873,3 +873,82 @@ async fn add_to_queue_takes_only_a_read_host_and_stages_inside_printer_uploads()
         "Remove deletes the staged directory"
     );
 }
+
+/// Under the shared worker admission, `run_next` claims printer uploads only:
+/// a cancelled Source import waits queued for its owner's cleanup claim
+/// (GRE-428).
+#[tokio::test]
+async fn run_next_never_claims_a_source_import() {
+    use crate::uploads::{SourceImports, Through};
+    use pp_storage::{
+        catalog::CreateSource,
+        jobs::{Credential as JobCredential, UserOperation},
+        uploads::{Admission, Input, State, Target},
+    };
+    let farm = Farm::open("http://127.0.0.1:9", &[]);
+    let supplied = farm.root.path().join("supplied");
+    std::fs::create_dir(&supplied).unwrap();
+    std::fs::write(supplied.join("part.stl"), b"solid part\nendsolid part\n").unwrap();
+    let session = || JobCredential::Session(Secret::new(farm.token.clone()));
+    let imports = SourceImports::new(&farm.owner, desktop_policy(), 64 * 1024 * 1024).unwrap();
+    let admitted = imports
+        .admit(
+            session(),
+            Admission {
+                input: Input::Files {
+                    paths: vec!["part.stl".into()],
+                },
+                max_input_bytes: 1024,
+                max_prepared_bytes: 2048,
+                reserved_bytes: 20 * 1024 * 1024,
+                key: "send-worker-kind".into(),
+                target: Target::Create {
+                    metadata: Box::new(CreateSource {
+                        source_type: Some("local".into()),
+                        source_kind: Some("local".into()),
+                        name: "Kind check".into(),
+                        ..Default::default()
+                    }),
+                },
+            },
+            &supplied,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let owned = imports
+        .work_operation(
+            &admitted.job_id,
+            Some(&supplied),
+            Through::OwnedInput,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(owned.state, State::OwnedInputReady);
+    // Cancelling requeues the import past admission for its owner.
+    farm.owner
+        .jobs(desktop_policy())
+        .unwrap()
+        .submit(
+            session(),
+            UserOperation::Cancel {
+                job_id: admitted.job_id.clone(),
+            },
+            &AtomicBool::new(false),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .receive()
+        .unwrap();
+
+    assert_eq!(farm.worker().run_next().await.unwrap(), None);
+    let state: String = farm
+        .database()
+        .query_row(
+            "SELECT state FROM durable_jobs WHERE id=?1",
+            [&admitted.job_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "queued");
+}

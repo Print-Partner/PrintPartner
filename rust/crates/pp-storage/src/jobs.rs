@@ -827,6 +827,19 @@ impl ServerWorkerClient {
     /// Claims the oldest admissible job of one admitted kind.
     #[cfg(feature = "desktop_rebuild")]
     pub fn claim_kind(&self, kind: JobKind) -> Result<Option<ClaimedAttempt>> {
+        self.claim_pending_kind(kind, &AtomicBool::new(false), Duration::from_secs(5))?
+            .receive()
+    }
+    /// Claims the next queued job of `kind` only, so a worker that shares the
+    /// owner's admission with other kinds never takes another worker's job
+    /// (GRE-428).
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn claim_pending_kind(
+        &self,
+        kind: JobKind,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<PendingClaim> {
         ensure!(
             self.admission
                 .kinds
@@ -834,7 +847,7 @@ impl ServerWorkerClient {
                 .any(|(admitted, _)| *admitted == kind),
             "Job kind is not admitted"
         );
-        PendingClaim(submit(
+        Ok(PendingClaim(submit(
             &self.storage,
             Command::Claim {
                 worker: self.identity.clone(),
@@ -844,10 +857,9 @@ impl ServerWorkerClient {
                 policy: self.policy,
                 storage: self.storage.clone(),
             },
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )?)
-        .receive()
+            cancelled,
+            wait,
+        )?))
     }
     /// Claims one queued supplied import by id. A refused original authority
     /// commits the refusal and returns the typed failure instead of moving on.
@@ -1655,6 +1667,18 @@ pub(crate) fn fail_source_unavailable(tx: &Transaction<'_>, job: &mut JobRecord)
     job.recovery = Some("Source is unavailable for this job".into());
     save(tx, job, "source_unavailable")
 }
+/// Stores `job.recovery` without a new version, so the attempt's lease stays
+/// valid; the next [`save`] publishes it.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn keep_recovery(tx: &Transaction<'_>, job: &JobRecord) -> Result<()> {
+    job.validate_state()?;
+    let updated = tx.execute(
+        "UPDATE durable_jobs SET document=?1 WHERE id=?2 AND version=?3",
+        params![encode(job)?, job.job_id, job.state_version],
+    )?;
+    ensure!(updated == 1, "Stale attempt fence");
+    Ok(())
+}
 pub(crate) fn save(tx: &Transaction<'_>, job: &mut JobRecord, event: &str) -> Result<()> {
     job.payload.validate_stored()?;
     job.state_version += 1;
@@ -1861,7 +1885,7 @@ fn close_unresolved_upload(
 }
 /// A worker's failure reason as the job keeps it: at most 500 characters.
 #[cfg(feature = "desktop_rebuild")]
-fn bounded_reason(reason: &str) -> String {
+pub(crate) fn bounded_reason(reason: &str) -> String {
     let reason = reason.trim();
     match reason.char_indices().nth(500) {
         Some((end, _)) => reason[..end].to_owned(),
@@ -1943,6 +1967,12 @@ pub(crate) fn printer_reserved(
 pub(crate) fn begin_job_collection() {
     subscriptions::begin_collection();
 }
+/// Marks the collected changes as committed, for a transaction that commits
+/// and then returns an error.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn job_collection_committed() {
+    subscriptions::mark_committed();
+}
 /// Publishes the collected changes when the transaction committed. A commit
 /// with an unknown outcome stops every stream, as a job command's does.
 #[cfg(feature = "desktop_rebuild")]
@@ -1953,11 +1983,13 @@ pub(crate) fn end_job_collection(
 ) {
     if committed {
         subscriptions::mark_committed();
-        subscriptions.publish(subscriptions::finish_collection());
-        return;
     }
-    subscriptions::finish_collection();
-    if error.is_some_and(|error| matches!(error.downcast_ref(), Some(JobFailure::CommitUnknown))) {
+    // Empty unless the transaction committed.
+    subscriptions.publish(subscriptions::finish_collection());
+    if !committed
+        && error
+            .is_some_and(|error| matches!(error.downcast_ref(), Some(JobFailure::CommitUnknown)))
+    {
         subscriptions.stop();
     }
 }
@@ -2203,7 +2235,6 @@ pub(crate) fn execute(
         } => {
             let authority = auth::resolve_stream_authority(&tx, &credential, policy, true)?;
             let job = owned(&tx, &job_id, &authority.tenant)?;
-            ensure!(!job.internal_only(), JobAccessFailure::NotFound);
             TransactionDecision::Observation {
                 credential,
                 authority,
@@ -2678,7 +2709,6 @@ pub(crate) fn user(
         #[cfg(feature = "desktop_rebuild")]
         UserOperation::GetPublic { job_id } => {
             let job = owned(tx, &job_id, tenant)?;
-            ensure!(!job.internal_only(), JobAccessFailure::NotFound);
             Ok(Outcome::PublicJob(job.snapshot()))
         }
         #[cfg(feature = "desktop_rebuild")]
@@ -2695,9 +2725,6 @@ pub(crate) fn user(
                     decode_row(&id, &document, &mut diagnostics).map(|job| (sequence, job))
                 })
                 .filter(|(_, job)| {
-                    if job.internal_only() {
-                        return false;
-                    }
                     let status = match &filter.status {
                         LegacyStatusFilter::Any => true,
                         LegacyStatusFilter::Exact(status) => job.snapshot().status == status,

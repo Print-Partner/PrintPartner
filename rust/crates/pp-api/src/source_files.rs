@@ -38,16 +38,22 @@ pub mod code {
 }
 
 /// The response body. `revision_id` is null, and `files` empty, for a Source
-/// with no revision yet.
+/// with no revision yet. The generated client's `listSourceFiles`.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct SourceFileList {
     pub source_id: i64,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<i64>")
+    )]
     pub revision_id: Option<i64>,
     /// Sorted by `path`.
     pub files: Vec<SourceFileEntry>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct SourceFileEntry {
     /// Relative to the revision's root, with `/` between folders.
     pub path: String,
@@ -58,11 +64,13 @@ pub struct SourceFileEntry {
 /// What a file is, by its extension.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub enum SourceFileKind {
     Stl,
-    /// 3MF, STEP, OBJ, OpenSCAD or Fusion.
+    // 3MF, STEP, OBJ, OpenSCAD or Fusion. A plain comment: a doc comment
+    // on only some variants would split the client's string enum.
     Model,
-    /// PDF, Markdown or plain text.
+    // PDF, Markdown or plain text.
     Document,
     Image,
     Other,

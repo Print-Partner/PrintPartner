@@ -1,6 +1,7 @@
 import { routePath, routes } from "@print-partner/rust-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router";
 import { CoreError, fetchCore } from "../core/client";
 import { ContractError, readCore, writeCore } from "../core/rust";
 import { syncFailure, syncStartFailure } from "./GithubSync";
@@ -156,6 +157,7 @@ export function SourceRows({
   note,
   remember,
   forget,
+  selected = false,
 }: {
   source: Source;
   activity: ReactNode;
@@ -163,6 +165,8 @@ export function SourceRows({
   note: string | undefined;
   remember: (sourceId: number, jobId: string) => void;
   forget: (sourceId: number) => void;
+  /** This row's files are the ones on screen. Clicking the name clears that. */
+  selected?: boolean;
 }) {
   const client = useQueryClient();
   const [phase, setPhase] = useState<Phase>(() =>
@@ -274,9 +278,15 @@ export function SourceRows({
   const github = source.source_kind === "github";
   return (
     <>
-      <tr>
+      <tr data-selected={selected || undefined}>
         <th scope="row">
-          {source.name}
+          <Link
+            className="pp-link pp-source-name"
+            to={selected ? "/library" : `/library/${source.id}`}
+            aria-current={selected ? "true" : undefined}
+          >
+            {source.name}
+          </Link>
           {!source.content_available && <span className="pp-tag">No files on disk</span>}
           <span className="pp-fact-detail">
             {[source.source_type, source.category].filter(Boolean).join(", ")}

@@ -38,7 +38,7 @@ Five destinations in a left rail, plus a command palette.
 | Today | `G T` | Pulse line, hero task, ranked tasks, open Build cards |
 | Builds | `G B` | Builds list, then the Build workspace |
 | Farm | `G F` | Printers, queue, farm log |
-| Library | `G L` | Library Sources, import, sync, revisions |
+| Library | `G L` | Library Sources, files, thumbnails, import, sync and revisions |
 | Settings | `G ,` | Modules, integrations, sharing, devices, backups |
 
 The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` opens Help, which explains how Plan changes save and lists the shortcuts.

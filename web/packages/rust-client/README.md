@@ -62,6 +62,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /api/v1/sources` (`createSource`) | `CreateSourceRequest` | `SourceSummary` |
 | `GET /api/v1/jobs/{id}` (`readJob`, text `id`) | | `JobSnapshot` (`status` one of `pending`, `running`, `done`, `error`, `cancelled`; `result` untyped JSON or null) |
 | `POST /api/v1/sources/{id}/upload-zip` (`uploadSourceZip`, `multipart/form-data`) | | `SourceUploadAccepted` (`{job_id}`; the route answers 202) |
+| `GET /api/v1/sources/{id}/files` (`listSourceFiles`) | | `SourceFileList` (`revision_id` null and `files` empty when the Source has no revision; each file has `path`, `kind` and `size_bytes`) |
 | `GET /api/v1/sources/github-branches?url=` (`listGithubBranches`) | | `GithubBranchList` (`url` is a query parameter) |
 | `POST /api/v1/jobs/sync` (`startSourceSync`; answers 202) | `StartSourceSyncRequest` (`project_ids`) | `SourceSyncAccepted` (`job_id`) |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |

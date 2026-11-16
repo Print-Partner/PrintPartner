@@ -42,12 +42,15 @@ impl fmt::Display for Shape {
 pub enum Status {
     /// No converter or check yet.
     Pending,
+    /// The import converts the row.
+    Converted,
 }
 
 impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Pending => f.write_str("pending"),
+            Self::Converted => f.write_str("converted"),
         }
     }
 }
@@ -75,7 +78,7 @@ const fn pending(step: u8, shapes: &'static [Shape], target: &'static str) -> Ro
 /// The rows the import converts or checks, in step order.
 #[rustfmt::skip]
 pub const ROWS: [Row; 16] = [
-    pending(2, &[Column("projects", "local_path")], "<data>/repos/<snapshot_locator>"),
+    Row { status: Status::Converted, ..pending(2, &[Column("projects", "local_path")], "<data>/repos/<snapshot_locator>") },
     pending(3, &[Setting("printer.fleet")], "typed fleet document"),
     pending(3, &[Setting("integrations")], "typed integrations document"),
     pending(4, &[Setting("printer.checkoff_links")], "Vec<CheckoffLink>"),
@@ -104,15 +107,20 @@ pub const ROWS: [Row; 16] = [
     ], "checked with today's typed reader, not rewritten"),
 ];
 
-/// Slicer profile text. The import copies it byte for byte: Rust reads it and
-/// keeps it opaque (`profiles.rs`).
-pub const COPIED: [Shape; 6] = [
+/// What the import copies byte for byte and no converter may rewrite: slicer
+/// profile text, which Rust reads and keeps opaque (`profiles.rs`), and the
+/// two credentials Rust reads as plain settings (`app_settings.rs`).
+pub const COPIED: [Shape; 8] = [
     Column("printer_profiles", "raw_json"),
     Column("printer_profiles", "resolved_flat_config"),
     Column("process_profiles", "resolved_flat_config"),
     Column("filament_profiles", "raw_json"),
     Column("filament_profiles", "resolved_flat_config"),
     Column("filament_profiles", "retraction"),
+    // Credentials. They stay plain settings on every platform, with no
+    // converter and no keychain. The report prints the key, never the value.
+    Setting("github_pat"),
+    Setting("discord_notify_webhook_url"),
 ];
 
 /// Stored data no Rust code reads. The import keeps it byte for byte, also

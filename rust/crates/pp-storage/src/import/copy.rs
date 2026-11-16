@@ -312,6 +312,7 @@ pub(super) fn import_with(
     let node = metadata.is_dir().then_some(source);
     let rebased = verify::rebase_sources(&connection, node, &stage.0.join("repos"), &repos)?;
     verify::check_sources(&connection, &paths, node, &repos)?;
+    super::checkoff::place_artifacts(&connection, node, &root)?;
     let changed = verify::changed(&stored, &verify::digests(&connection, Some(&stored))?);
     if !changed.is_empty() {
         return Err(ImportError::RowsChanged(changed));

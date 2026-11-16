@@ -1,17 +1,8 @@
 import type { SourceFileList } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  fileName,
-  fileSize,
-  groupByFolder,
-  isInView,
-  sourceFilesQuery,
-  thumbnailUrl,
-  type SourceFile,
-} from "./sourceFiles";
-
-type ThumbStatus = "off" | "pending" | "done";
+import { StlThumb, type ThumbStatus } from "../screen/StlThumb";
+import { fileName, fileSize, groupByFolder, sourceFilesQuery, type SourceFile } from "./sourceFiles";
 
 /**
  * Files of the selected Source, grouped by folder. An STL thumbnail is requested
@@ -114,63 +105,5 @@ function GroupedFiles({
         </section>
       ))}
     </>
-  );
-}
-
-function StlThumb({
-  sourceId,
-  path,
-  report,
-}: {
-  sourceId: number;
-  path: string;
-  report: (path: string, status: ThumbStatus) => void;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [show, setShow] = useState(false);
-  const [failed, setFailed] = useState(false);
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    if (isInView(element)) {
-      setShow(true);
-      report(path, "pending");
-      return;
-    }
-    report(path, "off");
-    if (typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      setShow(true);
-      report(path, "pending");
-      observer.disconnect();
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [path, report]);
-  return (
-    <span className="pp-stl-thumb" ref={ref} data-path={path}>
-      {show && !failed ? (
-        <img
-          src={thumbnailUrl(sourceId, path)}
-          alt=""
-          width={64}
-          height={64}
-          onLoad={() => report(path, "done")}
-          onError={() => {
-            setFailed(true);
-            report(path, "done");
-          }}
-        />
-      ) : (
-        <span
-          className="pp-stl-placeholder"
-          role={failed ? "img" : undefined}
-          aria-label={failed ? "No thumbnail" : undefined}
-        >
-          {failed ? "No preview" : null}
-        </span>
-      )}
-    </span>
   );
 }

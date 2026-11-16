@@ -12,12 +12,32 @@ import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
 import { LineCell } from "./LibraryScreen";
+import { SourceFiles } from "./SourceFiles";
 import { acceptedRevisionText, revisionText, sourcesQuery, type Source } from "./sources";
+
+/** Each Source once, in layer order. A layer with no Source is skipped. */
+function sourcesInLayerOrder(
+  layers: readonly {
+    layer_order: number;
+    project_id: number | null;
+    project_name: string | null;
+  }[],
+): { id: number; name: string }[] {
+  const seen = new Set<number>();
+  const sources: { id: number; name: string }[] = [];
+  for (const layer of [...layers].sort((a, b) => a.layer_order - b.layer_order)) {
+    if (layer.project_id == null || seen.has(layer.project_id)) continue;
+    seen.add(layer.project_id);
+    sources.push({ id: layer.project_id, name: layer.project_name ?? "Source" });
+  }
+  return sources;
+}
 
 function SourcesBody({ build, layers }: BuildData) {
   const sources = useQuery(sourcesQuery);
   const byId = new Map(sources.data?.sources.map((source) => [source.id, source]));
   const layered = [...layers].sort((a, b) => a.layer_order - b.layer_order);
+  const fileSources = sourcesInLayerOrder(layered);
   if (layered.length === 0) return <p>This Build has no layers, so it uses no Sources.</p>;
   const sourceCells = (source: Source | undefined) => {
     if (!source) {
@@ -79,11 +99,14 @@ function SourcesBody({ build, layers }: BuildData) {
           ))}
         </tbody>
       </table>
+      {fileSources.map((source) => (
+        <SourceFiles key={source.id} sourceId={source.id} sourceName={source.name} />
+      ))}
     </>
   );
 }
 
-/** The Sources tab: each layer's Source, its current revision, and the revision the Accepted Plan used. */
+/** The Sources tab: each layer's Source and revision, then that Source's files and STL thumbnails. */
 export function BuildSources() {
   const { id } = useOutletContext<WorkspaceContext>();
   const connection = useConnection();

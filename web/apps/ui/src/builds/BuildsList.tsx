@@ -1,10 +1,11 @@
 import type { ProfileSummary } from "@print-partner/rust-client";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
 import { tasksByBuild, tasksQuery, type Task, type UnavailableBuild } from "../core/workflow";
+import { BuildSourceThumb, useVisibleBuildIds } from "./buildThumb";
 
 type FeedEntries = ReadonlyMap<number, Task | UnavailableBuild>;
 import { useConnection } from "../frame/connection";
@@ -196,6 +197,8 @@ function BuildsTable({
   overdueOn: string;
   shared?: Map<number, ProfileSummary[]>;
 }) {
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const visible = useVisibleBuildIds(bodyRef, builds.map((build) => build.id).join(" "));
   return (
     <table className="pp-builds-table" aria-label="Builds">
       <thead>
@@ -207,14 +210,19 @@ function BuildsTable({
           <th scope="col">Next action</th>
         </tr>
       </thead>
-      <tbody onKeyDown={moveRowFocus}>
+      <tbody ref={bodyRef} onKeyDown={moveRowFocus}>
         {builds.map((build, row) => (
           <tr key={build.id}>
             <th scope="row">
-              <Link to={`/builds/${build.id}`} className="pp-link" data-row={row}>
-                {build.name}
-              </Link>
-              {build.archived_at && <span className="pp-tag">Archived</span>}
+              <span className="pp-build-mark">
+                <BuildSourceThumb buildId={build.id} active={visible.has(build.id)} />
+                <span>
+                  <Link to={`/builds/${build.id}`} className="pp-link" data-row={row}>
+                    {build.name}
+                  </Link>
+                  {build.archived_at && <span className="pp-tag">Archived</span>}
+                </span>
+              </span>
             </th>
             {showOrder && (
               <td className="num">

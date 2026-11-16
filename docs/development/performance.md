@@ -48,7 +48,7 @@ Requests use one keep-alive HTTP/1.1 connection per runtime, as a browser tab do
 What the numbers leave out:
 
 - No browser, and no React work. On Node the WebGL render is not timed, so a cold thumbnail is the server's share only: the placeholder, the mesh and the uploaded PNG. On Rust, `GET /sources/{id}/thumbnail` draws the PNG, so the cold time includes that render.
-- Neither the old Builds list nor the replacement Builds list requests thumbnails. The rows time the Parts of one Build. Node sends what the old app sends on that Build's Sources and Review steps. Rust sends `GET /sources/{id}/thumbnail` for each of those Parts.
+- The old Builds list does not request thumbnails. The replacement Builds list requests `GET /sources/{id}/thumbnail` for the first Source of each row on screen, after `GET /api/v2/plans` returns. Those image requests are not part of the Builds list rows. The thumbnail rows time the Parts of one Build. Node sends what the old app sends on that Build's Sources and Review steps. Rust sends `GET /sources/{id}/thumbnail` for each of those Parts.
 - The printer event row times the gateway's Rust Moonraker watcher in both modes; it polls every 2 s, so the row shows where the event fell in that cycle. It is not a Node-versus-Rust comparison.
 - Rows marked "different requests" have no ratio. Checkoff on Node is one request per unit and on Rust one per burst; Today and All Production are different screens.
 - When a server closes an idle keep-alive connection, the request is sent again once and only that attempt is timed. `http_retries` in the samples counts these: 0 on Node and 3 on Rust in the baseline below.

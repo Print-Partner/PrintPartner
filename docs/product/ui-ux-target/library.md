@@ -15,7 +15,7 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | GitHub branches and tags | `GET /sources/github-branches?url=`, `GET /sources/github-tags?url=` | Exists in Rust behind `desktop_rebuild` (GRE-429 PR 1). `listGithubBranches` is in the generated client (GRE-1728); `github-tags` is not. `github-branches` answers `owner`, `repo`, `default_branch`, `url_branch` and every branch; `github-tags` answers `owner`, `repo` and every tag. Both send the token saved with `PUT /settings/github-pat` and read at most 100 pages of 100. A missing `url` or one that is not a GitHub repository is 400, and GitHub's 404 is 404. Any other GitHub failure, a request with no answer in 30 seconds, or a listing not done in 60 seconds is 502; a refused token has `code` `github_token_rejected`, and GitHub's 403 or 429 has `github_refused` |
 | Sync a GitHub Source | `POST /api/v1/jobs/sync` (`startSourceSync`) | In the generated client (GRE-1728). The body is `{ "project_ids": [<id>] }` and the `202` answer is `{ "job_id" }`. Library starts one sync after creating a GitHub Source, and each `github` row has Sync |
 | Source files | `GET /api/v1/sources/{id}/files` (`listSourceFiles`) | In the generated client (GRE-1731). `revision_id` is null and `files` is empty when the Source has no revision. Each file has `path`, `kind` (`stl`, `model`, `document`, `image`, `other`) and `size_bytes`, sorted by path. Selecting a Source opens `/library/{id}` and shows that list grouped by folder |
-| STL thumbnail | `GET /api/v1/sources/{id}/thumbnail?path=` | A 256 × 256 PNG of one STL in the current revision (GRE-1520). Not a generated-client route: the page requests it as an image once the row is in the viewport. A failed response is a placeholder |
+| STL thumbnail | `GET /api/v1/sources/{id}/thumbnail?path=` | A 256 × 256 PNG of one STL in the current revision (GRE-1520). Not a generated-client route. Library, the Builds list and a Build's Sources tab request it as an image once the row is in the viewport. A failed response is a placeholder. The PNG is not tinted by filament colour |
 
 ## Delivery slices
 
@@ -58,5 +58,7 @@ The job id is written to `localStorage` key `pp.library.jobs` as soon as the 202
 ## Source files
 
 The Source's name is a link to `/library/{id}` (`web/apps/ui/src/library/SourceFiles.tsx`). That page lists the current revision's files from `listSourceFiles`, grouped by folder, with each file's name and size. Files at the revision root are under **Top level**. An STL has a 64 px thumbnail from `GET /api/v1/sources/{id}/thumbnail?path=`; the image is requested when the row enters the viewport, and a failed response shows **No preview** instead of a broken image. A Source with no revision says **No files yet.** Clicking the selected name returns to `/library`.
+
+A Build's Sources tab (`/builds/:id/sources`) lists each of that Build's Sources the same way, in layer order, one section per Source. A Source used on two layers is listed once.
 
 A finished import or sync reads every query under `["core", "sources"]` again, including that Source's file list.

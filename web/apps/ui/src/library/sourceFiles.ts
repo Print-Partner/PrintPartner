@@ -1,21 +1,8 @@
-import { routePath, type SourceFileList } from "@print-partner/rust-client";
-import { readCore } from "../core/rust";
+import type { SourceFileList } from "@print-partner/rust-client";
 
 export type SourceFile = SourceFileList["files"][number];
 
-export function sourceFilesQuery(sourceId: number) {
-  return {
-    queryKey: ["core", "sources", sourceId, "files"] as const,
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      readCore("listSourceFiles", { id: sourceId }, signal),
-  };
-}
-
-/** PNG for one STL, beside `listSourceFiles` on the same Source. */
-export function thumbnailUrl(sourceId: number, path: string): string {
-  const files = routePath("listSourceFiles", { id: sourceId });
-  return `${files.slice(0, -"files".length)}thumbnail?path=${encodeURIComponent(path)}`;
-}
+export { sourceFilesQuery, thumbnailUrl } from "../screen/sourceThumb";
 
 /** A `/library/:sourceId` segment, or null when it does not name a Source. */
 export function selectedSourceId(value: string | undefined): number | null {
@@ -67,20 +54,4 @@ export function fileSize(bytes: number): string {
   const kb = bytes / 1024;
   if (kb < 1024) return scaled(kb, "KB");
   return scaled(kb / 1024, "MB");
-}
-
-/** True when any pixel of `element` is inside the viewport. */
-export function isInView(element: Element): boolean {
-  const box = element.getBoundingClientRect();
-  const view = element.ownerDocument.defaultView;
-  const height = view?.innerHeight ?? 0;
-  const width = view?.innerWidth ?? 0;
-  return (
-    box.width > 0 &&
-    box.height > 0 &&
-    box.bottom > 0 &&
-    box.right > 0 &&
-    box.top < height &&
-    box.left < width
-  );
 }

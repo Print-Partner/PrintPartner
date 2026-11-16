@@ -180,6 +180,9 @@ pub(super) enum Decision {
     /// The stored path is below the installation's `repos`, but the copy
     /// holds no such folder. It is kept byte for byte.
     Missing,
+    /// The current revision's snapshot name is not a plain path. The import
+    /// refuses it. The dry run counts it.
+    BadLocator,
 }
 
 /// How the Sources' paths came out, by count. A path is never reported.
@@ -195,6 +198,9 @@ pub struct SourcePaths {
     /// Sources whose current revision names a snapshot the copy lacks. The
     /// import refuses an installation that has one.
     pub missing_revisions: u64,
+    /// Sources whose snapshot name is not a plain path. The import refuses
+    /// an installation that has one. The dry run counts it and continues.
+    pub bad_locators: u64,
 }
 
 impl SourcePaths {
@@ -211,6 +217,7 @@ impl SourcePaths {
             outside: count(|decision| matches!(decision, Decision::Outside)),
             missing: count(|decision| matches!(decision, Decision::Missing)),
             missing_revisions: count(|decision| matches!(decision, Decision::MissingRevision)),
+            bad_locators: count(|decision| matches!(decision, Decision::BadLocator)),
         }
     }
 }
@@ -259,7 +266,7 @@ pub(super) fn decide(
     rows: &[SourceRow],
     root: Option<&Path>,
     held: impl Fn(&str) -> bool,
-) -> Result<Vec<(i64, Decision)>, ImportError> {
+) -> Vec<(i64, Decision)> {
     let root = root.and_then(|root| std::path::absolute(root).ok());
     let root = root.as_ref().map(|root| root.to_string_lossy());
     let own: Option<Vec<&str>> = root.as_ref().map(|root| {
@@ -267,26 +274,28 @@ pub(super) fn decide(
         parts.push("repos");
         parts
     });
-    let decided = |row: &SourceRow| -> Result<Decision, ImportError> {
+    let decided = |row: &SourceRow| -> Decision {
         if let Some(locator) = &row.locator {
-            let inside = below(&segments(locator)).ok_or(ImportError::SourcePath(row.id))?;
-            return Ok(match held(&inside) {
+            let Some(inside) = below(&segments(locator)) else {
+                return Decision::BadLocator;
+            };
+            return match held(&inside) {
                 true => Decision::Rewrite(inside),
                 false => Decision::MissingRevision,
-            });
+            };
         }
         let Some(stored) = row.stored.as_deref().filter(|path| !path.is_empty()) else {
-            return Ok(Decision::Keep);
+            return Decision::Keep;
         };
         let parts = segments(stored);
         let rest = (own.as_ref()).and_then(|own| parts.strip_prefix(own.as_slice()));
-        Ok(match rest.and_then(below) {
+        match rest.and_then(below) {
             Some(inside) if held(&inside) => Decision::Rewrite(inside),
             Some(_) => Decision::Missing,
             None => Decision::Outside,
-        })
+        }
     };
-    rows.iter().map(|row| Ok((row.id, decided(row)?))).collect()
+    rows.iter().map(|row| (row.id, decided(row))).collect()
 }
 
 /// Writes what [`decide`] decided. A Source whose current revision the copy
@@ -301,13 +310,14 @@ pub(super) fn rebase_sources(
     repos: &Path,
 ) -> Result<SourcePaths, ImportError> {
     let rows = source_rows(connection)?;
-    let decisions = decide(&rows, root, |inside| stage_repos.join(inside).is_dir())?;
+    let decisions = decide(&rows, root, |inside| stage_repos.join(inside).is_dir());
     let staged = stage_repos.canonicalize().ok();
     let mut taken = BTreeMap::new();
     for (source, decision) in &decisions {
         let inside = match decision {
             Decision::Rewrite(inside) => inside,
             Decision::MissingRevision => return Err(ImportError::MissingRevision(*source)),
+            Decision::BadLocator => return Err(ImportError::SourcePath(*source)),
             Decision::Keep | Decision::Outside | Decision::Missing => continue,
         };
         if let Some(first) = taken.insert(inside.as_str(), *source) {
@@ -328,11 +338,23 @@ pub(super) fn rebase_sources(
     Ok(SourcePaths::of(&decisions))
 }
 
+/// True when `path` has no empty segment, or only the leading `//` of a
+/// Windows share (`\\server\share` once `\` is read as `/`).
+pub(super) fn plain_or_share(path: &str) -> bool {
+    let rest = match path.strip_prefix("//") {
+        Some(rest) if !path.starts_with("///") => rest,
+        Some(_) => return false,
+        None => path,
+    };
+    !rest.contains("//")
+}
+
 /// Checks every Source's path in the copy against `before`, the paths the
 /// source stored, without using [`decide`]: a path is either what the source
 /// stored, byte for byte, or `repos` joined with the snapshot of the current
 /// revision, or with what the stored path holds below `root`'s own `repos`.
-/// A Source with a current revision must have been rewritten.
+/// A Source with a current revision must have been rewritten. A Windows
+/// share's leading `//` is the same path the rewrite accepted.
 pub(super) fn check_sources(
     connection: &Connection,
     before: &BTreeMap<i64, Option<String>>,
@@ -361,7 +383,7 @@ pub(super) fn check_sources(
             && (own.as_deref())
                 .zip(unix.as_deref())
                 .is_some_and(|(own, path)| {
-                    !path.contains("//") && Path::new(path).strip_prefix(own) == Ok(found)
+                    plain_or_share(path) && Path::new(path).strip_prefix(own) == Ok(found)
                 });
         let plain = found.components().next().is_some()
             && found

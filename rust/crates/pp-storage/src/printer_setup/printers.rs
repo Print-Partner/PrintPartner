@@ -5,14 +5,13 @@
 //! already read. It has no version field, like [`super::integrations`]: it
 //! changes only through a numbered schema step. Every named field is typed
 //! strictly. A key the shape does not name is kept in [`Unread`] and never
-//! read; a loaded-filament row takes no such key.
+//! read; a loaded-filament row takes no such key. The import drops both
+//! before it writes, and names the field.
 //!
 //! Lengths are whole millimetres, as integers. A fractional value is not this
-//! shape, and Node accepted one. The import (GRE-412) is to normalise such a
-//! row: bed width, depth and height round down, the margin rounds up, and each
-//! change is listed in the import report. That conversion is not built yet
-//! (`import/inventory.rs` lists `printer.fleet` as pending), so until it is, a
-//! document with a fractional length is refused whole.
+//! shape, and Node accepted one. The import rounds width, depth and height
+//! down and the margin up, and lists each such change, before this reader
+//! sees the document. A fractional length stored here is still refused.
 //!
 //! New values are checked in [`apply`] against what Accept can use: a bed
 //! size is 1 to [`MAX_BED_MM`]; the margin is less than half the bed's width
@@ -107,7 +106,7 @@ pub struct PrinterPatch {
 }
 
 /// The stored document, or which entry is not the typed shape and why.
-fn parse(text: &str) -> Result<Vec<Printer>, InvalidDocument> {
+pub(crate) fn parse(text: &str) -> Result<Vec<Printer>, InvalidDocument> {
     let fault = |entry, reason| InvalidDocument {
         document: SetupDocument::Printers,
         entry,

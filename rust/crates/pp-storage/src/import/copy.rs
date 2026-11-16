@@ -69,6 +69,8 @@ pub struct ImportReport {
     pub rows: Vec<RowReport>,
     /// Rows per table in the imported database.
     pub tables: BTreeMap<String, u64>,
+    /// What the printer and integration conversion did.
+    pub settings: super::convert::SettingsReport,
 }
 
 impl ImportReport {
@@ -111,6 +113,7 @@ impl ImportReport {
             tables: (counts.tables.iter())
                 .map(|table| (table.table.clone(), table.rows))
                 .collect(),
+            settings: counts.settings.clone(),
         }
     }
 }
@@ -154,7 +157,8 @@ impl fmt::Display for ImportReport {
         writeln!(
             f,
             "The report is saved as {REPORT_FILE} in the destination."
-        )
+        )?;
+        self.settings.write(f)
     }
 }
 
@@ -299,6 +303,9 @@ pub(super) fn import_with(
     }
     if counts.users > 1 {
         return Err(ImportError::Accounts(counts.users));
+    }
+    if counts.settings.refused() {
+        return Err(ImportError::Settings(counts.settings.faults.clone()));
     }
     let repos = root.join("repos");
     // A folder source is the Node data folder itself; an archive names none.

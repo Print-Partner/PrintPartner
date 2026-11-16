@@ -2,13 +2,13 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)), and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Steps 1 and 2 exist today.
+The import lands in six steps. Steps 1 and 2, and the printer and integration conversion, exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
 | 1 | The dry run and this inventory | in this release |
 | 2 | The import: copy, schema upgrade, `projects.local_path` rebase, verification, report, ownership marker | in this release, see [Import](#import) |
-| 3 | Printers and integrations | not written; needs the typed fleet and integrations documents |
+| 3 | Printers and integrations | in this release, see [Printers and integrations](#printers-and-integrations) |
 | 4 | Checkoff links, unmatched prints and the send queue | not written |
 | 5 | Sources | not written |
 | 6 | Builds and Plans; the report says `complete: true` | not written |
@@ -68,7 +68,7 @@ The test `a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refus
 
 ### Report
 
-The report holds keys, names and counts, never a stored value. On the synthetic installation (`npm run fixture:synthetic -- --seed 1138`, [Storage](storage.md#synthetic-installations)) it starts:
+The report holds keys, names and counts. The only stored values it prints are a printer id or a bed size that the conversion changed, and the `tenant_id` values, which it masks. On the synthetic installation (`npm run fixture:synthetic -- --seed 1138`, [Storage](storage.md#synthetic-installations)) it starts:
 
 ```text
 Dry run of a Node data folder. Nothing was written.
@@ -80,7 +80,8 @@ Then it lists:
 
 - **Installation values and accounts:** one line with every `tenant_id` value that any table holds rows under and the number of accounts, and a line each when a value is not `default` or more than one account is stored. `default` and `anonymous` are printed as stored. Any other value can hold a sign-in name, so it is printed as `basic-***` when it starts with `basic-` and as `***` otherwise.
 - **Database files:** the bytes of `print-partner.db`, its `-wal` and its `-journal`, for each the source holds, and their total. The startup check copies these under `TMPDIR` and holds them in memory, so compare the total with the free space and memory given above; the documented Docker run gives `/tmp` 1 GB.
-- **Source paths:** three counts, "Source paths outside the installation", "Source paths whose folder is missing in the copy" and "Sources whose current revision is missing in the copy", by the rule under [Source paths](#source-paths). Paths are never printed.
+- **Source paths:** four counts, "Source paths outside the installation", "Source paths whose folder is missing in the copy", "Sources whose current revision is missing in the copy" and "Sources whose snapshot name is not a plain path", by the rule under [Source paths](#source-paths). Paths are never printed.
+- **Printers and integrations:** each id or size the conversion changed, with the stored value and the converted value, and a count for each field it dropped or moved. A dropped or moved field is named, never given its value. An address that holds a username or password is a count only. See [Printers and integrations](#printers-and-integrations).
 - **Backup roots:** for each backup root the source holds, the number of its files and folders, counted as a backup counts entries, and for a folder source the bytes of its files; then the total for all roots. A backup is bounded by its number of entries, so this line says how far an installation is from that bound.
 - **Tables with rows:** each table's row count, and its rows per `tenant_id` when it has that column, with the values masked the same way. Values are counted and compared as stored and masked only when printed, so two account ids print as two `***` entries.
 - **Conversion inventory:** every row of the table below with its step, its status and the item count of each shape. The status is `pending` until the import has the row's converter, then `converted`. An array setting counts its elements, a per-Build setting counts its rows, a column counts the rows that hold a value.
@@ -137,12 +138,13 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive
 | Two Sources that would lead to the same folder in the copy | The mapping of stored paths is wrong for this installation. The message names both Source ids. Send the dry-run report back. |
 | A Source whose rewritten path does not stay under the copy's `repos/` with links resolved, or whose path in the copy is not what its stored path maps to | The import checks every path it rewrote, apart from the code that wrote it. The message names the Source id. |
 | A source row that is missing or different after the upgrade and the rebase | Every row of every table must arrive as the source stored it, except what [Verification](#verification) lists. The message names the table. |
+| `printer.fleet` or `integrations` that is not the typed shape | The message names the field and a count. A key the typed shape has no place for is dropped and does not refuse the import. See [Printers and integrations](#printers-and-integrations). |
 
 What it does:
 
 1. Refuses unless the destination is apart from the source, then creates it, resolves its links, checks it a second time, and from then on writes only through that resolved folder. It creates `<destination>/.pp-import/` and stages everything there, never in the system temporary directory. The startup check still makes its short-lived database copy under `TMPDIR`.
 2. From a folder, copies the database files and every backup root: regular files and directories, no links. The database files (`print-partner.db`, its `-wal` and its `-journal`) are read back like every other file, before anything opens the copy. Each copied file is read back and its SHA-256 compared with the bytes read from the source; modification times are kept. The read-back runs before the flush in step 4 and reads the page cache: it catches a wrong copy, and it is not a check of the disk. A folder has no cap on its size, on the size of one file or on the number of entries: the only size refusal for a folder is too little free space at the destination. From an archive, validates and extracts it as a restore does, under the restore caps (100,000 entries, 20 GiB expanded, 8 GiB for one entry). An installation above those caps is imported from a folder: a filesystem snapshot or a copy of the stopped data folder (owner decision, 2026-11-12).
-3. Checks and upgrades the staged database as the dry run does. It then rewrites Source paths by the rule under [Source paths](#source-paths). It deletes the rows of `sessions` and `password_reset_tokens`. Last, it compares every table with the row digests it took before the upgrade and stops if a row is missing or different; see [Verification](#verification). Lease files and `backups/` are not copied. Users and password hashes are.
+3. Checks and upgrades the staged database as the dry run does, and rewrites `printer.fleet` and `integrations` as under [Printers and integrations](#printers-and-integrations). It then rewrites Source paths by the rule under [Source paths](#source-paths). It deletes the rows of `sessions` and `password_reset_tokens`. Last, it compares every table with the row digests it took before the upgrade and stops if a row is missing or different; see [Verification](#verification). Lease files and `backups/` are not copied. Users and password hashes are.
 4. Checkpoints and closes the staged database, so it is one file with no `-wal` or `-shm` beside it. Then it flushes everything it staged to disk in one call: `syncfs` on the destination's filesystem on Linux, which the Docker image runs on. Other platforms have no such call, so there it syncs every staged file and directory. The stage is inside the destination, so one flush covers both. A flush that fails ends the run with `import failed:` and no marker.
 5. Moves the database and the roots into the destination with a rename that fails if the name exists, so it never replaces a file. It saves the report as `import-report.json`, syncs the destination directory, and removes the stage.
 6. Writes `.pp-rust-owned.json` last, into the folder it resolved in step 1 and only while the given path still leads there, and syncs it and its directory.
@@ -163,7 +165,9 @@ Node stores each Source's folder in `projects.local_path` as an absolute path. T
 - **A Source without one** is rewritten only when its stored path lies under the source installation's own `repos` folder and the copy holds that folder. Both separators are read first, so `..\..` cannot pass as a name. The stored path is compared part by part with the `--from` folder plus `repos`, and everything below that is kept, also when a lower part is again called `repos`. A part that is empty, `.`, `..` or a drive letter is never accepted.
 - **Every other stored path is kept byte for byte.** A folder the user picked outside the installation, a path that climbs out of `repos`, or a folder the copy does not hold is never pointed at another Source's files. Such a Source keeps its record and loses nothing, but its files are not in the copy.
 
-The dry run and the import report give two counts, never a path: "Source paths outside the installation" and "Source paths whose folder is missing in the copy". While either is above zero the copy says `complete: false`. The dry run gives a third count, "Sources whose current revision is missing in the copy", and says the import would refuse when it is above zero. For an archive it reads these from the archive's listing, since a dry run does not extract `repos/`.
+The dry run and the import report give two counts, never a path: "Source paths outside the installation" and "Source paths whose folder is missing in the copy". While either is above zero the copy says `complete: false`. The dry run gives two more counts, "Sources whose current revision is missing in the copy" and "Sources whose snapshot name is not a plain path", and says the import would refuse when either is above zero. A snapshot name that is empty, `.`, `..` or a drive letter is not a plain path. The import still refuses that installation; the dry run finishes and prints the rest of the report. For an archive the dry run reads the listing, since it does not extract `repos/`. It counts a snapshot as present only when the listing has a directory at `repos/<name>` or a file under that directory. A file stored at exactly `repos/<name>` is not the snapshot.
+
+A stored path on a Windows share (`\\server\share\...`) is compared the same way. The check after writing accepts the leading `//` that those two separators become, and still refuses an empty segment anywhere else.
 
 Two cases count as outside although the files may be in the copy, because the import cannot show it:
 
@@ -182,16 +186,28 @@ It leaves out only what the import or the upgrade changes on purpose:
 | --- | --- |
 | Tables `sessions` and `password_reset_tokens` | The import empties them. |
 | Setting `schema_version` | The upgrade writes Rust's schema number. |
-| Every shape an inventory row marks `converted`, today `projects.local_path` | A converter rewrites it, and that converter's own check covers it; for `projects.local_path` see [Source paths](#source-paths). |
+| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet` and `integrations` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the two settings see [Printers and integrations](#printers-and-integrations). |
 | Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
 
 An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
 
-The report holds keys, names and counts, never a stored value. It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. One more limit applies to a copy made today:
+The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: false` while any inventory row is `pending`. Such a copy is disposable: import again once every converter exists. One more limit applies to a copy made today:
 
 - Node's send queue arrives as stored. The Rust runtime turns `sending` items into `error` when it opens the folder and never starts an upload on its own, so nothing prints without a Send action. Step 4 will turn `queued` items into `error` too.
+
+## Printers and integrations
+
+After the upgrade, the import rewrites `printer.fleet` and `integrations` into the documents Settings reads, then reads them back with those readers. A document that does not come back as the typed shape is left as stored. The dry run counts the reason and says the import would refuse; the import refuses and writes no marker.
+
+A printer is read the way Node reads a fleet row. The id is stored as text, so a numeric id becomes text. A missing name becomes `Printer`. A missing model becomes the name. Width, depth and height become whole millimetres, rounding down; the margin rounds up. A missing width, depth, margin or slot count takes Node's default (250, 210, 4 and 1). A missing height stays missing. Slots are held to 1 to 4. Each of those changes is listed with the field, the stored value and the converted value. A size that is not a number at or above zero, a slot count that is not a whole number, a row that is not an object, a missing or empty or repeated id, or a document that is not a list, is a refusal. The message names the field and a count.
+
+Moonraker, PrusaLink and Spoolman rows become the typed integration. `baseUrl`, `apiKey`, `user` and `storage_path` move to `base_url`, `api_key`, `username` and `storage` only when that field is empty; the report names the move and does not print the value. A PrusaLink `api_key` stays `api_key`. Every other known kind is kept byte for byte. A type Rust does not know, a missing name, config, `base_url`, `created_at` or `updated_at`, or a repeated id, is a refusal.
+
+A key the typed shape has no place for, including one inside `config` or a loaded-filament row, is dropped. The report names the field and a count, never the value. That alone does not refuse the import.
+
+An address that holds a username or password (`user:pass@host`) is counted and kept as stored. The report gives the count only. Such an address has never connected on either runtime.
 
 ## Conversion inventory
 
@@ -200,8 +216,8 @@ The report holds keys, names and counts, never a stored value. It says `complete
 | Step | Stored shape | Rust reader today | Typed target | Status |
 | --- | --- | --- | --- | --- |
 | 2 | `projects.local_path`, absolute | `ps/working_drafts/source_reads.rs`, `ps/catalog.rs` | `<data>/repos/<snapshot_locator>`, or `<data>/repos/` and the stored path below the installation's `repos`; any other path is kept | converted |
-| 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document | pending |
-| 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; unknown kinds kept as they are | pending |
+| 3 | setting `printer.fleet`; ids and sizes may be numbers or strings | `ps/printer_hosts.rs`, `ps/plates.rs`, `ps/checkoff_progress/print_file.rs`, `ps/read_model/farm.rs` | typed fleet document | converted |
+| 3 | setting `integrations`; `port` and `username` loosely typed | `ps/printer_hosts.rs`, `ps/read_model/stock.rs`, `ps/app_settings.rs`, `pp-drivers/src/bambu.rs` | typed integrations document; unknown kinds kept as they are | converted |
 | 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | pending |
 | 4 | setting `printer.send_queue` | `ps/send_queue.rs` adopts it at every open; `ps/read_model/farm.rs`, `history.rs` | rows in `printer_send_queue`; setting deleted; `artifact_path` rebased | pending |
 | 4 | settings `printer.unattributed_prints`, `printer.plan_bindings` | `ps/checkoff_progress/unattributed.rs` | `Vec<UnattributedPrint>`, `Vec<PlanBinding>` | pending |

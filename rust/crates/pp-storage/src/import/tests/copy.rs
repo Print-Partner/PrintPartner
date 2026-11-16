@@ -122,10 +122,11 @@ fn the_import_report_is_saved_without_stored_values() {
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let statuses: Vec<&str> = report.rows.iter().map(|row| row.status.as_str()).collect();
     assert_eq!(statuses[0], "converted");
-    assert!(statuses[1..].iter().all(|status| *status == "pending"));
+    assert_eq!(&statuses[1..3], &["converted", "converted"]);
+    assert!(statuses[3..].iter().all(|status| *status == "pending"));
     let summary = report.to_string();
     assert!(
-        summary.contains("complete: false. 15 inventory rows are not converted yet."),
+        summary.contains("complete: false. 13 inventory rows are not converted yet."),
         "{summary}"
     );
 
@@ -380,8 +381,9 @@ fn a_changed_row_in_any_table_is_named() {
         .filter(|(table, _)| stored.contains_key(*table))
         .map(|(_, count)| count)
         .sum();
-    // All rows but the schema number, which the upgrade writes.
-    assert_eq!(compared as i64, held - 1);
+    // All rows but the schema number, which the upgrade writes, and the two
+    // settings the import converts before the comparison.
+    assert_eq!(compared as i64, held - 3);
 
     // What the upgrade does on purpose changes nothing: a new column, a new
     // table, the schema number and a rebased Source path.
@@ -1057,6 +1059,60 @@ fn a_rewritten_source_path_is_checked_against_the_stored_one() {
     set(2, "/synthetic/rust/repos/2");
     let error = verify::check_sources(&connection, &before, None, repos).unwrap_err();
     assert!(matches!(error, ImportError::SourceRebase(1)), "{error:?}");
+
+    // An empty segment anywhere but a share's leading `//` is still a refusal.
+    set(2, "/synthetic/rust/repos/2");
+    let mut doubled = before.clone();
+    let stored = doubled.get_mut(&2).unwrap().as_mut().unwrap();
+    *stored = stored.replacen("/repos/", "//repos/", 1);
+    let error = verify::check_sources(&connection, &doubled, Some(root), repos).unwrap_err();
+    assert!(matches!(error, ImportError::SourceRebase(2)), "{error:?}");
+}
+
+/// A path on a Windows share (`\\server\share\...`) is rewritten by `decide`
+/// and must pass `check_sources`. `absolute` of a share path is a Windows
+/// path, so this runs there.
+#[cfg(windows)]
+#[test]
+fn a_windows_share_path_is_rewritten_and_then_accepted() {
+    let folder = node_folder();
+    let root = Path::new(r"\\server\share\data");
+    std::fs::create_dir_all(folder.path().join("repos/kit")).unwrap();
+    let connection = Connection::open(folder.database_path()).unwrap();
+    let original = setting(
+        &folder.database_path(),
+        "SELECT local_path FROM projects WHERE id = 1",
+    );
+    connection
+        .execute(
+            "UPDATE projects SET local_path = ?1 WHERE id = 2",
+            [r"\\server\share\data\repos\kit"],
+        )
+        .unwrap();
+    let rows = verify::source_rows(&connection).unwrap();
+    let decisions = verify::decide(&rows, Some(root), |inside| {
+        folder.path().join("repos").join(inside).is_dir()
+    });
+    let kit = decisions.iter().find(|(id, _)| *id == 2).unwrap();
+    assert_eq!(kit.1, verify::Decision::Rewrite("kit".into()));
+
+    let before = BTreeMap::from([
+        (1, Some(original)),
+        (2, Some(r"\\server\share\data\repos\kit".to_owned())),
+    ]);
+    connection
+        .execute(
+            "UPDATE projects SET local_path = '/synthetic/rust/repos/kit' WHERE id = 2",
+            [],
+        )
+        .unwrap();
+    verify::check_sources(
+        &connection,
+        &before,
+        Some(root),
+        Path::new("/synthetic/rust/repos"),
+    )
+    .unwrap();
 }
 
 /// A Node stopped in the middle of a transaction leaves a rollback journal

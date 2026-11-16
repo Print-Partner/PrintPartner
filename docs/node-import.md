@@ -2,7 +2,7 @@
 
 The import converts one Node installation into a new Rust-owned data folder, once. Rust owns its data formats ([ADR 0016](adr/0016-rust-owns-its-data-formats.md)), and `pp-storage::import` is the only Rust code that reads Node's stored shapes on purpose. The source is never opened for writing. Node and Rust never share a live data folder ([Docker image](docker.md#importing-node-data)).
 
-The import lands in six steps. Steps 1 to 4 exist today.
+The import lands in six steps. Steps 1 to 5 exist today.
 
 | Step | What it adds | State |
 | --- | --- | --- |
@@ -10,7 +10,7 @@ The import lands in six steps. Steps 1 to 4 exist today.
 | 2 | The import: copy, schema upgrade, `projects.local_path` rebase, verification, report, ownership marker | in this release, see [Import](#import) |
 | 3 | Printers and integrations | in this release, see [Printers and integrations](#printers-and-integrations) |
 | 4 | Checkoff links, unmatched prints and the send queue | in this release, see [Checkoff and the send queue](#checkoff-and-the-send-queue) |
-| 5 | Sources | not written |
+| 5 | Sources: metadata, import rules, categories, activity and custom filaments | in this release, see [Sources](#sources) |
 | 6 | Builds and Plans; the report says `complete: true` | not written |
 
 Two decisions shape the later steps:
@@ -186,7 +186,7 @@ It leaves out only what the import or the upgrade changes on purpose:
 | --- | --- |
 | Tables `sessions` and `password_reset_tokens` | The import empties them. |
 | Setting `schema_version` | The upgrade writes Rust's schema number. |
-| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet`, `integrations`, `printer.checkoff_links`, `printer.unattributed_prints`, `printer.plan_bindings` and `printer.send_queue` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the printer settings see [Printers and integrations](#printers-and-integrations) and [Checkoff and the send queue](#checkoff-and-the-send-queue). |
+| Every shape an inventory row marks `converted`: `projects.local_path`, `printer.fleet`, `integrations`, `printer.checkoff_links`, `printer.unattributed_prints`, `printer.plan_bindings`, `printer.send_queue`, `projects.metadata_json`, `projects.imported_paths`, `source_categories`, `app_events.payload_json` and `custom_filaments.json` | A converter rewrites it, and that converter's own check covers it. For `projects.local_path` see [Source paths](#source-paths). For the printer settings see [Printers and integrations](#printers-and-integrations) and [Checkoff and the send queue](#checkoff-and-the-send-queue). For Sources see [Sources](#sources). |
 | Rows added to `printer_profiles`, `process_profiles` and `filament_profiles` | The upgrade adds the starter profiles a table lacks, as every start does. The rows the source stored must still all be there, unchanged. |
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
@@ -217,6 +217,22 @@ An unmatched print Node's reader drops (not an object, or an id or filename that
 
 Each send-queue item Node's reader keeps is inserted in stored order. Its unit list is stored in `printer_send_queue.checkoff_units`. The inventory names that column, so the JSON is not an unknown document. `queued` becomes `error` with the not-started text, and `sending` becomes `error` with the interrupted text, so a copy never prints while Node is live (owner decision, 2026-11-12). Nothing inserts a `printer-upload` job. The setting is deleted after the report has counted it. `FarmTasks::read` then reads the queue through `queue_list`, which uses the table once the setting is gone. A repeated id, an id longer than 128 characters, or an `artifact_path` that sits under the installation and then climbs out refuses the import. A path under the Node folder, with no empty, `.`, `..` or drive part below it, is rewritten to the same path below the destination. A path outside the folder, and every path from an archive, is kept. The report counts rebased paths and kept paths, and does not print them.
 
+## Sources
+
+After Checkoff, the import rewrites each Source's `metadata_json` and `imported_paths`, the `source_categories` setting, each `app_events.payload_json`, and `custom_filaments.json`.
+
+`metadata_json` is stored as an object. A `category` string is trimmed with JavaScript's whitespace, which is what `GET /sources` shows. Keys the readers already use (`sync_required`, `sync_error`, `remote_update_status`, `remote_checked_at`, `naming`, `catalog_metadata_version`) stay as stored. Any other key stays in the object and is named in the report. Text that is not a JSON object is stored as `{"raw": <the original text>}`, which is what the catalog reader synthesises, and the report does not print that text. A `category` that is not text is kept as stored and named.
+
+`imported_paths` is stored as a JSON array of strings. Each string is trimmed, backslashes become slashes, a leading slash is removed, and a rule that is not empty, does not end in `/` and does not end in `.stl` gains a trailing `/`. That is the normalization the four readers do, done once here. A document that is not a list, and an element that is not text or is blank, is left out and named by index. Those are the values the readers already skip. The report does not print a path.
+
+`source_categories` is stored as the list the category reader keeps. Each entry is trimmed per segment. An empty path, or one with more than nine segments, is left out and named by index, as is an element that is not text. Each remaining path is stored with its parents, and a later entry that repeats a path in another case is not stored again.
+
+An activity `payload_json` is stored as an object. `source_id` stays when it is a number, and `source_name` and `error` stay when they are text, which is what `GET /sources/activity` reads. Any other key stays and is named. A payload that is not an object becomes `{}`, which is what that reader uses. The report names the event id and the key, not the text.
+
+`custom_filaments.json` is stored as `{"filaments": [...]}`. Each object keeps `id`, `display_name`, `product_line`, `hex` and `combo_label`, trimmed when they are text, and any other key. A file that is present and that the reader does not treat as a store (not JSON, or no `filaments` member) becomes `{"filaments":[]}`. A key on the store other than `filaments` is dropped and named, because the list reader does not return it. A missing file stays missing. A `null` file, a `filaments` value that is not a list, an entry that is not an object, or one of the five fields that is not text, refuses the import. The report names the index and the key. It does not print a name or a colour.
+
+The dry run reads the filament file and does not write it. The import writes the converted file in the stage after the inventory has counted the copied file, and after that copy's bytes were checked.
+
 ## Conversion inventory
 
 `rust/crates/pp-storage/src/import/inventory.rs` holds this table as data; a test fails when a shape there is not named here. `ps/` is `rust/crates/pp-storage/src/`. A later step that finds a new shape adds its row here and there.
@@ -229,10 +245,10 @@ Each send-queue item Node's reader keeps is inserted in stored order. Its unit l
 | 4 | setting `printer.checkoff_links` | `ps/checkoff_progress/links.rs`, `burst.rs`, `ps/plan_publication.rs` | `Vec<CheckoffLink>` with typed units, file identity and enums | converted |
 | 4 | setting `printer.send_queue` | `ps/send_queue.rs` adopts it at every open; `ps/read_model/farm.rs`, `history.rs` | rows in `printer_send_queue`; setting deleted; `artifact_path` rebased | converted |
 | 4 | settings `printer.unattributed_prints`, `printer.plan_bindings` | `ps/checkoff_progress/unattributed.rs` | `Vec<UnattributedPrint>`, `Vec<PlanBinding>` | converted |
-| 5 | `projects.metadata_json` | `ps/catalog.rs`, `ps/source_scan/node_json.rs` | `SourceMetadata`; unread keys kept in a map | pending |
-| 5 | `projects.imported_paths` | four readers that trim JavaScript whitespace, such as `ps/manifest_options/observation.rs` | `Vec<String>`, normalized once | pending |
-| 5 | setting `source_categories`; `app_events.payload_json` | `ps/catalog/categories.rs`, `ps/catalog/activity.rs` | `Vec<String>`; `SourceEventPayload` | pending |
-| 5 | file `custom_filaments.json` | `ps/admin.rs`, `ps/filaments/runtime.rs` | `Vec<CustomFilament>` | pending |
+| 5 | `projects.metadata_json` | `ps/catalog.rs`, `ps/source_scan/node_json.rs` | `SourceMetadata`; unread keys kept in a map | converted |
+| 5 | `projects.imported_paths` | four readers that trim JavaScript whitespace, such as `ps/manifest_options/observation.rs` | `Vec<String>`, normalized once | converted |
+| 5 | setting `source_categories`; `app_events.payload_json` | `ps/catalog/categories.rs`, `ps/catalog/activity.rs` | `Vec<String>`; `SourceEventPayload` | converted |
+| 5 | file `custom_filaments.json` | `ps/admin.rs`, `ps/filaments/runtime.rs` | `Vec<CustomFilament>` | converted |
 | 6 | settings `feature_toggles`, `feature_toggles:plan:{id}` | `ps/features.rs` | `pp_domain::features::Toggles` | pending |
 | 6 | setting `production_setup:{build}` | `ps/production/setup.rs` | `ProductionSetup` | pending |
 | 6 | settings `role_filaments_{build}`, `plan_variant_selection_{build}`, `kit_manifest_{build}` | `ps/working_drafts/preparation.rs`, `ps/build_graph/variants.rs`, `ps/manifest_options/model.rs` | one struct each; spool id one type | pending |

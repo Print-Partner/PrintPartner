@@ -12,6 +12,7 @@ mod checkoff;
 mod convert;
 mod copy;
 pub mod inventory;
+mod sources;
 mod verify;
 
 pub use copy::{ImportReport, REPORT_FILE, import};
@@ -289,7 +290,7 @@ impl ImportError {
                     .collect();
                 write!(
                     f,
-                    "A stored printer, Checkoff, print or send document is not the typed shape ({}). The import stops",
+                    "A stored printer, Checkoff, print, send or Source document is not the typed shape ({}). The import stops",
                     faults.join(", ")
                 )
             }
@@ -1006,7 +1007,7 @@ fn dry_run_in(
         return Err(io_error(source, kind));
     };
     let (connection, ready, ()) = upgrade(&scratch.0, |_| Ok(()))?;
-    let report = measure(&connection, kind, &ready, &files)?;
+    let report = measure(&connection, kind, &ready, &files, None)?;
     Ok(DryRunReport {
         destination,
         ..report
@@ -1405,13 +1406,15 @@ fn measure(
     source: SourceKind,
     ready: &schema::SchemaReady,
     files: &Files,
+    filaments: Option<&Path>,
 ) -> Result<DryRunReport, ImportError> {
     let named: Vec<&Shape> = inventory::named().collect();
     // What the import would do with each Source's path, judged against the
     // `repos` the import copies or extracts.
     let held = |inside: &str| files.held.holds(inside);
     let rows = verify::source_rows(connection)?;
-    let (converted, drop_queue) = convert::rewrite(connection, files.root.as_deref())?;
+    let (converted, drop_queue, filament_body) =
+        convert::rewrite(connection, files.root.as_deref(), &files.documents)?;
     let source_paths = SourcePaths::of(&verify::decide(&rows, files.root.as_deref(), held));
     let (mut tables, mut unnamed) = count_tables(connection, &named)?;
     let table = |name: &str| tables.iter().find(|table| table.table == name);
@@ -1459,6 +1462,14 @@ fn measure(
     let sources = table("projects").map_or(0, |table| table.rows);
     let users = table("users").map_or(0, |table| table.rows);
     forget_queue(connection, &mut tables, drop_queue)?;
+    // The inventory above counted the copied filament file. The import then
+    // replaces that staged copy. A dry run passes no path and writes nothing.
+    if !converted.refused()
+        && let Some(path) = filaments
+        && let Some(body) = filament_body.as_deref()
+    {
+        std::fs::write(path, body).map_err(|error| io_error(path, error))?;
+    }
     Ok(DryRunReport {
         source,
         schema_version: ready.previous_version,

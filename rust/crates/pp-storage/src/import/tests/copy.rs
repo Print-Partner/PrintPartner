@@ -121,11 +121,11 @@ fn the_import_report_is_saved_without_stored_values() {
     );
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let statuses: Vec<&str> = report.rows.iter().map(|row| row.status.as_str()).collect();
-    assert_eq!(&statuses[..6], &["converted"; 6]);
-    assert!(statuses[6..].iter().all(|status| *status == "pending"));
+    assert_eq!(&statuses[..10], &["converted"; 10]);
+    assert!(statuses[10..].iter().all(|status| *status == "pending"));
     let summary = report.to_string();
     assert!(
-        summary.contains("complete: false. 10 inventory rows are not converted yet."),
+        summary.contains("complete: false. 6 inventory rows are not converted yet."),
         "{summary}"
     );
 

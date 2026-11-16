@@ -6,6 +6,7 @@
 //! `202 {job_id}` once the upload is stored and the import is recorded, and
 //! the import job reports the rest.
 
+use super::super::wire::SourceUploadAccepted;
 use super::{App, Principal, credentials, dispatch, guard, reject, source_id};
 use axum::{
     Extension, Json, Router,
@@ -196,11 +197,9 @@ async fn receive(
     };
     match answered {
         (Err(()), _) => reject(StatusCode::BAD_REQUEST, "The upload body could not be read"),
-        (Ok(()), Ok(Ok(job_id))) => (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "job_id": job_id })),
-        )
-            .into_response(),
+        (Ok(()), Ok(Ok(job_id))) => {
+            (StatusCode::ACCEPTED, Json(SourceUploadAccepted { job_id })).into_response()
+        }
         (Ok(()), Ok(Err(failure))) => refused(failure),
         (Ok(()), Err(_)) => reject(StatusCode::INTERNAL_SERVER_ERROR, "Upload failed"),
     }

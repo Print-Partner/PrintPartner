@@ -1096,11 +1096,20 @@ mod tests {
         // Add to queue reads only a multipart form.
         let no_form =
             status == 415 && body["detail"] == "Send the print file as multipart/form-data";
+        // A Source ZIP upload answers 202 once the import is recorded. The
+        // sample names no Source and sends no multipart body, so the handler
+        // refuses before that: unknown Source, missing length, or not a form.
+        let upload = route.name == "uploadSourceZip"
+            && (status == 202
+                || (status == 404 && body["detail"] == "Source not found")
+                || (status == 411 && body["detail"] == "Content-Length is required")
+                || (status == 400 && body["detail"] == "Expected a multipart/form-data body"));
         status == 200
             || handler_not_found(status, body)
             || stale
             || no_layers
             || no_form
+            || upload
             || owner_exists(route, status, body)
     }
 
@@ -1128,6 +1137,36 @@ mod tests {
                 || DETAILS.iter().any(|detail| body["detail"] == *detail))
     }
 
+    /// Upload checks for the contract test. The sample names no Source, so
+    /// `upload` is not called; it still drains parts if a later sample does.
+    struct NoUploads;
+
+    impl pp_api::catalog::SourceUploads for NoUploads {
+        fn check_space(
+            &self,
+            _: pp_storage::catalog::Credentials,
+            _: u64,
+        ) -> Result<(), pp_api::catalog::UploadFailure> {
+            Ok(())
+        }
+        fn closing(&self) -> bool {
+            false
+        }
+        fn upload(
+            &self,
+            _: pp_storage::catalog::Credentials,
+            _: i64,
+            _: pp_api::catalog::UploadKind,
+            _: u64,
+            files: pp_api::catalog::UploadParts,
+        ) -> Result<String, pp_api::catalog::UploadFailure> {
+            for part in files {
+                part.map_err(|_| pp_api::catalog::UploadFailure::Failed)?;
+            }
+            Ok("job-contract".into())
+        }
+    }
+
     #[tokio::test]
     async fn client_routes_match_registrations() {
         use pp_api::client_contract::CLIENT_ROUTES;
@@ -1146,6 +1185,7 @@ mod tests {
             None,
         );
         let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
+        let uploads = upload_router(Arc::clone(&owner), &origin, Arc::new(NoUploads)).unwrap();
         let mut server = serve(
             listener,
             reads
@@ -1153,7 +1193,8 @@ mod tests {
                 .unwrap()
                 .merge(drafts.unwrap().unwrap())
                 .merge(jobs.unwrap().unwrap())
-                .merge(farm),
+                .merge(farm)
+                .merge(uploads),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {

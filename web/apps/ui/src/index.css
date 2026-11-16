@@ -172,6 +172,18 @@ body {
   }
 }
 
+/* A file input styled as a button. Disabled while that row's upload or import runs. */
+.pp-file-button {
+  position: relative;
+}
+
+.pp-file-button:has(input:disabled) {
+  border-style: dashed;
+  background: var(--surface-base);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 /* Offline mutations stay focusable so the reason can be read, and never look filled. */
 .pp-button[aria-disabled="true"] {
   border: 1px dashed var(--line-strong);

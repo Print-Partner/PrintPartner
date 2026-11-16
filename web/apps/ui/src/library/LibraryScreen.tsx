@@ -9,14 +9,13 @@ import {
   ACTIVITY_LIMIT,
   eventText,
   latestEvents,
-  revisionText,
   sourceActivityQuery,
   sourcesQuery,
-  syncText,
   type Line,
   type Source,
   type SourceEvent,
 } from "./sources";
+import { SourceRows, useLibraryJobs } from "./ZipUpload";
 
 export function LineCell({ line }: { line: Line }) {
   return (
@@ -69,6 +68,7 @@ function SourcesTable({
   events: Map<number, SourceEvent> | undefined;
   noActivity: string;
 }) {
+  const { jobs, remember, forget } = useLibraryJobs();
   return (
     <table className="pp-sources-table" aria-label="Sources">
       <thead>
@@ -77,28 +77,19 @@ function SourcesTable({
           <th scope="col">Revision</th>
           <th scope="col">Sync</th>
           <th scope="col">Latest activity</th>
+          <th scope="col">Upload</th>
         </tr>
       </thead>
       <tbody>
         {sources.map((source) => (
-          <tr key={source.id}>
-            <th scope="row">
-              {source.name}
-              {!source.content_available && <span className="pp-tag">No files on disk</span>}
-              <span className="pp-fact-detail">
-                {[source.source_type, source.category].filter(Boolean).join(", ")}
-              </span>
-            </th>
-            <td>
-              <LineCell line={revisionText(source)} />
-            </td>
-            <td>
-              <LineCell line={syncText(source)} />
-            </td>
-            <td>
-              <ActivityCell events={events} id={source.id} none={noActivity} />
-            </td>
-          </tr>
+          <SourceRows
+            key={source.id}
+            source={source}
+            activity={<ActivityCell events={events} id={source.id} none={noActivity} />}
+            jobId={jobs[String(source.id)]}
+            remember={remember}
+            forget={forget}
+          />
         ))}
       </tbody>
     </table>

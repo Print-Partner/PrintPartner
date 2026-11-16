@@ -61,6 +61,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /api/v2/printers/probe` | `PrinterProbeRequest` | `PrinterProbeResult` |
 | `POST /api/v1/sources` (`createSource`) | `CreateSourceRequest` | `SourceSummary` |
 | `GET /api/v1/jobs/{id}` (`readJob`, text `id`) | | `JobSnapshot` (`status` one of `pending`, `running`, `done`, `error`, `cancelled`; `result` untyped JSON or null) |
+| `POST /api/v1/sources/{id}/upload-zip` (`uploadSourceZip`, `multipart/form-data`) | | `SourceUploadAccepted` (`{job_id}`; the route answers 202) |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
@@ -92,7 +93,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /auth/register` | `RegisterRequest` | `SignedIn` |
 | `POST /auth/logout` | | `SignedOut` |
 
-`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md). `addQueuedSend` lists no request schema because its body is a form: post a `FormData` and parse the answer with the route's response schema. The send routes are documented in [Send queue storage](../../../docs/send-queue.md#routes-gre-365).
+`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md). `addQueuedSend` lists no request schema because its body is a form: post a `FormData` and parse the answer with the route's response schema. `uploadSourceZip` is the same kind of route: post one `.zip` file as `FormData` and parse `{job_id}` with `SourceUploadAccepted`. The send routes are documented in [Send queue storage](../../../docs/send-queue.md#routes-gre-365).
 
 The Checkoff burst types (`pp_storage::checkoff_progress::wire`) are the subset the replacement UI sends and reads. The routes parse a JSON value and accept more (imported-extra `additional_decisions`, JavaScript-style coercion), and a receipt carries more fields, such as each bed's stored link, which the generated schema strips. A `UnitDecision` with `result: "rejected"` needs `reason` (one of the ten `RejectReason` values) or the route answers 400; `reason` and `note` may be omitted on a confirmed unit. `checkoff_bursts_http` parses the served receipts into these types and records a rejection with its reason through the mounted route.
 

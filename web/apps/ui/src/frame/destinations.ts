@@ -36,7 +36,7 @@ export const DESTINATIONS: readonly Destination[] = [
     help: "See printers, the queue and the farm log when the Farm module is on",
   },
   {
-    help: "Add a Source, upload a ZIP, and read revisions, sync status and recent activity",
+    help: "Add a Source, upload a ZIP, pick a GitHub branch, sync a GitHub Source, and read revisions and activity",
     label: "Library",
     path: "/library",
     key: "l",

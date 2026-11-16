@@ -88,8 +88,42 @@ async fn list<C: GithubConnector>(
         Err(refused) => return *refused,
     };
     match listing {
-        Listing::Branches => answer(sync::list_branches(&port, &url)).await,
+        Listing::Branches => {
+            answer(async move {
+                Ok(GithubBranchList::from(
+                    sync::list_branches(&port, &url).await?,
+                ))
+            })
+            .await
+        }
         Listing::Tags => answer(sync::list_tags(&port, &url)).await,
+    }
+}
+
+/// `GET /sources/github-branches` body. The generated client's `GithubBranchList`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct GithubBranchList {
+    pub owner: String,
+    pub repo: String,
+    pub default_branch: String,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
+    )]
+    pub url_branch: Option<String>,
+    pub branches: Vec<String>,
+}
+
+impl From<sync::BranchListing> for GithubBranchList {
+    fn from(listed: sync::BranchListing) -> Self {
+        Self {
+            owner: listed.owner,
+            repo: listed.repo,
+            default_branch: listed.default_branch,
+            url_branch: listed.url_branch,
+            branches: listed.branches,
+        }
     }
 }
 

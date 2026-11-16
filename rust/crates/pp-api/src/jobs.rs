@@ -111,7 +111,7 @@ impl Drop for Cancellation {
 /// `/api/v1/jobs/{id}`, `/ws/jobs/{id}`, and `POST /jobs/sync` (also under
 /// `/api/v1`) when `PP_DESKTOP_REBUILD` was exactly `1` or `true`. Otherwise
 /// mounts nothing. `POST /jobs/sync` enqueues a sync of the named GitHub
-/// Sources and answers `202` with `{ "job_id" }`.
+/// Sources and answers `202` with [`SourceSyncAccepted`].
 pub fn jobs_router(config: JobsHttpConfig, client: AtomicJobClient) -> Router {
     if !config.enabled {
         return Router::new();
@@ -163,6 +163,23 @@ async fn guard(
 const SYNC_BODY_LIMIT: usize = 64 * 1024;
 const MAX_SAFE_ID: u64 = 9_007_199_254_740_991;
 
+/// `POST /jobs/sync` body. The generated client's `StartSourceSyncRequest`.
+/// The handler still reads the JSON itself so its 400 reasons stay as written.
+/// Present for schema generation only.
+#[cfg(feature = "codegen")]
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct StartSourceSyncRequest {
+    pub project_ids: Vec<u64>,
+}
+
+/// `202` body from `POST /jobs/sync`: the sync job to follow.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct SourceSyncAccepted {
+    pub job_id: String,
+}
+
 /// Enqueues a sync of the named Sources. A missing, null, or empty
 /// `project_ids`, or a value that is not a list of Source ids, is a 400 problem.
 async fn sync_sources(
@@ -207,9 +224,11 @@ async fn sync_sources(
     })
     .await;
     match enqueued {
-        Ok(Ok(Outcome::Job(job, _))) => {
-            (StatusCode::ACCEPTED, Json(json!({ "job_id": job.job_id }))).into_response()
-        }
+        Ok(Ok(Outcome::Job(job, _))) => (
+            StatusCode::ACCEPTED,
+            Json(SourceSyncAccepted { job_id: job.job_id }),
+        )
+            .into_response(),
         Ok(Ok(_)) => failure(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Jobs service unavailable",

@@ -1,10 +1,11 @@
-import type { CreateSourceRequest } from "@print-partner/rust-client";
+import type { CreateSourceRequest, GithubBranchList } from "@print-partner/rust-client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { CoreError } from "../core/client";
-import { writeCore } from "../core/rust";
+import { readCore, writeCore } from "../core/rust";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
+import { syncStartFailure } from "./GithubSync";
 import { sourcesQuery } from "./sources";
 
 type SourceKind = "github" | "archive";
@@ -33,34 +34,69 @@ export function sourceRequest(form: SourceForm): CreateSourceRequest {
   return { name, source_kind: "github", url: form.url.trim(), ...(branch && { branch }) };
 }
 
+type BranchField = { kind: "text"; reason: string } | { kind: "list"; names: string[] };
+
+function branchReason(error: unknown): string {
+  if (error instanceof CoreError) return error.detail ?? error.message;
+  return error instanceof Error ? error.message : "Could not read the branches.";
+}
+
 /**
  * Library's "Add Source": a name and a kind, ZIP archive or GitHub repository. Create sends
  * `createSource` once and never again by itself; the core refuses a name already in use, so
- * pressing Create after a lost answer cannot add a second Source.
+ * pressing Create after a lost answer cannot add a second Source. A GitHub Source then starts
+ * one sync. Leaving the URL field reads that repository's branches.
  */
-export function AddSource() {
+export function AddSource({
+  onJob,
+  onRefused,
+}: {
+  onJob: (sourceId: number, jobId: string) => void;
+  onRefused: (sourceId: number, message: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button type="button" className="pp-button pp-button-primary" onClick={() => setOpen(true)}>
         Add Source
       </button>
-      {open && <AddSourceDialog onClose={() => setOpen(false)} />}
+      {open && (
+        <AddSourceDialog onClose={() => setOpen(false)} onJob={onJob} onRefused={onRefused} />
+      )}
     </>
   );
 }
 
-function AddSourceDialog({ onClose }: { onClose: () => void }) {
+function AddSourceDialog({
+  onClose,
+  onJob,
+  onRefused,
+}: {
+  onClose: () => void;
+  onJob: (sourceId: number, jobId: string) => void;
+  onRefused: (sourceId: number, message: string) => void;
+}) {
   const client = useQueryClient();
   const offline = useConnection() === "offline";
   const ids = useId();
   const [form, setForm] = useState<SourceForm>(EMPTY);
   const [failure, setFailure] = useState("");
+  const [branches, setBranches] = useState<BranchField>({ kind: "text", reason: "" });
+  const branchRead = useRef(0);
   const sending = useRef(false);
   const create = useMutation({
     retry: false,
     networkMode: "always",
-    mutationFn: (body: CreateSourceRequest) => writeCore("createSource", {}, body),
+    mutationFn: async (body: CreateSourceRequest) => {
+      const source = await writeCore("createSource", {}, body);
+      if (body.source_kind !== "github") return { source, jobId: null, refused: null };
+      try {
+        const accepted = await writeCore("startSourceSync", {}, { project_ids: [source.id] });
+        return { source, jobId: accepted.job_id, refused: null };
+      } catch (error: unknown) {
+        return { source, jobId: null, refused: syncStartFailure(error) };
+      }
+    },
     // Runs even after the dialog closed: the list is read again whatever the answer.
     onSettled: () => {
       sending.current = false;
@@ -77,7 +113,11 @@ function AddSourceDialog({ onClose }: { onClose: () => void }) {
     // Per-call callbacks do not run once the dialog has closed, so a late answer
     // never closes or writes into a dialog opened after it.
     create.mutate(sourceRequest(form), {
-      onSuccess: () => onClose(),
+      onSuccess: (result) => {
+        if (result.jobId) onJob(result.source.id, result.jobId);
+        else if (result.refused) onRefused(result.source.id, result.refused);
+        onClose();
+      },
       onError: (error: Error) => {
         // A 4xx is the core's refusal; anything else may have added the Source.
         const refused = error instanceof CoreError && error.status < 500;
@@ -93,6 +133,37 @@ function AddSourceDialog({ onClose }: { onClose: () => void }) {
     // A refusal describes the values that were sent; editing makes it stale.
     setFailure("");
     setForm((current) => ({ ...current, ...patch }));
+  };
+  const loadBranches = (raw: string) => {
+    const url = raw.trim();
+    const token = ++branchRead.current;
+    if (!url) {
+      setBranches({ kind: "text", reason: "" });
+      return;
+    }
+    void readCore("listGithubBranches", {}, undefined, { url }).then(
+      (listing: GithubBranchList) => {
+        if (token !== branchRead.current) return;
+        const names =
+          !listing.default_branch || listing.branches.includes(listing.default_branch)
+            ? listing.branches
+            : [listing.default_branch, ...listing.branches];
+        const chosen =
+          (listing.default_branch && names.includes(listing.default_branch)
+            ? listing.default_branch
+            : names[0]) ?? "";
+        if (!chosen) {
+          setBranches({ kind: "text", reason: "The repository listed no branches." });
+          return;
+        }
+        setBranches({ kind: "list", names });
+        set({ branch: chosen });
+      },
+      (error: unknown) => {
+        if (token !== branchRead.current) return;
+        setBranches({ kind: "text", reason: branchReason(error) });
+      },
+    );
   };
   return (
     <Dialog title="Add Source" onClose={onClose}>
@@ -137,17 +208,43 @@ function AddSourceDialog({ onClose }: { onClose: () => void }) {
                 value={form.url}
                 autoComplete="off"
                 placeholder="https://github.com/owner/repository"
-                onChange={(event) => set({ url: event.target.value })}
+                onChange={(event) => {
+                  branchRead.current += 1;
+                  setBranches({ kind: "text", reason: "" });
+                  set({ url: event.target.value });
+                }}
+                onBlur={(event) => loadBranches(event.target.value)}
               />
             </div>
             <div className="pp-field">
               <label htmlFor={`${ids}-branch`}>Branch</label>
-              <input
-                id={`${ids}-branch`}
-                value={form.branch}
-                autoComplete="off"
-                onChange={(event) => set({ branch: event.target.value })}
-              />
+              {branches.kind === "list" ? (
+                <select
+                  id={`${ids}-branch`}
+                  value={form.branch}
+                  onChange={(event) => set({ branch: event.target.value })}
+                >
+                  {branches.names.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id={`${ids}-branch`}
+                  value={form.branch}
+                  autoComplete="off"
+                  aria-invalid={branches.reason ? true : undefined}
+                  aria-describedby={branches.reason ? `${ids}-branch-reason` : undefined}
+                  onChange={(event) => set({ branch: event.target.value })}
+                />
+              )}
+              {branches.kind === "text" && branches.reason && (
+                <p id={`${ids}-branch-reason`} role="alert" className="pp-field-error">
+                  {branches.reason}
+                </p>
+              )}
             </div>
           </div>
         )}

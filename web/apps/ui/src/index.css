@@ -413,6 +413,18 @@ body {
   border-collapse: collapse;
 }
 
+.pp-sync-cell {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.pp-sync-cell .pp-button:disabled {
+  border-style: dashed;
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 .pp-farm-table :is(th, td),
 .pp-sources-table :is(th, td) {
   padding: 8px 12px;

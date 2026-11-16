@@ -63,12 +63,13 @@ function SourcesTable({
   sources,
   events,
   noActivity,
+  jobs,
 }: {
   sources: Source[];
   events: Map<number, SourceEvent> | undefined;
   noActivity: string;
+  jobs: ReturnType<typeof useLibraryJobs>;
 }) {
-  const { jobs, remember, forget } = useLibraryJobs();
   return (
     <table className="pp-sources-table" aria-label="Sources">
       <thead>
@@ -86,9 +87,10 @@ function SourcesTable({
             key={source.id}
             source={source}
             activity={<ActivityCell events={events} id={source.id} none={noActivity} />}
-            jobId={jobs[String(source.id)]}
-            remember={remember}
-            forget={forget}
+            jobId={jobs.jobs[String(source.id)]}
+            note={jobs.refusals[String(source.id)]}
+            remember={jobs.remember}
+            forget={jobs.forget}
           />
         ))}
       </tbody>
@@ -122,6 +124,7 @@ export function LibraryScreen() {
   const connection = useConnection();
   const sources = useQuery(sourcesQuery);
   const activity = useQuery(sourceActivityQuery);
+  const jobs = useLibraryJobs();
   const state = queryScreenState(sources, connection, (data) => data.sources.length === 0);
   const events = activity.data?.events;
   return (
@@ -131,7 +134,7 @@ export function LibraryScreen() {
       // empty, offline or back.
       subnav={
         <p className="pp-screen-actions">
-          <AddSource />
+          <AddSource onJob={jobs.remember} onRefused={jobs.refuse} />
         </p>
       }
       state={state}
@@ -140,6 +143,7 @@ export function LibraryScreen() {
           <ActivityNotice query={activity} />
           <SourcesTable
             sources={data.sources}
+            jobs={jobs}
             events={events && latestEvents(events)}
             // Fewer events than the limit means the core returned all of them.
             noActivity={

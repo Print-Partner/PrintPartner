@@ -289,7 +289,8 @@ pub(super) fn import_with(
     // Sign-in state is not carried: every Node session ends with the import.
     // It goes before the count, so the report describes what was imported.
     connection.execute_batch("DELETE FROM sessions; DELETE FROM password_reset_tokens;")?;
-    let counts = measure(&connection, kind, &ready, &files)?;
+    let filament_copy = stage.0.join("custom_filaments.json");
+    let counts = measure(&connection, kind, &ready, &files, Some(&filament_copy))?;
     if !counts.unnamed.is_empty() {
         let shapes = counts.unnamed.iter().map(|unnamed| unnamed.shape.clone());
         return Err(ImportError::Unnamed(shapes.collect()));

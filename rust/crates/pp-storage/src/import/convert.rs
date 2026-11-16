@@ -1,9 +1,10 @@
 //! Converts the stored `printer.fleet` and `integrations` documents into the
 //! typed shapes Settings reads. Checkoff links, unmatched prints and the send
-//! queue are converted beside them in [`super::checkoff`]. A key the typed
-//! shape has no place for is dropped and named, never valued. A value the
-//! typed shape cannot hold refuses the import; the dry run counts it and
-//! still prints the rest.
+//! queue are converted beside them in [`super::checkoff`]. Source metadata,
+//! import rules, categories, activity and custom filaments are converted in
+//! [`super::sources`]. A key the typed shape has no place for is dropped and
+//! named, never valued. A value the typed shape cannot hold refuses the
+//! import; the dry run counts it and still prints the rest.
 
 use super::ImportError;
 use crate::{
@@ -57,7 +58,7 @@ pub struct SettingsReport {
 
 impl SettingsReport {
     pub(super) fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "\nPrinters, integrations, Checkoff and sends:")?;
+        writeln!(f, "\nPrinters, integrations, Checkoff, sends and Sources:")?;
         writeln!(f, "  changes (field, stored, converted, count):")?;
         if self.changes.is_empty() {
             writeln!(f, "    none")?;
@@ -152,7 +153,8 @@ impl Notes {
 pub(super) fn rewrite(
     connection: &Connection,
     source: Option<&Path>,
-) -> Result<(SettingsReport, bool), ImportError> {
+    documents: &Path,
+) -> Result<(SettingsReport, bool, Option<String>), ImportError> {
     let mut notes = Notes {
         changes: BTreeMap::new(),
         notes: BTreeMap::new(),
@@ -171,10 +173,14 @@ pub(super) fn rewrite(
         store(connection, INTEGRATIONS, &written)?;
     }
     let (checkoff, drop_queue) = super::checkoff::convert(connection, source)?;
+    let (sources, filaments) = super::sources::convert(connection, documents)?;
     let mut report = notes.report();
     report.changes.extend(checkoff.changes);
     report.notes.extend(checkoff.notes);
     report.faults.extend(checkoff.faults);
+    report.changes.extend(sources.changes);
+    report.notes.extend(sources.notes);
+    report.faults.extend(sources.faults);
     report.changes.sort_by(|left, right| {
         (&left.field, &left.stored, &left.converted).cmp(&(
             &right.field,
@@ -188,7 +194,7 @@ pub(super) fn rewrite(
     report
         .faults
         .sort_by(|left, right| left.name.cmp(&right.name));
-    Ok((report, drop_queue))
+    Ok((report, drop_queue, filaments))
 }
 
 fn stored(connection: &Connection, key: &str) -> Result<Option<String>, ImportError> {

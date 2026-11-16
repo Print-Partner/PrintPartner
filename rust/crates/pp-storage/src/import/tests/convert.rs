@@ -468,3 +468,219 @@ fn a_share_prefix_is_allowed_and_any_other_empty_segment_is_not() {
     assert!(!verify::plain_or_share("//server//share/data"));
     assert!(!verify::plain_or_share("/data//repos/kit"));
 }
+
+const VENDOR: &str = "do-not-print-vendor";
+const EVENT_TEXT: &str = "do-not-print-event";
+const TOKEN: &str = "do-not-print-token";
+const FILAMENT_SECRET: &str = "do-not-print-filament";
+const STORE_NOTE: &str = "do-not-print-note";
+
+fn sources_source() -> Installation {
+    let folder = node_folder();
+    let connection = Connection::open(folder.database_path()).unwrap();
+    connection
+        .execute(
+            "UPDATE projects SET metadata_json = ?1, imported_paths = ?2 WHERE id = 1",
+            (
+                format!(r#"{{"category":"  Printer kits  ","vendor":"{VENDOR}"}}"#),
+                r#"["  parts/  ", 4, "   ", "\\stl\\part.stl"]"#,
+            ),
+        )
+        .unwrap();
+    let mods = serde_json::json!({"category": "\u{a0}Mods\u{a0}".to_owned()}).to_string();
+    connection
+        .execute(
+            "UPDATE projects SET metadata_json = ?1, imported_paths = ?2 WHERE id = 2",
+            (mods, r#"["  mods/  "]"#),
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'source_categories', ?1)",
+            [r#"["  Printer kits  ","Printer kits/Mods","Hardware/Screws",2]"#],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO app_events (at, kind, payload_json) VALUES ('2026-11-01T00:00:00.000Z', 'source.updated', ?1)",
+            [format!(
+                r#"{{"source_id":1,"source_name":"Synthetic Source 01","error":"{EVENT_TEXT}","token":"{TOKEN}"}}"#
+            )],
+        )
+        .unwrap();
+    std::fs::write(
+        folder.path().join("custom_filaments.json"),
+        format!(
+            r#"{{"filaments":[{{"id":"custom-1","display_name":"  Mine  ","product_line":" Custom ","hex":" #AABBCC ","combo_label":"Mine","secret":"{FILAMENT_SECRET}"}}],"note":"{STORE_NOTE}"}}"#
+        ),
+    )
+    .unwrap();
+    folder
+}
+
+#[test]
+fn sources_metadata_rules_activity_and_filaments_convert() {
+    let folder = sources_source();
+    let report = run(folder.path()).unwrap();
+    let text = report.to_string();
+    for line in [
+        "projects.metadata_json category trimmed = 2",
+        "kept projects.metadata_json vendor = 1",
+        "projects.imported_paths index 1: is not text = 1",
+        "projects.imported_paths index 2: is blank = 1",
+        "projects.imported_paths normalized = 3",
+        "source_categories index 3: is not text = 1",
+        "source_categories normalized = 1",
+        "source_categories expanded = 1",
+        "kept app_events token = 1",
+        "kept app_events source = 1",
+        "custom_filaments.json trimmed = 3",
+        "kept custom_filaments.json secret = 1",
+        "dropped custom_filaments.json note = 1",
+    ] {
+        assert!(text.contains(line), "{line} missing from:\n{text}");
+    }
+    assert!(!text.contains("would refuse"), "{text}");
+    for hidden in [
+        VENDOR,
+        EVENT_TEXT,
+        TOKEN,
+        FILAMENT_SECRET,
+        STORE_NOTE,
+        "parts/",
+    ] {
+        assert!(!text.contains(hidden), "{hidden} is in the report:\n{text}");
+    }
+
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    import(folder.path(), &destination).unwrap();
+    let mut connection = Connection::open(destination.join("print-partner.db")).unwrap();
+    let tx = connection.transaction().unwrap();
+    let first = crate::catalog::get(&tx, "default", 1).unwrap().unwrap();
+    let second = crate::catalog::get(&tx, "default", 2).unwrap().unwrap();
+    assert_eq!(first.category.as_deref(), Some("Printer kits"));
+    assert_eq!(second.category.as_deref(), Some("Mods"));
+    let rules = |id: i64| -> String {
+        tx.query_row(
+            "SELECT imported_paths FROM projects WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(rules(1), r#"["parts/","stl/part.stl"]"#);
+    assert_eq!(rules(2), r#"["mods/"]"#);
+    let metadata: String = tx
+        .query_row(
+            "SELECT metadata_json FROM projects WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(metadata["vendor"], VENDOR);
+    assert_eq!(
+        crate::catalog::source_categories(&tx, "default").unwrap(),
+        [
+            "Printer kits",
+            "Printer kits/Mods",
+            "Hardware",
+            "Hardware/Screws",
+        ]
+    );
+    let events = crate::catalog::source_activity(&tx, "default", 20).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "source.updated");
+    assert_eq!(events[0].source_name, "Synthetic Source 01");
+    assert_eq!(
+        events[0]
+            .source_id
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("1")
+    );
+    assert_eq!(events[0].detail.as_deref(), Some(EVENT_TEXT));
+    drop(tx);
+    let crate::admin::CustomFilaments::Body(body) = crate::admin::custom_filaments(&destination)
+    else {
+        panic!("filament store did not read");
+    };
+    let store: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(store["filaments"][0]["display_name"], "Mine");
+    assert_eq!(store["filaments"][0]["product_line"], "Custom");
+    assert_eq!(store["filaments"][0]["hex"], "#AABBCC");
+    assert_eq!(store["filaments"][0]["id"], "custom-1");
+    assert_eq!(store["filaments"][0]["secret"], FILAMENT_SECRET);
+    assert!(store.get("note").is_none(), "{store}");
+}
+
+#[test]
+fn a_filament_entry_that_is_not_an_object_refuses_the_import() {
+    let folder = node_folder();
+    std::fs::write(
+        folder.path().join("custom_filaments.json"),
+        r#"{"filaments":[1]}"#,
+    )
+    .unwrap();
+    let report = run(folder.path()).unwrap();
+    let text = report.to_string();
+    assert!(
+        text.contains("custom_filaments.json index 0: is not an object = 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The import would refuse this installation."),
+        "{text}"
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+
+    let folder = node_folder();
+    std::fs::write(folder.path().join("custom_filaments.json"), "null").unwrap();
+    let report = run(folder.path()).unwrap();
+    assert!(
+        report
+            .to_string()
+            .contains("custom_filaments.json is null = 1"),
+        "{report}"
+    );
+    let destination = parent.path().join("null-store");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::Settings(_)), "{error:?}");
+    assert!(!destination.join(ownership_marker::MARKER_FILE).exists());
+}
+
+#[test]
+fn metadata_that_is_not_an_object_is_kept_as_raw_and_not_printed() {
+    let folder = node_folder();
+    let raw = r#"["do-not-print-raw"]"#;
+    execute(
+        &folder,
+        &format!("UPDATE projects SET metadata_json = '{raw}' WHERE id = 1"),
+    );
+    let report = run(folder.path()).unwrap();
+    let text = report.to_string();
+    assert!(
+        text.contains("projects.metadata_json is not an object = 1"),
+        "{text}"
+    );
+    assert!(!text.contains("do-not-print-raw"), "{text}");
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    import(folder.path(), &destination).unwrap();
+    let connection = Connection::open(destination.join("print-partner.db")).unwrap();
+    let metadata: String = connection
+        .query_row(
+            "SELECT metadata_json FROM projects WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(metadata["raw"], raw);
+}

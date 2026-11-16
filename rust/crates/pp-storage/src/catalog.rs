@@ -6,6 +6,18 @@ mod location;
 mod rebuild;
 #[cfg(feature = "desktop_rebuild")]
 pub use activity::SourceActivityEvent;
+#[cfg(all(test, feature = "desktop_rebuild"))]
+pub(crate) fn source_activity(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    limit: u8,
+) -> Result<Vec<SourceActivityEvent>> {
+    activity::list(tx, tenant, limit)
+}
+#[cfg(all(test, feature = "desktop_rebuild"))]
+pub(crate) fn source_categories(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<String>> {
+    categories::load(tx, tenant)
+}
 #[cfg(feature = "desktop_rebuild")]
 pub use rebuild::{
     BulkCategoryResult, CatalogAccess, CatalogFailure, CatalogKeyAccess, CategoryNode,

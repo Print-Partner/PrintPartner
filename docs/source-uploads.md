@@ -1,6 +1,6 @@
 # Source uploads
 
-`POST /sources/{id}/upload-files` uploads loose files into an existing Source on the Rust-only runtime (GRE-428 PR 1). `POST /sources/{id}/upload-zip` uploads one ZIP that the import unpacks (GRE-1444). The routes and their wiring compile with the `desktop_rebuild` feature, which these crates enable by default, and mount only when `PP_DESKTOP_REBUILD` is on. Lifting the fixed size limits is GRE-1445.
+`POST /sources/{id}/upload-files` uploads loose files into an existing Source on the Rust-only runtime (GRE-428 PR 1). `POST /sources/{id}/upload-zip` uploads one ZIP that the import unpacks (GRE-1444). The routes and their wiring compile with the `desktop_rebuild` feature, which these crates enable by default, and mount only when `PP_DESKTOP_REBUILD` is on. Size is bounded by free disk and the import reserve, not by a fixed upload ceiling (GRE-1445).
 
 ## Routes
 
@@ -9,7 +9,7 @@ Both routes are mounted at `/` and `/api/v1` from `pp_api::catalog::admit_upload
 Each route checks in this order:
 
 1. The Source, before any byte is read. Unknown: 404.
-2. `Content-Length` against the free-space reserve of 5 GiB (`pp_core::source_uploads::FREE_SPACE_RESERVE`). Missing: 411. Too little space would be left: 507.
+2. `Content-Length` against the free-space reserve (`GET`/`PUT` `/settings/import-free-space-reserve`, body `{"reserve_bytes": N}`, also under `/api/v1`). A missing row, or a stored value that is not a whole number of bytes, is 5 GiB. `0` is allowed. A settings read that fails is a storage error. Missing `Content-Length`: 411. The upload would leave less than the reserve free: 507, before any byte is staged. The same check runs again when the capture is about to be written. The input budget is the declared body. The prepared budget is the room left after the body and the reserve, capped so the reservation fits the quota row.
 3. The import slot. There is one slot, matching the worker admission's one Source import at a time and one job per Source. A second upload while one runs is 409, before anything is stored. Part of its body may be read first.
 4. The parts stream into the retained capture vault. The route answers `202 {"job_id"}` once the import is recorded.
 
@@ -20,26 +20,28 @@ Other refusals:
 | 400 | No file part, an unsafe or repeated path, a broken body, or a second part sent to `upload-zip`. |
 | 401 or 403 | Storage refused the credential when admitting the import, answered as on every storage write (`pp_api::problem::writer_failure`). |
 | 409 | Another import holds the one slot. Retry when it finishes. |
-| 413 | Input over the journal's 256 MiB limit. |
+| 413 | A file is larger than the budget taken from `Content-Length`. |
 | 500 | A storage fault or another unexpected failure. The cause is logged, never sent. |
 | 503 | Imports closed (startup recovery left a capture to repair, or shutdown has begun), or the storage writer is busy or stopped. Retry later. |
 
 Each refusal is an RFC 9457 problem. It creates no job and leaves the Source unchanged. A body cut off mid-file is discarded, never stored short: each part ends only on an explicit end marker. Each upload is a new import, so a retry after a lost 202 imports again; identical files keep the revision.
 
-The import job, kind `supplied-source-import`, is served by `GET /jobs/{id}`, the job list and `/ws/jobs/{id}`. A failed import's `error` gives the reason in words. Files of a type the import doesn't parse stay in the revision as kind `artifact`.
+The import job, kind `supplied-source-import`, is served by `GET /jobs/{id}`, the job list and `/ws/jobs/{id}`. A failed import's `error` gives the reason in words. A succeeded import's `result` is `{"warnings":[...]}`. The list is empty for a small import on a small library. One import over 256 MiB adds `This import is over 256 MiB.` The repos folder over 64 GiB adds `The repos folder is over 64 GiB.` Library does not show an import job yet (GRE-1365); that view reads `result.warnings`. Files of a type the import doesn't parse stay in the revision as kind `artifact`.
+
+`GET /api/v1/tasks` and `GET /api/v2/tasks` add `disk_notice` when free space on the data volume is below the reserve. The text is `Free space is below the import reserve.` Today shows it. The field is omitted when there is nothing to say. It is not a Build task.
 
 ## ZIP uploads
 
 The import worker unpacks the stored ZIP with `extract_zip_with_label_policy` before `prepare_media`, in the order `pp-source-media` uses. The revision holds the ZIP's files at their folder paths and the STLs made from any 3MF. Known document types keep their kinds. A file of a type the import does not parse, such as a PNG, stays as kind `artifact`. The ZIP itself is not kept.
 
-The ZIP limits are `pp_source::archive::ArchiveLimits::default()`. GRE-1445 owns lifting them. A ZIP that breaks a rule is stored, and its job ends `error` with the rule in words. The Source keeps its previous revision.
+The worker passes this import's input budget as the packed limit and its prepared budget as the unpacked limit. There is no fixed ceiling above those budgets. Traversal, links, case collisions, the 10,000-entry cap, the 100× compression ratio (with a 1 MiB floor), and the 8 MiB central-directory cap stay. A ZIP that breaks a rule is stored, and its job ends `error` with the rule in words. The Source keeps its previous revision.
 
 | Rule | Job `error` |
 | --- | --- |
 | An entry path that leaves its folder (`../`), is absolute, or has control characters | A ZIP entry has a path that is not allowed, such as one that leaves its folder (../) |
 | More than 10,000 entries | The ZIP holds more than 10,000 entries |
-| More than 1 GiB unpacked | The ZIP unpacks to more than 1 GiB |
-| More than 256 MiB compressed | The ZIP is larger than 256 MiB, or its file list is too long |
+| Unpacks past this import's prepared budget | The ZIP unpacks to more than this import allows |
+| Larger than this import's input budget, or a file list that is too long | The ZIP is larger than this import allows, or its file list is too long |
 | An entry compressed beyond the ratio limit | A ZIP entry is compressed more than the import allows |
 | Encryption, multiple disks or another unsupported feature | The ZIP uses a feature the import does not support, such as encryption |
 | Not a ZIP, or a damaged one | The file is not a readable ZIP |

@@ -27,7 +27,8 @@ fn opened(root: &tempfile::TempDir) -> (WriterOwner, SourceUploadService) {
     let acquisitions =
         SourceAcquisitions::new(&owner, desktop_policy(), IMPORT_QUOTA, IMPORT_SLOTS).unwrap();
     acquisitions.recover_before_accepting().unwrap();
-    let service = SourceUploadService::new(Arc::new(acquisitions), data, 0);
+    let settings = owner.app_settings_with_policy(desktop_policy()).unwrap();
+    let service = SourceUploadService::new(Arc::new(acquisitions), data, settings);
     (owner, service)
 }
 
@@ -59,7 +60,7 @@ fn refused(service: &SourceUploadService, credentials: Credentials) -> (WriterFa
     );
     let parts: UploadParts = Box::new([Ok(file)].into_iter());
     let Err(UploadFailure::Storage(failure)) =
-        service.upload(credentials, 9_999, UploadKind::Files, parts)
+        service.upload(credentials, 9_999, UploadKind::Files, 64, parts)
     else {
         panic!("expected a storage failure")
     };

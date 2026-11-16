@@ -298,10 +298,9 @@ impl SourceRoot {
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,
     ) -> Result<ExtractedArchive> {
-        if limits.max_compressed_bytes > MAX_COMPRESSED_BYTES
-            || limits.max_inflated_bytes > MAX_INFLATED_BYTES
-            || limits.max_entries > 10_000
-        {
+        // Packed and unpacked sizes are the caller's budget. The entry count
+        // stays capped, as do path, link, and case-collision checks below.
+        if limits.max_entries > 10_000 {
             return Err(ArchiveError::Limit);
         }
         check_cancel(cancelled)?;

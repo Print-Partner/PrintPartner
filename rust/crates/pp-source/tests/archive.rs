@@ -1125,6 +1125,28 @@ fn deflated_zip(fixture: &Fixture, data: &[u8]) {
     zip.write_all(data).unwrap();
     zip.finish().unwrap();
 }
+#[test]
+fn caller_may_raise_the_packed_and_unpacked_budgets() {
+    let fixture = Fixture::new();
+    fixture.zip(1);
+    fixture
+        .tenant()
+        .source(42)
+        .unwrap()
+        .extract_zip(
+            fixture.input(),
+            ArchiveLimits {
+                max_compressed_bytes: 256 * 1024 * 1024 + 1,
+                max_inflated_bytes: 1024 * 1024 * 1024 + 1,
+                max_entries: 10_000,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .discard()
+        .unwrap();
+}
+
 fn extract(fixture: &Fixture) -> Result<(), ArchiveError> {
     fixture
         .tenant()

@@ -2296,6 +2296,7 @@ pub(crate) mod codegen {
             TaskFeed {
                 tasks: vec![],
                 unavailable: vec![],
+                disk_notice: None,
             },
         )?);
         for (index, value) in workflows.into_iter().enumerate() {

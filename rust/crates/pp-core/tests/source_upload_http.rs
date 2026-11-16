@@ -41,11 +41,13 @@ struct Server {
 
 impl Server {
     /// Serves the product routes plus the upload route over a new data
-    /// directory, with `slots` import slots and a free-space `reserve`.
-    async fn start(slots: usize, reserve: u64) -> Self {
+    /// directory, with `slots` import slots. The free-space reserve is the
+    /// stored setting, or 5 GiB when it has not been set.
+    async fn start(slots: usize) -> Self {
         let root = tempfile::tempdir().unwrap();
         let data = std::fs::canonicalize(root.path()).unwrap().join("data");
         let owner = WriterOwner::open(&data, Limits::default()).unwrap().0;
+        let settings = owner.app_settings_with_policy(desktop_policy()).unwrap();
         let imports = Arc::new(
             SourceAcquisitions::new(&owner, desktop_policy(), IMPORT_QUOTA, slots).unwrap(),
         );
@@ -56,7 +58,7 @@ impl Server {
         let uploads: Arc<dyn SourceUploads> = Arc::new(SourceUploadService::new(
             Arc::clone(&imports),
             data.clone(),
-            reserve,
+            settings,
         ));
         let config =
             CatalogHttpConfig::from_startup(&origin, "default", desktop_policy(), Some("1"));
@@ -243,6 +245,18 @@ impl Server {
         body["current_source_revision_id"].clone()
     }
 
+    async fn set_reserve(&self, bytes: u64) {
+        let (status, body) = self
+            .json(
+                Method::PUT,
+                "/api/v1/settings/import-free-space-reserve",
+                Some(json!({ "reserve_bytes": bytes })),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["reserve_bytes"].as_u64(), Some(bytes));
+    }
+
     async fn job_count(&self) -> usize {
         let (status, body) = self.json(Method::GET, "/api/v1/jobs", None).await;
         assert_eq!(status, 200, "{body}");
@@ -333,7 +347,7 @@ fn zipped(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upload_files_publishes_and_reuses_revisions() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
     assert_eq!(server.revision(source).await, Value::Null);
 
@@ -361,6 +375,7 @@ async fn upload_files_publishes_and_reuses_revisions() {
         (Some("done"), Some("supplied-source-import")),
         "{done}"
     );
+    assert_eq!(done["result"]["warnings"], json!([]));
     let first = server.revision(source).await;
     assert!(first.is_i64(), "{first}");
     let first_files = revision_files(&server.data);
@@ -392,7 +407,7 @@ async fn upload_files_publishes_and_reuses_revisions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upload_refusals_create_no_job() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
     let a = stl("a");
 
@@ -424,8 +439,21 @@ async fn upload_refusals_create_no_job() {
 
     // An upload that would leave less than the reserve free is refused
     // before any byte is staged.
-    let server = Server::start(IMPORT_SLOTS, u64::MAX / 2).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
+    let (status, reserve) = server
+        .json(
+            Method::GET,
+            "/api/v1/settings/import-free-space-reserve",
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{reserve}");
+    assert_eq!(
+        reserve["reserve_bytes"].as_u64(),
+        Some(5 * 1024 * 1024 * 1024)
+    );
+    server.set_reserve(u64::MAX / 2).await;
     let (status, problem) = server.upload(source, &[("a.stl", &a)]).await;
     assert_eq!(status, 507, "{problem}");
     assert_eq!(server.job_count().await, 0);
@@ -435,7 +463,7 @@ async fn upload_refusals_create_no_job() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overlapping_uploads_are_refused_as_busy() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let (first, other) = (server.source().await, server.source().await);
     let body = multipart(&[("a.stl", &stl("a"))]);
     let (head, tail) = body.split_at(body.len() / 2);
@@ -463,7 +491,7 @@ async fn overlapping_uploads_are_refused_as_busy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cut_off_upload_is_discarded() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
     let body = multipart(&[("a.stl", &stl("a"))]);
     // The client goes away halfway through the file.
@@ -489,7 +517,7 @@ async fn cut_off_upload_is_discarded() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_discards_a_streaming_upload() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
     let body = multipart(&[("a.stl", &stl("a"))]);
     // The client stalls mid-body and sends nothing more.
@@ -519,7 +547,7 @@ async fn shutdown_discards_a_streaming_upload() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upload_zip_imports_one_zip_and_other_types_stay() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
     let kit = zipped(&[
         ("body/frame.stl", &stl("frame")),
@@ -565,7 +593,7 @@ async fn upload_zip_imports_one_zip_and_other_types_stay() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_import_names_its_reason() {
-    let server = Server::start(IMPORT_SLOTS, 0).await;
+    let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
     let (status, accepted) = server
         .upload_to(source, "upload-zip", &[("kit.zip", b"not a zip archive")])

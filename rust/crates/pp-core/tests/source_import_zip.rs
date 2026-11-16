@@ -237,7 +237,7 @@ fn a_refused_zip_fails_its_job_and_keeps_the_previous_revision() {
         (many, "The ZIP holds more than 10,000 entries"),
         (
             declaring((1 << 30) + 1),
-            "The ZIP unpacks to more than 1 GiB",
+            "The ZIP unpacks to more than this import allows",
         ),
         (b"not a zip".to_vec(), "The file is not a readable ZIP"),
     ];

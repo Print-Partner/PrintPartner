@@ -411,21 +411,30 @@ pub struct AdmissionLimits {
 
 fn validate_admission_limits(limits: AdmissionLimits, quota: Option<u64>) -> Result<()> {
     ensure!(
-        (1..=256 * 1024 * 1024).contains(&limits.max_input_bytes)
-            && (1..=1024 * 1024 * 1024).contains(&limits.max_prepared_bytes),
+        limits.max_input_bytes >= 1 && limits.max_prepared_bytes >= 1,
         "Invalid import limits"
     );
-    let minimum = limits
-        .max_input_bytes
-        .checked_add(3 * limits.max_prepared_bytes)
-        .and_then(|minimum| minimum.checked_add(16 * 1024 * 1024))
-        .ok_or_else(|| anyhow!("Quota overflow"))?;
+    let minimum = reservation_floor(limits.max_input_bytes, limits.max_prepared_bytes)?;
+    ensure!(
+        i64::try_from(limits.reserved_bytes).is_ok(),
+        "Quota overflow"
+    );
     ensure!(
         limits.reserved_bytes >= minimum
             && quota.is_none_or(|quota| limits.reserved_bytes <= quota),
         "Import quota exceeded"
     );
     Ok(())
+}
+
+/// The reservation a request must hold: the input, three copies of the
+/// prepared bytes, and 16 MiB. There is no fixed ceiling on either budget.
+fn reservation_floor(max_input_bytes: u64, max_prepared_bytes: u64) -> Result<u64> {
+    max_prepared_bytes
+        .checked_mul(3)
+        .and_then(|prepared| prepared.checked_add(max_input_bytes))
+        .and_then(|minimum| minimum.checked_add(16 * 1024 * 1024))
+        .ok_or_else(|| anyhow!("Quota overflow"))
 }
 
 fn ensure_owner_import_quota(
@@ -900,6 +909,9 @@ pub(crate) enum Command {
         source_work: catalog::SourceWorkProof,
         phase: Phase,
         policy: AuthPolicy,
+        /// Set on a successful import. `None` leaves `public_result` unset,
+        /// which is what recovery and the phase tests do.
+        warnings: Option<Vec<String>>,
     },
 }
 
@@ -937,13 +949,12 @@ pub struct ImportClient {
 }
 
 impl WriterOwner {
-    /// Opens the upload journal with the owner's import quota in bytes. Every
-    /// client of one owner must name the same quota.
+    /// Opens the upload journal with the owner's import quota in bytes. Any
+    /// quota above zero is valid. Every client of one owner must name the
+    /// same quota. The runtime names `u64::MAX`, so the library has no ceiling;
+    /// a sum that overflows is still refused.
     pub fn imports(&self, policy: AuthPolicy, quota: u64) -> Result<ImportClient> {
-        ensure!(
-            quota > 0 && quota <= 64 * 1024 * 1024 * 1024,
-            "Invalid desktop quota"
-        );
+        ensure!(quota > 0, "Invalid desktop quota");
         crate::auth::validate_policy(policy)?;
         let mut configured = self
             .client
@@ -1334,6 +1345,7 @@ fn execute(
             source_work,
             phase,
             policy,
+            warnings,
         } => {
             let mut job = match jobs::claimed_job(&tx, &lease) {
                 Ok(job) => job,
@@ -1386,9 +1398,10 @@ fn execute(
                 return Err(error);
             }
             UploadsOutcome::Operation(Box::new(if cleanup_retry {
+                let _ = warnings;
                 op
             } else {
-                advance(&tx, catalog_state, &lease, job, op, phase)?
+                advance(&tx, catalog_state, &lease, job, op, phase, warnings)?
             }))
         }
     };
@@ -1425,6 +1438,7 @@ fn advance(
     mut job: jobs::JobRecord,
     mut op: Operation,
     phase: Phase,
+    warnings: Option<Vec<String>>,
 ) -> Result<Operation> {
     ensure!(
         !job.cancel_requested || matches!(phase, Phase::Read | Phase::Fail(_) | Phase::Cleanup),
@@ -1473,6 +1487,7 @@ fn advance(
                     return Err(anyhow!("Import is not settled"));
                 }
             };
+            record_import_warnings(&mut job, warnings);
             settle(tx, &mut op)?;
             jobs::save(tx, &mut job, "source_import_settled")?;
         }
@@ -1483,6 +1498,24 @@ fn advance(
     }
     store(tx, &op)?;
     Ok(op)
+}
+
+/// Stores size warnings on a succeeded import. Other endings leave the
+/// result unset. Callers that pass `None` (phase tests, failure cleanup)
+/// also leave it unset.
+fn record_import_warnings(job: &mut jobs::JobRecord, warnings: Option<Vec<String>>) {
+    #[cfg(feature = "desktop_rebuild")]
+    if job.state == jobs::PersistentState::Succeeded
+        && let Some(warnings) = warnings
+    {
+        job.public_result = Some(jobs::CompletedResult::SourceImport(
+            jobs::SourceImportResult { warnings },
+        ));
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    {
+        let _ = (job, warnings);
+    }
 }
 
 /// Releases the import's reservation and keeps the bytes of its published
@@ -2192,15 +2225,14 @@ const PRODUCER: &str = "supplied-source-import-v1";
 
 fn validate_limits(request: &Admission, quota: u64) -> Result<()> {
     ensure!(
-        (1..=256 * 1024 * 1024).contains(&request.max_input_bytes)
-            && (1..=1024 * 1024 * 1024).contains(&request.max_prepared_bytes),
+        request.max_input_bytes >= 1 && request.max_prepared_bytes >= 1,
         "Invalid import limits"
     );
-    let minimum = request
-        .max_input_bytes
-        .checked_add(3 * request.max_prepared_bytes)
-        .and_then(|minimum| minimum.checked_add(16 * 1024 * 1024))
-        .ok_or_else(|| anyhow!("Quota overflow"))?;
+    let minimum = reservation_floor(request.max_input_bytes, request.max_prepared_bytes)?;
+    ensure!(
+        i64::try_from(request.reserved_bytes).is_ok(),
+        "Quota overflow"
+    );
     ensure!(
         (minimum..=quota).contains(&request.reserved_bytes),
         "Import quota exceeded"

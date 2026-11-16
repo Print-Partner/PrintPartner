@@ -59,10 +59,6 @@ impl SourceImports {
         supplied: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Operation> {
-        ensure!(
-            request.max_input_bytes > 0 && request.max_input_bytes <= 256 * 1024 * 1024,
-            "Invalid import input limit"
-        );
         let requested = match &request.input {
             Input::Files { paths } => paths.clone(),
             Input::Zip { path } => vec![path.clone()],
@@ -438,7 +434,11 @@ impl SourceImports {
                 let extracted = match op.input.captured_zip_path() {
                     Some(path) => Some(root.extract_zip_with_label_policy(
                         ZipInput::open(&local, &SourcePath::try_from(path.to_owned())?)?,
-                        ArchiveLimits::default(),
+                        ArchiveLimits {
+                            max_compressed_bytes: op.max_input_bytes,
+                            max_inflated_bytes: op.max_prepared_bytes,
+                            max_entries: MAX_ENTRIES,
+                        },
                         ArchiveLabelPolicy::NfcAtAcquisition,
                         cancelled,
                     )?),
@@ -461,11 +461,7 @@ impl SourceImports {
                     media,
                     &media_paths,
                     directories,
-                    MediaLimits {
-                        max_total_bytes: op.max_prepared_bytes,
-                        max_output_bytes: op.max_prepared_bytes.min(256 * 1024 * 1024),
-                        ..Default::default()
-                    },
+                    prepared_media_limits(op.max_prepared_bytes),
                     cancelled,
                 )?;
                 let (key, files) = prepared.files().local_snapshot_selection(
@@ -522,7 +518,17 @@ impl SourceImports {
                 return Ok(());
             }
             self.cleanup(&op)?;
-            op = self.worker.import_phase(&lease, &live, Phase::Cleanup)?;
+            let input_bytes = op
+                .requested_files
+                .iter()
+                .fold(0u64, |total, file| total.saturating_add(file.size));
+            let repos_bytes = local_selection::stored_bytes(&self.repos, cancelled).unwrap_or(0);
+            op = self.worker.import_phase_reporting(
+                &lease,
+                &live,
+                Phase::Cleanup,
+                import_size_warnings(input_bytes, repos_bytes),
+            )?;
             Ok(())
         })();
         // A captured import that is still admitted keeps its retained capture
@@ -604,8 +610,8 @@ fn failure_reason(error: &anyhow::Error) -> String {
         .unwrap_or_else(|| error.to_string())
 }
 
-/// Why a captured ZIP was refused, naming the rule it broke. The limits are
-/// `ArchiveLimits::default()`'s.
+/// Why a captured ZIP was refused, naming the rule it broke. Packed and
+/// unpacked sizes are this import's budgets, not a fixed ceiling.
 fn archive_reason(error: &ArchiveError) -> Option<String> {
     let reason = match error {
         ArchiveError::Source(error) => return source_reason(error),
@@ -615,8 +621,10 @@ fn archive_reason(error: &ArchiveError) -> Option<String> {
         }
         ArchiveError::DuplicateEntry => "Two ZIP entries have the same path",
         ArchiveError::TooManyEntries => "The ZIP holds more than 10,000 entries",
-        ArchiveError::TooLarge => "The ZIP unpacks to more than 1 GiB",
-        ArchiveError::Limit => "The ZIP is larger than 256 MiB, or its file list is too long",
+        ArchiveError::TooLarge => "The ZIP unpacks to more than this import allows",
+        ArchiveError::Limit => {
+            "The ZIP is larger than this import allows, or its file list is too long"
+        }
         ArchiveError::CompressionRatio => "A ZIP entry is compressed more than the import allows",
         ArchiveError::Unsupported => {
             "The ZIP uses a feature the import does not support, such as encryption"
@@ -698,4 +706,47 @@ fn scanned<T>(cancelled: &AtomicBool, result: Result<T, pp_source::Error>) -> Re
         "Cancelled before admission"
     );
     Ok(result?)
+}
+
+/// Media budgets for one import. Output and total follow the prepared limit.
+/// Mesh counts and the 64 MiB model-document cap stay at their defaults.
+pub fn prepared_media_limits(prepared: u64) -> MediaLimits {
+    MediaLimits {
+        max_total_bytes: prepared,
+        max_output_bytes: prepared,
+        ..MediaLimits::default()
+    }
+}
+
+const IMPORT_SIZE_WARNING: u64 = 256 * 1024 * 1024;
+const REPOS_SIZE_WARNING: u64 = 64 * 1024 * 1024 * 1024;
+
+/// Alerts for a finished import. Equal to a threshold is not a warning.
+pub fn import_size_warnings(input_bytes: u64, repos_bytes: u64) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if input_bytes > IMPORT_SIZE_WARNING {
+        warnings.push("This import is over 256 MiB.".to_owned());
+    }
+    if repos_bytes > REPOS_SIZE_WARNING {
+        warnings.push("The repos folder is over 64 GiB.".to_owned());
+    }
+    warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_size_warnings;
+
+    #[test]
+    fn size_warnings_start_above_the_old_caps() {
+        assert!(import_size_warnings(256 * 1024 * 1024, 64 * 1024 * 1024 * 1024).is_empty());
+        assert_eq!(
+            import_size_warnings(256 * 1024 * 1024 + 1, 0),
+            ["This import is over 256 MiB."]
+        );
+        assert_eq!(
+            import_size_warnings(0, 64 * 1024 * 1024 * 1024 + 1),
+            ["The repos folder is over 64 GiB."]
+        );
+    }
 }

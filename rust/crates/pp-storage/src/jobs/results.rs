@@ -15,6 +15,9 @@ pub enum CompletedResult {
     AcceptedPlates(AcceptedPlatesResult),
     Direct3mf(Direct3mfResult),
     PrinterUpload(PrinterUploadResult),
+    /// Last, and closed to unknown fields, so a result that also carries
+    /// `warnings` (an STL pack) keeps matching its own variant.
+    SourceImport(SourceImportResult),
 }
 
 impl CompletedResult {
@@ -30,6 +33,7 @@ impl CompletedResult {
             Self::AcceptedPlates(_) => JobKind::ExportAcceptedPlate3mf,
             Self::Direct3mf(_) => JobKind::ExportDirect3mf,
             Self::PrinterUpload(_) => JobKind::PrinterUpload,
+            Self::SourceImport(_) => JobKind::SuppliedSourceImport,
         }
     }
 }
@@ -169,6 +173,14 @@ pub struct Direct3mfResult {
     pub download_url: String,
     pub filename: String,
     pub tokens: Vec<String>,
+}
+
+/// Size warnings for one supplied Source import. Empty when the import and
+/// the repos folder are both within the alert thresholds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceImportResult {
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

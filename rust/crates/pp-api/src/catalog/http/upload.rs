@@ -69,8 +69,10 @@ pub enum UploadKind {
 /// What the upload route needs from the Source import service.
 pub trait SourceUploads: Send + Sync + 'static {
     /// Refuses an upload of `bytes` that would leave less free space on the
-    /// data volume than the reserve.
-    fn check_space(&self, bytes: u64) -> Result<(), UploadFailure>;
+    /// data volume than the caller's import reserve. Also the place the
+    /// per-upload budgets are checked, so a body that cannot be reserved is
+    /// refused before any byte is staged.
+    fn check_space(&self, credential: Credentials, bytes: u64) -> Result<(), UploadFailure>;
 
     /// Whether imports are closing for shutdown. A streaming upload checks it
     /// while it waits for the client, so shutdown never waits on a slow body.
@@ -78,11 +80,14 @@ pub trait SourceUploads: Send + Sync + 'static {
 
     /// Stores `files` as a new revision of `source_id` and returns the import
     /// job's ID once the import is recorded. Blocks the calling thread.
+    /// `declared_bytes` is `Content-Length`: free space is checked again and
+    /// the import's budgets are sized from it before the capture is written.
     fn upload(
         &self,
         credential: Credentials,
         source_id: i64,
         kind: UploadKind,
+        declared_bytes: u64,
         files: UploadParts,
     ) -> Result<String, UploadFailure>;
 }
@@ -160,7 +165,7 @@ async fn receive(
     let Some(length) = length.and_then(|value| value.to_str().ok()?.parse().ok()) else {
         return reject(StatusCode::LENGTH_REQUIRED, "Content-Length is required");
     };
-    if let Err(failure) = uploads.check_space(length) {
+    if let Err(failure) = uploads.check_space(credentials(principal.clone()), length) {
         return refused(failure);
     }
     let Ok(multipart) = Multipart::from_request(request, &()).await else {
@@ -174,7 +179,7 @@ async fn receive(
     let service = Arc::clone(&uploads);
     let stored = tokio::task::spawn_blocking(move || {
         let parts = Parts(received, Arc::clone(&service));
-        service.upload(credential, id, kind, Box::new(parts))
+        service.upload(credential, id, kind, length, Box::new(parts))
     });
     // Answer as soon as the blocking side refuses, even while a stalled
     // client is still mid-body, so a slow client cannot hold the drain.

@@ -892,6 +892,31 @@ impl ServerWorkerClient {
         source_work: &crate::catalog::SourceWorkLease,
         phase: crate::uploads::Phase,
     ) -> Result<crate::uploads::Operation> {
+        self.import_phase_with(lease, source_work, phase, None)
+    }
+
+    /// Like [`Self::import_phase`], and stores `warnings` on the job result
+    /// when the phase succeeds the import. An empty list is stored too, so a
+    /// finished import always has `result.warnings`.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn import_phase_reporting(
+        &self,
+        lease: &AttemptLease,
+        source_work: &crate::catalog::SourceWorkLease,
+        phase: crate::uploads::Phase,
+        warnings: Vec<String>,
+    ) -> Result<crate::uploads::Operation> {
+        self.import_phase_with(lease, source_work, phase, Some(warnings))
+    }
+
+    #[cfg(feature = "desktop_rebuild")]
+    fn import_phase_with(
+        &self,
+        lease: &AttemptLease,
+        source_work: &crate::catalog::SourceWorkLease,
+        phase: crate::uploads::Phase,
+        warnings: Option<Vec<String>>,
+    ) -> Result<crate::uploads::Operation> {
         ensure!(lease.worker == self.identity, "Foreign worker lease");
         let policy = self.policy.ok_or(auth::AuthorityFailure::PolicyRequired)?;
         match crate::uploads::submit(
@@ -901,6 +926,7 @@ impl ServerWorkerClient {
                 source_work: source_work.proof()?,
                 phase,
                 policy,
+                warnings,
             },
             &AtomicBool::new(false),
         )? {

@@ -4,7 +4,6 @@ use pp_core::uploads::{SourceImports, Through};
 use pp_source::{
     ArtifactBudget, LocalFiles, MAX_ENTRIES, Selection, SnapshotRequest, SourcePath, TenantRepos,
     local_selection,
-    media::MediaLimits,
     retained_capture::{FreezeResult, RetainedCaptureId, RetainedCaptureVault},
 };
 use pp_storage::{
@@ -598,11 +597,7 @@ fn source_import_resumes_after_interrupted_publication() {
             &local,
             &local.paths().unwrap(),
             &[],
-            MediaLimits {
-                max_total_bytes: owned.max_prepared_bytes,
-                max_output_bytes: owned.max_prepared_bytes.min(256 * 1024 * 1024),
-                ..Default::default()
-            },
+            pp_core::uploads::prepared_media_limits(owned.max_prepared_bytes),
             &AtomicBool::new(false),
         )
         .unwrap();

@@ -4,8 +4,10 @@
 //! and files to keep, downloads those files from the GitHub transport, and
 //! publishes them with the same snapshot store a supplied import uses.
 //! Activation records the commit on the Source. A later sync of the same
-//! commit reuses that revision. Tests point the transport at a local stand-in
-//! and never call GitHub.
+//! commit reuses that revision. Progress advances as each file lands. A
+//! refusal is the job's error, and shutdown leaves the claim so the next
+//! start runs it again (GRE-1726). Tests point the transport at a local
+//! stand-in and never call GitHub.
 
 use anyhow::{Context, Result, anyhow};
 use pp_api::sources_github::GithubConnector;
@@ -27,7 +29,8 @@ use pp_storage::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    path::PathBuf,
+    future::Future,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -37,6 +40,7 @@ use std::{
 use tokio::sync::Notify;
 
 const IDLE: Duration = Duration::from_millis(250);
+const RESERVE: &str = "Sync would leave less free space than the import reserve";
 
 pub struct SyncWorker {
     worker: ServerWorkerClient,
@@ -189,7 +193,7 @@ impl SyncWorker {
             return Ok(());
         }
         self.touch(lease).await?;
-        match self.prepare(&target, tenant, cancelled).await {
+        match self.prepare(lease, &target, tenant, cancelled).await {
             Ok((snapshot, settlement)) => {
                 self.with_lease(lease, move |worker, attempt| {
                     worker.activate_github_source(&attempt, target.lease(), snapshot)?;
@@ -198,6 +202,8 @@ impl SyncWorker {
                 })
                 .await
             }
+            // The claim stays. Startup requeues the job and opens the target again.
+            Err(Stop::Stopping) => Ok(()),
             Err(Stop::Refused(detail)) => self.fail_github(lease, target, &detail).await,
             Err(Stop::Broken(error)) => {
                 let detail = clip(&error.to_string());
@@ -209,6 +215,7 @@ impl SyncWorker {
 
     async fn prepare(
         &self,
+        lease: &mut AttemptLease,
         target: &GithubSyncTarget,
         tenant: &str,
         cancelled: &AtomicBool,
@@ -216,17 +223,24 @@ impl SyncWorker {
         let found = parse_github_url(target.url())
             .ok_or_else(|| Stop::Refused("Source URL is not a GitHub repository".into()))?;
         let session = self.transport.port(target.token().map(str::to_owned));
-        let plan = plan_github_sync(
-            &session,
-            target.url(),
-            target.branch(),
-            target.tag(),
-            sync::SyncLimits::default(),
-        )
-        .await
-        .map_err(|error| Stop::Refused(clip(&error.to_string())))?;
+        let plan = self
+            .stopping(cancelled, async {
+                plan_github_sync(
+                    &session,
+                    target.url(),
+                    target.branch(),
+                    target.tag(),
+                    sync::SyncLimits::default(),
+                )
+                .await
+            })
+            .await?
+            .map_err(|error| Stop::Refused(clip(&error.to_string())))?;
         if plan.files.is_empty() {
             return Err(Stop::Refused("GitHub Source has no snapshot files".into()));
+        }
+        if let Some(planned) = planned_bytes(&plan) {
+            self.reserve_for(tenant, planned).await?;
         }
         let source_id = u64::try_from(target.lease().observation().source_id())
             .map_err(|_| Stop::Refused("Invalid Source id".into()))?;
@@ -245,9 +259,10 @@ impl SyncWorker {
         tokio::fs::create_dir_all(&staging)
             .await
             .map_err(|error| Stop::Broken(error.into()))?;
-        for file in &plan.files {
+        let total = plan.files.len();
+        for (index, file) in plan.files.iter().enumerate() {
             if cancelled.load(Ordering::Acquire) {
-                return Err(Stop::Broken(anyhow!("Sync worker is stopping")));
+                return Err(Stop::Stopping);
             }
             if !safe_path(&file.path) {
                 return Err(Stop::Refused("Invalid GitHub path".into()));
@@ -262,18 +277,25 @@ impl SyncWorker {
                 .await
                 .map_err(|error| Stop::Broken(error.into()))?;
             let cap = file.size_hint_bytes.unwrap_or(MAX_CONTENT_BYTES);
-            session
-                .download(
-                    &found.owner,
-                    &found.repo,
-                    &plan.commit_sha,
-                    &file.path,
-                    cap,
-                    &mut out,
-                )
-                .await
-                .map_err(|error| Stop::Refused(clip(&error.message)))?;
+            self.stopping(cancelled, async {
+                session
+                    .download(
+                        &found.owner,
+                        &found.repo,
+                        &plan.commit_sha,
+                        &file.path,
+                        cap,
+                        &mut out,
+                    )
+                    .await
+            })
+            .await?
+            .map_err(|error| Stop::Refused(clip(&error.message)))?;
+            self.note_progress(lease, index + 1, total).await?;
         }
+        // Staging is already on this volume. Keeping the published copy and
+        // deleting staging leaves about the free space measured here.
+        self.reserve_for(tenant, 0).await?;
         let repos = self.repos.clone();
         let tenant = tenant.to_owned();
         let published = tokio::task::spawn_blocking(move || {
@@ -347,6 +369,73 @@ impl SyncWorker {
             },
         };
         Ok((snapshot, settlement))
+    }
+
+    /// Refuses when `free - added` would sit under the import reserve.
+    /// `added` is bytes not on the volume yet. Pass 0 once they are.
+    async fn reserve_for(&self, tenant: &str, added: u64) -> Result<(), Stop> {
+        let worker = self.worker.clone();
+        let tenant = tenant.to_owned();
+        let reserve = tokio::task::spawn_blocking(move || worker.import_reserve(&tenant))
+            .await
+            .map_err(|error| Stop::Broken(anyhow!("Sync worker stopped: {error}")))?
+            .map_err(Stop::Broken)?;
+        let free =
+            fs2::available_space(self.volume()).map_err(|error| Stop::Broken(error.into()))?;
+        if free.saturating_sub(added) < reserve {
+            Err(Stop::Refused(RESERVE.into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn volume(&self) -> &Path {
+        if self.repos.exists() {
+            &self.repos
+        } else {
+            self.repos.parent().unwrap_or(&self.repos)
+        }
+    }
+
+    async fn note_progress(
+        &self,
+        lease: &mut AttemptLease,
+        done: usize,
+        total: usize,
+    ) -> Result<(), Stop> {
+        if total == 0 || done == 0 {
+            return Ok(());
+        }
+        let progress = u8::try_from(((done * 100) / total).min(99)).unwrap_or(99);
+        if progress == 0 {
+            return Ok(());
+        }
+        self.with_lease(lease, move |worker, mut attempt| {
+            worker.update(&mut attempt, WorkerOperation::Progress(progress))?;
+            Ok(((), attempt))
+        })
+        .await
+        .map_err(Stop::Broken)
+    }
+
+    /// Runs `work` until it finishes. A shutdown wake abandons it and leaves
+    /// the caller to keep the claim.
+    async fn stopping<T>(
+        &self,
+        cancelled: &AtomicBool,
+        work: impl Future<Output = T>,
+    ) -> Result<T, Stop> {
+        tokio::pin!(work);
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Stop::Stopping);
+            }
+            tokio::select! {
+                biased;
+                result = &mut work => return Ok(result),
+                _ = self.wake.notified() => {}
+            }
+        }
     }
 
     async fn touch(&self, lease: &mut AttemptLease) -> Result<()> {
@@ -426,8 +515,18 @@ impl SyncWorker {
 }
 
 enum Stop {
+    /// The worker was asked to stop. The claim stays for the next start.
+    Stopping,
     Refused(String),
     Broken(anyhow::Error),
+}
+
+fn planned_bytes(plan: &SnapshotPlan) -> Option<u64> {
+    let mut total = 0u64;
+    for file in &plan.files {
+        total = total.saturating_add(file.size_hint_bytes?);
+    }
+    Some(total)
 }
 
 fn snapshot_request(plan: &SnapshotPlan) -> Result<SnapshotRequest, Stop> {
@@ -521,7 +620,10 @@ mod tests {
     };
     use reqwest::Method;
     use serde_json::{Value, json};
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{
+        collections::HashMap,
+        sync::{Mutex, atomic::Ordering},
+    };
 
     struct World {
         branch_sha: String,
@@ -529,6 +631,11 @@ mod tests {
         files: HashMap<String, Vec<(String, Vec<u8>)>>,
         hits: u32,
         raw_paths: Vec<String>,
+        gone: bool,
+        truncated: bool,
+        fail_download: bool,
+        hold: Option<Arc<tokio::sync::Notify>>,
+        waiting: Arc<AtomicBool>,
     }
 
     fn sha(label: &str) -> String {
@@ -576,7 +683,7 @@ mod tests {
     ) -> impl IntoResponse {
         let mut world = world.lock().unwrap();
         world.hits += 1;
-        if owner != "maker" || repo != "kit" {
+        if world.gone || owner != "maker" || repo != "kit" {
             return StatusCode::NOT_FOUND.into_response();
         }
         let sha = if git_ref == "main" {
@@ -597,9 +704,10 @@ mod tests {
     ) -> impl IntoResponse {
         let mut world = world.lock().unwrap();
         world.hits += 1;
-        if owner != "maker" || repo != "kit" {
+        if world.gone || owner != "maker" || repo != "kit" {
             return StatusCode::NOT_FOUND.into_response();
         }
+        let truncated = world.truncated;
         let Some(files) = world.files.get(&commit).cloned() else {
             return StatusCode::NOT_FOUND.into_response();
         };
@@ -615,25 +723,32 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        Json(json!({ "tree": tree, "truncated": false })).into_response()
+        Json(json!({ "tree": tree, "truncated": truncated })).into_response()
     }
 
     async fn raw(
         Path((owner, repo, commit, path)): Path<(String, String, String, String)>,
         State(world): State<Arc<Mutex<World>>>,
     ) -> impl IntoResponse {
-        let mut world = world.lock().unwrap();
-        world.hits += 1;
-        world.raw_paths.push(path.clone());
-        if owner != "maker" || repo != "kit" {
-            return StatusCode::NOT_FOUND.into_response();
+        let (body, hold, waiting) = {
+            let mut world = world.lock().unwrap();
+            world.hits += 1;
+            world.raw_paths.push(path.clone());
+            if world.gone || world.fail_download || owner != "maker" || repo != "kit" {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            let body = world.files.get(&commit).and_then(|files| {
+                files
+                    .iter()
+                    .find(|(name, _)| name == &path)
+                    .map(|(_, bytes)| bytes.clone())
+            });
+            (body, world.hold.clone(), Arc::clone(&world.waiting))
+        };
+        if let Some(hold) = hold {
+            waiting.store(true, Ordering::Release);
+            hold.notified().await;
         }
-        let body = world.files.get(&commit).and_then(|files| {
-            files
-                .iter()
-                .find(|(name, _)| name == &path)
-                .map(|(_, bytes)| bytes.clone())
-        });
         match body {
             Some(body) => body.into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
@@ -689,6 +804,11 @@ mod tests {
             ]),
             hits: 0,
             raw_paths: Vec::new(),
+            gone: false,
+            truncated: false,
+            fail_download: false,
+            hold: None,
+            waiting: Arc::new(AtomicBool::new(false)),
         }));
         let address = stand_in(Arc::clone(&world)).await;
         assert!(address.ip().is_loopback());
@@ -983,5 +1103,487 @@ mod tests {
         assert_eq!(status, 200, "{snapshot}");
         assert_eq!(snapshot["status"], "done", "{snapshot}");
         assert_eq!(snapshot["result"]["synced"], 1, "{snapshot}");
+    }
+
+    fn many(stl: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut files = kit(stl);
+        for index in 1..=8 {
+            files.push((format!("parts/part-{index}.stl"), stl.to_vec()));
+        }
+        files
+    }
+
+    struct Live {
+        app: App,
+        worker: SyncWorker,
+        owner: Arc<std::sync::Mutex<WriterOwner>>,
+    }
+
+    async fn live(
+        directory: &std::path::Path,
+        transport: crate::github::GithubTransport,
+        cookie: Option<String>,
+    ) -> (Live, String) {
+        let owner = Arc::new(std::sync::Mutex::new(
+            WriterOwner::open(directory, Limits::default()).unwrap().0,
+        ));
+        let worker = {
+            let guard = owner.lock().unwrap();
+            SyncWorker::new(&guard, policy(), transport).unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let auth = owner.lock().unwrap().auth_with_policy(policy()).unwrap();
+        let jobs = owner.lock().unwrap().jobs(policy()).unwrap();
+        let reads = owner
+            .lock()
+            .unwrap()
+            .accepted_reads_with_policy(policy())
+            .unwrap();
+        let settings = owner
+            .lock()
+            .unwrap()
+            .app_settings_with_policy(policy())
+            .unwrap();
+        let admin =
+            pp_api::admin::AdminHttpConfig::from_startup(&origin, "default", Some("true")).unwrap();
+        let router = admit_catalog_routes(
+            CatalogHttpConfig::from_startup(&origin, "default", policy(), Some("true")).unwrap(),
+            Arc::clone(&owner),
+        )
+        .merge(jobs_router(
+            JobsHttpConfig::from_startup(&origin, "default", Some("true")).unwrap(),
+            jobs,
+        ))
+        .merge(auth_router(
+            AuthHttpConfig::new(&origin, CookieTransport::LoopbackHttp, false, None, false)
+                .unwrap(),
+            auth,
+            ProviderClient::new(None, None).unwrap(),
+            ResetMailer::disabled(),
+        ))
+        .merge(pp_api::settings::settings_router(admin, reads, settings));
+        let serving = pp_api::serving::Serving::start(listener, router);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let cookie = match cookie {
+            Some(cookie) => cookie,
+            None => {
+                let registered = client
+                    .post(format!("{origin}/auth/register"))
+                    .header("Origin", &origin)
+                    .json(&json!({"email":"sync@example.test","password":"password-1234"}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(registered.status(), 200, "{registered:?}");
+                registered.headers()["set-cookie"]
+                    .to_str()
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            }
+        };
+        let app = App {
+            origin,
+            client,
+            cookie: cookie.clone(),
+            serving,
+        };
+        (Live { app, worker, owner }, cookie)
+    }
+
+    async fn source(app: &App, name: &str, kind: &str) -> i64 {
+        let (status, created) = app
+            .exchange(
+                Method::POST,
+                "/api/v1/sources",
+                Some(&json!({
+                    "name": name,
+                    "url": "https://github.com/maker/kit",
+                    "branch": "main",
+                    "source_kind": kind
+                })),
+            )
+            .await;
+        assert_eq!(status, 200, "{created}");
+        created["id"].as_i64().unwrap()
+    }
+
+    async fn enqueue(app: &App, ids: &[i64]) -> String {
+        let (status, job) = app
+            .exchange(
+                Method::POST,
+                "/api/v1/jobs/sync",
+                Some(&json!({"project_ids": ids})),
+            )
+            .await;
+        assert_eq!(status, 202, "{job}");
+        job["job_id"].as_str().unwrap().to_owned()
+    }
+
+    async fn snapshot(app: &App, job_id: &str) -> Value {
+        let (status, snapshot) = app
+            .exchange(Method::GET, &format!("/api/v1/jobs/{job_id}"), None)
+            .await;
+        assert_eq!(status, 200, "{snapshot}");
+        snapshot
+    }
+
+    async fn open_socket(origin: &str, cookie: &str, job_id: &str) -> tokio::net::TcpStream {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let host = origin.trim_start_matches("http://");
+        let mut stream = tokio::net::TcpStream::connect(host).await.unwrap();
+        let request = format!(
+            "GET /ws/jobs/{job_id} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nCookie: {cookie}\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut seen = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).await.unwrap();
+            seen.push(byte[0]);
+            if seen.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let text = String::from_utf8(seen).unwrap();
+        assert!(text.starts_with("HTTP/1.1 101"), "{text}");
+        stream
+    }
+
+    async fn read_frame(stream: &mut tokio::net::TcpStream) -> (u8, Vec<u8>) {
+        use tokio::io::AsyncReadExt;
+        let mut head = [0u8; 2];
+        stream.read_exact(&mut head).await.unwrap();
+        let opcode = head[0] & 0x0f;
+        let len = match head[1] & 0x7f {
+            126 => {
+                let mut ext = [0u8; 2];
+                stream.read_exact(&mut ext).await.unwrap();
+                u16::from_be_bytes(ext) as usize
+            }
+            len => len as usize,
+        };
+        let mut payload = vec![0u8; len];
+        if len > 0 {
+            stream.read_exact(&mut payload).await.unwrap();
+        }
+        (opcode, payload)
+    }
+
+    async fn frames_until_close(stream: &mut tokio::net::TcpStream) -> Vec<Value> {
+        let mut frames = Vec::new();
+        loop {
+            let (opcode, payload) =
+                tokio::time::timeout(Duration::from_secs(30), read_frame(stream))
+                    .await
+                    .expect("job websocket frame");
+            match opcode {
+                1 => frames.push(serde_json::from_slice(&payload).unwrap()),
+                8 => return frames,
+                other => panic!("unexpected websocket opcode {other}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_progress_moves_while_files_download() {
+        let commit = sha("commit-many");
+        let world = Arc::new(Mutex::new(World {
+            branch_sha: commit.clone(),
+            tag_sha: sha("unused-tag"),
+            files: HashMap::from([(commit.clone(), many(b"solid many\n"))]),
+            hits: 0,
+            raw_paths: Vec::new(),
+            gone: false,
+            truncated: false,
+            fail_download: false,
+            hold: None,
+            waiting: Arc::new(AtomicBool::new(false)),
+        }));
+        let address = stand_in(Arc::clone(&world)).await;
+        let transport = crate::github::GithubTransport::stand_in(
+            reqwest::Url::parse(&format!("http://{address}/")).unwrap(),
+            reqwest::Url::parse(&format!("http://{address}/raw/")).unwrap(),
+            Duration::from_secs(5),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let (mut live, _) = live(directory.path(), transport, None).await;
+        let id = source(&live.app, "Many", "github").await;
+        let job_id = enqueue(&live.app, &[id]).await;
+        let mut socket = open_socket(&live.app.origin, &live.app.cookie, &job_id).await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let wake = live.worker.waker();
+        let task = live.worker.spawn(Arc::clone(&stop));
+        let frames = frames_until_close(&mut socket).await;
+        stop.store(true, Ordering::Release);
+        wake.notify_one();
+        tokio::time::timeout(crate::MUTATION_DRAIN, task)
+            .await
+            .expect("worker did not stop")
+            .unwrap();
+        let progress = frames
+            .iter()
+            .filter_map(|frame| frame["progress"].as_u64())
+            .collect::<Vec<_>>();
+        assert!(
+            progress.iter().any(|value| (1..100).contains(value)),
+            "{frames:?}"
+        );
+        assert_eq!(frames.last().unwrap()["status"], "done");
+        live.app.serving.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_failures_name_the_reason_and_keep_the_revision() {
+        let commit = sha("commit-keep");
+        let world = Arc::new(Mutex::new(World {
+            branch_sha: commit.clone(),
+            tag_sha: sha("unused-tag"),
+            files: HashMap::from([(commit.clone(), kit(b"solid keep\n"))]),
+            hits: 0,
+            raw_paths: Vec::new(),
+            gone: false,
+            truncated: false,
+            fail_download: false,
+            hold: None,
+            waiting: Arc::new(AtomicBool::new(false)),
+        }));
+        let address = stand_in(Arc::clone(&world)).await;
+        let transport = crate::github::GithubTransport::stand_in(
+            reqwest::Url::parse(&format!("http://{address}/")).unwrap(),
+            reqwest::Url::parse(&format!("http://{address}/raw/")).unwrap(),
+            Duration::from_secs(5),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let (mut live, _) = live(directory.path(), transport, None).await;
+        let id = source(&live.app, "Keep", "github").await;
+        let job_id = enqueue(&live.app, &[id]).await;
+        assert!(
+            live.worker
+                .run_next(&Arc::new(AtomicBool::new(false)))
+                .await
+                .unwrap()
+        );
+        let done = snapshot(&live.app, &job_id).await;
+        assert_eq!(done["status"], "done", "{done}");
+        let kept = source_of(&live.app, id).await;
+        let revision = kept["current_source_revision_id"].clone();
+        let commit_sha = kept["last_commit_sha"].clone();
+
+        for (flag, phrase) in [
+            ("gone", "not found"),
+            ("truncated", "truncated"),
+            ("download", "not found"),
+            ("reserve", "import reserve"),
+        ] {
+            {
+                let mut world = world.lock().unwrap();
+                world.gone = flag == "gone";
+                world.truncated = flag == "truncated";
+                world.fail_download = flag == "download";
+            }
+            if flag == "reserve" {
+                let (status, body) = live
+                    .app
+                    .exchange(
+                        Method::PUT,
+                        "/api/v1/settings/import-free-space-reserve",
+                        Some(&json!({"reserve_bytes": 1u64 << 62})),
+                    )
+                    .await;
+                assert_eq!(status, 200, "{body}");
+            }
+            let job_id = enqueue(&live.app, &[id]).await;
+            assert!(
+                live.worker
+                    .run_next(&Arc::new(AtomicBool::new(false)))
+                    .await
+                    .unwrap()
+            );
+            let failed = snapshot(&live.app, &job_id).await;
+            assert_eq!(failed["status"], "error", "{flag} {failed}");
+            assert!(
+                failed["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains(phrase)),
+                "{flag} {failed}"
+            );
+            let source = source_of(&live.app, id).await;
+            assert_eq!(source["current_source_revision_id"], revision, "{flag}");
+            assert_eq!(source["last_commit_sha"], commit_sha, "{flag}");
+        }
+        live.app.serving.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_lists_unknown_and_other_sources_while_github_syncs() {
+        let commit = sha("commit-mixed");
+        let world = Arc::new(Mutex::new(World {
+            branch_sha: commit.clone(),
+            tag_sha: sha("unused-tag"),
+            files: HashMap::from([(commit, kit(b"solid mixed\n"))]),
+            hits: 0,
+            raw_paths: Vec::new(),
+            gone: false,
+            truncated: false,
+            fail_download: false,
+            hold: None,
+            waiting: Arc::new(AtomicBool::new(false)),
+        }));
+        let address = stand_in(Arc::clone(&world)).await;
+        let transport = crate::github::GithubTransport::stand_in(
+            reqwest::Url::parse(&format!("http://{address}/")).unwrap(),
+            reqwest::Url::parse(&format!("http://{address}/raw/")).unwrap(),
+            Duration::from_secs(5),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let (mut live, _) = live(directory.path(), transport, None).await;
+        let github = source(&live.app, "Remote", "github").await;
+        let local = source(&live.app, "Shelf", "local").await;
+        let unknown = 9_000_000;
+        let job_id = enqueue(&live.app, &[unknown, local, github]).await;
+        assert!(
+            live.worker
+                .run_next(&Arc::new(AtomicBool::new(false)))
+                .await
+                .unwrap()
+        );
+        let done = snapshot(&live.app, &job_id).await;
+        assert_eq!(done["status"], "done", "{done}");
+        assert_eq!(done["result"]["synced"], 1, "{done}");
+        let failures = done["result"]["failures"].as_array().unwrap();
+        let ids = failures
+            .iter()
+            .filter_map(|failure| failure["project_id"].as_i64())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&unknown), "{done}");
+        assert!(ids.contains(&local), "{done}");
+        assert!(
+            failures.iter().all(|failure| failure["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty())),
+            "{done}"
+        );
+        assert!(source_of(&live.app, github).await["current_source_revision_id"].is_i64());
+        live.app.serving.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_sync_resumes_after_restart_and_stops_within_the_drain() {
+        let commit = sha("commit-resume");
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let waiting = Arc::new(AtomicBool::new(false));
+        let world = Arc::new(Mutex::new(World {
+            branch_sha: commit.clone(),
+            tag_sha: sha("unused-tag"),
+            files: HashMap::from([(commit.clone(), kit(b"solid resume\n"))]),
+            hits: 0,
+            raw_paths: Vec::new(),
+            gone: false,
+            truncated: false,
+            fail_download: false,
+            hold: Some(Arc::clone(&hold)),
+            waiting: Arc::clone(&waiting),
+        }));
+        let address = stand_in(Arc::clone(&world)).await;
+        let transport = crate::github::GithubTransport::stand_in(
+            reqwest::Url::parse(&format!("http://{address}/")).unwrap(),
+            reqwest::Url::parse(&format!("http://{address}/raw/")).unwrap(),
+            Duration::from_secs(5),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let (mut first, cookie) = live(directory.path(), transport.clone(), None).await;
+        let id = source(&first.app, "Resume", "github").await;
+        let job_id = enqueue(&first.app, &[id]).await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let wake = first.worker.waker();
+        let task = first.worker.spawn(Arc::clone(&stop));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !waiting.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("download did not start");
+        let running = snapshot(&first.app, &job_id).await;
+        assert_eq!(running["status"], "running", "{running}");
+        stop.store(true, Ordering::Release);
+        wake.notify_one();
+        tokio::time::timeout(crate::MUTATION_DRAIN, task)
+            .await
+            .expect("sync worker did not stop inside the drain budget")
+            .unwrap();
+        hold.notify_waiters();
+        first.app.serving.stop().await.unwrap();
+        drop(first.app.client);
+        let owner = match Arc::try_unwrap(first.owner) {
+            Ok(owner) => owner,
+            Err(_) => panic!("router still holds storage"),
+        };
+        owner.into_inner().unwrap().shutdown().unwrap();
+
+        world.lock().unwrap().hold = Some(Arc::clone(&hold));
+        waiting.store(false, Ordering::Release);
+        let follow_transport = transport.clone();
+        let (mut second, _) = live(directory.path(), transport, Some(cookie)).await;
+        let queued = snapshot(&second.app, &job_id).await;
+        assert_eq!(queued["status"], "pending", "{queued}");
+        let stop = Arc::new(AtomicBool::new(false));
+        let wake = second.worker.waker();
+        let task = second.worker.spawn(Arc::clone(&stop));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let seen = snapshot(&second.app, &job_id).await;
+                if seen["status"] == "running" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("resumed job did not return to running");
+        world.lock().unwrap().hold = None;
+        hold.notify_waiters();
+        hold.notify_one();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let seen = snapshot(&second.app, &job_id).await;
+                if seen["status"] == "done" {
+                    assert_eq!(seen["result"]["synced"], 1, "{seen}");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("resumed job did not finish");
+        stop.store(true, Ordering::Release);
+        wake.notify_one();
+        tokio::time::timeout(crate::MUTATION_DRAIN, task)
+            .await
+            .expect("worker did not stop")
+            .unwrap();
+        assert_eq!(
+            revisions(directory.path(), id),
+            vec![format!("{commit}.snapshot-v2")]
+        );
+        let follow = {
+            let guard = second.owner.lock().unwrap();
+            SyncWorker::new(&guard, policy(), follow_transport).unwrap()
+        };
+        let again = enqueue(&second.app, &[id]).await;
+        assert!(
+            follow
+                .run_next(&Arc::new(AtomicBool::new(false)))
+                .await
+                .unwrap(),
+            "following sync was refused"
+        );
+        let followed = snapshot(&second.app, &again).await;
+        assert_eq!(followed["status"], "done", "{followed}");
+        second.app.serving.stop().await.unwrap();
     }
 }

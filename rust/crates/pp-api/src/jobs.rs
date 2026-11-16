@@ -1,4 +1,5 @@
-//! Gated HTTP list, read-one, and job WebSocket admission (`GET`/`HEAD`).
+//! Gated HTTP list, read-one, job WebSocket admission (`GET`/`HEAD`), and
+//! `POST /jobs/sync`.
 //!
 //! Two serializer permits bound JSON construction. A successful response keeps
 //! its permit until the body is sent or the client drops the connection.
@@ -14,23 +15,23 @@ use crate::loopback::{
 };
 use anyhow::Result;
 use axum::{
-    Router,
+    Json, Router,
     body::{Body, Bytes},
     extract::{
-        Path, State,
+        Extension, Path, State,
         ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     },
     http::{Method, StatusCode, header},
     middleware::{self, Next},
-    response::Response,
-    routing::get,
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
 use pp_storage::{
     auth::{AuthFailure, Secret},
     jobs::{
         AtomicJobClient, Credential, FrameAdmission, JobAccessFailure, JobFailure, JobSnapshot,
         JobSubscription, LegacyListFilter, LegacyProfileFilter, LegacyStatusFilter,
-        NonblockingSend, PreparedEvent, RetainedJobs, StreamClose,
+        NonblockingSend, Outcome, Payload, PreparedEvent, RetainedJobs, StreamClose, UserOperation,
     },
 };
 use serde_json::json;
@@ -107,9 +108,10 @@ impl Drop for Cancellation {
 }
 
 /// Mounts `GET`/`HEAD` `/api/v1/jobs`, read-one aliases `/jobs/{id}` and
-/// `/api/v1/jobs/{id}`, and `/ws/jobs/{id}` when `PP_DESKTOP_REBUILD` was
-/// exactly `1` or `true`. Otherwise mounts nothing. Mutation routes stay
-/// unregistered.
+/// `/api/v1/jobs/{id}`, `/ws/jobs/{id}`, and `POST /jobs/sync` (also under
+/// `/api/v1`) when `PP_DESKTOP_REBUILD` was exactly `1` or `true`. Otherwise
+/// mounts nothing. `POST /jobs/sync` enqueues a sync of the named GitHub
+/// Sources and answers `202` with `{ "job_id" }`.
 pub fn jobs_router(config: JobsHttpConfig, client: AtomicJobClient) -> Router {
     if !config.enabled {
         return Router::new();
@@ -122,6 +124,8 @@ pub fn jobs_router(config: JobsHttpConfig, client: AtomicJobClient) -> Router {
     };
     Router::new()
         .route("/api/v1/jobs", get(list))
+        .route("/jobs/sync", post(sync_sources))
+        .route("/api/v1/jobs/sync", post(sync_sources))
         .route("/jobs/{id}", get(detail))
         .route("/api/v1/jobs/{id}", get(detail))
         .route("/ws/jobs/{id}", get(stream).head(stream_head))
@@ -154,6 +158,97 @@ async fn guard(
     };
     request.extensions_mut().insert(presented);
     next.run(request).await
+}
+
+const SYNC_BODY_LIMIT: usize = 64 * 1024;
+const MAX_SAFE_ID: u64 = 9_007_199_254_740_991;
+
+/// Enqueues a sync of the named Sources. A missing, null, or empty
+/// `project_ids`, or a value that is not a list of Source ids, is a 400 problem.
+async fn sync_sources(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    body: Body,
+) -> Response {
+    let Ok(bytes) = axum::body::to_bytes(body, SYNC_BODY_LIMIT).await else {
+        return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body is too large");
+    };
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return crate::problem::response(StatusCode::BAD_REQUEST, crate::problem::INVALID_JSON);
+    };
+    let ids = match source_ids(&body) {
+        Ok(ids) => ids,
+        Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
+    };
+    let mut key = [0u8; 32];
+    if getrandom::fill(&mut key).is_err() {
+        return failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Jobs service unavailable",
+        );
+    }
+    let client = app.client.clone();
+    let credential = job_credential(presented);
+    let enqueued = tokio::task::spawn_blocking(move || {
+        client
+            .submit(
+                credential,
+                UserOperation::Enqueue {
+                    key: hex::encode(key),
+                    payload_version: 1,
+                    payload: Payload::Sync {
+                        project_ids: Some(ids),
+                    },
+                },
+                &AtomicBool::new(false),
+                Duration::from_secs(5),
+            )?
+            .receive()
+    })
+    .await;
+    match enqueued {
+        Ok(Ok(Outcome::Job(job, _))) => {
+            (StatusCode::ACCEPTED, Json(json!({ "job_id": job.job_id }))).into_response()
+        }
+        Ok(Ok(_)) => failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Jobs service unavailable",
+        ),
+        Ok(Err(error)) => domain_error(error),
+        Err(_) => failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Jobs service unavailable",
+        ),
+    }
+}
+
+fn source_ids(body: &serde_json::Value) -> std::result::Result<Vec<u64>, &'static str> {
+    let Some(ids) = body.get("project_ids") else {
+        return Err("project_ids must list at least one Source");
+    };
+    if ids.is_null() {
+        return Err("project_ids must list at least one Source");
+    }
+    let Some(ids) = ids.as_array() else {
+        return Err("project_ids must be a list of Source ids");
+    };
+    if ids.is_empty() {
+        return Err("project_ids must list at least one Source");
+    }
+    if ids.len() > 1000 {
+        return Err("Too many sources");
+    }
+    let mut parsed = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(id) = id.as_u64() else {
+            return Err("project_ids must be a list of Source ids");
+        };
+        if id == 0 || id > MAX_SAFE_ID {
+            return Err("project_ids must be a list of Source ids");
+        }
+        parsed.push(id);
+    }
+    Ok(parsed)
 }
 
 async fn list(State(app): State<App>, request: axum::extract::Request) -> Response {

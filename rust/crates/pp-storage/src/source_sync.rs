@@ -47,6 +47,72 @@ impl SyncTargetLease {
     }
 }
 
+/// A claimed GitHub Source and the token used to read it. `Debug` is not
+/// derived: the token must not appear in logs.
+pub struct GithubSyncTarget {
+    lease: SyncTargetLease,
+    url: String,
+    branch: String,
+    tag: Option<String>,
+    name: String,
+    token: Option<HeldToken>,
+}
+
+impl GithubSyncTarget {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The stored GitHub token, or `None` for a public repository.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_ref().map(HeldToken::expose)
+    }
+
+    pub fn lease(&self) -> &SyncTargetLease {
+        &self.lease
+    }
+
+    pub fn lease_mut(&mut self) -> &mut SyncTargetLease {
+        &mut self.lease
+    }
+}
+
+/// A GitHub personal access token. Dropping it overwrites the buffer.
+struct HeldToken(String);
+
+impl HeldToken {
+    fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for HeldToken {
+    fn drop(&mut self) {
+        let mut bytes = std::mem::take(&mut self.0).into_bytes();
+        bytes.fill(0);
+    }
+}
+
+struct GithubHandoff {
+    url: String,
+    branch: String,
+    tag: Option<String>,
+    name: String,
+    token: Option<HeldToken>,
+}
+
 /// What a worker presents for binding: the target it claimed, the claim
 /// generation it saw and the reservation it holds.
 pub(crate) struct SyncCandidate {
@@ -434,6 +500,10 @@ impl StoredSyncTargetRow {
 
 pub enum NextSyncTarget {
     Local(SyncTargetLease),
+    /// A claimed GitHub Source. The lease holds its reservation until it is
+    /// settled, failed, or dropped. The token is the stored personal access
+    /// token, when one is set, and is cleared when this value is dropped.
+    Github(GithubSyncTarget),
     /// The target failed before any reservation and needs no settlement.
     OrdinaryFailure(SourceSyncFailure),
     /// A local read failure whose reservation is still held. It is not a
@@ -457,6 +527,7 @@ pub(crate) struct ReservedTarget {
     token: u64,
     binding: SourceBinding,
     version: i64,
+    github: Option<GithubHandoff>,
 }
 
 impl ReservedTarget {
@@ -467,15 +538,24 @@ impl ReservedTarget {
     ) -> Result<(NextSyncTarget, i64)> {
         state.activate(self.token, self.binding.tenant, self.binding.id);
         let proof = state.proof(self.token)?;
-        Ok((
-            NextSyncTarget::Local(SyncTargetLease {
-                key: self.key,
-                source_work: crate::catalog::lease(client, proof),
-                observation: self.observation,
-                claim_generation: self.claim_generation,
+        let lease = SyncTargetLease {
+            key: self.key,
+            source_work: crate::catalog::lease(client, proof),
+            observation: self.observation,
+            claim_generation: self.claim_generation,
+        };
+        let target = match self.github {
+            Some(github) => NextSyncTarget::Github(GithubSyncTarget {
+                lease,
+                url: github.url,
+                branch: github.branch,
+                tag: github.tag,
+                name: github.name,
+                token: github.token,
             }),
-            self.version,
-        ))
+            None => NextSyncTarget::Local(lease),
+        };
+        Ok((target, self.version))
     }
 }
 
@@ -639,8 +719,7 @@ fn validate_bound_target_in_basis(
         claim_generation == bound.claim_generation,
         "Sync target claim generation mismatch"
     );
-    let observation =
-        crate::source_scan::project_observation(tx, &job.tenant, source_id, &authority_actor)?;
+    let observation = current_observation(tx, &job.tenant, source_id, &authority_actor)?;
     ensure!(
         observation.configuration_version == configuration_version,
         "Sync Source configuration mismatch"
@@ -1301,14 +1380,25 @@ pub(crate) fn next(
         job_id: job.job_id.clone(),
         ordinal: u32::try_from(ordinal)?,
     };
-    let source: Option<(String, String)> = tx
+    let source: Option<(String, String, String, String, String, Option<String>)> = tx
         .query_row(
-            "SELECT name,source_type FROM projects WHERE tenant_id=?1 AND id=?2",
+            "SELECT name,source_type,source_kind,url,branch,tag FROM projects WHERE tenant_id=?1 AND id=?2",
             params![job.tenant, source_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .optional()?;
-    let source_name = match source {
+    // `source_kind` selects the GitHub path. A row whose `source_type` was
+    // rewritten to `github` while its kind stayed local is still unsupported.
+    let (source_name, github) = match source {
         None => {
             tx.execute(
                 "UPDATE source_sync_targets SET state='failed',failure_code='unavailable',failure_detail='Source not found',reservation_acknowledged=1,updated_at=?3 WHERE job_id=?1 AND ordinal=?2 AND state='pending'",
@@ -1316,14 +1406,24 @@ pub(crate) fn next(
             )?;
             return ordinary_failure(tx, job, &key);
         }
-        Some((name, source_type)) if source_type != "local" => {
+        Some((name, _, kind, url, branch, tag)) if kind == "github" => (
+            name.clone(),
+            Some(GithubHandoff {
+                url,
+                branch,
+                tag,
+                name,
+                token: github_token(tx, &job.tenant)?,
+            }),
+        ),
+        Some((name, source_type, _, _, _, _)) if source_type != "local" => {
             tx.execute(
                 "UPDATE source_sync_targets SET source_name=?3,state='failed',failure_code='unsupported_kind',failure_detail='Source kind is not supported by Local Sync',reservation_acknowledged=1,updated_at=?4 WHERE job_id=?1 AND ordinal=?2 AND state='pending'",
                 params![key.job_id, key.ordinal, name, now()],
             )?;
             return ordinary_failure(tx, job, &key);
         }
-        Some((name, _)) => name,
+        Some((name, _, _, _, _, _)) => (name, None),
     };
     let durably_held: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM source_sync_targets WHERE tenant=?1 AND requested_source_id=?2 AND (state='claimed' OR (state IN ('succeeded','failed') AND reservation_acknowledged=0)))",
@@ -1335,8 +1435,7 @@ pub(crate) fn next(
         SourceBusy
     );
     let token = state.next_token()?;
-    let observation =
-        crate::source_scan::project_observation(tx, &job.tenant, source_id, authority.subject())?;
+    let observation = current_observation(tx, &job.tenant, source_id, authority.subject())?;
     ensure!(
         tx.execute(
             "UPDATE source_sync_targets SET source_name=?3,state='claimed',claim_generation=claim_generation+1,parent_generation=?4,attempt_worker=?5,attempt_fence_digest=?6,reservation_incarnation=?7,reservation_token=?8,configuration_version=?9,authority_actor=?10,authority_basis_digest=?11,activation_observation_digest=?12,path_observation_digest=?13,updated_at=?14 WHERE job_id=?1 AND ordinal=?2 AND state='pending' AND claim_generation=?15",
@@ -1370,7 +1469,38 @@ pub(crate) fn next(
             id: source_id,
         },
         version: job.state_version,
+        github,
     }))
+}
+
+/// The observation a claim records and later rechecks. A GitHub Source hashes
+/// its identity, not the revision and path activation writes, so settling
+/// after publication still matches. Every other kind keeps the local scan.
+fn current_observation(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    source_id: i64,
+    actor: &str,
+) -> Result<LocalScanObservation> {
+    let kind: String = tx.query_row(
+        "SELECT source_kind FROM projects WHERE tenant_id=?1 AND id=?2",
+        params![tenant, source_id],
+        |row| row.get(0),
+    )?;
+    if kind == "github" {
+        crate::source_scan::github_observation(tx, tenant, source_id, actor)
+    } else {
+        crate::source_scan::project_observation(tx, tenant, source_id, actor)
+    }
+}
+
+fn github_token(tx: &Transaction<'_>, tenant: &str) -> Result<Option<HeldToken>> {
+    match crate::snapshot(tx, tenant, "github_pat")? {
+        crate::SettingSnapshot::Stored { value } if !value.trim().is_empty() => {
+            Ok(Some(HeldToken(value)))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Binds a candidate to its stored claim, then checks its content against the
@@ -1820,8 +1950,7 @@ pub(crate) fn adopt(
             && fence == digest(lease.fence()),
         "Sync target attempt mismatch"
     );
-    let observation =
-        crate::source_scan::project_observation(tx, &job.tenant, source_id, &authority_actor)?;
+    let observation = current_observation(tx, &job.tenant, source_id, &authority_actor)?;
     ensure!(
         observation.configuration_version == configuration_version
             && observation.authority_actor == authority_actor

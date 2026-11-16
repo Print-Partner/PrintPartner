@@ -64,6 +64,9 @@ pub mod rebuild_api;
 pub mod send_worker;
 
 #[cfg(feature = "desktop_rebuild")]
+mod sync_worker;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod source_acquisition;
 
 #[cfg(feature = "desktop_rebuild")]
@@ -273,6 +276,12 @@ enum Backend {
         /// The send worker's stop flag, its wake (so an idle worker sees the
         /// flag at once) and its task.
         sends: (
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<tokio::sync::Notify>,
+            tokio::task::JoinHandle<()>,
+        ),
+        /// The GitHub sync worker, stopped the same way as sends.
+        syncs: (
             Arc<std::sync::atomic::AtomicBool>,
             Arc<tokio::sync::Notify>,
             tokio::task::JoinHandle<()>,
@@ -586,6 +595,11 @@ async fn start_rust_resources(
         rebuild_api::desktop_policy(),
         pp_gateway::printer_host::HostSends::new()?,
     )?;
+    let sync_worker = sync_worker::SyncWorker::new(
+        &writer,
+        rebuild_api::desktop_policy(),
+        github::GithubTransport::new()?,
+    )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let (imports, uploads) = start_imports(&writer, &origin).await?;
@@ -630,6 +644,12 @@ async fn start_rust_resources(
         send_worker.waker(),
         send_worker.spawn(stop_sends),
     );
+    let stop_syncs = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let syncs = (
+        Arc::clone(&stop_syncs),
+        sync_worker.waker(),
+        sync_worker.spawn(stop_syncs),
+    );
     Ok(Resources {
         owners,
         origin_change,
@@ -639,6 +659,7 @@ async fn start_rust_resources(
             writer,
             status: Arc::new(status),
             sends,
+            syncs,
             imports,
         },
         gate: ShutdownGate::new(),
@@ -985,10 +1006,11 @@ async fn stop_resources(
             writer,
             status,
             sends,
+            syncs,
             imports,
         } => {
             status.send_replace(RustStatus::Stopping);
-            let receipt = stop_rust(gateway, gate, writer, sends, imports).await;
+            let receipt = stop_rust(gateway, gate, writer, sends, syncs, imports).await;
             status.send_replace(RustStatus::Stopped);
             (receipt, None)
         }
@@ -1007,11 +1029,18 @@ async fn stop_rust(
         Arc<tokio::sync::Notify>,
         tokio::task::JoinHandle<()>,
     ),
+    (stop_syncs, sync_wake, syncs): (
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<()>,
+    ),
     imports: Arc<source_acquisition::SourceAcquisitions>,
 ) -> ShutdownReceipt {
-    // No new upload starts from here; one in flight may finish below.
+    // No new upload or sync starts from here; one in flight may finish below.
     stop_sends.store(true, std::sync::atomic::Ordering::Release);
+    stop_syncs.store(true, std::sync::atomic::Ordering::Release);
     wake.notify_one();
+    sync_wake.notify_one();
     // Source uploads close and their workers stop, within the same bound as
     // the gateway drain; an upload still streaming is discarded, and an
     // admitted import resumes at the next start.
@@ -1033,6 +1062,10 @@ async fn stop_rust(
     // dropped, and startup recovery marks it for reconciliation.
     let abort = sends.abort_handle();
     if tokio::time::timeout(MUTATION_DRAIN, sends).await.is_err() {
+        abort.abort();
+    }
+    let abort = syncs.abort_handle();
+    if tokio::time::timeout(MUTATION_DRAIN, syncs).await.is_err() {
         abort.abort();
     }
     let mut receipt = ShutdownReceipt::drained(tracked_idle, gateway_idle, None, gateway_stopped);

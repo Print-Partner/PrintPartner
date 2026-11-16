@@ -638,6 +638,8 @@ fn legacy_case(key: &str, input: Input, path: &str, byte: char) -> Value {
         cleanup_settled: false,
         authority_revision: None,
         observation_cursor: None,
+        commit_sha: None,
+        revision_key: None,
     };
     let payload = Payload::SuppliedSourceImport {
         project_id: 42,

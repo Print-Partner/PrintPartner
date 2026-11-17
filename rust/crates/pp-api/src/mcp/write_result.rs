@@ -80,7 +80,7 @@ pub(super) enum Code {
     InvalidHours,
     // propose_rebuild_plan
     NoStructuralBase,
-    SourceChoicesUnsupported,
+    UnresolvedSourceChoices,
     LayerConflict,
     NoStls,
     WouldWipe,
@@ -141,7 +141,7 @@ impl Code {
             Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
             Self::InvalidHours => "invalid_hours",
             Self::NoStructuralBase => "no_structural_base",
-            Self::SourceChoicesUnsupported => "source_choices_unsupported",
+            Self::UnresolvedSourceChoices => "unresolved_source_choices",
             Self::LayerConflict => "layer_conflict",
             Self::NoStls => "no_stls",
             Self::WouldWipe => "would_wipe",

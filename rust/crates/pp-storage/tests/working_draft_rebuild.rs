@@ -14,7 +14,8 @@ use pp_storage::{
     },
 };
 use pp_testkit::rebuild_fixture::{
-    SEED, brief, evidence, resolved, roles, two_bases, write_sources,
+    SEED, brief, evidence, roles, scoped_choices, two_bases, unresolved_choices, write_sources,
+    write_stl,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
@@ -160,7 +161,7 @@ fn rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
         ),
         (Some(brief(two_bases(), json!({}))), true),
         (Some(brief(roles(), json!({}))), false),
-        (Some(brief(roles(), resolved())), true),
+        (Some(unresolved_choices()), true),
     ];
     for (index, (brief, files)) in cases.into_iter().enumerate() {
         let f = Fixture::new(brief, files);
@@ -171,7 +172,10 @@ fn rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
             1 => matches!(error, RebuildError::NoStructuralBase),
             2 => matches!(error, RebuildError::MultipleStructuralBases),
             3 => matches!(error, RebuildError::NoStls),
-            _ => matches!(error, RebuildError::SourceChoicesUnsupported),
+            _ => matches!(
+                error,
+                RebuildError::UnresolvedSourceChoices { ref groups } if groups == &["group-1".to_owned()]
+            ),
         };
         assert!(expected, "case {index}: {error:?}");
         assert_eq!(f.state(), before, "case {index} wrote");
@@ -187,4 +191,81 @@ fn rebuild_keys_must_be_non_blank_and_leave_room_for_the_inputs_suffix() {
     ));
     assert!(RebuildRequest::new(&"k".repeat(143)).is_ok());
     assert!(RebuildRequest::new(&"k".repeat(144)).is_err());
+}
+
+#[test]
+fn rebuild_applies_a_scoped_contribution_and_drops_the_superseded_file() {
+    let f = Fixture::new(Some(scoped_choices()), true);
+    write_stl(f.root.path(), 4, "superseded.stl").unwrap();
+    write_stl(f.root.path(), 5, "mods/a/plate.stl").unwrap();
+    write_stl(f.root.path(), 5, "mods/b/other.stl").unwrap();
+    let rebuilt = f.rebuild("k").unwrap();
+    assert!(rebuilt.created);
+    let db = Connection::open(f.root.path().join("print-partner.db")).unwrap();
+    let mut query = db
+        .prepare(
+            "SELECT source_layer, relative_path FROM plan_draft_parts WHERE draft_id=?1 ORDER BY source_layer, relative_path",
+        )
+        .unwrap();
+    let parts: Vec<(String, String)> = query
+        .query_map([i64::try_from(rebuilt.draft_id.get()).unwrap()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        parts,
+        [
+            ("addon:Addon".into(), "mods/a/plate.stl".into()),
+            ("base:Base".into(), "bracket.stl".into()),
+            ("base:Base".into(), "gear.stl".into()),
+        ]
+    );
+    let again = f.rebuild("k").unwrap();
+    assert!(!again.created);
+    assert_eq!(again.draft_id, rebuilt.draft_id);
+}
+
+#[test]
+fn rebuild_removes_a_managed_layer_whose_role_became_evidence_and_keeps_a_ui_layer() {
+    let f = Fixture::new(Some(brief(roles(), json!({}))), true);
+    f.rebuild("k").unwrap();
+    let root = f.root.path().to_str().unwrap().replace('\'', "''");
+    write_stl(f.root.path(), 6, "ui.stl").unwrap();
+    let db = Connection::open(f.root.path().join("print-partner.db")).unwrap();
+    db.execute_batch(&format!(
+        "INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(6,'default','Extra','','local','main','{root}/repos/6','2026-11-01T00:00:00.000Z','rev6');
+         INSERT INTO profile_layers(tenant_id,profile_id,layer_order,layer_type,project_id) VALUES('default',3,2,'addon',6);"
+    ))
+    .unwrap();
+    let mut stored: Value = serde_json::from_str(&f.state().2).unwrap();
+    stored["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|item| item["id"] == "addon")
+        .unwrap()["source_role"] = json!("evidence");
+    db.execute(
+        "UPDATE app_settings SET value=?1 WHERE key='build_planning.v1.3'",
+        [stored.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    let before_layers = f.state().0;
+    assert_eq!(before_layers, "base:4,addon:5,addon:6");
+    let rebuilt = f.rebuild("later").unwrap();
+    assert!(rebuilt.created);
+    assert_eq!(
+        rebuilt
+            .sources
+            .iter()
+            .map(|s| s.source_id)
+            .collect::<Vec<_>>(),
+        [4]
+    );
+    let (layers, _, brief) = f.state();
+    assert_eq!(layers, "base:4,addon:6");
+    let brief: Value = serde_json::from_str(&brief).unwrap();
+    assert_eq!(brief["managed_source_ids"], json!([4]));
 }

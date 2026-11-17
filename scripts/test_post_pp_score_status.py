@@ -24,9 +24,9 @@ class PostPpScoreStatusTests(unittest.TestCase):
         comments = [
             comment(
                 "pp-score head="
-                f"{SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic\n"
+                f"{SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none\n"
                 "pp-score head="
-                f"{SHA} seat=glm-5.3-flash-free vendor=zhipu score=9 author=anthropic\n"
+                f"{SHA} seat=glm-5.3-flash-free vendor=zhipu score=9 author=anthropic obstacles=none\n"
             )
         ]
         records = pps.trusted_records(comments, self.trust)
@@ -49,7 +49,7 @@ class PostPpScoreStatusTests(unittest.TestCase):
 
     def test_score_below_eight_is_failure(self):
         comments = [
-            comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=7 author=anthropic")
+            comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=7 author=anthropic obstacles=none")
         ]
         plans = pps.plan_statuses(pps.trusted_records(comments, self.trust))
         self.assertEqual(plans[0].state, "failure")
@@ -63,11 +63,11 @@ class PostPpScoreStatusTests(unittest.TestCase):
     def test_untrusted_author_and_edited_comments_are_ignored(self):
         comments = [
             comment(
-                f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic",
+                f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none",
                 user="stranger",
             ),
             comment(
-                f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic",
+                f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none",
                 created="2026-11-13T01:51:14Z",
                 updated="2026-11-13T02:00:00Z",
             ),
@@ -79,9 +79,9 @@ class PostPpScoreStatusTests(unittest.TestCase):
         comments = [
             comment(
                 "a note about pp-score head= tokens in prose\n"
-                f"pp-score head={SHA} seat=unknown vendor=xai score=9 author=anthropic\n"
+                f"pp-score head={SHA} seat=unknown vendor=xai score=9 author=anthropic obstacles=none\n"
                 f"> SCORE: 9\n"
-                f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic\n"
+                f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none\n"
             )
         ]
         records = pps.trusted_records(comments, self.trust)
@@ -90,8 +90,8 @@ class PostPpScoreStatusTests(unittest.TestCase):
 
     def test_records_stay_on_their_own_sha(self):
         comments = [
-            comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic"),
-            comment(f"pp-score head={OTHER} seat=grok-4.7 vendor=xai score=6 author=anthropic"),
+            comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"),
+            comment(f"pp-score head={OTHER} seat=grok-4.7 vendor=xai score=6 author=anthropic obstacles=none"),
         ]
         plans = {p.head: p for p in pps.plan_statuses(pps.trusted_records(comments, self.trust))}
         self.assertEqual(plans[SHA].state, "success")
@@ -99,9 +99,9 @@ class PostPpScoreStatusTests(unittest.TestCase):
 
     def test_minimum_score_sets_state(self):
         comments = [
-            comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic"),
+            comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"),
             comment(
-                f"pp-score head={SHA} seat=glm-5.3-flash-free vendor=zhipu score=5 author=anthropic"
+                f"pp-score head={SHA} seat=glm-5.3-flash-free vendor=zhipu score=5 author=anthropic obstacles=none"
             ),
         ]
         plans = pps.plan_statuses(pps.trusted_records(comments, self.trust))
@@ -126,7 +126,7 @@ class RenderCaptureTests(unittest.TestCase):
             SHA,
             "success",
             "9/10 from grok-4.7",
-            (pps.Record(SHA, "grok-4.7", "xai", "anthropic", 9.0),),
+            (pps.Record(SHA, "grok-4.7", "xai", "anthropic", 9.0, ()),),
         )
         posted = []
 
@@ -187,28 +187,35 @@ class RealFormatTests(unittest.TestCase):
     def setUp(self):
         self.trust = pps.load_trust()
 
-    def test_backticked_records_from_1777_and_1734_parse(self):
+    def test_real_records_without_obstacles_no_longer_count(self):
+        for body in (PR1777_BODY, PR1734_ED251_BODY, PR1734_765_BODY):
+            with self.subTest(body=body[-60:]):
+                self.assertEqual(pps.trusted_records([comment(body)], self.trust), [])
+
+    def test_backticked_records_from_1777_and_1734_parse_with_obstacles(self):
         for body, head in ((PR1777_BODY, PR1777_HEAD), (PR1734_ED251_BODY, PR1734_ED251_HEAD)):
             with self.subTest(head=head):
+                body = body.replace("author=anthropic`", "author=anthropic obstacles=none`")
                 records = pps.trusted_records([comment(body)], self.trust)
                 self.assertEqual([(r.head, r.seat, r.score) for r in records], [(head, "grok-4.7", 10.0)])
                 (plan,) = pps.plan_statuses(records)
                 self.assertEqual((plan.state, plan.description), ("success", "10/10 from grok-4.7"))
 
-    def test_bare_records_from_1734_still_parse(self):
-        records = pps.trusted_records([comment(PR1734_765_BODY)], self.trust)
+    def test_bare_records_from_1734_parse_with_obstacles(self):
+        body = PR1734_765_BODY.replace("author=anthropic\n", "author=anthropic obstacles=none\n")
+        records = pps.trusted_records([comment(body)], self.trust)
         self.assertEqual({r.head for r in records}, {PR1734_765_HEAD})
         self.assertEqual([r.seat for r in records], ["grok-4.7", "glm-5.3-flash-free"])
 
     def test_fenced_and_double_backticked_records_parse(self):
-        line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic"
+        line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
         for body in (f"```text\n{line}\n```", f"``{line}``", f"  `{line}`  ", f"```\n  {line}\n```"):
             with self.subTest(body=body):
                 records = pps.trusted_records([comment(body)], self.trust)
                 self.assertEqual([r.seat for r in records], ["grok-4.7"])
 
     def test_records_inside_prose_still_do_not_parse(self):
-        line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic"
+        line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
         for body in (f"Recorded `{line}` today.", f"`{line}` and more", f"> {line}", f"`{line}"):
             with self.subTest(body=body):
                 self.assertEqual(pps.trusted_records([comment(body)], self.trust), [])
@@ -220,7 +227,7 @@ class FamilyTests(unittest.TestCase):
 
     def test_same_family_score_fails_the_head(self):
         comments = [comment(
-            f"pp-score head={SHA} seat=claude-opus-5-5 vendor=anthropic score=10 author=anthropic"
+            f"pp-score head={SHA} seat=claude-opus-5-5 vendor=anthropic score=10 author=anthropic obstacles=none"
         )]
         (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
         self.assertEqual(plan.state, "failure")
@@ -229,22 +236,22 @@ class FamilyTests(unittest.TestCase):
 
     def test_same_family_score_fails_even_beside_a_passing_seat(self):
         comments = [comment(
-            f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=10 author=anthropic\n"
-            f"pp-score head={SHA} seat=claude-opus-5-5 vendor=anthropic score=10 author=anthropic"
+            f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=10 author=anthropic obstacles=none\n"
+            f"pp-score head={SHA} seat=claude-opus-5-5 vendor=anthropic score=10 author=anthropic obstacles=none"
         )]
         (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
         self.assertEqual(plan.state, "failure")
 
     def test_codex_scoring_a_codex_pr_fails(self):
-        comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=openai")]
+        comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=openai obstacles=none")]
         (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
         self.assertEqual(plan.state, "failure")
         self.assertIn("(openai)", plan.description)
 
     def test_records_that_disagree_on_author_fail(self):
         comments = [comment(
-            f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=10 author=anthropic\n"
-            f"pp-score head={SHA} seat=glm-5.3-flash-free vendor=zhipu score=9 author=openai"
+            f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=10 author=anthropic obstacles=none\n"
+            f"pp-score head={SHA} seat=glm-5.3-flash-free vendor=zhipu score=9 author=openai obstacles=none"
         )]
         (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
         self.assertEqual((plan.state, plan.description),
@@ -256,12 +263,12 @@ class CodexSeatTests(unittest.TestCase):
         self.trust = pps.load_trust()
 
     def test_codex_seat_scores_a_claude_pr(self):
-        comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=anthropic")]
+        comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=anthropic obstacles=none")]
         (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
         self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.1-sol"))
 
     def test_codex_seat_must_name_openai(self):
-        comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=xai score=9 author=anthropic")]
+        comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=xai score=9 author=anthropic obstacles=none")]
         self.assertEqual(pps.trusted_records(comments, self.trust), [])
 
     def test_codex_seat_is_not_a_sensitive_merge_seat(self):
@@ -269,7 +276,19 @@ class CodexSeatTests(unittest.TestCase):
 
         data = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
         self.assertNotIn("gpt-6.1-sol", data["scorer_seats"])
-        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai"})
+        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
+        self.assertNotIn("gpt-6.2-sol", data["scorer_seats"])
+
+    def test_sol_6_2_seat_scores_a_claude_pr(self):
+        comments = [comment(
+            f"pp-score head={SHA} seat=gpt-6.2-sol vendor=openai score=9 author=anthropic obstacles=none")]
+        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.2-sol"))
+        wrong = comments[0]["body"].replace("vendor=openai", "vendor=xai")
+        self.assertEqual(pps.trusted_records([comment(wrong)], self.trust), [])
+        own = comments[0]["body"].replace("author=anthropic", "author=openai")
+        (plan,) = pps.plan_statuses(pps.trusted_records([comment(own)], self.trust))
+        self.assertEqual(plan.state, "failure")
 
     def test_pp_score_seat_cannot_override_a_scorer_seat_vendor(self):
         import json
@@ -283,6 +302,58 @@ class CodexSeatTests(unittest.TestCase):
             path.write_text(json.dumps(data), encoding="utf-8")
             with self.assertRaises(ValueError):
                 pps.load_trust(path)
+
+
+class ObstacleTests(unittest.TestCase):
+    """A record discloses the refusals, guard refusals and approval stalls its scorer hit."""
+
+    def setUp(self):
+        self.trust = pps.load_trust()
+
+    def line(self, obstacles):
+        return f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=anthropic{obstacles}"
+
+    def test_none_counts(self):
+        (record,) = pps.trusted_records([comment(self.line(" obstacles=none"))], self.trust)
+        self.assertEqual(record.obstacles, ())
+        (plan,) = pps.plan_statuses([record])
+        self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.1-sol"))
+
+    def test_missing_field_does_not_count(self):
+        self.assertEqual(pps.trusted_records([comment(self.line(""))], self.trust), [])
+        self.assertEqual(pps.plan_statuses(pps.trusted_records([comment(self.line(""))], self.trust)), [])
+
+    def test_listed_obstacles_still_count_as_records(self):
+        for token, expected in (("refusal", ("refusal",)), ("guard", ("guard",)),
+                                ("approval-stall", ("approval-stall",)),
+                                ("guard,refusal", ("guard", "refusal")),
+                                ("refusal,guard,approval-stall", ("refusal", "guard", "approval-stall"))):
+            with self.subTest(token=token):
+                (record,) = pps.trusted_records([comment(self.line(f" obstacles={token}"))], self.trust)
+                self.assertEqual(record.obstacles, expected)
+                (plan,) = pps.plan_statuses([record])
+                self.assertEqual(plan.state, "success")
+
+    def test_invalid_tokens_do_not_count(self):
+        for token in ("", "None", "NONE", "none,guard", "guard,guard", "guard,", ",guard", "stall",
+                      "approval_stall", "guard refusal", "guard;refusal", "yes", "0"):
+            with self.subTest(token=token):
+                self.assertEqual(pps.trusted_records([comment(self.line(f" obstacles={token}"))], self.trust), [])
+
+    def test_field_must_come_last(self):
+        line = (f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 obstacles=none author=anthropic")
+        self.assertEqual(pps.trusted_records([comment(line)], self.trust), [])
+        self.assertEqual(pps.trusted_records([comment(self.line(" obstacles=none extra"))], self.trust), [])
+
+    def test_whole_number_and_exact_head_rules_still_hold(self):
+        for line in (self.line(" obstacles=none").replace("score=9", "score=8.5"),
+                     self.line(" obstacles=none").replace(SHA, SHA[:12])):
+            with self.subTest(line=line):
+                self.assertEqual(pps.trusted_records([comment(line)], self.trust), [])
+
+    def test_trial_line_is_not_a_record(self):
+        line = self.line(" obstacles=none").replace("pp-score ", "pp-score-trial ", 1)
+        self.assertEqual(pps.trusted_records([comment(line)], self.trust), [])
 
 
 QUEUE_BASE = "5348fa04c2657f661d489c5dc46fcdcec2df33f0"
@@ -305,7 +376,7 @@ class MergeGroupTests(unittest.TestCase):
 
     def records(self, head, score=9, author="anthropic"):
         return pps.trusted_records([comment(
-            f"`pp-score head={head} seat=grok-4.7 vendor=xai score={score} author={author}`"
+            f"`pp-score head={head} seat=grok-4.7 vendor=xai score={score} author={author} obstacles=none`"
         )], self.trust)
 
     def test_queue_prs_reads_the_squash_commits(self):
@@ -386,7 +457,7 @@ class MergeGroupTests(unittest.TestCase):
             f"repos/o/r/compare/{QUEUE_BASE}...{QUEUE_HEAD}":
                 compare(squash(QUEUE_HEAD, "Post pp/score commit statuses (#1829)")),
             "repos/o/r/pulls/1829": {"head": {"sha": PR1777_HEAD}},
-            "repos/o/r/issues/1829/comments": [comment(PR1777_BODY)],
+            "repos/o/r/issues/1829/comments": [comment(PR1777_BODY.replace("anthropic`", "anthropic obstacles=none`"))],
         }
         posted = []
         original_json, original_apply = pps.gh_json, pps.apply_plan
@@ -411,7 +482,7 @@ class CursorAutoAuthorTests(unittest.TestCase):
         return pps.trusted_records([comment("\n".join(lines))], self.trust)
 
     def line(self, head, seat, vendor, score, author="cursor-auto"):
-        return f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author}"
+        return f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author} obstacles=none"
 
     def test_cursor_auto_record_parses(self):
         records = self.records(self.line(SHA, "claude-opus-5-5", "anthropic", 9))
@@ -470,13 +541,13 @@ class CursorAutoMergeGroupTests(unittest.TestCase):
 
     def dual(self, head, anthropic=9, openai=8, author="cursor-auto"):
         return pps.trusted_records([comment(
-            f"pp-score head={head} seat=claude-opus-5-5 vendor=anthropic score={anthropic} author={author}\n"
-            f"pp-score head={head} seat=gpt-6.1-sol vendor=openai score={openai} author={author}"
+            f"pp-score head={head} seat=claude-opus-5-5 vendor=anthropic score={anthropic} author={author} obstacles=none\n"
+            f"pp-score head={head} seat=gpt-6.1-sol vendor=openai score={openai} author={author} obstacles=none"
         )], self.trust)
 
     def one(self, head, seat="claude-opus-5-5", vendor="anthropic", score=9, author="cursor-auto"):
         return pps.trusted_records([comment(
-            f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author}"
+            f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author} obstacles=none"
         )], self.trust)
 
     def test_merge_group_passes_when_both_families_score_the_current_head(self):

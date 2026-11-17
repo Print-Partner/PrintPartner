@@ -347,8 +347,14 @@ fn read_grams(
 
 /// `(integration ID, filament ID)` when `id` names a Spoolman filament.
 fn spoolman_filament(id: &str) -> Option<(&str, i64)> {
+    spoolman_ref(id, ":filament:")
+}
+
+/// `(integration ID, n)` when `id` is `spoolman:{integration}{kind}{n}`, with
+/// one non-empty integration segment and a positive `n`.
+pub(crate) fn spoolman_ref<'a>(id: &'a str, kind: &str) -> Option<(&'a str, i64)> {
     let rest = id.strip_prefix("spoolman:")?;
-    let (integration, number) = rest.split_once(":filament:")?;
+    let (integration, number) = rest.split_once(kind)?;
     let number = number.parse::<i64>().ok().filter(|n| *n > 0)?;
     (!integration.is_empty() && !integration.contains(':')).then_some((integration, number))
 }

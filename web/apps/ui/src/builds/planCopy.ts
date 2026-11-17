@@ -31,3 +31,13 @@ export const HISTORY_EMPTY =
  */
 export const PLATES_CLEARED =
   "A new accepted Plan starts with no Plate layout, so Accept clears these Plates even when every unit is kept. Laying Plates out again is not available in this UI yet.";
+
+/**
+ * The first-run walk from an empty install to a first Build (GRE-1401). Help lists it, and so
+ * does the empty Builds list, so both say the same thing.
+ */
+export const FIRST_BUILD_STEPS: readonly string[] = [
+  "In Library, press Add Source and name the kit. Upload its ZIP, or add its GitHub repository and let it sync.",
+  "In Builds, press Create Build, name the Build and choose that Source as its base.",
+  "The new Build opens on its Overview. On its Plan tab, changes save to a draft, and the Build changes only when you accept it.",
+];

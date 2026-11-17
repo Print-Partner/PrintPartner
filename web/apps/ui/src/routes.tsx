@@ -1,10 +1,16 @@
+import type { ReactNode } from "react";
 import { Navigate, type RouteObject } from "react-router";
 import { LoginScreen, SetupScreen } from "./auth/AuthScreens";
 import { BuildCheckoff } from "./builds/BuildCheckoff";
 import { BuildHistory } from "./builds/BuildHistory";
 import { BuildPlan } from "./builds/BuildPlan";
 import { BuildProduction } from "./builds/BuildProduction";
-import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
+import {
+  BuildOverview,
+  BUILD_TABS,
+  BuildWorkspace,
+  type BuildTabPath,
+} from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
 import { FarmLog } from "./farm/FarmLog";
 import { FarmScreen } from "./farm/FarmScreen";
@@ -33,6 +39,15 @@ function PrinterStates() {
     </>
   );
 }
+
+/** Every Build tab's screen. A new tab without one is a type error, not a placeholder. */
+const BUILD_TAB_SCREENS: Record<BuildTabPath, ReactNode> = {
+  sources: <BuildSources />,
+  plan: <BuildPlan />,
+  production: <BuildProduction />,
+  checkoff: <BuildCheckoff />,
+  history: <BuildHistory />,
+};
 
 export const routes: RouteObject[] = [
   // Outside the frame: nothing on these screens needs a session.
@@ -65,23 +80,9 @@ export const routes: RouteObject[] = [
         element: <BuildWorkspace />,
         children: [
           { index: true, element: <BuildOverview /> },
-          ...BUILD_TABS.filter((t) => t.path).map((t) => ({
-            path: t.path,
-            element:
-              t.path === "sources" ? (
-                <BuildSources />
-              ) : t.path === "checkoff" ? (
-                <BuildCheckoff />
-              ) : t.path === "history" ? (
-                <BuildHistory />
-              ) : t.path === "plan" ? (
-                <BuildPlan />
-              ) : t.path === "production" ? (
-                <BuildProduction />
-              ) : (
-                <LaterTab label={t.label} holds={t.holds} />
-              ),
-          })),
+          ...BUILD_TABS.flatMap((t) =>
+            t.path === "" ? [] : [{ path: t.path, element: BUILD_TAB_SCREENS[t.path] }],
+          ),
         ],
       },
       { path: "library/:sourceId", element: <LibraryScreen /> },

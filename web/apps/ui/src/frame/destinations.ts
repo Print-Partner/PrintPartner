@@ -26,7 +26,7 @@ export const DESTINATIONS: readonly Destination[] = [
     path: "/builds",
     key: "b",
     holds: "the Builds list and each Build workspace",
-    help: "Open a Build to review its Plan, check off printed units or read its History",
+    help: "Create a Build from a Library Source, or open one to review its Plan, check off printed units or read its History",
   },
   {
     label: "Farm",

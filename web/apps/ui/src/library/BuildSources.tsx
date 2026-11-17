@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useId, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router";
 import {
   BuildTabs,
@@ -7,13 +8,16 @@ import {
   type WorkspaceContext,
 } from "../builds/BuildWorkspace";
 import { CoreError } from "../core/client";
-import { useConnection } from "../frame/connection";
+import { writeCore } from "../core/rust";
+import { sourcesQuery } from "../core/sources";
+import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
+import { refusalText, SourceSelect } from "../screen/SourceSelect";
 import { LineCell } from "./LibraryScreen";
 import { SourceFiles } from "./SourceFiles";
-import { acceptedRevisionText, revisionText, sourcesQuery, type Source } from "./sources";
+import { acceptedRevisionText, revisionText, type Source } from "./sources";
 
 /** Each Source once, in layer order. A layer with no Source is skipped. */
 function sourcesInLayerOrder(
@@ -33,12 +37,92 @@ function sourcesInLayerOrder(
   return sources;
 }
 
+/**
+ * A Build with no layers: choose a Library Source as its base. Set base Source sends
+ * `setBuildBase` once; the Build is read again whatever the answer.
+ */
+function SetBaseSource({ buildId }: { buildId: number }) {
+  const client = useQueryClient();
+  const offline = useConnection() === "offline";
+  const ids = useId();
+  const [sourceId, setSourceId] = useState<number | null>(null);
+  const [failure, setFailure] = useState("");
+  const set = useMutation({
+    retry: false,
+    networkMode: "always",
+    mutationFn: (projectId: number) =>
+      writeCore("setBuildBase", { id: buildId }, { project_id: projectId }),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ["core", "build", buildId] });
+      void client.invalidateQueries({ queryKey: ["core", "workflow", buildId] });
+    },
+    onError: (error: Error) => {
+      const refused = error instanceof CoreError && error.status < 500;
+      setFailure(
+        refused
+          ? refusalText(error.detail ?? error.message)
+          : `Could not confirm the base Source was set: ${error.message}. The Build is read again; check it before you try again.`,
+      );
+    },
+  });
+  const why = offline
+    ? OFFLINE_REASON
+    : set.isPending
+      ? "Setting the base Source."
+      : sourceId === null
+        ? "Choose a Source."
+        : null;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (why !== null || sourceId === null) return;
+    setFailure("");
+    set.mutate(sourceId);
+  };
+  return (
+    <form onSubmit={submit} noValidate aria-label="Set base Source">
+      <p>This Build has no layers, so it uses no Sources. Choose its base Source to plan it.</p>
+      <div className="pp-fields">
+        <div className="pp-field">
+          <label htmlFor={`${ids}-source`}>Base Source</label>
+          <SourceSelect
+            id={`${ids}-source`}
+            value={sourceId}
+            allowNone={false}
+            onChange={(next) => {
+              setFailure("");
+              setSourceId(next);
+            }}
+          />
+        </div>
+      </div>
+      {failure && (
+        <p role="alert" className="pp-field-error">
+          {failure}
+        </p>
+      )}
+      <div className="pp-dialog-actions">
+        <button
+          type="submit"
+          className="pp-button pp-button-primary"
+          aria-disabled={why !== null || undefined}
+          aria-describedby={why ? `${ids}-why` : undefined}
+        >
+          Set base Source
+        </button>
+        <span id={`${ids}-why`} role="status" className="pp-mutation-reason">
+          {why}
+        </span>
+      </div>
+    </form>
+  );
+}
+
 function SourcesBody({ build, layers }: BuildData) {
   const sources = useQuery(sourcesQuery);
   const byId = new Map(sources.data?.sources.map((source) => [source.id, source]));
   const layered = [...layers].sort((a, b) => a.layer_order - b.layer_order);
   const fileSources = sourcesInLayerOrder(layered);
-  if (layered.length === 0) return <p>This Build has no layers, so it uses no Sources.</p>;
+  if (layered.length === 0) return <SetBaseSource buildId={build.id} />;
   const sourceCells = (source: Source | undefined) => {
     if (!source) {
       const why = sources.isError

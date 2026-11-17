@@ -83,6 +83,22 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "ProfileLayers",
     ),
+    // Answers 200 with the new Build's summary and its `layers`; the client keeps the
+    // summary. A base Source is optional.
+    route(
+        "createBuild",
+        "POST",
+        "/api/v2/plans",
+        Some("CreateBuildRequest"),
+        "ProfileSummary",
+    ),
+    route(
+        "setBuildBase",
+        "PUT",
+        "/api/v2/plans/{id}/layers/base",
+        Some("SourceAttachmentRequest"),
+        "ProfileLayers",
+    ),
     route(
         "listDrafts",
         "GET",
@@ -549,9 +565,9 @@ pub(crate) mod codegen {
     };
     use pp_storage::{
         build_graph::wire::{
-            AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
-            PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
-            ProfileList, ProfileSummary,
+            AcceptedProgressSummary, AcceptedProgressUnavailableReason, CreateBuildRequest,
+            FreshnessReasons, PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer,
+            ProfileLayers, ProfileList, ProfileSummary, SourceAttachmentRequest,
         },
         checkoff_progress::wire::{
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
@@ -626,6 +642,14 @@ pub(crate) mod codegen {
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
+        schema(
+            "CreateBuildRequest",
+            schemars::schema_for!(CreateBuildRequest),
+        )?;
+        schema(
+            "SourceAttachmentRequest",
+            schemars::schema_for!(SourceAttachmentRequest),
+        )?;
         schema("DraftList", schemars::schema_for!(DraftListResponse))?;
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
@@ -2330,6 +2354,37 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "with-base",
+                json!({"name": format!("Build {UNICODE}"), "base_project_id": MAX_SAFE}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "no-base",
+                json!({"name": "Rack", "base_project_id": null}),
+            ),
+            request::<CreateBuildRequest>("CreateBuildRequest", "empty-name", json!({"name": ""})),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "long-name",
+                json!({"name": "\u{1f9f5}".repeat(4097)}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "zero-source",
+                json!({"name": "Rack", "base_project_id": 0}),
+            ),
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "max",
+                json!({"project_id": MAX_SAFE}),
+            ),
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "zero",
+                json!({"project_id": 0}),
+            ),
             served(
                 "DraftList",
                 "states",

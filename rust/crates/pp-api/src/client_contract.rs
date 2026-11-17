@@ -709,6 +709,8 @@ pub(crate) mod codegen {
                 "spool_id",
                 "grams",
                 "grams_basis",
+                "failure",
+                "failure_status",
             ];
             object.required.extend(nullable.map(String::from));
         }
@@ -2025,6 +2027,8 @@ pub(crate) mod codegen {
             spool_id: pending.then_some(7),
             grams: pending.then_some(20),
             grams_basis: pending.then_some("estimated"),
+            failure: None,
+            failure_status: None,
             created_at: "2026-11-12T00:00:00.000Z".into(),
             updated_at: "2026-11-12T00:00:00.000Z".into(),
         };

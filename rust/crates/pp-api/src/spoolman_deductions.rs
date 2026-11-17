@@ -16,7 +16,8 @@ use axum::{
     routing::get,
 };
 use pp_storage::spoolman_deductions::{
-    Deduction, DeductionError, Filter, GramsBasis, SkipReason, SpoolmanDeductionsClient, State,
+    Deduction, DeductionError, Failure, Filter, GramsBasis, SkipReason, SpoolmanDeductionsClient,
+    State,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -37,7 +38,8 @@ pub struct DeductionList {
 
 /// One recorded deduction. `integration_id`, `spool_id`, `grams` and
 /// `grams_basis` are null exactly when `state` is `skipped`, and `reason` is
-/// set exactly then.
+/// set exactly then. `failure` is set only on `failed`, `unknown` and
+/// `dismissed`. `failure_status` is set only when `failure` is `refused`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct DeductionView {
@@ -61,6 +63,11 @@ pub struct DeductionView {
     pub grams: Option<u64>,
     /// `estimated` (slicer) or `measured` (at print finish).
     pub grams_basis: Option<&'static str>,
+    /// `unreachable`, `refused`, `reply_lost`, `interrupted`,
+    /// `integration_missing` or `integration_disabled`.
+    pub failure: Option<&'static str>,
+    /// HTTP status from 100 to 599. Set only when `failure` is `refused`.
+    pub failure_status: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -79,6 +86,8 @@ impl From<Deduction> for DeductionView {
             spool_id: target.as_ref().map(|t| t.spool_id),
             grams: target.as_ref().map(|t| t.grams.ceil() as u64),
             grams_basis: target.as_ref().map(|t| GramsBasis::as_str(t.basis)),
+            failure: row.failure.map(Failure::as_str),
+            failure_status: row.failure_status,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -152,6 +161,7 @@ fn refused(error: &DeductionError) -> Response {
             "A stored deduction is unreadable",
             code::DEDUCTION_UNREADABLE,
         ),
+        DeductionError::GramsBeforeNotFinite | DeductionError::StatusOutOfRange => internal(),
         DeductionError::Writer(failure) => problem::writer_failure(failure),
     }
 }

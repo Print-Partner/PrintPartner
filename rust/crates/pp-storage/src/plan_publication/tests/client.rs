@@ -32,6 +32,7 @@ fn client(capacity: usize) -> PublicationClient {
             import_quota: Mutex::new(None),
             domain_events: crate::domain_events::Feed::new(0),
             restoration: crate::restore::activation::Context::for_test(),
+            deduction_wake: Mutex::new(None),
         }),
         policy: policy(),
     }

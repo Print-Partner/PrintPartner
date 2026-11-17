@@ -4,7 +4,8 @@
 //!
 //! The handler parses JSON and hands the body to storage, which owns the
 //! idempotency receipt, every check and the undo. No printer, webhook or
-//! Spoolman call happens here or inside the transaction. A response lost after
+//! Spoolman call happens here or inside the transaction. A committed verify
+//! burst wakes the deduction worker after the response is sent. A response lost after
 //! admission is reconciled by repeating the request with the same
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.

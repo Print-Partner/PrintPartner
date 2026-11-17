@@ -328,6 +328,10 @@ struct Shared {
     /// Print-file snapshots and the restore activity, one per open database.
     #[cfg(feature = "desktop_rebuild")]
     restoration: restore::activation::Context,
+    /// Called on the writer thread after a verify burst commits. It must not
+    /// use storage: the writer is still in this turn.
+    #[cfg(feature = "desktop_rebuild")]
+    deduction_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 #[derive(Clone)]
 pub struct SettingsClient {
@@ -496,6 +500,28 @@ fn execute(
     Ok(true)
 }
 impl Shared {
+    /// Registers the callback a committed verify burst runs. One worker.
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn set_deduction_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .deduction_wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    }
+
+    /// Runs the registered callback. The caller is the writer thread.
+    #[cfg(feature = "desktop_rebuild")]
+    fn notify_deduction_wake(&self) {
+        let wake = self
+            .deduction_wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     /// Waits up to `wait` for room in the writer queue, then queues `envelope`.
     fn admit(
         &self,
@@ -822,6 +848,8 @@ impl WriterOwner {
                 directory: lease.data_dir().to_owned(),
                 seed: seed_timestamp.to_owned(),
             },
+            #[cfg(feature = "desktop_rebuild")]
+            deduction_wake: Mutex::new(None),
             job_admission: Mutex::new(None),
             #[cfg(feature = "desktop_rebuild")]
             orphaned_source_leases: Mutex::new(Vec::new()),
@@ -971,11 +999,17 @@ impl WriterOwner {
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Checkoff { command, reply } => {
-                        let _ = reply.send(checkoff_progress::execute(
-                            &mut connection,
-                            command,
-                            admission,
-                        ));
+                        let verify = command.is_verify_batch();
+                        let response =
+                            checkoff_progress::execute(&mut connection, command, admission);
+                        let wake = verify
+                            && response
+                                .as_ref()
+                                .is_ok_and(|response| response.status == 200);
+                        let _ = reply.send(response);
+                        if wake {
+                            worker.notify_deduction_wake();
+                        }
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Plates { command, reply } => {

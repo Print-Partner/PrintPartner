@@ -42,6 +42,17 @@ impl Installation {
 /// Proves `credential` inside the write's own transaction, so the check and
 /// the write see the same sessions and API keys. A refused credential is
 /// [`WriterFailure::Auth`].
+/// The single-account installation, with no user session. Deduction sends
+/// run after Checkoff has already admitted the burst. More than one user
+/// has no single tenant, so the send does not guess.
+pub(crate) fn single_account(tx: &Transaction<'_>) -> Result<Installation, WriterFailure> {
+    let users: i64 = tx.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+    if users > 1 {
+        return Err(WriterFailure::Auth(AuthFailure::OwnerMappingRequired));
+    }
+    Ok(Installation("default".into()))
+}
+
 pub(crate) fn authorize(
     tx: &Transaction<'_>,
     credential: &Credential,

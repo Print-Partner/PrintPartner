@@ -36,6 +36,8 @@ fn ticket_t_59_catalog_private_full_queue_retains_unreleased_work() {
         domain_events: crate::domain_events::Feed::new(0),
         #[cfg(feature = "desktop_rebuild")]
         restoration: crate::restore::activation::Context::for_test(),
+        #[cfg(feature = "desktop_rebuild")]
+        deduction_wake: Mutex::new(None),
     });
     let readers = Arc::new(ReaderPool {
         state: Mutex::new(ReaderState {

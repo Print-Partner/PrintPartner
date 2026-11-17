@@ -81,11 +81,11 @@ If Spoolman is unavailable or the required mapping is missing, Checkoff still co
 
 The Rust core records each deduction when you confirm a Checkoff burst, in the same transaction, and does not call Spoolman then. It records one `pending` row per pinned spool on each bed, with the grams to deduct: the link's grams (the slicer estimate, or the measured grams once the print finished) divided by the link's units, times the confirmed units whose Part pins that spool (`spoolman:{integration}:spool:{n}`). Units it cannot deduct give one `skipped` row with the reason: `no_grams`, `no_pinned_spool`, `integration_missing`, `integration_disabled`, `integrations_unreadable` or `module_setting_unreadable` (a stored Module setting is not the typed shape, so the burst still succeeds). With the Spoolman Module off for the Build, nothing is recorded. Repeating a burst records nothing new, and undoing it removes its `pending` and `skipped` rows. `GET /api/v2/spoolman/deductions` lists the rows, including `failure` and `failure_status`.
 
-A claim moves one `pending` row to `sending` and stores the grams Spoolman reported before the request. The claim commits before any request. A finish applies only while the row is `sending`. Opening the database marks a `sending` row `unknown` with failure `interrupted` and does not send it again. With the Module off at send time the row stays `pending`. That is not a new skip reason.
+A worker started and stopped with the printer send worker sends each `pending` row once. A committed Checkoff burst wakes it. With nothing to send it looks again every 30 seconds. Checkoff returns without waiting for the send. Before each send the worker reads the Spoolman Module again. While the Module is off, or its setting cannot be read, the row stays `pending` and is sent once the Module is on. That is not a new skip reason.
+
+The send is `PUT /api/v1/spool/{id}/use` with the row's grams as `use_weight`. The worker reads the grams Spoolman reports for that spool, stores them, claims the row (`sending`), then sends once. A 2xx reply finishes the row `applied`. A reply that never comes back, or a restart while the row is `sending`, finishes it `unknown` (`reply_lost` or `interrupted`). A connection failure before the request is written, or a non-2xx reply, finishes it `failed` (`unreachable`, or `refused` with the HTTP status). Those rows are not sent again until a later reconcile. Undo still removes only `pending` and `skipped` rows and does not return filament.
 
 Deduction runs whenever the Spoolman Module is on; there is no per-printer setting. Do not also set `[spoolman]` in a printer's `moonraker.conf`, or the printer's own usage reports and these deductions would both count.
-
-Sending each `pending` row to Spoolman once, reconciling an uncertain result, and waking the worker from a burst commit (a notify, with a 30 second recheck as the printer send worker uses) follow in later parts of GRE-411.
 
 ## Security
 

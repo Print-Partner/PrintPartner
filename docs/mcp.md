@@ -210,12 +210,12 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 
 ### `propose_rebuild_plan`
 
-`propose_rebuild_plan` `{ plan_id, idempotency_key? }` prepares the Build's Working Plan from the Source roles in its planning brief (GRE-1539; the storage operation is GRE-1518).
+`propose_rebuild_plan` `{ plan_id, idempotency_key? }` prepares the Build's Working Plan from its planning brief (GRE-1539; the storage operation is GRE-1518 and GRE-1736).
 
-- **Propose** checks `plan_id` and `idempotency_key`, proves the API key and finds the brief. It writes nothing. The brief is read again at confirm, so a role set in between is used.
-- **Confirm** runs one transaction. It requires exactly one evidence item with role `structural_base` and makes its Source the base layer, then attaches each `overlay` and `addon` Source as an addon layer. Layers that already hold those Sources stay as they are. It prepares a draft from the layers the way `POST /plans/{id}/drafts/recompute` does, stores it, and records `draft_id`, `managed_source_ids` and `draft_source_revisions` in the brief. It never accepts or publishes a Plan.
-- It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "recompute", "sources": [{ "source_id", "role", "revision" }] } }`. `recompute` is `created`, or `existing` when the same key and the same Sources and revisions found the draft an earlier rebuild made. The key is `idempotency_key`, or else the action id. Read the draft's Parts with `get_plan_draft`. The result lists no Parts (provisional).
-- Path choices are not applied yet: a brief that resolves a difference or scopes a confirmed contribution to paths is refused. Removing layers an earlier rebuild attached also comes later (GRE-1434 PR 2).
+- **Propose** checks `plan_id` and `idempotency_key`, proves the API key and finds the brief. It writes nothing. The brief is read again at confirm, so a role or a path choice set in between is used.
+- **Confirm** runs one transaction. It requires exactly one evidence item with role `structural_base`. It removes a layer whose Source an earlier rebuild recorded in `managed_source_ids` when that Source is no longer `structural_base`, `overlay`, or `addon`. A layer the owner attached is not in that list, so it stays. It makes the structural base the base layer, then attaches each `overlay` and `addon` Source as an addon layer. Layers that already hold those Sources stay as they are.
+- Resolved differences become excluded paths: `choose_source_b` leaves out Source A's `.stl`, `choose_source_a` leaves out Source B's, and `not_applicable` leaves out both. `include_both` excludes nothing. A confirmed contribution with responsibility `printable_parts` limits that evidence Source to its `path_scopes` (`mods/a/**` keeps paths under `mods/a/`). It prepares a draft from the layers the way `POST /plans/{id}/drafts/recompute` does, stores it, and records `draft_id`, `managed_source_ids` and `draft_source_revisions` in the brief. It never accepts or publishes a Plan.
+- It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "recompute", "sources": [{ "source_id", "role", "revision" }] } }`. `recompute` is `created`, or `existing` when the same key and the same Sources, revisions, and path choices found the draft an earlier rebuild made. The key is `idempotency_key`, or else the action id. Read the draft's Parts with `get_plan_draft`. The result lists no Parts (provisional).
 
 Refusals have the shape described for `propose_create_build`. Every refusal leaves layers, drafts and brief unchanged, and confirm keeps the proposal pending.
 
@@ -227,7 +227,7 @@ Refusals have the shape described for `propose_create_build`. Every refusal leav
 | `planning_brief_invalid` | The stored brief does not parse. |
 | `no_structural_base` | No evidence item has role `structural_base`. |
 | `multiple_structural_bases` | More than one evidence item has role `structural_base`. |
-| `source_choices_unsupported` | The brief resolves a difference or scopes a confirmed contribution to paths. |
+| `unresolved_source_choices` | A difference group's resolution cannot be applied. That is a `custom` resolution, or an excluded `.stl` whose Source the brief's evidence does not name. The result adds `groups`, those group ids in the brief's difference order. |
 | `source_not_found` | A role Source does not exist. The result adds `source_id`. |
 | `layer_conflict` | The structural base Source is already attached as an addon layer. The result adds `source_id`. |
 | `accepted_baseline_required` | The Build needs an Accepted Plan first. |

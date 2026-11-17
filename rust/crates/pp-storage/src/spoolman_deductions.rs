@@ -19,8 +19,14 @@
 //! `interrupted`, before seeding and before job recovery, and does not send
 //! it. Nothing here returns `sending`, `unknown` or `failed` to `pending`.
 //! With the Module off at send time the row stays `pending`; that is not a
-//! new skip reason. The worker that sends, and the notify a burst commit uses
-//! to wake it, are GRE-411 part 2b.
+//! new skip reason.
+//!
+//! [`SpoolmanDeductionsClient::next_send`] is what the send worker reads.
+//! [`SpoolmanDeductionsClient::claim_for_send`] claims one row only while the
+//! Module is on, and [`SpoolmanDeductionsClient::finish_for_send`] records the
+//! outcome. Both act as the single-account installation: the burst already
+//! checked the caller's credential. A committed verify burst runs the callback
+//! registered with [`SpoolmanDeductionsClient::on_burst`].
 //!
 //! Errors are [`DeductionError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.
@@ -31,6 +37,12 @@ use crate::{
     printer_setup::{ServiceKind, integrations},
     read_model::Credential,
     write::authorize,
+};
+#[cfg(feature = "desktop_rebuild")]
+use crate::{
+    auth::{AuthFailure, SessionTenantPolicy},
+    read_model::stock::SpoolmanIntegration,
+    write::single_account,
 };
 use pp_domain::{PositiveId, features::Feature};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -159,6 +171,41 @@ pub struct Deduction {
     pub spool_grams_before: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// What the send worker should do with the oldest pending row.
+#[cfg(feature = "desktop_rebuild")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SendWork {
+    /// No `pending` row.
+    Idle,
+    /// Pending rows exist, and each one's Module is off or unreadable. They
+    /// stay `pending`.
+    Held,
+    /// The Module is on and the integration is not in the stored list, or the
+    /// list is not readable. Claim, then finish `integration_missing`.
+    Missing { id: i64 },
+    /// The Module is on and the integration is disabled. Claim, then finish
+    /// `integration_disabled`.
+    Disabled { id: i64 },
+    /// The Module is on and the integration can be contacted.
+    Ready {
+        id: i64,
+        spool_id: i64,
+        grams: f64,
+        integration: SpoolmanIntegration,
+    },
+}
+
+/// The result of claiming one row for a send.
+#[cfg(feature = "desktop_rebuild")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModuleClaim {
+    /// The row is not `pending`. Nothing changed.
+    Gone,
+    /// The Module is off or unreadable. The row stays `pending`.
+    Held,
+    Claimed(Claimed),
 }
 
 /// The row a claim moved to `sending`, with the grams the caller will send.
@@ -686,17 +733,202 @@ impl SpoolmanDeductionsClient {
             wait,
             move |tx, _| {
                 let installation = authorize(tx, &credential, policy)?;
-                let now = now(tx)?;
-                let changed = tx.execute(
-                    "UPDATE spoolman_deductions
-                     SET state=?1, failure=?2, failure_status=?3, updated_at=?4
-                     WHERE tenant_id=?5 AND id=?6 AND state='sending'",
-                    params![state, failure, status, now, installation.id(), id],
-                )?;
-                Ok(changed == 1)
+                finish_sending(tx, installation.id(), id, state, failure, status)
             },
         )?
     }
+
+    /// Registers `wake` to run after a verify burst commits. The callback
+    /// runs on the writer thread and must not use storage. A later call
+    /// replaces it.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn on_burst(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.shared.set_deduction_wake(wake);
+    }
+
+    /// The oldest `pending` row whose Module is on, or why nothing is sendable.
+    /// Does not claim.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn next_send(
+        &self,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<SendWork, DeductionError> {
+        let policy = self.policy;
+        self.readers.read(
+            "spoolman_deductions.next_send",
+            cancelled,
+            wait,
+            move |tx| {
+                let installation = runtime_tenant(tx, policy)?;
+                next_pending(tx, installation.id())
+            },
+        )?
+    }
+
+    /// Claims `id` when it is `pending` and the Module is on for its Build.
+    /// The write commits before this returns. `Held` leaves the row `pending`.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn claim_for_send(
+        &self,
+        id: i64,
+        grams_before: Option<f64>,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<ModuleClaim, DeductionError> {
+        if grams_before.is_some_and(|grams| !grams.is_finite()) {
+            return Err(DeductionError::GramsBeforeNotFinite);
+        }
+        let policy = self.policy;
+        self.shared.write(
+            "spoolman_deductions.claim_for_send",
+            cancelled,
+            wait,
+            move |tx, _| {
+                let installation = runtime_tenant(tx, policy)?;
+                claim_for_module(tx, installation.id(), id, grams_before)
+            },
+        )?
+    }
+
+    /// Records `end` on `id` while it is `sending`. `Ok(false)` leaves the row
+    /// unchanged.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn finish_for_send(
+        &self,
+        id: i64,
+        end: Outcome,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<bool, DeductionError> {
+        let (state, failure, status) = outcome(end)?;
+        let policy = self.policy;
+        self.shared.write(
+            "spoolman_deductions.finish_for_send",
+            cancelled,
+            wait,
+            move |tx, _| {
+                let installation = runtime_tenant(tx, policy)?;
+                finish_sending(tx, installation.id(), id, state, failure, status)
+            },
+        )?
+    }
+}
+
+#[cfg(feature = "desktop_rebuild")]
+fn runtime_tenant(
+    tx: &Transaction<'_>,
+    policy: AuthPolicy,
+) -> Result<crate::write::Installation, WriterFailure> {
+    if !matches!(
+        policy.session_tenant,
+        SessionTenantPolicy::SingleAccountDefault
+    ) {
+        return Err(WriterFailure::Auth(AuthFailure::SessionRequired));
+    }
+    single_account(tx)
+}
+
+#[cfg(feature = "desktop_rebuild")]
+fn next_pending(tx: &Transaction<'_>, tenant: &str) -> Result<SendWork, DeductionError> {
+    let pending = {
+        let mut statement = tx.prepare(
+            "SELECT id, profile_id, integration_id, spool_id, grams
+             FROM spoolman_deductions
+             WHERE tenant_id=?1 AND state='pending' ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![tenant], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<(i64, i64, String, i64, f64)>, _>>()?
+    };
+    let mut held = false;
+    for (id, profile, integration_id, spool_id, grams) in pending {
+        if !grams.is_finite() || grams <= 0.0 || spool_id <= 0 || integration_id.is_empty() {
+            return Err(DeductionError::StoredRowInvalid { id });
+        }
+        match module_on(tx, tenant, profile)? {
+            Some(true) => return ready(tx, tenant, id, spool_id, grams, &integration_id),
+            Some(false) | None => held = true,
+        }
+    }
+    Ok(if held { SendWork::Held } else { SendWork::Idle })
+}
+
+#[cfg(feature = "desktop_rebuild")]
+fn ready(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    spool_id: i64,
+    grams: f64,
+    integration_id: &str,
+) -> Result<SendWork, DeductionError> {
+    let found = crate::read_model::stock::spoolman_integration(tx, tenant, integration_id)
+        .map_err(WriterFailure::from)?;
+    Ok(match found {
+        Some(integration) if integration.enabled => SendWork::Ready {
+            id,
+            spool_id,
+            grams,
+            integration,
+        },
+        Some(_) => SendWork::Disabled { id },
+        None => SendWork::Missing { id },
+    })
+}
+
+#[cfg(feature = "desktop_rebuild")]
+fn claim_for_module(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    grams_before: Option<f64>,
+) -> Result<ModuleClaim, DeductionError> {
+    let row = tx
+        .query_row(
+            "SELECT state, profile_id FROM spoolman_deductions WHERE tenant_id=?1 AND id=?2",
+            params![tenant, id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((state, profile)) = row else {
+        return Ok(ModuleClaim::Gone);
+    };
+    if state != State::Pending.as_str() {
+        return Ok(ModuleClaim::Gone);
+    }
+    if module_on(tx, tenant, profile)? != Some(true) {
+        return Ok(ModuleClaim::Held);
+    }
+    Ok(match claim_pending(tx, tenant, id, grams_before)? {
+        Some(claimed) => ModuleClaim::Claimed(claimed),
+        None => ModuleClaim::Gone,
+    })
+}
+
+fn finish_sending(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    state: &str,
+    failure: Option<&str>,
+    status: Option<i64>,
+) -> Result<bool, DeductionError> {
+    let now = now(tx)?;
+    let changed = tx.execute(
+        "UPDATE spoolman_deductions
+         SET state=?1, failure=?2, failure_status=?3, updated_at=?4
+         WHERE tenant_id=?5 AND id=?6 AND state='sending'",
+        params![state, failure, status, now, tenant, id],
+    )?;
+    Ok(changed == 1)
 }
 
 fn claim_pending(

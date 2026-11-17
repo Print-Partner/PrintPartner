@@ -259,6 +259,22 @@ pub(super) fn read_inputs(
     })
 }
 
+/// The stored Spoolman integration `id`, if the integrations document names it.
+/// A document that is not a list reads as no integration. `Err` is a storage
+/// failure, not a missing integration.
+pub(crate) fn spoolman_integration(
+    connection: &Connection,
+    tenant: &str,
+    id: &str,
+) -> Result<Option<SpoolmanIntegration>> {
+    match crate::snapshot(connection, tenant, INTEGRATIONS_KEY)? {
+        crate::SettingSnapshot::Stored { value } => Ok(parse_integrations(&value)
+            .into_iter()
+            .find(|row| row.id == id)),
+        crate::SettingSnapshot::Missing => Ok(None),
+    }
+}
+
 /// Spoolman entries of Node's integration list. Corrupt entries are skipped,
 /// as Node's `loadRaw` skips them.
 fn parse_integrations(value: &str) -> Vec<SpoolmanIntegration> {

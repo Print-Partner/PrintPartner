@@ -31,6 +31,7 @@ fn client(capacity: usize) -> PublicationClient {
             import_quota: Mutex::new(None),
             domain_events: crate::domain_events::Feed::new(0),
             print_file_snapshots: Arc::default(),
+            deduction_wake: Mutex::new(None),
         }),
         policy: policy(),
     }

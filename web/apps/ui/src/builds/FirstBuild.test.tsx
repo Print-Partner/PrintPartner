@@ -98,9 +98,16 @@ interface Seed {
   builds?: [string, string | null][];
   /** Replaces the create's reply after the Build is stored, as a lost or failed answer. */
   answer?: (stored: ProfileSummary) => Response;
+  /** How the Source list answers: held until `releaseSources`, or a 500. */
+  sourceList?: "held" | "failed";
 }
 
-function scriptedCore({ sources: sourceNames = [], builds: buildSeeds = [], answer }: Seed = {}) {
+function scriptedCore({
+  sources: sourceNames = [],
+  builds: buildSeeds = [],
+  answer,
+  sourceList,
+}: Seed = {}) {
   const sources = sourceNames.map((name, i) => storedSource(i + 1, name));
   const builds: ProfileSummary[] = [];
   const layers = new Map<number, Layer[]>();
@@ -181,9 +188,18 @@ function scriptedCore({ sources: sourceNames = [], builds: buildSeeds = [], answ
     if (path === "/api/v2/printers") return json({ printers: [] });
     return sourceRoute(path, method, body) ?? planRoute(path, method, body);
   };
-  const fetchMock = vi.fn((path: string, init?: RequestInit) =>
-    down ? Promise.reject(new TypeError("Failed to fetch")) : Promise.resolve(route(path, init)),
-  );
+  let listMode = sourceList;
+  const held: (() => void)[] = [];
+  const fetchMock = vi.fn((path: string, init?: RequestInit): Promise<Response> => {
+    if (down) return Promise.reject(new TypeError("Failed to fetch"));
+    if (path === "/api/v1/sources" && !init?.method && listMode === "held") {
+      return new Promise((resolve) => held.push(() => resolve(route(path, init))));
+    }
+    if (path === "/api/v1/sources" && !init?.method && listMode === "failed") {
+      return Promise.resolve(problem(500, "Library unreadable"));
+    }
+    return Promise.resolve(route(path, init));
+  });
   return {
     fetchMock,
     sources,
@@ -193,6 +209,11 @@ function scriptedCore({ sources: sourceNames = [], builds: buildSeeds = [], answ
     buildPosts,
     basePuts,
     goDown: () => (down = true),
+    /** Answers the held Source list requests, and every later one, from the stored list. */
+    releaseSources: () => {
+      listMode = undefined;
+      for (const answerHeld of held.splice(0)) answerHeld();
+    },
   };
 }
 
@@ -357,6 +378,61 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
     fireEvent.click(create);
     await settle();
     expect(core.buildPosts).toEqual([]);
+  });
+});
+
+describe("Create Build waits for the Source list before it picks a base", () => {
+  it("sends nothing while the list loads, then defaults to the first Source", async () => {
+    const core = scriptedCore({ sources: ["Kit A"], sourceList: "held" });
+    renderAt("/builds", core.fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+    const form = dialog("Create Build");
+    expect(within(form).getByText("Loading the Library's Sources.")).toBeTruthy();
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Rack" } });
+    const create = within(form).getByRole("button", { name: "Create" });
+    expect(within(form).getByText("Waiting for the Library's Sources.")).toBeTruthy();
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(create);
+    await settle();
+    expect(core.buildPosts).toEqual([]);
+
+    core.releaseSources();
+    const base = (await within(form).findByLabelText("Base Source")) as HTMLSelectElement;
+    expect(base.selectedOptions[0]!.textContent).toBe("Kit A");
+    expect(create.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(create);
+    await heading("Rack");
+    expect(core.buildPosts).toEqual([{ name: "Rack", base_project_id: 1 }]);
+  });
+
+  it("sends nothing after the list failed, and a reopened dialog reads it again", async () => {
+    const core = scriptedCore({ sources: ["Kit A"], sourceList: "failed" });
+    renderAt("/builds", core.fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+    let form = dialog("Create Build");
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Rack" } });
+    expect(await within(form).findByText(/^Could not load the Library's Sources: /)).toBeTruthy();
+    expect(
+      within(form).getByText(
+        "The Library's Sources did not load. Close and open Create Build to try again.",
+      ),
+    ).toBeTruthy();
+    const create = within(form).getByRole("button", { name: "Create" });
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(create);
+    await settle();
+    expect(core.buildPosts).toEqual([]);
+
+    core.releaseSources();
+    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    form = dialog("Create Build");
+    const base = (await within(form).findByLabelText("Base Source")) as HTMLSelectElement;
+    expect(base.selectedOptions[0]!.textContent).toBe("Kit A");
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Rack" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Create" }));
+    await heading("Rack");
+    expect(core.buildPosts).toEqual([{ name: "Rack", base_project_id: 1 }]);
   });
 });
 

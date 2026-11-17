@@ -14,12 +14,6 @@ export function buildRequest(name: string, sourceId: number | null): CreateBuild
   return { name: name.trim(), base_project_id: sourceId };
 }
 
-/** The first Source in the Library, once the list has loaded, as the default base. */
-function useFirstSourceId(): number | null | undefined {
-  const sources = useQuery(sourcesQuery);
-  return sources.data && (sources.data.sources[0]?.id ?? null);
-}
-
 /** Builds' "Create Build" button and its dialog. */
 export function CreateBuild() {
   const [open, setOpen] = useState(false);
@@ -43,11 +37,14 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const offline = useConnection() === "offline";
   const ids = useId();
-  const firstSource = useFirstSourceId();
+  const sources = useQuery(sourcesQuery);
   const [name, setName] = useState("");
   // Undefined until the user picks, so the default follows the Sources as they load.
   const [picked, setPicked] = useState<number | null | undefined>(undefined);
-  const sourceId = picked === undefined ? (firstSource ?? null) : picked;
+  // The first Source is the default base, and `null` only once the list has loaded empty.
+  // Undefined while the list loads or after it failed: Create waits rather than send `null`.
+  const sourceId =
+    picked === undefined ? sources.data && (sources.data.sources[0]?.id ?? null) : picked;
   const [failure, setFailure] = useState("");
   const sending = useRef(false);
   const create = useMutation({
@@ -65,13 +62,17 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
     ? OFFLINE_REASON
     : create.isPending
       ? "Creating the Build."
-      : name.trim()
-        ? null
-        : "Enter a name.";
+      : !name.trim()
+        ? "Enter a name."
+        : sourceId !== undefined
+          ? null
+          : sources.isError
+            ? "The Library's Sources did not load. Close and open Create Build to try again."
+            : "Waiting for the Library's Sources.";
   const blocked = why !== null || create.isPending;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (blocked || sending.current) return;
+    if (blocked || sourceId === undefined || sending.current) return;
     sending.current = true;
     setFailure("");
     // Per-call callbacks do not run once the dialog has closed, so a late answer never
@@ -112,7 +113,7 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
             <label htmlFor={`${ids}-source`}>Base Source</label>
             <SourceSelect
               id={`${ids}-source`}
-              value={sourceId}
+              value={sourceId ?? null}
               allowNone
               onChange={(next) => {
                 setFailure("");

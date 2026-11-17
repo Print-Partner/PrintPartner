@@ -3,6 +3,9 @@ rules:
     ignore:
       # Linear sync runs trusted base/default-branch tooling for closed PRs.
       - linear-pr-sync.yml:4
+      # Posts pp/score from already-recorded comments. Checks out the default
+      # branch only, trusts only scorer_authors, and never runs PR head code.
+      - post-pp-score-status.yml:8
   self-repository:
     ignore:
       # actionlint 1.7.12 rejects the replacement $/ syntax. These local workflows

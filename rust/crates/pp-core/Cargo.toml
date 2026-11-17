@@ -52,6 +52,8 @@ socket2 = "=0.6.5"
 zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json"] }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+flate2 = "=1.1.10"
+tar = { version = "=0.4.46", default-features = false }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

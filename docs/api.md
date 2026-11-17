@@ -306,6 +306,14 @@ their compatibility behavior and replace only legacy roots that are present.
 See [Operations](../OPERATIONS.md) for the restore procedure and concurrency
 limits.
 
+The Rust-only runtime, with `PP_DESKTOP_REBUILD` exactly `1` or `true`, adds
+two routes that Node does not serve. `POST /api/v2/installation/backup`
+creates one whole-installation archive under the data directory's `backups`
+folder and answers its file name, time, app version, size and SHA-256.
+`GET /api/v2/installation/backup/archive` streams that archive. Free disk
+bounds the size. The routes are absent when the flag is off. See
+[Whole-installation backup export](storage.md#whole-installation-backup-export).
+
 ## Background jobs
 
 A background operation returns:

@@ -402,5 +402,110 @@ class MergeGroupTests(unittest.TestCase):
                          [(QUEUE_HEAD, "success", "#1829: 10/10 from grok-4.7")])
 
 
+
+class CursorAutoAuthorTests(unittest.TestCase):
+    def setUp(self):
+        self.trust = pps.load_trust()
+
+    def records(self, *lines):
+        return pps.trusted_records([comment("\n".join(lines))], self.trust)
+
+    def line(self, head, seat, vendor, score, author="cursor-auto"):
+        return f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author}"
+
+    def test_cursor_auto_record_parses(self):
+        records = self.records(self.line(SHA, "claude-opus-5-5", "anthropic", 9))
+        self.assertEqual([(r.author, r.vendor, r.seat, r.score) for r in records],
+                         [("cursor-auto", "anthropic", "claude-opus-5-5", 9.0)])
+
+    def test_missing_one_family_fails(self):
+        (plan,) = pps.plan_statuses(self.records(
+            self.line(SHA, "claude-opus-5-5", "anthropic", 9)))
+        self.assertEqual((plan.state, plan.description),
+                         ("failure", "cursor-auto requires anthropic and openai scores; missing openai"))
+
+        (plan,) = pps.plan_statuses(self.records(
+            self.line(SHA, "gpt-6.1-sol", "openai", 9, author="unknown")))
+        self.assertEqual((plan.state, plan.description),
+                         ("failure", "unknown requires anthropic and openai scores; missing anthropic"))
+
+    def test_both_families_pass_at_the_lower_score(self):
+        (plan,) = pps.plan_statuses(self.records(
+            self.line(SHA, "claude-opus-5-5", "anthropic", 9),
+            self.line(SHA, "gpt-6.1-sol", "openai", 8),
+        ))
+        self.assertEqual(plan.state, "success")
+        self.assertEqual(plan.description, "9/10 from claude-opus-5-5; 8/10 from gpt-6.1-sol")
+
+    def test_one_family_below_eight_fails(self):
+        (plan,) = pps.plan_statuses(self.records(
+            self.line(SHA, "claude-opus-5-5", "anthropic", 9),
+            self.line(SHA, "gpt-6.1-sol", "openai", 7),
+        ))
+        self.assertEqual(plan.state, "failure")
+        self.assertEqual(plan.description, "9/10 from claude-opus-5-5; 7/10 from gpt-6.1-sol")
+
+    def test_stale_head_does_not_satisfy_the_current_head(self):
+        records = self.records(
+            self.line(OTHER, "claude-opus-5-5", "anthropic", 9),
+            self.line(OTHER, "gpt-6.1-sol", "openai", 9),
+            self.line(SHA, "claude-opus-5-5", "anthropic", 9),
+        )
+        plans = {p.head: p for p in pps.plan_statuses(records)}
+        self.assertEqual(plans[OTHER].state, "success")
+        self.assertEqual(plans[SHA].state, "failure")
+        self.assertEqual(plans[SHA].description,
+                         "cursor-auto requires anthropic and openai scores; missing openai")
+
+    def test_known_family_still_rejects_a_same_family_score(self):
+        (plan,) = pps.plan_statuses(self.records(
+            self.line(SHA, "claude-opus-5-5", "anthropic", 9, author="anthropic")))
+        self.assertEqual(plan.state, "failure")
+        self.assertIn("author's own family (anthropic)", plan.description)
+
+
+class CursorAutoMergeGroupTests(unittest.TestCase):
+    def setUp(self):
+        self.trust = pps.load_trust()
+
+    def dual(self, head, anthropic=9, openai=8, author="cursor-auto"):
+        return pps.trusted_records([comment(
+            f"pp-score head={head} seat=claude-opus-5-5 vendor=anthropic score={anthropic} author={author}\n"
+            f"pp-score head={head} seat=gpt-6.1-sol vendor=openai score={openai} author={author}"
+        )], self.trust)
+
+    def one(self, head, seat="claude-opus-5-5", vendor="anthropic", score=9, author="cursor-auto"):
+        return pps.trusted_records([comment(
+            f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author}"
+        )], self.trust)
+
+    def test_merge_group_passes_when_both_families_score_the_current_head(self):
+        plan = pps.plan_merge_group(
+            QUEUE_HEAD, [1829], {1829: SHA}, {1829: self.dual(SHA)})
+        self.assertEqual((plan.state, plan.description),
+                         ("success", "#1829: 9/10 from claude-opus-5-5; 8/10 from gpt-6.1-sol"))
+
+    def test_merge_group_fails_when_one_family_is_missing_on_the_current_head(self):
+        # A complete pair on a stale SHA does not count for the current head.
+        records = self.dual(OTHER) + self.one(SHA)
+        plan = pps.plan_merge_group(
+            QUEUE_HEAD, [1829], {1829: SHA}, {1829: records})
+        self.assertEqual(plan.state, "failure")
+        self.assertEqual(
+            plan.description,
+            f"#1829 {SHA[:7]}: cursor-auto requires anthropic and openai scores; missing openai",
+        )
+        self.assertLessEqual(len(plan.description), 140)
+
+    def test_merge_group_fails_when_one_family_is_below_eight(self):
+        plan = pps.plan_merge_group(
+            QUEUE_HEAD, [1829], {1829: SHA}, {1829: self.dual(SHA, anthropic=9, openai=7)})
+        self.assertEqual(plan.state, "failure")
+        self.assertEqual(
+            plan.description,
+            f"#1829 {SHA[:7]}: 9/10 from claude-opus-5-5; 7/10 from gpt-6.1-sol",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

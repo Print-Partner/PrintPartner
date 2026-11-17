@@ -208,7 +208,7 @@ The generator does not produce open drafts, Checkoff progress, printer sends, ex
 
 ## Whole-installation restore: staging
 
-With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation, described below, swaps the staged copy into place under the same owner. The HTTP routes are GRE-1161. Build snapshot restore is a separate Plan operation.
+With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation, described below, swaps the staged copy into place under the same owner. Create and download are the routes in [Whole-installation backup export](#whole-installation-backup-export) (GRE-1371). Restore upload and activation routes remain GRE-1161. Build snapshot restore is a separate Plan operation.
 
 Staging (`WriterOwner::installation`, then `InstallationClient::begin_upload` and `stage`) takes no filesystem path from the caller:
 
@@ -287,9 +287,17 @@ Each operation checks the free space on the data volume first and keeps a reserv
 
 A backup archive over 20 GiB succeeds and carries `BackupWarning::Large`.
 
-The operation returns `restore::RestoreError`. A backup that would leave less than the reserve free is `Refused(Refusal::NoSpace)`. Activation adds `RolledBack` and `RestartRequired`. Other failures are the shared `WriterFailure` (`Stopped` once the owner is closing, `QueueFull` when the writer queue stayed full for 5 s, `Busy` when another process held the database past the writer deadline, and `Internal` for a file or SQLite failure). The HTTP routes, which stream the download, are GRE-1371.
+The operation returns `restore::RestoreError`. A backup that would leave less than the reserve free is `Refused(Refusal::NoSpace)`. Activation adds `RolledBack` and `RestartRequired`. Other failures are the shared `WriterFailure` (`Stopped` once the owner is closing, `QueueFull` when the writer queue stayed full for 5 s, `Busy` when another process held the database past the writer deadline, and `Internal` for a file or SQLite failure).
 
-Tests: `pp-storage/src/restore/tests/export.rs`.
+### Create and download
+
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two routes (GRE-1371). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One request runs at a time; a second answers 503 `A backup is already running`. Responses send `Cache-Control: private, no-store`.
+
+`POST /api/v2/installation/backup` calls `export_backup` with this build's version and answers the archive file name, `created_at`, app version, size in bytes, SHA-256 and warnings. The name is `print-partner-backup.tar.gz`. The router keeps that one archive. A later create drops the previous one, which removes its folder. Not enough free disk answers 503 `Not enough free disk space`, with `needed` and `available`. A restore in progress answers 503 `A restore is in progress`.
+
+`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
+
+Tests: `pp-storage/src/restore/tests/export.rs` and `pp-core/tests/installation_backup_http.rs`.
 
 ## To be written
 
@@ -325,7 +333,8 @@ reported before the send, stored when a row is claimed, and may be null.
 
 A claim moves one `pending` row to `sending` and stores that before value. It
 applies only while the row is still `pending`, and it commits before any
-request. A finish applies only while the row is `sending`. Opening the database
+request. The send worker's claim also requires the stored integration to equal
+the one it read before the spool read; otherwise the row stays `pending`. A finish applies only while the row is `sending`. Opening the database
 marks every `sending` row `unknown` with failure `interrupted`, before seeding
 and before job recovery, and does not send it. Nothing in this step returns
 `sending`, `unknown` or `failed` to `pending`. Reconcile is the only later

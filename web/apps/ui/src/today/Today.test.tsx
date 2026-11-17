@@ -1616,6 +1616,22 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
   });
 });
 
+it("shows a notice when free space is below the import reserve", async () => {
+  const core = fakeCore();
+  const base = core.fetchMock.getMockImplementation()!;
+  core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (path === "/api/v2/tasks")
+      return json({
+        tasks: [task(22, "Build 22", "Verify prints")],
+        unavailable: [],
+        disk_notice: "Free space is below the import reserve.",
+      });
+    return base(path, init);
+  });
+  renderToday(core);
+  expect(await screen.findByText("Free space is below the import reserve.")).toBeTruthy();
+});
+
 it("offers Builds when the task feed is empty, without marking anything", async () => {
   const core = fakeCore();
   const base = core.fetchMock.getMockImplementation()!;

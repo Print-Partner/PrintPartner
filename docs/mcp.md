@@ -75,6 +75,32 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 
 It also answers the four shared codes above.
 
+### `propose_assign_role_filament`
+
+`propose_assign_role_filament` `{ plan_id, assignment }` saves one role's filament default and records it on the Build's planning brief (GRE-1435). `assignment` is `{ role, inventory_kind, inventory_id?, requested_name?, requested_brand?, color_hex, substitution_confirmed? }`. `inventory_kind` is `catalog`, `spoolman`, `custom` or `substitute`. The call does not accept a Plan, pin a spool, or add an HTTP route.
+
+- **Propose** checks that `plan_id` is a JSON whole number from 1 up and that the assignment has a non-blank `role`, one of the four kinds, and a `#` plus six hex digits. `custom` and `substitute` require `substitution_confirmed: true`. A `spoolman` assignment also requires the Spoolman Module to be on. It then finds the Build's planning brief with the request's API key. It writes nothing and makes no network call.
+- **Confirm** checks the assignment again. A `catalog` assignment must name a built-in catalog color, and `color_hex` must match that color. A non-blank `requested_name` must match the color's display name, and a non-blank `requested_brand` its product line, ignoring case. A `spoolman` assignment is checked against the Spoolman Module again. This port has no Spoolman inventory reader on the MCP domain, so a module that is on still answers `spoolman_unavailable` and writes nothing. Confirm then runs one transaction: it replaces that role's entry in `role_filaments`, marks an existing `color_<role>` requirement satisfied (the role lowercased, with each run of non-alphanumeric characters becoming `_`), clears the selected draft, and merges `role_filaments_<plan_id>`. A second confirm for the same role replaces the first. The setting keeps `filament_color_id` for a catalog or Spoolman item, `filament_custom_hex` for a custom or substitute color, and `spoolman_spool_id` null. It answers `{ "ok": true, "result": { "role" } }`.
+
+A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
+
+| Code | When |
+| --- | --- |
+| `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
+| `invalid_filament_assignment` | `assignment` is missing or not an object with a role, a known kind, and a `#rrggbb` color. |
+| `substitution_unconfirmed` | `custom` or `substitute` without `substitution_confirmed: true`. |
+| `catalog_filament_not_found` | The catalog id names no built-in color. |
+| `catalog_color_mismatch` | `color_hex` is not that color's hex. |
+| `catalog_name_mismatch` | `requested_name` is not that color's display name. |
+| `catalog_brand_mismatch` | `requested_brand` is not that color's product line. |
+| `spoolman_module_off` | The Spoolman Module is off. |
+| `spoolman_unavailable` | Spoolman is on, and this port cannot verify the item, so it does not write. |
+| `module_settings_invalid` | A `spoolman` assignment, and the stored Module settings don't parse, so the Spoolman state is unknown. |
+| `no_planning_brief` | The Build has no planning brief. |
+| `planning_brief_invalid` | The stored brief does not parse. |
+
+It also answers the four shared codes above.
+
 ### `propose_import_build_inputs`
 
 `propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), and model pages and other links by `url` (part 3a, GRE-1526). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A git repository URL is refused until GRE-1300 part 3b.
@@ -154,7 +180,7 @@ It answers:
 
 Like `get_farm_status`, it is listed and callable only while the Farm Module is on. Storage failures answer the shared codes `unauthorized`, `unavailable` and `internal`.
 
-These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, and for `propose_set_build_source_roles` and `propose_import_build_inputs` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
+These tools are implemented in the Rust API behind both rebuild gates. Gateway entry-point proof waits on GRE-1333 and is tracked in [GRE-1386](https://linear.app/greetz/issue/GRE-1386/prove-addon-and-build-brief-mcp-tools-through-the-rust-only-gateway); for `propose_create_build` it waits on GRE-1353 and closes GRE-1441, for `propose_assign_role_filament` it waits on GRE-1353 and closes GRE-1435, and for `propose_set_build_source_roles` and `propose_import_build_inputs` it closes GRE-1300 after its last part. The default Node-backed runtime keeps its existing tools until the whole-runtime cutover in [ADR 0010](adr/0010-whole-runtime-cutover.md).
 
 ### `propose_edit_plan_draft_parts`
 
@@ -184,12 +210,12 @@ Refusals have the shape described for `propose_create_build`, and confirm keeps 
 
 ### `propose_rebuild_plan`
 
-`propose_rebuild_plan` `{ plan_id, idempotency_key? }` prepares the Build's Working Plan from the Source roles in its planning brief (GRE-1539; the storage operation is GRE-1518).
+`propose_rebuild_plan` `{ plan_id, idempotency_key? }` prepares the Build's Working Plan from its planning brief (GRE-1539; the storage operation is GRE-1518 and GRE-1736).
 
-- **Propose** checks `plan_id` and `idempotency_key`, proves the API key and finds the brief. It writes nothing. The brief is read again at confirm, so a role set in between is used.
-- **Confirm** runs one transaction. It requires exactly one evidence item with role `structural_base` and makes its Source the base layer, then attaches each `overlay` and `addon` Source as an addon layer. Layers that already hold those Sources stay as they are. It prepares a draft from the layers the way `POST /plans/{id}/drafts/recompute` does, stores it, and records `draft_id`, `managed_source_ids` and `draft_source_revisions` in the brief. It never accepts or publishes a Plan.
-- It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "recompute", "sources": [{ "source_id", "role", "revision" }] } }`. `recompute` is `created`, or `existing` when the same key and the same Sources and revisions found the draft an earlier rebuild made. The key is `idempotency_key`, or else the action id. Read the draft's Parts with `get_plan_draft`. The result lists no Parts (provisional).
-- Path choices are not applied yet: a brief that resolves a difference or scopes a confirmed contribution to paths is refused. Removing layers an earlier rebuild attached also comes later (GRE-1434 PR 2).
+- **Propose** checks `plan_id` and `idempotency_key`, proves the API key and finds the brief. It writes nothing. The brief is read again at confirm, so a role or a path choice set in between is used.
+- **Confirm** runs one transaction. It requires exactly one evidence item with role `structural_base`. It removes a layer whose Source an earlier rebuild recorded in `managed_source_ids` when that Source is no longer `structural_base`, `overlay`, or `addon`. A layer the owner attached is not in that list, so it stays. It makes the structural base the base layer, then attaches each `overlay` and `addon` Source as an addon layer. Layers that already hold those Sources stay as they are.
+- Resolved differences become excluded paths: `choose_source_b` leaves out Source A's `.stl`, `choose_source_a` leaves out Source B's, and `not_applicable` leaves out both. `include_both` excludes nothing. A confirmed contribution with responsibility `printable_parts` limits that evidence Source to its `path_scopes` (`mods/a/**` keeps paths under `mods/a/`). It prepares a draft from the layers the way `POST /plans/{id}/drafts/recompute` does, stores it, and records `draft_id`, `managed_source_ids` and `draft_source_revisions` in the brief. It never accepts or publishes a Plan.
+- It answers `{ "ok": true, "result": { "draft_id", "snapshot_digest", "recompute", "sources": [{ "source_id", "role", "revision" }] } }`. `recompute` is `created`, or `existing` when the same key and the same Sources, revisions, and path choices found the draft an earlier rebuild made. The key is `idempotency_key`, or else the action id. Read the draft's Parts with `get_plan_draft`. The result lists no Parts (provisional).
 
 Refusals have the shape described for `propose_create_build`. Every refusal leaves layers, drafts and brief unchanged, and confirm keeps the proposal pending.
 
@@ -201,7 +227,7 @@ Refusals have the shape described for `propose_create_build`. Every refusal leav
 | `planning_brief_invalid` | The stored brief does not parse. |
 | `no_structural_base` | No evidence item has role `structural_base`. |
 | `multiple_structural_bases` | More than one evidence item has role `structural_base`. |
-| `source_choices_unsupported` | The brief resolves a difference or scopes a confirmed contribution to paths. |
+| `unresolved_source_choices` | A difference group's resolution cannot be applied. That is a `custom` resolution, or an excluded `.stl` whose Source the brief's evidence does not name. The result adds `groups`, those group ids in the brief's difference order. |
 | `source_not_found` | A role Source does not exist. The result adds `source_id`. |
 | `layer_conflict` | The structural base Source is already attached as an addon layer. The result adds `source_id`. |
 | `accepted_baseline_required` | The Build needs an Accepted Plan first. |

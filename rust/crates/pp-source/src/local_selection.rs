@@ -167,9 +167,9 @@ impl LocalFiles {
 
     /// Classifies retained files into a snapshot selection and an upstream key.
     ///
-    /// The caller supplies the operation's limits. A file whose kind cannot be
-    /// classified is refused rather than dropped, so a revision never claims to
-    /// be complete while omitting a stored file.
+    /// The caller supplies the operation's limits. A file of a type the import
+    /// does not parse stays as an artifact, so the revision keeps every stored
+    /// file.
     pub fn local_snapshot_selection(
         &self,
         limits: SelectionLimits,
@@ -182,7 +182,7 @@ impl LocalFiles {
         let mut stls = 0u64;
         let mut documentation_bytes = 0u64;
         for file in inventory {
-            let kind = classify(file.path.as_str()).ok_or(Error::InvalidIdentity)?;
+            let kind = classify(file.path.as_str());
             if kind == FileKind::Stl {
                 stls += 1;
                 if stls > limits.max_stl_files {
@@ -205,7 +205,7 @@ impl LocalFiles {
             });
         }
         if files.is_empty() {
-            return Err(Error::InvalidIdentity);
+            return Err(Error::EmptySelection);
         }
         Ok((hex::encode(hash.finalize()), files))
     }
@@ -222,32 +222,24 @@ pub struct SelectionLimits {
     pub max_bytes: u64,
 }
 
-fn classify(path: &str) -> Option<FileKind> {
+/// The kind a file is kept as. A file of any other type, such as an image or
+/// a 3MF, stays in the revision as an `Artifact` (GRE-1444).
+fn classify(path: &str) -> FileKind {
     let lower = path.to_lowercase();
     if lower.ends_with(".stl") {
-        Some(FileKind::Stl)
-    } else if lower.ends_with(".3mf")
-        || lower.ends_with(".zip")
-        || path == "pp-phases.json"
-        || path == "print-partner.manifest.yaml"
-    {
-        Some(FileKind::Artifact)
+        FileKind::Stl
     } else if lower.ends_with(".pdf") {
-        Some(FileKind::Pdf)
-    } else if lower.ends_with(".md") {
-        Some(
-            if lower
-                .rsplit('/')
-                .next()
-                .is_some_and(|base| base == "readme.md" || base.starts_with("readme."))
-            {
-                FileKind::Readme
-            } else {
-                FileKind::Md
-            },
-        )
+        FileKind::Pdf
+    } else if !lower.ends_with(".md") {
+        FileKind::Artifact
+    } else if lower
+        .rsplit('/')
+        .next()
+        .is_some_and(|base| base == "readme.md" || base.starts_with("readme."))
+    {
+        FileKind::Readme
     } else {
-        None
+        FileKind::Md
     }
 }
 
@@ -365,14 +357,35 @@ mod tests {
     }
 
     #[test]
-    fn local_snapshot_selection_refuses_unclassified_owned_files() {
+    fn an_empty_selection_has_its_own_error() {
+        let (_dir, local) = open_local(&[]);
+        assert!(matches!(
+            local.local_snapshot_selection(limits(500, 1024 * 1024)),
+            Err(Error::EmptySelection)
+        ));
+    }
+
+    #[test]
+    fn local_snapshot_selection_keeps_other_files_as_artifacts() {
         let (_dir, local) = open_local(&[
             ("triangle.stl", b"solid triangle".as_slice()),
             ("notes.txt", b"not a snapshot kind".as_slice()),
+            ("photo.png", b"not a model".as_slice()),
         ]);
-        assert!(matches!(
-            local.local_snapshot_selection(limits(500, 4 * 1024 * 1024)),
-            Err(Error::InvalidIdentity)
-        ));
+        let (_, files) = local
+            .local_snapshot_selection(limits(500, 4 * 1024 * 1024))
+            .unwrap();
+        let kinds = files
+            .iter()
+            .map(|file| (file.path.as_str(), file.kind.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                ("notes.txt", FileKind::Artifact),
+                ("photo.png", FileKind::Artifact),
+                ("triangle.stl", FileKind::Stl),
+            ]
+        );
     }
 }

@@ -1,0 +1,237 @@
+import type { Health, SourceActivity, SourceList } from "@print-partner/rust-client";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createMemoryRouter } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { App, createQueryClient } from "../App";
+import { routes } from "../routes";
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const health: Health = {
+  ok: true,
+  authenticated: true,
+  authentication_required: true,
+  capabilities: [],
+  degraded_detail: null,
+  discord_oauth_configured: false,
+  github_oauth_configured: false,
+  multi_user: false,
+  owner_mapping_required: false,
+  registration_open: false,
+  single_user_auth: true,
+  single_user_setup_required: false,
+  modules: [],
+};
+
+type Source = SourceList["sources"][number];
+
+const source = (id: number, name: string, extra: Partial<Source> = {}): Source => ({
+  id,
+  name,
+  url: `https://example.com/${id}.git`,
+  source_kind: "git",
+  source_type: "kit",
+  role: "primary",
+  category: null,
+  branch: "main",
+  tag: null,
+  local_path: null,
+  content_available: true,
+  last_synced_at: "2026-11-05T10:00:00.000Z",
+  last_commit_sha: "0123456789abcdef0123456789abcdef01234567",
+  current_source_revision_id: 40 + id,
+  docs_url: null,
+  manifest_community_slug: null,
+  metadata: null,
+  naming_use_defaults: true,
+  update_status: "up_to_date",
+  update_checked_at: null,
+  doc_count: 0,
+  ...extra,
+});
+
+const SOURCES: SourceList = {
+  sources: [
+    source(1, "Frame kit"),
+    source(3, "Fresh import", {
+      content_available: false,
+      last_synced_at: null,
+      last_commit_sha: null,
+      current_source_revision_id: null,
+      update_status: null,
+    }),
+  ],
+};
+
+const ACTIVITY: SourceActivity = { events: [] };
+
+const FILES = {
+  source_id: 1,
+  revision_id: 41,
+  files: [
+    { path: "README.md", kind: "document", size_bytes: 5 },
+    { path: "stl/body.stl", kind: "stl", size_bytes: 1536 },
+    { path: "far/part.stl", kind: "stl", size_bytes: 2048 },
+  ],
+};
+
+interface RecordedObserver {
+  callback: IntersectionObserverCallback;
+}
+
+const observers: RecordedObserver[] = [];
+
+function installViewport() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function rect(
+    this: HTMLElement,
+  ) {
+    const path = this.dataset.path;
+    const top = path === "far/part.stl" ? 5000 : 8;
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 64,
+      bottom: top + 64,
+      width: 64,
+      height: 64,
+      toJSON() {
+        return {};
+      },
+    } as DOMRect;
+  });
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      callback: IntersectionObserverCallback;
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+      root = null;
+      rootMargin = "";
+      thresholds = [];
+    },
+  );
+}
+
+function renderAt(path: string) {
+  const fetchMock = vi.fn((request: string) => {
+    if (request === "/health") return Promise.resolve(json(health));
+    if (request === "/api/v1/sources") return Promise.resolve(json(SOURCES));
+    if (request.startsWith("/api/v1/sources/activity")) return Promise.resolve(json(ACTIVITY));
+    if (request === "/api/v1/sources/1/files") return Promise.resolve(json(FILES));
+    if (request === "/api/v1/sources/3/files") {
+      return Promise.resolve(json({ source_id: 3, revision_id: null, files: [] }));
+    }
+    return Promise.resolve(json({ detail: "missing" }, 404));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const router = createMemoryRouter(routes, { initialEntries: [path] });
+  const queryClient = createQueryClient();
+  queryClient.setDefaultOptions({
+    queries: { ...queryClient.getDefaultOptions().queries, retry: false },
+  });
+  render(<App router={router} queryClient={queryClient} />);
+  return { fetchMock, router };
+}
+
+afterEach(() => {
+  cleanup();
+  observers.length = 0;
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+const filesRegion = () => screen.getByRole("region", { name: /Files for / });
+
+describe("Library shows a Source's files and thumbnails", () => {
+  it("lists files by folder with sizes, and loads only the thumbnails in view", async () => {
+    installViewport();
+    const { fetchMock } = renderAt("/library/1");
+    const region = await screen.findByRole("region", { name: "Files for Frame kit" });
+    expect(await within(region).findByRole("heading", { name: "Top level" })).toBeTruthy();
+    expect(within(region).getByText("README.md").parentElement?.textContent).toContain("5 B");
+    expect(within(region).getByRole("heading", { name: "stl" })).toBeTruthy();
+    expect(within(region).getByText("body.stl").parentElement?.textContent).toContain("1.5 KB");
+    const shown = document.querySelector('[data-path="stl/body.stl"] img');
+    expect(shown?.getAttribute("src")).toBe("/api/v1/sources/1/thumbnail?path=stl%2Fbody.stl");
+    expect(document.querySelector('[data-path="far/part.stl"] img')).toBeNull();
+    expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/thumbnail"))).toBe(false);
+    fireEvent.load(shown!);
+    await waitFor(() => expect(filesRegion().getAttribute("aria-busy")).toBeNull());
+    const observer = observers[0];
+    if (!observer) throw new Error("below-fold thumbnail did not observe");
+    observer.callback(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      observer as unknown as IntersectionObserver,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-path="far/part.stl"] img')).toBeTruthy(),
+    );
+  });
+
+  it("shows a placeholder when a thumbnail fails", async () => {
+    installViewport();
+    renderAt("/library/1");
+    const image = await waitFor(() => {
+      const found = document.querySelector('[data-path="stl/body.stl"] img');
+      if (!found) throw new Error("thumbnail not requested");
+      return found;
+    });
+    fireEvent.error(image);
+    const region = filesRegion();
+    expect(within(region).getByRole("img", { name: "No thumbnail" }).textContent).toBe(
+      "No preview",
+    );
+    expect(document.querySelector('[data-path="stl/body.stl"] img')).toBeNull();
+  });
+
+  it("stops waiting on thumbnails when the next Source has no files", async () => {
+    installViewport();
+    renderAt("/library/1");
+    await waitFor(() => {
+      if (!document.querySelector('[data-path="stl/body.stl"] img')) {
+        throw new Error("thumbnail not requested");
+      }
+    });
+    expect(filesRegion().getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(screen.getByRole("link", { name: "Fresh import" }));
+    expect(await screen.findByText("No files yet.")).toBeTruthy();
+    expect(filesRegion().getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("says no files yet when the Source has no revision", async () => {
+    renderAt("/library/3");
+    expect(await screen.findByText("No files yet.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Top level" })).toBeNull();
+  });
+
+  it("selects a Source from the list and leaves that view from its name", async () => {
+    const { router, fetchMock } = renderAt("/library");
+    await screen.findByRole("table", { name: "Sources" });
+    expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith("/files"))).toBe(false);
+    fireEvent.click(screen.getByRole("link", { name: "Frame kit" }));
+    expect(router.state.location.pathname).toBe("/library/1");
+    expect(await screen.findByRole("region", { name: "Files for Frame kit" })).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Frame kit" }).getAttribute("aria-current"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("link", { name: "Frame kit" }));
+    expect(router.state.location.pathname).toBe("/library");
+    await waitFor(() => expect(screen.queryByRole("region", { name: /Files for / })).toBeNull());
+  });
+
+  it("says when the address names no Source", async () => {
+    renderAt("/library/9");
+    expect(await screen.findByText("That Source is not in the Library.")).toBeTruthy();
+  });
+});

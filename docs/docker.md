@@ -54,7 +54,8 @@ docker logs print-partner    # bound address and local probe origin
 ```
 
 - **User.** The image runs as UID 1000, GID 1000 (`ppuser`) from the first instruction. It never starts as root and has no `gosu` or entrypoint `chown`.
-- **Writes.** Installation data goes to `/data` only. `pp-server` also writes its storage runtime directory and its status file to `/tmp`. Each start's storage preflight copies the database and its WAL into `/tmp` twice, one after the other, and deletes each copy. Backup validation also extracts there. Mount `/tmp` as a bounded tmpfs at least twice the size of `print-partner.db` plus its WAL, with 64 MB to spare. The example's 1 GB fits a database up to about 450 MB. A tmpfs uses memory only for what it holds. With that tmpfs mounted, the root filesystem can be read-only (`--read-only`).
+- **Writes.** Installation data goes to `/data` only. `pp-server` also writes its storage runtime directory and its status file to `/tmp`. Both are small and fixed in size, so starting the server needs no `/tmp` space that grows with the database. Validating a backup still extracts the backup's database and WAL into `/tmp`, so that step needs room for them. A tmpfs uses memory only for what it holds. With that tmpfs mounted, the root filesystem can be read-only (`--read-only`).
+- **Free disk for each start.** Each start's storage preflight copies `print-partner.db` and its WAL into a private `.pp-preflight-<id>` folder in `/data`, checks the copy, and removes the folder. It reads and writes in chunks and never holds a database file in memory, so `/tmp` and memory don't limit the database size. The data volume needs free space for one extra copy of `print-partner.db` and its WAL at each start. With less, the start is refused with a message giving the bytes needed and the bytes available. A start killed during the preflight can leave its folder, and the next start removes it.
 - **Capabilities.** `pp-server` needs no Linux capabilities. Drop all of them with `--cap-drop ALL`, and use `--security-opt no-new-privileges`. The image has no setuid helper that needs either.
 - **Process tree.** `tini` is PID 1 and forwards signals. `pp-server` is its only child. In Rust-only mode `pp-server` starts no child process.
 - **Port.** This image sets `PP_LISTEN_ADDR=0.0.0.0:8080`. Docker publishes it on the host's loopback interface in this example. Open `http://127.0.0.1:8080` after obtaining a bootstrap URL (see [Sign in](#sign-in)). For a different published port, LAN address or specific-IP bind, replace the URL's host and port with that reachable address, keeping its path and query private.
@@ -186,7 +187,14 @@ The script needs Linux and Docker. It checks that the runtime has no Node, npm, 
 
 ## Importing Node data
 
-Node and Rust never share a live data directory. The whole-runtime cutover procedure in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) applies: stop Node, back up, migrate a separate Rust-owned copy, and keep the pre-cutover copy. `pp-server import --from <folder or archive> --data <new folder>` copies a stopped Node data folder or a full backup archive into a new Rust-owned folder, and `--dry-run` reports first what it would convert. The import is not complete yet: its report says `complete: false`, and such a copy is disposable. See [Node import](node-import.md).
+Node and Rust never share a live data directory. Stop Node, keep that data folder, and import into a new folder. The cutover in [Architecture](architecture.md#whole-runtime-cutover-and-rollback) is the same: the pre-cutover copy stays where it is.
+
+```sh
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --dry-run
+PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --data <new folder>
+```
+
+The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a format 2 full backup. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
 
 ## To be written
 

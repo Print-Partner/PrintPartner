@@ -50,7 +50,7 @@ Each URN is `urn:print-partner:problem:<suffix>`. `ProblemType::classify(status,
 | `draft_changed`, `base_changed`, `header_changed`, `duplicate_build_name`, `duplicate_order`, `build_archived`, `draft_not_found`, `idempotency_conflict`, `outcome_unknown`, `already_applied`, `reconciliation_required`, `snapshot_not_restorable`, `snapshot_not_found`, `inputs_changed`, `printed_units_affected`, `accepted_baseline_required`, `required_unit_set_unavailable`, `invalid_header` | The draft and History routes. These are the 18 codes the replacement UI branches on. |
 | `transaction_unavailable`, `outcome_unknown` | Every write through the write seam (`WriterFailure`): storage was busy past the deadline, or the write may or may not have committed. |
 | `invalid_integration`, `integration_not_found`, `integration_limit`, `integration_not_editable`, `integrations_unreadable`, `invalid_printer`, `printer_not_found`, `printer_limit`, `printers_unreadable`, `filament_slot_in_use` | The integration and printer routes under `/api/v2/integrations` and `/api/v2/printers`. |
-| `source_not_found`, `source_snapshot_unavailable`, `source_too_many_files` | `GET /sources/{id}/files`. |
+| `source_not_found`, `source_snapshot_unavailable`, `source_too_many_files`, `source_file_not_found`, `source_file_unrenderable`, `source_file_path_required` | `GET /sources/{id}/files` and `GET /sources/{id}/thumbnail`. |
 
 MCP keeps its own code list, in [MCP](mcp.md). A family served both ways has two mappings from the same typed error, one per surface, both in `pp-api`.
 

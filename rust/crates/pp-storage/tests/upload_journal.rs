@@ -261,7 +261,7 @@ fn admission_refuses_quota_and_limits_without_writing() {
         (
             limited(RESERVED, MAX_INPUT + 1, MAX_PREPARED),
             0,
-            "Invalid import limits",
+            "Import quota exceeded",
         ),
         (limited(RESERVED, MAX_INPUT, 0), 0, "Invalid import limits"),
         (limited(RESERVED, 2, MAX_PREPARED), 0, "Input limit"),
@@ -281,6 +281,17 @@ fn admission_refuses_quota_and_limits_without_writing() {
     assert_eq!(pending, "Owner import quota exceeded");
     let (request, files) = upload("second");
     fixture.admit(request, files, QUOTA - 2 * RESERVED).unwrap();
+
+    let max_input = 300 * 1024 * 1024;
+    let reserved = max_input + 3 * MAX_PREPARED + 16 * 1024 * 1024;
+    let (request, files) = upload("above-old-caps");
+    let request = Admission {
+        reserved_bytes: reserved,
+        max_input_bytes: max_input,
+        max_prepared_bytes: MAX_PREPARED,
+        ..request
+    };
+    fixture.admit(request, files, 0).unwrap();
 }
 
 #[test]
@@ -528,13 +539,10 @@ fn imports_requires_one_valid_owner_quota() {
     let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
     let refusal = |quota| owner.imports(policy(), quota).err().unwrap().to_string();
     assert_eq!(refusal(0), "Invalid desktop quota");
-    assert_eq!(
-        refusal(64 * 1024 * 1024 * 1024 + 1),
-        "Invalid desktop quota"
-    );
-    owner.imports(policy(), QUOTA).unwrap();
-    owner.imports(policy(), QUOTA).unwrap();
-    assert_eq!(refusal(QUOTA + 1), "Import quota already configured");
+    let large = 64 * 1024 * 1024 * 1024 + 1;
+    owner.imports(policy(), large).unwrap();
+    owner.imports(policy(), large).unwrap();
+    assert_eq!(refusal(QUOTA), "Import quota already configured");
 }
 
 #[test]
@@ -638,6 +646,8 @@ fn legacy_case(key: &str, input: Input, path: &str, byte: char) -> Value {
         cleanup_settled: false,
         authority_revision: None,
         observation_cursor: None,
+        commit_sha: None,
+        revision_key: None,
     };
     let payload = Payload::SuppliedSourceImport {
         project_id: 42,

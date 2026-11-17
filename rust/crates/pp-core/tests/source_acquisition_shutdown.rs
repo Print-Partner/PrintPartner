@@ -244,13 +244,14 @@ fn hold_input<'scope>(
     let worker = scope.spawn(move || {
         acquisitions
             .acquire(fixture.request(key, input), &AtomicBool::new(false))
+            .map_err(anyhow::Error::from)
             .and_then(AcquisitionReply::wait)
     });
     held.recv().unwrap();
     (release, worker)
 }
 
-fn refusal(result: anyhow::Result<AcquisitionReply>) -> String {
+fn refusal(result: Result<AcquisitionReply, impl std::fmt::Display>) -> String {
     match result {
         Ok(reply) => panic!("expected refusal, got {:?}", reply.wait()),
         Err(error) => format!("{error:#}"),

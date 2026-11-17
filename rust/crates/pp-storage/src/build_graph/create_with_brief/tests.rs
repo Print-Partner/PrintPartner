@@ -9,6 +9,26 @@ use crate::{
 };
 
 pub(in crate::build_graph) static IDLE: AtomicBool = AtomicBool::new(false);
+
+/// A Voron Build with the brief `create` stores, for the other brief writers.
+pub(in crate::build_graph) fn seeded_voron(created: &Fixture) -> PositiveId {
+    created
+        .create(NewBuild::parse("Voron", "A Voron 2.4", None).unwrap())
+        .unwrap()
+        .id
+}
+
+/// The brief `key` names, or a panic when that brief was never stored.
+pub(in crate::build_graph) fn read_stored_brief(
+    owner: &WriterOwner,
+    key: &str,
+) -> serde_json::Value {
+    let reader = owner.client().reader(WAIT).unwrap();
+    match reader.snapshot("default", key).unwrap() {
+        SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap(),
+        SettingSnapshot::Missing => panic!("no brief"),
+    }
+}
 const POLICY: AuthPolicy = AuthPolicy {
     registration: RegistrationPolicy::FirstAccountOnly,
     first_user: FirstUserTenant::NewUser,

@@ -259,6 +259,22 @@ pub(super) fn read_inputs(
     })
 }
 
+/// The stored Spoolman integration `id`, if the integrations document names it.
+/// A document that is not a list reads as no integration. `Err` is a storage
+/// failure, not a missing integration.
+pub(crate) fn spoolman_integration(
+    connection: &Connection,
+    tenant: &str,
+    id: &str,
+) -> Result<Option<SpoolmanIntegration>> {
+    match crate::snapshot(connection, tenant, INTEGRATIONS_KEY)? {
+        crate::SettingSnapshot::Stored { value } => Ok(parse_integrations(&value)
+            .into_iter()
+            .find(|row| row.id == id)),
+        crate::SettingSnapshot::Missing => Ok(None),
+    }
+}
+
 /// Spoolman entries of Node's integration list. Corrupt entries are skipped,
 /// as Node's `loadRaw` skips them.
 fn parse_integrations(value: &str) -> Vec<SpoolmanIntegration> {
@@ -347,8 +363,14 @@ fn read_grams(
 
 /// `(integration ID, filament ID)` when `id` names a Spoolman filament.
 fn spoolman_filament(id: &str) -> Option<(&str, i64)> {
+    spoolman_ref(id, ":filament:")
+}
+
+/// `(integration ID, n)` when `id` is `spoolman:{integration}{kind}{n}`, with
+/// one non-empty integration segment and a positive `n`.
+pub(crate) fn spoolman_ref<'a>(id: &'a str, kind: &str) -> Option<(&'a str, i64)> {
     let rest = id.strip_prefix("spoolman:")?;
-    let (integration, number) = rest.split_once(":filament:")?;
+    let (integration, number) = rest.split_once(kind)?;
     let number = number.parse::<i64>().ok().filter(|n| *n > 0)?;
     (!integration.is_empty() && !integration.contains(':')).then_some((integration, number))
 }

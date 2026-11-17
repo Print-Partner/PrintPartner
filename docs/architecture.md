@@ -243,7 +243,7 @@ use the same operation interface. A transport must not repeat its policy.
 | --- | --- |
 | Authentication, sessions, API keys, pairing | `pp-api` admission; `pp-storage::auth` owns credential/session transactions; gateway owns listener admission |
 | Product Module choices and settings | `pp-storage` feature/settings modules; `pp-api` exposes effective state and off reasons; recheck before worker effects |
-| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam (`pp-storage::source_files`, GRE-430); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
+| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam, and `GET /sources/{id}/thumbnail` renders and caches one STL (`pp-storage::source_files`, GRE-430); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
 | Builds, drafts, parts, order/customer/due-date fields | `pp-storage` build/draft modules own lifecycle, autosave receipts and order authority; `pp-services` holds extracted pure policy where useful |
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |
@@ -255,7 +255,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Optional external slicer jobs | Typed HTTP adapter in existing `pp-drivers`, policy in `pp-services`, job/effect state in `pp-storage`, worker lifetime in core |
 | Home Assistant, webhooks, Discord | `pp-drivers` checked adapters; storage owns configuration, deduplication and durable delivery state; core runs workers |
 | Jobs, cancel, restart recovery | `pp-storage::jobs` claims/fences/recovery; core runs workers; `pp-api` adapts commands and progress |
-| Backup, restore, migration/downgrade refusal | `pp-storage` owns snapshot/archive/activation and lock discipline; core quiesces workers/listeners; shell/API requests the operation |
+| Backup, restore, migration/downgrade refusal | `pp-storage` owns snapshot, archive, activation and lock discipline. `export_backup` writes a full archive under `<data>/backups/` (GRE-1469, GRE-1512). With `PP_DESKTOP_REBUILD` on, `pp-api` mounts `POST /api/v2/installation/backup` and `GET /api/v2/installation/backup/archive` (GRE-1371). Restore upload and activation routes are not mounted (GRE-1161). Core quiesces workers and listeners; the shell requests the operation |
 | Admin, legal, logs, diagnostics, health | Storage owns settings; gateway/API exposes bounded safe reads; core owns local logging/liveness; shell owns update lifecycle |
 | Reference sharing | Storage owns reference projections, `pp-api` exposes them under [ADR 0004](adr/0004-share-references-without-redistributing-models.md); do not redistribute model bytes or imply LAN admission |
 | Assistant and old API aggregators | AI uses authenticated MCP over the same operations; assistant HTTP routes are not a separate policy engine. Rust routers replace v1/v2 aggregators |

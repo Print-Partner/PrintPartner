@@ -20,6 +20,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(feature = "desktop_rebuild")]
+pub(super) mod upload;
+
 #[derive(Clone)]
 pub struct CatalogHttpConfig {
     origin: String,
@@ -94,7 +97,8 @@ struct App {
 /// Source activity, Source category settings, Source naming get/put, global STL
 /// naming get/put, and STL naming preview at `/` and `/api/v1` when
 /// `PP_DESKTOP_REBUILD` was exactly `1` or `true` at startup. Otherwise nothing
-/// is mounted. Sync, upload, and location stay unregistered.
+/// is mounted. Loose-file and ZIP upload are [`upload::admit_upload_routes`].
+/// Location stays unregistered. Sync is `POST /jobs/sync`.
 pub fn admit_catalog_routes(config: CatalogHttpConfig, owner: Arc<Mutex<WriterOwner>>) -> Router {
     if !config.enabled {
         return Router::new();

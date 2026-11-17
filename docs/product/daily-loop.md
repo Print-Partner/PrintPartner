@@ -52,8 +52,8 @@ not in the steps above. Each returns when Chad misses it.
 
 ## Rules while this plan runs
 
-[Definition of done](../development/definition-of-done.md#work-in-progress)
-holds the lane rule, [Parity scope](../development/definition-of-done.md#parity-scope)
-the parity rule, and the [merge gate](../development/definition-of-done.md#merge-gate)
-the review depth. [Rust core](../../rust/AGENTS.md#new-code) holds the rules
+[Definition of done](../development/definition-of-done.md#one-ticket-at-a-time)
+holds the one-ticket rule, [Parity scope](../development/definition-of-done.md#parity-scope)
+the parity rule, and [Who merges](../development/definition-of-done.md#who-merges)
+who merges. [Rust core](../../rust/AGENTS.md#new-code) holds the rules
 for new Rust code.

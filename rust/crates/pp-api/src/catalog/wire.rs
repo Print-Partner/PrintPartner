@@ -19,6 +19,14 @@ pub(crate) struct SourceActivity {
     pub events: Vec<SourceActivityEvent>,
 }
 
+/// `202` body from `POST /sources/{id}/upload-zip`: the import job to follow.
+/// Always compiled: `client_document` emits it with or without `desktop_rebuild`.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct SourceUploadAccepted {
+    pub job_id: String,
+}
+
 pub(super) fn source(row: SourceSummary) -> Result<Value, serde_json::Error> {
     serde_json::to_value(row)
 }

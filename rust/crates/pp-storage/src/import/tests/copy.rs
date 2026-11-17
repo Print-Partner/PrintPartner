@@ -1,6 +1,7 @@
 use super::*;
 use crate::import::copy::{
-    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, sync_tree,
+    confirm_copy, copy_verified, damage, ensure_room, import_with, publish, recheck, room_needed,
+    sync_tree,
 };
 use crate::import::{REPORT_FILE, import};
 use sha2::{Digest, Sha256};
@@ -20,52 +21,45 @@ fn entries(folder: &Path) -> Vec<String> {
     names
 }
 
-#[test]
-fn a_folder_imports_into_a_new_rust_owned_folder() {
+/// A synthetic folder with one account and a live session, imported into a
+/// new folder. Checks on the way that the import left its source alone.
+fn imported() -> (Installation, tempfile::TempDir, ImportReport) {
     let source = node_folder();
     let before = state(source.path());
     let parent = tempfile::tempdir().unwrap();
-    let destination = parent.path().join("rust");
-    let report = import(source.path(), &destination).unwrap();
+    let report = import(source.path(), &parent.path().join("rust")).unwrap();
     assert!(
         before == state(source.path()),
         "the import changed its source"
     );
+    (source, parent, report)
+}
 
-    assert!(!report.complete, "no converter exists yet");
-    assert_eq!(
-        (report.source_schema, report.schema),
-        (34, versions::RUST_SCHEMA)
-    );
-    assert_eq!(
-        (report.builds, report.sources),
-        (synthetic::BUILDS, synthetic::SOURCES)
-    );
-    // The Source snapshot's two files and the custom filament list.
-    assert_eq!(report.files, 3);
-    assert_eq!(report.rows.len(), inventory::ROWS.len());
-    assert!(report.rows.iter().all(|row| row.status == "pending"));
-
+#[test]
+fn a_folder_imports_into_a_new_rust_owned_folder() {
+    let (source, parent, _) = imported();
+    let destination = parent.path().join("rust");
+    let marker = ownership_marker::MARKER_FILE;
     let names = [
         "custom_filaments.json",
         REPORT_FILE,
         "print-partner.db",
         "repos",
-        ownership_marker::MARKER_FILE,
+        marker,
     ];
     let mut expected = names.map(str::to_owned).to_vec();
     expected.sort();
     assert_eq!(entries(&destination), expected);
-    assert!(matches!(
-        ownership_marker::inspect(&destination),
-        ownership_marker::MarkerState::Valid(_)
-    ));
-    let database = destination.join("print-partner.db");
-    let stored = |sql| setting(&database, sql);
-    assert_eq!(
-        stored("SELECT value FROM app_settings WHERE key = 'schema_version'"),
-        versions::RUST_SCHEMA.to_string()
+    let marked = ownership_marker::inspect(&destination);
+    assert!(
+        matches!(marked, ownership_marker::MarkerState::Valid(_)),
+        "{marked:?}"
     );
+
+    let database = destination.join("print-partner.db");
+    let stored = |sql: &str| setting(&database, sql);
+    let version = stored("SELECT value FROM app_settings WHERE key = 'schema_version'");
+    assert_eq!(version, versions::RUST_SCHEMA.to_string());
     assert_eq!(
         stored("SELECT COUNT(*) FROM build_profiles"),
         synthetic::BUILDS.to_string()
@@ -81,38 +75,81 @@ fn a_folder_imports_into_a_new_rust_owned_folder() {
         "sessions are not carried"
     );
     let manifest = "repos/1/revisions/synthetic-a/.printpartner-source-snapshot.json";
-    assert_eq!(
-        std::fs::read(destination.join(manifest)).unwrap(),
-        std::fs::read(source.path().join(manifest)).unwrap()
-    );
+    let copied = std::fs::read(destination.join(manifest)).unwrap();
+    assert_eq!(copied, std::fs::read(source.path().join(manifest)).unwrap());
 
-    let saved: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(destination.join(REPORT_FILE)).unwrap()).unwrap();
-    assert_eq!(saved["complete"], false);
-    assert_eq!(saved["builds"], synthetic::BUILDS);
-    assert_eq!(
-        saved["rows"][0]["shapes"][0]["shape"],
-        "projects.local_path"
-    );
-    let text = std::fs::read_to_string(destination.join(REPORT_FILE)).unwrap();
-    assert!(
-        !text.contains(synthetic::INTEGRATION_SECRET),
-        "the saved report holds a stored value"
-    );
-    assert!(
-        report
-            .to_string()
-            .contains("complete: false. 16 inventory rows are not converted yet.")
-    );
+    // Every Source path now leads into the new folder, to files that are there.
+    for source in 1..=synthetic::SOURCES {
+        let path = stored(&format!(
+            "SELECT local_path FROM projects WHERE id = {source}"
+        ));
+        assert!(
+            Path::new(&path).starts_with(destination.join("repos")),
+            "{path}"
+        );
+        assert!(Path::new(&path).is_dir(), "{path}");
+    }
+    let first = stored("SELECT local_path FROM projects WHERE id = 1");
+    assert!(Path::new(&first).join("synthetic-part.stl").is_file());
 
     // A second import refuses the folder it just wrote, and changes nothing in it.
-    let imported = state(&destination);
+    let written = state(&destination);
     let again = import(source.path(), &destination).unwrap_err();
     assert!(
         matches!(again, ImportError::Destination(Destination::Marked)),
         "{again:?}"
     );
-    assert!(imported == state(&destination));
+    assert!(written == state(&destination));
+}
+
+#[test]
+fn the_import_report_is_saved_without_stored_values() {
+    let (_source, parent, report) = imported();
+    assert!(report.complete, "{report}");
+    assert_eq!(
+        (report.source_schema, report.schema),
+        (34, versions::RUST_SCHEMA)
+    );
+    assert_eq!(
+        (report.builds, report.sources),
+        (synthetic::BUILDS, synthetic::SOURCES)
+    );
+    // The Source snapshot's two files and the custom filament list.
+    assert_eq!(
+        (report.files, report.rebased_sources),
+        (3, synthetic::SOURCES)
+    );
+    assert_eq!(report.rows.len(), inventory::ROWS.len());
+    let statuses: Vec<&str> = report.rows.iter().map(|row| row.status.as_str()).collect();
+    assert_eq!(&statuses[..15], &["converted"; 15]);
+    assert_eq!(statuses[15], "checked");
+    let summary = report.to_string();
+    assert!(
+        summary.contains("complete: true. 0 inventory rows are not converted yet."),
+        "{summary}"
+    );
+
+    let text = std::fs::read_to_string(parent.path().join("rust").join(REPORT_FILE)).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (&saved["complete"], &saved["builds"]),
+        (&true.into(), &synthetic::BUILDS.into())
+    );
+    assert_eq!(
+        saved["rows"][0]["shapes"][0]["shape"],
+        "projects.local_path"
+    );
+    assert!(
+        !text.contains(synthetic::INTEGRATION_SECRET),
+        "the saved report holds a stored value"
+    );
+    let payload: String = Connection::open(parent.path().join("rust").join("print-partner.db"))
+        .unwrap()
+        .query_row("SELECT payload_json FROM plan_snapshots", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(payload, r#"{"parts":[]}"#);
 }
 
 #[test]
@@ -122,6 +159,29 @@ fn a_full_archive_imports_the_same_data() {
     let parent = tempfile::tempdir().unwrap();
     let from_archive = import(archive.path(), &parent.path().join("a")).unwrap();
     let from_folder = import(source.path(), &parent.path().join("b")).unwrap();
+    // An archive does not say which folder its installation lived in, so a
+    // Source without a current revision cannot be shown to lie inside it:
+    // its path is kept and counted. The folder import rewrites both.
+    assert_eq!(
+        (from_folder.rebased_sources, from_folder.sources_outside),
+        (synthetic::SOURCES, 0)
+    );
+    assert_eq!(
+        (from_archive.rebased_sources, from_archive.sources_outside),
+        (0, synthetic::SOURCES)
+    );
+    let kept = setting(
+        &parent.path().join("a/print-partner.db"),
+        "SELECT local_path FROM projects WHERE id = 2",
+    );
+    assert_eq!(Path::new(&kept), source.path().join("repos/2"));
+    // `complete` follows the outside count. This comparison sets that count aside.
+    let from_archive = ImportReport {
+        rebased_sources: from_folder.rebased_sources,
+        sources_outside: 0,
+        complete: from_folder.complete,
+        ..from_archive
+    };
     assert_eq!(from_archive, from_folder);
     assert_eq!(
         entries(&parent.path().join("a")),
@@ -140,15 +200,15 @@ fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
     let caps = [
         archive::Limits {
             max_total_bytes: database / 2,
-            ..archive::Limits::default()
+            ..archive::Limits::node()
         },
         archive::Limits {
             max_entry_bytes: database / 2,
-            ..archive::Limits::default()
+            ..archive::Limits::node()
         },
         archive::Limits {
             max_entries: 4,
-            ..archive::Limits::default()
+            ..archive::Limits::node()
         },
     ];
     let archive = archive_of(source.path(), 2, "full");
@@ -167,6 +227,38 @@ fn a_folder_over_the_archive_caps_imports_and_its_archive_is_refused() {
     }
 }
 
+/// `import` itself reads an archive with Node's limits. A tar header
+/// declares its entry's size, so one header with no payload shows the
+/// refusal: the reader stops at the header and writes nothing.
+#[test]
+fn import_refuses_an_archive_whose_headers_declare_over_20_gib() {
+    const NODE_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
+    let parent = tempfile::tempdir().unwrap();
+    let source = parent.path().join("over.tar.gz");
+    let mut header = tar::Header::new_gnu();
+    header.set_path(archive::DATABASE_FILE).unwrap();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_mode(0o600);
+    header.set_size(NODE_TOTAL + 1);
+    header.set_cksum();
+    let file = std::fs::File::create(&source).unwrap();
+    let mut gzip = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    std::io::Write::write_all(&mut gzip, header.as_bytes()).unwrap();
+    gzip.finish().unwrap();
+    assert!(std::fs::metadata(&source).unwrap().len() < 1024);
+
+    let destination = parent.path().join("rust");
+    let error = import(&source, &destination).unwrap_err();
+    let ImportError::InvalidArchive(detail) = &error else {
+        panic!("an archive over Node's limit was not refused as invalid: {error:?}");
+    };
+    assert!(
+        detail.contains(&format!("byte limit exceeded ({NODE_TOTAL})")),
+        "{detail}"
+    );
+    assert_eq!(entries(&destination), [] as [String; 0]);
+}
+
 /// The marker is written only after the staged files were flushed. A flush
 /// that fails ends the import with its own error and leaves a folder the
 /// next import accepts.
@@ -175,7 +267,7 @@ fn a_failed_flush_leaves_no_marker_and_is_reported() {
     let source = node_folder();
     let parent = tempfile::tempdir().unwrap();
     let destination = parent.path().join("rust");
-    let limits = archive::Limits::default();
+    let limits = archive::Limits::node();
     let failing = |_: &Path| Err(std::io::Error::other("synthetic flush failure"));
     let error =
         import_with(source.path(), &destination, parent.path(), limits, failing).unwrap_err();
@@ -273,6 +365,130 @@ fn a_refused_import_leaves_no_marker_and_no_stage() {
 }
 
 #[test]
+fn a_source_whose_files_cannot_be_placed_stops_the_import() {
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let missing = node_folder();
+    give_revision(&missing, "1/revisions/synthetic-gone");
+    let error = import(missing.path(), &destination).unwrap_err();
+    assert!(
+        matches!(error, ImportError::MissingRevision(1)),
+        "{error:?}"
+    );
+    assert_eq!(entries(&destination), Vec::<String>::new());
+
+    // A snapshot name that is no plain path below `repos` is refused too.
+    let climbing = node_folder();
+    give_revision(&climbing, "..\\..\\synthetic");
+    let error = import(climbing.path(), &destination).unwrap_err();
+    assert!(matches!(error, ImportError::SourcePath(1)), "{error:?}");
+    assert_eq!(entries(&destination), Vec::<String>::new());
+
+    // A current revision decides the path, whatever Node stored beside it.
+    let current = node_folder();
+    give_revision(&current, "1/revisions/synthetic-a");
+    execute(
+        &current,
+        "UPDATE projects SET local_path = 'C:\\node\\repos\\old' WHERE id = 1",
+    );
+    import(current.path(), &destination).unwrap();
+    let stored = setting(
+        &destination.join("print-partner.db"),
+        "SELECT local_path FROM projects WHERE id = 1",
+    );
+    assert_eq!(
+        Path::new(&stored),
+        destination.join("repos/1/revisions/synthetic-a")
+    );
+}
+
+#[test]
+fn a_changed_row_in_any_table_is_named() {
+    let folder = node_folder_33();
+    let connection = Connection::open(folder.database_path()).unwrap();
+    let stored = verify::digests(&connection, None).unwrap();
+    let changed = || {
+        let found = verify::digests(&connection, Some(&stored)).unwrap();
+        verify::changed(&stored, &found)
+    };
+    assert!(changed().is_empty());
+    // Every table of the source is compared, less the two the import empties.
+    let tables = rows(folder.path());
+    assert_eq!(stored.len(), tables.len() - 2);
+    assert!(!stored.contains_key("sessions") && !stored.contains_key("password_reset_tokens"));
+    let compared: usize = stored.values().map(|(_, rows)| rows.len()).sum();
+    let held: i64 = (tables.iter())
+        .filter(|(table, _)| stored.contains_key(*table))
+        .map(|(_, count)| count)
+        .sum();
+    // All rows but the schema number and the settings this folder holds that
+    // the import converts: the fleet, the integrations, the unmatched prints,
+    // both feature layers, the production setup and the kit manifest.
+    assert_eq!(compared as i64, held - 8);
+
+    // What the upgrade does on purpose changes nothing: a new column, a new
+    // table, the schema number and a rebased Source path.
+    connection
+        .execute_batch(
+            "ALTER TABLE source_notes ADD COLUMN synthetic_added TEXT DEFAULT 'x';
+             CREATE TABLE synthetic_added (id INTEGER);
+             INSERT INTO synthetic_added VALUES (1);
+             UPDATE app_settings SET value = '48' WHERE key = 'schema_version';
+             UPDATE projects SET local_path = '/synthetic/elsewhere';",
+        )
+        .unwrap();
+    assert!(changed().is_empty());
+
+    // A changed value, a missing row, an added row and a dropped column are
+    // each named, in tables no list holds.
+    connection
+        .execute_batch(
+            "UPDATE source_notes SET updated_at = '2026-10-03';
+             DELETE FROM app_events;
+             INSERT INTO source_docs (project_id, path, kind, updated_at) VALUES (1, 'ADDED.md', 'markdown', '2026-10-02');
+             UPDATE app_settings SET value = 'synthetic' WHERE key = 'filename_grouping:1';
+             ALTER TABLE plan_snapshots DROP COLUMN name;",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        changed(),
+        [
+            "app_events",
+            "app_settings",
+            "plan_snapshots",
+            "source_docs",
+            "source_notes"
+        ]
+    );
+}
+
+#[test]
+fn starter_rows_may_be_added_and_stored_profiles_may_not_change() {
+    let row = |byte: u8| [byte; 32];
+    let table = |name: &str, rows: &[u8]| {
+        let rows = rows.iter().copied().map(row).collect();
+        (name.to_owned(), (vec!["name".to_owned()], rows))
+    };
+    let stored = verify::Digests::from([table("filament_profiles", &[2, 2, 5])]);
+    let found = |rows: &[u8]| verify::Digests::from([table("filament_profiles", rows)]);
+    assert!(verify::changed(&stored, &found(&[1, 2, 2, 3, 5, 9])).is_empty());
+    for lost in [&[1, 2, 3, 5][..], &[2, 2], &[]] {
+        assert_eq!(
+            verify::changed(&stored, &found(lost)),
+            ["filament_profiles"]
+        );
+    }
+    // Any other table must hold exactly its stored rows.
+    let stored = verify::Digests::from([table("plan_revisions", &[2, 5])]);
+    let added = verify::Digests::from([table("plan_revisions", &[1, 2, 5])]);
+    assert_eq!(verify::changed(&stored, &added), ["plan_revisions"]);
+    assert_eq!(
+        verify::changed(&stored, &verify::Digests::new()),
+        ["plan_revisions"]
+    );
+}
+
+#[test]
 fn a_copy_that_reads_back_differently_stops_the_import() {
     let folder = tempfile::tempdir().unwrap();
     let (from, to) = (
@@ -295,6 +511,13 @@ fn a_copy_that_reads_back_differently_stops_the_import() {
 
 #[test]
 fn the_write_step_refuses_a_destination_without_room() {
+    // The files still to copy, the database again for the upgrade's
+    // write-ahead log, and the reserve. Nothing caps the size.
+    let reserve = 64 * 1024 * 1024;
+    assert_eq!(room_needed(0, 0), reserve);
+    let (roots, database) = (50_000_000_000, 1_000_000_000);
+    assert_eq!(room_needed(roots, database), roots + database + reserve);
+    assert_eq!(room_needed(u64::MAX, database), u64::MAX);
     let folder = tempfile::tempdir().unwrap();
     ensure_room(folder.path(), 1).expect("one byte fits");
     let error = ensure_room(folder.path(), u64::MAX).unwrap_err();
@@ -370,6 +593,12 @@ fn a_schema_33_folder_imports_with_every_table_it_holds() {
             "{table} in the report"
         );
     }
+    // Verification covered every source table but the two emptied ones.
+    assert_eq!(report.verified_tables as usize, stored.len() - 2);
+    assert!(report.to_string().contains(&format!(
+        "{} rows in {} tables arrived as the source stored them.",
+        report.verified_rows, report.verified_tables
+    )));
 }
 
 /// Every entry of `folder`, with the SHA-256 of each file: what a refused
@@ -458,7 +687,7 @@ fn a_destination_inside_the_source_is_refused() {
     // The dry run says so too, and creates nothing.
     let temporary = tempfile::tempdir().unwrap();
     let child = source.path().join("child");
-    let limits = archive::Limits::default();
+    let limits = archive::Limits::node();
     let report = dry_run_in(source.path(), Some(&child), temporary.path(), limits).unwrap();
     assert_eq!(report.destination, Some(inside));
     let text = report.to_string();
@@ -509,7 +738,7 @@ fn the_import_keeps_the_startup_copy_out_of_the_source() {
     let parent = tempfile::tempdir().unwrap();
     let destination = parent.path().join("rust");
     let before = fingerprint(source.path());
-    let (limits, flush) = (archive::Limits::default(), pp_os::sync_filesystem);
+    let (limits, flush) = (archive::Limits::node(), pp_os::sync_filesystem);
     for temporary in [source.path(), inside.as_path()] {
         let error = import_with(source.path(), &destination, temporary, limits, flush).unwrap_err();
         assert!(
@@ -612,4 +841,352 @@ fn publishing_never_replaces_what_the_destination_holds() {
     let error = pp_os::rename_new(&stage.join("repos"), &taken).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(std::fs::read(&taken).unwrap(), b"held");
+}
+
+/// A refusal at the second check, after the destination exists, leaves
+/// nothing behind: a folder this run created is removed, if still empty.
+#[test]
+fn a_refusal_after_creation_removes_the_folder_this_run_created() {
+    let source = node_folder();
+    let inside = Destination::Overlaps(Overlap::DestinationInside);
+    let refused = |root: &Path, created: bool| {
+        let error = recheck(source.path(), root, created).unwrap_err();
+        assert!(
+            matches!(&error, ImportError::Destination(found) if found == &inside),
+            "{error}"
+        );
+    };
+    let created = source.path().join("synthetic-created");
+    std::fs::create_dir(&created).unwrap();
+    refused(&created, true);
+    assert!(!created.exists(), "the created folder was left behind");
+    // A folder that was there before, or that holds something, stays.
+    std::fs::create_dir(&created).unwrap();
+    refused(&created, false);
+    assert!(created.is_dir());
+    std::fs::write(created.join("synthetic.txt"), "kept").unwrap();
+    refused(&created, true);
+    assert_eq!(
+        std::fs::read(created.join("synthetic.txt")).unwrap(),
+        b"kept"
+    );
+    // A free folder passes and is left alone.
+    let parent = tempfile::tempdir().unwrap();
+    recheck(source.path(), parent.path(), true).unwrap();
+    assert!(parent.path().is_dir());
+}
+
+/// Stores `paths` as the Sources' paths, by id, imports the folder and
+/// returns the report with each Source's path in the copy. The marker must
+/// be there: none of these cases stops the import.
+fn imported_with(
+    folder: &Installation,
+    paths: &[(i64, &str)],
+) -> (ImportReport, Vec<String>, tempfile::TempDir) {
+    let connection = Connection::open(folder.database_path()).unwrap();
+    for (source, path) in paths {
+        connection
+            .execute(
+                "UPDATE projects SET local_path = ?1 WHERE id = ?2",
+                (path, source),
+            )
+            .unwrap();
+    }
+    drop(connection);
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let report = import(folder.path(), &destination).unwrap();
+    assert!(destination.join(ownership_marker::MARKER_FILE).is_file());
+    let connection = Connection::open(destination.join("print-partner.db")).unwrap();
+    let stored = strings(
+        &connection,
+        "SELECT local_path FROM projects ORDER BY id",
+        None,
+    )
+    .unwrap();
+    (report, stored, parent)
+}
+
+#[test]
+fn a_source_path_outside_the_installation_is_kept_and_counted() {
+    // A folder the user picked: Node stores whatever `path.resolve` gave.
+    for outside in ["/home/synthetic/repos/voron", "D:\\repos\\voron"] {
+        let folder = node_folder();
+        let dry = {
+            execute(
+                &folder,
+                &format!("UPDATE projects SET local_path = '{outside}' WHERE id = 2"),
+            );
+            run(folder.path()).unwrap()
+        };
+        assert_eq!((dry.source_paths.outside, dry.source_paths.missing), (1, 0));
+        let text = dry.to_string();
+        assert!(
+            text.contains("\nSource paths outside the installation: 1\n"),
+            "{text}"
+        );
+        assert!(!text.contains("voron"), "{text}");
+        let (report, stored, _parent) = imported_with(&folder, &[]);
+        assert_eq!(stored[1], outside, "the stored path was rewritten");
+        assert_eq!(
+            (
+                report.rebased_sources,
+                report.sources_outside,
+                report.sources_missing
+            ),
+            (1, 1, 0)
+        );
+        assert!(!report.complete);
+        let text = report.to_string();
+        assert!(
+            text.contains("Source paths outside the installation: 1\n"),
+            "{text}"
+        );
+        assert!(!text.contains("voron"), "{text}");
+    }
+}
+
+#[test]
+fn two_sources_with_the_same_tail_each_keep_their_own_path() {
+    let folder = node_folder();
+    let paths = [
+        (1, "/home/synthetic-a/repos/kit"),
+        (2, "/home/synthetic-b/repos/kit"),
+    ];
+    let (report, stored, _parent) = imported_with(&folder, &paths);
+    assert_eq!(
+        stored,
+        ["/home/synthetic-a/repos/kit", "/home/synthetic-b/repos/kit"]
+    );
+    assert_eq!((report.rebased_sources, report.sources_outside), (0, 2));
+}
+
+#[test]
+fn a_path_inside_the_installation_keeps_all_of_it_below_repos() {
+    // A second `repos` lower down is part of the path, not a new start.
+    let folder = node_folder();
+    let nested = folder.path().join("repos/a/repos/b");
+    std::fs::create_dir_all(&nested).unwrap();
+    let (report, stored, parent) = imported_with(&folder, &[(2, &nested.to_string_lossy())]);
+    let destination = parent.path().join("rust").canonicalize().unwrap();
+    assert_eq!(Path::new(&stored[1]), destination.join("repos/a/repos/b"));
+    assert!(Path::new(&stored[1]).is_dir());
+    assert_eq!((report.rebased_sources, report.sources_outside), (2, 0));
+}
+
+#[test]
+fn a_path_that_climbs_out_once_its_separators_are_read_is_kept() {
+    let folder = node_folder();
+    let root = folder.path().to_string_lossy().into_owned();
+    for climbing in [
+        format!("{root}/repos/..\\..\\etc"),
+        format!("{root}/repos/\\etc\\passwd"),
+        format!("{root}/repos/../../etc"),
+        format!("{root}/repos/1/../1"),
+        "C:\\node\\repos\\..\\..\\etc".to_owned(),
+        "\\etc\\passwd".to_owned(),
+    ] {
+        let folder = node_folder();
+        let climbing = climbing.replace(&root, &folder.path().to_string_lossy());
+        let (report, stored, parent) = imported_with(&folder, &[(2, &climbing)]);
+        assert_eq!(stored[1], climbing, "the stored path was rewritten");
+        assert_eq!(
+            (report.rebased_sources, report.sources_outside),
+            (1, 1),
+            "{climbing}"
+        );
+        // Nothing the import wrote leads out of the destination's `repos`.
+        assert!(Path::new(&stored[0]).starts_with(parent.path().canonicalize().unwrap()));
+    }
+}
+
+#[test]
+fn a_source_whose_folder_is_missing_in_the_copy_is_kept_and_counted() {
+    let folder = node_folder();
+    let gone = folder.path().join("repos/synthetic-gone");
+    let gone = gone.to_string_lossy();
+    execute(
+        &folder,
+        &format!("UPDATE projects SET local_path = '{gone}' WHERE id = 2"),
+    );
+    let dry = run(folder.path()).unwrap();
+    assert_eq!((dry.source_paths.outside, dry.source_paths.missing), (0, 1));
+    let line = "Source paths whose folder is missing in the copy: 1\n";
+    assert!(dry.to_string().contains(line), "{dry}");
+    let (report, stored, _parent) = imported_with(&folder, &[]);
+    assert_eq!(stored[1], gone, "the stored path was rewritten");
+    assert_eq!(
+        (
+            report.rebased_sources,
+            report.sources_outside,
+            report.sources_missing
+        ),
+        (1, 0, 1)
+    );
+    assert!(!report.complete);
+    assert!(report.to_string().contains(line), "{report}");
+}
+
+#[test]
+fn two_sources_that_would_share_a_folder_stop_the_import() {
+    let folder = node_folder();
+    let shared = folder.path().join("repos/2");
+    let shared = shared.to_string_lossy();
+    execute(
+        &folder,
+        &format!("UPDATE projects SET local_path = '{shared}'"),
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().join("rust");
+    let error = import(folder.path(), &destination).unwrap_err();
+    assert!(
+        matches!(error, ImportError::SourcesShare(1, 2)),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("Sources 1 and 2 would lead to the same folder")
+    );
+    // No marker and no stage.
+    assert_eq!(entries(&destination), Vec::<String>::new());
+}
+
+#[test]
+fn a_rewritten_source_path_is_checked_against_the_stored_one() {
+    let folder = node_folder();
+    let (root, repos) = (folder.path(), Path::new("/synthetic/rust/repos"));
+    let connection = Connection::open(folder.database_path()).unwrap();
+    let before: BTreeMap<i64, Option<String>> = [1, 2]
+        .map(|source| {
+            (
+                source,
+                Some(setting(
+                    &folder.database_path(),
+                    &format!("SELECT local_path FROM projects WHERE id = {source}"),
+                )),
+            )
+        })
+        .into();
+    let set = |source: i64, path: &str| {
+        connection
+            .execute(
+                "UPDATE projects SET local_path = ?1 WHERE id = ?2",
+                (path, source),
+            )
+            .unwrap();
+    };
+    let checked = || verify::check_sources(&connection, &before, Some(root), repos);
+    // As stored, or rewritten to the same place below the new `repos`.
+    checked().unwrap();
+    set(1, "/synthetic/rust/repos/1/revisions/synthetic-a");
+    set(2, "/synthetic/rust/repos/2");
+    checked().unwrap();
+    // Another Source's folder, a folder outside `repos`, and a climb.
+    for wrong in [
+        "/synthetic/rust/repos/1/revisions/synthetic-a",
+        "/synthetic/rust/elsewhere",
+        "/synthetic/rust/repos/2/../1",
+        "/synthetic/elsewhere/repos/2",
+    ] {
+        set(2, wrong);
+        let error = checked().unwrap_err();
+        assert!(
+            matches!(error, ImportError::SourceRebase(2)),
+            "{wrong}: {error:?}"
+        );
+    }
+    // An archive names no installation folder: nothing may be rewritten.
+    set(2, "/synthetic/rust/repos/2");
+    let error = verify::check_sources(&connection, &before, None, repos).unwrap_err();
+    assert!(matches!(error, ImportError::SourceRebase(1)), "{error:?}");
+
+    // An empty segment anywhere but a share's leading `//` is still a refusal.
+    set(2, "/synthetic/rust/repos/2");
+    let mut doubled = before.clone();
+    let stored = doubled.get_mut(&2).unwrap().as_mut().unwrap();
+    *stored = stored.replacen("/repos/", "//repos/", 1);
+    let error = verify::check_sources(&connection, &doubled, Some(root), repos).unwrap_err();
+    assert!(matches!(error, ImportError::SourceRebase(2)), "{error:?}");
+}
+
+/// A path on a Windows share (`\\server\share\...`) is rewritten by `decide`
+/// and must pass `check_sources`. `absolute` of a share path is a Windows
+/// path, so this runs there.
+#[cfg(windows)]
+#[test]
+fn a_windows_share_path_is_rewritten_and_then_accepted() {
+    let folder = node_folder();
+    let root = Path::new(r"\\server\share\data");
+    std::fs::create_dir_all(folder.path().join("repos/kit")).unwrap();
+    let connection = Connection::open(folder.database_path()).unwrap();
+    let original = setting(
+        &folder.database_path(),
+        "SELECT local_path FROM projects WHERE id = 1",
+    );
+    connection
+        .execute(
+            "UPDATE projects SET local_path = ?1 WHERE id = 2",
+            [r"\\server\share\data\repos\kit"],
+        )
+        .unwrap();
+    let rows = verify::source_rows(&connection).unwrap();
+    let decisions = verify::decide(&rows, Some(root), |inside| {
+        folder.path().join("repos").join(inside).is_dir()
+    });
+    let kit = decisions.iter().find(|(id, _)| *id == 2).unwrap();
+    assert_eq!(kit.1, verify::Decision::Rewrite("kit".into()));
+
+    let before = BTreeMap::from([
+        (1, Some(original)),
+        (2, Some(r"\\server\share\data\repos\kit".to_owned())),
+    ]);
+    connection
+        .execute(
+            "UPDATE projects SET local_path = '/synthetic/rust/repos/kit' WHERE id = 2",
+            [],
+        )
+        .unwrap();
+    verify::check_sources(
+        &connection,
+        &before,
+        Some(root),
+        Path::new("/synthetic/rust/repos"),
+    )
+    .unwrap();
+}
+
+/// A Node stopped in the middle of a transaction leaves a rollback journal
+/// beside its database. The import copies both, and the first connection to
+/// the copy must be able to replay the journal.
+#[test]
+fn a_source_with_an_unfinished_transaction_imports_as_it_was_before_it() {
+    let folder = node_folder();
+    let writer = Connection::open(folder.database_path()).unwrap();
+    let events = |connection: &Connection| -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM app_events", [], |row| row.get(0))
+            .unwrap()
+    };
+    let committed = events(&writer);
+    // A cache of one page makes the open transaction write to the database
+    // file, which needs the journal on disk first.
+    writer
+        .execute_batch(
+            "PRAGMA journal_mode = DELETE; PRAGMA cache_size = 1; BEGIN;
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000)
+             INSERT INTO app_events (at, kind, payload_json)
+               SELECT '2026-10-02', 'synthetic-unfinished', '{\"source\":1}' FROM n;",
+        )
+        .unwrap();
+    let journal = folder.path().join("print-partner.db-journal");
+    assert!(
+        std::fs::metadata(&journal).is_ok_and(|file| file.len() > 0),
+        "the test did not produce a rollback journal"
+    );
+    let (report, _paths, parent) = imported_with(&folder, &[]);
+    let imported = Connection::open(parent.path().join("rust/print-partner.db")).unwrap();
+    assert_eq!(events(&imported), committed);
+    assert_eq!(report.tables["app_events"], committed.unsigned_abs());
+    drop(writer);
 }

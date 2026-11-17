@@ -1,4 +1,6 @@
-use crate::{Envelope, SettingsClient, WriterOwner, auth::AuthPolicy, catalog, jobs};
+use crate::{
+    Envelope, SettingsClient, WriterFailure, WriterOwner, auth::AuthPolicy, catalog, jobs,
+};
 use anyhow::{Result, anyhow, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -212,11 +214,6 @@ fn validate_journal(connection: &Connection, preclaim: bool) -> Result<()> {
     for document in documents {
         let op: Operation = serde_json::from_str(&document)?;
         validate_operation(&op)?;
-        let payload = jobs::Payload::SuppliedSourceImport {
-            project_id: u64::try_from(op.source_id)?,
-            operation_key: op.key.clone(),
-            input_version: op.input_version,
-        };
         let job = connection
             .query_row(
                 "SELECT document FROM durable_jobs WHERE id=?1 UNION ALL SELECT archived_document FROM durable_job_keys WHERE job_id=?1 AND archived_document IS NOT NULL LIMIT 1",
@@ -226,17 +223,39 @@ fn validate_journal(connection: &Connection, preclaim: bool) -> Result<()> {
             .optional()?
             .map(|job| jobs::decode(&job))
             .transpose()?;
-        ensure!(
-            job.as_ref().is_some_and(|job| job.payload_version == 1
-                && job.job_id == op.job_id
-                && job.tenant == op.tenant
-                && job.payload == payload),
-            "Import job binding mismatch"
-        );
-        ensure!(
-            !op.cleanup_settled || job.as_ref().is_some_and(|job| job.state.terminal()),
-            "Import completion job mismatch"
-        );
+        // A GitHub sync publishes through this journal with a synthetic job id.
+        // The Sync job is a different row; this import does not enqueue one.
+        let github = op
+            .authority_revision
+            .as_ref()
+            .is_some_and(|revision| revision.producer_version == GITHUB_PRODUCER);
+        if github {
+            ensure!(
+                op.commit_sha.is_some()
+                    && op.revision_key.is_some()
+                    && op.state == State::Activated
+                    && op.cleanup_settled
+                    && job.is_none(),
+                "GitHub sync import binding mismatch"
+            );
+        } else {
+            let payload = jobs::Payload::SuppliedSourceImport {
+                project_id: u64::try_from(op.source_id)?,
+                operation_key: op.key.clone(),
+                input_version: op.input_version,
+            };
+            ensure!(
+                job.as_ref().is_some_and(|job| job.payload_version == 1
+                    && job.job_id == op.job_id
+                    && job.tenant == op.tenant
+                    && job.payload == payload),
+                "Import job binding mismatch"
+            );
+            ensure!(
+                !op.cleanup_settled || job.as_ref().is_some_and(|job| job.state.terminal()),
+                "Import completion job mismatch"
+            );
+        }
         if preclaim && let Some(job) = job {
             validate_preclaim_refusal(connection, &op, &job)?;
         }
@@ -348,6 +367,15 @@ pub enum Input {
 }
 
 impl Input {
+    /// The path of the one ZIP a captured import holds, which the worker
+    /// unpacks before preparing media (GRE-1444).
+    pub fn captured_zip_path(&self) -> Option<&str> {
+        match self {
+            Self::Captured(captured) => captured.payload.zip_path(),
+            Self::Files { .. } | Self::Zip { .. } => None,
+        }
+    }
+
     pub fn version(&self) -> u32 {
         match self {
             Self::Files { .. } | Self::Zip { .. } => 1,
@@ -400,21 +428,30 @@ pub struct AdmissionLimits {
 
 fn validate_admission_limits(limits: AdmissionLimits, quota: Option<u64>) -> Result<()> {
     ensure!(
-        (1..=256 * 1024 * 1024).contains(&limits.max_input_bytes)
-            && (1..=1024 * 1024 * 1024).contains(&limits.max_prepared_bytes),
+        limits.max_input_bytes >= 1 && limits.max_prepared_bytes >= 1,
         "Invalid import limits"
     );
-    let minimum = limits
-        .max_input_bytes
-        .checked_add(3 * limits.max_prepared_bytes)
-        .and_then(|minimum| minimum.checked_add(16 * 1024 * 1024))
-        .ok_or_else(|| anyhow!("Quota overflow"))?;
+    let minimum = reservation_floor(limits.max_input_bytes, limits.max_prepared_bytes)?;
+    ensure!(
+        i64::try_from(limits.reserved_bytes).is_ok(),
+        "Quota overflow"
+    );
     ensure!(
         limits.reserved_bytes >= minimum
             && quota.is_none_or(|quota| limits.reserved_bytes <= quota),
         "Import quota exceeded"
     );
     Ok(())
+}
+
+/// The reservation a request must hold: the input, three copies of the
+/// prepared bytes, and 16 MiB. There is no fixed ceiling on either budget.
+fn reservation_floor(max_input_bytes: u64, max_prepared_bytes: u64) -> Result<u64> {
+    max_prepared_bytes
+        .checked_mul(3)
+        .and_then(|prepared| prepared.checked_add(max_input_bytes))
+        .and_then(|minimum| minimum.checked_add(16 * 1024 * 1024))
+        .ok_or_else(|| anyhow!("Quota overflow"))
 }
 
 fn ensure_owner_import_quota(
@@ -711,6 +748,26 @@ pub struct Operation {
     pub authority_revision: Option<SourceAuthorityRevision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation_cursor: Option<i64>,
+    /// The 40-character commit a GitHub sync publishes. Absent on a supplied
+    /// import, which still records its content hash as `last_commit_sha`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+    /// The snapshot key, which is the commit or `{commit}.snapshot-v2` /
+    /// `{commit}.snapshot-v3`. When set, it is `artifact.upstream_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_key: Option<String>,
+}
+
+/// A GitHub snapshot already on disk. Activation records it as a Source
+/// revision and writes [`GithubSnapshot::commit_sha`] to `last_commit_sha`.
+#[derive(Clone, Debug)]
+pub struct GithubSnapshot {
+    pub commit_sha: String,
+    pub revision_key: String,
+    pub manifest_digest: String,
+    pub locator: String,
+    pub stored_bytes: u64,
+    pub files: Vec<File>,
 }
 
 /// A step of a claimed import attempt. Every step but `Read` records a Source
@@ -722,7 +779,9 @@ pub enum Phase {
     Published(Artifact),
     Activate,
     Cleanup,
-    Fail,
+    /// Ends the import. The reason, in words, becomes the failed job's
+    /// `error`; a cancelled import ignores it.
+    Fail(String),
 }
 
 impl Phase {
@@ -733,7 +792,7 @@ impl Phase {
             Self::Published(_) => Some("published"),
             Self::Activate => Some("activated"),
             Self::Cleanup => Some("cleanup"),
-            Self::Fail => Some("failed"),
+            Self::Fail(_) => Some("failed"),
         }
     }
 }
@@ -887,6 +946,9 @@ pub(crate) enum Command {
         source_work: catalog::SourceWorkProof,
         phase: Phase,
         policy: AuthPolicy,
+        /// Set on a successful import. `None` leaves `public_result` unset,
+        /// which is what recovery and the phase tests do.
+        warnings: Option<Vec<String>>,
     },
 }
 
@@ -924,13 +986,12 @@ pub struct ImportClient {
 }
 
 impl WriterOwner {
-    /// Opens the upload journal with the owner's import quota in bytes. Every
-    /// client of one owner must name the same quota.
+    /// Opens the upload journal with the owner's import quota in bytes. Any
+    /// quota above zero is valid. Every client of one owner must name the
+    /// same quota. The runtime names `u64::MAX`, so the library has no ceiling;
+    /// a sum that overflows is still refused.
     pub fn imports(&self, policy: AuthPolicy, quota: u64) -> Result<ImportClient> {
-        ensure!(
-            quota > 0 && quota <= 64 * 1024 * 1024 * 1024,
-            "Invalid desktop quota"
-        );
+        ensure!(quota > 0, "Invalid desktop quota");
         crate::auth::validate_policy(policy)?;
         let mut configured = self
             .client
@@ -1194,18 +1255,21 @@ pub(crate) fn submit(
     command: Command,
     cancelled: &AtomicBool,
 ) -> Result<UploadsOutcome> {
+    // Admission failures are typed, so callers sort them with
+    // `WriterFailure::from` rather than by text.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut queue = storage
         .shared
         .queue
         .lock()
-        .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        .map_err(|_| WriterFailure::Stopped)?;
     loop {
-        ensure!(!queue.closed, "Storage stopped");
-        ensure!(
-            !cancelled.load(Ordering::Acquire),
-            "Cancelled before admission"
-        );
+        if queue.closed {
+            return Err(WriterFailure::Stopped.into());
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WriterFailure::Cancelled.into());
+        }
         if queue.pending.len() < storage.shared.capacity {
             let (reply, receiver) = mpsc::channel();
             queue
@@ -1217,17 +1281,44 @@ pub(crate) fn submit(
                 .recv()
                 .map_err(|_| anyhow!("Import commit outcome unknown"))?;
         }
-        ensure!(Instant::now() < deadline, "Writer queue full");
+        if Instant::now() >= deadline {
+            return Err(WriterFailure::QueueFull.into());
+        }
         queue = storage
             .shared
             .changed
             .wait_timeout(queue, Duration::from_millis(5))
-            .map_err(|_| anyhow!("Writer admission poisoned"))?
+            .map_err(|_| WriterFailure::Stopped)?
             .0;
     }
 }
 
-pub(crate) fn execute(
+/// Runs `command` on the writer thread: advances the import accounting epoch
+/// when it changed what admission counts, and publishes the import job
+/// changes it committed to `/ws/jobs` like a job command's.
+pub(crate) fn run(
+    connection: &mut Connection,
+    catalog_state: &catalog::State,
+    command: Command,
+    admission: crate::writer_admission::Deadline,
+    shared: &crate::Shared,
+) -> Result<UploadsOutcome> {
+    let changes_accounting = command.changes_accounting();
+    let changes_before = connection.total_changes();
+    jobs::begin_job_collection();
+    let result = execute(connection, catalog_state, command, admission);
+    jobs::end_job_collection(
+        &shared.job_subscriptions,
+        result.is_ok(),
+        result.as_ref().err(),
+    );
+    if result.is_ok() && changes_accounting && connection.total_changes() != changes_before {
+        shared.import_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+    result
+}
+
+fn execute(
     connection: &mut Connection,
     catalog_state: &catalog::State,
     command: Command,
@@ -1291,6 +1382,7 @@ pub(crate) fn execute(
             source_work,
             phase,
             policy,
+            warnings,
         } => {
             let mut job = match jobs::claimed_job(&tx, &lease) {
                 Ok(job) => job,
@@ -1338,13 +1430,15 @@ pub(crate) fn execute(
                     record_observation(&tx, &mut op, "authority_refused", observed)?;
                     store(&tx, &op)?;
                     tx.commit()?;
+                    jobs::job_collection_committed();
                 }
                 return Err(error);
             }
             UploadsOutcome::Operation(Box::new(if cleanup_retry {
+                let _ = warnings;
                 op
             } else {
-                advance(&tx, catalog_state, &lease, job, op, phase)?
+                advance(&tx, catalog_state, &lease, job, op, phase, warnings)?
             }))
         }
     };
@@ -1381,9 +1475,10 @@ fn advance(
     mut job: jobs::JobRecord,
     mut op: Operation,
     phase: Phase,
+    warnings: Option<Vec<String>>,
 ) -> Result<Operation> {
     ensure!(
-        !job.cancel_requested || matches!(phase, Phase::Read | Phase::Fail | Phase::Cleanup),
+        !job.cancel_requested || matches!(phase, Phase::Read | Phase::Fail(_) | Phase::Cleanup),
         "Import cancelled"
     );
     let observation = phase.observation();
@@ -1403,7 +1498,7 @@ fn advance(
             ensure!(op.state == State::Published, "Artifact not published");
             activate(tx, catalog_state, &mut op, lease)?;
         }
-        Phase::Fail => {
+        Phase::Fail(reason) => {
             ensure!(op.receipt.is_none(), "Import already completed");
             if matches!(op.state, State::Failed | State::Cancelled)
                 && repeats_observation(tx, &op, "failed", Observed::fenced(&job, lease, &op))?
@@ -1413,6 +1508,10 @@ fn advance(
             op.state = if job.cancel_requested {
                 State::Cancelled
             } else {
+                // Kept for cleanup, which ends the job; a version bump here
+                // would end this attempt's lease.
+                job.recovery = Some(jobs::bounded_reason(&reason));
+                jobs::keep_recovery(tx, &job)?;
                 State::Failed
             };
         }
@@ -1425,6 +1524,7 @@ fn advance(
                     return Err(anyhow!("Import is not settled"));
                 }
             };
+            record_import_warnings(&mut job, warnings);
             settle(tx, &mut op)?;
             jobs::save(tx, &mut job, "source_import_settled")?;
         }
@@ -1435,6 +1535,24 @@ fn advance(
     }
     store(tx, &op)?;
     Ok(op)
+}
+
+/// Stores size warnings on a succeeded import. Other endings leave the
+/// result unset. Callers that pass `None` (phase tests, failure cleanup)
+/// also leave it unset.
+fn record_import_warnings(job: &mut jobs::JobRecord, warnings: Option<Vec<String>>) {
+    #[cfg(feature = "desktop_rebuild")]
+    if job.state == jobs::PersistentState::Succeeded
+        && let Some(warnings) = warnings
+    {
+        job.public_result = Some(jobs::CompletedResult::SourceImport(
+            jobs::SourceImportResult { warnings },
+        ));
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    {
+        let _ = (job, warnings);
+    }
 }
 
 /// Releases the import's reservation and keeps the bytes of its published
@@ -1807,7 +1925,7 @@ fn activate(
             op.source_id,
             id,
             local_path,
-            artifact.upstream_key,
+            op.commit_sha.as_deref().unwrap_or(artifact.upstream_key.as_str()),
             synced_at,
             basis.current_source_revision_id,
             basis.url,
@@ -2127,6 +2245,8 @@ fn admit(
         cleanup_settled: false,
         authority_revision: Some(authority_revision),
         observation_cursor: Some(0),
+        commit_sha: None,
+        revision_key: None,
     };
     validate_operation(&op)?;
     tx.execute(
@@ -2141,18 +2261,166 @@ fn admit(
 }
 
 const PRODUCER: &str = "supplied-source-import-v1";
+const GITHUB_PRODUCER: &str = "github-source-sync-v1";
+
+/// Publishes one claimed GitHub target through the import engine. The snapshot
+/// is already on disk. The sync reservation stays held; the caller settles it.
+/// The import row uses a synthetic job id so it does not collide with the Sync
+/// job, and its quota is settled so the Source is not left busy.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn activate_github(
+    tx: &Transaction<'_>,
+    catalog_state: &catalog::State,
+    lease: &jobs::AttemptLease,
+    candidate: &crate::source_sync::SyncCandidate,
+    snapshot: GithubSnapshot,
+) -> Result<i64> {
+    let bound = crate::source_sync::bind(tx, catalog_state, lease, candidate)?;
+    ensure!(
+        commit_text(&snapshot.commit_sha) && revision_text(&snapshot.revision_key),
+        "Invalid GitHub revision"
+    );
+    ensure!(
+        !snapshot.files.is_empty(),
+        "GitHub Source has no snapshot files"
+    );
+    let actor: String = tx.query_row(
+        "SELECT authority_actor FROM source_sync_targets WHERE job_id=?1 AND ordinal=?2",
+        params![bound.key.job_id, bound.key.ordinal],
+        |row| row.get(0),
+    )?;
+    let basis = basis(tx, lease.tenant(), bound.source_id)?;
+    ensure!(
+        basis.source_kind == "github",
+        "Source is not a GitHub Source"
+    );
+    let configuration_version: i64 = tx.query_row(
+        "SELECT source_configuration_version FROM projects WHERE tenant_id=?1 AND id=?2",
+        params![lease.tenant(), bound.source_id],
+        |row| row.get(0),
+    )?;
+    let requested_files = snapshot
+        .files
+        .iter()
+        .map(|file| File {
+            path: file.path.clone(),
+            size: file.size,
+            sha256: file.sha256.clone(),
+            kind: "input".into(),
+        })
+        .collect::<Vec<_>>();
+    let requested_digest = serialized_digest(&requested_files)?;
+    let content = requested_files
+        .iter()
+        .try_fold(0u64, |total, file| total.checked_add(file.size))
+        .ok_or_else(|| anyhow!("Input size overflow"))?;
+    let reserved = snapshot.stored_bytes.max(content).max(1);
+    let limit = content.max(1);
+    let job_id = hex::encode(Sha256::digest(
+        format!("github-sync:{}:{}", bound.key.job_id, bound.key.ordinal).as_bytes(),
+    ));
+    let paths = requested_files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let artifact = Artifact {
+        tenant: lease.tenant().to_owned(),
+        source_id: bound.source_id,
+        upstream_key: snapshot.revision_key.clone(),
+        manifest_digest: snapshot.manifest_digest,
+        locator: snapshot.locator,
+        stored_bytes: snapshot.stored_bytes,
+        files: snapshot.files,
+        suggested_rules: Vec::new(),
+    };
+    ensure!(
+        artifact.locator == format!("{}/revisions/{}", bound.source_id, artifact.upstream_key),
+        "Artifact locator mismatch"
+    );
+    let mut op = Operation {
+        tenant: lease.tenant().to_owned(),
+        actor,
+        key: job_id.clone(),
+        intent_digest: serialized_digest(&(
+            &snapshot.commit_sha,
+            &snapshot.revision_key,
+            bound.source_id,
+        ))?,
+        source_id: bound.source_id,
+        job_id: job_id.clone(),
+        input_version: 1,
+        input: Input::Files { paths },
+        requested_files: requested_files.clone(),
+        requested_digest: requested_digest.clone(),
+        state: State::Published,
+        basis: basis.clone(),
+        default_rules: false,
+        original_rules: None,
+        reserved_bytes: reserved,
+        max_input_bytes: limit,
+        max_prepared_bytes: limit,
+        owned: Some(OwnedInput {
+            locator: format!(".pp-imports/{job_id}"),
+            digest: requested_digest.clone(),
+            files: requested_files,
+        }),
+        artifact: Some(artifact),
+        receipt: None,
+        cleanup_settled: false,
+        authority_revision: Some(SourceAuthorityRevision {
+            version: 1,
+            source_configuration_version: configuration_version,
+            activation_observation_digest: serialized_digest(&basis)?,
+            input_digest: requested_digest,
+            producer_version: GITHUB_PRODUCER.into(),
+        }),
+        observation_cursor: Some(0),
+        commit_sha: Some(snapshot.commit_sha),
+        revision_key: Some(snapshot.revision_key),
+    };
+    validate_operation(&op)?;
+    tx.execute(
+        "INSERT INTO source_import_operations(tenant,operation_key,actor,intent_digest,source_id,job_id,state,document_version,document) VALUES(?1,?2,?3,?4,?5,?6,'published',1,?7)",
+        params![op.tenant, op.key, op.actor, op.intent_digest, op.source_id, op.job_id, serde_json::to_string(&op)?],
+    )?;
+    tx.execute(
+        "INSERT INTO source_import_quota VALUES(?1,?2,0,?3,1)",
+        params![op.tenant, op.key, i64::try_from(snapshot.stored_bytes)?],
+    )?;
+    activate(tx, catalog_state, &mut op, lease)?;
+    let revision_id = op
+        .receipt
+        .as_ref()
+        .filter(|receipt| receipt.activated)
+        .map(|receipt| receipt.revision_id)
+        .ok_or_else(|| anyhow!("Source changed during sync"))?;
+    op.cleanup_settled = true;
+    store(tx, &op)?;
+    Ok(revision_id)
+}
+
+fn commit_text(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn revision_text(value: &str) -> bool {
+    let (sha, suffix) = value.split_once('.').unwrap_or((value, ""));
+    commit_text(sha) && matches!(suffix, "" | "snapshot-v2" | "snapshot-v3")
+}
 
 fn validate_limits(request: &Admission, quota: u64) -> Result<()> {
     ensure!(
-        (1..=256 * 1024 * 1024).contains(&request.max_input_bytes)
-            && (1..=1024 * 1024 * 1024).contains(&request.max_prepared_bytes),
+        request.max_input_bytes >= 1 && request.max_prepared_bytes >= 1,
         "Invalid import limits"
     );
-    let minimum = request
-        .max_input_bytes
-        .checked_add(3 * request.max_prepared_bytes)
-        .and_then(|minimum| minimum.checked_add(16 * 1024 * 1024))
-        .ok_or_else(|| anyhow!("Quota overflow"))?;
+    let minimum = reservation_floor(request.max_input_bytes, request.max_prepared_bytes)?;
+    ensure!(
+        i64::try_from(request.reserved_bytes).is_ok(),
+        "Quota overflow"
+    );
     ensure!(
         (minimum..=quota).contains(&request.reserved_bytes),
         "Import quota exceeded"
@@ -2361,7 +2629,10 @@ fn validate_operation(op: &Operation) -> Result<()> {
         ensure!(
             revision.version == 1
                 && revision.source_configuration_version > 0
-                && revision.producer_version == PRODUCER
+                && matches!(
+                    revision.producer_version.as_str(),
+                    PRODUCER | GITHUB_PRODUCER
+                )
                 && revision.input_digest == op.requested_digest
                 && revision.activation_observation_digest == serialized_digest(&op.basis)?,
             "Invalid Source authority revision"
@@ -2418,8 +2689,25 @@ fn validate_operation(op: &Operation) -> Result<()> {
             "Owned input binding mismatch"
         );
     }
+    ensure!(
+        match (&op.revision_key, &op.commit_sha) {
+            (None, None) => true,
+            (Some(key), Some(commit)) => {
+                revision_text(key)
+                    && commit_text(commit)
+                    && op
+                        .artifact
+                        .as_ref()
+                        .is_some_and(|artifact| artifact.upstream_key == *key)
+            }
+            _ => false,
+        },
+        "Invalid GitHub revision"
+    );
     if let Some(artifact) = &op.artifact {
-        digest(&artifact.upstream_key)?;
+        if op.revision_key.is_none() {
+            digest(&artifact.upstream_key)?;
+        }
         digest(&artifact.manifest_digest)?;
         files(&artifact.files, op.max_prepared_bytes)?;
         ensure!(

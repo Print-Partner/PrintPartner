@@ -13,8 +13,6 @@
     "scripts/test_ci_path_filter.py",
     "scripts/ci-rust-runner.py",
     "scripts/test_ci_rust_runner.py",
-    "scripts/lint-pr-evidence.mjs",
-    "scripts/lint-pr-evidence.test.mjs",
     "scripts/check-github-actions-pinned.sh",
     "scripts/test_merge_group_workflows.py",
     "scripts/linear/**",
@@ -76,5 +74,8 @@
     "grok-4.7": "xai",
     "glm-5.3-flash-free": "zhipu",
     "deepseek-v4.1-flash-free": "deepseek"
+  },
+  "pp_score_seats": {
+    "gpt-6.1-sol": "openai"
   }
 }

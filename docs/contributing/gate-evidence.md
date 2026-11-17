@@ -50,26 +50,9 @@ artifacts and does not check hosts. Those removed requirements are tracked in
 
 ## CI and local checks
 
-`.github/workflows/pr-evidence.yml` runs body lint on
-`pull_request` events, including body edits. Draft PRs skip the job; marking
-a PR ready starts validation. It executes the protected
-default branch's checker with read-only permissions. This keeps the same
-repository evidence policy for stacked PRs whose base branches predate the
-checker. The PR body enters the checker through an environment variable, and
-the changed-file list comes from the GitHub API with the job's read-only token;
-the body-lint job never checks out or executes the PR head.
-
-`.github/workflows/pr-evidence-tests.yml` tests the proposed checker on a
-GitHub-hosted runner when the checker, its tests, the PR template or an
-Evidence workflow changes. It also supports manual runs.
-
-```sh
-node --test scripts/lint-pr-evidence.test.mjs
-node scripts/lint-pr-evidence.mjs --body-file body.md
-```
-
-The checker also accepts `PR_BODY` or `--stdin`. Pass `--changed-files
-files.txt` (one path per line) to apply the screenshot and video rule locally.
+GRE-1647 removed the hosted evidence lint and `scripts/lint-pr-evidence.mjs`.
+CI no longer reads the pull request body. The evidence rules above still apply
+when a change needs a screenshot or a video.
 
 ## Run CI locally before you push
 
@@ -89,8 +72,8 @@ list each skipped step under Evidence.
 
 Normal PRs run `just ci --fast` instead, which leaves out the full nextest and
 doctest passes and runs nextest with `desktop_rebuild` on for the crates the
-branch affects. Sensitive PRs, as the
-[merge gate](../development/definition-of-done.md#merge-gate) defines them, run
+branch affects. Data-loss changes, as
+[Who merges](../development/definition-of-done.md#who-merges) defines them, run
 the full `just ci`. Name the command you ran under Evidence.
 
 A later push, for a merge of `main` or a review fix, does not rerun either

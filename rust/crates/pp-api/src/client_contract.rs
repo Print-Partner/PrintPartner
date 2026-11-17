@@ -3,8 +3,8 @@
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
 //! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
-//! [`crate::modules`], [`crate::integrations`], [`crate::printers`], [`crate::backup`]
-//! or [`crate::auth`].
+//! [`crate::modules`], [`crate::integrations`], [`crate::printers`],
+//! [`crate::spoolman_deductions`], [`crate::backup`] or [`crate::auth`].
 //! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -248,6 +248,20 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "/api/v2/spoolman/deductions",
         None,
         "DeductionList",
+    ),
+    route(
+        "readSpoolmanDeduction",
+        "GET",
+        "/api/v2/spoolman/deductions/{id}",
+        None,
+        "DeductionDetail",
+    ),
+    route(
+        "reconcileSpoolmanDeduction",
+        "POST",
+        "/api/v2/spoolman/deductions/{id}/reconcile",
+        Some("ReconcileDeductionRequest"),
+        "DeductionView",
     ),
     route(
         "listUnmatchedPrints",
@@ -706,11 +720,12 @@ pub(crate) mod codegen {
         }
         schema("PrinterConfig", config)?;
         // A deduction always serializes its nullable fields, null included.
-        let mut deductions = schemars::schema_for!(crate::spoolman_deductions::DeductionList);
-        if let Some(schemars::schema::Schema::Object(view)) =
-            deductions.definitions.get_mut("DeductionView")
-            && let Some(object) = view.object.as_mut()
-        {
+        // The same required list is applied to every copy of DeductionView so
+        // the generator sees one shape.
+        let require_deduction_view = |object: &mut schemars::schema::SchemaObject| {
+            let Some(object) = object.object.as_mut() else {
+                return;
+            };
             let nullable = [
                 "reason",
                 "integration_id",
@@ -721,8 +736,28 @@ pub(crate) mod codegen {
                 "failure_status",
             ];
             object.required.extend(nullable.map(String::from));
+        };
+        let mut view = schemars::schema_for!(crate::spoolman_deductions::DeductionView);
+        require_deduction_view(&mut view.schema);
+        schema("DeductionView", view)?;
+        let mut deductions = schemars::schema_for!(crate::spoolman_deductions::DeductionList);
+        if let Some(schemars::schema::Schema::Object(view)) =
+            deductions.definitions.get_mut("DeductionView")
+        {
+            require_deduction_view(view);
         }
         schema("DeductionList", deductions)?;
+        let mut detail = schemars::schema_for!(crate::spoolman_deductions::DeductionDetail);
+        if let Some(schemars::schema::Schema::Object(view)) =
+            detail.definitions.get_mut("DeductionView")
+        {
+            require_deduction_view(view);
+        }
+        schema("DeductionDetail", detail)?;
+        schema(
+            "ReconcileDeductionRequest",
+            schemars::schema_for!(crate::spoolman_deductions::ReconcileDeductionRequest),
+        )?;
         schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),
@@ -2044,9 +2079,12 @@ pub(crate) mod codegen {
         ])
     }
 
-    /// A pending deduction and a skipped one, whose target fields are null.
+    /// A pending deduction and a skipped one, whose target fields are null,
+    /// plus the read and reconcile bodies.
     fn deduction_cases() -> Result<Vec<Value>, serde_json::Error> {
-        use crate::spoolman_deductions::{DeductionList, DeductionView};
+        use crate::spoolman_deductions::{
+            DeductionDetail, DeductionList, DeductionView, ReconcileDeductionRequest, ReportedGrams,
+        };
         let row = |pending: bool| DeductionView {
             id: if pending { MAX_SAFE } else { 1 },
             state: if pending { "pending" } else { "skipped" },
@@ -2063,12 +2101,52 @@ pub(crate) mod codegen {
             created_at: "2026-11-12T00:00:00.000Z".into(),
             updated_at: "2026-11-12T00:00:00.000Z".into(),
         };
-        let deductions = vec![row(true), row(false)];
-        Ok(vec![served(
-            "DeductionList",
-            "pending-and-skipped",
-            DeductionList { deductions },
-        )?])
+        let pending = row(true);
+        let skipped = row(false);
+        let mut cases = vec![
+            served(
+                "DeductionList",
+                "pending-and-skipped",
+                DeductionList {
+                    deductions: vec![pending.clone(), skipped.clone()],
+                },
+            )?,
+            served("DeductionView", "pending", pending.clone())?,
+            served("DeductionView", "skipped", skipped)?,
+            served(
+                "DeductionDetail",
+                "reports-grams",
+                DeductionDetail {
+                    deduction: pending.clone(),
+                    grams_before: ReportedGrams::Known { grams: 512 },
+                    grams_now: ReportedGrams::Known { grams: 492 },
+                },
+            )?,
+            served(
+                "DeductionDetail",
+                "now-unknown",
+                DeductionDetail {
+                    deduction: pending,
+                    grams_before: ReportedGrams::Unknown,
+                    grams_now: ReportedGrams::Unknown,
+                },
+            )?,
+        ];
+        for (name, value) in [
+            ("deducted", json!({"answer": "deducted"})),
+            ("retry", json!({"answer": "retry"})),
+            ("dismiss", json!({"answer": "dismiss"})),
+            ("missing", json!({})),
+            ("extra", json!({"answer": "dismiss", "grams": 1})),
+            ("unknown-answer", json!({"answer": "skip"})),
+        ] {
+            cases.push(request::<ReconcileDeductionRequest>(
+                "ReconcileDeductionRequest",
+                name,
+                value,
+            ));
+        }
+        Ok(cases)
     }
 
     fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {

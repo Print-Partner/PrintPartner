@@ -1,7 +1,8 @@
 //! GRE-1738: the deduction worker sends each pending row once, against a
-//! loopback Spoolman. GRE-1750: an integration change during the spool GET
-//! sends nothing to the old config. Nothing here contacts a real Spoolman or
-//! a printer.
+//! loopback Spoolman. GRE-1749: reconcile answers an unknown or failed row,
+//! and a read reports the grams from before the send and now. GRE-1750: an
+//! integration change during the spool GET sends nothing to the old config.
+//! Nothing here contacts a real Spoolman or a printer.
 #![cfg(feature = "desktop_rebuild")]
 
 use pp_api::accepted::{AcceptedHttpConfig, accepted_router};
@@ -54,6 +55,8 @@ enum Mode {
     Refuse,
     /// Subtract `use_weight`, then close with no reply.
     Drop,
+    /// The first PUT is 422. Later PUTs apply.
+    RefuseThenApply,
 }
 
 struct Hit {
@@ -185,6 +188,21 @@ async fn serve_one(
             Mode::Drop => {
                 apply_use(&stock, &path, &body);
                 return Ok(());
+            }
+            Mode::RefuseThenApply => {
+                let first = log
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|hit| hit.method == "PUT")
+                    .count()
+                    == 1;
+                if first {
+                    return write_response(&mut socket, 422, "Unprocessable Entity", "{}").await;
+                }
+                apply_use(&stock, &path, &body);
+                let reply = stock_body(&stock, &path);
+                return write_response(&mut socket, 200, "OK", &reply).await;
             }
         }
     }
@@ -710,4 +728,266 @@ async fn shortfalls(origin: &str) -> Value {
     let body: Value = response.json().await.unwrap();
     assert_eq!(status, 200, "{body}");
     body["filaments"][0]["grams_available"].clone()
+}
+
+fn requests(fake: &Fake) -> usize {
+    fake.log.lock().unwrap().len()
+}
+
+struct Api {
+    origin: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Api {
+    async fn start(owner: &WriterOwner) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let config = AcceptedHttpConfig::from_startup(&origin, "default", Some("1")).unwrap();
+        let router = pp_api::spoolman_deductions::spoolman_deductions_router(
+            config,
+            owner.spoolman_deductions(desktop_policy()).unwrap(),
+            Arc::new(SpoolmanInventory::new().unwrap()),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
+        Self { origin, task }
+    }
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder().no_proxy().build().unwrap()
+}
+
+async fn get_deduction(origin: &str, id: i64) -> (u16, Value) {
+    let response = http_client()
+        .get(format!("{origin}/api/v2/spoolman/deductions/{id}"))
+        .header("Cookie", format!("pp_session={SESSION}"))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.json().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+async fn post_answer(origin: &str, id: i64, body: Value) -> (u16, Value) {
+    let response = http_client()
+        .post(format!(
+            "{origin}/api/v2/spoolman/deductions/{id}/reconcile"
+        ))
+        .header("Cookie", format!("pp_session={SESSION}"))
+        .header("Origin", origin)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.json().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+async fn post_raw(origin: &str, id: i64, body: &str) -> (u16, Value) {
+    let response = http_client()
+        .post(format!(
+            "{origin}/api/v2/spoolman/deductions/{id}/reconcile"
+        ))
+        .header("Cookie", format!("pp_session={SESSION}"))
+        .header("Origin", origin)
+        .header("Content-Type", "application/json")
+        .body(body.to_owned())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.json().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+async fn wait_state(owner: &WriterOwner, state: State) -> i64 {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(row) = rows(owner).iter().find(|row| row.state == state) {
+            return row.id;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timed out waiting for {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn deducted_applies_unknown_without_a_request_and_get_reports_grams() {
+    let fake = Fake::start(Mode::Drop).await;
+    let (fixture, owner) = prepared(&fake.origin);
+    burst(&owner, "k1");
+    assert!(send_once(&owner).await);
+    let id = rows(&owner)[0].id;
+    assert_eq!(rows(&owner)[0].state, State::Unknown);
+    let before_requests = requests(&fake);
+    assert_eq!(fake.puts().len(), 1);
+
+    let api = Api::start(&owner).await;
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "deducted"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "applied");
+    assert!(body["failure"].is_null());
+    assert_eq!(requests(&fake), before_requests);
+    assert_eq!(fake.puts().len(), 1);
+
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["deduction"]["state"], "applied");
+    assert_eq!(
+        detail["grams_before"],
+        json!({"kind": "known", "grams": 512})
+    );
+    assert_eq!(detail["grams_now"], json!({"kind": "known", "grams": 492}));
+    assert_eq!(requests(&fake), before_requests + 1);
+
+    put(&fixture, "feature_toggles", r#"{"spoolman":false}"#);
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["grams_now"], json!({"kind": "known", "grams": 492}));
+    put(&fixture, "feature_toggles", r#"{"spoolman":true}"#);
+
+    let seen = requests(&fake);
+    put(
+        &fixture,
+        "integrations",
+        &integration(&fake.origin, "sm-1").replace("\"enabled\":true", "\"enabled\":false"),
+    );
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(
+        detail["grams_before"],
+        json!({"kind": "known", "grams": 512})
+    );
+    assert_eq!(detail["grams_now"], json!({"kind": "unknown"}));
+    assert_eq!(requests(&fake), seen);
+    put(&fixture, "integrations", &integration(&fake.origin, "sm-1"));
+
+    drop(fake);
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(
+        detail["grams_before"],
+        json!({"kind": "known", "grams": 512})
+    );
+    assert_eq!(detail["grams_now"], json!({"kind": "unknown"}));
+
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "retry"})).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["code"], "deduction_state");
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "nope"})).await;
+    assert_eq!(status, 400, "{body}");
+    let (status, body) = post_raw(&api.origin, id, "{").await;
+    assert_eq!(status, 400, "{body}");
+    let (status, body) = get_deduction(&api.origin, 0).await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["code"], "deduction_not_found");
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn dismiss_keeps_the_failure_and_a_pending_row_conflicts() {
+    let fake = Fake::start(Mode::Refuse).await;
+    let (_fixture, owner) = prepared(&fake.origin);
+    burst(&owner, "k1");
+    assert!(send_once(&owner).await);
+    let id = rows(&owner)[0].id;
+    let seen = requests(&fake);
+    assert_eq!(fake.puts().len(), 1);
+
+    let api = Api::start(&owner).await;
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "dismiss"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "dismissed");
+    assert_eq!(body["failure"], "refused");
+    assert_eq!(body["failure_status"], 422);
+    assert_eq!(requests(&fake), seen);
+    assert_eq!(fake.puts().len(), 1);
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "deducted"})).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["code"], "deduction_state");
+    assert_eq!(requests(&fake), seen);
+
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(
+        detail["grams_before"],
+        json!({"kind": "known", "grams": 512})
+    );
+    assert_eq!(detail["grams_now"], json!({"kind": "known", "grams": 512}));
+    owner.shutdown().unwrap();
+
+    let fake = Fake::start(Mode::Apply).await;
+    let (_fixture, owner) = prepared(&fake.origin);
+    burst(&owner, "k1");
+    let id = rows(&owner)[0].id;
+    assert_eq!(rows(&owner)[0].state, State::Pending);
+    let api = Api::start(&owner).await;
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "deducted"})).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["code"], "deduction_state");
+    assert_eq!(rows(&owner)[0].state, State::Pending);
+    assert!(fake.puts().is_empty());
+    assert_eq!(requests(&fake), 0);
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["grams_before"], json!({"kind": "unknown"}));
+    assert_eq!(detail["grams_now"], json!({"kind": "known", "grams": 512}));
+    assert!(fake.puts().is_empty());
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn retry_wakes_the_worker_for_exactly_one_more_put() {
+    let fake = Fake::start(Mode::RefuseThenApply).await;
+    let (_fixture, owner) = prepared(&fake.origin);
+    let worker =
+        DeductionWorker::new(&owner, desktop_policy(), SpoolmanInventory::new().unwrap()).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let wake = worker.waker();
+    let task = worker.spawn(Arc::clone(&stop));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let api = Api::start(&owner).await;
+    burst(&owner, "k1");
+    let id = wait_state(&owner, State::Failed).await;
+    assert_eq!(fake.puts().len(), 1);
+
+    let (status, body) = post_answer(&api.origin, id, json!({"answer": "retry"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "pending");
+    assert!(body["failure"].is_null());
+    let id = wait_state(&owner, State::Applied).await;
+    assert_eq!(fake.puts().len(), 2);
+    assert_eq!(fake.puts()[1].path, "/api/v1/spool/7/use");
+    let (status, detail) = get_deduction(&api.origin, id).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["deduction"]["state"], "applied");
+    assert_eq!(
+        detail["grams_before"],
+        json!({"kind": "known", "grams": 512})
+    );
+    assert_eq!(detail["grams_now"], json!({"kind": "known", "grams": 492}));
+
+    stop.store(true, Ordering::Release);
+    wake.notify_one();
+    task.await.unwrap();
+    owner.shutdown().unwrap();
 }

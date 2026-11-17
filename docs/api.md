@@ -162,10 +162,16 @@ Served only by the Rust core with both rebuild gates on, behind a session or API
 ### Spoolman deductions (Rust-only)
 
 ```text
-GET /api/v2/spoolman/deductions?state=&link_id=
+GET  /api/v2/spoolman/deductions?state=&link_id=
+GET  /api/v2/spoolman/deductions/:id
+POST /api/v2/spoolman/deductions/:id/reconcile
 ```
 
-Served only by the Rust core with both rebuild gates on, behind a session or API key. Answers `{ "deductions": [...] }`, newest first, at most 100. Each row has `id`, `state` (`pending`, `sending`, `applied`, `unknown`, `failed`, `skipped` or `dismissed`), `reason` (set only on `skipped`), `link_id`, `profile_id` (the Build), `units`, and `integration_id`, `spool_id`, `grams` (whole grams, rounded up) and `grams_basis` (`estimated` or `measured`), which are null on `skipped` rows. `failure` is set only on `failed`, `unknown` and `dismissed`. `failure_status` is set only when `failure` is `refused`. `state` must be one of those states and `link_id` 1 to 200 characters; any other query is refused with 400 `invalid_deduction_filter`. Checkoff writes the rows and returns without waiting for Spoolman. A background worker sends each `pending` row once after the burst commits; see [Spoolman](integrations/SPOOLMAN.md#on-the-rust-core). Errors are [problem responses](problem-responses.md).
+Served only by the Rust core with both rebuild gates on, behind a session or API key. The list answers `{ "deductions": [...] }`, newest first, at most 100. Each row has `id`, `state` (`pending`, `sending`, `applied`, `unknown`, `failed`, `skipped` or `dismissed`), `reason` (set only on `skipped`), `link_id`, `profile_id` (the Build), `units`, and `integration_id`, `spool_id`, `grams` (whole grams, rounded up) and `grams_basis` (`estimated` or `measured`), which are null on `skipped` rows. `failure` is set only on `failed`, `unknown` and `dismissed`. `failure_status` is set only when `failure` is `refused`. `state` must be one of those states and `link_id` 1 to 200 characters; any other query is refused with 400 `invalid_deduction_filter`. Checkoff writes the rows and returns without waiting for Spoolman. A background worker sends each `pending` row once after the burst commits; see [Spoolman](integrations/SPOOLMAN.md#on-the-rust-core).
+
+`GET /api/v2/spoolman/deductions/:id` answers `{ "deduction": <row>, "grams_before": ..., "grams_now": ... }`. Each gram report is `{ "kind": "known", "grams": N }` or `{ "kind": "unknown" }`. `grams` is whole grams, rounded down. `grams_before` is what Spoolman reported when the row was claimed. `grams_now` is what that spool reports at the read. A skipped row, or a missing, disabled or unreadable integration, is `unknown` and is not contacted. The Spoolman Module being off does not block the read. A missing id is 404 `deduction_not_found`.
+
+`POST /api/v2/spoolman/deductions/:id/reconcile` takes `{ "answer": "deducted" | "retry" | "dismiss" }` and answers the row. `deducted` moves `unknown` to `applied` and does not call Spoolman. `retry` moves `unknown` or `failed` to `pending`, clears the failure, and the worker then makes one more send. `dismiss` moves `unknown` or `failed` to `dismissed`, keeps the failure, and does not call Spoolman. Any other state is 409 `deduction_state` and changes nothing. A body that is not that shape is 400. Errors are [problem responses](problem-responses.md).
 
 ### History
 

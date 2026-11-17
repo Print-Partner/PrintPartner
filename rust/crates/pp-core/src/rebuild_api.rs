@@ -355,6 +355,7 @@ fn setup_routes(
     let deductions = pp_api::spoolman_deductions::spoolman_deductions_router(
         config.clone(),
         guard.spoolman_deductions(policy)?,
+        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
     );
     Ok(modules_router(config, features)
         .merge(integrations)
@@ -996,6 +997,7 @@ mod tests {
                 "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
             "ClaimUnattributedRequest" => json!({"profile_id": 1}),
             "DismissUnattributedRequest" => json!({}),
+            "ReconcileDeductionRequest" => json!({"answer": "dismiss"}),
             "ReconcileSendRequest" => json!({"printed": false, "job_id": null}),
             "SignInRequest" => json!({"email": "client@example.com", "password": "password-1234"}),
             "RegisterRequest" => {
@@ -1149,7 +1151,7 @@ mod tests {
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
     /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 7] = [
+        const CODES: [&str; 8] = [
             "integration_not_found",
             "printer_not_found",
             "draft_not_found",
@@ -1157,6 +1159,7 @@ mod tests {
             "farm_log_entry_not_found",
             "print_not_found",
             "source_not_found",
+            "deduction_not_found",
         ];
         const DETAILS: [&str; 6] = [
             "beds[0]: Checkoff link not found",

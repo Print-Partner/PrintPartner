@@ -17,7 +17,8 @@
 //! caller sends anything. A finish changes a row only while it is `sending`.
 //! Opening the database marks every `sending` row `unknown` with failure
 //! `interrupted`, before seeding and before job recovery, and does not send
-//! it. Nothing here returns `sending`, `unknown` or `failed` to `pending`.
+//! it. [`SpoolmanDeductionsClient::reconcile`] is the only write that returns
+//! `unknown` or `failed` to `pending`. Nothing returns `sending` to `pending`.
 //! With the Module off at send time the row stays `pending`; that is not a
 //! new skip reason.
 //!
@@ -36,13 +37,12 @@ use crate::{
     SettingsClient, Shared, WriterFailure, WriterOwner,
     auth::AuthPolicy,
     printer_setup::{ServiceKind, integrations},
-    read_model::Credential,
+    read_model::{Credential, stock::SpoolmanIntegration},
     write::authorize,
 };
 #[cfg(feature = "desktop_rebuild")]
 use crate::{
     auth::{AuthFailure, SessionTenantPolicy},
-    read_model::stock::SpoolmanIntegration,
     write::single_account,
 };
 use pp_domain::{PositiveId, features::Feature};
@@ -101,6 +101,17 @@ pub enum Failure {
     Interrupted,
     IntegrationMissing,
     IntegrationDisabled,
+}
+
+/// The owner's answer for an `unknown` or `failed` row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// `unknown` becomes `applied`. No Spoolman request.
+    Deducted,
+    /// `unknown` or `failed` becomes `pending`. The send worker then sends once.
+    Retry,
+    /// `unknown` or `failed` becomes `dismissed`. No Spoolman request.
+    Dismiss,
 }
 
 /// How a claimed send ended. Applied only while the row is `sending`.
@@ -228,6 +239,15 @@ pub struct Filter {
     pub link_id: Option<String>,
 }
 
+/// One deduction and, when the row names an enabled Spoolman integration, that
+/// integration. A missing or disabled integration is `None`: the caller does
+/// not contact it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeductionRecord {
+    pub deduction: Deduction,
+    pub integration: Option<SpoolmanIntegration>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DeductionError {
     /// A stored row breaks the shape the schema checks; it is left as it is.
@@ -239,6 +259,12 @@ pub enum DeductionError {
     /// A refused send named a status outside 100 to 599. The row was not finished.
     #[error("a refused deduction needs an HTTP status from 100 to 599")]
     StatusOutOfRange,
+    /// No row has this id.
+    #[error("deduction not found")]
+    NotFound,
+    /// The row's state does not accept this answer. The row is unchanged.
+    #[error("deduction state does not accept this answer")]
+    StateConflict,
     #[error(transparent)]
     Writer(#[from] WriterFailure),
 }
@@ -692,6 +718,64 @@ impl SpoolmanDeductionsClient {
             })?
     }
 
+    /// The deduction `id`, with the enabled integration it names.
+    /// `Ok(None)` when no row has that id.
+    pub fn get(
+        &self,
+        credential: Credential,
+        id: i64,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Option<DeductionRecord>, DeductionError> {
+        let policy = self.policy;
+        self.readers
+            .read("spoolman_deductions.get", cancelled, wait, move |tx| {
+                let installation = authorize(tx, &credential, policy)?;
+                let Some(deduction) = load(tx, installation.id(), id)? else {
+                    return Ok(None);
+                };
+                let integration = contactable(tx, installation.id(), &deduction)?;
+                Ok(Some(DeductionRecord {
+                    deduction,
+                    integration,
+                }))
+            })?
+    }
+
+    /// Applies `answer` to `id`. `deducted` moves `unknown` to `applied`.
+    /// `retry` moves `unknown` or `failed` to `pending` and clears the failure.
+    /// `dismiss` moves `unknown` or `failed` to `dismissed` and keeps the
+    /// failure. Any other state is [`DeductionError::StateConflict`] and the
+    /// row is unchanged. A missing id is [`DeductionError::NotFound`].
+    ///
+    /// A successful `retry` is the only write that returns a row to `pending`.
+    /// It wakes the send worker after the write commits. The other answers
+    /// do not.
+    pub fn reconcile(
+        &self,
+        credential: Credential,
+        id: i64,
+        answer: Answer,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Deduction, DeductionError> {
+        let policy = self.policy;
+        let changed = self.shared.write(
+            "spoolman_deductions.reconcile",
+            cancelled,
+            wait,
+            move |tx, _| {
+                let installation = authorize(tx, &credential, policy)?;
+                apply_answer(tx, installation.id(), id, answer)
+            },
+        )?;
+        #[cfg(feature = "desktop_rebuild")]
+        if answer == Answer::Retry && changed.is_ok() {
+            self.shared.notify_deduction_wake();
+        }
+        changed
+    }
+
     /// Moves `id` from `pending` to `sending` and stores `grams_before`.
     /// The write commits before this returns, so the caller can send after
     /// it. `Ok(None)` when the row is not `pending`: nothing changes, and a
@@ -742,9 +826,9 @@ impl SpoolmanDeductionsClient {
         )?
     }
 
-    /// Registers `wake` to run after a verify burst commits. The callback
-    /// runs on the writer thread and must not use storage. A later call
-    /// replaces it.
+    /// Registers `wake` to run after a verify burst commits, and after a
+    /// reconcile `retry` commits. The callback must not use storage. A burst
+    /// runs it on the writer thread. A later call replaces it.
     #[cfg(feature = "desktop_rebuild")]
     pub fn on_burst(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.shared.set_deduction_wake(wake);
@@ -937,6 +1021,64 @@ fn claim_for_module(
         Some(claimed) => ModuleClaim::Claimed(claimed),
         None => ModuleClaim::Gone,
     })
+}
+
+fn load(tx: &Transaction<'_>, tenant: &str, id: i64) -> Result<Option<Deduction>, DeductionError> {
+    let mut statement =
+        tx.prepare("SELECT * FROM spoolman_deductions WHERE tenant_id=?1 AND id=?2")?;
+    let mut rows = statement.query(params![tenant, id])?;
+    rows.next()?.map(deduction).transpose()
+}
+
+fn contactable(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    deduction: &Deduction,
+) -> Result<Option<SpoolmanIntegration>, DeductionError> {
+    let Some(target) = &deduction.target else {
+        return Ok(None);
+    };
+    let found = crate::read_model::stock::spoolman_integration(tx, tenant, &target.integration_id)
+        .map_err(WriterFailure::from)?;
+    Ok(found.filter(|integration| integration.enabled))
+}
+
+/// The row after `answer`, or a conflict or a missing id. A conflict writes
+/// nothing. `retry` clears the failure so the row can be `pending` again.
+fn apply_answer(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    answer: Answer,
+) -> Result<Deduction, DeductionError> {
+    let now = now(tx)?;
+    let changed = match answer {
+        Answer::Deducted => tx.execute(
+            "UPDATE spoolman_deductions
+             SET state='applied', failure=NULL, failure_status=NULL, updated_at=?1
+             WHERE tenant_id=?2 AND id=?3 AND state='unknown'",
+            params![now, tenant, id],
+        )?,
+        Answer::Retry => tx.execute(
+            "UPDATE spoolman_deductions
+             SET state='pending', failure=NULL, failure_status=NULL, updated_at=?1
+             WHERE tenant_id=?2 AND id=?3 AND state IN ('unknown', 'failed')",
+            params![now, tenant, id],
+        )?,
+        Answer::Dismiss => tx.execute(
+            "UPDATE spoolman_deductions
+             SET state='dismissed', updated_at=?1
+             WHERE tenant_id=?2 AND id=?3 AND state IN ('unknown', 'failed')",
+            params![now, tenant, id],
+        )?,
+    };
+    if changed == 1 {
+        return load(tx, tenant, id)?.ok_or(DeductionError::NotFound);
+    }
+    match load(tx, tenant, id)? {
+        Some(_) => Err(DeductionError::StateConflict),
+        None => Err(DeductionError::NotFound),
+    }
 }
 
 fn finish_sending(

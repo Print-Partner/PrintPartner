@@ -23,7 +23,8 @@
 //!
 //! [`SpoolmanDeductionsClient::next_send`] is what the send worker reads.
 //! [`SpoolmanDeductionsClient::claim_for_send`] claims one row only while the
-//! Module is on, and [`SpoolmanDeductionsClient::finish_for_send`] records the
+//! Module is on and the stored integration is still the one `next_send`
+//! returned, and [`SpoolmanDeductionsClient::finish_for_send`] records the
 //! outcome. Both act as the single-account installation: the burst already
 //! checked the caller's credential. A committed verify burst runs the callback
 //! registered with [`SpoolmanDeductionsClient::on_burst`].
@@ -205,6 +206,9 @@ pub enum ModuleClaim {
     Gone,
     /// The Module is off or unreadable. The row stays `pending`.
     Held,
+    /// The integration was removed, disabled or edited after `next_send`
+    /// read it. The row stays `pending`; read it again with `next_send`.
+    Changed,
     Claimed(Claimed),
 }
 
@@ -767,11 +771,15 @@ impl SpoolmanDeductionsClient {
     }
 
     /// Claims `id` when it is `pending` and the Module is on for its Build.
-    /// The write commits before this returns. `Held` leaves the row `pending`.
+    /// With `admitted`, the row's stored integration must also still equal it,
+    /// so the caller sends only to the config this claim checked. The write
+    /// commits before this returns. `Held` and `Changed` leave the row
+    /// `pending`.
     #[cfg(feature = "desktop_rebuild")]
     pub fn claim_for_send(
         &self,
         id: i64,
+        admitted: Option<SpoolmanIntegration>,
         grams_before: Option<f64>,
         cancelled: &AtomicBool,
         wait: Duration,
@@ -786,7 +794,7 @@ impl SpoolmanDeductionsClient {
             wait,
             move |tx, _| {
                 let installation = runtime_tenant(tx, policy)?;
-                claim_for_module(tx, installation.id(), id, grams_before)
+                claim_for_module(tx, installation.id(), id, admitted.as_ref(), grams_before)
             },
         )?
     }
@@ -889,16 +897,24 @@ fn claim_for_module(
     tx: &Transaction<'_>,
     tenant: &str,
     id: i64,
+    admitted: Option<&SpoolmanIntegration>,
     grams_before: Option<f64>,
 ) -> Result<ModuleClaim, DeductionError> {
     let row = tx
         .query_row(
-            "SELECT state, profile_id FROM spoolman_deductions WHERE tenant_id=?1 AND id=?2",
+            "SELECT state, profile_id, integration_id FROM spoolman_deductions
+             WHERE tenant_id=?1 AND id=?2",
             params![tenant, id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((state, profile)) = row else {
+    let Some((state, profile, integration_id)) = row else {
         return Ok(ModuleClaim::Gone);
     };
     if state != State::Pending.as_str() {
@@ -906,6 +922,16 @@ fn claim_for_module(
     }
     if module_on(tx, tenant, profile)? != Some(true) {
         return Ok(ModuleClaim::Held);
+    }
+    if let Some(admitted) = admitted {
+        let Some(integration_id) = integration_id else {
+            return Err(DeductionError::StoredRowInvalid { id });
+        };
+        let current = crate::read_model::stock::spoolman_integration(tx, tenant, &integration_id)
+            .map_err(WriterFailure::from)?;
+        if current.as_ref() != Some(admitted) {
+            return Ok(ModuleClaim::Changed);
+        }
     }
     Ok(match claim_pending(tx, tenant, id, grams_before)? {
         Some(claimed) => ModuleClaim::Claimed(claimed),

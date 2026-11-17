@@ -1,9 +1,10 @@
 //! Sends each pending Spoolman deduction once (GRE-1738).
 //!
 //! Started and stopped with the printer send worker. A committed Checkoff
-//! verify burst wakes it; with nothing to send it looks again after
-//! [`RECHECK`]. Before each claim it reads the Spoolman Module again. While
-//! the Module is off, or its setting cannot be read, the row stays `pending`
+//! verify burst wakes it, and so does a reconcile retry. With nothing to
+//! send it looks again after [`RECHECK`]. Before each claim it reads the
+//! Spoolman Module again. While the Module is off, or its setting cannot be
+//! read, the row stays `pending`
 //! and is sent once the Module is on. Applied, unknown and failed rows are
 //! not sent again. A lost reply or a restart while a row is `sending` stays
 //! unknown until reconcile.

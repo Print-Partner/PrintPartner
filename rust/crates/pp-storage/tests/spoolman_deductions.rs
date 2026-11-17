@@ -11,12 +11,18 @@ use pp_storage::{
     checkoff_progress::Request,
     read_model::Credential,
     spoolman_deductions::{
-        Claimed, Deduction, DeductionError, Filter, GramsBasis, Outcome, SkipReason,
-        SpoolmanDeductionsClient, State, Target,
+        Answer, Claimed, Deduction, DeductionError, DeductionRecord, Failure, Filter, GramsBasis,
+        Outcome, SkipReason, SpoolmanDeductionsClient, State, Target,
     },
 };
 use serde_json::{Value, json};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 #[path = "common/checkoff_apply.rs"]
 mod checkoff_apply;
@@ -247,6 +253,37 @@ fn finish(owner: &WriterOwner, id: i64, end: Outcome) -> Result<bool, DeductionE
     )
 }
 
+fn reconcile(owner: &WriterOwner, id: i64, answer: Answer) -> Result<Deduction, DeductionError> {
+    client(owner).reconcile(
+        credential(),
+        id,
+        answer,
+        &AtomicBool::new(false),
+        Duration::from_secs(5),
+    )
+}
+
+fn record(owner: &WriterOwner, id: i64) -> Option<DeductionRecord> {
+    client(owner)
+        .get(
+            credential(),
+            id,
+            &AtomicBool::new(false),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+}
+
+fn conflict(owner: &WriterOwner, id: i64, answer: Answer) {
+    assert!(
+        matches!(
+            reconcile(owner, id, answer).unwrap_err(),
+            DeductionError::StateConflict
+        ),
+        "{answer:?}"
+    );
+}
+
 fn pending_id(owner: &WriterOwner) -> i64 {
     deductions(owner)
         .iter()
@@ -398,6 +435,150 @@ fn a_finish_applies_only_while_the_row_is_sending() {
             ("failed".into(), Some(failure.into()), None, None)
         );
     }
+}
+
+#[test]
+fn reconcile_is_the_only_return_to_pending() {
+    let (fixture, owner) = prepared();
+    burst(&owner, "k1", vec![confirm(1, 1)]);
+    burst(&owner, "k2", vec![confirm(1, 2)]);
+    burst(&owner, "k3", vec![confirm(3, 0)]);
+    let pending_ids: Vec<i64> = deductions(&owner)
+        .iter()
+        .filter(|row| row.state == State::Pending)
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(pending_ids.len(), 2);
+    let (unknown, failed) = (pending_ids[0], pending_ids[1]);
+    let skipped = deductions(&owner)
+        .iter()
+        .find(|row| row.state == State::Skipped)
+        .unwrap()
+        .id;
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&hits);
+    client(&owner).on_burst(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    let pending = stored(&fixture, unknown);
+    for answer in [Answer::Deducted, Answer::Retry, Answer::Dismiss] {
+        conflict(&owner, unknown, answer);
+        assert_eq!(stored(&fixture, unknown), pending);
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+    claim(&owner, unknown, Some(12.5)).unwrap().unwrap();
+    let sending = stored(&fixture, unknown);
+    for answer in [Answer::Deducted, Answer::Retry, Answer::Dismiss] {
+        conflict(&owner, unknown, answer);
+    }
+    assert_eq!(stored(&fixture, unknown), sending);
+    assert!(finish(&owner, unknown, Outcome::ReplyLost).unwrap());
+    assert!(claim(&owner, unknown, Some(1.0)).unwrap().is_none());
+    assert!(!finish(&owner, unknown, Outcome::Applied).unwrap());
+
+    let retried = reconcile(&owner, unknown, Answer::Retry).unwrap();
+    assert_eq!(retried.state, State::Pending);
+    assert_eq!(retried.failure, None);
+    assert_eq!(
+        stored(&fixture, unknown),
+        ("pending".into(), None, None, Some(12.5))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    conflict(&owner, unknown, Answer::Retry);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    claim(&owner, unknown, Some(9.0)).unwrap().unwrap();
+    assert!(finish(&owner, unknown, Outcome::ReplyLost).unwrap());
+    let applied = reconcile(&owner, unknown, Answer::Deducted).unwrap();
+    assert_eq!(applied.state, State::Applied);
+    assert_eq!(applied.failure, None);
+    assert_eq!(
+        stored(&fixture, unknown),
+        ("applied".into(), None, None, Some(9.0))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    for answer in [Answer::Deducted, Answer::Retry, Answer::Dismiss] {
+        conflict(&owner, unknown, answer);
+    }
+    assert_eq!(stored(&fixture, unknown).0, "applied");
+
+    let found = record(&owner, unknown).unwrap();
+    assert_eq!(found.deduction.state, State::Applied);
+    assert_eq!(found.deduction.spool_grams_before, Some(9.0));
+    assert_eq!(found.integration.unwrap().id, "sm-1");
+    put(
+        &fixture,
+        "integrations",
+        &SPOOLMAN.replace("\"enabled\":true", "\"enabled\":false"),
+    );
+    assert!(record(&owner, unknown).unwrap().integration.is_none());
+    put(&fixture, "integrations", SPOOLMAN);
+
+    claim(&owner, failed, Some(3.0)).unwrap().unwrap();
+    assert!(finish(&owner, failed, Outcome::Refused(422)).unwrap());
+    conflict(&owner, failed, Answer::Deducted);
+    assert_eq!(
+        stored(&fixture, failed),
+        (
+            "failed".into(),
+            Some("refused".into()),
+            Some(422),
+            Some(3.0)
+        )
+    );
+    let dismissed = reconcile(&owner, failed, Answer::Dismiss).unwrap();
+    assert_eq!(dismissed.state, State::Dismissed);
+    assert_eq!(dismissed.failure, Some(Failure::Refused));
+    assert_eq!(dismissed.failure_status, Some(422));
+    assert_eq!(
+        stored(&fixture, failed),
+        (
+            "dismissed".into(),
+            Some("refused".into()),
+            Some(422),
+            Some(3.0)
+        )
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    for answer in [Answer::Deducted, Answer::Retry, Answer::Dismiss] {
+        conflict(&owner, failed, answer);
+    }
+
+    fixture
+        .sql()
+        .execute(
+            "INSERT INTO spoolman_deductions
+             (tenant_id,burst,link_id,profile_id,state,units,integration_id,spool_id,grams,grams_basis,created_at,updated_at)
+             VALUES ('default','k4','link-verify',1,'pending',1,'sm-1',7,1.0,'estimated','t','t')",
+            [],
+        )
+        .unwrap();
+    let again = pending_id(&owner);
+    claim(&owner, again, Some(4.0)).unwrap().unwrap();
+    assert!(finish(&owner, again, Outcome::Refused(409)).unwrap());
+    let retried_failure = reconcile(&owner, again, Answer::Retry).unwrap();
+    assert_eq!(retried_failure.state, State::Pending);
+    assert_eq!(retried_failure.failure, None);
+    assert_eq!(
+        stored(&fixture, again),
+        ("pending".into(), None, None, Some(4.0))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+    let skipped_row = stored(&fixture, skipped);
+    for answer in [Answer::Deducted, Answer::Retry, Answer::Dismiss] {
+        conflict(&owner, skipped, answer);
+    }
+    assert_eq!(stored(&fixture, skipped), skipped_row);
+    assert!(record(&owner, skipped).unwrap().integration.is_none());
+    assert!(matches!(
+        reconcile(&owner, 0, Answer::Dismiss).unwrap_err(),
+        DeductionError::NotFound
+    ));
+    assert!(record(&owner, 0).is_none());
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
 }
 
 #[test]

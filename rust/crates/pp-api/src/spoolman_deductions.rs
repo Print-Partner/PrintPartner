@@ -1,30 +1,58 @@
-//! `GET /api/v2/spoolman/deductions`: the Spoolman deductions Checkoff bursts
-//! recorded, newest first, at most 100. Filters: `state` and `link_id`.
-//! Rust-only runtime: the route mounts only when `PP_DESKTOP_REBUILD` is on.
+//! Spoolman deduction routes. Rust-only runtime: they mount only when
+//! `PP_DESKTOP_REBUILD` is on.
+//!
+//! `GET /api/v2/spoolman/deductions` lists the rows Checkoff recorded, newest
+//! first, at most 100. Filters: `state` and `link_id`.
+//! `GET /api/v2/spoolman/deductions/{id}` adds the grams Spoolman reported
+//! before the send and the grams it reports now.
+//! `POST /api/v2/spoolman/deductions/{id}/reconcile` answers `deducted`,
+//! `retry` or `dismiss`. It does not call Spoolman. `retry` returns the row
+//! to `pending` and the send worker makes one more call.
 //!
 //! Storage owns the rows and answers `DeductionError`; this module maps it to
 //! a status code and a problem body, once.
 
 use crate::accepted::{AcceptedHttpConfig, Gate, internal, ok_json};
 use crate::loopback::PresentedCredential;
-use crate::problem;
+use crate::problem::{self, ProblemType};
 use axum::{
     Extension, Router,
-    extract::{Query, State as AxumState},
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, Query, State as AxumState},
     http::StatusCode,
     response::Response,
-    routing::get,
+    routing::{get, post},
 };
-use pp_storage::spoolman_deductions::{
-    Deduction, DeductionError, Failure, Filter, GramsBasis, SkipReason, SpoolmanDeductionsClient,
-    State,
+use pp_storage::{
+    read_model::stock::SpoolmanIntegration,
+    spoolman_deductions::{
+        Answer, Deduction, DeductionError, Failure, Filter, GramsBasis, SkipReason,
+        SpoolmanDeductionsClient, State,
+    },
 };
-use serde::Serialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 pub mod code {
     pub const INVALID_FILTER: &str = "invalid_deduction_filter";
     pub const DEDUCTION_UNREADABLE: &str = "deduction_unreadable";
+    pub const DEDUCTION_NOT_FOUND: &str = "deduction_not_found";
+    pub const DEDUCTION_STATE: &str = "deduction_state";
+}
+
+/// Largest integer this API states. A larger id misses, and a larger gram
+/// report reads as unknown.
+const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+const BODY_LIMIT: usize = 4 * 1024;
+
+/// Reads the grams one spool reports now. `None` means the read failed.
+/// Implementations only read: they never reserve or deduct stock.
+pub trait SpoolGrams: Send + Sync {
+    fn remaining(
+        &self,
+        integration: SpoolmanIntegration,
+        spool_id: i64,
+    ) -> Pin<Box<dyn Future<Output = Option<f64>> + Send>>;
 }
 
 /// The longest `link_id` filter; stored link ids are far shorter.
@@ -40,7 +68,7 @@ pub struct DeductionList {
 /// `grams_basis` are null exactly when `state` is `skipped`, and `reason` is
 /// set exactly then. `failure` is set only on `failed`, `unknown` and
 /// `dismissed`. `failure_status` is set only when `failure` is `refused`.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct DeductionView {
     pub id: i64,
@@ -72,6 +100,43 @@ pub struct DeductionView {
     pub updated_at: String,
 }
 
+/// One deduction plus the grams Spoolman reported before the send and reports
+/// now. Each is whole grams, rounded down, or `unknown`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct DeductionDetail {
+    pub deduction: DeductionView,
+    pub grams_before: ReportedGrams,
+    pub grams_now: ReportedGrams,
+}
+
+/// Grams from Spoolman, or `unknown` when that number was not stored or the
+/// read failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReportedGrams {
+    Known { grams: u64 },
+    Unknown,
+}
+
+/// `POST /api/v2/spoolman/deductions/{id}/reconcile`.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReconcileDeductionRequest {
+    pub answer: ReconcileAnswer,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileAnswer {
+    Deducted,
+    Retry,
+    Dismiss,
+}
+
 impl From<Deduction> for DeductionView {
     fn from(row: Deduction) -> Self {
         let target = row.target;
@@ -98,19 +163,32 @@ impl From<Deduction> for DeductionView {
 struct App {
     gate: Gate,
     client: SpoolmanDeductionsClient,
+    grams: Arc<dyn SpoolGrams>,
 }
 
-/// Mounts the list route under the accepted gate when `PP_DESKTOP_REBUILD`
-/// was exactly `1` or `true`; otherwise nothing.
+/// Mounts the list, read and reconcile routes under the accepted gate when
+/// `PP_DESKTOP_REBUILD` was exactly `1` or `true`; otherwise nothing.
 pub fn spoolman_deductions_router(
     config: AcceptedHttpConfig,
     client: SpoolmanDeductionsClient,
+    grams: Arc<dyn SpoolGrams>,
 ) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
-    let routes = Router::new().route("/api/v2/spoolman/deductions", get(list));
-    gate.guard(routes).with_state(App { gate, client })
+    let routes = Router::new()
+        .route("/api/v2/spoolman/deductions", get(list))
+        .route("/api/v2/spoolman/deductions/{id}", get(read_one))
+        .route(
+            "/api/v2/spoolman/deductions/{id}/reconcile",
+            post(reconcile),
+        )
+        .layer(DefaultBodyLimit::max(BODY_LIMIT));
+    gate.guard(routes).with_state(App {
+        gate,
+        client,
+        grams,
+    })
 }
 
 /// The filter the query names, or `None` for a query this route refuses.
@@ -154,8 +232,112 @@ async fn list(
     }
 }
 
+async fn read_one(
+    AxumState(app): AxumState<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = deduction_id(&id);
+    let client = app.client.clone();
+    let loaded = app.gate.blocking(move |cancelled, wait| {
+        client.get(presented.into_credential(), id, &cancelled, wait)
+    });
+    let record = match loaded.await {
+        Ok(Ok(Some(record))) => record,
+        Ok(Ok(None)) => return not_found(),
+        Ok(Err(error)) => return refused(&error),
+        Err(_) => return internal(),
+    };
+    let grams_before = reported(record.deduction.spool_grams_before);
+    let spool_id = record
+        .deduction
+        .target
+        .as_ref()
+        .map(|target| target.spool_id);
+    let grams_now = match (record.integration, spool_id) {
+        (Some(integration), Some(spool_id)) => {
+            reported(app.grams.remaining(integration, spool_id).await)
+        }
+        _ => ReportedGrams::Unknown,
+    };
+    ok_json(&DeductionDetail {
+        deduction: record.deduction.into(),
+        grams_before,
+        grams_now,
+    })
+}
+
+async fn reconcile(
+    AxumState(app): AxumState<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Ok(request) = serde_json::from_slice::<ReconcileDeductionRequest>(&body) else {
+        return problem::typed(
+            ProblemType::MalformedRequest,
+            StatusCode::BAD_REQUEST,
+            "Send {\"answer\": \"deducted\"}, \"retry\" or \"dismiss\"",
+        );
+    };
+    let id = deduction_id(&id);
+    let answer = match request.answer {
+        ReconcileAnswer::Deducted => Answer::Deducted,
+        ReconcileAnswer::Retry => Answer::Retry,
+        ReconcileAnswer::Dismiss => Answer::Dismiss,
+    };
+    let client = app.client.clone();
+    let done = app.gate.blocking(move |cancelled, wait| {
+        client.reconcile(presented.into_credential(), id, answer, &cancelled, wait)
+    });
+    match done.await {
+        Ok(Ok(row)) => ok_json(&DeductionView::from(row)),
+        Ok(Err(error)) => refused(&error),
+        Err(_) => internal(),
+    }
+}
+
+/// A positive safe-integer id. Anything else still authenticates, then misses.
+fn deduction_id(text: &str) -> i64 {
+    let Ok(id) = text.parse::<i64>() else {
+        return 0;
+    };
+    if text.bytes().all(|byte| byte.is_ascii_digit()) && (1..=MAX_SAFE as i64).contains(&id) {
+        id
+    } else {
+        0
+    }
+}
+
+/// Whole grams, rounded down. A missing, negative or non-finite report is
+/// unknown, and so is a number past the JavaScript safe integer range.
+fn reported(grams: Option<f64>) -> ReportedGrams {
+    match grams {
+        Some(grams) if grams.is_finite() && (0.0..=MAX_SAFE).contains(&grams) => {
+            ReportedGrams::Known {
+                grams: grams.floor() as u64,
+            }
+        }
+        _ => ReportedGrams::Unknown,
+    }
+}
+
+fn not_found() -> Response {
+    problem::coded(
+        StatusCode::NOT_FOUND,
+        "Deduction not found",
+        code::DEDUCTION_NOT_FOUND,
+    )
+}
+
 fn refused(error: &DeductionError) -> Response {
     match error {
+        DeductionError::NotFound => not_found(),
+        DeductionError::StateConflict => problem::coded(
+            StatusCode::CONFLICT,
+            "This deduction's state does not accept that answer",
+            code::DEDUCTION_STATE,
+        ),
         DeductionError::StoredRowInvalid { .. } => problem::coded(
             StatusCode::INTERNAL_SERVER_ERROR,
             "A stored deduction is unreadable",
@@ -198,6 +380,17 @@ mod tests {
             query(&[("spool", "7")]),
         ] {
             assert!(filter(&refused).is_none(), "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn reported_grams_round_down_and_a_bad_report_is_unknown() {
+        use super::{ReportedGrams, reported};
+        assert_eq!(reported(Some(512.4)), ReportedGrams::Known { grams: 512 });
+        assert_eq!(reported(Some(492.4)), ReportedGrams::Known { grams: 492 });
+        assert_eq!(reported(Some(0.0)), ReportedGrams::Known { grams: 0 });
+        for grams in [None, Some(-0.1), Some(f64::NAN), Some(f64::INFINITY)] {
+            assert_eq!(reported(grams), ReportedGrams::Unknown);
         }
     }
 }

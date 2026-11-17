@@ -154,6 +154,17 @@ fn headers(bearer: &Option<String>) -> Vec<(&str, &str)> {
         .collect()
 }
 
+impl pp_api::spoolman_deductions::SpoolGrams for SpoolmanInventory {
+    fn remaining(
+        &self,
+        integration: SpoolmanIntegration,
+        spool_id: i64,
+    ) -> Pin<Box<dyn Future<Output = Option<f64>> + Send>> {
+        let reader = self.clone();
+        Box::pin(async move { reader.remaining_grams(&integration, spool_id).await })
+    }
+}
+
 impl InventoryReader for SpoolmanInventory {
     fn read(
         &self,

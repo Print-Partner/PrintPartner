@@ -328,8 +328,9 @@ applies only while the row is still `pending`, and it commits before any
 request. A finish applies only while the row is `sending`. Opening the database
 marks every `sending` row `unknown` with failure `interrupted`, before seeding
 and before job recovery, and does not send it. Nothing in this step returns
-`sending`, `unknown` or `failed` to `pending`. Undoing a burst still removes
-only its `pending` and `skipped` rows.
+`sending`, `unknown` or `failed` to `pending`. Reconcile is the only later
+write that returns `unknown` or `failed` to `pending`. Undoing a burst still
+removes only its `pending` and `skipped` rows.
 
 With the Spoolman Module off at send time the row stays `pending` and is sent
 once the Module is on again. That is not a new skip reason, and this step does

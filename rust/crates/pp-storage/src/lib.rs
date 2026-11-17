@@ -509,9 +509,11 @@ impl Shared {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
     }
 
-    /// Runs the registered callback. The caller is the writer thread.
+    /// Runs the registered callback. A committed verify burst calls it on the
+    /// writer thread. Reconcile calls it after its write commits, from the
+    /// caller's thread. The callback must not use storage.
     #[cfg(feature = "desktop_rebuild")]
-    fn notify_deduction_wake(&self) {
+    pub(crate) fn notify_deduction_wake(&self) {
         let wake = self
             .deduction_wake
             .lock()

@@ -85,6 +85,10 @@ A worker started and stopped with the printer send worker sends each `pending` r
 
 The send is `PUT /api/v1/spool/{id}/use` with the row's grams as `use_weight`. The worker reads the grams Spoolman reports for that spool, stores them, claims the row (`sending`), then sends once. A 2xx reply finishes the row `applied`. A reply that never comes back, or a restart while the row is `sending`, finishes it `unknown` (`reply_lost` or `interrupted`). A connection failure before the request is written, or a non-2xx reply, finishes it `failed` (`unreachable`, or `refused` with the HTTP status). Those rows are not sent again until a later reconcile. Undo still removes only `pending` and `skipped` rows and does not return filament.
 
+`POST /api/v2/spoolman/deductions/{id}/reconcile` answers an `unknown` or `failed` row. The body is `{"answer":"deducted"}`, `"retry"` or `"dismiss"`. `deducted` moves `unknown` to `applied` and does not call Spoolman. `retry` moves `unknown` or `failed` to `pending`, clears the failure, and the worker then makes one more send. `dismiss` moves `unknown` or `failed` to `dismissed`, keeps the failure, and does not call Spoolman. Any other state answers 409 `deduction_state` and changes nothing. A missing id answers 404 `deduction_not_found`.
+
+`GET /api/v2/spoolman/deductions/{id}` returns the row plus `grams_before` and `grams_now`. Each is `{"kind":"known","grams":N}` or `{"kind":"unknown"}`. `grams` is whole grams, rounded down. `grams_before` is what Spoolman reported when the row was claimed. `grams_now` is what that spool reports at the read. A skipped row, or a missing, disabled or unreadable integration, is `unknown` and is not contacted. The Spoolman Module being off does not block the read.
+
 Deduction runs whenever the Spoolman Module is on; there is no per-printer setting. Do not also set `[spoolman]` in a printer's `moonraker.conf`, or the printer's own usage reports and these deductions would both count.
 
 ## Security

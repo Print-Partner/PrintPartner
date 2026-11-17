@@ -6,7 +6,7 @@
 //! nothing here touches those. `backups` is not a backup root, so no export
 //! contains another.
 
-use super::{InstallationClient, RestoreError, is_id, random_id};
+use super::{InstallationClient, Refusal, RestoreError, is_id, random_id};
 use crate::{Envelope, Work, WriterFailure, archive};
 use sha2::Digest;
 use std::{
@@ -95,10 +95,10 @@ pub(super) fn sweep(data_dir: &Path) {
 impl InstallationClient {
     /// Writes a full backup under `<data>/backups/`, through the writer like
     /// `WriterOwner::create_archive`. The caller names no path. Refuses with
-    /// [`RestoreError::NoSpace`], before writing anything, when the backup
-    /// would leave less than the reserve free on the data volume.
+    /// [`Refusal::NoSpace`], before writing anything, when the backup would
+    /// leave less than the reserve free on the data volume.
     pub fn export_backup(&self, app_version: &str) -> Result<BackupFile, RestoreError> {
-        let _active = self.activity.enter().map_err(|_| WriterFailure::Stopped)?;
+        let _active = self.activity.admit()?;
         let directory = export_dir(&self.data_dir).map_err(internal)?;
         let mut backup = BackupFile {
             path: directory.join("print-partner-backup.tar.gz"),
@@ -130,7 +130,7 @@ impl InstallationClient {
             .recv()
             .map_err(|_| WriterFailure::Stopped)?
             .map_err(|error| match error.downcast::<archive::NoSpace>() {
-                Ok(no_space) => RestoreError::NoSpace(no_space),
+                Ok(no_space) => RestoreError::Refused(Refusal::NoSpace(no_space)),
                 Err(error) => WriterFailure::from(error).into(),
             })?;
         let mut file = File::open(&backup.path).map_err(internal)?;

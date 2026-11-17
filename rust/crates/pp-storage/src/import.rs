@@ -918,7 +918,7 @@ impl Held {
 /// With a `destination`, the report also says whether the import would
 /// accept that folder. The folder is read, never created.
 pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport, ImportError> {
-    let limits = archive::Limits::default();
+    let limits = archive::Limits::node();
     dry_run_in(source, destination, &std::env::temp_dir(), limits)
 }
 

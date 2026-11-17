@@ -261,11 +261,35 @@ Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admiss
 
 `GET /sources/{id}/thumbnail?path=` (GRE-430) renders a 256 x 256 PNG of one STL in a Source's current revision and caches it at `thumbs/sources/<revision id>/<SHA-256 of the path>-v<renderer version>.png`. Rust writes nothing else under `thumbs/`. Node writes only flat files directly in `thumbs/`: part thumbnails and previews as `thumbs/<16-hex digest>.png` (`globalThumbnailPath`, `globalPreviewPath` in `web/apps/server/src/lib/thumbnails.ts`) and the accepted-media cache as `thumbs/<basis>.png` (`web/apps/server/src/lib/accepted-media-cache.ts`). Node never creates a folder there, so its files and `thumbs/sources/` cannot collide.
 
-The cache is regenerable: a revision never changes, and the renderer version is in the name, so any file there can be deleted, or the whole `thumbs/sources` folder, and the next request renders it again. `thumbs/` stays a backup root (`archive::FULL_ROOTS` and Node's format 1), so backups carry these PNGs along with Node's; restoring them is harmless and never required. A file is written under a temporary name, synced, then renamed into place, so a crash leaves at most a `.tmp` file, which is also safe to delete. A cached file that does not start with the PNG signature is rendered again and replaced.
+The cache is regenerable: a revision never changes, and the renderer version is in the name, so any file there can be deleted, or the whole `thumbs/sources` folder, and the next request renders it again. A file is written under a temporary name, synced, then renamed into place, so a crash leaves at most a `.tmp` file, which is also safe to delete. A cached file that does not start with the PNG signature is rendered again and replaced.
+
+### Backups leave the cache out
+
+GRE-1538. A full backup written by Rust leaves out `thumbs/sources` and everything under it (`archive::SOURCE_THUMBNAIL_CACHE`). `archive::plan` skips that one path while it walks the `thumbs` root. Node's flat files in `thumbs/` are still backed up.
+
+The exclusion is in the walk, not in `archive::FULL_ROOTS`. `thumbs` holds Node's part thumbnails and accepted-media cache too, so it stays a root. The metadata still declares all eleven roots, so the format is unchanged and Node and Rust both validate the archive. A declared root may already be missing from an archive (see [Whole-installation restore: staging](#whole-installation-restore-staging)), so a `thumbs` root without `sources` is valid.
+
+Restoring a backup that still holds `thumbs/sources`, such as one Rust wrote before this change, is harmless. Staging accepts it, because every entry is under the declared `thumbs` root. Activation puts the cache folders back. Their names are the revision ids of the database in that same backup, so a restored cache file still matches its revision. A full restore replaces the whole `thumbs` root, so the live cache never survives next to a restored database whose revision ids it does not match.
+
+Entry count. The cache adds one entry for `thumbs/sources`, one per cached revision, and one per STL viewed in that revision. A test on a disposable data folder with two revisions of 500 STLs each (Node's per-Source snapshot cap, `DEFAULT_LOCAL_SNAPSHOT_STL_LIMIT`) counts 1,003 cache entries, and the walk takes none of them (`archive::tests::the_walk_leaves_out_the_source_thumbnail_cache`). The owner's STL count therefore does not change a backup's entry count, and no owner number is needed. Rust's own limit is 5,000,000 entries (`Limits::backup()`); Node's 100,000-entry limit applies only to archives Node reads.
+
+### Superseded revisions are pruned
+
+When the thumbnail route creates a revision's cache folder, which happens on the first thumbnail of a Source's new current revision, it then prunes the cache:
+
+1. It opens `thumbs/sources` without following a link and lists the revision folders: real folders whose name is a revision id as Rust writes it (decimal, no leading zero). Links, files and other names are left alone.
+2. In one read transaction it checks the request's credential and reads every Source's current revision, in any tenant.
+3. It removes each listed folder whose revision is not current: first the files in it, without following a link, then the empty folder. A folder that holds a subfolder is left in place.
+
+This removes the folder of a revision superseded by a Rust or a Node sync, of a Source that was deleted, and of a revision restored from an older backup. The folders are listed before the read, so a folder made for a revision that becomes current after the read is not on the list. A request that read the old revision before an activation can still write into the old folder. That folder is removed by the next prune, which runs as soon as any revision's folder is created.
+
+A failed prune is logged as `source_thumbnail_cache_prune_failed` and the thumbnail is still answered. A write into a folder that already exists prunes nothing. Nothing else removes cache folders: no timer and no startup sweep. The cache holds at most the folders of the revisions that were current at the last prune, plus the folders created for them since.
+
+Tests: `pp-storage/src/source_files/tests.rs` (prune), `pp-storage/src/archive/tests.rs` (walk), and `pp-storage/src/restore/tests/export.rs` (backup and restore).
 
 ## Whole-installation backup export
 
-With the `desktop_rebuild` feature, `InstallationClient::export_backup(app_version)` writes a full backup archive (format 2, every root in `archive::FULL_ROOTS`) for the `WriterOwner` that made the client. The caller names no path. The archive is written on the writer thread, as `WriterOwner::create_archive` writes one, so the database snapshot and the files are read while no other write runs.
+With the `desktop_rebuild` feature, `InstallationClient::export_backup(app_version)` writes a full backup archive (format 2, every root in `archive::FULL_ROOTS`, without the [Source thumbnail cache](#backups-leave-the-cache-out)) for the `WriterOwner` that made the client. The caller names no path. The archive is written on the writer thread, as `WriterOwner::create_archive` writes one, so the database snapshot and the files are read while no other write runs.
 
 Each export has its own folder, `<data>/backups/export-<32 hex>/`, which holds the archive and the working copies made for it (the database snapshot and the copy validation checks). Nothing is written under the system temporary directory, which Docker mounts as a 1 GB tmpfs. The returned `BackupFile` holds the archive path, its metadata, its size in bytes, its SHA-256 and its warnings; dropping it removes the folder. `backups` is not a backup root, so no export contains another export.
 

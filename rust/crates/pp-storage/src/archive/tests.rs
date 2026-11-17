@@ -200,3 +200,51 @@ fn node_archive_limits_refuse_over_20_gib_in_total_and_8_gib_in_one_entry() {
         tally.add(size, compressed, Limits::backup()).unwrap();
     }
 }
+
+/// GRE-1538, measured on a disposable data folder: two cached revisions of
+/// 500 STLs each (Node's per-Source snapshot cap) add 1,003 entries under
+/// `thumbs/sources`, and the walk adds none of them.
+#[test]
+fn the_walk_leaves_out_the_source_thumbnail_cache() {
+    let data = scratch("thumbs-walk");
+    let thumbs = data.path().join("thumbs");
+    std::fs::create_dir_all(&thumbs).unwrap();
+    for name in ["0123456789abcdef.png", "fedcba9876543210.png", "basis.png"] {
+        std::fs::write(thumbs.join(name), b"node").unwrap();
+    }
+    let without = plan(data.path(), Scope::Full, u64::MAX).unwrap();
+
+    let mut cache_entries = 1;
+    for revision in ["10", "11"] {
+        let folder = data.path().join(SOURCE_THUMBNAIL_CACHE).join(revision);
+        std::fs::create_dir_all(&folder).unwrap();
+        cache_entries += 1;
+        for index in 0..500 {
+            std::fs::write(folder.join(format!("{index:064x}-v1.png")), b"png").unwrap();
+            cache_entries += 1;
+        }
+    }
+    assert_eq!(cache_entries, 1_003);
+    let with = plan(data.path(), Scope::Full, u64::MAX).unwrap();
+
+    let names = |items: &[Item]| -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match item {
+                Item::Directory(name) | Item::File(name, _, _) => name.clone(),
+            })
+            .collect()
+    };
+    assert_eq!(names(&with), names(&without));
+    assert_eq!(
+        names(&with),
+        [
+            "thumbs",
+            "thumbs/0123456789abcdef.png",
+            "thumbs/basis.png",
+            "thumbs/fedcba9876543210.png"
+        ]
+    );
+    // A tight entry limit that the cache alone would break still passes.
+    assert!(plan(data.path(), Scope::Full, 4 + CORE_ENTRIES).is_ok());
+}

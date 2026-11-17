@@ -1,5 +1,6 @@
 //! `POST /api/v2/installation/backup` and `GET /api/v2/installation/backup/archive`
-//! (GRE-1371). Mounted only when `PP_DESKTOP_REBUILD` is exactly `1` or `true`.
+//! (GRE-1371), and the [`crate::restore`] routes (GRE-1161). Mounted only when
+//! `PP_DESKTOP_REBUILD` is exactly `1` or `true`.
 //!
 //! Create calls [`pp_storage::restore::InstallationClient::export_backup`], which
 //! writes one full archive under `<data>/backups/`. The router keeps that one
@@ -171,8 +172,9 @@ struct App {
     slot: Arc<Slot>,
 }
 
-/// Mounts the backup routes under `/api/v2` when `config` was built with
-/// `PP_DESKTOP_REBUILD` exactly `1` or `true`. Otherwise the router is empty.
+/// Mounts the backup and restore routes under `/api/v2` when `config` was
+/// built with `PP_DESKTOP_REBUILD` exactly `1` or `true`. Otherwise the router
+/// is empty.
 pub fn backup_router(
     config: AdminHttpConfig,
     owner: Arc<Mutex<WriterOwner>>,
@@ -181,16 +183,18 @@ pub fn backup_router(
     let Some(gate) = Gate::new(config, reads) else {
         return Router::new();
     };
+    let restore = crate::restore::routes(Arc::clone(&owner));
     let routes = Router::new()
         .route("/installation/backup", post(create))
-        .route("/installation/backup/archive", get(download));
-    gate.guard(Router::new().nest("/api/v2", routes))
+        .route("/installation/backup/archive", get(download))
         .with_state(App {
             owner,
             slot: Arc::new(Slot {
                 inner: Mutex::new(Inner::default()),
             }),
         })
+        .merge(restore);
+    gate.guard(Router::new().nest("/api/v2", routes))
 }
 
 fn export(owner: &Mutex<WriterOwner>) -> Result<BackupFile, BackupFailure> {
@@ -280,7 +284,8 @@ async fn download(
     archive_response(file, kept.size_bytes, &name, flight)
 }
 
-fn json_ok(body: &InstallationBackup) -> Response {
+/// A 200 JSON answer that no cache keeps.
+pub(crate) fn json_ok(body: &impl Serialize) -> Response {
     let bytes = match serde_json::to_vec(body) {
         Ok(bytes) => bytes,
         Err(_) => return refused(&BackupFailure::Internal),
@@ -368,13 +373,17 @@ impl http_body::Body for ArchiveBody {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::to_bytes;
     use serde_json::Value;
 
     async fn document(failure: &BackupFailure) -> (u16, Value) {
-        let response = refused(failure);
+        answered(refused(failure)).await
+    }
+
+    /// The status and JSON body of a refusal.
+    pub(crate) async fn answered(response: Response) -> (u16, Value) {
         let status = response.status().as_u16();
         let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap())

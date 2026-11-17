@@ -313,6 +313,10 @@ folder and answers its file name, time, app version, size and SHA-256.
 `GET /api/v2/installation/backup/archive` streams that archive. Free disk
 bounds the size. The routes are absent when the flag is off. See
 [Whole-installation backup export](storage.md#whole-installation-backup-export).
+`POST /api/v2/installation/restore/stage` takes a backup archive as the
+request body and answers a `restore_id` and the confirmation text.
+`POST /api/v2/installation/restore` with that id and the exact text replaces
+the database and files. See [Stage and restore routes](storage.md#stage-and-restore-routes).
 
 ## Background jobs
 

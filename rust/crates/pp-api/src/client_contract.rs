@@ -4,7 +4,7 @@
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
 //! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
 //! [`crate::modules`], [`crate::integrations`], [`crate::printers`],
-//! [`crate::spoolman_deductions`], [`crate::backup`] or [`crate::auth`].
+//! [`crate::spoolman_deductions`], [`crate::backup`], [`crate::restore`] or [`crate::auth`].
 //! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -528,6 +528,22 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "InstallationBackup",
     ),
+    // The body is the backup archive as `application/gzip`, so there is no
+    // request DTO.
+    route(
+        "stageInstallationRestore",
+        "POST",
+        "/api/v2/installation/restore/stage",
+        None,
+        "RestorePreview",
+    ),
+    route(
+        "restoreInstallation",
+        "POST",
+        "/api/v2/installation/restore",
+        Some("RestoreRequest"),
+        "RestoreOutcome",
+    ),
 ];
 
 #[cfg(feature = "codegen")]
@@ -847,6 +863,18 @@ pub(crate) mod codegen {
         schema(
             "InstallationBackup",
             schemars::schema_for!(crate::backup::InstallationBackup),
+        )?;
+        schema(
+            "RestorePreview",
+            schemars::schema_for!(crate::restore::RestorePreview),
+        )?;
+        schema(
+            "RestoreRequest",
+            schemars::schema_for!(crate::restore::RestoreRequest),
+        )?;
+        schema(
+            "RestoreOutcome",
+            schemars::schema_for!(crate::restore::RestoreOutcome),
         )?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
@@ -1789,6 +1817,42 @@ pub(crate) mod codegen {
         ])
     }
 
+    fn installation_restore_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::restore::{RestoreOutcome, RestorePreview, RestoreRequest};
+        let restore_id = "a".repeat(32);
+        Ok(vec![
+            served(
+                "RestorePreview",
+                "staged",
+                RestorePreview {
+                    restore_id: restore_id.clone(),
+                    created_at: "2026-11-17T02:50:00.000Z".into(),
+                    app_version: "0.1.0".into(),
+                    schema_version: 34,
+                    confirmation: pp_storage::restore::CONFIRMATION.into(),
+                },
+            )?,
+            served(
+                "RestoreOutcome",
+                "migrated",
+                RestoreOutcome {
+                    restored_schema_version: 34,
+                    schema_version: 50,
+                },
+            )?,
+            request::<RestoreRequest>(
+                "RestoreRequest",
+                "confirmed",
+                json!({"restore_id": restore_id, "confirmation": pp_storage::restore::CONFIRMATION}),
+            ),
+            request::<RestoreRequest>(
+                "RestoreRequest",
+                "extra-member",
+                json!({"restore_id": "a".repeat(32), "confirmation": "yes", "path": "/data"}),
+            ),
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -2413,6 +2477,7 @@ pub(crate) mod codegen {
         cases.extend(catalog_fixtures()?);
         cases.extend(source_file_fixtures()?);
         cases.extend(installation_backup_fixtures()?);
+        cases.extend(installation_restore_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);

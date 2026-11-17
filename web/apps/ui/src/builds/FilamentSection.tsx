@@ -1,9 +1,15 @@
-import type { FilamentShortfalls } from "@print-partner/rust-client";
+import type { DeductionView, FilamentShortfalls } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
 import { readCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
 import { LoadedAt, ModuleOff, MutationButton } from "../screen/ScreenTemplate";
+import {
+  DeductionFact,
+  DeductionNotices,
+  deductionsQuery,
+  newestOnSpools,
+} from "./FilamentDeductions";
 
 type Filament = Extract<FilamentShortfalls, { kind: "ready" }>["filaments"][number];
 type Needed = Filament["grams_needed"];
@@ -100,9 +106,18 @@ function Amount({ term, text }: { term: string; text: { value: string; basis: st
   );
 }
 
-function FilamentRow({ filament }: { filament: Filament }) {
+function FilamentRow({
+  filament,
+  deductions,
+}: {
+  filament: Filament;
+  deductions: DeductionView[];
+}) {
   const nameId = useId();
   const name = filamentName(filament);
+  const available = filament.grams_available;
+  const deduction =
+    available.kind === "spoolman" ? newestOnSpools(deductions, available.spool_ids) : undefined;
   return (
     <li aria-labelledby={nameId}>
       <h3 id={nameId}>{name}</h3>
@@ -115,6 +130,7 @@ function FilamentRow({ filament }: { filament: Filament }) {
             <Status filament={filament} />
           </dd>
         </div>
+        {deduction && <DeductionFact deduction={deduction} />}
       </dl>
       <ul className="pp-filament-parts" aria-label={`Parts on ${name}`}>
         {filament.parts.map((part) => (
@@ -130,7 +146,7 @@ function FilamentRow({ filament }: { filament: Filament }) {
   );
 }
 
-function Body({ data }: { data: FilamentShortfalls }) {
+function Body({ data, deductions }: { data: FilamentShortfalls; deductions: DeductionView[] }) {
   switch (data.kind) {
     case "module_off":
       return (
@@ -143,27 +159,50 @@ function Body({ data }: { data: FilamentShortfalls }) {
     case "no_accepted_plan":
       return <p>No accepted Plan yet.</p>;
     case "ready":
-      if (data.filaments.length === 0) return <p>Nothing left to print.</p>;
       return (
-        <ul className="pp-filaments" aria-label="Filaments">
-          {data.filaments.map((filament) => (
-            <FilamentRow key={filament.filament_color_id} filament={filament} />
-          ))}
-        </ul>
+        <>
+          <DeductionNotices rows={deductions} />
+          {data.filaments.length === 0 ? (
+            <p>Nothing left to print.</p>
+          ) : (
+            <ul className="pp-filaments" aria-label="Filaments">
+              {data.filaments.map((filament) => (
+                <FilamentRow
+                  key={filament.filament_color_id}
+                  filament={filament}
+                  deductions={deductions}
+                />
+              ))}
+            </ul>
+          )}
+        </>
       );
   }
 }
 
 /**
- * The Overview's Filament section (GRE-1102 PR 1): Spoolman shortfalls for the accepted
- * Plan. It loads on its own, so the rest of the Overview never waits for Spoolman.
+ * The Overview's Filament section (GRE-1102): Spoolman shortfalls for the accepted Plan and
+ * this Build's deductions. It loads on its own, so the rest of the Overview never waits for
+ * Spoolman. The deduction list is read only after the shortfall read answered `ready`, so
+ * with the Module off the section never asks for it.
  */
 export function FilamentSection({ id }: { id: number }) {
   const headingId = useId();
   const offline = useConnection() === "offline";
   const query = useQuery(filamentShortfallsQuery(id));
-  const refresh = () => void query.refetch({ cancelRefetch: false });
   const data = query.data;
+  const ready = data?.kind === "ready";
+  const deductions = useQuery({
+    ...deductionsQuery,
+    enabled: ready,
+    select: (list) => list.deductions.filter((row) => row.profile_id === id),
+  });
+  const refresh = async () => {
+    // A read that turns `ready` enables the deduction query, and that reads by itself.
+    const wasReady = ready;
+    const read = await query.refetch({ cancelRefetch: false });
+    if (wasReady && read.data?.kind === "ready") void deductions.refetch({ cancelRefetch: false });
+  };
   let status: ReactNode = null;
   if (query.isFetching) {
     status = <span className="pp-muted">Reading Spoolman</span>;
@@ -182,13 +221,21 @@ export function FilamentSection({ id }: { id: number }) {
   return (
     <section aria-labelledby={headingId} className="pp-filament-section">
       <h2 id={headingId}>Filament</h2>
+      {data?.kind !== "module_off" && (
+        <p className="pp-muted">
+          Checking off a linked print deducts its filament from the Part's pinned spool in Spoolman.
+        </p>
+      )}
       <p className="pp-filament-status">
         <span role="status">{status}</span>{" "}
-        <MutationButton onClick={refresh}>
+        <MutationButton onClick={() => void refresh()}>
           {query.isError && !offline ? "Retry" : "Refresh"}
         </MutationButton>
       </p>
-      {data && <Body data={data} />}
+      {ready && deductions.isError && (
+        <p className="pp-muted">Could not read deductions: {deductions.error.message}.</p>
+      )}
+      {data && <Body data={data} deductions={(ready && deductions.data) || []} />}
     </section>
   );
 }

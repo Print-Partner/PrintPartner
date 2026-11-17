@@ -250,3 +250,80 @@ fn a_refused_open_leaves_a_leftover_export_byte_for_byte() {
     open(&root).unwrap().shutdown().unwrap();
     assert!(exports(&root).is_empty());
 }
+
+/// Writes `count` small PNG-named files under `folder`.
+fn cached_pngs(folder: &Path, count: usize) {
+    std::fs::create_dir_all(folder).unwrap();
+    for index in 0..count {
+        std::fs::write(folder.join(format!("{index:064x}-v1.png")), b"png").unwrap();
+    }
+}
+
+/// GRE-1538: a full backup leaves out the Source thumbnail cache and keeps
+/// Node's files beside it in `thumbs/`. The metadata still declares `thumbs`.
+#[test]
+fn a_full_backup_leaves_out_the_source_thumbnail_cache() {
+    let (_installation, root) = installation();
+    std::fs::create_dir_all(root.join("thumbs")).unwrap();
+    std::fs::write(root.join("thumbs/0123456789abcdef.png"), b"node").unwrap();
+    cached_pngs(&root.join("thumbs/sources/10"), 3);
+    cached_pngs(&root.join("thumbs/sources/11"), 2);
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+
+    let backup = client.export_backup("test").unwrap();
+    assert_eq!(backup.metadata.scope, archive::MetadataScope::Full);
+    assert!(backup.metadata.included_roots().contains(&"thumbs"));
+    let paths = entry_paths(&backup);
+    assert!(
+        paths
+            .iter()
+            .any(|path| path == "thumbs/0123456789abcdef.png")
+    );
+    assert!(
+        !paths.iter().any(|path| path.starts_with("thumbs/sources")),
+        "{paths:?}"
+    );
+
+    // The backup restores, and the restored `thumbs` holds no cache.
+    let staged = stage(&client, &backup.path).unwrap();
+    let staged_thumbs = staged_dir(&root, &staged).join("thumbs");
+    assert_eq!(
+        std::fs::read(staged_thumbs.join("0123456789abcdef.png")).unwrap(),
+        b"node"
+    );
+    assert!(!staged_thumbs.join("sources").exists());
+    owner.shutdown().unwrap();
+}
+
+/// GRE-1538: an archive written before the cache was left out still holds
+/// `thumbs/sources`. Staging and activating it succeed and put the cache back
+/// as it was, where the thumbnail route's prune treats it like any other.
+#[test]
+fn an_archive_that_still_holds_the_cache_restores() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let cache: [(&[u8], tar::EntryType); 5] = [
+        (b"thumbs", tar::EntryType::Directory),
+        (b"thumbs/0123456789abcdef.png", tar::EntryType::Regular),
+        (b"thumbs/sources", tar::EntryType::Directory),
+        (b"thumbs/sources/10", tar::EntryType::Directory),
+        (b"thumbs/sources/10/cached-v1.png", tar::EntryType::Regular),
+    ];
+    let archive = archive_with(scratch.path(), 34, "full", &cache);
+
+    let staged = stage(&client, &archive).unwrap();
+    assert!(
+        staged_dir(&root, &staged)
+            .join("thumbs/sources/10/cached-v1.png")
+            .is_file()
+    );
+    client
+        .activate(&staged.restore_id, crate::restore::CONFIRMATION)
+        .unwrap();
+    assert!(root.join("thumbs/0123456789abcdef.png").is_file());
+    assert!(root.join("thumbs/sources/10/cached-v1.png").is_file());
+    owner.shutdown().unwrap();
+}

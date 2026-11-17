@@ -68,6 +68,13 @@ pub const LEGACY_ROOTS: [&str; 5] = [
     "covers",
 ];
 
+/// Rust's Source thumbnail cache (GRE-1538). A full backup leaves this folder
+/// out, because every file in it can be rendered again. It stays inside the
+/// `thumbs` root, so restoring an archive that holds it is still valid.
+pub(crate) const SOURCE_THUMBNAIL_CACHE: &str =
+    // ast-grep-ignore: no-writer-family-literal -- Rust's own thumbnail cache, only inside thumbs/sources, a folder Node never creates; Node writes flat files directly in thumbs/.
+    "thumbs/sources";
+
 fn root_for(path: &str) -> Option<(&'static str, RootKind)> {
     FULL_ROOTS.into_iter().find(|(root, kind)| {
         path == *root
@@ -351,8 +358,9 @@ fn push(items: &mut Vec<Item>, item: Item, max_entries: u64) -> Result<()> {
 
 /// Lists every root entry Node's `tar.c` filter keeps: regular files and
 /// directories, never following a symlink. A root itself must not be a
-/// symlink or the wrong type; a missing root is omitted. The walk stops as
-/// soon as the archive would exceed `max_entries`.
+/// symlink or the wrong type; a missing root is omitted. The walk leaves out
+/// [`SOURCE_THUMBNAIL_CACHE`] and everything under it. It stops as soon as
+/// the archive would exceed `max_entries`.
 pub(crate) fn plan(data_dir: &Path, scope: Scope, max_entries: u64) -> Result<Vec<Item>> {
     let mut items = Vec::new();
     ensure!(
@@ -399,8 +407,11 @@ fn walk(directory: &Path, name: String, items: &mut Vec<Item>, max_entries: u64)
         let Some(file_name) = file_name.to_str() else {
             bail!("Backup entry name is not UTF-8 under {name}");
         };
-        let metadata = child.path().symlink_metadata()?;
         let child_name = format!("{name}/{file_name}");
+        if child_name == SOURCE_THUMBNAIL_CACHE {
+            continue;
+        }
+        let metadata = child.path().symlink_metadata()?;
         if metadata.is_dir() {
             walk(&child.path(), child_name, items, max_entries)?;
         } else if metadata.is_file() {

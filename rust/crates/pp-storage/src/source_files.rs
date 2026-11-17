@@ -155,7 +155,7 @@ impl SourceFilesClient {
         wait: Duration,
     ) -> Result<SourceFiles, SourceFilesError> {
         let snapshot =
-            self.snapshot("source_files.list", credential, source_id, cancelled, wait)?;
+            self.snapshot("source_files.list", &credential, source_id, cancelled, wait)?;
         let Some((revision_id, root)) = snapshot else {
             return Ok(SourceFiles {
                 source_id,
@@ -176,13 +176,13 @@ impl SourceFilesClient {
     fn snapshot(
         &self,
         name: &'static str,
-        credential: Credential,
+        credential: &Credential,
         source_id: i64,
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Option<(i64, PathBuf)>, SourceFilesError> {
         let current = self.readers.read(name, cancelled, wait, |tx| {
-            let installation = authorize(tx, &credential, self.policy)?;
+            let installation = authorize(tx, credential, self.policy)?;
             current(tx, &installation, source_id)
         })??;
         let Some(revision_id) = current.revision_id else {

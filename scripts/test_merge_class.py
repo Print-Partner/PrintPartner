@@ -138,13 +138,16 @@ class CoverageTests(unittest.TestCase):
 
     def test_merge_classes_file_is_valid_json(self):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors"})
+        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors",
+                                                   "pp_score_seats"})
         self.assertEqual(data["vendors"], ["anthropic", "deepseek", "openai", "xai", "zhipu"])
         self.assertEqual(data["scorer_authors"], ["poitee"])
         # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max. Sol is not a seat.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek"})
+        # The Codex seat counts for the pp/score status only, not for the sensitive merge guard.
+        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai"})
 
 
 class ScoreTests(unittest.TestCase):

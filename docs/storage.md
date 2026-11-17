@@ -208,7 +208,7 @@ The generator does not produce open drafts, Checkoff progress, printer sends, ex
 
 ## Whole-installation restore: staging
 
-With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation, described below, swaps the staged copy into place under the same owner. Create and download are the routes in [Whole-installation backup export](#whole-installation-backup-export) (GRE-1371). Restore upload and activation routes remain GRE-1161. Build snapshot restore is a separate Plan operation.
+With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation, described below, swaps the staged copy into place under the same owner. Create and download are the routes in [Whole-installation backup export](#whole-installation-backup-export) (GRE-1371). Stage and restore are the routes in [Stage and restore routes](#stage-and-restore-routes) (GRE-1161). Build snapshot restore is a separate Plan operation.
 
 Staging (`WriterOwner::installation`, then `InstallationClient::begin_upload` and `stage`) takes no filesystem path from the caller:
 
@@ -256,6 +256,34 @@ Shutdown is permanent: an activation that finishes after shutdown began does not
 Activation needs no free space beyond the stage, which staging already checked: the swap renames files within the data volume, and the prior copies leave once it commits.
 
 Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admission and drained readers during the swap, fail and then crash at every step of it, and compare the four SQLite files and the archive bytes around every refusal and rollback.
+
+### Stage and restore routes
+
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two more routes beside the backup routes (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
+
+`POST /api/v2/installation/restore/stage` takes the backup archive as the request body (`application/gzip`, not a form) and needs `Content-Length`, which becomes `begin_upload`'s limit. The route passes the body to the upload in 1 MiB writes, then calls `stage`, and answers `RestorePreview`: `restore_id`, the archive's `created_at` and `app_version`, its `schema_version`, and the `confirmation` text to repeat. The stage lasts until Print Partner restarts or the next stage replaces it; then the backup must be uploaded again.
+
+`POST /api/v2/installation/restore` takes `RestoreRequest` (`restore_id`, `confirmation`; unknown members are refused) and calls `activate`. It answers `RestoreOutcome` (`restored_schema_version`, `schema_version`) once the restored database is serving. The restored database brings its own accounts and sessions, so a session the backup does not hold signs out.
+
+| Refusal | Answer |
+| --- | --- |
+| No `Content-Length` | 411 `Content-Length is required` |
+| Body ends early or cannot be read | 400 `The upload body could not be read` |
+| Body longer than its `Content-Length` (`Refusal::TooLarge`) | 413 |
+| No valid `.pp-rust-owned.json` (`Refusal::Unmarked`) | 409 `Restore needs a Rust-owned installation` |
+| `Refusal::NoSpace`, `Refusal::InsufficientSpace` | 503 `Not enough free disk space`, with `needed` and `available` |
+| `Refusal::InvalidArchive`, `Refusal::LargerThanDeclared` | 422 `Invalid backup archive` |
+| `Refusal::UnsupportedSchema` | 422 `This release cannot restore the backup's database` |
+| `RestoreRequest` not readable | 400 `Request is invalid`, with field errors |
+| `Refusal::Confirmation` | 400 `Restore confirmation does not match` |
+| `Refusal::UnknownRestore` (also any id that is not 32 lowercase hex) | 404, code `restore_not_found`: upload the backup again |
+| `Refusal::Busy` | 503 `Storage work is still active; try again` |
+| `RestoreError::RolledBack` | 500, code `restore_rolled_back`: the previous installation is kept and serving |
+| `RestoreError::RestartRequired` | 503, code `restart_required`: storage refuses work until a restart replays the journal |
+
+The generated client names the routes `stageInstallationRestore` (no request DTO; post the archive bytes) and `restoreInstallation`.
+
+Tests: `pp-core/tests/installation_restore_http.rs` runs on a disposable pp-testkit installation (copied schema-34 database, valid marker). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals and the routes' absence with the flag off. `pp_api::restore`'s unit test pins every refusal's body.
 
 ## Source thumbnail cache
 

@@ -151,6 +151,10 @@ problem_codes! {
     SourceFileNotFound = "source_file_not_found";
     SourceFileUnrenderable = "source_file_unrenderable";
     SourceFilePathRequired = "source_file_path_required";
+    // `POST /api/v2/installation/restore`.
+    RestoreNotFound = "restore_not_found";
+    RestoreRolledBack = "restore_rolled_back";
+    RestartRequired = "restart_required";
 }
 
 impl ProblemType {

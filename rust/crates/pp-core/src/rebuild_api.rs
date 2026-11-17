@@ -560,8 +560,9 @@ pub fn desktop_policy() -> AuthPolicy {
     }
 }
 
-/// Whole-installation backup create and download (GRE-1371). The router is
-/// empty unless `flag` is exactly `1` or `true`.
+/// Whole-installation backup create and download (GRE-1371), restore stage
+/// and confirmed restore (GRE-1161). The router is empty unless `flag` is
+/// exactly `1` or `true`.
 pub(crate) fn installation_backup_router(
     owner: &Arc<Mutex<WriterOwner>>,
     origin: &str,
@@ -571,11 +572,10 @@ pub(crate) fn installation_backup_router(
         .lock()
         .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
         .accepted_reads_with_policy(desktop_policy())?;
-    Ok(pp_api::backup::backup_router(
-        AdminHttpConfig::from_startup(origin, DESKTOP_TENANT, flag)?,
-        Arc::clone(owner),
-        reads,
-    ))
+    let config = AdminHttpConfig::from_startup(origin, DESKTOP_TENANT, flag)?;
+    let backup = pp_api::backup::backup_router(config.clone(), Arc::clone(owner), reads.clone());
+    let restore = pp_api::restore::restore_router(config, Arc::clone(owner), reads);
+    Ok(backup.merge(restore))
 }
 
 /// The product routes a Rust-only runtime mounts in the gateway: the read
@@ -999,6 +999,8 @@ mod tests {
             "DismissUnattributedRequest" => json!({}),
             "ReconcileDeductionRequest" => json!({"answer": "dismiss"}),
             "ReconcileSendRequest" => json!({"printed": false, "job_id": null}),
+            // A wrong confirmation is refused before any stage is looked up.
+            "RestoreRequest" => json!({"restore_id": "0".repeat(32), "confirmation": "yes"}),
             "SignInRequest" => json!({"email": "client@example.com", "password": "password-1234"}),
             "RegisterRequest" => {
                 json!({"email": "second@example.com", "password": "password-1234"})
@@ -1137,6 +1139,14 @@ mod tests {
             status == 202 && body["job_id"].as_str().is_some_and(|id| !id.is_empty());
         // The branch-list sample omits ?url=, so the handler answers before GitHub.
         let branch_list = status == 400 && body["detail"] == "url query parameter is required";
+        // The contract installation has no ownership marker, and the sample
+        // restore names no stage.
+        let restore = (route.name == "stageInstallationRestore"
+            && ((status == 409 && body["detail"] == "Restore needs a Rust-owned installation")
+                || (status == 411 && body["detail"] == "Content-Length is required")))
+            || (route.name == "restoreInstallation"
+                && status == 400
+                && body["detail"] == "Restore confirmation does not match");
         status == 200
             || handler_not_found(status, body)
             || stale
@@ -1145,6 +1155,7 @@ mod tests {
             || upload
             || sync_accepted
             || branch_list
+            || restore
             || owner_exists(route, status, body)
     }
 

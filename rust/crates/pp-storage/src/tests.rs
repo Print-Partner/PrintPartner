@@ -1871,7 +1871,7 @@ fn ticket_t_7_migrations_preserves_refused_inputs() {
         "Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to",
     );
     let newer = if cfg!(feature = "desktop_rebuild") {
-        "50"
+        "51"
     } else {
         "40"
     };

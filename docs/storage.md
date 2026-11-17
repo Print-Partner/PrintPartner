@@ -102,22 +102,22 @@ The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision
 | --- | --- |
 | No database, an empty file, or no `schema_version` row | `Fresh`: install the full schema. |
 | 31 to 34 (Node; 31 shipped in Print Partner v3.3.0) | `NodeUpgrade`: replay Node's migrations, then the Rust steps. |
-| 35 to 48, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
-| The build's newest: 35 without `desktop_rebuild`, 49 with it | `Current`: nothing to migrate. |
+| 35 to 49, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
+| The build's newest: 35 without `desktop_rebuild`, 50 with it | `Current`: nothing to migrate. |
 | 1 to 30, or above the newest (a value above `u64::MAX` counts as `u64::MAX`) | Refused with `IncompatibleSchema`. |
 
 `ticket_t_7_migrations` opens a fresh directory and Node-built schema 31, 32, 33 and 34 databases through the writer and checks each against its named path.
 
 The refusal is terminal. The version is read from the preflight copy in the temporary directory, before the integrity check, so a refused database, its `-wal` and its `-journal` keep their bytes. The message names the version found, the supported range and the recovery step:
 
-- Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 49). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
-- Too new: `Incompatible storage: database schema version 50 is newer than supported version 49 (this release opens schema 31 to 49). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`
+- Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 50). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
+- Too new: `Incompatible storage: database schema version 51 is newer than supported version 50 (this release opens schema 31 to 50). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`
 
 Each runtime stops on it instead of reopening the database:
 
 - **Node-backed start.** Node opens 31 to 34. Right after `lease_unmarked`, and before cutover recovery or the Node child, `pp-core` runs the same preflight (`versions::node_refusal`) and refuses any other version against the range 31 to 34. Preflight reads and checks the version first and records it, before `PRAGMA integrity_check` and the Rust schema validations. So an unsupported version is refused here even when the file also fails its integrity check or does not match the Rust schema; those errors themselves are unchanged. The child never starts, so the supervisor never backs off and restarts it. A failure before the version is read, such as a file SQLite cannot open or a non-numeric version, logs `node_schema_preflight_unchecked` and leaves the decision to Node, as before. The check copies the database to the temporary directory. For a version this build's Rust schema accepts, it runs `PRAGMA integrity_check` once per start, including versions 35 up to the Rust schema ceiling, which Node then refuses. A nonzero version below 31, or a version newer than the Rust schema ceiling, returns before that check.
 - **Rust-only start.** `WriterOwner::open` refuses during its preflight, and startup returns the error once; nothing retries it.
-- **Desktop.** The startup dialog is titled "Print Partner cannot open this data folder" and shows the message. Stderr gets `desktop_startup_failed: core_startup -> incompatible_storage: found=50 supported=31..=49 direction=newer`. `core.log` does not: it attaches only after core startup admits the data directory.
+- **Desktop.** The startup dialog is titled "Print Partner cannot open this data folder" and shows the message. Stderr gets `desktop_startup_failed: core_startup -> incompatible_storage: found=51 supported=31..=50 direction=newer`. `core.log` does not: it attaches only after core startup admits the data directory.
 - **Headless `pp-server`.** It writes `incompatible_storage: found=<n> supported=<oldest>..=<newest> direction=<older|newer>` and the message to stderr and exits with code 78 (`EX_CONFIG`). Other start failures exit with 1. Docker restart policies restart on any non-zero code, so a container with a restart policy starts again, and each start refuses again without writing. Stop the container before you recover the data folder.
 
 A downgrade refuses the live schema before restore cleanup. It preserves the database, all SQLite sidecars (`-wal`, `-shm`, `-journal`), saved backup archives, and pending restore uploads and stages. Repeated refused starts do not prune or replace these copies. This does not restore older data automatically; rollback after new writes still needs informed owner approval (ADR 0010).
@@ -269,6 +269,32 @@ at most once. Undoing the burst deletes its `pending` and `skipped` rows and
 their claims. Nothing is written with the Spoolman Module off. The migration
 takes `backups/pre-schema49.db` and validates both tables and their indexes
 before stamping version 49, as earlier steps do.
+
+## Spoolman deduction send states
+
+Schema 50, compiled only with `desktop_rebuild`, adds three columns to
+`spoolman_deductions` and does not rebuild the table (GRE-1522). `failure` is
+one of `unreachable`, `refused`, `reply_lost`, `interrupted`,
+`integration_missing` or `integration_disabled`, and only on a `failed`,
+`unknown` or `dismissed` row. `failure_status` is an integer from 100 to 599,
+and only when `failure` is `refused`. `spool_grams_before` is the grams Spoolman
+reported before the send, stored when a row is claimed, and may be null.
+
+A claim moves one `pending` row to `sending` and stores that before value. It
+applies only while the row is still `pending`, and it commits before any
+request. A finish applies only while the row is `sending`. Opening the database
+marks every `sending` row `unknown` with failure `interrupted`, before seeding
+and before job recovery, and does not send it. Nothing in this step returns
+`sending`, `unknown` or `failed` to `pending`. Undoing a burst still removes
+only its `pending` and `skipped` rows.
+
+With the Spoolman Module off at send time the row stays `pending` and is sent
+once the Module is on again. That is not a new skip reason, and this step does
+not change the reason check. The worker that sends, and the notify a burst
+commit uses to wake it (with a 30 second recheck, as the printer send worker
+does), are GRE-411 part 2b. The migration takes `backups/pre-schema50.db` and
+validates the columns before stamping version 50. A failed step leaves the
+database at 49.
 
 ## Experiment ancestry
 

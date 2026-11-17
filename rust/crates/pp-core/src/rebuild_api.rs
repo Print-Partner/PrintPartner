@@ -559,6 +559,24 @@ pub fn desktop_policy() -> AuthPolicy {
     }
 }
 
+/// Whole-installation backup create and download (GRE-1371). The router is
+/// empty unless `flag` is exactly `1` or `true`.
+pub(crate) fn installation_backup_router(
+    owner: &Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    flag: Option<&str>,
+) -> Result<Router> {
+    let reads = owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
+        .accepted_reads_with_policy(desktop_policy())?;
+    Ok(pp_api::backup::backup_router(
+        AdminHttpConfig::from_startup(origin, DESKTOP_TENANT, flag)?,
+        Arc::clone(owner),
+        reads,
+    ))
+}
+
 /// The product routes a Rust-only runtime mounts in the gateway: the read
 /// routers, the draft routers and the jobs router, all from one owner.
 /// `community_manifests` is the bundle's
@@ -621,6 +639,7 @@ pub(crate) fn product_router_with_updates(
             job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
         )
     };
+    let backups = installation_backup_router(&owner, origin, Some("1"))?;
     let reads = read_router_with_updates(
         rebuild,
         owner,
@@ -633,7 +652,7 @@ pub(crate) fn product_router_with_updates(
     Ok(reads
         .zip(drafts)
         .zip(jobs)
-        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
+        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs).merge(backups)))
 }
 
 /// `POST /sources/{id}/upload-files` for the Rust-only runtime, over its one
@@ -1201,6 +1220,7 @@ mod tests {
         );
         let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
         let uploads = upload_router(Arc::clone(&owner), &origin, Arc::new(NoUploads)).unwrap();
+        let backups = installation_backup_router(&owner, &origin, Some("1")).unwrap();
         let mut server = serve(
             listener,
             reads
@@ -1209,7 +1229,8 @@ mod tests {
                 .merge(drafts.unwrap().unwrap())
                 .merge(jobs.unwrap().unwrap())
                 .merge(farm)
-                .merge(uploads),
+                .merge(uploads)
+                .merge(backups),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {

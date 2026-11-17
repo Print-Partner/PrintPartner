@@ -67,6 +67,9 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v1/sources/{id}/files` (`listSourceFiles`) | | `SourceFileList` (`revision_id` null and `files` empty when the Source has no revision; each file has `path`, `kind` and `size_bytes`) |
 | `GET /api/v1/sources/github-branches?url=` (`listGithubBranches`) | | `GithubBranchList` (`url` is a query parameter) |
 | `POST /api/v1/jobs/sync` (`startSourceSync`; answers 202) | `StartSourceSyncRequest` (`project_ids`) | `SourceSyncAccepted` (`job_id`) |
+| `POST /api/v2/installation/backup` (`createInstallationBackup`) | | `InstallationBackup` |
+| `POST /api/v2/installation/restore/stage` (`stageInstallationRestore`, `application/gzip`) | | `RestorePreview` (`restore_id`, archive metadata, `confirmation`) |
+| `POST /api/v2/installation/restore` (`restoreInstallation`) | `RestoreRequest` (`restore_id`, `confirmation`) | `RestoreOutcome` |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
@@ -98,7 +101,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `POST /auth/register` | `RegisterRequest` | `SignedIn` |
 | `POST /auth/logout` | | `SignedOut` |
 
-`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md). `addQueuedSend` lists no request schema because its body is a form: post a `FormData` and parse the answer with the route's response schema. `uploadSourceZip` is the same kind of route: post one `.zip` file as `FormData` and parse `{job_id}` with `SourceUploadAccepted`. The send routes are documented in [Send queue storage](../../../docs/send-queue.md#routes-gre-365).
+`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md). `addQueuedSend` lists no request schema because its body is a form: post a `FormData` and parse the answer with the route's response schema. `uploadSourceZip` is the same kind of route: post one `.zip` file as `FormData` and parse `{job_id}` with `SourceUploadAccepted`. `stageInstallationRestore` lists no request schema either: post the backup archive's bytes as the body with `Content-Type: application/gzip` and parse the answer with `RestorePreview`. `GET /api/v2/installation/backup/archive` answers the archive file and is not in the client. The send routes are documented in [Send queue storage](../../../docs/send-queue.md#routes-gre-365).
 
 The Checkoff burst types (`pp_storage::checkoff_progress::wire`) are the subset the replacement UI sends and reads. The routes parse a JSON value and accept more (imported-extra `additional_decisions`, JavaScript-style coercion), and a receipt carries more fields, such as each bed's stored link, which the generated schema strips. A `UnitDecision` with `result: "rejected"` needs `reason` (one of the ten `RejectReason` values) or the route answers 400; `reason` and `note` may be omitted on a confirmed unit. `checkoff_bursts_http` parses the served receipts into these types and records a rejection with its reason through the mounted route.
 

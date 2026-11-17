@@ -1,10 +1,16 @@
-import type { FilamentShortfalls, Health, ProfileSummary } from "@print-partner/rust-client";
+import type {
+  DeductionView,
+  FilamentShortfalls,
+  Health,
+  ProfileSummary,
+} from "@print-partner/rust-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
+import { skippedText } from "./FilamentDeductions";
 import { neededText, stockText } from "./FilamentSection";
 
 // A scripted core. The rows match rust/crates/pp-core/tests/filament_shortfalls_http.rs,
@@ -77,12 +83,17 @@ const UNREACHABLE = row({
 });
 
 const SHORTFALLS = "/api/v2/plans/1/filament-shortfalls";
+const DEDUCTIONS = "/api/v2/spoolman/deductions";
 
 /** The Overview's reads, with the shortfall answer from `shortfalls`. */
-function core(shortfalls: () => Response | Promise<Response>) {
-  return vi.fn((path: string) => {
+function core(
+  shortfalls: () => Response | Promise<Response>,
+  deductions: () => DeductionView[] = () => [],
+) {
+  return vi.fn((path: string, _init?: RequestInit) => {
     if (path === "/health") return Promise.resolve(json(health));
     if (path === SHORTFALLS) return Promise.resolve(shortfalls());
+    if (path === DEDUCTIONS) return Promise.resolve(json({ deductions: deductions() }));
     if (path === "/api/v2/plans/1") return Promise.resolve(json(BUILD));
     if (path === "/api/v2/plans/1/layers")
       return Promise.resolve(json({ profile_id: 1, layers: [] }));
@@ -90,7 +101,7 @@ function core(shortfalls: () => Response | Promise<Response>) {
   });
 }
 
-function renderOverview(fetchImpl: (path: string) => Promise<Response>) {
+function renderOverview(fetchImpl: (path: string, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal("fetch", fetchImpl);
   const router = createMemoryRouter(routes, { initialEntries: ["/builds/1"] });
   const queryClient = createQueryClient();
@@ -264,5 +275,195 @@ describe("Filament amounts in words", () => {
       value: "Not known",
       basis: "Spoolman has no filament with this ID",
     });
+  });
+});
+
+/** A deduction row as `GET /api/v2/spoolman/deductions` sends it: Build 1, spool 7, 42 g. */
+const deduction = (extra: Partial<DeductionView> = {}): DeductionView => ({
+  id: 1,
+  state: "applied",
+  reason: null,
+  link_id: "link-1",
+  profile_id: 1,
+  units: 1,
+  integration_id: "local",
+  spool_id: 7,
+  grams: 42,
+  grams_basis: "measured",
+  failure: null,
+  failure_status: null,
+  created_at: "2026-11-17T15:00:00Z",
+  updated_at: "2026-11-17T15:00:01Z",
+  ...extra,
+});
+const SKIPPED = deduction({
+  state: "skipped",
+  reason: "no_pinned_spool",
+  integration_id: null,
+  spool_id: null,
+  grams: null,
+  grams_basis: null,
+});
+const deductionReads = (fetchMock: ReturnType<typeof core>) =>
+  fetchMock.mock.calls.filter(([p]) => p === DEDUCTIONS).length;
+const writes = (fetchMock: ReturnType<typeof core>) =>
+  fetchMock.mock.calls.filter(([, init]) => (init?.method ?? "GET") !== "GET").length;
+const SENTENCE =
+  "Checking off a linked print deducts its filament from the Part's pinned spool in Spoolman.";
+
+describe("GRE-1102 deductions on the Filament section", () => {
+  it("before a burst: the sentence, no deduction line and no notice", async () => {
+    const fetchMock = core(() => json(ready([row()])));
+    renderOverview(fetchMock);
+    await screen.findByText("Enough");
+    expect(within(section()).getByText(SENTENCE)).toBeTruthy();
+    await waitFor(() => expect(deductionReads(fetchMock)).toBe(1));
+    expect(within(section()).queryByText("Last deduction")).toBeNull();
+    expect(within(section()).queryByRole("link", { name: "Answer in the Farm log" })).toBeNull();
+    expect(section().textContent).not.toMatch(/skipped|switch/i);
+    expect(within(section()).queryByRole("checkbox")).toBeNull();
+  });
+
+  it("an applied deduction shows grams, spool, state and time, and Refresh reads both again", async () => {
+    let stock = row();
+    let rows: DeductionView[] = [];
+    const fetchMock = core(
+      () => json(ready([stock])),
+      () => rows,
+    );
+    renderOverview(fetchMock);
+    await screen.findByText("Enough");
+    rows = [deduction()];
+    stock = row({ grams_available: { kind: "spoolman", grams: 710, spool_ids: [7, 8] } });
+    fireEvent.click(within(section()).getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(fact("In Spoolman")).toBe("710 gon 2 spools"));
+    await waitFor(() => expect(fact("Last deduction")).toMatch(/^42 g from spool 7applied, .+/));
+    const time = within(section()).getByText("Last deduction").nextElementSibling!;
+    expect(time.querySelector("time")!.dateTime).toBe("2026-11-17T15:00:01.000Z");
+    expect(reads(fetchMock)).toBe(2);
+    expect(deductionReads(fetchMock)).toBe(2);
+    expect(writes(fetchMock)).toBe(0);
+  });
+
+  it("each row shows the newest deduction from one of its own spools", async () => {
+    const other = row({
+      filament_color_id: "spoolman:local:filament:3",
+      label: "Other PLA",
+      grams_available: { kind: "spoolman", grams: 500, spool_ids: [9] },
+    });
+    const newest = deduction({ id: 3, spool_id: 8, grams: 21, state: "pending" });
+    renderOverview(
+      core(
+        () => json(ready([row(), other])),
+        () => [newest, deduction({ id: 2 }), deduction({ id: 1, spool_id: 9, grams: 5 })],
+      ),
+    );
+    await screen.findAllByText("Enough");
+    const rows = await within(section()).findAllByText("Last deduction");
+    expect(rows.map((term) => term.nextElementSibling!.textContent)).toEqual([
+      expect.stringMatching(/^21 g from spool 8waiting to send, /),
+      expect.stringMatching(/^5 g from spool 9applied, /),
+    ]);
+  });
+
+  it("an unknown outcome gets a notice with its grams and a Farm log link, and a reload sends nothing", async () => {
+    let rows = [deduction({ state: "unknown", failure: "reply_lost" })];
+    const fetchMock = core(
+      () => json(ready([row()])),
+      () => rows,
+    );
+    renderOverview(fetchMock);
+    await screen.findByText("Enough");
+    const link = await within(section()).findByRole("link", { name: "Answer in the Farm log" });
+    expect(link.getAttribute("href")).toBe("/farm/log");
+    expect(link.closest("p")!.textContent).toBe(
+      "1 deduction has an unknown outcome: 42 g. Spoolman's numbers may be off by up to 42 g. Answer in the Farm log",
+    );
+    expect(fact("Last deduction")).toMatch(/^42 g from spool 7outcome unknown, /);
+    cleanup();
+    renderOverview(fetchMock);
+    await screen.findByText("Enough");
+    await within(section()).findByRole("link", { name: "Answer in the Farm log" });
+    expect(writes(fetchMock)).toBe(0);
+    // The owner answers `deducted` in the Farm log; the Overview opens again.
+    rows = [deduction({ state: "applied" })];
+    cleanup();
+    renderOverview(fetchMock);
+    await screen.findByText("Enough");
+    await waitFor(() => expect(fact("Last deduction")).toMatch(/^42 g from spool 7applied, /));
+    expect(within(section()).queryByRole("link", { name: "Answer in the Farm log" })).toBeNull();
+  });
+
+  it("a refused write says the deduction failed", async () => {
+    renderOverview(
+      core(
+        () => json(ready([row()])),
+        () => [deduction({ state: "failed", failure: "refused", failure_status: 500 })],
+      ),
+    );
+    await screen.findByText("Enough");
+    const link = await within(section()).findByRole("link", { name: "Answer in the Farm log" });
+    expect(link.closest("p")!.textContent).toMatch(/^1 deduction failed: 42 g\. /);
+    expect(link.closest(".pp-banner")!.getAttribute("data-kind")).toBe("error");
+  });
+
+  it("a skipped deduction says why in words", async () => {
+    renderOverview(
+      core(
+        () => json(ready([row()])),
+        () => [SKIPPED],
+      ),
+    );
+    await screen.findByText("Enough");
+    expect(
+      await within(section()).findByText("1 deduction was skipped because no spool is pinned."),
+    ).toBeTruthy();
+    expect(within(section()).queryByText("Last deduction")).toBeNull();
+    expect(within(section()).queryByRole("link", { name: "Answer in the Farm log" })).toBeNull();
+  });
+
+  it("a second Build's deductions do not show on this Build", async () => {
+    const fetchMock = core(
+      () => json(ready([row()])),
+      () => [
+        deduction({ profile_id: 2, state: "unknown" }),
+        { ...SKIPPED, profile_id: 2 },
+        deduction({ profile_id: 2 }),
+      ],
+    );
+    renderOverview(fetchMock);
+    await screen.findByText("Enough");
+    await waitFor(() => expect(deductionReads(fetchMock)).toBe(1));
+    expect(within(section()).queryByText("Last deduction")).toBeNull();
+    expect(section().textContent).not.toMatch(/deduction (has|was|failed)/);
+  });
+
+  it("Module off makes no deduction request and drops the sentence", async () => {
+    const fetchMock = core(
+      () => json({ kind: "module_off", module: "spoolman", reason: "default_off" }),
+      () => [deduction({ state: "unknown" })],
+    );
+    renderOverview(fetchMock);
+    await screen.findByText("The Spoolman module is off.");
+    fireEvent.click(within(section()).getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(reads(fetchMock)).toBe(2));
+    expect(deductionReads(fetchMock)).toBe(0);
+    expect(within(section()).queryByText(SENTENCE)).toBeNull();
+  });
+});
+
+describe("skipped deductions in words", () => {
+  it("groups several reasons", () => {
+    expect(
+      skippedText([
+        SKIPPED,
+        { ...SKIPPED, reason: "no_grams" },
+        SKIPPED,
+        { ...SKIPPED, reason: "later_reason" },
+      ]),
+    ).toBe(
+      '4 deductions were skipped: 2 because no spool is pinned, 1 because the print recorded no grams, 1 because the core gave the reason "later_reason".',
+    );
+    expect(skippedText([deduction()])).toBeNull();
   });
 });

@@ -51,6 +51,7 @@ Each URN is `urn:print-partner:problem:<suffix>`. `ProblemType::classify(status,
 | `transaction_unavailable`, `outcome_unknown` | Every write through the write seam (`WriterFailure`): storage was busy past the deadline, or the write may or may not have committed. |
 | `invalid_integration`, `integration_not_found`, `integration_limit`, `integration_not_editable`, `integrations_unreadable`, `invalid_printer`, `printer_not_found`, `printer_limit`, `printers_unreadable`, `filament_slot_in_use` | The integration and printer routes under `/api/v2/integrations` and `/api/v2/printers`. |
 | `source_not_found`, `source_snapshot_unavailable`, `source_too_many_files`, `source_file_not_found`, `source_file_unrenderable`, `source_file_path_required` | `GET /sources/{id}/files` and `GET /sources/{id}/thumbnail`. |
+| `restore_not_found`, `restore_rolled_back`, `restart_required` | `POST /api/v2/installation/restore` ([Stage and restore routes](storage.md#stage-and-restore-routes)). |
 
 MCP keeps its own code list, in [MCP](mcp.md). A family served both ways has two mappings from the same typed error, one per surface, both in `pp-api`.
 

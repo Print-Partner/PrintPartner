@@ -16,18 +16,30 @@
 //! answered. The cache folders are opened one by one without following a
 //! link: a symbolic link at `thumbs`, `thumbs/sources` or the revision's
 //! folder means no cache, never a write through it.
+//!
+//! The write that creates a revision's folder then prunes the cache
+//! (GRE-1538): every revision folder whose revision is no longer any Source's
+//! current revision is removed. The folders are listed before the read that
+//! finds the current revisions, so a folder made for a revision that became
+//! current after that read is not on the list. Nothing else removes a folder,
+//! and a full backup leaves the whole cache out
+//! (`archive::SOURCE_THUMBNAIL_CACHE`).
 
 use super::{SourceFilesClient, SourceFilesError};
 use crate::{
+    archive::SOURCE_THUMBNAIL_CACHE,
     production::{
         geometry::GeometryLimits,
         thumbnail::{RENDERER_VERSION, render},
     },
     read_model::{Credential, graph::safe_path},
+    write::authorize,
 };
 use pp_os::Dir;
+use rusqlite::Transaction;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     fs,
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
@@ -65,7 +77,7 @@ impl SourceFilesClient {
         }
         let name = "source_files.thumbnail";
         let Some((revision_id, root)) =
-            self.snapshot(name, credential, source_id, cancelled, wait)?
+            self.snapshot(name, &credential, source_id, cancelled, wait)?
         else {
             return Err(SourceFilesError::FileNotFound);
         };
@@ -86,14 +98,56 @@ impl SourceFilesClient {
         let limits = GeometryLimits::default();
         let stl = read_stl(&stl_file(&root, path)?, limits.max_bytes)?;
         let png = render(&stl, limits).map_err(|_| SourceFilesError::Unrenderable)?;
-        if let Err(error) = store(&self.data, revision_id, &cached, &png) {
-            tracing::warn!(error = %error, "source_thumbnail_cache_write_failed");
+        match store(&self.data, revision_id, &cached, &png) {
+            Ok(Folder::Created) => self.prune(&credential, cancelled, wait),
+            Ok(Folder::Existed) => {}
+            Err(error) => tracing::warn!(error = %error, "source_thumbnail_cache_write_failed"),
         }
         Ok(SourceThumbnail {
             revision_id,
             tag,
             png,
         })
+    }
+
+    /// Removes the cache folder of every revision that is no longer any
+    /// Source's current revision. A failure is logged and stops nothing: the
+    /// cache is regenerable, and the next new folder prunes again.
+    fn prune(&self, credential: &Credential, cancelled: &AtomicBool, wait: Duration) {
+        let warn = |error: &dyn std::fmt::Display| {
+            tracing::warn!(error = %error, "source_thumbnail_cache_prune_failed");
+        };
+        let (sources, listed) = match revision_folders(&self.data) {
+            Ok(found) => found,
+            Err(error) => return warn(&error),
+        };
+        let current = self.readers.read(
+            "source_files.thumbnail_prune",
+            cancelled,
+            wait,
+            |tx| -> Result<_, SourceFilesError> {
+                authorize(tx, credential, self.policy)?;
+                Ok(current_revisions(tx)?)
+            },
+        );
+        let current = match current {
+            Ok(Ok(current)) => current,
+            Ok(Err(error)) => return warn(&error),
+            Err(error) => return warn(&error),
+        };
+        let mut removed = false;
+        for (name, revision_id) in listed {
+            if current.contains(&revision_id) {
+                continue;
+            }
+            match remove_revision_folder(&sources, &name) {
+                Ok(()) => removed = true,
+                Err(error) => warn(&error),
+            }
+        }
+        if removed && let Err(error) = sources.sync() {
+            warn(&error);
+        }
     }
 
     /// A path the file list could show for an STL. No name may hold a `:`:
@@ -153,20 +207,30 @@ fn read_stl(file: &Path, max_bytes: usize) -> Result<Vec<u8>, SourceFilesError> 
     Ok(bytes)
 }
 
+/// Whether [`cache_folder`] made the revision's folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Folder {
+    Created,
+    Existed,
+}
+
 /// `thumbs/sources/<revision id>` under the data folder, each folder opened
 /// relative to the one above without following a link, so a symbolic link or
 /// a file at any of those names fails instead of leading outside. Missing
 /// folders are made only when `create` is set.
-fn cache_folder(data: &Path, revision_id: i64, create: bool) -> io::Result<Dir> {
+fn cache_folder(data: &Path, revision_id: i64, create: bool) -> io::Result<(Dir, Folder)> {
     let revision = revision_id.to_string();
     let mut folder = Dir::open(data)?;
-    // ast-grep-ignore: no-writer-family-literal -- Rust's own thumbnail cache, only inside thumbs/sources, a folder Node never creates; Node writes flat files directly in thumbs/.
-    for name in ["thumbs", "sources", revision.as_str()] {
+    let mut made = Folder::Existed;
+    for name in SOURCE_THUMBNAIL_CACHE.split('/').chain([revision.as_str()]) {
         folder = match folder.open_dir_nofollow(name) {
             Ok(next) => next,
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
                 match folder.create_dir(name) {
-                    Ok(()) => folder.sync()?,
+                    Ok(()) => {
+                        folder.sync()?;
+                        made = Folder::Created;
+                    }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(error) => return Err(error),
                 }
@@ -175,12 +239,60 @@ fn cache_folder(data: &Path, revision_id: i64, create: bool) -> io::Result<Dir> 
             Err(error) => return Err(error),
         };
     }
-    Ok(folder)
+    Ok((folder, made))
+}
+
+/// `thumbs/sources`, opened as [`cache_folder`] opens it, and the revision
+/// folders in it: each real folder named by a revision id as Rust writes it,
+/// decimal with no leading zero. Links, files and other names are left alone.
+fn revision_folders(data: &Path) -> io::Result<(Dir, Vec<(String, i64)>)> {
+    let mut sources = Dir::open(data)?;
+    for name in SOURCE_THUMBNAIL_CACHE.split('/') {
+        sources = sources.open_dir_nofollow(name)?;
+    }
+    let mut listed = Vec::new();
+    for name in sources.entries()? {
+        let Some(name) = name?.to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(revision_id) = name.parse::<i64>().ok().filter(|id| id.to_string() == name) else {
+            continue;
+        };
+        if sources.status_nofollow(&name)?.is_dir() {
+            listed.push((name, revision_id));
+        }
+    }
+    Ok((sources, listed))
+}
+
+/// Every revision that is some Source's current revision, in any tenant.
+fn current_revisions(tx: &Transaction<'_>) -> rusqlite::Result<BTreeSet<i64>> {
+    tx.prepare(
+        "SELECT current_source_revision_id FROM projects \
+         WHERE current_source_revision_id IS NOT NULL",
+    )?
+    .query_map([], |row| row.get(0))?
+    .collect()
+}
+
+/// Removes the revision folder `name` and the files in it, without following
+/// a link. A folder that holds anything but regular files is left in place.
+fn remove_revision_folder(sources: &Dir, name: &str) -> io::Result<()> {
+    let folder = sources.open_dir_nofollow(name)?;
+    for file in folder.entries()? {
+        let file = file?;
+        let file = file
+            .to_str()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "name is not UTF-8"))?;
+        folder.remove_file(file)?;
+    }
+    sources.remove_dir(name)
 }
 
 /// The cached file `name`, read without following a link.
 fn read_cached(data: &Path, revision_id: i64, name: &str) -> io::Result<Vec<u8>> {
-    let mut file = cache_folder(data, revision_id, false)?.open_read_nofollow(name)?;
+    let (folder, _) = cache_folder(data, revision_id, false)?;
+    let mut file = folder.open_read_nofollow(name)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(bytes)
@@ -189,8 +301,8 @@ fn read_cached(data: &Path, revision_id: i64, name: &str) -> io::Result<Vec<u8>>
 /// Writes `png` as `name` through a temporary file in the same folder, synced
 /// before the rename so a crash leaves the old state or the whole file. Every
 /// step is relative to the folder handle, so nothing is written through a link.
-fn store(data: &Path, revision_id: i64, name: &str, png: &[u8]) -> io::Result<()> {
-    let folder = cache_folder(data, revision_id, true)?;
+fn store(data: &Path, revision_id: i64, name: &str, png: &[u8]) -> io::Result<Folder> {
+    let (folder, made) = cache_folder(data, revision_id, true)?;
     let temporary = format!(".{:016x}.tmp", rand::random::<u64>());
     let written = folder
         .create_new_nofollow(&temporary)
@@ -203,5 +315,5 @@ fn store(data: &Path, revision_id: i64, name: &str, png: &[u8]) -> io::Result<()
     if written.is_err() {
         let _ = folder.remove_file(&temporary);
     }
-    written
+    written.map(|()| made)
 }

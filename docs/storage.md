@@ -208,7 +208,7 @@ The generator does not produce open drafts, Checkoff progress, printer sends, ex
 
 ## Whole-installation restore: staging
 
-With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation, described below, swaps the staged copy into place under the same owner. Create and download are the routes in [Whole-installation backup export](#whole-installation-backup-export) (GRE-1371). Restore upload and activation routes remain GRE-1161. Build snapshot restore is a separate Plan operation.
+With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation, described below, swaps the staged copy into place under the same owner. Create and download are the routes in [Whole-installation backup export](#whole-installation-backup-export) (GRE-1371). Stage and restore are the routes in [Stage and restore routes](#stage-and-restore-routes) (GRE-1161). Build snapshot restore is a separate Plan operation.
 
 Staging (`WriterOwner::installation`, then `InstallationClient::begin_upload` and `stage`) takes no filesystem path from the caller:
 
@@ -257,15 +257,67 @@ Activation needs no free space beyond the stage, which staging already checked: 
 
 Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admission and drained readers during the swap, fail and then crash at every step of it, and compare the four SQLite files and the archive bytes around every refusal and rollback.
 
+### Stage and restore routes
+
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
+
+`POST /api/v2/installation/restore/stage` takes the backup archive as the request body (`application/gzip`, not a form) and needs `Content-Length`, which becomes `begin_upload`'s limit. The route passes the body to the upload in 1 MiB writes, then calls `stage`, and answers `RestorePreview`: `restore_id`, the archive's `created_at` and `app_version`, its `schema_version`, and the `confirmation` text to repeat. The stage lasts until Print Partner restarts or the next stage replaces it; then the backup must be uploaded again.
+
+`POST /api/v2/installation/restore` takes `RestoreRequest` (`restore_id`, `confirmation`; unknown members are refused) and calls `activate`. It answers `RestoreOutcome` (`restored_schema_version`, `schema_version`) once the restored database is serving. The restored database brings its own accounts and sessions, so a session the backup does not hold signs out.
+
+| Refusal | Answer |
+| --- | --- |
+| No `Content-Length` | 411 `Content-Length is required` |
+| Body ends early or cannot be read | 400 `The upload body could not be read` |
+| Body longer than its `Content-Length` (`Refusal::TooLarge`) | 413 |
+| No valid `.pp-rust-owned.json` (`Refusal::Unmarked`) | 409 `Restore needs a Rust-owned installation` |
+| `Refusal::NoSpace`, `Refusal::InsufficientSpace` | 503 `Not enough free disk space`, with `needed` and `available` |
+| `Refusal::InvalidArchive`, `Refusal::LargerThanDeclared` | 422 `Invalid backup archive` |
+| `Refusal::UnsupportedSchema` | 422 `This release cannot restore the backup's database` |
+| `RestoreRequest` not readable | 400 `Request is invalid`, with field errors |
+| `Refusal::Confirmation` | 400 `Restore confirmation does not match` |
+| `Refusal::UnknownRestore` (also any id that is not 32 lowercase hex) | 404, code `restore_not_found`: upload the backup again |
+| `Refusal::Busy` | 503 `Storage work is still active; try again` |
+| `RestoreError::RolledBack` | 500, code `restore_rolled_back`: the previous installation is kept and serving |
+| `RestoreError::RestartRequired` | 503, code `restart_required`: storage refuses work until a restart replays the journal |
+
+The generated client names the routes `stageInstallationRestore` (no request DTO; post the archive bytes) and `restoreInstallation`.
+
+Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Installation::with_builds_drafts_and_history` (copied schema-34 database, valid marker, the same seed the storage restore tests use). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals. `pp-core/tests/installation_backup_http.rs` checks that the routes are absent with the flag off. `pp_api::restore`'s unit tests pin every refusal's body.
+
 ## Source thumbnail cache
 
 `GET /sources/{id}/thumbnail?path=` (GRE-430) renders a 256 x 256 PNG of one STL in a Source's current revision and caches it at `thumbs/sources/<revision id>/<SHA-256 of the path>-v<renderer version>.png`. Rust writes nothing else under `thumbs/`. Node writes only flat files directly in `thumbs/`: part thumbnails and previews as `thumbs/<16-hex digest>.png` (`globalThumbnailPath`, `globalPreviewPath` in `web/apps/server/src/lib/thumbnails.ts`) and the accepted-media cache as `thumbs/<basis>.png` (`web/apps/server/src/lib/accepted-media-cache.ts`). Node never creates a folder there, so its files and `thumbs/sources/` cannot collide.
 
-The cache is regenerable: a revision never changes, and the renderer version is in the name, so any file there can be deleted, or the whole `thumbs/sources` folder, and the next request renders it again. `thumbs/` stays a backup root (`archive::FULL_ROOTS` and Node's format 1), so backups carry these PNGs along with Node's; restoring them is harmless and never required. A file is written under a temporary name, synced, then renamed into place, so a crash leaves at most a `.tmp` file, which is also safe to delete. A cached file that does not start with the PNG signature is rendered again and replaced.
+The cache is regenerable: a revision never changes, and the renderer version is in the name, so any file there can be deleted, or the whole `thumbs/sources` folder, and the next request renders it again. A file is written under a temporary name, synced, then renamed into place, so a crash leaves at most a `.tmp` file, which is also safe to delete. A cached file that does not start with the PNG signature is rendered again and replaced.
+
+### Backups leave the cache out
+
+GRE-1538. A full backup written by Rust leaves out `thumbs/sources` and everything under it (`archive::SOURCE_THUMBNAIL_CACHE`). `archive::plan` skips that one path while it walks the `thumbs` root. Node's flat files in `thumbs/` are still backed up.
+
+The exclusion is in the walk, not in `archive::FULL_ROOTS`. `thumbs` holds Node's part thumbnails and accepted-media cache too, so it stays a root. The metadata still declares all eleven roots, so the format is unchanged and Node and Rust both validate the archive. A declared root may already be missing from an archive (see [Whole-installation restore: staging](#whole-installation-restore-staging)), so a `thumbs` root without `sources` is valid.
+
+Restoring a backup that still holds `thumbs/sources`, such as one Rust wrote before this change, is harmless. Staging accepts it, because every entry is under the declared `thumbs` root. Activation puts the cache folders back. Their names are the revision ids of the database in that same backup, so a restored cache file still matches its revision. A full restore replaces the whole `thumbs` root, so the live cache never survives next to a restored database whose revision ids it does not match.
+
+Entry count. The cache adds one entry for `thumbs/sources`, one per cached revision, and one per STL viewed in that revision. A test on a disposable data folder with two revisions of 500 STLs each (Node's per-Source snapshot cap, `DEFAULT_LOCAL_SNAPSHOT_STL_LIMIT`) counts 1,003 cache entries, and the walk takes none of them (`archive::tests::the_walk_leaves_out_the_source_thumbnail_cache`). The owner's STL count therefore does not change a backup's entry count, and no owner number is needed. Rust's own limit is 5,000,000 entries (`Limits::backup()`); Node's 100,000-entry limit applies only to archives Node reads.
+
+### Superseded revisions are pruned
+
+When the thumbnail route creates a revision's cache folder, which happens on the first thumbnail of a Source's new current revision, it then prunes the cache:
+
+1. It opens `thumbs/sources` without following a link and lists the revision folders: real folders whose name is a revision id as Rust writes it (decimal, no leading zero). Links, files and other names are left alone.
+2. In one read transaction it checks the request's credential and reads every Source's current revision, in any tenant.
+3. It removes each listed folder whose revision is not current: first the files in it, without following a link, then the empty folder. A folder that holds a subfolder is left in place.
+
+This removes the folder of a revision superseded by a Rust or a Node sync, of a Source that was deleted, and of a revision restored from an older backup. The folders are listed before the read, so a folder made for a revision that becomes current after the read is not on the list. A request that read the old revision before an activation can still write into the old folder. That folder is removed by the next prune, which runs as soon as any revision's folder is created.
+
+A failed prune is logged as `source_thumbnail_cache_prune_failed` and the thumbnail is still answered. A write into a folder that already exists prunes nothing. Nothing else removes cache folders: no timer and no startup sweep. The cache holds at most the folders of the revisions that were current at the last prune, plus the folders created for them since.
+
+Tests: `pp-storage/src/source_files/tests.rs` (prune), `pp-storage/src/archive/tests.rs` (walk), and `pp-storage/src/restore/tests/export.rs` (backup and restore).
 
 ## Whole-installation backup export
 
-With the `desktop_rebuild` feature, `InstallationClient::export_backup(app_version)` writes a full backup archive (format 2, every root in `archive::FULL_ROOTS`) for the `WriterOwner` that made the client. The caller names no path. The archive is written on the writer thread, as `WriterOwner::create_archive` writes one, so the database snapshot and the files are read while no other write runs.
+With the `desktop_rebuild` feature, `InstallationClient::export_backup(app_version)` writes a full backup archive (format 2, every root in `archive::FULL_ROOTS`, without the [Source thumbnail cache](#backups-leave-the-cache-out)) for the `WriterOwner` that made the client. The caller names no path. The archive is written on the writer thread, as `WriterOwner::create_archive` writes one, so the database snapshot and the files are read while no other write runs.
 
 Each export has its own folder, `<data>/backups/export-<32 hex>/`, which holds the archive and the working copies made for it (the database snapshot and the copy validation checks). Nothing is written under the system temporary directory, which Docker mounts as a 1 GB tmpfs. The returned `BackupFile` holds the archive path, its metadata, its size in bytes, its SHA-256 and its warnings; dropping it removes the folder. `backups` is not a backup root, so no export contains another export.
 

@@ -25,6 +25,7 @@ pub mod node_installation;
 pub mod node_path;
 pub mod node_schema;
 pub mod rebuild_fixture;
+pub mod restore_fixture;
 
 /// Keep the cookie pair from a response's `Set-Cookie` header for the next request.
 pub fn session_cookie(set_cookie: &str) -> String {

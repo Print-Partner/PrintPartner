@@ -108,6 +108,8 @@ pub mod printer_stream;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printers;
 #[cfg(feature = "desktop_rebuild")]
+pub mod restore;
+#[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings;

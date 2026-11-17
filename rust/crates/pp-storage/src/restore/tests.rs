@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{Limits, Setting, SettingCommand, ownership_marker::WriterGate};
-use pp_testkit::{Installation, MarkerState as KitMarker, Spec};
+use pp_testkit::Installation;
 use rusqlite::{Connection, OpenFlags};
 use std::{collections::BTreeMap, sync::mpsc, thread};
 use std::{io::Read, sync::atomic::AtomicBool, time::Duration};
@@ -68,36 +68,11 @@ fn on_work_dir(root: &Path, hook: impl FnOnce() + Send + 'static) {
         .push((root.to_owned(), Box::new(hook)));
 }
 
-const SEED: &str = "INSERT INTO build_profiles(id, name) VALUES (7, 'Seven'), (29, 'Twenty-nine');
-INSERT INTO plan_snapshots(id, profile_id, name, created_at, payload_json)
-  VALUES (3, 29, 'before', '2026-10-01T00:00:00.000Z', '{\"layers\":2}');
-INSERT INTO plan_drafts(id, profile_id, base_plan_version, state, digest_format,
-  snapshot_digest, created_by, idempotency_key, created_at)
-  VALUES (41, 29, 0, 'open', 'v1', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  'user:1', 'seed', '2026-10-01T00:00:00.000Z');";
-
 /// A marked installation with Builds 7 and 29, a Plan snapshot, an open
 /// draft and Source and export files.
 fn installation() -> (Installation, PathBuf) {
-    let installation = Installation::create(Spec {
-        node_database: true,
-        marker: KitMarker::Valid,
-        ..Spec::default()
-    })
-    .unwrap();
-    Connection::open(installation.database_path())
-        .unwrap()
-        .execute_batch(SEED)
-        .unwrap();
+    let installation = Installation::with_builds_drafts_and_history().unwrap();
     let root = installation.path().canonicalize().unwrap();
-    std::fs::create_dir_all(root.join("repos/source-a")).unwrap();
-    std::fs::write(
-        root.join("repos/source-a/part.stl"),
-        b"solid a\nendsolid a\n",
-    )
-    .unwrap();
-    std::fs::create_dir_all(root.join("exports")).unwrap();
-    std::fs::write(root.join("exports/plate.3mf"), b"plate").unwrap();
     (installation, root)
 }
 
@@ -120,16 +95,8 @@ fn state(root: &Path) -> BTreeMap<String, String> {
     let mut tables = names.query([]).unwrap();
     while let Some(table) = tables.next().unwrap() {
         let name: String = table.get(0).unwrap();
-        let mut select = db.prepare(&format!("SELECT * FROM \"{name}\"")).unwrap();
-        let width = select.column_count();
-        let mut found = Vec::new();
-        let mut rows = select.query([]).unwrap();
-        while let Some(row) = rows.next().unwrap() {
-            let values: Vec<_> = (0..width).map(|i| row.get_ref(i).unwrap()).collect();
-            found.push(format!("{values:?}"));
-        }
-        found.sort();
-        state.insert(format!("table {name}"), found.join("\n"));
+        let rows = pp_testkit::restore_fixture::table_rows(&db, &name).unwrap();
+        state.insert(format!("table {name}"), rows);
     }
     for (name, _) in archive::FULL_ROOTS {
         let path = root.join(name);

@@ -572,10 +572,11 @@ pub(crate) fn installation_backup_router(
         .lock()
         .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
         .accepted_reads_with_policy(desktop_policy())?;
-    let config = AdminHttpConfig::from_startup(origin, DESKTOP_TENANT, flag)?;
-    let backup = pp_api::backup::backup_router(config.clone(), Arc::clone(owner), reads.clone());
-    let restore = pp_api::restore::restore_router(config, Arc::clone(owner), reads);
-    Ok(backup.merge(restore))
+    Ok(pp_api::backup::backup_router(
+        AdminHttpConfig::from_startup(origin, DESKTOP_TENANT, flag)?,
+        Arc::clone(owner),
+        reads,
+    ))
 }
 
 /// The product routes a Rust-only runtime mounts in the gateway: the read

@@ -1,26 +1,26 @@
 //! `POST /api/v2/installation/restore/stage` and `POST /api/v2/installation/restore`
-//! (GRE-1161). Mounted only when `PP_DESKTOP_REBUILD` is exactly `1` or `true`.
+//! (GRE-1161). [`crate::backup::backup_router`] mounts them behind its gate, so
+//! they exist only when `PP_DESKTOP_REBUILD` is exactly `1` or `true`.
 //!
 //! Stage streams an uploaded backup archive into
 //! [`pp_storage::restore::InstallationClient::begin_upload`] and stages it.
 //! Restore activates a staged restore by its id once the request repeats
 //! [`CONFIRMATION`]. The client sends no path. One request runs at a time.
 
-use crate::admin::{AdminHttpConfig, Gate};
+use crate::backup::json_ok;
 use crate::loopback::PresentedCredential;
 use crate::problem::{self, FieldError, Problem, ProblemCode, ProblemType, ToProblem};
 use axum::{
     Extension, Router,
     body::Body,
     extract::{Request, State},
-    http::{StatusCode, header},
+    http::header,
     response::Response,
     routing::post,
 };
 use http_body::Body as _;
 use pp_storage::{
     WriterFailure, WriterOwner,
-    read_model::ReadClient,
     restore::{CONFIRMATION, InstallationClient, Refusal, RestoreError, Staged, Upload},
 };
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,12 @@ enum RestoreFailure {
     RestartRequired,
     Writer(WriterFailure),
     Internal,
+}
+
+impl From<Refusal> for RestoreFailure {
+    fn from(refusal: Refusal) -> Self {
+        Self::Refused(refusal)
+    }
 }
 
 impl From<RestoreError> for RestoreFailure {
@@ -227,20 +233,12 @@ struct App {
     operation: Arc<Semaphore>,
 }
 
-/// Mounts the restore routes under `/api/v2` when `config` was built with
-/// `PP_DESKTOP_REBUILD` exactly `1` or `true`. Otherwise the router is empty.
-pub fn restore_router(
-    config: AdminHttpConfig,
-    owner: Arc<Mutex<WriterOwner>>,
-    reads: ReadClient,
-) -> Router {
-    let Some(gate) = Gate::new(config, reads) else {
-        return Router::new();
-    };
-    let routes = Router::new()
+/// The stage and restore routes, relative to `/api/v2`. The caller puts
+/// them behind its gate, which adds the [`PresentedCredential`].
+pub(crate) fn routes(owner: Arc<Mutex<WriterOwner>>) -> Router {
+    Router::new()
         .route("/installation/restore/stage", post(stage))
-        .route("/installation/restore", post(restore));
-    gate.guard(Router::new().nest("/api/v2", routes))
+        .route("/installation/restore", post(restore))
         .with_state(App {
             owner,
             operation: Arc::new(Semaphore::new(1)),
@@ -381,164 +379,95 @@ async fn restore(
     }
 }
 
-fn json_ok(body: &impl Serialize) -> Response {
-    let Ok(bytes) = serde_json::to_vec(body) else {
-        return refused(&RestoreFailure::Internal);
-    };
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CONTENT_LENGTH, bytes.len())
-        .header(header::CACHE_CONTROL, "private, no-store")
-        .body(Body::from(bytes))
-        .unwrap_or_else(|_| refused(&RestoreFailure::Internal))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
+    use crate::backup::tests::answered;
+    use ProblemType as T;
     use pp_storage::archive::NoSpace;
-    use serde_json::Value;
 
-    async fn document(failure: &RestoreFailure) -> (u16, Value) {
-        let response = refused(failure);
-        let status = response.status().as_u16();
-        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+    async fn assert_problem(failure: RestoreFailure, expected: (u16, T, &str, Option<&str>)) {
+        let (status, kind, detail, code) = expected;
+        let (answered, body) = answered(refused(&failure)).await;
+        assert_eq!(answered, status, "{detail}");
+        let mut problem =
+            json!({"type": kind, "title": kind.title(), "status": status, "detail": detail});
+        if let Some(code) = code {
+            problem["code"] = json!(code);
+        }
+        assert_eq!(body, problem);
     }
 
     #[tokio::test]
-    async fn each_failure_has_one_problem_body() {
-        use ProblemType as T;
+    async fn request_and_staging_refusals_have_fixed_bodies() {
+        let path = "/tmp/secret-path-canary".to_owned();
+        let invalid = (422, T::Validation, "Invalid backup archive", None);
+        let cases = [
+            (
+                RestoreFailure::LengthRequired,
+                (411, T::MalformedRequest, "Content-Length is required", None),
+            ),
+            (
+                RestoreFailure::BodyUnreadable,
+                (
+                    400,
+                    T::MalformedRequest,
+                    "The upload body could not be read",
+                    None,
+                ),
+            ),
+            (
+                RestoreFailure::Busy,
+                (503, T::Overloaded, "A restore is already running", None),
+            ),
+            (
+                Refusal::Unmarked.into(),
+                (
+                    409,
+                    T::Conflict,
+                    "Restore needs a Rust-owned installation",
+                    None,
+                ),
+            ),
+            (
+                Refusal::TooLarge(9).into(),
+                (
+                    413,
+                    T::MalformedRequest,
+                    "The upload is larger than its Content-Length",
+                    None,
+                ),
+            ),
+            (Refusal::LargerThanDeclared(9).into(), invalid),
+            (Refusal::InvalidArchive(path.clone()).into(), invalid),
+            (
+                Refusal::UnsupportedSchema(path).into(),
+                (
+                    422,
+                    T::Validation,
+                    "This release cannot restore the backup's database",
+                    None,
+                ),
+            ),
+        ];
+        for (failure, expected) in cases {
+            assert_problem(failure, expected).await;
+        }
         let space = NoSpace {
             needed: 30,
             available: 4,
         };
-        let (status, body) = document(&RestoreFailure::Refused(Refusal::NoSpace(space))).await;
-        assert_eq!(status, 503);
-        assert_eq!(body["detail"], "Not enough free disk space");
+        let (status, body) = answered(refused(&Refusal::NoSpace(space).into())).await;
         assert_eq!(
-            (body["needed"].clone(), body["available"].clone()),
-            (json!(30), json!(4))
+            (status, &body["detail"]),
+            (503, &json!("Not enough free disk space"))
         );
-        let path = "/tmp/secret-path-canary".to_owned();
-        let cases = [
-            (
-                RestoreFailure::LengthRequired,
-                411,
-                T::MalformedRequest,
-                "Content-Length is required",
-                None,
-            ),
-            (
-                RestoreFailure::BodyUnreadable,
-                400,
-                T::MalformedRequest,
-                "The upload body could not be read",
-                None,
-            ),
-            (
-                RestoreFailure::Busy,
-                503,
-                T::Overloaded,
-                "A restore is already running",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::Unmarked),
-                409,
-                T::Conflict,
-                "Restore needs a Rust-owned installation",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::TooLarge(9)),
-                413,
-                T::MalformedRequest,
-                "The upload is larger than its Content-Length",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::LargerThanDeclared(9)),
-                422,
-                T::Validation,
-                "Invalid backup archive",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::InvalidArchive(path.clone())),
-                422,
-                T::Validation,
-                "Invalid backup archive",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::UnsupportedSchema(path)),
-                422,
-                T::Validation,
-                "This release cannot restore the backup's database",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::Confirmation),
-                400,
-                T::Validation,
-                "Restore confirmation does not match",
-                None,
-            ),
-            (
-                RestoreFailure::Refused(Refusal::UnknownRestore),
-                404,
-                T::NotFound,
-                "No staged restore with that id; upload the backup again",
-                Some("restore_not_found"),
-            ),
-            (
-                RestoreFailure::Refused(Refusal::Busy),
-                503,
-                T::Overloaded,
-                "Storage work is still active; try again",
-                None,
-            ),
-            (
-                RestoreFailure::RolledBack,
-                500,
-                T::Internal,
-                "Restore failed; the previous installation is kept",
-                Some("restore_rolled_back"),
-            ),
-            (
-                RestoreFailure::RestartRequired,
-                503,
-                T::Unavailable,
-                "Restore did not finish; restart Print Partner to recover",
-                Some("restart_required"),
-            ),
-            (
-                RestoreFailure::Internal,
-                500,
-                T::Internal,
-                "Internal Server Error",
-                None,
-            ),
-        ];
-        for (failure, status, kind, detail, code) in cases {
-            let (answered, body) = document(&failure).await;
-            assert_eq!(answered, status, "{detail}");
-            let mut expected = json!({
-                "type": serde_json::to_value(kind).unwrap(),
-                "title": kind.title(),
-                "status": status,
-                "detail": detail,
-            });
-            if let Some(code) = code {
-                expected["code"] = json!(code);
-            }
-            assert_eq!(body, expected);
-        }
+        assert_eq!(
+            (&body["needed"], &body["available"]),
+            (&json!(30), &json!(4))
+        );
         let leaked = staging_failure(anyhow::anyhow!("open /tmp/secret-path-canary"));
-        let (status, body) = document(&leaked).await;
+        let (status, body) = answered(refused(&leaked)).await;
         assert_eq!(status, 500);
         assert!(!body.to_string().contains("secret-path-canary"), "{body}");
         let refusal = staging_failure(anyhow::Error::from(Refusal::UnknownRestore));
@@ -546,5 +475,63 @@ mod tests {
             refusal,
             RestoreFailure::Refused(Refusal::UnknownRestore)
         ));
+    }
+
+    #[tokio::test]
+    async fn activation_refusals_have_fixed_bodies_and_codes() {
+        let cases = [
+            (
+                Refusal::Confirmation.into(),
+                (
+                    400,
+                    T::Validation,
+                    "Restore confirmation does not match",
+                    None,
+                ),
+            ),
+            (
+                Refusal::UnknownRestore.into(),
+                (
+                    404,
+                    T::NotFound,
+                    "No staged restore with that id; upload the backup again",
+                    Some("restore_not_found"),
+                ),
+            ),
+            (
+                Refusal::Busy.into(),
+                (
+                    503,
+                    T::Overloaded,
+                    "Storage work is still active; try again",
+                    None,
+                ),
+            ),
+            (
+                RestoreFailure::RolledBack,
+                (
+                    500,
+                    T::Internal,
+                    "Restore failed; the previous installation is kept",
+                    Some("restore_rolled_back"),
+                ),
+            ),
+            (
+                RestoreFailure::RestartRequired,
+                (
+                    503,
+                    T::Unavailable,
+                    "Restore did not finish; restart Print Partner to recover",
+                    Some("restart_required"),
+                ),
+            ),
+            (
+                RestoreFailure::Internal,
+                (500, T::Internal, "Internal Server Error", None),
+            ),
+        ];
+        for (failure, expected) in cases {
+            assert_problem(failure, expected).await;
+        }
     }
 }

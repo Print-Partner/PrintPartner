@@ -1,15 +1,15 @@
 #![cfg(feature = "desktop_rebuild")]
 //! `POST /api/v2/installation/backup` and `GET /api/v2/installation/backup/archive`
-//! (GRE-1371) on a disposable installation.
+//! (GRE-1371) on a disposable installation, and the absence of these and the
+//! GRE-1161 restore routes with the flag off.
 
-use pp_api::admin::AdminHttpConfig;
-use pp_core::{
-    DesktopRebuild,
-    rebuild_api::{desktop_policy, product_router},
-};
+#[path = "support/installation.rs"]
+mod support_installation;
+
+use pp_core::{DesktopRebuild, rebuild_api::product_router};
 use pp_storage::{Limits, WriterOwner, archive};
 use reqwest::Method;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     io::Read,
@@ -17,106 +17,18 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use support_installation::Server;
 
 const SOURCE: &[u8] = b"solid a\nendsolid a\n";
 
-struct Server {
-    origin: String,
-    client: reqwest::Client,
-    cookie: String,
-    serving: Option<pp_api::serving::Serving>,
-    owner: Arc<Mutex<WriterOwner>>,
-    data: std::path::PathBuf,
-    _root: tempfile::TempDir,
-}
-
-impl Server {
-    async fn start(flag: Option<&str>) -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let data = root.path().join("data");
-        let owner = WriterOwner::open(&data, Limits::default()).unwrap().0;
-        std::fs::create_dir_all(data.join("repos/source-a")).unwrap();
-        std::fs::write(data.join("repos/source-a/part.stl"), SOURCE).unwrap();
-        let owner = Arc::new(Mutex::new(owner));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let router = match flag {
-            Some("1" | "true") => product_router(
-                DesktopRebuild::from_value(flag),
-                Arc::clone(&owner),
-                &origin,
-                None,
-            )
-            .unwrap()
-            .expect("flag on mounts the product routes"),
-            _ => {
-                let reads = owner
-                    .lock()
-                    .unwrap()
-                    .accepted_reads_with_policy(desktop_policy())
-                    .unwrap();
-                pp_api::backup::backup_router(
-                    AdminHttpConfig::from_startup(&origin, "default", flag).unwrap(),
-                    Arc::clone(&owner),
-                    reads,
-                )
-            }
-        };
-        let serving = pp_api::serving::Serving::start(listener, router);
-        let mut server = Self {
-            client: reqwest::Client::builder().no_proxy().build().unwrap(),
-            cookie: String::new(),
-            serving: Some(serving),
-            origin,
-            owner,
-            data,
-            _root: root,
-        };
-        if matches!(flag, Some("1" | "true")) {
-            let account = json!({"email": "owner@example.test", "password": "password-1234"});
-            let signed_in = server
-                .request(Method::POST, "/auth/register")
-                .json(&account)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(signed_in.status(), 200);
-            let set_cookie = signed_in.headers()["set-cookie"].to_str().unwrap();
-            server.cookie = set_cookie.split(';').next().unwrap().to_owned();
-        }
-        server
-    }
-
-    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
-        let request = self
-            .client
-            .request(method, format!("{}{path}", self.origin))
-            .header("Origin", &self.origin);
-        if self.cookie.is_empty() {
-            request
-        } else {
-            request.header("Cookie", &self.cookie)
-        }
-    }
-
-    async fn stop(mut self) {
-        if let Some(mut serving) = self.serving.take() {
-            serving.stop().await.unwrap();
-        }
-        let owner = Arc::into_inner(self.owner).expect("the router still holds the owner");
-        owner.into_inner().unwrap().shutdown().unwrap();
-    }
-
-    async fn exchange(&self, method: Method, path: &str) -> (u16, reqwest::Response) {
-        let response = self.request(method, path).send().await.unwrap();
-        (response.status().as_u16(), response)
-    }
-
-    async fn json(&self, method: Method, path: &str) -> (u16, Value) {
-        let (status, response) = self.exchange(method, path).await;
-        let body = response.json().await.unwrap_or(Value::Null);
-        (status, body)
-    }
+/// A disposable data directory with one Source file, served with `flag`.
+async fn start(flag: Option<&str>) -> Server {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let owner = WriterOwner::open(&data, Limits::default()).unwrap().0;
+    std::fs::create_dir_all(data.join("repos/source-a")).unwrap();
+    std::fs::write(data.join("repos/source-a/part.stl"), SOURCE).unwrap();
+    Server::start(owner, data, root, flag).await
 }
 
 fn export_dirs(data: &Path) -> Vec<String> {
@@ -164,16 +76,19 @@ async fn routes_are_absent_when_the_rebuild_flag_is_off() {
             "{flag:?}"
         );
     }
-    let server = Server::start(Some("0")).await;
+    let server = start(Some("0")).await;
     for (method, path) in [
         (Method::POST, "/api/v2/installation/backup"),
         (Method::GET, "/api/v2/installation/backup/archive"),
+        (Method::POST, "/api/v2/installation/restore/stage"),
+        (Method::POST, "/api/v2/installation/restore"),
     ] {
         let (status, response) = server.exchange(method.clone(), path).await;
         assert_eq!(status, 404, "{method} {path}");
         assert_eq!(response.text().await.unwrap(), "");
     }
     assert!(export_dirs(&server.data).is_empty());
+    assert!(!server.data.join(".pp-restore").exists());
     server.stop().await;
 }
 
@@ -204,16 +119,7 @@ async fn refused_from_another_origin(server: &Server, path: &str, method: Method
 /// One create holds the owner lock, so the other create and a download are
 /// refused. Returns the backup that finished after the lock was released.
 async fn created_while_the_owner_is_held(server: &Server, create: &str, archive: &str) -> Value {
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let (held_tx, held_rx) = std::sync::mpsc::channel();
-    let owner = Arc::clone(&server.owner);
-    let holder = std::thread::spawn(move || {
-        let guard = owner.lock().unwrap();
-        held_tx.send(()).unwrap();
-        let _ = release_rx.recv();
-        drop(guard);
-    });
-    held_rx.recv().unwrap();
+    let held = server.hold_owner();
     let first = server.request(Method::POST, create).send();
     let second = server.request(Method::POST, create).send();
     tokio::pin!(first, second);
@@ -232,8 +138,7 @@ async fn created_while_the_owner_is_held(server: &Server, create: &str, archive:
     let (status, during) = server.json(Method::GET, archive).await;
     assert_eq!(status, 503, "{during}");
     assert_eq!(during["detail"], "A backup is already running");
-    release_tx.send(()).unwrap();
-    holder.join().unwrap();
+    held.release();
     let created = match label {
         "first" => second.await.unwrap(),
         "second" => first.await.unwrap(),
@@ -289,7 +194,7 @@ async fn assert_download(server: &Server, archive: &str, created: &Value, sha256
 
 #[tokio::test]
 async fn an_authenticated_client_creates_and_downloads_one_backup() {
-    let server = Server::start(Some("1")).await;
+    let server = start(Some("1")).await;
     let create = "/api/v2/installation/backup";
     let archive = "/api/v2/installation/backup/archive";
     refused_without_a_session(&server, create, Method::POST).await;

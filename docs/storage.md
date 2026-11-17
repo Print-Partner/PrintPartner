@@ -259,7 +259,7 @@ Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admiss
 
 ### Stage and restore routes
 
-With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two more routes beside the backup routes (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
 
 `POST /api/v2/installation/restore/stage` takes the backup archive as the request body (`application/gzip`, not a form) and needs `Content-Length`, which becomes `begin_upload`'s limit. The route passes the body to the upload in 1 MiB writes, then calls `stage`, and answers `RestorePreview`: `restore_id`, the archive's `created_at` and `app_version`, its `schema_version`, and the `confirmation` text to repeat. The stage lasts until Print Partner restarts or the next stage replaces it; then the backup must be uploaded again.
 
@@ -283,7 +283,7 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two m
 
 The generated client names the routes `stageInstallationRestore` (no request DTO; post the archive bytes) and `restoreInstallation`.
 
-Tests: `pp-core/tests/installation_restore_http.rs` runs on a disposable pp-testkit installation (copied schema-34 database, valid marker). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals and the routes' absence with the flag off. `pp_api::restore`'s unit test pins every refusal's body.
+Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Installation::with_builds_drafts_and_history` (copied schema-34 database, valid marker, the same seed the storage restore tests use). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals. `pp-core/tests/installation_backup_http.rs` checks that the routes are absent with the flag off. `pp_api::restore`'s unit tests pin every refusal's body.
 
 ## Source thumbnail cache
 

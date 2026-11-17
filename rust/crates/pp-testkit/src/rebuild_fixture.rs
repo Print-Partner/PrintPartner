@@ -26,6 +26,15 @@ pub fn write_sources(data_dir: &Path, files: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Writes one printable file at `relative` under Source `source`.
+pub fn write_stl(data_dir: &Path, source: i64, relative: &str) -> std::io::Result<()> {
+    let path = data_dir.join(format!("repos/{source}")).join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("solid {relative}\nendsolid {relative}\n"))
+}
+
 /// An evidence item linked to Source `source` with role `role`.
 pub fn evidence(id: &str, source: i64, role: &str) -> Value {
     json!({"id":id,"url":format!("https://example.test/{id}"),"normalized_url":format!("https://example.test/{id}"),
@@ -34,10 +43,45 @@ pub fn evidence(id: &str, source: i64, role: &str) -> Value {
 
 /// Build 3's planning brief with `evidence` and `resolutions`.
 pub fn brief(evidence: Value, resolutions: Value) -> Value {
+    planning_brief(evidence, json!([]), json!([]), resolutions)
+}
+
+/// Build 3's planning brief, including contributions and differences.
+pub fn planning_brief(
+    evidence: Value,
+    contributions: Value,
+    differences: Value,
+    resolutions: Value,
+) -> Value {
     json!({"version":1,"build_id":3,"special_request":"Fixture","requirements":[],"evidence":evidence,
-        "contributions":[],"compatibility_findings":[],"differences":[],"resolutions":resolutions,
-        "role_filaments":[],"checklist_items":[],"draft_review_blockers":[],
+        "contributions":contributions,"compatibility_findings":[],"differences":differences,
+        "resolutions":resolutions,"role_filaments":[],"checklist_items":[],"draft_review_blockers":[],
         "created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"})
+}
+
+/// A confirmed printable contribution on `evidence_id`, scoped to `scopes`.
+pub fn contribution(evidence_id: &str, scopes: &[&str]) -> Value {
+    json!({"id":format!("contribution-{evidence_id}"),"evidence_id":evidence_id,"slot":"parts",
+        "responsibility":"printable_parts","path_scopes":scopes,"confidence":"high",
+        "evidence_text":"Scoped printable parts","status":"confirmed"})
+}
+
+/// One changed-file difference. `path_a` belongs to `source_a`.
+pub fn difference(
+    group: &str,
+    source_a: &str,
+    path_a: &str,
+    source_b: &str,
+    path_b: &str,
+) -> Value {
+    json!({"id":group,"group_id":group,"family":"parts","kind":"changed","source_a":source_a,
+        "source_b":source_b,"path_a":path_a,"path_b":path_b,"detail":"Content differs"})
+}
+
+/// A stored resolution of `kind`.
+pub fn resolution(kind: &str) -> Value {
+    json!({"resolution":kind,"rationale":"Fixture","custom_resolution":null,
+        "resolved_at":"2026-11-01T00:00:00.000Z"})
 }
 
 /// Source 4 as the structural base and Source 5 as an addon.
@@ -56,7 +100,31 @@ pub fn two_bases() -> Value {
     ])
 }
 
-/// One resolved difference group: a path choice the first rebuild refuses.
-pub fn resolved() -> Value {
-    json!({"group-1":{"resolution":"choose_source_a","rationale":"Fixture","custom_resolution":null,"resolved_at":"2026-11-01T00:00:00.000Z"}})
+/// Source 5 scoped to `mods/a/**`, and a resolution that drops Source 4's
+/// `superseded.stl` in favour of Source 5.
+pub fn scoped_choices() -> Value {
+    planning_brief(
+        roles(),
+        json!([contribution("addon", &["mods/a/**"])]),
+        json!([difference(
+            "group-1",
+            "Base",
+            "superseded.stl",
+            "Addon",
+            "mods/a/plate.stl"
+        )]),
+        json!({"group-1": resolution("choose_source_b")}),
+    )
+}
+
+/// A resolution that names a Source the evidence does not.
+pub fn unresolved_choices() -> Value {
+    planning_brief(
+        roles(),
+        json!([]),
+        json!([difference(
+            "group-1", "Gone", "gone.stl", "Addon", "clip.stl"
+        )]),
+        json!({"group-1": resolution("choose_source_b")}),
+    )
 }

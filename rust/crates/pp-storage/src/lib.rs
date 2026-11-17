@@ -1008,10 +1008,13 @@ impl WriterOwner {
                             && response
                                 .as_ref()
                                 .is_ok_and(|response| response.status == 200);
-                        let _ = reply.send(response);
+                        // Wake before the reply. The callback must not use
+                        // storage. A caller that waits for this reply has
+                        // already seen the wake.
                         if wake {
                             worker.notify_deduction_wake();
                         }
+                        let _ = reply.send(response);
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Plates { command, reply } => {

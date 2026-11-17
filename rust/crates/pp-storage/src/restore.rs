@@ -1,4 +1,5 @@
-//! Whole-installation backup export and restore staging for the Rust runtime.
+//! Owner-bound whole-installation backup export, restore staging and
+//! confirmed activation for the Rust runtime.
 //!
 //! Backup export ([`InstallationClient::export_backup`]) writes a full
 //! archive under `<data>/backups/`. Free disk space bounds a backup and a
@@ -7,15 +8,21 @@
 //! Staging writes an uploaded app backup archive (Node's format 2, see
 //! [`crate::archive`]) under `<data>/.pp-restore/`, validates and extracts it
 //! there, and admits its schema as startup admits a live database. It never
-//! touches live files. Activation, which swaps the staged copy into place,
-//! is not part of this module yet.
+//! touches live files. Confirmed activation runs on the writer thread, drains
+//! readers and retains the prior database and roots under a replayable journal.
 //!
 //! Restore work belongs to one [`WriterOwner`]. Its [`Activity`] refuses new
 //! work once the owner starts to close, and the owner keeps its lease while
 //! work is still running, so the next owner's [`recover`] never removes an
 //! upload or stage in use.
 
-use crate::{SettingsClient, WriterFailure, WriterOwner, archive, ownership_marker, schema};
+use crate::{
+    Envelope, SettingsClient, WriterFailure, WriterOwner, archive, ownership_marker, schema,
+};
+
+pub(crate) mod activation;
+mod journal;
+pub use activation::{Activated, CONFIRMATION};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 pub use backup::{BackupFile, BackupWarning};
 use std::{
@@ -23,7 +30,7 @@ use std::{
     fs::File,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc},
     time::Instant,
 };
 
@@ -52,6 +59,9 @@ pub enum Refusal {
     /// Too little free disk on the data volume for the schema check's
     /// working copy of the staged database. The stage was removed.
     InsufficientSpace(schema::InsufficientSpace),
+    Confirmation,
+    UnknownRestore,
+    Busy,
 }
 
 impl fmt::Display for Refusal {
@@ -69,6 +79,11 @@ impl fmt::Display for Refusal {
             Self::InvalidArchive(detail) => write!(f, "Invalid backup archive: {detail}"),
             Self::UnsupportedSchema(detail) => write!(f, "Unsupported backup schema: {detail}"),
             Self::InsufficientSpace(space) => space.fmt(f),
+            Self::Confirmation => f.write_str("Restore confirmation does not match"),
+            Self::UnknownRestore => {
+                f.write_str("No staged restore with that id; upload the backup again")
+            }
+            Self::Busy => f.write_str("Restore refused: storage work is still active"),
         }
     }
 }
@@ -96,9 +111,19 @@ pub struct Staged {
 /// it and still returns `anyhow` errors that carry a [`Refusal`].
 #[derive(Debug, thiserror::Error)]
 pub enum RestoreError {
-    /// The backup would leave less than the reserve free. Nothing was kept.
+    /// The request was refused. Nothing changed. Too little free disk is
+    /// [`Refusal::NoSpace`].
     #[error(transparent)]
-    NoSpace(#[from] archive::NoSpace),
+    Refused(#[from] Refusal),
+    /// Activation failed after it began and rolled back: the previous
+    /// installation is kept and serving again. The cause is logged.
+    #[error("restore failed; the previous installation is kept")]
+    RolledBack,
+    /// An activation did not finish and could not roll back, or an earlier
+    /// one is still unfinished. Storage refuses work until a restart
+    /// replays the journal. The cause is logged.
+    #[error("restore did not finish; restart to recover")]
+    RestartRequired,
     #[error(transparent)]
     Writer(#[from] WriterFailure),
 }
@@ -144,6 +169,7 @@ pub(crate) struct Activity {
 #[derive(Default)]
 struct ActivityState {
     closed: bool,
+    paused: bool,
     active: usize,
 }
 
@@ -163,11 +189,26 @@ impl Activity {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn enter(&self) -> Result<Active<'_>> {
+    /// Starts one restore operation, unless the owner is closing or an
+    /// activation has paused restore work.
+    fn admit(&self) -> Result<Active<'_>, RestoreError> {
         let mut state = self.lock();
-        ensure!(!state.closed, "Storage owner is closed");
+        if state.closed {
+            return Err(WriterFailure::Stopped.into());
+        }
+        if state.paused {
+            return Err(Refusal::Busy.into());
+        }
         state.active += 1;
         Ok(Active(self))
+    }
+
+    /// [`Self::admit`] for staging, which returns `anyhow` errors.
+    fn enter(&self) -> Result<Active<'_>> {
+        self.admit().map_err(|error| match error {
+            RestoreError::Refused(refusal) => refusal.into(),
+            _ => anyhow!("Storage owner is closed"),
+        })
     }
 
     /// Refuses new restore work. Work already running goes on.
@@ -258,6 +299,48 @@ impl Drop for Upload {
 }
 
 impl InstallationClient {
+    /// Activates the staged restore `restore_id` once `confirmation` equals
+    /// [`CONFIRMATION`]. Blocks until the writer has reopened.
+    pub fn activate(
+        &self,
+        restore_id: &str,
+        confirmation: &str,
+    ) -> Result<Activated, RestoreError> {
+        if confirmation != CONFIRMATION {
+            return Err(Refusal::Confirmation.into());
+        }
+        let _active = self.activity.admit()?;
+        let _gate = (self.activity.staging.lock()).map_err(|_| WriterFailure::Stopped)?;
+        let staged = self
+            .data_dir
+            .join(WORK_DIR)
+            .join(format!("{STAGED_PREFIX}{restore_id}"));
+        if !is_id(restore_id) || !staged.symlink_metadata().is_ok_and(|found| found.is_dir()) {
+            return Err(Refusal::UnknownRestore.into());
+        }
+        if (journal::Journal::read(&self.data_dir).map_err(WriterFailure::from)?).is_some() {
+            return Err(RestoreError::RestartRequired);
+        }
+        if !marked(&self.data_dir) {
+            return Err(Refusal::Unmarked.into());
+        }
+        admit_schema(&staged).map_err(|error| RestoreError::Refused(schema_refusal(error)))?;
+        let (reply, receiver) = mpsc::channel();
+        {
+            let shared = &self.client.shared;
+            let mut queue = shared.queue.lock().map_err(|_| WriterFailure::Stopped)?;
+            if queue.closed || queue.restoring {
+                return Err(WriterFailure::Stopped.into());
+            }
+            let command = activation::Command { staged, reply };
+            (queue.pending).push_back(Envelope::Control(crate::storage_control::Command::Restore(
+                command,
+            )));
+            shared.changed.notify_all();
+        }
+        receiver.recv().map_err(|_| WriterFailure::Stopped)?
+    }
+
     /// Starts an upload of at most `limit` bytes, the size the caller
     /// declares. Refuses with [`Refusal::NoSpace`] when that many bytes would
     /// leave less than the reserve free.
@@ -330,31 +413,7 @@ impl InstallationClient {
                 metadata.scope == archive::MetadataScope::Full,
                 Refusal::InvalidArchive("restore needs a full backup".into())
             );
-            let schema_version = admit_schema(&staged).map_err(|error| {
-                // The schema check's working copy goes in the stage, on the
-                // data volume, so a full volume is a space refusal, not a
-                // schema one.
-                if let Some(space) = error
-                    .chain()
-                    .find_map(|cause| cause.downcast_ref::<schema::InsufficientSpace>())
-                {
-                    return Refusal::InsufficientSpace(*space);
-                }
-                let detail = match error
-                    .chain()
-                    .find_map(|cause| cause.downcast_ref::<crate::versions::IncompatibleSchema>())
-                {
-                    Some(refusal) if !refusal.too_new() => format!(
-                        "cannot upgrade database schema version {} (this release opens schema {} to {}). \
-                         Restore this backup into Print Partner v3.3.0 and make a new backup, \
-                         then restore the new backup into this release. The live database was not changed.",
-                        refusal.found, refusal.oldest, refusal.newest
-                    ),
-                    Some(refusal) => refusal.to_string().trim_start_matches("Incompatible storage: ").to_owned(),
-                    None => format!("{error:#}"),
-                };
-                Refusal::UnsupportedSchema(detail)
-            })?;
+            let schema_version = admit_schema(&staged).map_err(schema_refusal)?;
             Ok((metadata, schema_version))
         })();
         drop(upload);
@@ -403,11 +462,16 @@ fn remove_stage(path: &Path) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)
 }
 
+fn marked(data_dir: &Path) -> bool {
+    matches!(
+        ownership_marker::inspect(data_dir),
+        ownership_marker::MarkerState::Valid(_)
+    )
+}
+
 fn require_marker(data_dir: &Path) -> Result<()> {
-    match ownership_marker::inspect(data_dir) {
-        ownership_marker::MarkerState::Valid(_) => Ok(()),
-        _ => Err(Refusal::Unmarked.into()),
-    }
+    ensure!(marked(data_dir), Refusal::Unmarked);
+    Ok(())
 }
 
 /// Creates `<data>/.pp-restore` if needed and refuses one that is not a
@@ -452,6 +516,35 @@ fn is_id(id: &str) -> bool {
 /// refuses a live one: newer than supported, too old to upgrade, missing, or
 /// failing integrity or job-table checks. The preflight's working copy goes
 /// in a folder inside `directory`, the stage, on the data filesystem.
+/// Turns a schema preflight failure into a restore refusal. The working
+/// copy is on the data volume, so too little free disk is
+/// [`Refusal::InsufficientSpace`], not an unsupported schema.
+fn schema_refusal(error: anyhow::Error) -> Refusal {
+    if let Some(space) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<schema::InsufficientSpace>())
+    {
+        return Refusal::InsufficientSpace(*space);
+    }
+    let detail = match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::versions::IncompatibleSchema>())
+    {
+        Some(refusal) if !refusal.too_new() => format!(
+            "cannot upgrade database schema version {} (this release opens schema {} to {}). \
+             Restore this backup into Print Partner v3.3.0 and make a new backup, \
+             then restore the new backup into this release. The live database was not changed.",
+            refusal.found, refusal.oldest, refusal.newest
+        ),
+        Some(refusal) => refusal
+            .to_string()
+            .trim_start_matches("Incompatible storage: ")
+            .to_owned(),
+        None => format!("{error:#}"),
+    };
+    Refusal::UnsupportedSchema(detail)
+}
+
 pub(crate) fn admit_schema(directory: &Path) -> Result<u64> {
     let stage = pp_os::Dir::open(directory)
         .with_context(|| format!("Open stage {}", directory.display()))?;
@@ -471,6 +564,8 @@ pub(crate) fn admit_schema(directory: &Path) -> Result<u64> {
 /// A `.pp-restore` entry this build creates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Leftover {
+    /// An unpublished journal intent; no live rename can precede publication.
+    JournalTemporary,
     /// `incoming-<32 hex>.tar.gz`, a regular file.
     Incoming,
     /// `staged-<32 hex>`, a real directory.
@@ -480,7 +575,9 @@ enum Leftover {
 /// Which leftover `path` (named `name`) is, `None` for any other name. A
 /// leftover name on a link or the wrong type is an error.
 fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
-    let kind = if name.strip_prefix(STAGED_PREFIX).is_some_and(is_id) {
+    let kind = if name == "journal.json.tmp" {
+        Leftover::JournalTemporary
+    } else if name.strip_prefix(STAGED_PREFIX).is_some_and(is_id) {
         Leftover::Staged
     } else if name
         .strip_prefix(INCOMING_PREFIX)
@@ -494,7 +591,7 @@ fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
     let file_type = path.symlink_metadata()?.file_type();
     match kind {
         Leftover::Staged if file_type.is_dir() => Ok(Some(kind)),
-        Leftover::Incoming if file_type.is_file() => Ok(Some(kind)),
+        Leftover::Incoming | Leftover::JournalTemporary if file_type.is_file() => Ok(Some(kind)),
         _ => bail!("{name} is a link or has the wrong type"),
     }
 }
@@ -507,11 +604,17 @@ fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
 /// other entry, a link, a wrong type, or a `.pp-restore` that is not a real
 /// directory refuses the open without removing anything, because this build
 /// cannot tell whether it holds the only copy of an installation.
-pub(crate) fn recover(data_dir: &Path) -> Result<()> {
+pub(crate) fn recover(data_dir: &Path) -> Result<bool> {
+    let replayed = recover_work(data_dir)?;
+    // Only an open that goes ahead removes anything.
     backup::sweep(data_dir);
+    Ok(replayed)
+}
+
+fn recover_work(data_dir: &Path) -> Result<bool> {
     let work = data_dir.join(WORK_DIR);
     let Ok(metadata) = work.symlink_metadata() else {
-        return Ok(());
+        return Ok(false);
     };
     let refuse = |detail: String| {
         anyhow!(
@@ -521,6 +624,11 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
     };
     if !metadata.file_type().is_dir() {
         return Err(refuse("is not a directory".into()));
+    }
+    journal::validate_work(data_dir)?;
+    if journal::recover(data_dir)? {
+        recover_work(data_dir)?;
+        return Ok(true);
     }
     let mut found = Vec::new();
     for entry in std::fs::read_dir(&work)? {
@@ -536,10 +644,11 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
         .iter()
         .try_for_each(|(path, kind)| match kind {
             Leftover::Staged => std::fs::remove_dir_all(path),
-            Leftover::Incoming => std::fs::remove_file(path),
+            Leftover::Incoming | Leftover::JournalTemporary => std::fs::remove_file(path),
         })
         .and_then(|()| std::fs::remove_dir(&work))
-        .map_err(|error| refuse(format!("could not be cleared: {error}")))
+        .map_err(|error| refuse(format!("could not be cleared: {error}")))?;
+    Ok(false)
 }
 
 /// Test hook: [`WriterOwner`]'s shutdown calls it once writer, reader and
@@ -550,4 +659,4 @@ pub(crate) fn admission_closed(data_dir: &Path, deadline: Instant) {
 }
 
 #[cfg(all(test, unix))]
-mod tests;
+pub(super) mod tests;

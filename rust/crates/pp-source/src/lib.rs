@@ -32,6 +32,8 @@ use unicode_normalization::UnicodeNormalization;
 use unicode16::nfc16;
 
 pub const MANIFEST: &str = ".printpartner-source-snapshot.json";
+/// Default content budget for the CLI and media preparation. Callers may
+/// name a larger budget; this is not a hard ceiling.
 pub const MAX_CONTENT_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 10_000;
 const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
@@ -61,6 +63,8 @@ pub enum Error {
     #[cfg(feature = "desktop_rebuild")]
     CaptureCollisionLimit,
     InvalidIdentity,
+    /// A selection or upload with no files in it.
+    EmptySelection,
     DuplicatePath,
     Limit,
     /// The file's absolute published path would reach `PATH_MAX`, so readers
@@ -120,6 +124,7 @@ impl Error {
             #[cfg(feature = "desktop_rebuild")]
             Self::CaptureCollisionLimit => "capture-collision-limit",
             Self::InvalidIdentity => "invalid-identity",
+            Self::EmptySelection => "empty-selection",
             Self::DuplicatePath => "duplicate-path",
             Self::Limit => "limit",
             Self::StoredPathTooLong { .. } => "stored-path-too-long",
@@ -443,9 +448,6 @@ pub struct ArtifactBudget {
 }
 impl ArtifactBudget {
     pub fn new(reserved_stored_bytes: u64, max_content_bytes: u64) -> Result<Self> {
-        if max_content_bytes > MAX_CONTENT_BYTES {
-            return Err(Error::Limit);
-        }
         Ok(Self {
             stored_bytes: reserved_stored_bytes,
             content_bytes: max_content_bytes,
@@ -995,7 +997,7 @@ impl SourceRoot {
             let (size, sha) = copy_hash(
                 existing.file(file.path.as_str(), false)?,
                 io::sink(),
-                MAX_CONTENT_BYTES - bytes,
+                file.size_bytes,
             )?;
             if size != file.size_bytes || sha != file.sha256 {
                 return Err(Error::CorruptSnapshot);

@@ -36,11 +36,11 @@ export const DESTINATIONS: readonly Destination[] = [
     help: "See printers, the queue and the farm log when the Farm module is on",
   },
   {
-    help: "Add a Source, and read Source revisions, sync status and recent Source activity",
+    help: "Add a Source, upload a ZIP or sync it, and see its files and thumbnails",
     label: "Library",
     path: "/library",
     key: "l",
-    holds: "Library Sources, import, sync and revisions",
+    holds: "Library Sources, files, thumbnails, import, sync and revisions",
   },
   {
     help: "Check Modules and their availability; unfinished settings say Not available yet",

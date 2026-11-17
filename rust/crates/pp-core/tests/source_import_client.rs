@@ -265,7 +265,7 @@ fn source_import_client_refuses_invalid_directory_input() {
                 paths: vec!["part.stl".into()],
             },
             256 * 1024 * 1024 + 1,
-            "Invalid import input limit",
+            "Import quota exceeded",
         ),
     ];
     for (input, max_input_bytes, expected) in refusals {

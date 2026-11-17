@@ -281,6 +281,31 @@ fn ticket_t_8_restore_stage_extracts_a_full_backup_and_leaves_live_files_untouch
 }
 
 #[test]
+fn ticket_t_8_restore_a_full_data_volume_is_a_space_refusal_not_an_unsupported_schema() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let (backup, _) = backup_then_change(&owner, &root, scratch.path());
+    let live = state(&root);
+    schema::working_copy::override_available(Some(4096));
+    let error = stage(&client, &backup).unwrap_err();
+    schema::working_copy::override_available(None);
+    match refusal(&error) {
+        Some(Refusal::InsufficientSpace(space)) => {
+            assert_eq!(space.available, 4096);
+            assert!(space.needed > space.available, "{space:?}");
+        }
+        other => panic!("expected a space refusal, got {other:?}: {error:#}"),
+    }
+    assert!(work_entries(&root).is_empty(), "the stage is removed");
+    assert_eq!(state(&root), live);
+    // The same backup stages once the space is there.
+    stage(&client, &backup).unwrap();
+    owner.shutdown().unwrap();
+}
+
+#[test]
 fn ticket_t_8_restore_a_new_stage_replaces_the_earlier_one_and_a_refused_stage_keeps_it() {
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();
@@ -317,7 +342,11 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
     let client = owner.installation().unwrap();
     let refuse = |version: u64, scope: &str, extra: &[(&[u8], EntryType)]| {
         let archive = archive_with(scratch.path(), version, scope, extra);
+        let database = pp_testkit::node_schema::database_files(&root);
+        let archive_bytes = std::fs::read(&archive).unwrap();
         let error = stage(&client, &archive).unwrap_err();
+        assert!(pp_testkit::node_schema::database_files(&root) == database);
+        assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
         assert!(work_entries(&root).is_empty());
         assert!(!root.parent().unwrap().join("escape").exists());
         refusal(&error)
@@ -400,10 +429,10 @@ fn ticket_t_8_restore_unmarked_installations_and_oversized_uploads_refuse_before
         "{error:#}"
     );
     assert!(work_entries(&root).is_empty());
-    assert_eq!(
-        client.begin_upload(u64::MAX).unwrap().limit,
-        MAX_UPLOAD_BYTES
-    );
+    // No fixed cap: free disk space decides, and no disk holds this much.
+    let error = client.begin_upload(u64::MAX).err().unwrap();
+    assert!(matches!(refusal(&error), Some(Refusal::NoSpace(_))));
+    assert!(work_entries(&root).is_empty());
     owner.shutdown().unwrap();
 }
 
@@ -458,7 +487,12 @@ fn ticket_t_8_restore_an_unknown_work_entry_or_linked_work_directory_refuses_ope
         std::fs::create_dir(&work).unwrap();
         std::fs::write(work.join(name), b"keep").unwrap();
         let error = open(&root).err().unwrap();
-        assert!(error.to_string().contains("unexpected entry"), "{error:#}");
+        let expected = if name == "journal.json" {
+            "Restore journal"
+        } else {
+            "unexpected entry"
+        };
+        assert!(error.to_string().contains(expected), "{error:#}");
         assert_eq!(std::fs::read(work.join(name)).unwrap(), b"keep");
         assert_eq!(state(&root), before);
         std::fs::remove_dir_all(&work).unwrap();
@@ -713,7 +747,7 @@ fn ticket_t_8_restore_a_corrupt_gzip_trailer_refuses_and_keeps_the_earlier_stage
             .path()
             .join(format!("corrupt-{trailer_byte}.tar.gz"));
         std::fs::write(&corrupt, bytes).unwrap();
-        assert!(archive::validate(&corrupt, archive::Limits::default()).is_err());
+        assert!(archive::validate(&corrupt, archive::Limits::backup()).is_err());
         let error = stage(&client, &corrupt).unwrap_err();
         assert!(
             matches!(refusal(&error), Some(Refusal::InvalidArchive(detail)) if detail.contains("gzip")),
@@ -789,7 +823,7 @@ fn ticket_t_8_restore_data_after_the_gzip_member_refuses_and_keeps_the_earlier_s
         let path = scratch.path().join(format!("{}.tar.gz", random_id()));
         std::fs::write(&path, bytes).unwrap();
         assert!(
-            archive::validate(&path, archive::Limits::default()).is_err(),
+            archive::validate(&path, archive::Limits::backup()).is_err(),
             "{case}"
         );
         let error = stage(&client, &path).unwrap_err();
@@ -842,35 +876,73 @@ fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_li
     owner.shutdown().unwrap();
 }
 
-#[test]
-fn backup_export_reports_size_and_hash_stages_and_removes_itself() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let client = owner.installation().unwrap();
-    let live = state(&root);
-    let database = pp_testkit::node_schema::database_files(&root);
-    let backup = client.backup_to_temporary("test").unwrap();
-    assert!(pp_testkit::node_schema::database_files(&root) == database);
-    let bytes = std::fs::read(&backup.path).unwrap();
-    assert_eq!(backup.size_bytes, bytes.len() as u64);
-    assert_eq!(
-        backup.sha256,
-        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
-    );
-    assert_eq!(backup.metadata.scope, archive::MetadataScope::Full);
-    assert!(!backup.path.starts_with(&root));
-    let staged = stage(&client, &backup.path).unwrap();
-    let staged_dir = root
-        .join(WORK_DIR)
-        .join(format!("{STAGED_PREFIX}{}", staged.restore_id));
-    assert_eq!(state(&staged_dir), live);
-    assert_eq!(state(&root), live);
-    let directory = backup.path.parent().unwrap().to_owned();
-    drop(backup);
-    assert!(!directory.exists());
-    owner.shutdown().unwrap();
-    assert!(matches!(
-        client.backup_to_temporary("closed"),
-        Err(RestoreError::Writer(WriterFailure::Stopped))
-    ));
+mod export;
+
+/// A simulated process death: activation returns without rolling back.
+#[derive(Debug)]
+pub(super) struct Crash;
+impl fmt::Display for Crash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("simulated crash")
+    }
+}
+impl std::error::Error for Crash {}
+
+/// (data directory, steps to pass before failing, crash instead of fail)
+static STEPS: Mutex<Vec<(PathBuf, usize, bool)>> = Mutex::new(Vec::new());
+static DURING: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+/// Called before each rename, before the journal commits and after it.
+pub(crate) fn step(data_dir: &Path) -> Result<()> {
+    let mut steps = STEPS.lock().unwrap();
+    let Some(index) = steps.iter().position(|(dir, ..)| dir == data_dir) else {
+        return Ok(());
+    };
+    if steps[index].1 > 0 {
+        steps[index].1 -= 1;
+        return Ok(());
+    }
+    let (_, _, crash) = steps.remove(index);
+    Err(if crash {
+        Crash.into()
+    } else {
+        anyhow!("injected restore failure")
+    })
+}
+
+/// Called after admission stopped and connections closed, before the swap.
+pub(super) fn during_activation(data_dir: &Path) {
+    let hook = {
+        let mut hooks = DURING.lock().unwrap();
+        let index = hooks.iter().position(|(dir, _)| dir == data_dir);
+        index.map(|index| hooks.remove(index).1)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+pub(super) fn crashed(error: &anyhow::Error) -> bool {
+    error.is::<Crash>()
+}
+
+mod activation;
+
+static AFTER_ROLLBACK: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+pub(crate) fn after_rollback(root: &Path) {
+    if let Some(hook) = take_hook(&AFTER_ROLLBACK, root) {
+        hook();
+    }
+}
+
+static FAIL_ROLLBACK: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// The next rollback for `data_dir` fails before it moves anything.
+pub(crate) fn fail_rollback(data_dir: &Path) -> Result<()> {
+    let mut armed = FAIL_ROLLBACK.lock().unwrap();
+    let Some(index) = armed.iter().position(|dir| dir == data_dir) else {
+        return Ok(());
+    };
+    armed.remove(index);
+    bail!("injected rollback failure")
 }

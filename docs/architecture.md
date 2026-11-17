@@ -10,6 +10,9 @@ The owner-delegated research choice on 2026-11-03 keeps that design and adds
 sharing. The amendment is chosen design, not implemented portability.
 [ADR 0016](adr/0016-rust-owns-its-data-formats.md), accepted 2026-11-12, makes
 the import the only reader of Node's stored formats.
+[ADR 0017](adr/0017-one-rust-program-serves-the-react-screens.md), accepted
+2026-11-15, records that one Rust program serves the React screens, as a Docker
+image and as a desktop app for Windows, macOS and Linux.
 
 ## Product and system shape
 
@@ -126,11 +129,12 @@ content and state also stay unchanged. The new entry point must not wire screens
 to Node or introduce a mutation fallback. Maintain the old app for correctness
 and data safety until cutover.
 
-Keep the default-off Cargo feature and exact runtime opt-in
-`PP_DESKTOP_REBUILD=1` or `true`. Test both gates independently and together.
-Neither this design nor cutover approval authorizes changing the default.
+GRE-1646 turns the Cargo feature on by default for the crates the Rust-only
+image builds. The runtime opt-in stays exact: `PP_DESKTOP_REBUILD=1` or `true`,
+and it still defaults off outside that image. Test the feature-off build with
+`--no-default-features`, and test the runtime switch on and off.
 [Desktop rebuild](desktop-rebuild.md) remains the implementation/flag reference;
-its parity-first sequencing and default-on proposal are superseded by these ADRs.
+its parity-first sequencing is superseded by these ADRs.
 
 ## Crates and allowed edges
 
@@ -239,7 +243,7 @@ use the same operation interface. A transport must not repeat its policy.
 | --- | --- |
 | Authentication, sessions, API keys, pairing | `pp-api` admission; `pp-storage::auth` owns credential/session transactions; gateway owns listener admission |
 | Product Module choices and settings | `pp-storage` feature/settings modules; `pp-api` exposes effective state and off reasons; recheck before worker effects |
-| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam (`pp-storage::source_files`, GRE-430); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
+| Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam, and `GET /sources/{id}/thumbnail` renders and caches one STL (`pp-storage::source_files`, GRE-430); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
 | Builds, drafts, parts, order/customer/due-date fields | `pp-storage` build/draft modules own lifecycle, autosave receipts and order authority; `pp-services` holds extracted pure policy where useful |
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |
@@ -251,7 +255,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Optional external slicer jobs | Typed HTTP adapter in existing `pp-drivers`, policy in `pp-services`, job/effect state in `pp-storage`, worker lifetime in core |
 | Home Assistant, webhooks, Discord | `pp-drivers` checked adapters; storage owns configuration, deduplication and durable delivery state; core runs workers |
 | Jobs, cancel, restart recovery | `pp-storage::jobs` claims/fences/recovery; core runs workers; `pp-api` adapts commands and progress |
-| Backup, restore, migration/downgrade refusal | `pp-storage` owns snapshot/archive/activation and lock discipline; core quiesces workers/listeners; shell/API requests the operation |
+| Backup, restore, migration/downgrade refusal | `pp-storage` owns snapshot, archive, activation and lock discipline. `export_backup` writes a full archive under `<data>/backups/` (GRE-1469, GRE-1512). With `PP_DESKTOP_REBUILD` on, `pp-api` mounts `POST /api/v2/installation/backup` and `GET /api/v2/installation/backup/archive` (GRE-1371). Restore upload and activation routes are not mounted (GRE-1161). Core quiesces workers and listeners; the shell requests the operation |
 | Admin, legal, logs, diagnostics, health | Storage owns settings; gateway/API exposes bounded safe reads; core owns local logging/liveness; shell owns update lifecycle |
 | Reference sharing | Storage owns reference projections, `pp-api` exposes them under [ADR 0004](adr/0004-share-references-without-redistributing-models.md); do not redistribute model bytes or imply LAN admission |
 | Assistant and old API aggregators | AI uses authenticated MCP over the same operations; assistant HTTP routes are not a separate policy engine. Rust routers replace v1/v2 aggregators |
@@ -481,8 +485,10 @@ approves production cutover after a timed, versioned runbook rehearsal.
    artifact.
 5. Validate readiness, authentication, persistence and restart before normal
    mutations or effects. Chad records the go/no-go and authority switch.
-6. Observe through an owner-set acceptance window, including an evening Checkoff
-   session and restart. Retain recovery copies for a separately declared period.
+6. Observe through the acceptance window in
+   [ADR 0010](adr/0010-whole-runtime-cutover.md): 7 days of real printing on Rust
+   with no fallback, including an evening Checkoff session and restart. Keep the
+   pre-cutover copy for 90 days.
 
 Rollback stops Rust, preserves its state/evidence, and restores the verified
 pre-cutover database **and matching files** for the pinned old runtime. It loses
@@ -618,9 +624,11 @@ No compile-time, runtime or memory improvement has been measured.
 - Release signing identity/provider, publisher name, key custodians and recovery.
   Evaluate Microsoft Artifact Signing and SignPath eligibility rather than
   assuming EV signing removes SmartScreen warnings.
-- Acceptance/rollback window length, backup retention/free-space requirements,
-  supported input schemas, timed abort/recovery budgets, and explicit production
-  go/no-go. A window never promises lossless rollback.
+- Backup free-space requirements, supported input schemas, timed
+  abort/recovery budgets, and explicit production go/no-go. The acceptance
+  window and the 90-day pre-cutover copy are set in
+  [ADR 0010](adr/0010-whole-runtime-cutover.md). A window never promises
+  lossless rollback.
 - Flag retirement conditions/date and responsible issue; `desktop_rebuild` stays
   default-off until separately approved removal.
 - Final UI/client package names and router; contract exporter after one-family
@@ -630,7 +638,8 @@ No compile-time, runtime or memory improvement has been measured.
 - Platform minima, signing/update channels and release cadence; Linux package
   set/GPU matrix; reference performance hardware and measured budgets.
 
-The glossary remains [CONTEXT.md](../CONTEXT.md); no term changes are needed.
+The glossary is [GLOSSARY.md](../GLOSSARY.md). ADR 0017 added Connected app
+and narrowed Share on network to the desktop app.
 Keep this existing URL canonical, as the planning research recommends when an
 existing explanation can remain in place. It avoids a second competing target
 page and preserves root guidance links. [Storage](storage.md),

@@ -71,17 +71,41 @@ function fakeCore({ farm = "on" as "on" | "off", claimed = new Set<string>() } =
     suggestions: BACKLOG(),
     claimed,
     dismissed: new Set<string>(),
+    // Dismissed rows, so Undo can put them back.
+    held: new Map<string, Suggestion>(),
+    gone: new Set<string>(),
+    matchedSince: new Set<string>(),
+    down: false,
     // Each print's integration; the core claims per integration, not per printer.
     integration: (s: Suggestion) => `int-${s.printer_id}`,
   };
   const posts: { path: string; body: unknown }[] = [];
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { profile_id?: number };
+      const body = init.body ? (JSON.parse(String(init.body)) as { profile_id?: number }) : {};
       posts.push({ path, body });
+      const undo = /unattributed\/([^/]+)\/dismiss\/undo$/.exec(path);
+      if (undo) {
+        const id = undo[1]!;
+        if (state.down) throw new TypeError("Failed to fetch");
+        if (state.gone.has(id))
+          return json({ code: "print_not_found", detail: "This print is no longer kept" }, 404);
+        if (state.matchedSince.has(id))
+          return json(
+            { code: "print_already_matched", detail: "matched to a Build since" },
+            409,
+          );
+        const row = state.held.get(id);
+        if (row && !state.suggestions.some((s) => s.print_id === id)) state.suggestions.push(row);
+        state.held.delete(id);
+        state.dismissed.delete(id);
+        return json({ ok: true, restored: true });
+      }
       const [, id, action] = /unattributed\/([^/]+)\/(claim|dismiss)$/.exec(path)!;
       const row = state.suggestions.find((s) => s.print_id === id);
       if (action === "dismiss") {
+        const row = state.suggestions.find((s) => s.print_id === id);
+        if (row) state.held.set(id!, row);
         state.dismissed.add(id!);
         state.suggestions = state.suggestions.filter((s) => s.print_id !== id);
         return json({ ok: true });
@@ -130,6 +154,7 @@ function renderMatch(core: ReturnType<typeof fakeCore>) {
   vi.stubGlobal("fetch", core.fetchMock);
   const router = createMemoryRouter(routes, { initialEntries: ["/farm/match"] });
   render(<App router={router} queryClient={createQueryClient()} />);
+  return router;
 }
 
 const group = (name: RegExp) => screen.getByRole("region", { name });
@@ -406,5 +431,134 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     renderMatch(core);
     fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 2 prints" }));
     expect(await within(result()).findByText("Applied: claimed 2 prints.")).toBeTruthy();
+  });
+
+  it("undoes both dismissals from the last Apply", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push(suggestion("cube", "none", null));
+    renderMatch(core);
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^benchy\.gcode/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^cube\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 2 prints" }));
+    expect(await within(result()).findByText("Applied: dismissed 2 prints.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /^No suggestion/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Undo 2 dismissals" }));
+    expect(await within(result()).findByText("Restored 2 prints.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
+    expect(box("benchy")).toHaveProperty("checked", false);
+    expect(box("cube")).toHaveProperty("checked", false);
+    expect(core.posts.filter((p) => p.path.endsWith("/dismiss/undo"))).toEqual([
+      { path: "/api/v2/printer-checkoff/unattributed/benchy/dismiss/undo", body: {} },
+      { path: "/api/v2/printer-checkoff/unattributed/cube/dismiss/undo", body: {} },
+    ]);
+  });
+
+  it("undoes a dismissal and leaves a claim from another Apply alone", async () => {
+    const core = fakeCore();
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 1 print" }));
+    await within(result()).findByText("Applied: claimed 1 print.");
+    fireEvent.click(box("benchy"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 1 print" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo 1 dismissal" }));
+    expect(await within(result()).findByText("Restored 1 print.")).toBeTruthy();
+    expect(core.posts.some((p) => p.path.includes("/bracket/dismiss/undo"))).toBe(false);
+    expect(screen.queryByRole("checkbox", { name: /^bracket/ })).toBeNull();
+    expect(box("benchy")).toHaveProperty("checked", false);
+  });
+
+  it("says a missing print could not be restored and brings the other back", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push(suggestion("cube", "none", null));
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^benchy\.gcode/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^cube\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 2 prints" }));
+    await screen.findByRole("button", { name: "Undo 2 dismissals" });
+    core.state.gone.add("cube");
+    fireEvent.click(screen.getByRole("button", { name: "Undo 2 dismissals" }));
+    expect(
+      await within(result()).findByText(
+        "Restored 1 print. 1 could not be restored: no longer kept.",
+      ),
+    ).toBeTruthy();
+    expect(box("benchy")).toHaveProperty("checked", false);
+    expect(screen.queryByRole("checkbox", { name: /^cube/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
+  });
+
+  it("says a print matched since stays dismissed", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push(suggestion("cube", "none", null));
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^benchy\.gcode/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^cube\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 2 prints" }));
+    await screen.findByRole("button", { name: "Undo 2 dismissals" });
+    core.state.matchedSince.add("cube");
+    fireEvent.click(screen.getByRole("button", { name: "Undo 2 dismissals" }));
+    expect(
+      await within(result()).findByText(
+        "Restored 1 print. 1 stays dismissed: matched to a Build since.",
+      ),
+    ).toBeTruthy();
+    expect(box("benchy")).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /^cube/ })).toBeNull();
+  });
+
+  it("keeps the dismissals when Undo gets no answer, then restores them on retry", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push(suggestion("cube", "none", null));
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^benchy\.gcode/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^cube\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 2 prints" }));
+    await screen.findByRole("button", { name: "Undo 2 dismissals" });
+    core.state.down = true;
+    fireEvent.click(screen.getByRole("button", { name: "Undo 2 dismissals" }));
+    expect(
+      await within(result()).findByText("2 could not be restored. Press Undo to try again."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo 2 dismissals" })).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /^benchy/ })).toBeNull();
+    core.state.down = false;
+    fireEvent.click(screen.getByRole("button", { name: "Undo 2 dismissals" }));
+    expect(await within(result()).findByText("Restored 2 prints.")).toBeTruthy();
+    expect(box("benchy")).toHaveProperty("checked", false);
+    expect(box("cube")).toHaveProperty("checked", false);
+  });
+
+  it("covers only the dismissals of the latest Apply", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push(suggestion("cube", "none", null));
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^benchy\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 1 print" }));
+    await screen.findByRole("button", { name: "Undo 1 dismissal" });
+    fireEvent.click(box("cube"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 1 print" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo 1 dismissal" }));
+    expect(await within(result()).findByText("Restored 1 print.")).toBeTruthy();
+    expect(box("cube")).toHaveProperty("checked", false);
+    expect(screen.queryByRole("checkbox", { name: /^benchy/ })).toBeNull();
+    expect(core.posts.filter((p) => p.path.endsWith("/dismiss/undo")).map((p) => p.path)).toEqual([
+      "/api/v2/printer-checkoff/unattributed/cube/dismiss/undo",
+    ]);
+  });
+
+  it("drops Undo after leaving Match review and coming back", async () => {
+    const core = fakeCore();
+    const router = renderMatch(core);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^benchy\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 1 print" }));
+    await screen.findByRole("button", { name: "Undo 1 dismissal" });
+    await router.navigate("/farm");
+    expect(await screen.findByRole("heading", { name: "Farm" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
+    await router.navigate("/farm/match");
+    expect(await screen.findByRole("heading", { level: 2, name: "Exact (1)" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /^benchy/ })).toBeNull();
   });
 });

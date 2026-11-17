@@ -21,7 +21,7 @@ tokio-util = { workspace = true, features = ["io"] }
 http-body.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-pp-compat = { path = "../pp-compat" }
+pp-compat = { path = "../pp-compat", default-features = false }
 pp-net = { path = "../pp-net" }
 pp-os = { path = "../pp-os" }
 http-body-util.workspace = true

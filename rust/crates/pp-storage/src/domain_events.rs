@@ -246,9 +246,11 @@ fn head(connection: &Connection) -> Result<i64> {
 
 fn read(tx: &Transaction<'_>, feed: &Feed, tenant: &str, after: Option<&Cursor>) -> Result<Read> {
     let head = head(tx)?;
-    let pruned = feed.opened_at.max(head - RETAINED_EVENTS);
+    let position = feed.position.lock().unwrap_or_else(PoisonError::into_inner);
+    let (generation, opened_at) = &*position;
+    let pruned = (*opened_at).max(head - RETAINED_EVENTS);
     let at = |seq| Cursor {
-        generation: feed.generation.clone(),
+        generation: generation.clone(),
         seq,
     };
     let Some(after) = after else {
@@ -257,7 +259,7 @@ fn read(tx: &Transaction<'_>, feed: &Feed, tenant: &str, after: Option<&Cursor>)
             position: at(head),
         });
     };
-    let refused = if after.generation != feed.generation {
+    let refused = if after.generation != *generation {
         Some(ResyncReason::GenerationChanged)
     } else if after.seq > head {
         Some(ResyncReason::AheadOfLog)
@@ -333,8 +335,7 @@ pub type Waker = Arc<dyn Fn() + Send + Sync>;
 /// Wakers are held weakly: dropping the caller's [`Waker`] ends its
 /// subscription.
 pub(crate) struct Feed {
-    generation: String,
-    opened_at: i64,
+    position: Mutex<(String, i64)>,
     head: AtomicI64,
     wakers: Mutex<Vec<Weak<dyn Fn() + Send + Sync>>>,
 }
@@ -342,8 +343,7 @@ pub(crate) struct Feed {
 impl Feed {
     pub(crate) fn new(head: i64) -> Self {
         Self {
-            generation: hex::encode(rand::random::<[u8; 16]>()),
-            opened_at: head,
+            position: Mutex::new((hex::encode(rand::random::<[u8; 16]>()), head)),
             head: AtomicI64::new(head),
             wakers: Mutex::new(Vec::new()),
         }
@@ -351,6 +351,15 @@ impl Feed {
 
     pub(crate) fn open(connection: &Connection) -> Result<Self> {
         Ok(Self::new(head(connection)?))
+    }
+
+    pub(crate) fn reset(&self, connection: &Connection) -> Result<()> {
+        let head = head(connection)?;
+        *self.position.lock().unwrap_or_else(PoisonError::into_inner) =
+            (hex::encode(rand::random::<[u8; 16]>()), head);
+        self.head.store(head, Ordering::Release);
+        self.wake();
+        Ok(())
     }
 
     fn subscribe(&self, waker: &Waker) -> Result<()> {

@@ -1,12 +1,14 @@
 //! MCP `propose_rebuild_plan` and its `confirm_apply` on Rust storage
-//! (GRE-1518, GRE-1434 PR 1).
+//! (GRE-1518, GRE-1736).
 //!
 //! Propose checks `plan_id` and `idempotency_key`, then proves the API key
 //! and finds the Build's planning brief on the read seam. It writes nothing.
 //! Confirm runs `WorkingDraftClient::rebuild_from_brief` with the brief as it
-//! is at confirm time: it sets the base and addon layers from the Source
-//! roles, prepares and stores a draft, and selects it in the brief, in one
-//! transaction. It never accepts or publishes a Plan.
+//! is at confirm time: it drops layers an earlier rebuild attached when their
+//! Sources lose a layer role, sets the base and addon layers from the roles
+//! that remain, applies the brief's path choices, prepares and stores a
+//! draft, and selects it in the brief, in one transaction. It never accepts
+//! or publishes a Plan.
 
 use super::{
     checkoff::CheckoffDomain,
@@ -104,10 +106,14 @@ impl CheckoffDomain {
                 Ok(rebuilt) => json!({ "ok": true, "result": result(&rebuilt) }),
                 Err(error) => {
                     let mut refused = storage_refusal(&error).confirmation();
-                    if let RebuildError::SourceNotFound(id) | RebuildError::LayerConflict(id) =
-                        error
-                    {
-                        refused["source_id"] = id.into();
+                    match &error {
+                        RebuildError::SourceNotFound(id) | RebuildError::LayerConflict(id) => {
+                            refused["source_id"] = (*id).into();
+                        }
+                        RebuildError::UnresolvedSourceChoices { groups } => {
+                            refused["groups"] = json!(groups);
+                        }
+                        _ => {}
                     }
                     refused
                 }
@@ -161,9 +167,9 @@ fn storage_refusal(error: &RebuildError) -> Refusal {
             Code::MultipleStructuralBases,
             "A Build can have only one structural base.",
         ),
-        RebuildError::SourceChoicesUnsupported => Refusal::new(
-            Code::SourceChoicesUnsupported,
-            "The brief resolves differences or scopes contributions to paths, which the rebuild does not apply yet.",
+        RebuildError::UnresolvedSourceChoices { .. } => Refusal::new(
+            Code::UnresolvedSourceChoices,
+            "A difference group's resolution cannot be applied. Nothing was changed.",
         ),
         RebuildError::SourceNotFound(_) => Refusal::new(
             Code::SourceNotFound,

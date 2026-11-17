@@ -58,6 +58,8 @@ pub mod accepted;
 #[cfg(feature = "desktop_rebuild")]
 pub mod admin;
 #[cfg(feature = "desktop_rebuild")]
+pub mod backup;
+#[cfg(feature = "desktop_rebuild")]
 pub mod builds;
 #[cfg(feature = "desktop_rebuild")]
 pub mod catalog;
@@ -115,6 +117,8 @@ pub mod settings_support;
 pub mod source_files;
 #[cfg(feature = "desktop_rebuild")]
 pub mod sources_github;
+#[cfg(feature = "desktop_rebuild")]
+pub mod spoolman_deductions;
 #[cfg(feature = "desktop_rebuild")]
 mod update_check;
 #[cfg(feature = "desktop_rebuild")]

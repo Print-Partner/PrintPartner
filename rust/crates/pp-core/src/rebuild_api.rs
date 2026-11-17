@@ -338,7 +338,8 @@ fn settings_routes(
 }
 
 /// The Settings screen's routes outside `/settings`: the Module switches,
-/// the integration writes and the printer routes, from the same owner.
+/// the integration writes, the printer routes and the Spoolman deduction
+/// list, from the same owner.
 fn setup_routes(
     owner: &Mutex<WriterOwner>,
     policy: AuthPolicy,
@@ -351,9 +352,15 @@ fn setup_routes(
     let setup = guard.printer_setup(policy)?;
     let integrations = integrations_router(config.clone(), setup.clone());
     let printers = printers_router(config.clone(), setup);
+    let deductions = pp_api::spoolman_deductions::spoolman_deductions_router(
+        config.clone(),
+        guard.spoolman_deductions(policy)?,
+        Arc::new(crate::spoolman::SpoolmanInventory::new()?),
+    );
     Ok(modules_router(config, features)
         .merge(integrations)
-        .merge(printers))
+        .merge(printers)
+        .merge(deductions))
 }
 
 /// Library's file list of a Source's current revision.
@@ -553,6 +560,24 @@ pub fn desktop_policy() -> AuthPolicy {
     }
 }
 
+/// Whole-installation backup create and download (GRE-1371). The router is
+/// empty unless `flag` is exactly `1` or `true`.
+pub(crate) fn installation_backup_router(
+    owner: &Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    flag: Option<&str>,
+) -> Result<Router> {
+    let reads = owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
+        .accepted_reads_with_policy(desktop_policy())?;
+    Ok(pp_api::backup::backup_router(
+        AdminHttpConfig::from_startup(origin, DESKTOP_TENANT, flag)?,
+        Arc::clone(owner),
+        reads,
+    ))
+}
+
 /// The product routes a Rust-only runtime mounts in the gateway: the read
 /// routers, the draft routers and the jobs router, all from one owner.
 /// `community_manifests` is the bundle's
@@ -615,6 +640,7 @@ pub(crate) fn product_router_with_updates(
             job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
         )
     };
+    let backups = installation_backup_router(&owner, origin, Some("1"))?;
     let reads = read_router_with_updates(
         rebuild,
         owner,
@@ -627,7 +653,22 @@ pub(crate) fn product_router_with_updates(
     Ok(reads
         .zip(drafts)
         .zip(jobs)
-        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
+        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs).merge(backups)))
+}
+
+/// `POST /sources/{id}/upload-files` for the Rust-only runtime, over its one
+/// Source upload service (GRE-428). Mounted beside [`product_router`], with
+/// the catalog's guard and no fixed body limit.
+pub(crate) fn upload_router(
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    uploads: Arc<dyn pp_api::catalog::SourceUploads>,
+) -> Result<Router> {
+    Ok(pp_api::catalog::admit_upload_routes(
+        CatalogHttpConfig::from_startup(origin, DESKTOP_TENANT, desktop_policy(), Some("1"))?,
+        owner,
+        uploads,
+    ))
 }
 
 /// API keys route to the default tenant under the single-account policy.
@@ -918,6 +959,7 @@ mod tests {
             }
             "SetModuleRequest" => json!({"on": true}),
             "CreateSourceRequest" => json!({"name": "Client contract", "source_kind": "archive"}),
+            "StartSourceSyncRequest" => json!({"project_ids": [1]}),
             "CreateIntegrationRequest" => {
                 json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
             }
@@ -955,6 +997,7 @@ mod tests {
                 "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
             "ClaimUnattributedRequest" => json!({"profile_id": 1}),
             "DismissUnattributedRequest" => json!({}),
+            "ReconcileDeductionRequest" => json!({"answer": "dismiss"}),
             "ReconcileSendRequest" => json!({"printed": false, "job_id": null}),
             "SignInRequest" => json!({"email": "client@example.com", "password": "password-1234"}),
             "RegisterRequest" => {
@@ -1081,24 +1124,42 @@ mod tests {
         // Add to queue reads only a multipart form.
         let no_form =
             status == 415 && body["detail"] == "Send the print file as multipart/form-data";
+        // A Source ZIP upload answers 202 once the import is recorded. The
+        // sample names no Source and sends no multipart body, so the handler
+        // refuses before that: unknown Source, missing length, or not a form.
+        let upload = route.name == "uploadSourceZip"
+            && (status == 202
+                || (status == 404 && body["detail"] == "Source not found")
+                || (status == 411 && body["detail"] == "Content-Length is required")
+                || (status == 400 && body["detail"] == "Expected a multipart/form-data body"));
+        // POST /jobs/sync answers 202 with the job to follow.
+        let sync_accepted =
+            status == 202 && body["job_id"].as_str().is_some_and(|id| !id.is_empty());
+        // The branch-list sample omits ?url=, so the handler answers before GitHub.
+        let branch_list = status == 400 && body["detail"] == "url query parameter is required";
         status == 200
             || handler_not_found(status, body)
             || stale
             || no_layers
             || no_form
+            || upload
+            || sync_accepted
+            || branch_list
             || owner_exists(route, status, body)
     }
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
     /// print or queue item, so those handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
-        const CODES: [&str; 6] = [
+        const CODES: [&str; 8] = [
             "integration_not_found",
             "printer_not_found",
             "draft_not_found",
             "snapshot_not_found",
             "farm_log_entry_not_found",
             "print_not_found",
+            "source_not_found",
+            "deduction_not_found",
         ];
         const DETAILS: [&str; 6] = [
             "beds[0]: Checkoff link not found",
@@ -1111,6 +1172,36 @@ mod tests {
         status == 404
             && (CODES.iter().any(|code| body["code"] == *code)
                 || DETAILS.iter().any(|detail| body["detail"] == *detail))
+    }
+
+    /// Upload checks for the contract test. The sample names no Source, so
+    /// `upload` is not called; it still drains parts if a later sample does.
+    struct NoUploads;
+
+    impl pp_api::catalog::SourceUploads for NoUploads {
+        fn check_space(
+            &self,
+            _: pp_storage::catalog::Credentials,
+            _: u64,
+        ) -> Result<(), pp_api::catalog::UploadFailure> {
+            Ok(())
+        }
+        fn closing(&self) -> bool {
+            false
+        }
+        fn upload(
+            &self,
+            _: pp_storage::catalog::Credentials,
+            _: i64,
+            _: pp_api::catalog::UploadKind,
+            _: u64,
+            files: pp_api::catalog::UploadParts,
+        ) -> Result<String, pp_api::catalog::UploadFailure> {
+            for part in files {
+                part.map_err(|_| pp_api::catalog::UploadFailure::Failed)?;
+            }
+            Ok("job-contract".into())
+        }
     }
 
     #[tokio::test]
@@ -1131,6 +1222,8 @@ mod tests {
             None,
         );
         let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
+        let uploads = upload_router(Arc::clone(&owner), &origin, Arc::new(NoUploads)).unwrap();
+        let backups = installation_backup_router(&owner, &origin, Some("1")).unwrap();
         let mut server = serve(
             listener,
             reads
@@ -1138,7 +1231,9 @@ mod tests {
                 .unwrap()
                 .merge(drafts.unwrap().unwrap())
                 .merge(jobs.unwrap().unwrap())
-                .merge(farm),
+                .merge(farm)
+                .merge(uploads)
+                .merge(backups),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {

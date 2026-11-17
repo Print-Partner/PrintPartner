@@ -4053,6 +4053,8 @@ fn sync_finish_all_failed_marks_the_job_failed_with_joined_recovery() {
     assert_eq!(stored.state, PersistentState::Failed);
     assert_eq!(stored.public_result, None);
     assert_eq!(stored.recovery.as_deref(), Some(recovery.as_str()));
+    #[cfg(feature = "desktop_rebuild")]
+    assert_eq!(stored.snapshot().error.as_deref(), Some(recovery.as_str()));
     assert_eq!(sync.batch(&job_id), ("failed".into(), None));
     let aggregate_json: String = sync
         .connection()

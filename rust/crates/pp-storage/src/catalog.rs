@@ -6,6 +6,18 @@ mod location;
 mod rebuild;
 #[cfg(feature = "desktop_rebuild")]
 pub use activity::SourceActivityEvent;
+#[cfg(all(test, feature = "desktop_rebuild"))]
+pub(crate) fn source_activity(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    limit: u8,
+) -> Result<Vec<SourceActivityEvent>> {
+    activity::list(tx, tenant, limit)
+}
+#[cfg(all(test, feature = "desktop_rebuild"))]
+pub(crate) fn source_categories(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<String>> {
+    categories::load(tx, tenant)
+}
 #[cfg(feature = "desktop_rebuild")]
 pub use rebuild::{
     BulkCategoryResult, CatalogAccess, CatalogFailure, CatalogKeyAccess, CategoryNode,
@@ -358,6 +370,14 @@ impl State {
             directory,
         }
     }
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn after_restore(&mut self) {
+        let issued = self.issued_high_water;
+        *self = Self::new(self.directory.clone());
+        // Outstanding lease drops still carry a bare token, so never reuse one.
+        self.issued_high_water = issued;
+    }
+
     pub(crate) fn source_busy(&self, tenant: &str, id: i64) -> bool {
         self.active
             .values()

@@ -9,7 +9,6 @@ Run from the repository root:
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-compat
-cargo nextest run --manifest-path rust/Cargo.toml -p pp-compat --features desktop_rebuild
 ```
 
 - Do not grow the compatibility bridge or add new domain operations.

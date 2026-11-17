@@ -8,10 +8,11 @@
 //! document that is not the typed shape refuses every operation and is left
 //! as it is.
 //!
-//! A stored row may hold keys its typed shape does not name. Only the Node
-//! import is to write such a row (GRE-1523). The keys ride along in
-//! [`Unread`]: no code reads them, no answer or log carries them, and an edit
-//! stores them back as they were.
+//! A stored row may hold keys its typed shape does not name. They ride along
+//! in [`Unread`]: no code reads them, no answer or log carries them, and an
+//! edit stores them back as they were. The Node import does not write them.
+//! It drops a key the typed shape has no place for and names the field in
+//! its report (GRE-1523).
 //!
 //! Errors are [`PrinterSetupError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.

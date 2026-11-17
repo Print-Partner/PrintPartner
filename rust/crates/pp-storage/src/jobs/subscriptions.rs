@@ -40,9 +40,7 @@ pub(crate) fn mark_committed() {
 
 pub(crate) fn record(job: &JobRecord) {
     COLLECTOR.with(|collector| {
-        if let Some(collector) = collector.borrow_mut().as_mut()
-            && !job.internal_only()
-        {
+        if let Some(collector) = collector.borrow_mut().as_mut() {
             collector.changes.push(CommittedJobView {
                 tenant: job.tenant.clone(),
                 snapshot: Arc::new(job.snapshot()),
@@ -561,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn supplied_import_saves_never_reach_a_stream() {
+    fn supplied_import_saves_reach_a_stream() {
         let import = |state_version| -> JobRecord {
             let mut job = job("import", state_version, PersistentState::Running);
             job.kind = JobKind::SuppliedSourceImport;
@@ -578,7 +576,7 @@ mod tests {
         record(&import(2));
         mark_committed();
         subscriptions.publish(finish_collection());
-        assert_eq!(drain(&subscription), (vec![1], None));
+        assert_eq!(drain(&subscription), (vec![1, 2], None));
     }
 
     #[test]
@@ -870,5 +868,16 @@ mod tests {
             refused.downcast_ref::<JobAccessFailure>(),
             Some(&JobAccessFailure::Stopped)
         );
+    }
+
+    #[test]
+    fn stopping_old_job_streams_allows_restored_lower_versions() {
+        let subscriptions = JobSubscriptions::new();
+        let old = subscribe_to(&subscriptions, job("a", 9, PersistentState::Queued), None).unwrap();
+        subscriptions.stop();
+        assert_eq!(drain(&old), (vec![], Some(StreamClose::OwnerStopped)));
+        let restored =
+            subscribe_to(&subscriptions, job("a", 1, PersistentState::Queued), None).unwrap();
+        assert_eq!(drain(&restored), (vec![1], None));
     }
 }

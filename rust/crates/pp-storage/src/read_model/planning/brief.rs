@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -1057,36 +1057,55 @@ pub(crate) fn readiness(brief: &BuildPlanningBrief) -> BuildPlanningReadiness {
     }
 }
 
-/// Node's `resolvedSourcePathExclusions` blockers: a custom resolution, or a
-/// resolved printable path whose Source the brief's evidence does not name.
-pub(crate) fn source_choice_blockers(
+/// Excluded printable paths and the groups whose resolution cannot be applied.
+/// Node's `resolvedSourcePathExclusions`: `choose_source_a` drops Source B's
+/// path, `choose_source_b` drops Source A's, `not_applicable` drops both, and
+/// `include_both` drops neither. A `custom` resolution, or an excluded `.stl`
+/// whose Source name the evidence does not name, is a blocker. Paths are
+/// sorted by Source id, then path.
+pub(crate) struct SourcePathChoices {
+    pub exclusions: BTreeMap<i64, Vec<String>>,
+    pub blockers: Vec<String>,
+    /// Group ids that produced a blocker, in the brief's difference order.
+    pub groups: Vec<String>,
+}
+
+/// `source_ids_by_name` is the evidence Sources that exist, last evidence
+/// winning when two share a name. That is Node's `sourceIdsByName`.
+pub(crate) fn source_path_choices(
     brief: &BuildPlanningBrief,
-    sources: &HashMap<i64, PlanningSource>,
-) -> Vec<String> {
-    let named: HashSet<&str> = brief
-        .evidence
-        .iter()
-        .filter_map(|item| sources.get(&item.source_id?))
-        .map(|source| source.name.as_str())
-        .collect();
-    let mut groups: Vec<(&str, Vec<&BuildDifference>)> = Vec::new();
+    source_ids_by_name: &HashMap<String, i64>,
+) -> SourcePathChoices {
+    let mut grouped: Vec<(&str, Vec<&BuildDifference>)> = Vec::new();
     for difference in &brief.differences {
-        match groups.iter_mut().find(|(id, _)| *id == difference.group_id) {
+        match grouped
+            .iter_mut()
+            .find(|(id, _)| *id == difference.group_id)
+        {
             Some((_, members)) => members.push(difference),
-            None => groups.push((&difference.group_id, vec![difference])),
+            None => grouped.push((&difference.group_id, vec![difference])),
         }
     }
+    let mut excluded: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
     let mut blockers = Vec::new();
-    for (group, differences) in groups {
+    let mut groups = Vec::new();
+    let mut block = |group: &str, detail: String| {
+        if !groups.iter().any(|seen| seen == group) {
+            groups.push(group.to_owned());
+        }
+        blockers.push(detail);
+    };
+    for (group, differences) in grouped {
         let Some(resolution) = brief.resolutions.get(group).map(|r| r.resolution) else {
             continue;
         };
         let (keep_a, keep_b) = match resolution {
             DifferenceResolution::IncludeBoth => continue,
             DifferenceResolution::Custom => {
-                blockers.push(format!(
-                    "{group}: custom resolution requires explicit draft review"
-                ));
+                block(
+                    group,
+                    format!("{group}: custom resolution requires explicit draft review"),
+                );
                 continue;
             }
             DifferenceResolution::ChooseSourceA => (true, false),
@@ -1102,15 +1121,48 @@ pub(crate) fn source_choice_blockers(
                 let Some(path) = path.as_deref().filter(|_| !kept) else {
                     continue;
                 };
-                if path.to_lowercase().ends_with(".stl") && !named.contains(source.as_str()) {
-                    blockers.push(format!(
-                        "{group}: resolved printable path is missing from the draft: {source}/{path}"
-                    ));
+                if !path.to_lowercase().ends_with(".stl") {
+                    continue;
+                }
+                match source_ids_by_name.get(source.as_str()) {
+                    Some(id) => {
+                        excluded.entry(*id).or_default().insert(path.to_owned());
+                    }
+                    None => block(
+                        group,
+                        format!(
+                            "{group}: resolved printable path is missing from the draft: {source}/{path}"
+                        ),
+                    ),
                 }
             }
         }
     }
-    blockers
+    SourcePathChoices {
+        exclusions: excluded
+            .into_iter()
+            .map(|(id, paths)| (id, paths.into_iter().collect()))
+            .collect(),
+        blockers,
+        groups,
+    }
+}
+
+/// Node's `resolvedSourcePathExclusions` blockers: a custom resolution, or a
+/// resolved printable path whose Source the brief's evidence does not name.
+pub(crate) fn source_choice_blockers(
+    brief: &BuildPlanningBrief,
+    sources: &HashMap<i64, PlanningSource>,
+) -> Vec<String> {
+    let mut source_ids_by_name = HashMap::new();
+    for item in &brief.evidence {
+        let Some(id) = item.source_id else { continue };
+        let Some(source) = sources.get(&id) else {
+            continue;
+        };
+        source_ids_by_name.insert(source.name.clone(), id);
+    }
+    source_path_choices(brief, &source_ids_by_name).blockers
 }
 
 /// Node's `deriveBuildPlanningPhase`, from the stored draft row the hydrated

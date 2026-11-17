@@ -3,7 +3,8 @@
 
 Reads trusted pp-score lines and plans one pp/score status per exact head SHA they name.
 Never invents or re-derives a score. A record whose seat vendor equals its author= vendor
-is a self-score and fails the head. In --merge-group mode it checks every PR in a merge
+is a self-score and fails the head. author=cursor-auto or author=unknown requires trusted
+anthropic and openai records on that exact head; the lower score is the bar. In --merge-group mode it checks every PR in a merge
 queue entry and posts one pp/score status on the merge group SHA, failing closed.
 Default is a dry run that prints the gh api POST that would be sent. Pass --post to apply.
 """
@@ -26,6 +27,10 @@ CONTEXT = "pp/score"
 MAX_DESCRIPTION = 140
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 VENDOR = re.compile(r"^[a-z][a-z0-9-]*$")
+# Not seat vendors. Cursor Auto and an unknown family need both an Anthropic
+# and an OpenAI score on the exact head (Chad, 2026-11-16 11:23 PM ET).
+DUAL_AUTHOR_FAMILIES = frozenset({"cursor-auto", "unknown"})
+DUAL_REQUIRED_VENDORS = ("anthropic", "openai")
 # GitHub names a merge queue entry's branch gh-readonly-queue/<base>/pr-<number>-<base sha>.
 QUEUE_REF = re.compile(r"^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-([0-9a-f]{40})$")
 # The queue squashes each PR into one commit whose title GitHub ends with "(#<number>)".
@@ -53,15 +58,19 @@ class GateError(Exception):
     """A merge group cannot be verified; the status fails closed with this message."""
 
 
-def score_pattern(vendors):
+def score_pattern(vendors, author_names=None):
     if not isinstance(vendors, (list, tuple)) or not vendors or any(
         not isinstance(v, str) or not VENDOR.fullmatch(v) for v in vendors
     ):
         raise ValueError("invalid vendor list")
-    names = "|".join(re.escape(v) for v in sorted(set(vendors)))
+    extra = set(author_names or ())
+    if any(not isinstance(v, str) or not VENDOR.fullmatch(v) for v in extra):
+        raise ValueError("invalid author list")
+    vendor_names = "|".join(re.escape(v) for v in sorted(set(vendors)))
+    author_names = "|".join(re.escape(v) for v in sorted(set(vendors) | extra))
     return re.compile(
-        rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({names})"
-        rf" score=([0-9]+) author=({names})$"
+        rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({vendor_names})"
+        rf" score=([0-9]+) author=({author_names})$"
     )
 
 
@@ -91,7 +100,7 @@ def load_trust(path=CLASSES):
     return {
         "authors": tuple(authors),
         "seats": seats,
-        "pattern": score_pattern(vendors),
+        "pattern": score_pattern(vendors, DUAL_AUTHOR_FAMILIES),
     }
 
 
@@ -174,6 +183,14 @@ def plan_head(head: str, group: list[Record]) -> StatusPlan:
             f"rejected: same-family score ({r.vendor})"), records)
     if len({r.author for r in unique}) > 1:
         return StatusPlan(head, "failure", "rejected: records disagree on the author family", records)
+    author = unique[0].author
+    if author in DUAL_AUTHOR_FAMILIES:
+        present = {r.vendor for r in unique}
+        missing = [v for v in DUAL_REQUIRED_VENDORS if v not in present]
+        if missing:
+            return StatusPlan(head, "failure", _fit(
+                f"{author} requires anthropic and openai scores; missing {', '.join(missing)}",
+                f"{author}: missing a required family"), records)
     # One status per SHA: the minimum recorded score is the conservative bar.
     minimum = min(r.score for r in unique)
     state = "success" if minimum >= PASS_AT else "failure"

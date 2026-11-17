@@ -5,7 +5,7 @@ import type {
   SourceActivity,
   SourceList,
 } from "@print-partner/rust-client";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -214,6 +214,10 @@ function buildCore(
     if (path === "/api/v2/plans/5") return json(summary(freshness));
     if (path === "/api/v2/plans/5/layers") return json(LAYERS);
     if (path === "/api/v1/sources") return sources();
+    const files = /^\/api\/v1\/sources\/(\d+)\/files$/.exec(path);
+    if (files) {
+      return json({ source_id: Number(files[1]), revision_id: 41, files: [] });
+    }
     return json({}, 404);
   });
 }
@@ -283,5 +287,126 @@ describe("UI14-04 The Sources tab shows which Source revisions the Build uses", 
     );
     const table = await screen.findByRole("table", { name: "Build Sources" });
     await waitFor(() => expect(within(table).getAllByText("No Plan accepted yet")).toHaveLength(2));
+  });
+});
+
+interface RecordedObserver {
+  callback: IntersectionObserverCallback;
+}
+
+const thumbObservers: RecordedObserver[] = [];
+
+function installViewport() {
+  thumbObservers.length = 0;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function rect(
+    this: HTMLElement,
+  ) {
+    const top = this.dataset.path === "far/part.stl" ? 5000 : 8;
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 64,
+      bottom: top + 64,
+      width: 64,
+      height: 64,
+      toJSON() {
+        return {};
+      },
+    } as DOMRect;
+  });
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        this.callback = callback;
+        thumbObservers.push(this);
+      }
+      callback: IntersectionObserverCallback;
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+      root = null;
+      rootMargin = "";
+      thresholds = [];
+    },
+  );
+}
+
+describe("The Sources tab shows each Source's files and thumbnails", () => {
+  it("groups files like Library, loads a thumbnail in view, and holds the one below", async () => {
+    installViewport();
+    renderAt(
+      "/builds/5/sources",
+      core((path) => {
+        if (path === "/api/v2/plans/5") {
+          return json(
+            summary({
+              status: "current",
+              accepted_at: "2026-11-01T10:00:00.000Z",
+              accepted_input_set_id: 3,
+            }),
+          );
+        }
+        if (path === "/api/v2/plans/5/layers") {
+          return json({
+            profile_id: 5,
+            layers: [
+              { id: 12, layer_order: 2, layer_type: "addon", project_id: 2, project_name: "Hinge pack" },
+              { id: 13, layer_order: 1, layer_type: "extra", project_id: 1, project_name: "Frame kit" },
+              { id: 10, layer_order: 0, layer_type: "base", project_id: 1, project_name: "Frame kit" },
+            ],
+          });
+        }
+        if (path === "/api/v1/sources") return json(SOURCES);
+        if (path === "/api/v1/sources/1/files") {
+          return json({
+            source_id: 1,
+            revision_id: 41,
+            files: [
+              { path: "README.md", kind: "document", size_bytes: 5 },
+              { path: "stl/body.stl", kind: "stl", size_bytes: 1536 },
+              { path: "far/part.stl", kind: "stl", size_bytes: 2048 },
+            ],
+          });
+        }
+        if (path === "/api/v1/sources/2/files") {
+          return json({
+            source_id: 2,
+            revision_id: 42,
+            files: [{ path: "hinge.stl", kind: "stl", size_bytes: 1024 }],
+          });
+        }
+        return json({}, 404);
+      }),
+    );
+    expect(
+      (await screen.findAllByRole("heading", { level: 2 })).map((heading) => heading.textContent),
+    ).toEqual(["Files for Frame kit", "Files for Hinge pack"]);
+    const frame = screen.getByRole("region", { name: "Files for Frame kit" });
+    expect(await within(frame).findByRole("heading", { name: "Top level" })).toBeTruthy();
+    expect(within(frame).getByText("README.md").parentElement?.textContent).toContain("5 B");
+    expect(within(frame).getByText("body.stl").parentElement?.textContent).toContain("1.5 KB");
+    const shown = document.querySelector('[data-path="stl/body.stl"] img');
+    expect(shown?.getAttribute("src")).toBe("/api/v1/sources/1/thumbnail?path=stl%2Fbody.stl");
+    expect(document.querySelector('[data-path="far/part.stl"] img')).toBeNull();
+    expect(document.querySelector('[data-path="hinge.stl"] img')?.getAttribute("src")).toBe(
+      "/api/v1/sources/2/thumbnail?path=hinge.stl",
+    );
+    const observer = thumbObservers[0];
+    if (!observer) throw new Error("below-fold thumbnail did not observe");
+    observer.callback(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      observer as unknown as IntersectionObserver,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-path="far/part.stl"] img')).toBeTruthy(),
+    );
+    fireEvent.error(shown!);
+    expect(within(frame).getByRole("img", { name: "No thumbnail" }).textContent).toBe("No preview");
   });
 });

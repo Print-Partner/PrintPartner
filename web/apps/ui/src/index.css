@@ -999,3 +999,18 @@ body {
   color: var(--text-muted);
   font-size: var(--text-xs);
 }
+
+.pp-build-mark {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* The list row stays the measured height. Library file rows keep the 64px box. */
+.pp-builds-table .pp-stl-thumb,
+.pp-builds-table .pp-stl-thumb img,
+.pp-builds-table .pp-stl-placeholder {
+  width: var(--row-height);
+  height: var(--row-height);
+}

@@ -72,7 +72,7 @@ The report holds keys, names and counts. The only stored values it prints are a 
 
 ```text
 Dry run of a Node data folder. Nothing was written.
-Schema 34, upgraded to 48 on a temporary copy.
+Schema 34, upgraded to 49 on a temporary copy.
 22 Builds, 10 Sources, 2 printers, 18 unmatched prints.
 ```
 

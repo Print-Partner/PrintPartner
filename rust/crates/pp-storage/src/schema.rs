@@ -12,7 +12,7 @@ pub use working_copy::InsufficientSpace;
 pub(crate) use working_copy::sweep as sweep_preflight_leftovers;
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 49;
+pub(crate) const CURRENT_VERSION: u64 = 50;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Every step
 /// from 38 does.
 ///
@@ -23,7 +23,7 @@ pub(crate) const CURRENT_VERSION: u64 = 49;
 /// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
 /// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 49;
+pub(crate) const LAST_COPIED_STEP: u64 = 50;
 #[cfg(feature = "desktop_rebuild")]
 const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
 /// The last step a release without the run marker installs. Its interrupted
@@ -472,6 +472,10 @@ pub(crate) fn initialize_with(
         crate::source_scan::validate_schema(&conn, CURRENT_VERSION)?;
         crate::source_sync::validate_schema(&conn, CURRENT_VERSION)?;
         validate_side_schemas(&conn, CURRENT_VERSION)?;
+        // Before seeding and before job recovery. A `sending` row left by a
+        // crash becomes `unknown` and is not sent again.
+        crate::spoolman_deductions::interrupt_sending(&mut conn)
+            .context("spoolman deduction startup")?;
     }
     // Node's fixture builder connects once to create the input and again to
     // create the expected database. The first Rust open must repeat that
@@ -593,6 +597,8 @@ fn install_steps(
     };
     let install_deductions: fn(&Connection) -> Result<()> =
         |connection| Ok(connection.execute_batch(include_str!("spoolman_deductions/schema.sql"))?);
+    let install_send_states: fn(&Connection) -> Result<()> =
+        crate::spoolman_deductions::install_send_states;
     for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
         (40, install_scan),
         (41, install_sync),
@@ -604,6 +610,10 @@ fn install_steps(
         (crate::tls_pins::SCHEMA_STEP, install_tls_pins),
         (crate::build_graph::SCHEMA_STEP, install_experiments),
         (crate::spoolman_deductions::SCHEMA_STEP, install_deductions),
+        (
+            crate::spoolman_deductions::SEND_STATE_STEP,
+            install_send_states,
+        ),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -711,6 +721,13 @@ fn validate_side_schemas(connection: &Connection, version: u64) -> Result<()> {
         }
         let expected = Connection::open_in_memory()?;
         expected.execute_batch(reference)?;
+        // Step 50 appends columns. SQLite rewrites the CREATE in sqlite_master,
+        // so the expected catalog runs the same ALTER on the step 49 SQL.
+        if step == crate::spoolman_deductions::SCHEMA_STEP
+            && version >= crate::spoolman_deductions::SEND_STATE_STEP
+        {
+            crate::spoolman_deductions::install_send_states(&expected)?;
+        }
         ensure!(actual == catalog(&expected)?, mismatch);
     }
     Ok(())

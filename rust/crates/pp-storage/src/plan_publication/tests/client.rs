@@ -20,6 +20,7 @@ fn client(capacity: usize) -> PublicationClient {
                 auth_ready: VecDeque::new(),
                 next: QueueClass::Normal,
                 closed: false,
+                restoring: false,
                 pending: VecDeque::new(),
             }),
             changed: Condvar::new(),
@@ -30,7 +31,7 @@ fn client(capacity: usize) -> PublicationClient {
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             import_quota: Mutex::new(None),
             domain_events: crate::domain_events::Feed::new(0),
-            print_file_snapshots: Arc::default(),
+            restoration: crate::restore::activation::Context::for_test(),
         }),
         policy: policy(),
     }
@@ -434,10 +435,10 @@ fn admission_matches_reference_cancel_full_stop_and_unknown_outcome() {
         .lock()
         .unwrap()
         .pending
-        .push_back(Envelope::WriterControl {
-            control: crate::WriterControl::PageCount,
+        .push_back(crate::storage_control::queued(
+            crate::WriterControl::PageCount,
             reply,
-        });
+        ));
     assert!(matches!(
         failure(client.apply(
             input(case).unwrap(),
@@ -584,7 +585,7 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
     let (owner, ready) = WriterOwner::open(&dir, crate::Limits::default()).unwrap();
     assert_eq!(ready.version, crate::schema::CURRENT_VERSION);
     assert_eq!(ready.previous_version, 35);
-    let backup = dir.join("backups/pre-schema35-to-49.db");
+    let backup = dir.join("backups/pre-schema35-to-50.db");
     assert_eq!(ready.backup.as_ref(), Some(&backup));
     assert_eq!(std::fs::read(&backup).unwrap(), before);
     let saved =
@@ -614,10 +615,10 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
         let checkpoint = client.shared.orphaned_source_leases.lock().unwrap();
         let (reply, control) = mpsc::channel();
         let mut queue = client.shared.queue.lock().unwrap();
-        queue.pending.push_back(Envelope::WriterControl {
-            control: crate::WriterControl::PageCount,
+        queue.pending.push_back(crate::storage_control::queued(
+            crate::WriterControl::PageCount,
             reply,
-        });
+        ));
         client.shared.changed.notify_all();
         let (queue, _) = client
             .shared

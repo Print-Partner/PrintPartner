@@ -316,7 +316,7 @@ fn domain_events_objects_below_42_are_refused_by_preflight_before_any_write() {
     assert_eq!(contents(&data), before);
 }
 
-/// Sets up a 37 to 49 upgrade interrupted after step `at` committed: the
+/// Sets up a 37 to 50 upgrade interrupted after step `at` committed: the
 /// live database is at `at` and copies 38 to `at` are on disk, oldest first.
 #[cfg(feature = "desktop_rebuild")]
 fn interrupted(name: &str, at: u64) -> (Scratch, PathBuf) {
@@ -431,7 +431,7 @@ fn ticket_t_8_archive_retention_retry_from_unmarked_41_keeps_the_older_run_input
     let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
     owner.shutdown().unwrap();
     assert_eq!(ready.previous_version, 41);
-    for step in 38..=49 {
+    for step in 38..=50 {
         assert!(
             backups.join(format!("pre-schema{step}.db")).exists(),
             "{step} {:?}",

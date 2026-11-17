@@ -6,11 +6,14 @@
 use checkoff_apply::apply;
 use checkoff_fixture::Fixture;
 use pp_storage::{
-    WriterOwner,
+    Limits, WriterOwner,
     auth::{self, Secret},
     checkoff_progress::Request,
     read_model::Credential,
-    spoolman_deductions::{Deduction, Filter, GramsBasis, SkipReason, State, Target},
+    spoolman_deductions::{
+        Claimed, Deduction, DeductionError, Filter, GramsBasis, Outcome, SkipReason,
+        SpoolmanDeductionsClient, State, Target,
+    },
 };
 use serde_json::{Value, json};
 use std::{sync::atomic::AtomicBool, time::Duration};
@@ -204,4 +207,360 @@ fn with_the_module_off_the_burst_succeeds_and_writes_no_row() {
         })
         .unwrap();
     assert_eq!(rows, 0);
+}
+
+fn client(owner: &WriterOwner) -> SpoolmanDeductionsClient {
+    owner
+        .spoolman_deductions(auth::AuthPolicy {
+            registration: auth::RegistrationPolicy::Open,
+            first_user: auth::FirstUserTenant::NewUser,
+            session_tenant: auth::SessionTenantPolicy::AccountTenant,
+        })
+        .unwrap()
+}
+
+fn credential() -> Credential {
+    Credential::Session(Secret::new("required-unit-fixture-secret".into()))
+}
+
+fn claim(
+    owner: &WriterOwner,
+    id: i64,
+    grams_before: Option<f64>,
+) -> Result<Option<Claimed>, DeductionError> {
+    client(owner).claim(
+        credential(),
+        id,
+        grams_before,
+        &AtomicBool::new(false),
+        Duration::from_secs(5),
+    )
+}
+
+fn finish(owner: &WriterOwner, id: i64, end: Outcome) -> Result<bool, DeductionError> {
+    client(owner).finish(
+        credential(),
+        id,
+        end,
+        &AtomicBool::new(false),
+        Duration::from_secs(5),
+    )
+}
+
+fn pending_id(owner: &WriterOwner) -> i64 {
+    deductions(owner)
+        .iter()
+        .find(|row| row.state == State::Pending)
+        .unwrap()
+        .id
+}
+
+/// A second connection reads the committed row. Claim returns only after its
+/// write commits.
+fn stored(fixture: &Fixture, id: i64) -> (String, Option<String>, Option<i64>, Option<f64>) {
+    fixture
+        .sql()
+        .query_row(
+            "SELECT state, failure, failure_status, spool_grams_before
+             FROM spoolman_deductions WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_claim_commits_only_a_pending_row_and_keeps_its_before_value() {
+    let (fixture, owner) = prepared();
+    burst(&owner, "k1", vec![confirm(1, 1), confirm(3, 0)]);
+    let rows = deductions(&owner);
+    let pending = rows.iter().find(|row| row.state == State::Pending).unwrap();
+    let skipped = rows.iter().find(|row| row.state == State::Skipped).unwrap();
+    assert!(claim(&owner, skipped.id, Some(1.0)).unwrap().is_none());
+    assert_eq!(
+        claim(&owner, pending.id, Some(f64::NAN))
+            .unwrap_err()
+            .to_string(),
+        "spool grams before a deduction must be a finite number"
+    );
+    assert_eq!(
+        stored(&fixture, pending.id),
+        ("pending".into(), None, None, None)
+    );
+
+    let claimed = claim(&owner, pending.id, Some(12.5)).unwrap().unwrap();
+    assert_eq!(
+        (
+            claimed.id,
+            claimed.integration_id.as_str(),
+            claimed.spool_id,
+            claimed.grams
+        ),
+        (pending.id, "sm-1", 7, 10.0)
+    );
+    assert_eq!(claimed.spool_grams_before, Some(12.5));
+    assert_eq!(
+        stored(&fixture, pending.id),
+        ("sending".into(), None, None, Some(12.5))
+    );
+    assert!(claim(&owner, pending.id, Some(99.0)).unwrap().is_none());
+    assert_eq!(
+        stored(&fixture, pending.id),
+        ("sending".into(), None, None, Some(12.5))
+    );
+    assert_eq!(stored(&fixture, skipped.id).0, "skipped");
+}
+
+#[test]
+fn a_finish_applies_only_while_the_row_is_sending() {
+    let (fixture, owner) = prepared();
+    fixture
+        .sql()
+        .execute(
+            "UPDATE parts SET spoolman_spool_id = 'spoolman:sm-1:spool:7' WHERE id = 3",
+            [],
+        )
+        .unwrap();
+    for (key, unit) in [
+        ("k1", confirm(1, 1)),
+        ("k2", confirm(1, 2)),
+        ("k3", confirm(3, 0)),
+        ("k4", confirm(3, 1)),
+    ] {
+        burst(&owner, key, vec![unit]);
+    }
+    let ids: Vec<i64> = deductions(&owner).iter().rev().map(|row| row.id).collect();
+    assert_eq!(ids.len(), 4);
+    assert!(!finish(&owner, ids[0], Outcome::Applied).unwrap());
+    assert_eq!(stored(&fixture, ids[0]).0, "pending");
+
+    claim(&owner, ids[0], Some(3.5)).unwrap().unwrap();
+    assert_eq!(
+        finish(&owner, ids[0], Outcome::Refused(99))
+            .unwrap_err()
+            .to_string(),
+        "a refused deduction needs an HTTP status from 100 to 599"
+    );
+    assert_eq!(
+        finish(&owner, ids[0], Outcome::Refused(600))
+            .unwrap_err()
+            .to_string(),
+        "a refused deduction needs an HTTP status from 100 to 599"
+    );
+    assert_eq!(stored(&fixture, ids[0]).0, "sending");
+    assert!(finish(&owner, ids[0], Outcome::Refused(422)).unwrap());
+    assert_eq!(
+        stored(&fixture, ids[0]),
+        (
+            "failed".into(),
+            Some("refused".into()),
+            Some(422),
+            Some(3.5)
+        )
+    );
+    assert!(!finish(&owner, ids[0], Outcome::Applied).unwrap());
+    assert!(claim(&owner, ids[0], Some(1.0)).unwrap().is_none());
+
+    let ends = [
+        (ids[1], Outcome::Applied, "applied", None),
+        (ids[2], Outcome::ReplyLost, "unknown", Some("reply_lost")),
+        (ids[3], Outcome::Unreachable, "failed", Some("unreachable")),
+    ];
+    for (id, end, state, failure) in ends {
+        claim(&owner, id, None).unwrap().unwrap();
+        assert!(finish(&owner, id, end).unwrap());
+        assert_eq!(
+            stored(&fixture, id),
+            (state.into(), failure.map(str::to_owned), None, None)
+        );
+        assert!(!finish(&owner, id, Outcome::Applied).unwrap());
+        assert!(claim(&owner, id, None).unwrap().is_none());
+    }
+
+    for (burst_id, end, failure) in [
+        ("k5", Outcome::IntegrationMissing, "integration_missing"),
+        ("k6", Outcome::IntegrationDisabled, "integration_disabled"),
+    ] {
+        fixture
+            .sql()
+            .execute(
+                "INSERT INTO spoolman_deductions
+                 (tenant_id,burst,link_id,profile_id,state,units,integration_id,spool_id,grams,grams_basis,created_at,updated_at)
+                 VALUES ('default',?1,'link-verify',1,'pending',1,'sm-1',7,1.0,'estimated','t','t')",
+                [burst_id],
+            )
+            .unwrap();
+        let id = pending_id(&owner);
+        claim(&owner, id, None).unwrap().unwrap();
+        assert!(finish(&owner, id, end).unwrap());
+        assert_eq!(
+            stored(&fixture, id),
+            ("failed".into(), Some(failure.into()), None, None)
+        );
+    }
+}
+
+#[test]
+fn a_restart_marks_a_sending_row_unknown_and_does_not_send_it() {
+    let (fixture, owner) = prepared();
+    burst(&owner, "k1", vec![confirm(1, 1)]);
+    let sending = pending_id(&owner);
+    claim(&owner, sending, Some(80.0)).unwrap().unwrap();
+    burst(&owner, "k2", vec![confirm(1, 2)]);
+    let still_pending = pending_id(&owner);
+    drop(owner);
+
+    let owner = WriterOwner::open(&fixture.path, Limits::default())
+        .unwrap()
+        .0;
+    assert_eq!(
+        stored(&fixture, sending),
+        (
+            "unknown".into(),
+            Some("interrupted".into()),
+            None,
+            Some(80.0)
+        )
+    );
+    assert_eq!(
+        stored(&fixture, still_pending),
+        ("pending".into(), None, None, None)
+    );
+    assert!(claim(&owner, sending, Some(1.0)).unwrap().is_none());
+    assert_eq!(stored(&fixture, sending).0, "unknown");
+    let claimed = claim(&owner, still_pending, Some(1.0)).unwrap().unwrap();
+    assert_eq!(claimed.id, still_pending);
+}
+
+#[test]
+fn undo_removes_pending_and_skipped_rows_and_leaves_a_sending_claim() {
+    let (fixture, owner) = prepared();
+    let first = burst(&owner, "k1", vec![confirm(1, 1), confirm(3, 0)]);
+    let pending = pending_id(&owner);
+    claim(&owner, pending, Some(4.0)).unwrap().unwrap();
+    let undone = apply(
+        &owner,
+        Request::UndoBatch {
+            body: json!({ "undo_token": &first["body"]["undo_token"] }),
+        },
+    );
+    assert_eq!(undone["status"], 200, "{undone}");
+    let rows = deductions(&owner);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, State::Sending);
+    assert_eq!(rows[0].spool_grams_before, Some(4.0));
+    let claims: i64 = fixture
+        .sql()
+        .query_row(
+            "SELECT count(*) FROM spoolman_deduction_units WHERE deduction_id=?1",
+            [pending],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claims, 1);
+    burst(&owner, "k2", vec![confirm(1, 1)]);
+    assert_eq!(deductions(&owner).len(), 1);
+}
+
+fn version(fixture: &Fixture) -> String {
+    fixture
+        .sql()
+        .query_row(
+            "SELECT value FROM app_settings WHERE tenant_id='default' AND key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+fn column_present(fixture: &Fixture, name: &str) -> bool {
+    fixture
+        .sql()
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('spoolman_deductions') WHERE name=?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+
+#[test]
+fn schema_50_keeps_a_step_49_database_and_a_failed_step_leaves_it_there() {
+    let (fixture, owner) = prepared();
+    burst(&owner, "k1", vec![confirm(1, 1), confirm(3, 0)]);
+    drop(owner);
+    let columns = "id,tenant_id,burst,link_id,profile_id,state,reason,units,integration_id,spool_id,grams,grams_basis,created_at,updated_at";
+    let read = |connection: &rusqlite::Connection| -> Vec<String> {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {columns} FROM spoolman_deductions ORDER BY id"
+            ))
+            .unwrap();
+        let width = statement.column_count();
+        statement
+            .query_map([], |row| {
+                let values = (0..width)
+                    .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(format!("{values:?}"))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let connection = fixture.sql();
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE spoolman_deductions_kept AS SELECT {columns} FROM spoolman_deductions;
+             DROP TABLE spoolman_deductions;
+             {schema}
+             INSERT INTO spoolman_deductions ({columns}) SELECT {columns} FROM spoolman_deductions_kept;
+             DROP TABLE spoolman_deductions_kept;
+             UPDATE app_settings SET value='49' WHERE tenant_id='default' AND key='schema_version';
+             CREATE TRIGGER reject_schema50 BEFORE UPDATE OF value ON app_settings
+             WHEN NEW.tenant_id = 'default' AND NEW.key = 'schema_version' AND NEW.value = '50'
+             BEGIN SELECT RAISE(ABORT, 'schema50 stamp rejected'); END;",
+            schema = include_str!("../src/spoolman_deductions/schema.sql"),
+        ))
+        .unwrap();
+    let rows = read(&connection);
+    assert_eq!(rows.len(), 2);
+    drop(connection);
+    assert!(!column_present(&fixture, "failure"));
+
+    let Err(error) = WriterOwner::open(&fixture.path, Limits::default()) else {
+        panic!("step 50 committed past the stamp trigger");
+    };
+    assert!(
+        format!("{error:#}").contains("schema50 stamp rejected"),
+        "{error:#}"
+    );
+    assert_eq!(version(&fixture), "49");
+    assert!(!column_present(&fixture, "failure"));
+    assert_eq!(read(&fixture.sql()), rows);
+    assert!(fixture.path.join("backups/pre-schema50.db").is_file());
+
+    fixture
+        .sql()
+        .execute_batch("DROP TRIGGER reject_schema50")
+        .unwrap();
+    let (owner, ready) = WriterOwner::open(&fixture.path, Limits::default()).unwrap();
+    assert_eq!((ready.version, ready.previous_version), (50, 49));
+    drop(owner);
+    assert_eq!(version(&fixture), "50");
+    assert!(column_present(&fixture, "failure"));
+    assert!(column_present(&fixture, "failure_status"));
+    assert!(column_present(&fixture, "spool_grams_before"));
+    assert_eq!(read(&fixture.sql()), rows);
+    let blanks: (i64, i64, i64) = fixture
+        .sql()
+        .query_row(
+            "SELECT count(failure), count(failure_status), count(spool_grams_before)
+             FROM spoolman_deductions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(blanks, (0, 0, 0));
 }

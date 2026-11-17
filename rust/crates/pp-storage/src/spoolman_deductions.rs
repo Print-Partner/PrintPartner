@@ -12,21 +12,37 @@
 //! (`spoolman_deduction_units`); undoing a burst removes its `pending` and
 //! `skipped` rows and frees their units.
 //!
+//! A claim moves one `pending` row to `sending` and stores the grams Spoolman
+//! reported before the request. The claim commits on its own, before the
+//! caller sends anything. A finish changes a row only while it is `sending`.
+//! Opening the database marks every `sending` row `unknown` with failure
+//! `interrupted`, before seeding and before job recovery, and does not send
+//! it. Nothing here returns `sending`, `unknown` or `failed` to `pending`.
+//! With the Module off at send time the row stays `pending`; that is not a
+//! new skip reason. The worker that sends, and the notify a burst commit uses
+//! to wake it, are GRE-411 part 2b.
+//!
 //! Errors are [`DeductionError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.
 
 use crate::{
-    SettingsClient, WriterFailure, WriterOwner,
+    SettingsClient, Shared, WriterFailure, WriterOwner,
     auth::AuthPolicy,
     printer_setup::{ServiceKind, integrations},
     read_model::Credential,
     write::authorize,
 };
 use pp_domain::{PositiveId, features::Feature};
-use rusqlite::{OptionalExtension, Row, Transaction, params};
-use std::{collections::BTreeMap, sync::atomic::AtomicBool, time::Duration};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 pub(crate) const SCHEMA_STEP: u64 = 49;
+/// Columns that record one send. Appended; the table is not rebuilt.
+pub(crate) const SEND_STATE_STEP: u64 = 50;
 /// The list answers at most this many rows, newest first.
 pub const LIST_LIMIT: usize = 100;
 
@@ -63,6 +79,33 @@ pub enum GramsBasis {
     Measured,
 }
 
+/// Why a send did not apply. Set only on `failed`, `unknown` and `dismissed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Unreachable,
+    Refused,
+    ReplyLost,
+    Interrupted,
+    IntegrationMissing,
+    IntegrationDisabled,
+}
+
+/// How a claimed send ended. Applied only while the row is `sending`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Applied,
+    /// The reply never came back. The row becomes `unknown`.
+    ReplyLost,
+    /// Nothing was accepted. The row becomes `failed`.
+    Unreachable,
+    /// Spoolman answered this HTTP status. The row becomes `failed`.
+    Refused(u16),
+    /// The integration was gone at send time. The row becomes `failed`.
+    IntegrationMissing,
+    /// The integration was disabled at send time. The row becomes `failed`.
+    IntegrationDisabled,
+}
+
 macro_rules! text_enum {
     ($name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
         impl $name {
@@ -78,6 +121,14 @@ macro_rules! text_enum {
 text_enum!(State { Pending => "pending", Sending => "sending", Applied => "applied", Unknown => "unknown", Failed => "failed", Skipped => "skipped", Dismissed => "dismissed" });
 text_enum!(SkipReason { NoGrams => "no_grams", NoPinnedSpool => "no_pinned_spool", IntegrationMissing => "integration_missing", IntegrationDisabled => "integration_disabled", IntegrationsUnreadable => "integrations_unreadable", ModuleSettingUnreadable => "module_setting_unreadable" });
 text_enum!(GramsBasis { Estimated => "estimated", Measured => "measured" });
+text_enum!(Failure {
+    Unreachable => "unreachable",
+    Refused => "refused",
+    ReplyLost => "reply_lost",
+    Interrupted => "interrupted",
+    IntegrationMissing => "integration_missing",
+    IntegrationDisabled => "integration_disabled",
+});
 
 /// What a row deducts: present on every row except a `skipped` one.
 #[derive(Clone, Debug, PartialEq)]
@@ -100,8 +151,24 @@ pub struct Deduction {
     /// The burst's confirmed units this row covers.
     pub units: u32,
     pub target: Option<Target>,
+    /// Set only on `failed`, `unknown` and `dismissed`.
+    pub failure: Option<Failure>,
+    /// 100 to 599, and only when `failure` is `refused`.
+    pub failure_status: Option<i64>,
+    /// Grams Spoolman reported before the send. Stored when the row is claimed.
+    pub spool_grams_before: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// The row a claim moved to `sending`, with the grams the caller will send.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Claimed {
+    pub id: i64,
+    pub integration_id: String,
+    pub spool_id: i64,
+    pub grams: f64,
+    pub spool_grams_before: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -115,6 +182,12 @@ pub enum DeductionError {
     /// A stored row breaks the shape the schema checks; it is left as it is.
     #[error("stored deduction row {id} is not the typed shape")]
     StoredRowInvalid { id: i64 },
+    /// `spool_grams_before` was not a finite number. The row was not claimed.
+    #[error("spool grams before a deduction must be a finite number")]
+    GramsBeforeNotFinite,
+    /// A refused send named a status outside 100 to 599. The row was not finished.
+    #[error("a refused deduction needs an HTTP status from 100 to 599")]
+    StatusOutOfRange,
     #[error(transparent)]
     Writer(#[from] WriterFailure),
 }
@@ -395,6 +468,64 @@ fn now(tx: &Transaction<'_>) -> rusqlite::Result<String> {
     })
 }
 
+/// Appends the send-state columns. A column that is already there is left as
+/// it is, so a restarted step does not fail on its own write.
+pub(crate) fn install_send_states(connection: &Connection) -> anyhow::Result<()> {
+    for statement in include_str!("spoolman_deductions/columns50.sql").lines() {
+        let statement = statement.trim();
+        if statement.is_empty() || statement.starts_with("--") {
+            continue;
+        }
+        let column = statement
+            .split_whitespace()
+            .nth(5)
+            .ok_or_else(|| anyhow::anyhow!("Invalid deduction column migration"))?;
+        crate::schema::add_column(connection, "spoolman_deductions", column, statement)?;
+    }
+    Ok(())
+}
+
+/// Every `sending` row becomes `unknown` / `interrupted`. Nothing is sent.
+/// Called from schema open, after the columns exist and before other recovery.
+pub(crate) fn interrupt_sending(connection: &mut Connection) -> anyhow::Result<()> {
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let now = now(&tx)?;
+    tx.execute(
+        "UPDATE spoolman_deductions
+         SET state='unknown', failure='interrupted', failure_status=NULL, updated_at=?1
+         WHERE state='sending'",
+        [now],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// `(state, failure, failure_status)` a finish stores, or a refusal that
+/// writes nothing.
+fn outcome(
+    end: Outcome,
+) -> Result<(&'static str, Option<&'static str>, Option<i64>), DeductionError> {
+    Ok(match end {
+        Outcome::Applied => ("applied", None, None),
+        Outcome::ReplyLost => ("unknown", Some(Failure::ReplyLost.as_str()), None),
+        Outcome::Unreachable => ("failed", Some(Failure::Unreachable.as_str()), None),
+        Outcome::IntegrationMissing => ("failed", Some(Failure::IntegrationMissing.as_str()), None),
+        Outcome::IntegrationDisabled => {
+            ("failed", Some(Failure::IntegrationDisabled.as_str()), None)
+        }
+        Outcome::Refused(status) => {
+            if !(100..=599).contains(&status) {
+                return Err(DeductionError::StatusOutOfRange);
+            }
+            (
+                "failed",
+                Some(Failure::Refused.as_str()),
+                Some(i64::from(status)),
+            )
+        }
+    })
+}
+
 fn deduction(row: &Row<'_>) -> Result<Deduction, DeductionError> {
     let id: i64 = row.get("id")?;
     let invalid = || DeductionError::StoredRowInvalid { id };
@@ -421,6 +552,26 @@ fn deduction(row: &Row<'_>) -> Result<Deduction, DeductionError> {
     if (state == State::Skipped) != reason.is_some() || (target.is_none() != reason.is_some()) {
         return Err(invalid());
     }
+    let failure = match row.get::<_, Option<String>>("failure")? {
+        Some(text) => Some(Failure::parse(&text).ok_or_else(invalid)?),
+        None => None,
+    };
+    let failure_status = row.get::<_, Option<i64>>("failure_status")?;
+    let spool_grams_before = row.get::<_, Option<f64>>("spool_grams_before")?;
+    if failure.is_some() && !matches!(state, State::Failed | State::Unknown | State::Dismissed) {
+        return Err(invalid());
+    }
+    if failure_status.is_some() && failure != Some(Failure::Refused) {
+        return Err(invalid());
+    }
+    if let Some(status) = failure_status
+        && !(100..=599).contains(&status)
+    {
+        return Err(invalid());
+    }
+    if spool_grams_before.is_some_and(|grams| !grams.is_finite()) {
+        return Err(invalid());
+    }
     Ok(Deduction {
         id,
         state,
@@ -429,6 +580,9 @@ fn deduction(row: &Row<'_>) -> Result<Deduction, DeductionError> {
         profile_id: row.get("profile_id")?,
         units: row.get("units")?,
         target,
+        failure,
+        failure_status,
+        spool_grams_before,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -436,6 +590,7 @@ fn deduction(row: &Row<'_>) -> Result<Deduction, DeductionError> {
 
 #[derive(Clone)]
 pub struct SpoolmanDeductionsClient {
+    shared: Arc<Shared>,
     readers: SettingsClient,
     policy: AuthPolicy,
 }
@@ -447,6 +602,7 @@ impl WriterOwner {
     ) -> anyhow::Result<SpoolmanDeductionsClient> {
         crate::auth::validate_policy(policy)?;
         Ok(SpoolmanDeductionsClient {
+            shared: self.client.shared.clone(),
             readers: self.client(),
             policy,
         })
@@ -484,11 +640,107 @@ impl SpoolmanDeductionsClient {
                 Ok(out)
             })?
     }
+
+    /// Moves `id` from `pending` to `sending` and stores `grams_before`.
+    /// The write commits before this returns, so the caller can send after
+    /// it. `Ok(None)` when the row is not `pending`: nothing changes, and a
+    /// later call cannot claim it either.
+    pub fn claim(
+        &self,
+        credential: Credential,
+        id: i64,
+        grams_before: Option<f64>,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Option<Claimed>, DeductionError> {
+        if grams_before.is_some_and(|grams| !grams.is_finite()) {
+            return Err(DeductionError::GramsBeforeNotFinite);
+        }
+        let policy = self.policy;
+        self.shared.write(
+            "spoolman_deductions.claim",
+            cancelled,
+            wait,
+            move |tx, _| {
+                let installation = authorize(tx, &credential, policy)?;
+                claim_pending(tx, installation.id(), id, grams_before)
+            },
+        )?
+    }
+
+    /// Records `end` on `id`. Applied only while the row is `sending`.
+    /// `Ok(false)` when it is not: the row is unchanged.
+    pub fn finish(
+        &self,
+        credential: Credential,
+        id: i64,
+        end: Outcome,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<bool, DeductionError> {
+        let (state, failure, status) = outcome(end)?;
+        let policy = self.policy;
+        self.shared.write(
+            "spoolman_deductions.finish",
+            cancelled,
+            wait,
+            move |tx, _| {
+                let installation = authorize(tx, &credential, policy)?;
+                let now = now(tx)?;
+                let changed = tx.execute(
+                    "UPDATE spoolman_deductions
+                     SET state=?1, failure=?2, failure_status=?3, updated_at=?4
+                     WHERE tenant_id=?5 AND id=?6 AND state='sending'",
+                    params![state, failure, status, now, installation.id(), id],
+                )?;
+                Ok(changed == 1)
+            },
+        )?
+    }
+}
+
+fn claim_pending(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    grams_before: Option<f64>,
+) -> Result<Option<Claimed>, DeductionError> {
+    let now = now(tx)?;
+    let changed = tx.execute(
+        "UPDATE spoolman_deductions
+         SET state='sending', spool_grams_before=?1, updated_at=?2
+         WHERE tenant_id=?3 AND id=?4 AND state='pending'",
+        params![grams_before, now, tenant, id],
+    )?;
+    if changed != 1 {
+        return Ok(None);
+    }
+    let (integration_id, spool_id, grams): (Option<String>, Option<i64>, Option<f64>) = tx
+        .query_row(
+            "SELECT integration_id, spool_id, grams FROM spoolman_deductions WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    let (Some(integration_id), Some(spool_id), Some(grams)) = (integration_id, spool_id, grams)
+    else {
+        return Err(DeductionError::StoredRowInvalid { id });
+    };
+    if !grams.is_finite() || grams <= 0.0 {
+        return Err(DeductionError::StoredRowInvalid { id });
+    }
+    Ok(Some(Claimed {
+        id,
+        integration_id,
+        spool_id,
+        grams,
+        spool_grams_before: grams_before,
+    }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{share, spool_pin};
+    use super::{install_send_states, share, spool_pin};
+    use rusqlite::params;
 
     #[test]
     fn a_share_multiplies_before_it_divides_and_is_positive_and_finite() {
@@ -513,6 +765,61 @@ mod tests {
             "sm-1:spool:7",
         ] {
             assert_eq!(spool_pin(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn send_state_columns_accept_only_a_failure_on_a_terminal_row() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("spoolman_deductions/schema.sql"))
+            .unwrap();
+        install_send_states(&conn).unwrap();
+        install_send_states(&conn).unwrap();
+        let insert = |state: &str, failure: Option<&str>, status: Option<i64>| {
+            conn.execute(
+                "INSERT INTO spoolman_deductions
+                 (tenant_id,burst,link_id,profile_id,state,reason,units,integration_id,spool_id,grams,grams_basis,created_at,updated_at,failure,failure_status)
+                 VALUES ('default','b','link',1,?1,NULL,1,'sm',7,1.5,'estimated','t','t',?2,?3)",
+                params![state, failure, status],
+            )
+        };
+        insert("failed", Some("unreachable"), None).unwrap();
+        insert("unknown", Some("reply_lost"), None).unwrap();
+        insert("dismissed", Some("interrupted"), None).unwrap();
+        insert("failed", Some("refused"), Some(422)).unwrap();
+        insert("failed", None, None).unwrap();
+        insert("unknown", None, None).unwrap();
+        insert("pending", None, None).unwrap();
+        let skipped = conn.execute(
+            "INSERT INTO spoolman_deductions
+             (tenant_id,burst,link_id,profile_id,state,reason,units,created_at,updated_at)
+             VALUES ('default','skip','link',1,'skipped','module_off',1,'t','t')",
+            [],
+        );
+        assert!(
+            skipped
+                .unwrap_err()
+                .to_string()
+                .contains("CHECK constraint"),
+            "a new skip reason must stay refused"
+        );
+        for (state, failure, status) in [
+            ("pending", Some("unreachable"), None),
+            ("sending", Some("interrupted"), None),
+            ("applied", Some("reply_lost"), None),
+            ("failed", Some("no_grams"), None),
+            ("failed", Some("refused"), Some(99)),
+            ("failed", Some("refused"), Some(600)),
+            ("failed", Some("unreachable"), Some(500)),
+            ("pending", None, Some(422)),
+        ] {
+            let Err(error) = insert(state, failure, status) else {
+                panic!("{state} {failure:?} {status:?} was accepted");
+            };
+            assert!(
+                error.to_string().contains("CHECK constraint"),
+                "{state} {failure:?} {status:?}: {error}"
+            );
         }
     }
 }

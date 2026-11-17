@@ -17,7 +17,7 @@ use std::{
 };
 
 const CURRENT_SCHEMA: u64 = if cfg!(feature = "desktop_rebuild") {
-    49
+    50
 } else {
     35
 };

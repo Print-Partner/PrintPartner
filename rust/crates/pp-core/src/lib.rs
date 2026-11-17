@@ -61,10 +61,19 @@ pub mod review_observations;
 pub mod rebuild_api;
 
 #[cfg(feature = "desktop_rebuild")]
+pub mod deduction_worker;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod send_worker;
 
 #[cfg(feature = "desktop_rebuild")]
+mod sync_worker;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod source_acquisition;
+
+#[cfg(feature = "desktop_rebuild")]
+pub mod source_uploads;
 
 #[cfg(feature = "desktop_rebuild")]
 pub mod spoolman;
@@ -274,6 +283,20 @@ enum Backend {
             Arc<tokio::sync::Notify>,
             tokio::task::JoinHandle<()>,
         ),
+        /// The GitHub sync worker, stopped the same way as sends.
+        syncs: (
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<tokio::sync::Notify>,
+            tokio::task::JoinHandle<()>,
+        ),
+        /// Spoolman deduction sends, stopped the same way as sends.
+        deductions: (
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<tokio::sync::Notify>,
+            tokio::task::JoinHandle<()>,
+        ),
+        /// Source uploads and the import workers they start.
+        imports: Arc<source_acquisition::SourceAcquisitions>,
     },
 }
 
@@ -581,8 +604,19 @@ async fn start_rust_resources(
         rebuild_api::desktop_policy(),
         pp_gateway::printer_host::HostSends::new()?,
     )?;
+    let deduction_worker = deduction_worker::DeductionWorker::new(
+        &writer,
+        rebuild_api::desktop_policy(),
+        spoolman::SpoolmanInventory::new()?,
+    )?;
+    let sync_worker = sync_worker::SyncWorker::new(
+        &writer,
+        rebuild_api::desktop_policy(),
+        github::GithubTransport::new()?,
+    )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
+    let (imports, uploads) = start_imports(&writer, &origin).await?;
     // MCP is composed before the gateway starts the watchers; it reads them
     // through this slot, bound when the gateway hands out its status port.
     let farm = printer_status::LateFarm::default();
@@ -593,7 +627,8 @@ async fn start_rust_resources(
         community_manifests.as_deref(),
         rebuild_api::RuntimeInputs::running(server_updates, listen.is_some(), &farm),
     )?
-    .context("Rust product routes need the rebuild setting")?;
+    .context("Rust product routes need the rebuild setting")?
+    .merge(uploads);
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
     let product = move |status: pp_gateway::MoonrakerStatus| {
         farm.bind(status.clone());
@@ -623,6 +658,18 @@ async fn start_rust_resources(
         send_worker.waker(),
         send_worker.spawn(stop_sends),
     );
+    let stop_syncs = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let syncs = (
+        Arc::clone(&stop_syncs),
+        sync_worker.waker(),
+        sync_worker.spawn(stop_syncs),
+    );
+    let stop_deductions = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let deductions = (
+        Arc::clone(&stop_deductions),
+        deduction_worker.waker(),
+        deduction_worker.spawn(stop_deductions),
+    );
     Ok(Resources {
         owners,
         origin_change,
@@ -632,9 +679,54 @@ async fn start_rust_resources(
             writer,
             status: Arc::new(status),
             sends,
+            syncs,
+            deductions,
+            imports,
         },
         gate: ShutdownGate::new(),
     })
+}
+
+/// Constructs the runtime's one [`source_acquisition::SourceAcquisitions`]
+/// and runs its recovery before anything is served: half-written captures
+/// are discarded, retained captures settle, and imports a stopped process
+/// left resume. A capture that still needs repair keeps uploads closed
+/// (503) but does not stop the server.
+#[cfg(feature = "desktop_rebuild")]
+async fn start_imports(
+    writer: &Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
+    origin: &str,
+) -> Result<(Arc<source_acquisition::SourceAcquisitions>, axum::Router)> {
+    let (imports, data_dir, settings) = {
+        let owner = writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage owner lock poisoned"))?;
+        let imports = source_acquisition::SourceAcquisitions::new(
+            &owner,
+            rebuild_api::desktop_policy(),
+            source_uploads::IMPORT_QUOTA,
+            source_uploads::IMPORT_SLOTS,
+        )?;
+        let settings = owner.app_settings_with_policy(rebuild_api::desktop_policy())?;
+        let lease = owner.lease().context("Storage lease unavailable")?;
+        (Arc::new(imports), lease.data_dir().to_owned(), settings)
+    };
+    let recovering = Arc::clone(&imports);
+    let recovered = tokio::task::spawn_blocking(move || {
+        let recovered = recovering.recover_before_accepting();
+        (recovered, recovering.resume_imports())
+    })
+    .await?;
+    if let (Err(error), _) | (_, Err(error)) = recovered {
+        tracing::warn!(error = %format!("{error:#}"), "Source import recovery incomplete");
+    }
+    let uploads = Arc::new(source_uploads::SourceUploadService::new(
+        Arc::clone(&imports),
+        data_dir,
+        settings,
+    ));
+    let router = rebuild_api::upload_router(Arc::clone(writer), origin, uploads)?;
+    Ok((imports, router))
 }
 
 impl CoreRuntime {
@@ -936,9 +1028,12 @@ async fn stop_resources(
             writer,
             status,
             sends,
+            syncs,
+            deductions,
+            imports,
         } => {
             status.send_replace(RustStatus::Stopping);
-            let receipt = stop_rust(gateway, gate, writer, sends).await;
+            let receipt = stop_rust(gateway, gate, writer, sends, syncs, deductions, imports).await;
             status.send_replace(RustStatus::Stopped);
             (receipt, None)
         }
@@ -957,18 +1052,41 @@ async fn stop_rust(
         Arc<tokio::sync::Notify>,
         tokio::task::JoinHandle<()>,
     ),
+    (stop_syncs, sync_wake, syncs): (
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<()>,
+    ),
+    (stop_deductions, deduction_wake, deductions): (
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<()>,
+    ),
+    imports: Arc<source_acquisition::SourceAcquisitions>,
 ) -> ShutdownReceipt {
-    // No new upload starts from here; one in flight may finish below.
+    // No new upload, sync or deduction send starts from here; one in flight
+    // may finish below.
     stop_sends.store(true, std::sync::atomic::Ordering::Release);
+    stop_syncs.store(true, std::sync::atomic::Ordering::Release);
+    stop_deductions.store(true, std::sync::atomic::Ordering::Release);
     wake.notify_one();
-    let (tracked_idle, gateway_idle) = drain::reject_and_wait(
-        MUTATION_DRAIN,
-        &gate,
-        || gateway.begin_drain(),
-        |bound| gateway.wait_idle(bound),
-        || {},
-    )
-    .await;
+    sync_wake.notify_one();
+    deduction_wake.notify_one();
+    // Source uploads close and their workers stop, within the same bound as
+    // the gateway drain; an upload still streaming is discarded, and an
+    // admitted import resumes at the next start.
+    let imports = tokio::task::spawn_blocking(move || imports.shutdown(MUTATION_DRAIN));
+    let ((tracked_idle, gateway_idle), imports) = tokio::join!(
+        drain::reject_and_wait(
+            MUTATION_DRAIN,
+            &gate,
+            || gateway.begin_drain(),
+            |bound| gateway.wait_idle(bound),
+            || {},
+        ),
+        imports
+    );
+    let imports_idle = imports.is_ok_and(|drain| drain.is_ok_and(|drain| drain.idle));
     gateway.finish_drain();
     let gateway_stopped = gateway.stop().await.is_ok();
     // An upload in flight finishes; one still running at the bound is
@@ -977,13 +1095,29 @@ async fn stop_rust(
     if tokio::time::timeout(MUTATION_DRAIN, sends).await.is_err() {
         abort.abort();
     }
+    let abort = syncs.abort_handle();
+    if tokio::time::timeout(MUTATION_DRAIN, syncs).await.is_err() {
+        abort.abort();
+    }
+    let abort = deductions.abort_handle();
+    if tokio::time::timeout(MUTATION_DRAIN, deductions)
+        .await
+        .is_err()
+    {
+        abort.abort();
+    }
     let mut receipt = ShutdownReceipt::drained(tracked_idle, gateway_idle, None, gateway_stopped);
     receipt.compat_reaped = true;
+    if !imports_idle {
+        tracing::warn!("Source import workers still running; storage stays owned until exit");
+        receipt.errors.push("source_imports_not_drained");
+    }
     if !gateway_stopped {
         receipt.errors.push("gateway_join_failed");
     }
-    if !tracked_idle {
-        // Tracked work may still use storage: keep the lock until process exit.
+    if !tracked_idle || !imports_idle {
+        // Tracked work or an import worker may still write storage: keep the
+        // lock until process exit.
         std::mem::forget(writer);
         receipt.errors.push("storage_ownership_retained");
         return receipt;

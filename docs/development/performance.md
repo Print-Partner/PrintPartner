@@ -38,21 +38,22 @@ Requests use one keep-alive HTTP/1.1 connection per runtime, as a browser tab do
 | --- | --- | --- |
 | App open | spawn to the origin line, plus the first `GET /api/v2/plans` | same |
 | Idle memory and CPU | 5 s settle, then 30 s of process-tree CPU ticks and Linux PSS (`smaps_rollup`) | same |
-| Thumbnails | per Part of the 100-unit Build: cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | none |
+| Thumbnails | per Part of the 100-unit Build: cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | per Part of that Build: `GET /sources/{id}/thumbnail?path=` for the Part's STL. Cold is the first read, which renders the PNG; warm is the same GET from the cache |
 | Plan change | `POST .../drafts/recompute`, `PATCH .../parts`, `POST .../apply` under `/api/v2/plans/{id}`; also `POST /plans/:id/save` | the same three, plus `POST .../drafts/save` and `GET .../accept-preview` |
 | Checkoff session | per unit `PATCH /parts/:id/progress`, then `GET /plans/:id/checkoff` per burst | per burst `POST /api/v2/plans/{id}/checkoff/bursts`, then `GET .../checkoff/units` |
-| Exports | `POST /jobs/export-stl-pack` or `/jobs/export-checklist-html`, `GET /jobs/:id` every 20 ms until done, then the download | none |
+| Exports | `POST /jobs/export-stl-pack` or `/jobs/export-checklist-html`, `GET /jobs/:id` every 20 ms until done, then the download | `GET /api/v2/plans/{id}/exports/stl-pack` and `GET /api/v2/plans/{id}/exports/checklist`, each from the request to the last byte |
 | Printer event | a simulator turns `printing` into `complete`; poll `GET /api/v1/integrations/{id}/status` every 50 ms | same |
 | Today refresh | All Production's reads at once: `/printer-checkoff`, `/printer-checkoff/unattributed` | Today's reads at once: `/api/v2/tasks`, `/api/v2/printer-checkoff`, `/api/v2/printers` |
 
 What the numbers leave out:
 
-- No browser. Rendering, the WebGL thumbnail render and React work are not timed. A cold thumbnail is the server's share only.
-- Neither the old Builds list nor the replacement Builds list requests thumbnails, so the thumbnail rows time a Build's Part thumbnails, which the old app shows on the Build's Sources and Review steps.
+- No browser, and no React work. On Node the WebGL render is not timed, so a cold thumbnail is the server's share only: the placeholder, the mesh and the uploaded PNG. On Rust, `GET /sources/{id}/thumbnail` draws the PNG, so the cold time includes that render.
+- The old Builds list does not request thumbnails. The replacement Builds list requests `GET /sources/{id}/thumbnail` for the first Source of each row on screen, after `GET /api/v2/plans` returns. Those image requests are not part of the Builds list rows. The thumbnail rows time the Parts of one Build. Node sends what the old app sends on that Build's Sources and Review steps. Rust sends `GET /sources/{id}/thumbnail` for each of those Parts.
 - The printer event row times the gateway's Rust Moonraker watcher in both modes; it polls every 2 s, so the row shows where the event fell in that cycle. It is not a Node-versus-Rust comparison.
 - Rows marked "different requests" have no ratio. Checkoff on Node is one request per unit and on Rust one per burst; Today and All Production are different screens.
 - When a server closes an idle keep-alive connection, the request is sent again once and only that attempt is timed. `http_retries` in the samples counts these: 0 on Node and 3 on Rust in the baseline below.
 - p95 is nearest-rank. Below 20 samples it is the maximum, and the table says "(max)". Per-request rows pool samples from all rounds.
+- The four export rows time one transfer each: Node's job, its 20 ms poll and the download, or one Rust GET read to the last byte. They leave out the replacement UI's check. That check is the same GET aborted at the headers, after the core has opened and verified the files, and the browser download sends the GET again. The `check request` and `check then download` rows time that pair. They run after the four row GETs, so those files are already in the page cache. The cold time to the first byte is the `until headers` sample of the first GET.
 
 ## Baseline, 2026-11-08
 
@@ -122,3 +123,96 @@ What changed:
 - Farm match suggestions interpreted every Part file name again for every unmatched print, and allocated per Levenshtein row and per collation comparison. `pp_domain::gcode_objects::FilenameIndex` keeps those keys once per read.
 
 On a fresh copy of the seed-388 dataset with no workload before it, the task feed answers in about 120 ms. After the harness workload it takes about 220 ms. The workload adds plan revisions, and the remaining time is mostly scans of `plan_revision_required_units`, `required_units`, `plan_revision_parts` and `parts` by columns that no index leads with, plus the per-Build digest and projection work. Going further needs indexes, which are a schema change.
+
+## Thumbnail, Plan change and Checkoff, 2026-11-15
+
+GRE-1668. One default run of `baseline.py` on the seed-388 dataset, Rust-only against the Node runtime, on one machine. The 2026-11-08 table stays as captured. Its export rows stay there too. [Export downloads](#export-downloads-2026-11-15) records the Rust samples.
+
+Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from main at `8623d14ff` (sha256 `0e0ebaff…a41b`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the 2026-11-08 capture. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.05 and 0.53 (Node 0.05 to 0.29, Rust 0.11 to 0.53). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15.json](performance-baseline-2026-11-15.json). That file is the whole harness run, so it also holds the Node export timings the harness records every time. The Rust export rows are in [Export downloads](#export-downloads-2026-11-15).
+
+Requests this run timed:
+
+| Measure | Node request | Rust request |
+| --- | --- | --- |
+| Thumbnail load | per Part of "Synthetic Build Anchor 100u15p": cold is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG; warm is `GET /parts/:id/thumbnail` | no route on main |
+| Plan change | on "Synthetic Build Anchor 47u6p": `POST /api/v2/plans/{id}/drafts/recompute`, `PATCH .../drafts/{draft_id}/parts`, `POST .../drafts/{draft_id}/apply`; also `POST /plans/:id/save` | the same three, plus `POST .../drafts/save` and `GET .../drafts/{draft_id}/accept-preview` |
+| Checkoff session | on "Synthetic Build Anchor 100u15p", 15 bursts, 100 units: per unit `PATCH /parts/:id/progress`, then `GET /plans/:id/checkoff` per burst | per burst `POST /api/v2/plans/{id}/checkoff/bursts`, then `GET .../checkoff/units` |
+
+| Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Thumbnails cold, whole Build | 519 ms | 639 ms (max) | - | - | - | 10/0 | GRE-1520 owes the route |
+| Thumbnail cold, per Part | 24.2 ms | 37.0 ms | - | - | - | 200/0 | GRE-1520 owes the route |
+| Thumbnails warm, whole Build | 148 ms | 162 ms | - | - | - | 30/0 | GRE-1520 owes the route |
+| Thumbnail warm, per Part | 7.0 ms | 10.8 ms | - | - | - | 600/0 | GRE-1520 owes the route |
+| Plan change: open draft (recompute) | 20.7 ms | 35.8 ms | 10.3 ms | 11.5 ms | 0.50x | 60/60 |  |
+| Plan change: edit Part quantity | 14.4 ms | 24.7 ms | 7.3 ms | 8.5 ms | 0.50x | 60/60 |  |
+| Plan change: autosave | - | - | 8.7 ms | 9.8 ms | - | 0/60 | Node has no draft-only autosave |
+| Plan change: Accept preview | - | - | 3.9 ms | 4.6 ms | - | 0/60 | Node has no Accept preview |
+| Plan change: Accept | 18.2 ms | 32.2 ms | 8.8 ms | 11.3 ms | 0.48x | 60/60 |  |
+| Plan change: open + edit + Accept | 55.5 ms | 84.7 ms | 26.2 ms | 31.2 ms | 0.47x | 60/60 |  |
+| Plan change: whole flow as each UI sends it | 55.7 ms | 85.1 ms | 39.2 ms | 45.2 ms | - | 60/60 | different requests per runtime; see the notes |
+| Plan change: Node one-request Save | 88.7 ms | 102 ms | - | - | - | 60/0 | Node only; Rust has no `/plans/:id/save` |
+| Checkoff burst, write + screen refresh | 104 ms | 134 ms | 9.0 ms | 11.6 ms | - | 150/150 | different requests per runtime; see the notes |
+| Checkoff session, 15 bursts, 100 units | 1558 ms | 1995 ms (max) | 144 ms | 157 ms (max) | - | 10/10 | different requests per runtime; see the notes |
+
+What this run says:
+
+- Thumbnail load stays unclaimed. Node's cold thumbnails for the 20 Parts take 519 ms for the Build and 24.2 ms per Part; the warm reads take 148 ms and 7.0 ms. Rust recorded no thumbnail samples. Main has no `GET /sources/{id}/thumbnail`. [GRE-1520](https://linear.app/greetz/issue/GRE-1520) (part of [GRE-430](https://linear.app/greetz/issue/GRE-430)) still owes that route.
+- Plan change: the three steps both serve (open draft, edit, Accept) take 26.2 ms on Rust and 55.5 ms on Node. The whole flow each UI sends takes 39.2 ms on Rust and 55.7 ms on Node. Rust's autosave is 8.7 ms and Accept preview is 3.9 ms. Node's one-request Save takes 88.7 ms.
+- Checkoff: the 15 bursts take 144 ms on Rust and 1558 ms on Node. A burst is 9.0 ms on Rust and 104 ms on Node. Node sends one request per unit; Rust sends one request per burst.
+- Where both columns have a median, the Rust median is lower than the Node median. That includes the whole Plan-change flow and both Checkoff rows, whose requests differ.
+
+## Export downloads, 2026-11-15
+
+GRE-1535. One default run of `baseline.py` on the seed-388 dataset. The 2026-11-08 table and the thumbnail, Plan and Checkoff capture above stay as captured.
+
+Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from `d2441f8fb` (sha256 `114fffcd…dfcb`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the earlier captures. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.05 and 0.56 (Node 0.05 to 0.38, Rust 0.09 to 0.56). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15-exports.json](performance-baseline-2026-11-15-exports.json).
+
+The four rows are one transfer each. Node starts `POST /jobs/export-stl-pack` or `POST /jobs/export-checklist-html` for "Synthetic Build Anchor 100u15p", polls `GET /jobs/:id` every 20 ms, and downloads the file. Rust reads `GET /api/v2/plans/{id}/exports/stl-pack` and `GET /api/v2/plans/{id}/exports/checklist` from the request to the last byte. The check rows are a later GET of the same path, stopped at the headers with the body unread, which is the request the Production tab aborts before the browser download. The click rows add the download that follows that check. Those rows run after the four GETs, so the files are already in the page cache.
+
+| Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| STL pack export, first in run | 164 ms | 210 ms (max) | 50.0 ms | 56.6 ms (max) | 0.30x | 10/10 |  |
+| HTML checklist export, first in run | 143 ms | 209 ms (max) | 7.1 ms | 9.6 ms (max) | 0.05x | 10/10 |  |
+| STL pack export, repeated | 181 ms | 227 ms (max) | 48.0 ms | 52.3 ms (max) | 0.27x | 10/10 |  |
+| HTML checklist export, repeated | 117 ms | 165 ms (max) | 7.2 ms | 9.1 ms (max) | 0.06x | 10/10 |  |
+| STL pack export, first GET until headers | - | - | 9.0 ms | 13.6 ms (max) | - | 0/10 | Rust only; each STL is opened and hashed before the first byte |
+| HTML checklist export, first GET until headers | - | - | 7.1 ms | 9.6 ms (max) | - | 0/10 | Rust only; the checklist is built before the first byte |
+| STL pack export, repeated GET until headers | - | - | 7.3 ms | 10.3 ms (max) | - | 0/10 | Rust only; each STL is opened and hashed before the first byte |
+| HTML checklist export, repeated GET until headers | - | - | 7.2 ms | 9.1 ms (max) | - | 0/10 | Rust only; the checklist is built before the first byte |
+| STL pack export, check request | - | - | 7.2 ms | 10.4 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| HTML checklist export, check request | - | - | 5.7 ms | 9.3 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| STL pack export, repeated check request | - | - | 6.7 ms | 9.3 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| HTML checklist export, repeated check request | - | - | 5.5 ms | 6.7 ms (max) | - | 0/10 | Rust only; aborted at the headers, body not read |
+| STL pack export, check then download | - | - | 14.4 ms | 19.7 ms (max) | - | 0/10 | Rust only; one click opens and hashes each STL twice |
+| HTML checklist export, check then download | - | - | 12.0 ms | 16.3 ms (max) | - | 0/10 | Rust only; one click builds the checklist twice |
+| STL pack export, repeated check then download | - | - | 13.6 ms | 17.1 ms (max) | - | 0/10 | Rust only; one click opens and hashes each STL twice |
+| HTML checklist export, repeated check then download | - | - | 11.6 ms | 16.3 ms (max) | - | 0/10 | Rust only; one click builds the checklist twice |
+
+What this run says:
+
+- Each of the four export rows has ten Rust samples, and each Rust median is lower than the Node median for that row. The STL pack is 50 ms first and 48 ms repeated, against Node's 164 ms and 181 ms. The HTML checklist is 7.1 ms and 7.2 ms, against 143 ms and 117 ms.
+- The STL pack opens and hashes each distinct STL before the first byte: 9.0 ms on the first GET and 7.3 ms on the repeat. The checklist does not open Source files. It is built before the headers, so the time to headers and the time to the last byte are the same 7.1 ms and 7.2 ms.
+- Six of the ten first STL reads, and six of the ten repeats, land between 47 ms and 57 ms. The other four finish between 7.5 ms and 13 ms, close to the headers. The response is chunked and sends no Content-Length, and the extra time is after the headers. The checklist, which sends Content-Length, has no such gap.
+- A Production-tab click pays for two opens. The check stops at the headers, after the core has opened and verified the files, and the browser download sends the GET again. On this run those samples follow the row GETs, so the files are in the page cache. The STL check is 7.2 ms and the click is 14.4 ms; the repeated click is 13.6 ms. The checklist check is 5.7 ms and the click is 12.0 ms; the repeated click is 11.6 ms. The check is the extra open, about 7 ms for the STL pack and about 6 ms for the checklist, on top of the download in that same click. A click stays under the Node median for the same file.
+
+## Source thumbnails, 2026-11-15
+
+GRE-1695. One default run of `baseline.py` on the seed-388 dataset, after `GET /sources/{id}/thumbnail` landed on main. The 2026-11-08 table, the thumbnail, Plan and Checkoff capture above, and the export rows stay as captured.
+
+Captured 2026-11-15 on a Linux host: Intel Xeon Processor, 4 logical CPUs, 15.6 GiB, kernel 6.12.113+. `pp-server` was a release build with `desktop_rebuild` from `e9ee1d804` (sha256 `ea47463e…932f`). The samples record `checkout_dirty: false`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, the same seed-388 digest as the earlier captures. Ten rounds per runtime, default counts (`--settle-secs 5`, `--idle-secs 30`, `--plan-iterations 6`, `--list-repeats 10`, `--export-repeats 2`), `--max-load 4` (the CPU count) and `--quiet-timeout 300`. The 1-minute load at run start stayed between 0.056 and 0.578 (Node 0.056 to 0.578, Rust 0.097 to 0.426). `http_retries` is 0 on both runtimes. Five loopback Moonraker simulators answered status reads; the run sent nothing to a printer. Raw samples and all metadata: [performance-baseline-2026-11-15-thumbnails.json](performance-baseline-2026-11-15-thumbnails.json).
+
+The four rows time the 20 Parts of "Synthetic Build Anchor 100u15p". Node's cold request is the placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh` and `POST /parts/:id/thumbnail` with a 256 px PNG. Its warm request is `GET /parts/:id/thumbnail`, three times. Rust's request, cold and warm, is `GET /sources/{id}/thumbnail?path=` for that Part's STL. The Source is the Build layer whose `layer_type:project_name` equals the Part's `source_layer`, and `path` is the Part's `relative_path`. Cold is the first read: the cache is empty, so Rust renders the PNG and stores it under `thumbs/sources`. Warm is the same GET, three times, answered from that cache.
+
+| Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Thumbnails cold, whole Build | 565 ms | 717 ms (max) | 53.9 ms | 63.9 ms (max) | 0.10x | 10/10 |  |
+| Thumbnail cold, per Part | 26.8 ms | 40.6 ms | 2.5 ms | 4.2 ms | 0.09x | 200/200 |  |
+| Thumbnails warm, whole Build | 164 ms | 250 ms | 4.8 ms | 8.0 ms | 0.03x | 30/30 |  |
+| Thumbnail warm, per Part | 7.7 ms | 13.0 ms | 0.2 ms | 0.5 ms | 0.03x | 600/600 |  |
+
+What this run says:
+
+- Each Rust median is lower than the Node median for the same row. The cold Build is 53.9 ms on Rust and 565 ms on Node (0.10x). Per Part that is 2.5 ms and 26.8 ms (0.09x). The warm Build is 4.8 ms and 164 ms (0.03x). Per Part that is 0.2 ms and 7.7 ms (0.03x).
+- Node's cold time is the placeholder, the mesh and the upload. Rust's cold GET renders the STL. These STLs are the synthetic closed boxes in the seed-388 dataset.
+- Ten rounds and 20 Parts give 10 cold Build samples, 200 cold Part samples, 30 warm Build samples and 600 warm Part samples on each runtime.

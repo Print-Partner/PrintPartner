@@ -28,6 +28,7 @@ jobs:
       - name: Validate shared agent guidance
         run: |
           python3 -B -m unittest discover -s scripts -p test_agent_guidance.py -v
+          python3 -B -m unittest discover -s scripts -p test_post_pp_score_status.py -v
           python3 -B scripts/check-agent-guidance.py
           python3 -B -m unittest discover -s scripts -p test_agent_guard.py -v
           python3 -B -m unittest discover -s scripts -p test_pre_commit_sparse_snapshot.py -v

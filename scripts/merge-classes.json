@@ -74,5 +74,8 @@
     "grok-4.7": "xai",
     "glm-5.3-flash-free": "zhipu",
     "deepseek-v4.1-flash-free": "deepseek"
+  },
+  "pp_score_seats": {
+    "gpt-6.1-sol": "openai"
   }
 }

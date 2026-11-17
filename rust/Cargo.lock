@@ -3549,6 +3549,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "flate2",
  "fs2",
  "hex",
  "http-body-util",
@@ -3574,12 +3575,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "socket2",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-util",
  "tower",
  "tracing",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -3769,6 +3772,7 @@ dependencies = [
  "hmac",
  "icu_collator",
  "libc",
+ "png 0.18.1",
  "pp-contracts",
  "pp-domain",
  "pp-os",

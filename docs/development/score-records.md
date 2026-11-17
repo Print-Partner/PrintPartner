@@ -5,16 +5,19 @@ The coordinator guard reads score comments only from `scorer_authors` in
 seat's score, so the login does not identify the model. A dedicated bot
 identity is the follow-up.
 
-Each score occupies a line in this format, with a full lowercase head SHA. `vendor=` and
-`author=` take a name from `vendors` (the `vendors` list in `scripts/merge-classes.json`):
+Each score occupies a line in this format, with a full lowercase head SHA. `vendor=`
+takes a name from `vendors` (the `vendors` list in `scripts/merge-classes.json`). `author=`
+takes one of those names, or `cursor-auto` or `unknown`:
 
 ```text
-pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|deepseek|openai|xai|zhipu> score=<integer> author=<anthropic|deepseek|openai|xai|zhipu>
+pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|deepseek|openai|xai|zhipu> score=<integer> author=<anthropic|deepseek|openai|xai|zhipu|cursor-auto|unknown>
 ```
 
-The coordinator records the head branch's author vendor in `author=`.
+The coordinator records the head branch's author family in `author=`.
 This is trusted coordinator metadata, not a vendor inferred from the GitHub
 account. All score records for the current head must agree on it.
+`cursor-auto` is for Cursor Auto-authored PRs. `unknown` is for an author family
+that cannot be named. Those two are not seat vendors.
 
 The allowed seats are data: `scorer_seats` in `scripts/merge-classes.json` maps each seat to its
 vendor. Since 2026-11-12 (owner decision) they are `claude-opus-5-5` (Anthropic), `grok-4.7`
@@ -34,3 +37,13 @@ also refuse the merge. Owner and lane classifications are unchanged.
 Never edit a score record; post a new one. The guard refuses a sensitive merge when a trusted comment holding a record for the current head has `updated_at` different from `created_at`; edits to records for older heads do not matter, because those never count. Through the `gh` routes (`gh pr comment`, `gh issue comment`, `gh api` and its GraphQL endpoint), the guard refuses edits and deletes of PR comments outside the coordinator worktree: any method but GET or HEAD on `issues/comments/<id>` or `pulls/comments/<id>` (including POST, fields without `-X`, and an `X-HTTP-Method-Override` header), `--edit-last`, `--delete-last`, and the GraphQL update and delete comment mutations. A program that calls the GitHub API with the account's token directly is not covered, and a deleted record cannot be detected, until score records move to an identity lanes cannot use (GRE-1408).
 
 The allowed seats (`scorer_seats`, seat to vendor) and the vendors a record may name (`vendors`) are data in `scripts/merge-classes.json`; the record pattern is built from them. Removing a vendor makes old records that name it unparseable, so a PR that carries one refuses the merge.
+
+When a trusted `scorer_authors` account posts a well-formed record, the `post-pp-score-status` workflow also posts a `pp/score` commit status on that exact head SHA (`N/10 from <seat>`, success at 8 or more). The status is copied from the comment; it is never invented or re-derived. Records for other SHAs are left untouched. For this status only:
+
+- A record may be wrapped in inline-code backticks (`` `pp-score ...` ``) or sit inside a code fence; surrounding whitespace and backticks are dropped before the line is matched. A record embedded in prose is still ignored.
+- A record whose `vendor=` equals its `author=` is a same-family score and fails the head, as does a head whose records disagree on `author=`. The old `Score: N/10 from <seat> on head <sha>` form names no author family and no longer counts.
+- If `author=` is `cursor-auto` or `unknown`, the head also needs a trusted Anthropic record and a trusted OpenAI record (`gpt-6.1-sol` or another OpenAI seat) on that exact SHA. The status uses the lower of those scores and succeeds only at 8 or more. A missing family, a score below 8, or a complete pair on a stale SHA fails closed, including on `merge_group`. Known families are unchanged: one trusted cross-family score of 8 or more is enough, and same-family scores still fail.
+- `pp_score_seats` in `scripts/merge-classes.json` adds seats the status accepts on top of `scorer_seats`. It holds the Codex seat `gpt-6.1-sol` (OpenAI). The sensitive merge guard still reads `scorer_seats` only.
+- On `merge_group`, the workflow checks out the queue entry's base SHA, reads the PRs in the group from its squash commits (`... (#N)`), and posts `pp/score` on the merge group SHA. It posts success only when every PR has a trusted score of 8 or more on its current head; otherwise, or when anything cannot be read, it posts failure naming the PR or the reason, so the entry leaves the queue instead of waiting for the timeout.
+
+`pp/score` is a plain commit status. While scores post as `poitee`, any account or workflow with write access to statuses can also post `pp/score=success`; a dedicated scorer identity was deferred by the owner on 2026-11-16.

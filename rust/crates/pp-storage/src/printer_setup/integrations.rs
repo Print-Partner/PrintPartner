@@ -201,7 +201,7 @@ impl Entry {
         }
     }
 
-    fn parse(raw: Box<RawValue>) -> Result<Self, DocumentFault> {
+    pub(crate) fn parse(raw: Box<RawValue>) -> Result<Self, DocumentFault> {
         #[derive(Deserialize)]
         struct Head {
             #[serde(rename = "type")]

@@ -94,7 +94,7 @@ pub(crate) fn js_string(value: &Value) -> String {
 /// `String.prototype.slice(0, len)`. A pair split at the limit leaves Node a
 /// lone surrogate; Rust strings cannot hold one, so it becomes U+FFFD, as
 /// [`js_json`] reads it back.
-pub(super) fn js_slice(s: &str, len: usize) -> String {
+pub(crate) fn js_slice(s: &str, len: usize) -> String {
     let mut units = 0;
     let mut out = String::new();
     for c in s.chars() {
@@ -112,7 +112,7 @@ pub(super) fn js_slice(s: &str, len: usize) -> String {
 
 /// JSON text as `JSON.stringify` writes it, with each lone surrogate escape
 /// replaced by U+FFFD so serde_json accepts what `JSON.parse` accepts.
-pub(super) fn js_json(raw: &str) -> String {
+pub(crate) fn js_json(raw: &str) -> String {
     let surrogate = |hex: &str| {
         u16::from_str_radix(hex, 16)
             .ok()
@@ -186,7 +186,7 @@ pub(super) fn js_number(value: &Value) -> Option<f64> {
 }
 
 /// `Number.isInteger(Number(value)) && n >= min`.
-pub(super) fn js_integer(value: Option<&Value>, min: f64) -> Option<i64> {
+pub(crate) fn js_integer(value: Option<&Value>, min: f64) -> Option<i64> {
     value
         .and_then(js_number)
         .filter(|n| n.is_finite() && n.fract() == 0.0 && *n >= min && n.abs() <= MAX_SAFE)
@@ -462,7 +462,7 @@ fn status_fields(raw: &Value, state: &str, now: &str) -> [(&'static str, Value);
 }
 
 /// `parseLink`, including the legacy `applied` state that now reads as verified.
-pub(super) fn parse(raw: &Value, now: &str) -> Option<Link> {
+pub(crate) fn parse(raw: &Value, now: &str) -> Option<Link> {
     let state = match raw.get("state")?.as_str()? {
         "applied" => "verified",
         s @ ("watching" | "awaiting_verify" | "host_failed" | "dismissed" | "verified") => s,
@@ -524,7 +524,7 @@ pub(super) fn parse(raw: &Value, now: &str) -> Option<Link> {
 }
 
 /// The link as Node's JSON serializes it: no `undefined` fields.
-pub(super) fn public(link: &Link) -> Value {
+pub(crate) fn public(link: &Link) -> Value {
     Value::Object(
         link.iter()
             .filter(|(_, v)| !v.is_null())

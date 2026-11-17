@@ -1,0 +1,68 @@
+name: Post pp/score status
+
+# Turns trusted score comments into a pp/score status on the exact head SHA
+# they name, and on merge queue SHAs once every queued PR passed on its head.
+# Runs only trusted base-branch code, never PR head code, and never invents a
+# score.
+on:
+  issue_comment:
+    types: [created]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number whose recorded scores should be posted as pp/score
+        required: true
+        type: string
+      dry_run:
+        description: Print the status API calls and do not post
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  post:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || github.event.issue.pull_request
+    name: Post pp/score from recorded comments
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A merge group's own SHA holds the queued PRs' code; run the base instead.
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+          persist-credentials: false
+      - name: Run unit tests
+        run: python3 -B -m unittest discover -s scripts -p test_post_pp_score_status.py -v
+      - name: Post pp/score on the merge group SHA
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/post_pp_score_status.py --repo "$REPO" --merge-group \
+            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --head-ref "$HEAD_REF" --post
+      - name: Post or preview pp/score statuses
+        if: github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.pr || github.event.issue.number }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          args=(python3 -B scripts/post_pp_score_status.py --repo "$REPO" --pr "$PR_NUMBER")
+          if [ "$DRY_RUN" != "true" ]; then
+            args+=(--post)
+          fi
+          "${args[@]}"

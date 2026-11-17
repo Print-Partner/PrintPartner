@@ -87,6 +87,24 @@ class Session:
         return self.conn
 
     def request(self, method, path, body=None, headers=None):
+        """One request, read to the last byte. Returns (status, headers, body, ms)."""
+        status, response_headers, data, _headers_ms, total_ms = self.exchange(
+            method, path, body, headers, read=True)
+        return status, response_headers, data, total_ms
+
+    def request_headers(self, method, path, body=None, headers=None):
+        """Sends one request and returns when the status line and headers
+        arrive, without reading the body. Closes the connection, which drops
+        the rest, as the export check aborts. Returns (status, headers, ms)."""
+        status, response_headers, _data, headers_ms, _total_ms = self.exchange(
+            method, path, body, headers, read=False)
+        return status, response_headers, headers_ms
+
+    def exchange(self, method, path, body=None, headers=None, read=True):
+        """Returns (status, headers, body, ms to headers, ms to the last byte).
+
+        `read` False stops after the headers and closes. The body is empty
+        and both times are the time until the headers."""
         sent = {"Host": f"{self.host}:{self.port}", "Origin": self.origin}
         if self.cookie:
             sent["Cookie"] = self.cookie
@@ -104,7 +122,8 @@ class Session:
             try:
                 conn.request(method, path, body=payload, headers=sent)
                 reply = conn.getresponse()
-                data = reply.read()
+                headers_ms = (time.perf_counter() - started) * 1000
+                data = reply.read() if read else b""
             except (http.client.HTTPException, ConnectionError):
                 # A server may close an idle keep-alive connection; reconnect once.
                 self.close()
@@ -112,10 +131,11 @@ class Session:
                     raise
                 self.retries += 1
                 continue
-            elapsed = (time.perf_counter() - started) * 1000
-            if reply.getheader("Connection", "").lower() == "close":
+            total_ms = (time.perf_counter() - started) * 1000
+            if not read or reply.getheader("Connection", "").lower() == "close":
                 self.close()
-            return reply.status, {k.lower(): v for k, v in reply.getheaders()}, data, elapsed
+            response_headers = {key.lower(): value for key, value in reply.getheaders()}
+            return reply.status, response_headers, data, headers_ms, total_ms
         raise AssertionError("unreachable")
 
     def raw_cookies(self, method, path, body=None):

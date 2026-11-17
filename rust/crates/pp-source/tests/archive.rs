@@ -871,33 +871,51 @@ mod acquisition_labels {
             .unwrap()
             .len();
         let mut source = fixture.tenant().source(42).unwrap();
-        for limits in [
-            ArchiveLimits {
-                max_compressed_bytes: compressed - 1,
-                ..ArchiveLimits::default()
-            },
-            ArchiveLimits {
-                max_inflated_bytes: 1,
-                ..ArchiveLimits::default()
-            },
-            ArchiveLimits {
-                max_inflated_bytes: 3,
-                ..ArchiveLimits::default()
-            },
-            ArchiveLimits {
-                max_entries: 1,
-                ..ArchiveLimits::default()
-            },
+        // The packed cap stays `Limit`; the unpacked and entry caps say which.
+        for (limits, expected) in [
+            (
+                ArchiveLimits {
+                    max_compressed_bytes: compressed - 1,
+                    ..ArchiveLimits::default()
+                },
+                ArchiveError::Limit,
+            ),
+            (
+                ArchiveLimits {
+                    max_inflated_bytes: 1,
+                    ..ArchiveLimits::default()
+                },
+                ArchiveError::TooLarge,
+            ),
+            (
+                ArchiveLimits {
+                    max_inflated_bytes: 3,
+                    ..ArchiveLimits::default()
+                },
+                ArchiveError::TooLarge,
+            ),
+            (
+                ArchiveLimits {
+                    max_entries: 1,
+                    ..ArchiveLimits::default()
+                },
+                ArchiveError::TooManyEntries,
+            ),
         ] {
-            assert!(matches!(
-                source.extract_zip_with_label_policy(
+            let refused = source
+                .extract_zip_with_label_policy(
                     fixture.input(),
                     limits,
                     ArchiveLabelPolicy::NfcAtAcquisition,
                     &AtomicBool::new(false),
-                ),
-                Err(ArchiveError::Limit)
-            ));
+                )
+                .err()
+                .expect("refused");
+            assert_eq!(
+                std::mem::discriminant(&refused),
+                std::mem::discriminant(&expected),
+                "{refused}"
+            );
             assert!(!fixture.candidate().exists());
         }
         deflated_zip(&fixture, &vec![0; 2 * 1024 * 1024]);
@@ -1107,6 +1125,28 @@ fn deflated_zip(fixture: &Fixture, data: &[u8]) {
     zip.write_all(data).unwrap();
     zip.finish().unwrap();
 }
+#[test]
+fn caller_may_raise_the_packed_and_unpacked_budgets() {
+    let fixture = Fixture::new();
+    fixture.zip(1);
+    fixture
+        .tenant()
+        .source(42)
+        .unwrap()
+        .extract_zip(
+            fixture.input(),
+            ArchiveLimits {
+                max_compressed_bytes: 256 * 1024 * 1024 + 1,
+                max_inflated_bytes: 1024 * 1024 * 1024 + 1,
+                max_entries: 10_000,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .discard()
+        .unwrap();
+}
+
 fn extract(fixture: &Fixture) -> Result<(), ArchiveError> {
     fixture
         .tenant()

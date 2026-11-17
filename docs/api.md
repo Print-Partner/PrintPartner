@@ -77,7 +77,23 @@ PUT    /sources/:id/import-rules
 POST   /jobs/sync
 ```
 
-Sync and scanning operations use background jobs when the work may outlive one request.
+`POST /jobs/sync` with `{ "project_ids": [<id>, ...] }` enqueues a sync of those
+GitHub Sources. The Rust runtime answers `202` with `{ "job_id" }`. The
+replacement UI calls this `startSourceSync`, and reads branches with
+`listGithubBranches` (`GET /api/v1/sources/github-branches?url=`). A missing
+or empty `project_ids` is a 400 problem. The sync worker publishes each
+Source's revision. Sync and scanning operations use background jobs when the
+work may outlive one request.
+
+While files download, `GET /jobs/{id}` and `/ws/jobs/{id}` show `progress`
+between 0 and 100. A failed sync's `error` is the reason: the repository is
+gone, GitHub truncated the tree, a download failed, or the sync would leave
+less free space than the import reserve. The Source keeps its previous
+revision. An id that is unknown or not a GitHub Source is listed in
+`result.failures`; the other Sources still sync and the job ends `done`.
+Stopping the server while a sync is `running` leaves that job. The next start
+runs the same `job_id` again, and a following sync of the Source is not refused
+as busy. Shutdown stops the sync worker inside the mutation drain (5 seconds).
 
 `local_path` is an operator-facing capability for trusted, single-tenant
 self-host deployments. SaaS and multi-user deployments reject it on Source
@@ -142,6 +158,20 @@ Served only by the Rust core with both rebuild gates on, behind a session or API
 - `ready` with one row per filament that has remaining units: the exact `filament_color_id`, Spoolman's `label`, `grams_needed`, `grams_available`, `status` (`sufficient`, `short` with `short_grams`, or `unknown`), and each Part's need.
 
 `grams_needed` is `measured` or `estimated` (each with `grams` and the `job_count` used), or `unknown` with a reason. It comes from past sends: each send's grams (the Printer Checkoff link's row in `print_link_grams`) divided by the units that send prints, averaged over the Part's five most recent sends with a checked-off unit for it, times the remaining units, rounded up. A Part with any measured send uses only measured sends. The reason is `grams_not_recorded` when no checked-off unit of the Build belongs to a send with grams, and `part_not_printed` when other Parts have such sends but this one does not. The owner chose the writer's design (GRE-1165): the send queue records the slicer's estimate when a job is uploaded, and the status watcher replaces it with the length the printer measured, converted with the send's grams per millimetre, when the print finishes. `estimated` is the basis while any Part's grams come only from estimates. It carries `reason: "measured_length_not_convertible"` when the printer measured a length but the sent file stated no length to convert it with; otherwise `reason` is `null`. `estimated` and `measured` both decide `status`. `grams_available` is `spoolman` (whole grams over unarchived spools, rounded down) or `unknown` with a reason (`not_spoolman`, `integration_missing`, `integration_disabled` (the integration is `enabled: false` and is not contacted), `unreachable`, `filament_missing`, `spool_weight_missing`). Unknown never reads as zero, and an unknown on either side gives `status: unknown`, never `short`. The read never reserves or deducts stock. Errors are [problem responses](problem-responses.md).
+
+### Spoolman deductions (Rust-only)
+
+```text
+GET  /api/v2/spoolman/deductions?state=&link_id=
+GET  /api/v2/spoolman/deductions/:id
+POST /api/v2/spoolman/deductions/:id/reconcile
+```
+
+Served only by the Rust core with both rebuild gates on, behind a session or API key. The list answers `{ "deductions": [...] }`, newest first, at most 100. Each row has `id`, `state` (`pending`, `sending`, `applied`, `unknown`, `failed`, `skipped` or `dismissed`), `reason` (set only on `skipped`), `link_id`, `profile_id` (the Build), `units`, and `integration_id`, `spool_id`, `grams` (whole grams, rounded up) and `grams_basis` (`estimated` or `measured`), which are null on `skipped` rows. `failure` is set only on `failed`, `unknown` and `dismissed`. `failure_status` is set only when `failure` is `refused`. `state` must be one of those states and `link_id` 1 to 200 characters; any other query is refused with 400 `invalid_deduction_filter`. Checkoff writes the rows and returns without waiting for Spoolman. A background worker sends each `pending` row once after the burst commits; see [Spoolman](integrations/SPOOLMAN.md#on-the-rust-core).
+
+`GET /api/v2/spoolman/deductions/:id` answers `{ "deduction": <row>, "grams_before": ..., "grams_now": ... }`. Each gram report is `{ "kind": "known", "grams": N }` or `{ "kind": "unknown" }`. `grams` is whole grams, rounded down. `grams_before` is what Spoolman reported when the row was claimed. `grams_now` is what that spool reports at the read. A skipped row, or a missing, disabled or unreadable integration, is `unknown` and is not contacted. The Spoolman Module being off does not block the read. A missing id is 404 `deduction_not_found`.
+
+`POST /api/v2/spoolman/deductions/:id/reconcile` takes `{ "answer": "deducted" | "retry" | "dismiss" }` and answers the row. `deducted` moves `unknown` to `applied` and does not call Spoolman. `retry` moves `unknown` or `failed` to `pending`, clears the failure, and the worker then makes one more send. `dismiss` moves `unknown` or `failed` to `dismissed`, keeps the failure, and does not call Spoolman. Any other state is 409 `deduction_state` and changes nothing. A body that is not that shape is 400. Errors are [problem responses](problem-responses.md).
 
 ### History
 
@@ -276,6 +306,14 @@ their compatibility behavior and replace only legacy roots that are present.
 See [Operations](../OPERATIONS.md) for the restore procedure and concurrency
 limits.
 
+The Rust-only runtime, with `PP_DESKTOP_REBUILD` exactly `1` or `true`, adds
+two routes that Node does not serve. `POST /api/v2/installation/backup`
+creates one whole-installation archive under the data directory's `backups`
+folder and answers its file name, time, app version, size and SHA-256.
+`GET /api/v2/installation/backup/archive` streams that archive. Free disk
+bounds the size. The routes are absent when the flag is off. See
+[Whole-installation backup export](storage.md#whole-installation-backup-export).
+
 ## Background jobs
 
 A background operation returns:
@@ -327,7 +365,7 @@ Typical status codes:
 
 JSON request bodies are limited to 1 MiB. Routes that take bulk Plan edits or manifests accept up to 8 MiB: `POST /plans/{id}/save`, `PATCH /plans/{id}/drafts/{draftId}/parts`, `PUT /plans/{id}/drafts/{draftId}/reconciliation`, `POST /plans/{id}/progress/import`, `POST /plans/{id}/plates/initialize`, `PATCH /plans/{id}/production-setup`, `PUT /plans/{id}/kit-manifest`, and `PUT /sources/{id}/repo-manifest`. Reference-sharing routes accept 4 MiB. Assistant action apply and dismiss, and HTTP MCP, accept 96 MiB so a 64 MiB inline base64 file fits.
 
-Multipart uploads have their own limits: Source uploads 256 MiB, kit bundles and print files 64 MiB, rendered Part thumbnails 1 MiB, and backups 20 GiB. Source uploads stream to disk while the limit is enforced.
+Multipart uploads have their own limits: Source uploads are bounded by free disk and the import reserve (`/settings/import-free-space-reserve`, default 5 GiB), kit bundles and print files 64 MiB, rendered Part thumbnails 1 MiB, and backups 20 GiB. Source uploads stream to disk. The reserve is checked before any byte is staged.
 
 ## MCP
 

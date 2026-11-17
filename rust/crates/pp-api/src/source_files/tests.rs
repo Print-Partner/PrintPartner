@@ -28,6 +28,16 @@ async fn each_storage_failure_has_one_status_and_code() {
             422,
             Some(code::TOO_MANY_FILES),
         ),
+        (
+            SourceFilesError::FileNotFound,
+            404,
+            Some(code::FILE_NOT_FOUND),
+        ),
+        (
+            SourceFilesError::Unrenderable,
+            422,
+            Some(code::UNRENDERABLE),
+        ),
         (SourceFilesError::Writer(WriterFailure::Stopped), 503, None),
     ];
     for (error, status, code) in cases {
@@ -54,6 +64,10 @@ async fn each_storage_failure_answers_one_whole_body() {
             body("internal", "Internal Error", 500, "The Source's current revision cannot be read", "source_snapshot_unavailable")),
         (SourceFilesError::TooManyFiles,
             body("validation", "Validation Failed", 422, "The revision holds more than 20000 files", "source_too_many_files")),
+        (SourceFilesError::FileNotFound,
+            body("not-found", "Not Found", 404, "The current revision has no STL file at that path", "source_file_not_found")),
+        (SourceFilesError::Unrenderable,
+            body("validation", "Validation Failed", 422, "The STL file cannot be rendered", "source_file_unrenderable")),
         (SourceFilesError::Writer(WriterFailure::Busy),
             body("unavailable", "Service Unavailable", 503, "Service temporarily unavailable", "transaction_unavailable")),
     ];

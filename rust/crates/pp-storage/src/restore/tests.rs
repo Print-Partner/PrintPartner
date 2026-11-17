@@ -281,6 +281,31 @@ fn ticket_t_8_restore_stage_extracts_a_full_backup_and_leaves_live_files_untouch
 }
 
 #[test]
+fn ticket_t_8_restore_a_full_data_volume_is_a_space_refusal_not_an_unsupported_schema() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let (backup, _) = backup_then_change(&owner, &root, scratch.path());
+    let live = state(&root);
+    schema::working_copy::override_available(Some(4096));
+    let error = stage(&client, &backup).unwrap_err();
+    schema::working_copy::override_available(None);
+    match refusal(&error) {
+        Some(Refusal::InsufficientSpace(space)) => {
+            assert_eq!(space.available, 4096);
+            assert!(space.needed > space.available, "{space:?}");
+        }
+        other => panic!("expected a space refusal, got {other:?}: {error:#}"),
+    }
+    assert!(work_entries(&root).is_empty(), "the stage is removed");
+    assert_eq!(state(&root), live);
+    // The same backup stages once the space is there.
+    stage(&client, &backup).unwrap();
+    owner.shutdown().unwrap();
+}
+
+#[test]
 fn ticket_t_8_restore_a_new_stage_replaces_the_earlier_one_and_a_refused_stage_keeps_it() {
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();

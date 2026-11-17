@@ -923,8 +923,9 @@ pub fn dry_run(source: &Path, destination: Option<&Path>) -> Result<DryRunReport
 }
 
 /// Refuses when `temporary` is `folder` or lies inside it, with links and
-/// `..` resolved in both. The dry run stages there, and the startup check
-/// that the dry run and the import share copies the database there. A path
+/// `..` resolved in both. The dry run stages there. The import's startup
+/// check copies the database into the destination stage, and the import
+/// still refuses a `temporary` inside the source or the destination. A path
 /// that cannot be resolved is an error, never a pass.
 fn ensure_outside(temporary: &Path, folder: &Path) -> Result<(), ImportError> {
     let inside = temporary

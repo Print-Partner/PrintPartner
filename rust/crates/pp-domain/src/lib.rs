@@ -134,3 +134,7 @@ impl Digest {
 
 #[cfg(feature = "codegen")]
 mod schema;
+
+#[doc(hidden)]
+#[allow(dead_code)]
+pub const PP_BENCH_EDIT: u64 = 1794243948961157141;

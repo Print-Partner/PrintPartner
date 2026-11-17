@@ -140,3 +140,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
     anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
     Ok(())
 }
+
+#[doc(hidden)]
+#[allow(dead_code)]
+pub const PP_BENCH_EDIT: u64 = 1794249756054026600;

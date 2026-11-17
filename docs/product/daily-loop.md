@@ -65,16 +65,25 @@ The four operations Chad named as slow must be no slower than the Node
 baseline in [Performance](../development/performance.md): thumbnail load, a
 Plan change, a Checkoff session, and an STL pack or HTML checklist export.
 
+## After cutover
+
+Approved 2026-11-15. [ADR 0017](../adr/0017-one-rust-program-serves-the-react-screens.md) records the shipping shape: one Rust program serves the React screens, as a Docker image and as a desktop app.
+Cutover is to the Docker install. After it, in this order: the Connected app
+on Windows, macOS and Linux; then the desktop app running its own install with
+Share on network, on each of those systems, Windows last. Node, the old UI and
+pp-compat are deleted after the acceptance window in
+[ADR 0010](../adr/0010-whole-runtime-cutover.md).
+
 ## What waits
 
-Windows, sharing on the network, native slicer handoff, Bambu beyond status,
+Native slicer handoff, Bambu beyond status,
 webhooks and Home Assistant, 3MF and kit-bundle exports, and every Node feature
 not in the steps above. Each returns when Chad misses it.
 
 ## Rules while this plan runs
 
-[Definition of done](../development/definition-of-done.md#work-in-progress)
-holds the lane rule, [Parity scope](../development/definition-of-done.md#parity-scope)
-the parity rule, and the [merge gate](../development/definition-of-done.md#merge-gate)
-the review depth. [Rust core](../../rust/AGENTS.md#new-code) holds the rules
+[Definition of done](../development/definition-of-done.md#one-ticket-at-a-time)
+holds the one-ticket rule, [Parity scope](../development/definition-of-done.md#parity-scope)
+the parity rule, and [Who merges](../development/definition-of-done.md#who-merges)
+who merges. [Rust core](../../rust/AGENTS.md#new-code) holds the rules
 for new Rust code.

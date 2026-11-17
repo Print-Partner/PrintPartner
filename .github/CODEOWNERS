@@ -24,8 +24,6 @@
 /web/scripts/check-ci-event-tree.test.mjs @poitee
 /scripts/workaround-ratchet.mjs @poitee
 /scripts/workaround-ratchet.test.mjs @poitee
-/scripts/lint-pr-evidence.mjs @poitee
-/scripts/lint-pr-evidence.test.mjs @poitee
 /scripts/linear/ @poitee
 /scripts/release.mjs @poitee
 /web/scripts/atomic-package-build.mjs @poitee

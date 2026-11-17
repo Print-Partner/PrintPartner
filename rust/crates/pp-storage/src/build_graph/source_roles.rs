@@ -14,7 +14,7 @@
 
 use super::{
     BuildGraphClient,
-    create_with_brief::{BriefError, store_changed_brief, stored_brief},
+    create_with_brief::{BriefError, authorized_brief, store_changed_brief, stored_brief},
 };
 use crate::{
     WriterFailure,
@@ -115,11 +115,10 @@ impl BuildGraphClient {
         let policy = self.policy;
         let name = "build_graph.set_source_roles";
         self.shared.write(name, cancelled, wait, move |tx, _| {
-            let installation = authorize(tx, &credential, policy)?;
-            let tenant = installation.id();
-            let mut brief = stored_brief::<SourceRolesError>(tx, tenant, build)?;
+            let (tenant, mut brief) =
+                authorized_brief::<SourceRolesError>(tx, &credential, policy, build)?;
             let set = apply(&mut brief, &changes)?;
-            store_changed_brief(tx, tenant, build, brief)?;
+            store_changed_brief(tx, &tenant, build, brief)?;
             Ok(set)
         })?
     }

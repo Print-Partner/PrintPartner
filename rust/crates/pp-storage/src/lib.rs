@@ -64,6 +64,8 @@ pub mod read_model;
 pub mod required_units;
 #[cfg(feature = "desktop_rebuild")]
 pub mod restore;
+mod storage_control;
+use storage_control::execute as control;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
@@ -73,6 +75,8 @@ pub mod source_files;
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_sync;
+#[cfg(feature = "desktop_rebuild")]
+pub mod spoolman_deductions;
 pub mod sqlite_uri;
 #[cfg(feature = "desktop_rebuild")]
 pub mod tls_pins;
@@ -90,13 +94,13 @@ pub use writer_admission::WriterFailure;
 use restore::recover as recover_restore;
 
 #[cfg(not(feature = "desktop_rebuild"))]
-fn recover_restore(_directory: &std::path::Path) -> anyhow::Result<()> {
-    Ok(())
+fn recover_restore(_: &std::path::Path) -> anyhow::Result<bool> {
+    Ok(false)
 }
 
 use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-pub use schema::SchemaReady;
+pub use schema::{InsufficientSpace, SchemaReady};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
@@ -282,10 +286,7 @@ enum Envelope {
         policy: auth::AuthPolicy,
         reply: mpsc::Sender<Result<auth::Reply>>,
     },
-    WriterControl {
-        control: WriterControl,
-        reply: mpsc::Sender<Result<u32>>,
-    },
+    Control(storage_control::Command),
 }
 #[cfg(feature = "desktop_rebuild")]
 fn stop_poisoned_queue(
@@ -306,6 +307,7 @@ struct Queue {
     #[cfg(feature = "desktop_rebuild")]
     next: QueueClass,
     closed: bool,
+    restoring: bool,
     pending: VecDeque<Envelope>,
 }
 struct Shared {
@@ -323,16 +325,40 @@ struct Shared {
     import_quota: Mutex<Option<u64>>,
     #[cfg(feature = "desktop_rebuild")]
     domain_events: domain_events::Feed,
-    /// Print-file snapshots, one store per open database as Node keeps one
-    /// per repository.
+    /// Print-file snapshots and the restore activity, one per open database.
     #[cfg(feature = "desktop_rebuild")]
-    print_file_snapshots: Arc<checkoff_progress::print_file::SnapshotStore>,
+    restoration: restore::activation::Context,
+    /// Called on the writer thread after a verify burst commits. It must not
+    /// use storage: the writer is still in this turn.
+    #[cfg(feature = "desktop_rebuild")]
+    deduction_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 #[derive(Clone)]
 pub struct SettingsClient {
     shared: Arc<Shared>,
     readers: Arc<ReaderPool>,
 }
+struct WriterState {
+    catalog: catalog::State,
+    #[cfg(feature = "desktop_rebuild")]
+    tokens: Box<dyn plan_publication::RequiredUnitTokenAllocator>,
+}
+impl WriterState {
+    #[cfg(feature = "desktop_rebuild")]
+    fn new(directory: &Path) -> Self {
+        Self {
+            catalog: catalog::State::new(directory.to_owned()),
+            tokens: plan_publication::random_tokens(),
+        }
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    fn new(directory: &Path) -> Self {
+        Self {
+            catalog: catalog::State::new(directory.to_owned()),
+        }
+    }
+}
+
 struct ReaderState {
     closed: bool,
     idle: Vec<Connection>,
@@ -474,6 +500,30 @@ fn execute(
     Ok(true)
 }
 impl Shared {
+    /// Registers the callback a committed verify burst runs. One worker.
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn set_deduction_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .deduction_wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    }
+
+    /// Runs the registered callback. A committed verify burst calls it on the
+    /// writer thread. Reconcile calls it after its write commits, from the
+    /// caller's thread. The callback must not use storage.
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn notify_deduction_wake(&self) {
+        let wake = self
+            .deduction_wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     /// Waits up to `wait` for room in the writer queue, then queues `envelope`.
     fn admit(
         &self,
@@ -484,7 +534,7 @@ impl Shared {
         let deadline = Instant::now() + wait;
         let mut queue = self.queue.lock().map_err(|_| AdmissionError::Poisoned)?;
         loop {
-            if queue.closed {
+            if queue.closed || queue.restoring {
                 return Err(AdmissionError::Stopped);
             }
             if cancelled.load(Ordering::Acquire) {
@@ -510,7 +560,7 @@ impl SettingsClient {
     #[cfg(feature = "desktop_rebuild")]
     pub(crate) fn enqueue_auth(&self, work: auth::rebuild::WriterWork) {
         let mut queue = self.shared.queue.lock().unwrap_or_else(stop_poisoned_queue);
-        if queue.closed {
+        if queue.closed || queue.restoring {
             self.shared.changed.notify_all();
             drop(queue);
             auth::rebuild::finish_stopped(work);
@@ -545,7 +595,7 @@ impl SettingsClient {
     /// and the assignment route redeems from.
     #[cfg(feature = "desktop_rebuild")]
     pub fn print_file_snapshots(&self) -> Arc<checkoff_progress::print_file::SnapshotStore> {
-        Arc::clone(&self.shared.print_file_snapshots)
+        Arc::clone(&self.shared.restoration.snapshots)
     }
     pub fn reader(&self, wait: Duration) -> Result<ReaderCheckout> {
         Ok(self.checkout(wait)?)
@@ -725,12 +775,20 @@ impl WriterOwner {
                 return Err(error);
             }
         };
-        // Recovery removes uploads and stages. Admit the live schema first so
-        // an older runtime cannot discard a newer installation's recovery copy.
-        if let Err(error) = recover_restore(lease.data_dir()) {
-            lease.abandon();
-            return Err(error);
-        }
+        // Admit the live schema before recovery can remove or replay copies.
+        let version = match recover_restore(lease.data_dir()).and_then(|replayed| {
+            if replayed {
+                lease.preflight()
+            } else {
+                Ok(version)
+            }
+        }) {
+            Ok(version) => version,
+            Err(error) => {
+                lease.abandon();
+                return Err(error);
+            }
+        };
         // Preserve one literal per line so the covers suppression applies only to that literal.
         #[rustfmt::skip]
         let directories = [
@@ -777,6 +835,7 @@ impl WriterOwner {
                 #[cfg(feature = "desktop_rebuild")]
                 next: QueueClass::Normal,
                 closed: false,
+                restoring: false,
                 pending: VecDeque::new(),
             }),
             changed: Condvar::new(),
@@ -784,7 +843,15 @@ impl WriterOwner {
             #[cfg(feature = "desktop_rebuild")]
             domain_events: event_feed,
             #[cfg(feature = "desktop_rebuild")]
-            print_file_snapshots: Arc::default(),
+            restoration: restore::activation::Context {
+                activity: Arc::default(),
+                snapshots: Arc::default(),
+                readers: readers.clone(),
+                directory: lease.data_dir().to_owned(),
+                seed: seed_timestamp.to_owned(),
+            },
+            #[cfg(feature = "desktop_rebuild")]
+            deduction_wake: Mutex::new(None),
             job_admission: Mutex::new(None),
             #[cfg(feature = "desktop_rebuild")]
             orphaned_source_leases: Mutex::new(Vec::new()),
@@ -796,9 +863,7 @@ impl WriterOwner {
             import_quota: Mutex::new(None),
         });
         let worker = shared.clone();
-        let mut catalog_state = catalog::State::new(lease.data_dir().to_owned());
-        #[cfg(feature = "desktop_rebuild")]
-        let mut publication_tokens = plan_publication::random_tokens();
+        let mut state = WriterState::new(lease.data_dir());
         let join = thread::spawn(move || {
             loop {
                 #[cfg(not(feature = "desktop_rebuild"))]
@@ -874,7 +939,7 @@ impl WriterOwner {
                     }
                 };
                 #[cfg(feature = "desktop_rebuild")]
-                catalog_state.reap(std::mem::take(
+                state.catalog.reap(std::mem::take(
                     &mut *worker
                         .orphaned_source_leases
                         .lock()
@@ -912,7 +977,7 @@ impl WriterOwner {
                         let _ = reply.send(plan_publication::execute(
                             &mut connection,
                             command,
-                            publication_tokens.as_mut(),
+                            state.tokens.as_mut(),
                             admission,
                         ));
                     }
@@ -926,25 +991,30 @@ impl WriterOwner {
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Uploads { command, reply } => {
-                        let changes_accounting = command.changes_accounting();
-                        let changes_before = connection.total_changes();
-                        let result =
-                            uploads::execute(&mut connection, &catalog_state, command, admission);
-                        if result.is_ok()
-                            && changes_accounting
-                            && connection.total_changes() != changes_before
-                        {
-                            worker.import_epoch.fetch_add(1, Ordering::AcqRel);
-                        }
-                        let _ = reply.send(result);
+                        let _ = reply.send(uploads::run(
+                            &mut connection,
+                            &state.catalog,
+                            command,
+                            admission,
+                            &worker,
+                        ));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Checkoff { command, reply } => {
-                        let _ = reply.send(checkoff_progress::execute(
-                            &mut connection,
-                            command,
-                            admission,
-                        ));
+                        let verify = command.is_verify_batch();
+                        let response =
+                            checkoff_progress::execute(&mut connection, command, admission);
+                        let wake = verify
+                            && response
+                                .as_ref()
+                                .is_ok_and(|response| response.status == 200);
+                        // Wake before the reply. The callback must not use
+                        // storage. A caller that waits for this reply has
+                        // already seen the wake.
+                        if wake {
+                            worker.notify_deduction_wake();
+                        }
+                        let _ = reply.send(response);
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Plates { command, reply } => {
@@ -960,7 +1030,7 @@ impl WriterOwner {
                             &mut connection,
                             command,
                             admission,
-                            publication_tokens.as_mut(),
+                            state.tokens.as_mut(),
                         );
                     }
                     #[cfg(feature = "desktop_rebuild")]
@@ -1010,7 +1080,7 @@ impl WriterOwner {
                     Envelope::Catalog { command, reply } => {
                         let _ = reply.send(catalog::execute(
                             &mut connection,
-                            &mut catalog_state,
+                            &mut state.catalog,
                             command,
                             admission,
                         ));
@@ -1018,7 +1088,7 @@ impl WriterOwner {
                     Envelope::CatalogRequest { command, reply } => {
                         let result = catalog::execute(
                             &mut connection,
-                            &mut catalog_state,
+                            &mut state.catalog,
                             command,
                             admission,
                         )
@@ -1046,7 +1116,7 @@ impl WriterOwner {
                             #[cfg(feature = "desktop_rebuild")]
                             &worker.job_subscriptions,
                             #[cfg(feature = "desktop_rebuild")]
-                            &mut catalog_state,
+                            &mut state.catalog,
                         );
                         #[cfg(feature = "desktop_rebuild")]
                         if cancels && result.is_ok() {
@@ -1073,8 +1143,8 @@ impl WriterOwner {
                         );
                         let _ = reply.send(result);
                     }
-                    Envelope::WriterControl { control, reply } => {
-                        let _ = reply.send(writer_control(&connection, control));
+                    Envelope::Control(command) => {
+                        control(&mut connection, &worker, &mut state, command)
                     }
                 }
                 #[cfg(feature = "desktop_rebuild")]
@@ -1088,11 +1158,11 @@ impl WriterOwner {
         });
         Ok((
             Self {
+                #[cfg(feature = "desktop_rebuild")]
+                restore: shared.restoration.activity.clone(),
                 client: SettingsClient { shared, readers },
                 join: Some(join),
                 lease: Some(lease),
-                #[cfg(feature = "desktop_rebuild")]
-                restore: Arc::default(),
                 drain: READER_DRAIN,
             },
             ready,
@@ -1120,12 +1190,12 @@ impl WriterOwner {
                 .lock()
                 .map_err(|_| anyhow!("Writer admission poisoned"))?;
             loop {
-                ensure!(!queue.closed, "Storage stopped");
+                ensure!(!queue.closed && !queue.restoring, "Storage stopped");
                 if queue.pending.len() < self.client.shared.capacity {
                     let (reply, receiver) = mpsc::channel();
                     queue
                         .pending
-                        .push_back(Envelope::WriterControl { control, reply });
+                        .push_back(storage_control::queued(control, reply));
                     self.client.shared.changed.notify_all();
                     break receiver;
                 }
@@ -1201,6 +1271,7 @@ impl WriterOwner {
             data_dir,
             metadata: metadata.clone(),
             request,
+            free_space: archive::free_space,
         })))?;
         Ok(metadata)
     }

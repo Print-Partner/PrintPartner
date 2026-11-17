@@ -41,6 +41,8 @@ mod manual;
 pub mod print_file;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;
+#[cfg(feature = "desktop_rebuild")]
+pub use unattributed::{DismissUndo, UndoDismissError};
 mod verify;
 pub mod wire;
 
@@ -477,6 +479,13 @@ pub(crate) struct Command {
     op: Op,
     repos: PathBuf,
     policy: auth::AuthPolicy,
+}
+
+impl Command {
+    /// A verify burst, including a replay of one. Undo is not.
+    pub(crate) fn is_verify_batch(&self) -> bool {
+        matches!(self.op, Op::VerifyBatch(_))
+    }
 }
 impl WriterOwner {
     pub fn checkoff_progress(&self) -> Result<ProgressClient> {

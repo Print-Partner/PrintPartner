@@ -262,6 +262,67 @@ pub(crate) fn project_observation(
     })
 }
 
+/// The claim observation for a GitHub Source. It hashes the Source's identity
+/// and leaves out the revision, local path and commit that activation writes,
+/// so a settlement after publication still matches the claim.
+pub(crate) fn github_observation(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    source_id: i64,
+    actor: &str,
+) -> Result<LocalScanObservation> {
+    let (source_kind, source_type, url, branch, tag, local_path, configuration_version): (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+    ) = tx.query_row(
+        "SELECT source_kind,source_type,url,branch,tag,local_path,source_configuration_version FROM projects WHERE tenant_id=?1 AND id=?2",
+        params![tenant, source_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        },
+    )?;
+    ensure!(
+        source_kind == "github",
+        "GitHub sync requires a GitHub Source"
+    );
+    ensure!(
+        configuration_version > 0,
+        "Invalid Source configuration version"
+    );
+    let authority_basis_digest = digest_bytes(serde_json::to_vec(&(tenant, actor))?);
+    let identity = digest_bytes(serde_json::to_vec(&(
+        source_id,
+        configuration_version,
+        source_kind,
+        source_type,
+        url,
+        branch,
+        tag,
+    ))?);
+    Ok(LocalScanObservation {
+        source_id,
+        local_path,
+        configuration_version,
+        authority_actor: actor.to_owned(),
+        authority_basis_digest,
+        activation_observation_digest: identity.clone(),
+        path_observation_digest: identity,
+    })
+}
+
 fn mark_source_synced(
     tx: &Transaction<'_>,
     tenant: &str,

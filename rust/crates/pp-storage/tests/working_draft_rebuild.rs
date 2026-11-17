@@ -13,6 +13,10 @@ use pp_storage::{
         rebuild::{RebuildError, RebuildRequest, RebuildSource, Rebuilt},
     },
 };
+use pp_testkit::rebuild_fixture::{
+    SEED, brief, evidence, roles, scoped_choices, two_bases, unresolved_choices, write_sources,
+    write_stl,
+};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::{
@@ -20,27 +24,6 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
-
-const SEED: &str = "INSERT INTO build_profiles(id,tenant_id,name) VALUES(3,'default','Rebuild Fixture');
-INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(4,'default','Base','','local','main','<data-dir>/repos/4','2026-11-01T00:00:00.000Z','rev4');
-INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(5,'default','Addon','','local','main','<data-dir>/repos/5','2026-11-01T00:00:00.000Z','rev5');";
-
-fn evidence(id: &str, source: i64, role: &str) -> Value {
-    json!({"id":id,"url":format!("https://example.test/{id}"),"normalized_url":format!("https://example.test/{id}"),
-        "kind":"canonical_design","title":id,"source_id":source,"source_role":role})
-}
-fn brief(evidence: Value, resolutions: Value) -> Value {
-    json!({"version":1,"build_id":3,"special_request":"Fixture","requirements":[],"evidence":evidence,
-        "contributions":[],"compatibility_findings":[],"differences":[],"resolutions":resolutions,
-        "role_filaments":[],"checklist_items":[],"draft_review_blockers":[],
-        "created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"})
-}
-fn roles() -> Value {
-    json!([
-        evidence("base", 4, "structural_base"),
-        evidence("addon", 5, "addon")
-    ])
-}
 
 /// Build 3's layers and drafts as `kind:id` lists, and its stored brief text.
 type State = (String, String, String);
@@ -59,17 +42,7 @@ impl Fixture {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/required-units/unchanged.db");
         std::fs::copy(fixture, &database).unwrap();
-        for (source, names) in [(4, &["bracket", "gear"][..]), (5, &["clip"][..])] {
-            let dir = root.path().join(format!("repos/{source}"));
-            std::fs::create_dir_all(&dir).unwrap();
-            for name in names.iter().filter(|_| files) {
-                std::fs::write(
-                    dir.join(format!("{name}.stl")),
-                    format!("solid {name}\nendsolid {name}\n"),
-                )
-                .unwrap();
-            }
-        }
+        write_sources(root.path(), files).unwrap();
         let db = Connection::open(&database).unwrap();
         db.execute_batch(&SEED.replace("<data-dir>", root.path().to_str().unwrap()))
             .unwrap();
@@ -180,20 +153,15 @@ fn rebuild_sets_layers_from_roles_and_selects_a_new_draft() {
 
 #[test]
 fn rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
-    let two_bases = json!([
-        evidence("base", 4, "structural_base"),
-        evidence("addon", 5, "structural_base")
-    ]);
-    let resolved = json!({"group-1":{"resolution":"choose_source_a","rationale":"Fixture","custom_resolution":null,"resolved_at":"2026-11-01T00:00:00.000Z"}});
     let cases = [
         (None, true),
         (
             Some(brief(json!([evidence("addon", 5, "addon")]), json!({}))),
             true,
         ),
-        (Some(brief(two_bases, json!({}))), true),
+        (Some(brief(two_bases(), json!({}))), true),
         (Some(brief(roles(), json!({}))), false),
-        (Some(brief(roles(), resolved)), true),
+        (Some(unresolved_choices()), true),
     ];
     for (index, (brief, files)) in cases.into_iter().enumerate() {
         let f = Fixture::new(brief, files);
@@ -204,7 +172,10 @@ fn rebuild_refusals_leave_layers_drafts_and_brief_unchanged() {
             1 => matches!(error, RebuildError::NoStructuralBase),
             2 => matches!(error, RebuildError::MultipleStructuralBases),
             3 => matches!(error, RebuildError::NoStls),
-            _ => matches!(error, RebuildError::SourceChoicesUnsupported),
+            _ => matches!(
+                error,
+                RebuildError::UnresolvedSourceChoices { ref groups } if groups == &["group-1".to_owned()]
+            ),
         };
         assert!(expected, "case {index}: {error:?}");
         assert_eq!(f.state(), before, "case {index} wrote");
@@ -220,4 +191,81 @@ fn rebuild_keys_must_be_non_blank_and_leave_room_for_the_inputs_suffix() {
     ));
     assert!(RebuildRequest::new(&"k".repeat(143)).is_ok());
     assert!(RebuildRequest::new(&"k".repeat(144)).is_err());
+}
+
+#[test]
+fn rebuild_applies_a_scoped_contribution_and_drops_the_superseded_file() {
+    let f = Fixture::new(Some(scoped_choices()), true);
+    write_stl(f.root.path(), 4, "superseded.stl").unwrap();
+    write_stl(f.root.path(), 5, "mods/a/plate.stl").unwrap();
+    write_stl(f.root.path(), 5, "mods/b/other.stl").unwrap();
+    let rebuilt = f.rebuild("k").unwrap();
+    assert!(rebuilt.created);
+    let db = Connection::open(f.root.path().join("print-partner.db")).unwrap();
+    let mut query = db
+        .prepare(
+            "SELECT source_layer, relative_path FROM plan_draft_parts WHERE draft_id=?1 ORDER BY source_layer, relative_path",
+        )
+        .unwrap();
+    let parts: Vec<(String, String)> = query
+        .query_map([i64::try_from(rebuilt.draft_id.get()).unwrap()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        parts,
+        [
+            ("addon:Addon".into(), "mods/a/plate.stl".into()),
+            ("base:Base".into(), "bracket.stl".into()),
+            ("base:Base".into(), "gear.stl".into()),
+        ]
+    );
+    let again = f.rebuild("k").unwrap();
+    assert!(!again.created);
+    assert_eq!(again.draft_id, rebuilt.draft_id);
+}
+
+#[test]
+fn rebuild_removes_a_managed_layer_whose_role_became_evidence_and_keeps_a_ui_layer() {
+    let f = Fixture::new(Some(brief(roles(), json!({}))), true);
+    f.rebuild("k").unwrap();
+    let root = f.root.path().to_str().unwrap().replace('\'', "''");
+    write_stl(f.root.path(), 6, "ui.stl").unwrap();
+    let db = Connection::open(f.root.path().join("print-partner.db")).unwrap();
+    db.execute_batch(&format!(
+        "INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at,last_commit_sha) VALUES(6,'default','Extra','','local','main','{root}/repos/6','2026-11-01T00:00:00.000Z','rev6');
+         INSERT INTO profile_layers(tenant_id,profile_id,layer_order,layer_type,project_id) VALUES('default',3,2,'addon',6);"
+    ))
+    .unwrap();
+    let mut stored: Value = serde_json::from_str(&f.state().2).unwrap();
+    stored["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|item| item["id"] == "addon")
+        .unwrap()["source_role"] = json!("evidence");
+    db.execute(
+        "UPDATE app_settings SET value=?1 WHERE key='build_planning.v1.3'",
+        [stored.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    let before_layers = f.state().0;
+    assert_eq!(before_layers, "base:4,addon:5,addon:6");
+    let rebuilt = f.rebuild("later").unwrap();
+    assert!(rebuilt.created);
+    assert_eq!(
+        rebuilt
+            .sources
+            .iter()
+            .map(|s| s.source_id)
+            .collect::<Vec<_>>(),
+        [4]
+    );
+    let (layers, _, brief) = f.state();
+    assert_eq!(layers, "base:4,addon:6");
+    let brief: Value = serde_json::from_str(&brief).unwrap();
+    assert_eq!(brief["managed_source_ids"], json!([4]));
 }

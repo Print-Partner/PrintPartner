@@ -6,13 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["desktop_rebuild"]
 desktop_rebuild = [
     "pp-storage/desktop_rebuild",
     "dep:http-body",
     "dep:ryu-js",
     "dep:rusqlite",
     "dep:pp-services",
+    "pp-services/desktop_rebuild",
     "dep:rmcp",
     "dep:serde_path_to_error",
     "axum/multipart",
@@ -25,7 +26,7 @@ name = "export-rust-client"
 required-features = ["codegen"]
 
 [dependencies]
-pp-storage = { path = "../pp-storage" }
+pp-storage = { path = "../pp-storage", default-features = false }
 pp-services = { path = "../pp-services", optional = true }
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"], optional = true }
 anyhow.workspace = true
@@ -51,10 +52,11 @@ lettre = { version = "=0.11.23", default-features = false, features = ["builder"
 
 [dev-dependencies]
 # Test-only opt-in: lets tests open unmarked directories in desktop_rebuild builds.
-pp-storage = { path = "../pp-storage", features = ["test-unmarked-writer"] }
+pp-storage = { path = "../pp-storage", default-features = false, features = ["test-unmarked-writer"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 rusqlite.workspace = true
 tempfile = "=3.27.0"
+zip = { version = "=9.0.4", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 hyper = { workspace = true, features = ["server"] }
 hyper-util.workspace = true

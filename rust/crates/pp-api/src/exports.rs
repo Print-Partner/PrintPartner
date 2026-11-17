@@ -1,6 +1,9 @@
-//! Accepted Plan exports (GRE-1447): `GET /api/v2/plans/{id}/exports/checklist`
-//! answers one self-contained HTML attachment, built from one reader-pool read
-//! per request. No job runs and nothing is stored.
+//! Accepted Plan exports: `GET /api/v2/plans/{id}/exports/checklist` (GRE-1447)
+//! answers one self-contained HTML attachment and `.../exports/stl-pack`
+//! (GRE-1525, [`pack`]) a ZIP of the STLs, each built from one reader-pool
+//! read per request. No job runs and nothing is stored.
+
+mod pack;
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, build_id},
@@ -14,11 +17,12 @@ use axum::{
     response::Response,
     routing::get,
 };
-use pp_services::exports::{self, ChecklistPart, ChecklistPlan, Colour};
+use pp_services::exports::{self, ChecklistPart, ChecklistPlan, Colour, pack::PackRefusal};
 use pp_storage::{
     WriterFailure,
     read_model::{AcceptedRead, Part, ReadClient, Snapshot, views},
 };
+use serde_json::{Map, json};
 
 #[derive(Clone)]
 struct App {
@@ -32,7 +36,9 @@ pub fn exports_router(config: AcceptedHttpConfig, client: ReadClient) -> Router 
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
-    let routes = Router::new().route("/plans/{id}/exports/checklist", get(checklist));
+    let routes = Router::new()
+        .route("/plans/{id}/exports/checklist", get(checklist))
+        .route("/plans/{id}/exports/stl-pack", get(pack::stl_pack));
     gate.guard(Router::new().nest("/api/v2", routes))
         .with_state(App { gate, client })
 }
@@ -48,6 +54,13 @@ enum ExportFailure {
     AcceptedPlanInconsistent,
     /// The blocking read did not finish.
     Interrupted,
+    /// `scope` is neither `all` nor `remaining`.
+    InvalidScope,
+    /// The scope leaves no Required unit to pack.
+    NothingToPack,
+    /// Source files are missing or no longer match their accepted SHA-256.
+    SourceFilesUnavailable(Vec<pack::UnavailableFile>),
+    Pack(pp_services::exports::pack::PackRefusal),
 }
 
 impl ExportFailure {
@@ -72,6 +85,46 @@ impl ExportFailure {
             Self::Interrupted => {
                 problem::response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
             }
+            Self::InvalidScope => problem::coded(
+                StatusCode::BAD_REQUEST,
+                "scope must be all or remaining",
+                "invalid_scope",
+            ),
+            Self::NothingToPack | Self::Pack(PackRefusal::NothingToPack) => problem::coded(
+                StatusCode::CONFLICT,
+                "No Required unit is left to pack",
+                "nothing_to_pack",
+            ),
+            Self::SourceFilesUnavailable(files) => problem::build(
+                problem::problem(
+                    StatusCode::CONFLICT,
+                    "Source files are missing or changed since the Plan was accepted",
+                    Some("source_files_unavailable"),
+                ),
+                Map::from_iter([("files".into(), json!(files))]),
+            ),
+            Self::Pack(PackRefusal::TooManyEntries { entries, limit }) => problem::build(
+                problem::problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "The pack has more entries than a ZIP holds",
+                    Some("pack_too_large"),
+                ),
+                Map::from_iter([
+                    ("entries".into(), json!(entries)),
+                    ("limit".into(), json!(limit)),
+                ]),
+            ),
+            Self::Pack(PackRefusal::TooLarge { bytes, limit }) => problem::build(
+                problem::problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "The pack is larger than a ZIP holds",
+                    Some("pack_too_large"),
+                ),
+                Map::from_iter([
+                    ("bytes".into(), json!(bytes)),
+                    ("limit".into(), json!(limit)),
+                ]),
+            ),
         }
     }
 }

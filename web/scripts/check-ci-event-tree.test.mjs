@@ -31,7 +31,7 @@ console.log(JSON.stringify({ path: '.github/workflows/desktop-contracts.yml', st
   symlinkSync(join(root, 'web/node_modules'), join(directory, 'web/node_modules'));
   writeFileSync(join(directory, contracts), original);
   writeFileSync(join(directory, '.github/workflows/web-ci.yml'), YAML.stringify(webCI));
-  for (const name of ['integration-smoke', 'pr-evidence', 'desktop-e2e', 'desktop-webkit', 'desktop-runtime', 'desktop-native-macos']) {
+  for (const name of ['integration-smoke', 'desktop-e2e', 'desktop-webkit', 'desktop-runtime', 'desktop-native-macos']) {
     copyFileSync(join(root, `.github/workflows/${name}.yml`), join(directory, `.github/workflows/${name}.yml`));
   }
   const git = (...args) => {
@@ -116,16 +116,12 @@ test('event tree accepts pinned actions in tabbed workflow filename', t => {
 });
 
 for (const [name, change] of [
-  ['manual only', w => { w.on = { workflow_dispatch: null }; }],
-  ['trigger list', w => { w.on = ['push', 'pull_request']; }],
-  ['missing PR trigger', w => { delete w.on.pull_request; }],
-  ['closed PRs only', w => { w.on.pull_request.types = ['closed']; }],
-  ['missing synchronize event', w => { w.on.pull_request.types = ['opened', 'reopened', 'ready_for_review', 'converted_to_draft']; }],
-  ['ignored paths', w => { w.on.push['paths-ignore'] = ['**']; }],
-  ['removed coverage', w => { w.on.push.paths.shift(); }],
-  ['negative path', w => { w.on.pull_request.paths.push('!rust/**'); }],
-  ['wrong branch', w => { w.on.push.branches = ['never']; }],
-  ['negative branch', w => { w.on.push.branches.push('!main'); }],
+  ['pull request trigger', w => { w.on.pull_request = { types: ['opened'] }; }],
+  ['push trigger', w => { w.on.push = { branches: ['main'] }; }],
+  ['merge group trigger', w => { w.on.merge_group = { types: ['checks_requested'] }; }],
+  ['schedule trigger', w => { w.on.schedule = [{ cron: '0 0 * * *' }]; }],
+  ['manual trigger removed', w => { delete w.on.workflow_dispatch; }],
+  ['trigger list', w => { w.on = ['workflow_dispatch']; }],
   ['job false', w => { w.jobs.parity.if = false; }],
   ['job expression', w => { w.jobs.parity.if = '${{ false }}'; }],
   ['job dependency', w => { w.jobs.parity.needs = ['skipped']; }],
@@ -149,28 +145,14 @@ for (const [name, change] of [
   });
 }
 
-for (const event of ['push', 'pull_request']) {
-  test(`event tree rejects ${event} paths without rust-client coverage`, t => {
-    const f = fixture(t, modify(w => { w.on[event].paths = w.on[event].paths.filter(p => p !== 'web/packages/rust-client/**'); }));
-    writeFileSync(join(f.directory, contracts), original);
-    const result = f.run();
-    assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.match(result.stderr, /INVALID_DESKTOP_TRIGGERS/);
-  });
-}
-
-const selects = (patterns, file) => patterns.some(pattern => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\0/g, '.*')}$`).test(file));
-
-for (const event of ['push', 'pull_request']) {
-  test(`desktop-contracts ${event} filter selects a rust-client-only change`, () => {
-    const { paths } = YAML.parse(original).on[event];
-    for (const file of ['web/packages/rust-client/src/schemas.generated.ts', 'web/packages/rust-client/package.json']) {
-      assert.equal(selects(paths, file), true, file);
-    }
-    assert.equal(selects(paths, 'web/packages/rust-client-docs/README.md'), false);
-    assert.equal(selects(paths, 'web/packages/unrelated/index.ts'), false);
-  });
-}
+test('desktop contracts does not run on pull requests or main', () => {
+  const events = YAML.parse(original).on;
+  assert.equal(events.pull_request, undefined);
+  assert.equal(events.push, undefined);
+  assert.equal(events.merge_group, undefined);
+  assert.equal(events.schedule, undefined);
+  assert.ok(Object.hasOwn(events, 'workflow_dispatch'));
+});
 
 test('event tree allows no runner-conditioned steps', t => {
   const workflow = YAML.parse(original);
@@ -229,13 +211,8 @@ test('event tree rejects gitlink at required workflow path', t => {
   assert.match(result.stderr, /INVALID_EVENT_DESKTOP_CONTRACTS/);
 });
 
-test('event tree rejects yaml extension despite corrected trigger coverage', t => {
-  const f = fixture(t, modify(w => {
-    for (const trigger of [w.on.push, w.on.pull_request]) {
-      trigger.paths.push('docs/**');
-      trigger.paths = trigger.paths.map(p => p.replace('desktop-contracts.yml', 'desktop-contracts.yaml'));
-    }
-  }));
+test('event tree rejects yaml extension despite a dispatch-only workflow', t => {
+  const f = fixture(t);
   f.git('mv', contracts, '.github/workflows/desktop-contracts.yaml');
   const sha = f.commit();
   const result = f.run(sha);
@@ -243,12 +220,8 @@ test('event tree rejects yaml extension despite corrected trigger coverage', t =
   assert.match(result.stderr, /INVALID_EVENT_DESKTOP_CONTRACTS/);
 });
 
-test('event tree accepts extra trigger coverage', t => {
-  const f = fixture(t, modify(w => {
-    w.on.push.paths.push('docs/**');
-    w.on.pull_request.paths.push('docs/**');
-  }));
-  const result = f.run();
+test('event tree accepts the dispatch-only contracts workflow', t => {
+  const result = fixture(t).run();
   assert.equal(result.status, 0, result.stderr);
 });
 
@@ -261,46 +234,16 @@ for (const sha of ['', 'HEAD', 'a'.repeat(40), '--help', 'a'.repeat(39)]) {
   });
 }
 
-for (const job of ['web', 'web-build']) {
-  for (const [scenario, valid, state, missing] of [
-    ['runs after valid event', true, 'active', false],
-    ['never runs for missing event workflow', false, 'active', true],
-    ['never runs for API disabled_manually', false, 'disabled_manually', false],
-    ['never runs for API disabled_inactivity', false, 'disabled_inactivity', false],
-  ]) {
-    test(`${job} lifecycle sentinel ${scenario}`, t => {
-      const f = fixture(t, directory => {
-        if (missing) rmSync(join(directory, contracts));
-      });
-      const web = join(f.directory, 'web');
-      rmSync(join(web, 'node_modules'));
-      writeFileSync(join(web, 'package.json'), JSON.stringify({
-        name: 'lifecycle-proof', version: '1.0.0', private: true,
-        dependencies: { yaml: '2.9.1' },
-        scripts: { postinstall: 'node -e "require(\'fs\').writeFileSync(\'lifecycle-ran\', \'yes\')"' },
-      }));
-      const lock = spawnSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: web, encoding: 'utf8' });
-      assert.equal(lock.status, 0, lock.stderr);
-      assert.equal(webCI.jobs[job].permissions.actions, 'read');
-      const steps = webCI.jobs[job].steps;
-      assert.equal(steps.find(step => step.run?.includes('check-desktop-workflow-state.mjs')).env.GH_TOKEN, '${{ github.token }}');
-      const start = steps.findIndex(step => step.run?.startsWith('npm ci'));
-      const commands = [];
-      for (const step of steps.slice(start)) {
-        if (!step.run) continue;
-        commands.push(`cd "${step['working-directory'] === '.' ? f.directory : web}"\n${step.run}`);
-        if (step.run === 'npm rebuild' || step.name === 'Check Action SHAs and CI installer tool pins') break;
-      }
-      const result = spawnSync('bash', ['-e', '-c', commands.join('\n')], {
-        cwd: web, encoding: 'utf8', env: { ...process.env, EVENT_SHA: f.sha, GITHUB_SHA: f.sha, GITHUB_REPOSITORY: 'Print-Partner/PrintPartner',
-          GH_TOKEN: 'fixture-token', TEST_WORKFLOW_STATE: state, PATH: `${join(f.directory, 'bin')}:${process.env.PATH}` },
-      });
-      assert.equal(existsSync(join(web, 'lifecycle-ran')), valid, result.stdout + result.stderr);
-      assert.equal(result.status, valid ? 0 : 1, result.stdout + result.stderr);
-      if (!valid) assert.match(result.stderr, missing ? /INVALID_EVENT_DESKTOP_CONTRACTS/ : /INVALID_DESKTOP_WORKFLOW_STATE/);
-    });
-  }
-}
+test('replacement UI job tests and builds the UI package', () => {
+  const job = webCI.jobs.ui;
+  assert.equal(job.needs[0], 'changes');
+  assert.match(job.if, /needs\.changes\.outputs\.ui != 'false'/);
+  const run = job.steps.find(step => step.name === 'Test and build the replacement UI').run;
+  assert.match(run, /npm test -w @print-partner\/rust-client/);
+  assert.match(run, /npm run test --workspace @print-partner\/ui/);
+  assert.match(run, /npm run build --workspace @print-partner\/ui/);
+  assert.doesNotMatch(run, /@print-partner\/web/);
+});
 
 test('Release grants its reusable Web CI caller permission to read workflow state', () => {
   const release = YAML.parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
@@ -308,7 +251,7 @@ test('Release grants its reusable Web CI caller permission to read workflow stat
   assert.equal(release.jobs.quality.permissions.actions, 'read');
 });
 
-for (const lane of ['web', 'web-build']) {
+for (const lane of ['ui']) {
   test(`event tree rejects floating Web CI ${lane} Node despite repaired checkout`, t => {
     const f = fixture(t, directory => {
       const workflow = JSON.parse(JSON.stringify(webCI));
@@ -367,7 +310,6 @@ test('event tree rejects gitlink at required Web CI path', t => {
 
 for (const [name, job, diagnostic] of [
   ['integration-smoke', 'postgres', 'UNPINNED_INTEGRATION_NODE'],
-  ['pr-evidence', 'lint-pr-body', 'UNPINNED_EVIDENCE_NODE'],
   ['desktop-e2e', 'linux-smoke', 'UNPINNED_E2E_NODE'],
   ['desktop-webkit', 'webkit-stl', 'UNPINNED_WEBKIT_NODE'],
   ['desktop-runtime', 'runtime', 'UNPINNED_DESKTOP_NODE'],

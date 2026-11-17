@@ -120,16 +120,21 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
 ## Builds
 
 `/builds` lists every Build `GET /api/v2/plans` returns, in the core's order,
-with its name, order number, accepted progress and next action
-(`src/builds/BuildsList.tsx`). `/builds/:id` opens the Build workspace: the tab
+with its name, a thumbnail of its first Source's first STL, order number,
+accepted progress and next action (`src/builds/BuildsList.tsx`). The thumbnail
+uses the same `GET /api/v1/sources/{id}/thumbnail?path=` route as Library, at
+the row height. The row reads `listBuildLayers` and that Source's file list
+only once the row is in the viewport; a failed image says "No preview". The
+PNG is not tinted. `/builds/:id` opens the Build workspace: the tab
 bar Overview, Sources, Plan, Production, Checkoff and History (the Machine tab is
 parked), with Overview at the index route (`src/builds/BuildWorkspace.tsx`).
 Overview reads `GET /api/v2/plans/{id}`, `/layers` and `/workflow` and shows
 progress, part count, the Plan's freshness with its reasons in words, the next
 action with its reason, the count of open decisions, the order number and customer
 request, last use, and the layers in layer order. Checkoff is described below.
-The other tabs say what they will hold and that a later slice brings them.
-Nothing on Overview changes data.
+The Sources tab lists each layer's Source and the revision the Accepted Plan
+used, then each Source's files grouped as in Library, with a thumbnail beside
+each STL (`src/library/BuildSources.tsx`). Nothing on Overview changes data.
 
 - **Order fields follow the Orders Module.** `useModule` (`src/core/modules.ts`)
   reads the Module list from `GET /health`. Orders on shows the Order column and
@@ -157,7 +162,8 @@ Nothing on Overview changes data.
 - **Keyboard.** Up, Down, Home and End move focus between the Build links. Rows
   are keyed by Build ID, so a refetch keeps focus where it was.
 - **Large lists.** Every row renders; rows off screen use
-  `content-visibility: auto` so they skip layout and paint. This was chosen from
+  `content-visibility: auto` so they skip layout and paint. A row off screen
+  does not request its Source thumbnail. This was chosen from
   `test/browser/builds.browser.mjs` on 10,000 Builds on a 4-CPU cloud host:
   WebKitGTK showed the first row 2.0 to 3.5 s after navigation (fetch, schema
   check and render of all rows) and moved focus to the next row by the next
@@ -438,6 +444,31 @@ applies to every file in this package. It fails:
 
 `test/boundary.test.ts` plants each of those imports and expects the rule to
 fail it. Do not add `paths` or Vite aliases that point outside this package.
+
+### Layers inside `src` (GRE-1537)
+
+The same rule keeps three layers apart inside `src`:
+
+- **Screens:** `auth`, `builds`, `farm`, `library`, `settings` and `today`. A
+  screen folder may not import another screen folder.
+- **Shared layers:** `core`, `frame`, `screen`, `status`, `theme`, `type` and
+  `fonts`. A shared layer may not import a screen. Any other new folder under
+  `src` counts as a screen until it is added to `SHARED_LAYERS` in the rule.
+- **Composition:** the files directly in `src`: `App.tsx`, `routes.tsx`,
+  `main.tsx`, `csp.ts`, `index.css`, `typography.css` and the test setup
+  (`testSetup.ts`, `testSockets.ts`). An import of a folder, such as
+  `../builds`, counts as that folder. Only composition may import it.
+  Test files (`*.test.*`, `*.test-utils.*`) may too, because a screen test
+  renders the composed app through `../App` and `../routes`; the two screen
+  rules still apply to them.
+
+A helper that two screens need goes in a shared layer, never in one of the
+screens. The 16 cross-layer imports that existed when the rule landed are
+recorded in `web/eslint-suppressions.json`, a count per file. When you remove
+one, run `npx eslint . --prune-suppressions` from `web/` and commit the lower
+count. A new one fails lint. `npm run lint` in this package runs ESLint from
+`web/` (`cd ../.. && eslint apps/ui`), because ESLint looks for the suppressions
+file, and matches its paths, from the directory it runs in.
 
 ## Choices
 

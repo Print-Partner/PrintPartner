@@ -13,6 +13,15 @@ mod json;
 
 type Check<'a> = &'a dyn Fn() -> Result<()>;
 
+/// Whether both columns are what the reconciliation reader accepts. The
+/// import checks them and does not rewrite them.
+pub(crate) fn accept_reconciliation(basis: &str, result: &str) -> Result<()> {
+    let allow = || Ok(());
+    json::basis(basis, &allow)?;
+    json::result(result, &allow)?;
+    Ok(())
+}
+
 pub(crate) const DRAFT_COLUMNS: &str = "id,tenant_id,profile_id,base_revision_id,base_plan_version,state,lifecycle_version,rebased_from_draft_id,rebased_from_lifecycle_version,rebased_from_snapshot_digest,digest_format,snapshot_digest,created_by,idempotency_key,created_at,current_required_unit_reconciliation_id,consumed_revision_id,consumed_at";
 pub(crate) const INPUT_COLUMNS: &str = "id,tenant_id,draft_id,source_id,source_layer,layer_order,tracking_kind,source_revision_id,manifest_digest,effective_naming_digest";
 pub(crate) const PART_COLUMNS: &str = "id,tenant_id,draft_id,base_revision_part_id,part_key,relative_path,filename,source_layer,status,role_inferred,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id,quantity_inferred,quantity_override,quantity_effective,included,notes,github_blob_url,geometry_same,requirement,option_group_id,manifest_source,artifact_digest";

@@ -17,6 +17,29 @@ use std::{
 /// Node's setting key for the integration list.
 const INTEGRATIONS_KEY: &str = "integrations";
 
+/// Bytes of free space an import must leave on the data volume.
+pub const IMPORT_RESERVE_KEY: &str = "import.free_space_reserve_bytes";
+
+/// Used when the setting is missing or not a whole number of bytes.
+pub const DEFAULT_IMPORT_RESERVE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+/// The reserve an import must leave free. `0` is a stored choice. Anything
+/// that is not a `u64` in decimal, including a missing row, is 5 GiB.
+pub fn import_reserve_bytes(stored: Option<&str>) -> u64 {
+    match stored {
+        Some(text) => match text.parse::<u64>() {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                tracing::warn!(
+                    "Import free-space reserve setting is not a byte count; using 5 GiB"
+                );
+                DEFAULT_IMPORT_RESERVE_BYTES
+            }
+        },
+        None => DEFAULT_IMPORT_RESERVE_BYTES,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     DateFormat,
@@ -25,6 +48,7 @@ pub enum Key {
     ExternalAccess,
     GithubPat,
     DiscordNotify,
+    ImportReserve,
 }
 
 impl Key {
@@ -36,6 +60,7 @@ impl Key {
             Self::ExternalAccess => "external_access_mode",
             Self::GithubPat => "github_pat",
             Self::DiscordNotify => "discord_notify_webhook_url",
+            Self::ImportReserve => IMPORT_RESERVE_KEY,
         }
     }
 }
@@ -51,6 +76,8 @@ pub enum Write {
     SpoolmanDefault(String),
     GithubPat(String),
     DiscordNotify([Option<String>; 4]),
+    /// Whole bytes. `0` stores a reserve of nothing.
+    ImportReserve(u64),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -226,6 +253,9 @@ pub(super) fn execute(
                 Outcome::NotSpoolman
             }
         }
+        Request::Write(Write::ImportReserve(bytes)) => {
+            store(&tx, &tenant, Key::ImportReserve, &bytes.to_string())?
+        }
     };
     tx.commit()?;
     Ok(outcome)
@@ -352,7 +382,7 @@ fn js_string(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_spoolman;
+    use super::{DEFAULT_IMPORT_RESERVE_BYTES, import_reserve_bytes, is_spoolman};
 
     #[test]
     fn spoolman_lookup_takes_the_first_row_with_a_string_id() {
@@ -365,5 +395,23 @@ mod tests {
         assert!(!is_spoolman(None, "a"));
         assert!(!is_spoolman(Some("not json".into()), "a"));
         assert!(!is_spoolman(Some(r#"{"id":"a"}"#.into()), "a"));
+    }
+
+    #[test]
+    fn import_reserve_defaults_to_five_gib_unless_the_row_is_a_whole_number() {
+        assert_eq!(import_reserve_bytes(None), DEFAULT_IMPORT_RESERVE_BYTES);
+        assert_eq!(
+            import_reserve_bytes(Some("nope")),
+            DEFAULT_IMPORT_RESERVE_BYTES
+        );
+        assert_eq!(
+            import_reserve_bytes(Some("-1")),
+            DEFAULT_IMPORT_RESERVE_BYTES
+        );
+        assert_eq!(import_reserve_bytes(Some("0")), 0);
+        assert_eq!(
+            import_reserve_bytes(Some("5368709120")),
+            5 * 1024 * 1024 * 1024
+        );
     }
 }

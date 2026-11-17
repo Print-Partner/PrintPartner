@@ -554,6 +554,71 @@
       "count": 1
     }
   },
+  "apps/ui/src/auth/AuthScreens.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/builds/BuildCheckoff.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/builds/BuildPlan.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 2
+    }
+  },
+  "apps/ui/src/builds/PlanReconcile.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/builds/checkoff.ts": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/farm/FarmLog.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/frame/Frame.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 3
+    }
+  },
+  "apps/ui/src/frame/HelpDialog.test.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/frame/HelpDialog.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/library/BuildSources.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/library/LibraryScreen.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/library/sources.ts": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
+  "apps/ui/src/settings/IntegrationsSection.tsx": {
+    "print-partner/ui-boundary": {
+      "count": 1
+    }
+  },
   "apps/web/src/api/endpoints/checkoff.ts": {
     "complexity": {
       "count": 2

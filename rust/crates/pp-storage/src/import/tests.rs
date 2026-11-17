@@ -3,6 +3,7 @@ use inventory::Status;
 use pp_testkit::{Fixture, Installation, node_installation as synthetic, node_schema};
 use std::time::SystemTime;
 
+mod convert;
 mod copy;
 
 fn node_folder() -> Installation {
@@ -44,12 +45,26 @@ fn state(source: &Path) -> Vec<(PathBuf, u64, SystemTime, Option<Vec<u8>>)> {
 /// Runs the dry run with its own temporary directory, and checks that the
 /// run changed nothing in the source and removed its temporary copy.
 fn run(source: &Path) -> Result<DryRunReport, ImportError> {
+    run_with(source, archive::Limits::node())
+}
+
+fn run_with(source: &Path, limits: archive::Limits) -> Result<DryRunReport, ImportError> {
     let temporary = tempfile::tempdir().unwrap();
     let before = state(source);
-    let result = dry_run_in(source, None, temporary.path());
+    let result = dry_run_in(source, None, temporary.path(), limits);
     assert!(before == state(source), "the dry run changed its source");
     assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
     result
+}
+
+/// Gives Source 1 a current revision whose snapshot is at `locator`.
+fn give_revision(folder: &Installation, locator: &str) {
+    let sql = format!(
+        "INSERT INTO source_revisions (project_id, upstream_revision_key, manifest_digest, snapshot_locator, synced_at)
+           VALUES (1, 'synthetic-a', 'synthetic-digest', '{locator}', '2026-10-02T00:00:00.000Z');
+         UPDATE projects SET current_source_revision_id = last_insert_rowid() WHERE id = 1;"
+    );
+    execute(folder, &sql);
 }
 
 fn execute(folder: &Installation, sql: &str) {
@@ -128,7 +143,7 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
 
     assert_eq!(report.rows.len(), inventory::ROWS.len());
     let items: BTreeMap<String, u64> = (report.rows.iter())
-        .inspect(|(row, _)| assert_eq!(row.status, Status::Pending))
+        .inspect(|(row, _)| assert_ne!(row.status, Status::Pending))
         .flat_map(|(_, shapes)| shapes)
         .map(|(shape, items)| (shape.to_string(), *items))
         .collect();
@@ -164,7 +179,14 @@ fn a_node_folder_reports_its_counts_and_is_left_unchanged() {
     let text = report.to_string();
     let holds = |line: &str| assert!(text.contains(line), "{line} is not in:\n{text}");
     holds("3 Builds, 2 Sources, 2 printers, 2 unmatched prints.");
-    holds("step 3 pending: setting printer.fleet = 2");
+    holds("step 3 converted: setting printer.fleet = 2");
+    holds("step 6 converted: setting feature_toggles = 1");
+    holds("step 6 checked:");
+    holds("production_setup ignored = 1");
+    holds("dropped kit_manifest modules = 1");
+    holds("printer.fleet id: 1 -> \"1\" = 1");
+    holds("printer.fleet bed_width_mm: \"250\" -> 250 = 1");
+    holds("addresses with a username or password, kept as stored: 0");
     holds("Stored JSON the inventory does not name:\n  none");
     holds("Installation value \"default\"; accounts stored: 1.");
     holds("Kept, not used by Rust:\n  setting filename_grouping:* = 1");
@@ -184,14 +206,87 @@ fn a_full_archive_gives_the_same_counts() {
     let archive = archive_of(folder.path(), 2, "full");
     let from_archive = run(archive.path()).unwrap();
     assert_eq!(from_archive.source, SourceKind::Archive);
+    // Both count the same entries under each root. Only a folder has the
+    // bytes: an archive is listed, not read.
+    assert!(from_folder.roots.iter().all(|count| count.bytes.is_some()));
+    let listed = |report: &DryRunReport| -> Vec<(&'static str, u64)> {
+        (report.roots.iter().map(|count| (count.root, count.entries))).collect()
+    };
+    assert_eq!(listed(&from_archive), listed(&from_folder));
+    // The synthetic `repos/` is itself, four folders and the snapshot's two
+    // files; `custom_filaments.json` is one file.
+    let expected = [("repos", 7), ("custom_filaments.json", 1)];
+    assert_eq!(listed(&from_folder), expected);
+    let text = from_folder.to_string();
+    let lines = "\nBackup roots (files and folders, then bytes of the files):\n  repos 7 38\n  custom_filaments.json 1 52\n  all roots: 8 entries\n";
+    assert!(text.contains(lines), "{text}");
+    let lines = "\n  repos 7\n  custom_filaments.json 1\n  all roots: 8 entries\n";
+    assert!(from_archive.to_string().contains(lines));
+    // The size of each database file the source holds, from its own bytes.
+    let database = std::fs::metadata(folder.database_path()).unwrap().len();
+    assert_eq!(
+        from_folder.database_files[0],
+        ("print-partner.db", database)
+    );
+    assert_eq!(from_archive.database_files[0].0, "print-partner.db");
+    let lines = format!("\nDatabase files (bytes):\n  print-partner.db {database}\n");
+    assert!(from_folder.to_string().contains(&lines));
+    let total: u64 = from_folder
+        .database_files
+        .iter()
+        .map(|(_, bytes)| bytes)
+        .sum();
+    let line = format!("  all database files: {total} bytes\n");
+    assert!(from_folder.to_string().contains(&line));
+    // An archive names no installation folder, so it cannot show that a
+    // Source without a current revision lies inside it.
+    let inside = SourcePaths {
+        rebased: synthetic::SOURCES,
+        ..SourcePaths::default()
+    };
+    assert_eq!(from_folder.source_paths, inside);
+    let outside = SourcePaths {
+        outside: synthetic::SOURCES,
+        ..SourcePaths::default()
+    };
+    assert_eq!(from_archive.source_paths, outside);
     let source = SourceKind::Directory;
     assert_eq!(
         DryRunReport {
             source,
+            roots: from_folder.roots.clone(),
+            database_files: from_folder.database_files.clone(),
+            source_paths: from_folder.source_paths,
             ..from_archive
         },
         from_folder
     );
+}
+
+/// The supported way to dry-run an installation larger than the archive's
+/// expanded-size cap is a folder copy or snapshot: the cap applies only to a
+/// packed archive (docs/node-import.md).
+#[test]
+fn a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused() {
+    let folder = node_folder();
+    let database = std::fs::metadata(folder.database_path()).unwrap().len();
+    let limits = archive::Limits {
+        max_total_bytes: database / 2,
+        ..archive::Limits::node()
+    };
+    let archive = archive_of(folder.path(), 2, "full");
+    let error = run_with(archive.path(), limits).unwrap_err();
+    assert!(matches!(error, ImportError::InvalidArchive(_)), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Invalid backup archive: Backup archive decompressed byte limit exceeded ({})",
+            database / 2
+        )
+    );
+    let report = run_with(folder.path(), limits).unwrap();
+    assert_eq!(report.source, SourceKind::Directory);
+    assert_eq!(report, run(folder.path()).unwrap());
 }
 
 #[test]
@@ -287,7 +382,13 @@ fn a_destination_is_inspected_and_never_created() {
     let found = inspect_destination(&file);
     assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
     assert!(found.to_string().contains("cannot be read ("), "{found}");
-    let report = dry_run_in(node.path(), Some(&file), parent.path()).unwrap();
+    let report = dry_run_in(
+        node.path(),
+        Some(&file),
+        parent.path(),
+        archive::Limits::node(),
+    )
+    .unwrap();
     assert_eq!(report.destination, Some(found));
 }
 
@@ -299,7 +400,8 @@ fn a_temporary_directory_inside_the_source_or_the_destination_is_refused() {
     let destination = tempfile::tempdir().unwrap();
     let before = state(folder.path());
     let refused = |target: Option<&Path>, temporary: &Path, named: &Path| {
-        let error = dry_run_in(folder.path(), target, temporary).unwrap_err();
+        let error =
+            dry_run_in(folder.path(), target, temporary, archive::Limits::node()).unwrap_err();
         let text = error.to_string();
         let ImportError::TemporaryInside { folder: found, .. } = error else {
             panic!(
@@ -332,7 +434,13 @@ fn a_temporary_directory_inside_the_source_or_the_destination_is_refused() {
     }
     // A directory beside both is used.
     let beside = tempfile::tempdir().unwrap();
-    let report = dry_run_in(folder.path(), Some(destination.path()), beside.path()).unwrap();
+    let report = dry_run_in(
+        folder.path(),
+        Some(destination.path()),
+        beside.path(),
+        archive::Limits::node(),
+    )
+    .unwrap();
     assert_eq!(report.destination, Some(Destination::Free));
 }
 
@@ -356,7 +464,13 @@ fn a_database_that_cannot_fit_is_refused_before_it_is_copied() {
         .unwrap();
     database.set_len(1 << 43).unwrap();
     let temporary = tempfile::tempdir().unwrap();
-    let error = dry_run_in(folder.path(), None, temporary.path()).unwrap_err();
+    let error = dry_run_in(
+        folder.path(),
+        None,
+        temporary.path(),
+        archive::Limits::node(),
+    )
+    .unwrap_err();
     let staged = std::fs::read_dir(temporary.path()).unwrap().count();
     assert_eq!(staged, 0, "the refusal left its stage behind");
     let refusal = error.to_string();
@@ -375,7 +489,7 @@ fn the_staged_upgrade_keeps_no_rollback_copies() {
     // The import's own upgrade of a staged folder writes no copy beside it.
     let (folder, stage) = (node_folder(), tempfile::tempdir().unwrap());
     stage_directory(folder.path(), stage.path()).unwrap();
-    let (connection, ready) = upgrade(stage.path()).unwrap();
+    let (connection, ready, ()) = upgrade(stage.path(), |_| Ok(())).unwrap();
     drop(connection);
     assert_eq!(
         (ready.previous_version, ready.version),
@@ -512,6 +626,156 @@ fn only_a_full_format_2_archive_is_read() {
         matches!(error, ImportError::Schema(refusal) if refusal.found == 48),
         "{error:?}"
     );
+}
+
+#[test]
+fn the_two_credentials_are_copied_unchanged_and_reported_by_key_only() {
+    let folder = node_folder();
+    execute(
+        &folder,
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES
+           ('default', 'github_pat', 'synthetic-token-value'),
+           ('default', 'discord_notify_webhook_url', 'https://synthetic.invalid/hook-value');",
+    );
+    let report = run(folder.path()).unwrap();
+    for key in ["github_pat", "discord_notify_webhook_url"] {
+        assert!(report.copied.contains(&(Shape::Setting(key), 1)), "{key}");
+        assert!(!report.scalar_settings.contains(key), "{key}");
+    }
+    assert!(report.unnamed.is_empty(), "{:?}", report.unnamed);
+    let text = report.to_string();
+    assert!(text.contains("  setting github_pat = 1"), "{text}");
+    assert!(
+        !text.contains("token-value") && !text.contains("hook-value"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_destination_that_cannot_be_resolved_is_reported_and_the_dry_run_goes_on() {
+    let folder = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let file = parent.path().join("file");
+    std::fs::write(&file, "synthetic").unwrap();
+    let below = file.join("child");
+    let temporary = tempfile::tempdir().unwrap();
+    let report = dry_run_in(
+        folder.path(),
+        Some(&below),
+        temporary.path(),
+        archive::Limits::node(),
+    )
+    .unwrap();
+    let found = report.destination.as_ref().unwrap();
+    assert!(matches!(found, Destination::Unreadable(_)), "{found:?}");
+    assert!(report.to_string().contains("cannot be read ("), "{report}");
+}
+
+#[test]
+fn a_disk_or_filesystem_failure_in_the_upgrade_is_a_failed_run_not_a_refused_database() {
+    use rusqlite::ffi;
+    let database = Path::new("print-partner.db");
+    let sorted = |cause: &(dyn std::error::Error + 'static)| {
+        upgrade_failure(database, "synthetic detail".into(), [cause].into_iter())
+    };
+    let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+    for code in [
+        ffi::SQLITE_FULL,
+        ffi::SQLITE_IOERR,
+        ffi::SQLITE_READONLY,
+        ffi::SQLITE_CANTOPEN,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(matches!(error, ImportError::Io { .. }), "{code}: {error:?}");
+        assert_eq!(error.to_string(), "print-partner.db: synthetic detail");
+    }
+    let full = std::io::Error::from(ErrorKind::StorageFull);
+    let error = sorted(&full);
+    assert!(
+        matches!(&error, ImportError::Io { source, .. } if source.kind() == ErrorKind::StorageFull),
+        "{error:?}"
+    );
+    // A damaged or unexpected database is still a refusal.
+    for code in [
+        ffi::SQLITE_CORRUPT,
+        ffi::SQLITE_CONSTRAINT,
+        ffi::SQLITE_NOTADB,
+    ] {
+        let error = sorted(&sqlite(code));
+        assert!(
+            matches!(error, ImportError::Database(_)),
+            "{code}: {error:?}"
+        );
+    }
+    let none = upgrade_failure(
+        database,
+        "Invalid database schema version".into(),
+        [].into_iter(),
+    );
+    assert_eq!(
+        none.to_string(),
+        "The database failed its checks: Invalid database schema version"
+    );
+}
+
+#[test]
+fn the_dry_run_counts_a_source_with_a_current_revision_as_the_import_treats_it() {
+    // Its snapshot is in the folder and in the archive: the import rewrites
+    // it from either, and the dry run of either says so.
+    let folder = node_folder();
+    give_revision(&folder, "1/revisions/synthetic-a");
+    let from_folder = run(folder.path()).unwrap();
+    assert_eq!(
+        (
+            from_folder.source_paths.rebased,
+            from_folder.source_paths.missing_revisions
+        ),
+        (synthetic::SOURCES, 0)
+    );
+    let archive = archive_of(folder.path(), 2, "full");
+    let from_archive = run(archive.path()).unwrap().source_paths;
+    assert_eq!(
+        (from_archive.rebased, from_archive.missing_revisions),
+        (1, 0)
+    );
+    assert_eq!(from_archive.outside, synthetic::SOURCES - 1);
+
+    // A snapshot the copy would lack: the import refuses, and the dry run
+    // says it would.
+    let gone = node_folder();
+    give_revision(&gone, "1/revisions/synthetic-gone");
+    let report = run(gone.path()).unwrap();
+    assert_eq!(report.source_paths.missing_revisions, 1);
+    let line = "Sources whose current revision is missing in the copy: 1. The import would refuse this installation.\n";
+    assert!(report.to_string().contains(line), "{report}");
+    let line = "Sources whose current revision is missing in the copy: 0.\n";
+    assert!(from_folder.to_string().contains(line), "{from_folder}");
+}
+
+#[test]
+fn a_file_at_the_snapshot_path_is_not_counted_as_the_snapshot_folder() {
+    let folder = node_folder();
+    std::fs::write(folder.path().join("repos/not-a-dir"), "synthetic").unwrap();
+    give_revision(&folder, "not-a-dir");
+    let from_folder = run(folder.path()).unwrap();
+    assert_eq!(from_folder.source_paths.missing_revisions, 1);
+    let archive = archive_of(folder.path(), 2, "full");
+    let from_archive = run(archive.path()).unwrap();
+    assert_eq!(
+        from_archive.source_paths.missing_revisions, 1,
+        "{from_archive}"
+    );
+}
+
+#[test]
+fn a_snapshot_name_that_is_not_a_plain_path_does_not_end_the_dry_run() {
+    let folder = node_folder();
+    give_revision(&folder, r"..\..\synthetic");
+    let report = run(folder.path()).unwrap();
+    assert_eq!(report.source_paths.bad_locators, 1);
+    let line = "Sources whose snapshot name is not a plain path: 1. The import would refuse this installation.\n";
+    assert!(report.to_string().contains(line), "{report}");
+    assert!(report.to_string().contains("3 Builds"), "{report}");
 }
 
 #[test]

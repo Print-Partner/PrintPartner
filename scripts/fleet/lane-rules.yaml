@@ -5,7 +5,7 @@
 # and docs/development/agent-workflow.md (safety guard, coordinator worktree).
 # Removed here: the picker (next-ticket.py and its inputs), the Linear claim, merge_gate, close_out,
 # end_of_wake, author_overflow, wake.scorer_deadline, the scorer seat rules and scorer_policy.
-# .github/workflows/lane-dispatch.yml is disabled until the owner re-approves it. Restoring any removed
+# GRE-1647 deleted .github/workflows/lane-dispatch.yml. Restoring any removed
 # block needs an owner-approved PR; git history keeps the old version.
 version: 3
 updated: "2026-11-03T00:00:00-05:00"

@@ -2,9 +2,10 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::modules`],
-//! [`crate::integrations`], [`crate::printers`] or [`crate::auth`]. `pp-core`'s
-//! `client_routes_match_registrations` test sends every entry to the composed
+//! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
+//! [`crate::modules`], [`crate::integrations`], [`crate::printers`],
+//! [`crate::spoolman_deductions`], [`crate::backup`] or [`crate::auth`].
+//! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
 //! The document's `descriptors` list holds constant tables the generator writes
@@ -242,6 +243,27 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "CheckoffResultList",
     ),
     route(
+        "listSpoolmanDeductions",
+        "GET",
+        "/api/v2/spoolman/deductions",
+        None,
+        "DeductionList",
+    ),
+    route(
+        "readSpoolmanDeduction",
+        "GET",
+        "/api/v2/spoolman/deductions/{id}",
+        None,
+        "DeductionDetail",
+    ),
+    route(
+        "reconcileSpoolmanDeduction",
+        "POST",
+        "/api/v2/spoolman/deductions/{id}/reconcile",
+        Some("ReconcileDeductionRequest"),
+        "DeductionView",
+    ),
+    route(
         "listUnmatchedPrints",
         "GET",
         "/api/v2/printer-checkoff/unattributed",
@@ -327,6 +349,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "DismissUnattributedReceipt",
         )
     },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "undoDismissUnattributedPrint",
+            "POST",
+            "/api/v2/printer-checkoff/unattributed/{id}/dismiss/undo",
+            Some("DismissUnattributedRequest"),
+            "UndoDismissUnattributedReceipt",
+        )
+    },
     route(
         "readSendQueue",
         "GET",
@@ -341,6 +373,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "/api/v1/sources/activity",
         None,
         "SourceActivity",
+    ),
+    route(
+        "listSourceFiles",
+        "GET",
+        "/api/v1/sources/{id}/files",
+        None,
+        "SourceFileList",
     ),
     ClientRoute {
         text_params: &["module"],
@@ -482,6 +521,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         auth: ClientAuth::None,
         ..route("signOut", "POST", "/auth/logout", None, "SignedOut")
     },
+    route(
+        "createInstallationBackup",
+        "POST",
+        "/api/v2/installation/backup",
+        None,
+        "InstallationBackup",
+    ),
 ];
 
 #[cfg(feature = "codegen")]
@@ -490,7 +536,7 @@ pub use codegen::{document, document_bytes};
 #[cfg(feature = "codegen")]
 pub(crate) mod codegen {
     use super::CLIENT_ROUTES;
-    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
+    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemCode, ProblemType};
     use pp_storage::checkoff_progress::farm_log::{
         FarmLogEntry, FarmLogKind, FarmLogPage, FarmLogUndo, FarmUndoReason,
     };
@@ -673,6 +719,45 @@ pub(crate) mod codegen {
             object.required.extend(nullable.map(String::from));
         }
         schema("PrinterConfig", config)?;
+        // A deduction always serializes its nullable fields, null included.
+        // The same required list is applied to every copy of DeductionView so
+        // the generator sees one shape.
+        let require_deduction_view = |object: &mut schemars::schema::SchemaObject| {
+            let Some(object) = object.object.as_mut() else {
+                return;
+            };
+            let nullable = [
+                "reason",
+                "integration_id",
+                "spool_id",
+                "grams",
+                "grams_basis",
+                "failure",
+                "failure_status",
+            ];
+            object.required.extend(nullable.map(String::from));
+        };
+        let mut view = schemars::schema_for!(crate::spoolman_deductions::DeductionView);
+        require_deduction_view(&mut view.schema);
+        schema("DeductionView", view)?;
+        let mut deductions = schemars::schema_for!(crate::spoolman_deductions::DeductionList);
+        if let Some(schemars::schema::Schema::Object(view)) =
+            deductions.definitions.get_mut("DeductionView")
+        {
+            require_deduction_view(view);
+        }
+        schema("DeductionList", deductions)?;
+        let mut detail = schemars::schema_for!(crate::spoolman_deductions::DeductionDetail);
+        if let Some(schemars::schema::Schema::Object(view)) =
+            detail.definitions.get_mut("DeductionView")
+        {
+            require_deduction_view(view);
+        }
+        schema("DeductionDetail", detail)?;
+        schema(
+            "ReconcileDeductionRequest",
+            schemars::schema_for!(crate::spoolman_deductions::ReconcileDeductionRequest),
+        )?;
         schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),
@@ -706,6 +791,10 @@ pub(crate) mod codegen {
         schema(
             "SourceActivity",
             schemars::schema_for!(crate::catalog::wire::SourceActivity),
+        )?;
+        schema(
+            "SourceFileList",
+            schemars::schema_for!(crate::source_files::SourceFileList),
         )?;
         schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
         schema("FarmLogEntry", schemars::schema_for!(FarmLogEntry))?;
@@ -745,11 +834,20 @@ pub(crate) mod codegen {
             schemars::schema_for!(DismissUnattributedReceipt),
         )?;
         schema(
+            "UndoDismissUnattributedReceipt",
+            schemars::schema_for!(crate::checkoff::UndoDismissUnattributedReceipt),
+        )?;
+        schema(
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
         )?;
         schema("Problem", schemars::schema_for!(Problem))?;
         schema("ProblemType", schemars::schema_for!(ProblemType))?;
+        schema("ProblemCode", schemars::schema_for!(ProblemCode))?;
+        schema(
+            "InstallationBackup",
+            schemars::schema_for!(crate::backup::InstallationBackup),
+        )?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -1629,6 +1727,68 @@ pub(crate) mod codegen {
         ])
     }
 
+    /// A revision's files, including one path per kind the list uses, and a
+    /// Source that has no revision yet.
+    fn source_file_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::source_files::{SourceFileEntry, SourceFileKind, SourceFileList};
+        let file = |path: &str, kind: SourceFileKind, size_bytes: u64| SourceFileEntry {
+            path: path.into(),
+            kind,
+            size_bytes,
+        };
+        Ok(vec![
+            served(
+                "SourceFileList",
+                "grouped",
+                SourceFileList {
+                    source_id: MAX_SAFE,
+                    revision_id: Some(4),
+                    files: vec![
+                        file("README.md", SourceFileKind::Document, 5),
+                        file("notes.txt", SourceFileKind::Document, 0),
+                        file("photo.png", SourceFileKind::Image, 12),
+                        file("part.3mf", SourceFileKind::Model, 40),
+                        file("stl/arms/arm.stl", SourceFileKind::Stl, 1_024),
+                        file(
+                            &format!("stl/{UNICODE}.stl"),
+                            SourceFileKind::Stl,
+                            MAX_SAFE as u64,
+                        ),
+                        file("unknown.bin", SourceFileKind::Other, 7),
+                    ],
+                },
+            )?,
+            served(
+                "SourceFileList",
+                "no-revision",
+                SourceFileList {
+                    source_id: 2,
+                    revision_id: None,
+                    files: vec![],
+                },
+            )?,
+        ])
+    }
+
+    fn installation_backup_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::backup::{InstallationBackup, InstallationBackupWarning};
+        let created = InstallationBackup {
+            name: "print-partner-backup.tar.gz".into(),
+            created_at: "2026-11-17T02:50:00.000Z".into(),
+            app_version: "0.1.0".into(),
+            size_bytes: 1200,
+            sha256: "ab".repeat(32),
+            warnings: vec![],
+        };
+        let mut large = created.clone();
+        large.size_bytes = 20 * 1024 * 1024 * 1024 + 1;
+        large.warnings = vec![InstallationBackupWarning::Large];
+        Ok(vec![
+            served("InstallationBackup", "created", created)?,
+            served("InstallationBackup", "large", large)?,
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -1919,6 +2079,76 @@ pub(crate) mod codegen {
         ])
     }
 
+    /// A pending deduction and a skipped one, whose target fields are null,
+    /// plus the read and reconcile bodies.
+    fn deduction_cases() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::spoolman_deductions::{
+            DeductionDetail, DeductionList, DeductionView, ReconcileDeductionRequest, ReportedGrams,
+        };
+        let row = |pending: bool| DeductionView {
+            id: if pending { MAX_SAFE } else { 1 },
+            state: if pending { "pending" } else { "skipped" },
+            reason: (!pending).then_some("no_pinned_spool"),
+            link_id: UNICODE.into(),
+            profile_id: MAX_SAFE,
+            units: 2,
+            integration_id: pending.then(|| "sm-1".into()),
+            spool_id: pending.then_some(7),
+            grams: pending.then_some(20),
+            grams_basis: pending.then_some("estimated"),
+            failure: None,
+            failure_status: None,
+            created_at: "2026-11-12T00:00:00.000Z".into(),
+            updated_at: "2026-11-12T00:00:00.000Z".into(),
+        };
+        let pending = row(true);
+        let skipped = row(false);
+        let mut cases = vec![
+            served(
+                "DeductionList",
+                "pending-and-skipped",
+                DeductionList {
+                    deductions: vec![pending.clone(), skipped.clone()],
+                },
+            )?,
+            served("DeductionView", "pending", pending.clone())?,
+            served("DeductionView", "skipped", skipped)?,
+            served(
+                "DeductionDetail",
+                "reports-grams",
+                DeductionDetail {
+                    deduction: pending.clone(),
+                    grams_before: ReportedGrams::Known { grams: 512 },
+                    grams_now: ReportedGrams::Known { grams: 492 },
+                },
+            )?,
+            served(
+                "DeductionDetail",
+                "now-unknown",
+                DeductionDetail {
+                    deduction: pending,
+                    grams_before: ReportedGrams::Unknown,
+                    grams_now: ReportedGrams::Unknown,
+                },
+            )?,
+        ];
+        for (name, value) in [
+            ("deducted", json!({"answer": "deducted"})),
+            ("retry", json!({"answer": "retry"})),
+            ("dismiss", json!({"answer": "dismiss"})),
+            ("missing", json!({})),
+            ("extra", json!({"answer": "dismiss", "grams": 1})),
+            ("unknown-answer", json!({"answer": "skip"})),
+        ] {
+            cases.push(request::<ReconcileDeductionRequest>(
+                "ReconcileDeductionRequest",
+                name,
+                value,
+            ));
+        }
+        Ok(cases)
+    }
+
     fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {
         let config = |filled: bool| crate::printers::PrinterConfig {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -2146,6 +2376,7 @@ pub(crate) mod codegen {
         }
         cases.extend(integration_cases()?);
         cases.extend(printer_cases()?);
+        cases.extend(deduction_cases()?);
         for (index, value) in shortfalls().into_iter().enumerate() {
             cases.push(served(
                 "FilamentShortfalls",
@@ -2180,6 +2411,8 @@ pub(crate) mod codegen {
         )?);
         cases.push(served("SendQueue", "every-state", queue)?);
         cases.extend(catalog_fixtures()?);
+        cases.extend(source_file_fixtures()?);
+        cases.extend(installation_backup_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);
@@ -2239,6 +2472,9 @@ pub(crate) mod codegen {
             cases.push(served("Problem", &name, Problem::new(kind, 400, UNICODE))?);
             cases.push(served("ProblemType", &name, kind)?);
         }
+        for &code in ProblemCode::ALL {
+            cases.push(served("ProblemCode", code.as_str(), code)?);
+        }
         let bare = Problem::new(ProblemType::Conflict, 409, "").without_detail();
         cases.push(served("Problem", "no-detail", bare.with_code("not_open"))?);
         let errors = (0..MAX_FIELD_ERRORS)
@@ -2278,6 +2514,7 @@ pub(crate) mod codegen {
             TaskFeed {
                 tasks: vec![],
                 unavailable: vec![],
+                disk_notice: None,
             },
         )?);
         for (index, value) in workflows.into_iter().enumerate() {
@@ -2614,7 +2851,7 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
-    /// Unattributed claim and dismiss bodies and the receipts their routes serve.
+    /// Unattributed claim, dismiss and undo bodies and the receipts their routes serve.
     fn unattributed_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let mut cases = vec![
             served(
@@ -2635,6 +2872,22 @@ pub(crate) mod codegen {
                 "DismissUnattributedReceipt",
                 "dismissed",
                 DismissUnattributedReceipt { ok: true },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "restored",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: true,
+                },
+            )?,
+            served(
+                "UndoDismissUnattributedReceipt",
+                "not-dismissed",
+                crate::checkoff::UndoDismissUnattributedReceipt {
+                    ok: true,
+                    restored: false,
+                },
             )?,
         ];
         for (name, value) in [

@@ -4,7 +4,8 @@
 //!
 //! The handler parses JSON and hands the body to storage, which owns the
 //! idempotency receipt, every check and the undo. No printer, webhook or
-//! Spoolman call happens here or inside the transaction. A response lost after
+//! Spoolman call happens here or inside the transaction. A committed verify
+//! burst wakes the deduction worker after the response is sent. A response lost after
 //! admission is reconciled by repeating the request with the same
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.
@@ -42,10 +43,13 @@
 //! `POST /printer-checkoff/unattributed/{id}/claim` attributes a print to a
 //! Build and creates its Checkoff link, and `/dismiss` drops it from Match
 //! review. Storage owns both writes; there is no Node fallback.
+//! `/dismiss/undo` (GRE-1549) opens a dismissed print again: storage returns a
+//! typed outcome and [`undo_dismiss_unattributed`] sets the status here.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Gate, build_id, failure, storage_answer},
+    accepted::{AcceptedHttpConfig, Gate, build_id, failure, internal, ok_json, storage_answer},
     loopback::PresentedCredential,
+    problem,
 };
 use axum::{
     Extension, Router,
@@ -56,7 +60,10 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use pp_storage::checkoff_progress::{Body, Import, ProgressClient, Request};
+use pp_storage::checkoff_progress::{
+    Body, DismissUndo, Import, ProgressClient, Request, UndoDismissError,
+};
+use serde::Serialize;
 use serde_json::Value;
 
 /// Node's `MAX_BULK_JSON_BODY_BYTES` for the import route.
@@ -107,6 +114,10 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         .route(
             "/printer-checkoff/unattributed/{id}/dismiss",
             post(dismiss_unattributed),
+        )
+        .route(
+            "/printer-checkoff/unattributed/{id}/dismiss/undo",
+            post(undo_dismiss_unattributed),
         );
     let v1 = Router::new().route(
         "/printer-checkoff/{id}/manual-complete",
@@ -307,6 +318,55 @@ async fn dismiss_unattributed(
     Path(id): Path<String>,
 ) -> Response {
     run(app, presented, Request::DismissUnattributed { id }).await
+}
+
+/// The undo receipt. `restored` is false when the print was not dismissed,
+/// so nothing changed.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct UndoDismissUnattributedReceipt {
+    pub ok: bool,
+    pub restored: bool,
+}
+
+/// `POST /printer-checkoff/unattributed/{id}/dismiss/undo`. Like dismiss, it
+/// reads no body.
+async fn undo_dismiss_unattributed(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+) -> Response {
+    let client = app.client;
+    let undone = app
+        .gate
+        .blocking(move |cancelled, wait| {
+            client.undo_dismiss(presented.into_credential(), id, &cancelled, wait)
+        })
+        .await;
+    match undone {
+        Ok(Ok(undo)) => ok_json(&UndoDismissUnattributedReceipt {
+            ok: true,
+            restored: undo == DismissUndo::Restored,
+        }),
+        Ok(Err(error)) => undo_refused(&error),
+        Err(_) => internal(),
+    }
+}
+
+fn undo_refused(error: &UndoDismissError) -> Response {
+    match error {
+        UndoDismissError::NotFound => problem::coded(
+            StatusCode::NOT_FOUND,
+            "This print is no longer kept",
+            "print_not_found",
+        ),
+        UndoDismissError::AlreadyMatched => problem::coded(
+            StatusCode::CONFLICT,
+            "A Checkoff result has matched this print's file since it was dismissed",
+            "print_already_matched",
+        ),
+        UndoDismissError::Writer(failure) => problem::writer_failure(failure),
+    }
 }
 
 async fn apply(

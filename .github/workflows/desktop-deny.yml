@@ -1,11 +1,7 @@
 name: Desktop cargo-deny
 
+# Desktop cargo-deny stays off pull requests until desktop CI returns (GRE-1649).
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths:
-      - 'rust/**'
-      - '.github/workflows/desktop-deny.yml'
   workflow_dispatch:
 
 permissions:

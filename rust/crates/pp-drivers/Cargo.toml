@@ -17,7 +17,7 @@ tokio-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pp-net = { path = "../pp-net" }
-pp-api-types = { path = "../pp-api-types" }
+pp-api-types = { path = "../pp-api-types", default-features = false }
 url = "=2.5.8"
 hex.workspace = true
 md5 = { package = "md-5", version = "=0.10.6" }

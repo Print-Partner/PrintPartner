@@ -1,41 +1,8 @@
 name: Desktop runtime
 
+# Desktop runtime stays off pull requests and main until desktop CI returns (GRE-1649).
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths:
-      - 'rust/**'
-      - 'rust-toolchain.toml'
-      - 'scripts/setup-ci-linux.sh'
-      - 'web/apps/server/**'
-      - 'web/apps/web/**'
-      - 'web/packages/domain/**'
-      - 'web/packages/contracts/**'
-      - 'web/package.json'
-      - 'web/package-lock.json'
-      - 'web/scripts/**'
-      - 'web/playwright.config.ts'
-      - 'web/test/e2e/**'
-      - 'scripts/verify-rust-gateway/**'
-      - '.github/workflows/desktop-runtime.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - 'rust/**'
-      - 'rust-toolchain.toml'
-      - 'scripts/setup-ci-linux.sh'
-      - 'web/apps/server/**'
-      - 'web/apps/web/**'
-      - 'web/packages/domain/**'
-      - 'web/packages/contracts/**'
-      - 'web/package.json'
-      - 'web/package-lock.json'
-      - 'web/scripts/**'
-      - 'web/playwright.config.ts'
-      - 'web/test/e2e/**'
-      - 'scripts/verify-rust-gateway/**'
-      - '.github/workflows/desktop-runtime.yml'
 
 permissions:
   contents: read

@@ -172,6 +172,18 @@ body {
   }
 }
 
+/* A file input styled as a button. Disabled while that row's upload or import runs. */
+.pp-file-button {
+  position: relative;
+}
+
+.pp-file-button:has(input:disabled) {
+  border-style: dashed;
+  background: var(--surface-base);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 /* Offline mutations stay focusable so the reason can be read, and never look filled. */
 .pp-button[aria-disabled="true"] {
   border: 1px dashed var(--line-strong);
@@ -185,6 +197,28 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 16px;
+}
+
+/* The Production tab's downloads: one block per file, above the sends. */
+.pp-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+  margin: 16px 0;
+}
+
+.pp-export-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  max-width: 48rem;
+}
+
+.pp-export-action > p,
+.pp-export-action > .pp-banner {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 /* A send row's actions: separate buttons, none styled as the default. */
@@ -377,6 +411,18 @@ body {
 .pp-sources-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.pp-sync-cell {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.pp-sync-cell .pp-button:disabled {
+  border-style: dashed;
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 .pp-farm-table :is(th, td),
@@ -881,4 +927,90 @@ body {
 
 .pp-auth h1:focus {
   outline: none;
+}
+
+.pp-sources-table tr[data-selected] {
+  background: var(--interaction-selection);
+}
+
+.pp-sources-table tr[data-selected] .pp-link {
+  color: var(--interaction-on-selection);
+}
+
+.pp-source-files {
+  margin: 0 0 24px;
+}
+
+.pp-file-group h3 {
+  margin: 16px 0 4px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.pp-file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--touch-target-min);
+  border-bottom: 1px solid var(--line);
+}
+
+.pp-file-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pp-file-size {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pp-stl-thumb {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-sunken);
+}
+
+.pp-stl-thumb img,
+.pp-stl-placeholder {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+
+.pp-stl-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.pp-build-mark {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* The list row stays the measured height. Library file rows keep the 64px box. */
+.pp-builds-table .pp-stl-thumb,
+.pp-builds-table .pp-stl-thumb img,
+.pp-builds-table .pp-stl-placeholder {
+  width: var(--row-height);
+  height: var(--row-height);
 }

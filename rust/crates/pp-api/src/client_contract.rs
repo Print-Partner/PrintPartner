@@ -3,7 +3,8 @@
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
 //! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
-//! [`crate::modules`], [`crate::integrations`], [`crate::printers`] or [`crate::auth`].
+//! [`crate::modules`], [`crate::integrations`], [`crate::printers`], [`crate::backup`]
+//! or [`crate::auth`].
 //! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -506,6 +507,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         auth: ClientAuth::None,
         ..route("signOut", "POST", "/auth/logout", None, "SignedOut")
     },
+    route(
+        "createInstallationBackup",
+        "POST",
+        "/api/v2/installation/backup",
+        None,
+        "InstallationBackup",
+    ),
 ];
 
 #[cfg(feature = "codegen")]
@@ -801,6 +809,10 @@ pub(crate) mod codegen {
         schema("Problem", schemars::schema_for!(Problem))?;
         schema("ProblemType", schemars::schema_for!(ProblemType))?;
         schema("ProblemCode", schemars::schema_for!(ProblemCode))?;
+        schema(
+            "InstallationBackup",
+            schemars::schema_for!(crate::backup::InstallationBackup),
+        )?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -1723,6 +1735,25 @@ pub(crate) mod codegen {
         ])
     }
 
+    fn installation_backup_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::backup::{InstallationBackup, InstallationBackupWarning};
+        let created = InstallationBackup {
+            name: "print-partner-backup.tar.gz".into(),
+            created_at: "2026-11-17T02:50:00.000Z".into(),
+            app_version: "0.1.0".into(),
+            size_bytes: 1200,
+            sha256: "ab".repeat(32),
+            warnings: vec![],
+        };
+        let mut large = created.clone();
+        large.size_bytes = 20 * 1024 * 1024 * 1024 + 1;
+        large.warnings = vec![InstallationBackupWarning::Large];
+        Ok(vec![
+            served("InstallationBackup", "created", created)?,
+            served("InstallationBackup", "large", large)?,
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -2303,6 +2334,7 @@ pub(crate) mod codegen {
         cases.push(served("SendQueue", "every-state", queue)?);
         cases.extend(catalog_fixtures()?);
         cases.extend(source_file_fixtures()?);
+        cases.extend(installation_backup_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);

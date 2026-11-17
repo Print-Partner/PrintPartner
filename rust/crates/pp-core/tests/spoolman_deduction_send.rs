@@ -1,5 +1,7 @@
 //! GRE-1738: the deduction worker sends each pending row once, against a
-//! loopback Spoolman. Nothing here contacts a real Spoolman or a printer.
+//! loopback Spoolman. GRE-1750: an integration change during the spool GET
+//! sends nothing to the old config. Nothing here contacts a real Spoolman or
+//! a printer.
 #![cfg(feature = "desktop_rebuild")]
 
 use pp_api::accepted::{AcceptedHttpConfig, accepted_router};
@@ -24,6 +26,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::oneshot,
 };
 
 #[path = "../../pp-storage/tests/common/checkoff_apply.rs"]
@@ -59,10 +62,18 @@ struct Hit {
     body: Option<Value>,
 }
 
+/// Holds the next single-spool GET: `arrived` fires when it comes in, and
+/// the reply waits for `release`.
+struct Gate {
+    arrived: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
+
 struct Fake {
     origin: String,
     stock: Arc<Mutex<Vec<Value>>>,
     log: Arc<Mutex<Vec<Hit>>>,
+    gate: Arc<Mutex<Option<Gate>>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -74,8 +85,10 @@ impl Fake {
             serde_json::from_str::<Vec<Value>>(SUFFICIENT).unwrap(),
         ));
         let log = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(Mutex::new(None));
         let stock_task = Arc::clone(&stock);
         let log_task = Arc::clone(&log);
+        let gate_task = Arc::clone(&gate);
         let task = tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
@@ -83,8 +96,9 @@ impl Fake {
                 };
                 let stock = Arc::clone(&stock_task);
                 let log = Arc::clone(&log_task);
+                let gate = Arc::clone(&gate_task);
                 tokio::spawn(async move {
-                    let _ = serve_one(socket, mode, stock, log).await;
+                    let _ = serve_one(socket, mode, stock, log, gate).await;
                 });
             }
         });
@@ -92,8 +106,21 @@ impl Fake {
             origin,
             stock,
             log,
+            gate,
             task,
         }
+    }
+
+    /// Holds the next `GET /api/v1/spool/{id}`. Returns the receiver that
+    /// fires when it arrives and the sender that lets it reply.
+    fn hold_next_spool_get(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (arrived, on_arrival) = oneshot::channel();
+        let (release, on_release) = oneshot::channel();
+        *self.gate.lock().unwrap() = Some(Gate {
+            arrived,
+            release: on_release,
+        });
+        (on_arrival, release)
     }
 
     fn puts(&self) -> Vec<Hit> {
@@ -133,6 +160,7 @@ async fn serve_one(
     mode: Mode,
     stock: Arc<Mutex<Vec<Value>>>,
     log: Arc<Mutex<Vec<Hit>>>,
+    gate: Arc<Mutex<Option<Gate>>>,
 ) -> std::io::Result<()> {
     let request = read_request(&mut socket).await?;
     let (method, path, body) = match parse_request(&request) {
@@ -158,6 +186,13 @@ async fn serve_one(
                 apply_use(&stock, &path, &body);
                 return Ok(());
             }
+        }
+    }
+    if path.starts_with("/api/v1/spool/") {
+        let held = gate.lock().unwrap().take();
+        if let Some(held) = held {
+            let _ = held.arrived.send(());
+            let _ = held.release.await;
         }
     }
     let reply = match path.as_str() {
@@ -267,11 +302,15 @@ async fn write_response(
 }
 
 fn integration(origin: &str, id: &str) -> String {
+    integration_with(origin, id, true)
+}
+
+fn integration_with(origin: &str, id: &str, enabled: bool) -> String {
     json!([{
         "id": id,
         "type": "spoolman",
         "name": "Spoolman",
-        "config": {"base_url": origin, "api_key": "disposable-key", "enabled": true},
+        "config": {"base_url": origin, "api_key": "disposable-key", "enabled": enabled},
         "created_at": "2026-11-01T00:00:00.000Z",
         "updated_at": "2026-11-01T00:00:00.000Z"
     }])
@@ -524,6 +563,67 @@ async fn module_off_leaves_the_row_pending_until_it_is_on() {
     assert!(send_once(&owner).await);
     assert_eq!(rows(&owner)[0].state, State::Applied);
     assert_one_put(&fake, 20.0);
+    owner.shutdown().unwrap();
+}
+
+/// Runs one worker turn, and commits `change` to the integrations setting
+/// while the worker's spool GET to `fake` is held open.
+async fn send_once_changing_integrations_during_get(
+    fixture: &Fixture,
+    owner: &WriterOwner,
+    fake: &Fake,
+    change: &str,
+) -> bool {
+    let (arrived, release) = fake.hold_next_spool_get();
+    let worker =
+        DeductionWorker::new(owner, desktop_policy(), SpoolmanInventory::new().unwrap()).unwrap();
+    let turn = tokio::spawn(async move { worker.run_next().await.unwrap() });
+    arrived.await.unwrap();
+    put(fixture, "integrations", change);
+    release.send(()).unwrap();
+    turn.await.unwrap()
+}
+
+#[tokio::test]
+async fn disabling_the_integration_during_the_spool_get_sends_nothing() {
+    let fake = Fake::start(Mode::Apply).await;
+    let (fixture, owner) = prepared(&fake.origin);
+    burst(&owner, "k1");
+    let disabled = integration_with(&fake.origin, "sm-1", false);
+    assert!(send_once_changing_integrations_during_get(&fixture, &owner, &fake, &disabled).await);
+    let found = rows(&owner);
+    assert_eq!(found[0].state, State::Pending);
+    assert_eq!(found[0].spool_grams_before, None);
+    assert!(fake.puts().is_empty());
+
+    assert!(send_once(&owner).await);
+    let found = rows(&owner);
+    assert_eq!(found[0].state, State::Failed);
+    assert_eq!(found[0].failure, Some(Failure::IntegrationDisabled));
+    assert!(fake.puts().is_empty());
+    assert!((fake.remaining(7) - 512.4).abs() < 1e-6);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn moving_the_integration_during_the_spool_get_sends_only_to_the_new_endpoint() {
+    let old = Fake::start(Mode::Apply).await;
+    let new = Fake::start(Mode::Apply).await;
+    let (fixture, owner) = prepared(&old.origin);
+    burst(&owner, "k1");
+    let moved = integration(&new.origin, "sm-1");
+    assert!(send_once_changing_integrations_during_get(&fixture, &owner, &old, &moved).await);
+    assert_eq!(rows(&owner)[0].state, State::Pending);
+    assert!(old.puts().is_empty());
+    assert!(new.log.lock().unwrap().is_empty());
+
+    assert!(send_once(&owner).await);
+    let found = rows(&owner);
+    assert_eq!(found[0].state, State::Applied);
+    assert_eq!(found[0].spool_grams_before, Some(512.4));
+    assert!(old.puts().is_empty());
+    assert!((old.remaining(7) - 512.4).abs() < 1e-6);
+    assert_one_put(&new, 20.0);
     owner.shutdown().unwrap();
 }
 

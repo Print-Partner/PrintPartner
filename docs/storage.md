@@ -325,7 +325,8 @@ reported before the send, stored when a row is claimed, and may be null.
 
 A claim moves one `pending` row to `sending` and stores that before value. It
 applies only while the row is still `pending`, and it commits before any
-request. A finish applies only while the row is `sending`. Opening the database
+request. The send worker's claim also requires the stored integration to equal
+the one it read before the spool read; otherwise the row stays `pending`. A finish applies only while the row is `sending`. Opening the database
 marks every `sending` row `unknown` with failure `interrupted`, before seeding
 and before job recovery, and does not send it. Nothing in this step returns
 `sending`, `unknown` or `failed` to `pending`. Undoing a burst still removes

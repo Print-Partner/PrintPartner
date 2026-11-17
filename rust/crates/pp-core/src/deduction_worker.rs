@@ -4,9 +4,12 @@
 //! verify burst wakes it; with nothing to send it looks again after
 //! [`RECHECK`]. Before each claim it reads the Spoolman Module again. While
 //! the Module is off, or its setting cannot be read, the row stays `pending`
-//! and is sent once the Module is on. Applied, unknown and failed rows are
-//! not sent again. A lost reply or a restart while a row is `sending` stays
-//! unknown until reconcile.
+//! and is sent once the Module is on. The claim also checks that the stored
+//! integration still equals the one read before the spool GET (GRE-1750). If
+//! it was disabled, removed or edited meanwhile, the row stays `pending`, is
+//! read again, and nothing goes to the old endpoint. Applied, unknown and
+//! failed rows are not sent again. A lost reply or a restart while a row is
+//! `sending` stays unknown until reconcile.
 
 use crate::spoolman::{SpoolmanInventory, UseResult};
 use anyhow::{Result, anyhow, bail};
@@ -146,9 +149,9 @@ impl DeductionWorker {
         if cancelled.load(Ordering::Acquire) {
             return Ok(Turn::Wait);
         }
-        match self.claim(id, None, cancelled).await? {
+        match self.claim(id, None, None, cancelled).await? {
             ModuleClaim::Held => Ok(Turn::Wait),
-            ModuleClaim::Gone => Ok(Turn::Again),
+            ModuleClaim::Gone | ModuleClaim::Changed => Ok(Turn::Again),
             ModuleClaim::Claimed(claimed) => {
                 self.record(claimed.id, end).await?;
                 Ok(Turn::Again)
@@ -163,11 +166,17 @@ impl DeductionWorker {
         grams_before: Option<f64>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Turn> {
-        match self.claim(id, grams_before, cancelled).await? {
+        match self
+            .claim(id, Some(integration.clone()), grams_before, cancelled)
+            .await?
+        {
             ModuleClaim::Held => Ok(Turn::Wait),
-            ModuleClaim::Gone => Ok(Turn::Again),
+            // The integration changed during the spool GET. Read the row and
+            // its integration again; nothing goes to the old config.
+            ModuleClaim::Gone | ModuleClaim::Changed => Ok(Turn::Again),
             ModuleClaim::Claimed(claimed) => {
-                // The claim has committed. Finish this send even if stopping.
+                // The claim has committed and admitted `integration` as stored.
+                // Finish this send even if stopping.
                 // An abort here leaves the row `sending`; the next open marks
                 // it unknown and nothing is sent again.
                 let end = stored(
@@ -189,13 +198,16 @@ impl DeductionWorker {
     async fn claim(
         &self,
         id: i64,
+        admitted: Option<SpoolmanIntegration>,
         grams_before: Option<f64>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<ModuleClaim> {
         let client = self.client.clone();
         let cancelled = Arc::clone(cancelled);
-        spawn_storage(move || client.claim_for_send(id, grams_before, &cancelled, STORAGE_WAIT))
-            .await
+        spawn_storage(move || {
+            client.claim_for_send(id, admitted, grams_before, &cancelled, STORAGE_WAIT)
+        })
+        .await
     }
 
     async fn record(&self, id: i64, end: Outcome) -> Result<bool> {

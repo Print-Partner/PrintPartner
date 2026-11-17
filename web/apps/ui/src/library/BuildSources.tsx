@@ -55,6 +55,7 @@ function SetBaseSource({ buildId }: { buildId: number }) {
     onSettled: () => {
       void client.invalidateQueries({ queryKey: ["core", "build", buildId] });
       void client.invalidateQueries({ queryKey: ["core", "workflow", buildId] });
+      void client.invalidateQueries({ queryKey: ["core", "tasks"] });
     },
     onError: (error: Error) => {
       const refused = error instanceof CoreError && error.status < 500;

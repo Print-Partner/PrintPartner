@@ -70,6 +70,18 @@ pub(super) enum Code {
     DerivedEvidenceNotFound,
     // get_print_stats
     InvalidHours,
+    // propose_assign_role_filament
+    InvalidAssignment,
+    RoleRequired,
+    InvalidInventoryKind,
+    InvalidColor,
+    SubstitutionNotConfirmed,
+    SpoolmanModuleOff,
+    SpoolmanUnavailable,
+    InventoryNotFound,
+    InventoryColorMismatch,
+    InventoryNameMismatch,
+    InventoryBrandMismatch,
 }
 
 impl Code {
@@ -118,6 +130,17 @@ impl Code {
             Self::SourceNotFound => "source_not_found",
             Self::DerivedEvidenceNotFound => "derived_evidence_not_found",
             Self::InvalidHours => "invalid_hours",
+            Self::InvalidAssignment => "invalid_assignment",
+            Self::RoleRequired => "role_required",
+            Self::InvalidInventoryKind => "invalid_inventory_kind",
+            Self::InvalidColor => "invalid_color",
+            Self::SubstitutionNotConfirmed => "substitution_not_confirmed",
+            Self::SpoolmanModuleOff => "spoolman_module_off",
+            Self::SpoolmanUnavailable => "spoolman_unavailable",
+            Self::InventoryNotFound => "inventory_not_found",
+            Self::InventoryColorMismatch => "inventory_color_mismatch",
+            Self::InventoryNameMismatch => "inventory_name_mismatch",
+            Self::InventoryBrandMismatch => "inventory_brand_mismatch",
         }
     }
 }

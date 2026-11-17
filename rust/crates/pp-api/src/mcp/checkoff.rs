@@ -34,6 +34,7 @@ pub(super) struct CheckoffDomain {
     pub(super) builds: pp_storage::build_graph::BuildGraphClient,
     pub(super) drafts: pp_storage::working_drafts::WorkingDraftClient,
     pub(super) farm: super::McpFarm,
+    pub(super) filaments: super::McpFilaments,
     /// The API key of the tool call in progress. `ProductMcp` sets it around
     /// each call and runs one call per session at a time.
     caller: Mutex<Option<PresentedCredential>>,
@@ -45,6 +46,7 @@ impl CheckoffDomain {
         builds: pp_storage::build_graph::BuildGraphClient,
         drafts: pp_storage::working_drafts::WorkingDraftClient,
         farm: super::McpFarm,
+        filaments: super::McpFilaments,
         wait: Duration,
     ) -> Self {
         Self {
@@ -52,6 +54,7 @@ impl CheckoffDomain {
             builds,
             drafts,
             farm,
+            filaments,
             wait,
             caller: Mutex::new(None),
         }
@@ -167,6 +170,9 @@ impl DomainPort for CheckoffDomain {
         if name == super::import_inputs::PROPOSE {
             return self.import_inputs_propose(args);
         }
+        if name == super::role_filament::PROPOSE {
+            return self.role_filament_propose(args);
+        }
         Err(format!("{name} has no Rust port yet"))
     }
 
@@ -185,6 +191,9 @@ impl DomainPort for CheckoffDomain {
         }
         if action.action_type == super::import_inputs::PROPOSE {
             return self.import_inputs_apply(action);
+        }
+        if action.action_type == super::role_filament::PROPOSE {
+            return self.role_filament_apply(action);
         }
         if action.action_type != VERIFY {
             return Ok(

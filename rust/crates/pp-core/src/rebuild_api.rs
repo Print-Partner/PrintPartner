@@ -15,7 +15,7 @@ use pp_api::{
     history::history_router,
     integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpFarm, McpFilaments, McpHttpConfig, mcp_router},
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
@@ -442,7 +442,7 @@ fn read_router_with_updates(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         &accepted_client,
         admin_files.clone(),
-        (filament_client, app_settings),
+        (filament_client.clone(), app_settings),
         runtime.server.update_checks,
     )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
@@ -467,6 +467,10 @@ fn read_router_with_updates(
             progress: checkoff_client,
             accepted: accepted_client,
             farm: mcp_farm(farm_clients, runtime.farm, settings),
+            filaments: McpFilaments {
+                client: filament_client,
+                spoolman: Arc::new(crate::spoolman::SpoolmanInventory::new()?),
+            },
         },
     );
     Ok(Some(

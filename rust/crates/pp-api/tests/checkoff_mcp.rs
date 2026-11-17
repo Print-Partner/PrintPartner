@@ -33,6 +33,18 @@ mod mcp_rpc;
 const UNKNOWN_ACTION: &str = "Unknown, in-flight, or already applied/dismissed action_id";
 
 /// The Checkoff routes and MCP from one owner on a loopback listener.
+/// This suite never assigns a Spoolman filament.
+struct NoSpoolman;
+
+impl pp_api::filaments::CatalogReader for NoSpoolman {
+    fn read(
+        &self,
+        _integration: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<Value>>> + Send>> {
+        Box::pin(async { None })
+    }
+}
+
 struct Served {
     origin: String,
     client: Client,
@@ -84,6 +96,10 @@ impl Served {
                     observations: Arc::new(pp_api::farm::Unwatched),
                     modules: owner.client(),
                     activity: owner.print_activity(mcp_rpc::policy()).unwrap(),
+                },
+                filaments: pp_api::mcp::McpFilaments {
+                    client: owner.filaments_with_policy(mcp_rpc::policy()).unwrap(),
+                    spoolman: Arc::new(NoSpoolman),
                 },
             },
         ));

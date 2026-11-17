@@ -83,6 +83,8 @@ pub struct McpHttpConfig {
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
     #[cfg(test)]
     clock: Option<Arc<rate_limit::ManualClock>>,
+    #[cfg(test)]
+    spoolman: Option<Arc<dyn crate::filaments::CatalogReader>>,
 }
 
 impl McpHttpConfig {
@@ -102,6 +104,8 @@ impl McpHttpConfig {
             confirm_gate: None,
             #[cfg(test)]
             clock: None,
+            #[cfg(test)]
+            spoolman: None,
         })
     }
 
@@ -135,6 +139,13 @@ impl McpHttpConfig {
         self.confirm_gate = Some(gate);
         self
     }
+
+    /// The Spoolman reader `test_router` gives role filament confirms.
+    #[cfg(test)]
+    pub(crate) fn with_spoolman(mut self, reader: Arc<dyn crate::filaments::CatalogReader>) -> Self {
+        self.spoolman = Some(reader);
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -160,6 +171,7 @@ struct Reads {
     progress: ProgressClient,
     accepted: ReadClient,
     farm: McpFarm,
+    filaments: McpFilaments,
     wait: Duration,
     #[cfg(test)]
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
@@ -175,6 +187,16 @@ pub struct McpClients {
     pub progress: ProgressClient,
     pub accepted: ReadClient,
     pub farm: McpFarm,
+    pub filaments: McpFilaments,
+}
+
+/// What `propose_assign_role_filament` reads to verify an inventory item:
+/// the plan's Spoolman Module and integration through `client`, and that
+/// integration's filaments through `spoolman`, which `pp-core` provides.
+#[derive(Clone)]
+pub struct McpFilaments {
+    pub client: pp_storage::filaments::FilamentClient,
+    pub spoolman: Arc<dyn crate::filaments::CatalogReader>,
 }
 
 /// What `get_farm_status` and the farm tools' Module gate read: the farm
@@ -218,6 +240,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         progress,
         accepted,
         farm,
+        filaments,
     } = clients;
     let reads = Reads {
         builds,
@@ -227,6 +250,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         progress,
         accepted,
         farm,
+        filaments,
         wait: config.wait,
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
@@ -251,6 +275,20 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
             },
             guard,
         ))
+}
+
+/// A Spoolman that never answers, for tests that do not script one.
+#[cfg(test)]
+struct NoSpoolman;
+
+#[cfg(test)]
+impl crate::filaments::CatalogReader for NoSpoolman {
+    fn read(
+        &self,
+        _: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<Value>>> + Send>> {
+        Box::pin(async { None })
+    }
 }
 
 /// The router over every client MCP reads, each opened on `owner` with
@@ -298,6 +336,7 @@ pub(crate) fn test_router_watching(
         )
         .unwrap();
     let accepted = owner.accepted_reads_with_policy(policy).unwrap();
+    let spoolman = config.spoolman.clone();
     let router = mcp_router(
         config,
         auth.clone(),
@@ -313,6 +352,10 @@ pub(crate) fn test_router_watching(
                 observations,
                 modules: owner.client(),
                 activity: owner.print_activity(policy).unwrap(),
+            },
+            filaments: McpFilaments {
+                client: owner.filaments_with_policy(policy).unwrap(),
+                spoolman: spoolman.unwrap_or_else(|| Arc::new(NoSpoolman)),
             },
         },
     );
@@ -432,6 +475,7 @@ impl ProductMcp {
                     reads.builds.clone(),
                     reads.drafts.clone(),
                     reads.farm.clone(),
+                    reads.filaments.clone(),
                     reads.wait,
                 ),
                 None,
@@ -652,6 +696,8 @@ mod progress_reads;
 mod rate_limit;
 #[path = "mcp/reads.rs"]
 mod reads;
+#[path = "mcp/role_filament.rs"]
+mod role_filament;
 #[path = "mcp/source_roles.rs"]
 mod source_roles;
 #[path = "mcp/write_result.rs"]

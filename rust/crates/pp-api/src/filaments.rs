@@ -198,6 +198,16 @@ async fn catalog(
     catalog_response(body, custom)
 }
 
+/// One color of the bundled filament catalog by its id, as `GET
+/// /filaments/catalog` serves it: `display_name`, `product_line` and `hex`
+/// among its fields.
+pub(crate) fn catalog_color(id: &str) -> Option<Value> {
+    let mut body = catalog_body()?;
+    let colors = body.get_mut("colors")?.as_array_mut()?;
+    let index = colors.iter().position(|color| color["id"] == id)?;
+    Some(colors.swap_remove(index))
+}
+
 fn catalog_body() -> Option<Value> {
     let mut body: Value = serde_json::from_str(include_str!(
         // ast-grep-ignore: no-writer-family-literal -- Bundled catalog is read-only.

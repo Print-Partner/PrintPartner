@@ -1,10 +1,10 @@
-//! Rebuild a Build's Working Plan from the Source roles in its planning brief
-//! (GRE-1518), the operation behind MCP `propose_rebuild_plan`. One write
-//! transaction sets the base and addon layers from the roles, prepares and
-//! stores a draft as the recompute route does (reading the Source files inside
-//! the transaction), and records the draft in the brief, so a refusal changes
-//! nothing. Path choices and detaching earlier layers come in GRE-1434 PR 2.
-//! Errors are [`RebuildError`]; `pp-api` maps them.
+//! Rebuild a Build's Working Plan from its planning brief (GRE-1518,
+//! GRE-1736), the operation behind MCP `propose_rebuild_plan`. One write
+//! transaction detaches layers an earlier rebuild attached whose Sources no
+//! longer have a layer role, sets the base and addon layers from the roles
+//! that remain, prepares and stores a draft with the brief's path choices,
+//! and records the draft in the brief. A refusal changes nothing. Errors are
+//! [`RebuildError`]; `pp-api` maps them.
 
 use super::{
     Origin, RecomputeOutcome, WorkingDraftClient, abandon_open, baseline_required,
@@ -19,7 +19,10 @@ use crate::{
     },
     read_model::{
         Credential,
-        planning::{BuildPlanningBrief, ContributionStatus, SourceRole},
+        planning::{
+            BuildPlanningBrief, ContributionResponsibility, ContributionStatus, SourceRole,
+            source_path_choices,
+        },
     },
     required_units::{
         model,
@@ -31,7 +34,11 @@ use pp_domain::PositiveId;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeSet, sync::atomic::AtomicBool, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::atomic::AtomicBool,
+    time::Duration,
+};
 
 /// The caller's idempotency key, checked. Confirm passes the proposal's key,
 /// or else its action id.
@@ -88,9 +95,11 @@ pub enum RebuildError {
     NoStructuralBase,
     #[error("more than one Source has the structural_base role")]
     MultipleStructuralBases,
-    /// The brief resolves a difference or scopes a contribution to paths.
-    #[error("the brief holds path choices, which the rebuild does not apply yet")]
-    SourceChoicesUnsupported,
+    /// A difference group is `custom`, or the printable path it excludes
+    /// names a Source the brief's evidence does not. `groups` is those group
+    /// ids, in the brief's difference order.
+    #[error("a resolved difference cannot be applied")]
+    UnresolvedSourceChoices { groups: Vec<String> },
     #[error("a Source the brief names does not exist")]
     SourceNotFound(i64),
     /// A role Source is attached in a layer the rebuild cannot reuse.
@@ -145,8 +154,20 @@ impl WorkingDraftClient {
             let profile = i64::try_from(build.get()).map_err(|_| RebuildError::BriefInvalid)?;
             let mut brief = stored_brief::<RebuildError>(tx, tenant, build)?;
             let sources = role_sources(tx, tenant, &brief)?;
+            let choices = source_path_choices(&brief, &source_ids_by_name(tx, tenant, &brief)?);
+            if !choices.blockers.is_empty() {
+                return Err(RebuildError::UnresolvedSourceChoices {
+                    groups: choices.groups,
+                });
+            }
+            let included = included_paths(&brief);
+            detach_retired(tx, tenant, build, &brief, &sources, &observations.repos)?;
             configure_layers(tx, tenant, build, &sources, &observations.repos)?;
-            let key = format!("{}:{}", request.key, inputs_digest(&sources));
+            let key = format!(
+                "{}:{}",
+                request.key,
+                inputs_digest(&sources, &choices.exclusions, &included)
+            );
             let key = idempotency_key(&key).map_err(|_| RebuildError::InvalidIdempotencyKey)?;
             let (document, created) =
                 match winner(tx, tenant, &actor, profile, &key).map_err(internal)? {
@@ -159,7 +180,6 @@ impl WorkingDraftClient {
                     }
                     Some(_) => return Err(RebuildError::IdempotencyConflict),
                     None => {
-                        let flag = AtomicBool::new(false);
                         let id = prepare_and_insert(
                             tx,
                             tenant,
@@ -167,7 +187,10 @@ impl WorkingDraftClient {
                             profile,
                             &key,
                             &observations,
-                            &flag,
+                            PathFilters {
+                                excluded: &choices.exclusions,
+                                included: &included,
+                            },
                         )?;
                         let saved = draft(tx, tenant, profile, id)
                             .map_err(internal)?
@@ -215,12 +238,6 @@ fn role_sources(
     tenant: &str,
     brief: &BuildPlanningBrief,
 ) -> Result<Vec<RebuildSource>, RebuildError> {
-    let path_scoped = brief.contributions.iter().any(|contribution| {
-        contribution.status == ContributionStatus::Confirmed && !contribution.path_scopes.is_empty()
-    });
-    if !brief.resolutions.is_empty() || path_scoped {
-        return Err(RebuildError::SourceChoicesUnsupported);
-    }
     let mut bases = Vec::new();
     let mut layered = Vec::new();
     let mut seen = BTreeSet::new();
@@ -263,6 +280,111 @@ fn role_sources(
             })
         })
         .collect()
+}
+
+/// Evidence Sources that exist, by name. The last evidence item wins when
+/// two Sources share a name.
+fn source_ids_by_name(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    brief: &BuildPlanningBrief,
+) -> Result<HashMap<String, i64>, RebuildError> {
+    let mut names = HashMap::new();
+    for item in &brief.evidence {
+        let Some(id) = item.source_id else { continue };
+        let name: Option<String> = tx
+            .query_row(
+                "SELECT name FROM projects WHERE tenant_id=?1 AND id=?2",
+                params![tenant, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(name) = name {
+            names.insert(name, id);
+        }
+    }
+    Ok(names)
+}
+
+/// Confirmed `printable_parts` contributions, as included paths on the
+/// evidence item's Source. An empty scope list includes nothing from it.
+fn included_paths(brief: &BuildPlanningBrief) -> BTreeMap<i64, Vec<String>> {
+    let mut included: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
+    for contribution in &brief.contributions {
+        if contribution.status != ContributionStatus::Confirmed
+            || contribution.responsibility != ContributionResponsibility::PrintableParts
+        {
+            continue;
+        }
+        let Some(source_id) = brief
+            .evidence
+            .iter()
+            .find(|item| item.id == contribution.evidence_id)
+            .and_then(|item| item.source_id)
+        else {
+            continue;
+        };
+        let scopes = included.entry(source_id).or_default();
+        scopes.extend(contribution.path_scopes.iter().cloned());
+    }
+    included
+        .into_iter()
+        .map(|(id, scopes)| (id, scopes.into_iter().collect()))
+        .collect()
+}
+
+/// Removes layers an earlier rebuild recorded in `managed_source_ids` whose
+/// Sources are no longer a structural base, overlay, or addon. A layer the
+/// owner attached is absent from that list, so it stays.
+fn detach_retired(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: PositiveId,
+    brief: &BuildPlanningBrief,
+    sources: &[RebuildSource],
+    repos: &std::path::Path,
+) -> Result<(), RebuildError> {
+    let managed: BTreeSet<i64> = brief.managed_source_ids.iter().flatten().copied().collect();
+    if managed.is_empty() {
+        return Ok(());
+    }
+    let targets: BTreeSet<i64> = sources.iter().map(|source| source.source_id).collect();
+    let profile = i64::try_from(build.get()).unwrap_or(i64::MAX);
+    let rows = {
+        let mut statement = tx.prepare(
+            "SELECT id, project_id FROM profile_layers WHERE tenant_id=?1 AND profile_id=?2 AND project_id IS NOT NULL ORDER BY id",
+        )?;
+        statement
+            .query_map(params![tenant, profile], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<Vec<(i64, i64)>, _>>()?
+    };
+    let flag = AtomicBool::new(false);
+    for (layer_id, project_id) in rows {
+        if !managed.contains(&project_id) || targets.contains(&project_id) {
+            continue;
+        }
+        let layer = PositiveId::new(u64::try_from(layer_id).unwrap_or(0))
+            .map_err(|_| internal(anyhow::anyhow!("layer id {layer_id} is not a positive id")))?;
+        match build_graph::mutation(
+            tx,
+            tenant,
+            &BuildCommand::Detach { build, layer },
+            repos,
+            &flag,
+        )
+        .map_err(internal)?
+        {
+            BuildOutcome::Deleted => {}
+            other => {
+                return Err(internal(anyhow::anyhow!(
+                    "unexpected detach outcome: {other:?}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Makes the structural base the base layer and attaches the other role
@@ -310,14 +432,25 @@ fn configure_layers(
     Ok(())
 }
 
-/// The role Sources and their revisions. A rebuild with the same key and
-/// these inputs answers the draft it made before.
-fn inputs_digest(sources: &[RebuildSource]) -> String {
-    let inputs: Vec<_> = sources
+/// The role Sources, their revisions, and the path choices. A rebuild with
+/// the same key and these inputs answers the draft it made before.
+fn inputs_digest(
+    sources: &[RebuildSource],
+    excluded: &BTreeMap<i64, Vec<String>>,
+    included: &BTreeMap<i64, Vec<String>>,
+) -> String {
+    let sources: Vec<_> = sources
         .iter()
-        .map(|s| json!([s.source_id, s.role, s.revision]))
+        .map(|s| json!([s.source_id, s.role.as_str(), s.revision]))
         .collect();
-    hex::encode(Sha256::digest(json!(inputs).to_string().as_bytes()))[..16].to_owned()
+    let inputs = json!({ "sources": sources, "excluded": excluded, "included": included });
+    hex::encode(Sha256::digest(inputs.to_string().as_bytes()))[..16].to_owned()
+}
+
+/// Excluded and included paths for one rebuild.
+struct PathFilters<'a> {
+    excluded: &'a BTreeMap<i64, Vec<String>>,
+    included: &'a BTreeMap<i64, Vec<String>>,
 }
 
 /// Prepares a draft from the Build's layers inside `tx` and stores it, as
@@ -329,7 +462,7 @@ fn prepare_and_insert(
     profile: i64,
     key: &str,
     observations: &super::Observations,
-    flag: &AtomicBool,
+    paths: PathFilters<'_>,
 ) -> Result<i64, RebuildError> {
     let profile_row = one(
         tx,
@@ -345,9 +478,15 @@ fn prepare_and_insert(
         "baseRevisionId": profile_row["acceptedPlanRevisionId"],
         "basePlanVersion": profile_row["acceptedPlanVersion"],
     });
-    let mut budget = observation::PreparationBudget::new(flag, observations.limits)
+    let flag = AtomicBool::new(false);
+    let mut budget = observation::PreparationBudget::new(&flag, observations.limits)
         .map_err(|failure| internal(anyhow::Error::new(failure)))?;
-    let options = preparation::PreparationOptions::default();
+    let map = |chosen: &BTreeMap<i64, Vec<String>>| (!chosen.is_empty()).then(|| chosen.clone());
+    let options = preparation::PreparationOptions {
+        excluded_paths_by_source_id: map(paths.excluded),
+        included_paths_by_source_id: map(paths.included),
+        ..Default::default()
+    };
     let prepared = prepare_draft(
         &mut &*tx,
         tenant,

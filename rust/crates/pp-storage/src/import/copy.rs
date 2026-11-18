@@ -456,8 +456,9 @@ fn extract_archive(
         }
         _ => ImportError::InvalidArchive(format!("{error:#}")),
     })?;
-    if metadata.scope != archive::MetadataScope::Full {
-        return Err(ImportError::PartialArchive(metadata.scope));
+    // A format 1 archive holds only the five legacy roots; it imports too.
+    if metadata.scope == archive::MetadataScope::DatabaseOnly {
+        return Err(ImportError::DatabaseOnlyArchive);
     }
     // Everything is extracted; the upgrade still needs its working space.
     ensure_room(stage, room_needed(0, staged_database(stage)))?;

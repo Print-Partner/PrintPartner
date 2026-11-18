@@ -55,8 +55,9 @@ pub enum ImportError {
     /// The database files changed while they were read.
     Changed,
     InvalidArchive(String),
-    /// The archive is not a format 2 `full` backup.
-    PartialArchive(archive::MetadataScope),
+    /// The archive is a format 2 `database-only` backup: it holds no roots.
+    /// Format 1 (no scope, the five legacy roots) and format 2 `full` are read.
+    DatabaseOnlyArchive,
     /// The stored schema is outside 31 to 34, the range the import upgrades.
     Schema(versions::IncompatibleSchema),
     /// The database failed its integrity or schema checks.
@@ -151,13 +152,9 @@ impl fmt::Display for ImportError {
                 archive::DATABASE_FILE
             ),
             Self::InvalidArchive(detail) => write!(f, "Invalid backup archive: {detail}"),
-            Self::PartialArchive(scope) => write!(
+            Self::DatabaseOnlyArchive => write!(
                 f,
-                "The import needs a format 2 full backup; this archive is {}",
-                match scope {
-                    archive::MetadataScope::Legacy => "format 1",
-                    _ => "database-only",
-                }
+                "The import needs a full backup; this archive is database-only"
             ),
             Self::Schema(refusal) if refusal.too_new() => write!(
                 f,
@@ -1176,8 +1173,10 @@ fn stage_archive(
             Some(io) if io.kind() == ErrorKind::StorageFull => io_error(scratch, io.kind().into()),
             _ => ImportError::InvalidArchive(format!("{error:#}")),
         })?;
-    if metadata.scope != archive::MetadataScope::Full {
-        return Err(ImportError::PartialArchive(metadata.scope));
+    // Format 1 (Print Partner v3.3.0 and earlier) declares no scope; it holds
+    // the five legacy roots, which extraction already confined it to.
+    if metadata.scope == archive::MetadataScope::DatabaseOnly {
+        return Err(ImportError::DatabaseOnlyArchive);
     }
     // The archive's size says nothing here: it also holds `repos/`, which a
     // dry run only lists. The database size is known once it is extracted.

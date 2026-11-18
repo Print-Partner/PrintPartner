@@ -24,7 +24,7 @@ Two decisions shape the later steps:
 PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or backup archive> [--data <destination>] --dry-run
 ```
 
-The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`, which the Rust-only Docker image sets. `--from` is a stopped Node data folder, or a format 2 `full` backup archive that Node's `POST /backups` wrote. With `--data`, the dry run reads that folder and reports whether it is as the import needs (absent, or empty by the ownership-marker rule and without a `.desktop-lease` entry) or would be refused (it holds data, a lease entry, a Rust installation, or a `.pp-rust-owned.json` entry that is not a valid marker, or it cannot be read, for example because it is a file; in the last two cases the report gives the reason). It reads the folder's entries only: it never creates the folder, and it does not check the folder's owner or permissions, which the import and the server check when they open it.
+The command exists in `desktop_rebuild` builds and needs `PP_DESKTOP_REBUILD=1`, which the Rust-only Docker image sets. `--from` is a stopped Node data folder, or a full backup archive that Node's `POST /backups` wrote: format 2 `full`, or format 1 from Print Partner v3.3.0 and earlier (see [Format 1 archives](#format-1-archives)). With `--data`, the dry run reads that folder and reports whether it is as the import needs (absent, or empty by the ownership-marker rule and without a `.desktop-lease` entry) or would be refused (it holds data, a lease entry, a Rust installation, or a `.pp-rust-owned.json` entry that is not a valid marker, or it cannot be read, for example because it is a file; in the last two cases the report gives the reason). It reads the folder's entries only: it never creates the folder, and it does not check the folder's owner or permissions, which the import and the server check when they open it.
 
 What it does:
 
@@ -66,6 +66,12 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <copy> --dry-run
 
 The test `a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refused` in `rust/crates/pp-storage/src/import/tests.rs` checks both paths with a lowered cap.
 
+### Format 1 archives
+
+Print Partner v3.3.0 and earlier wrote format 1: `formatVersion` 1 and no `scope`. Its roots are the five that Node's `LEGACY_BACKUP_ROOTS` names: `repos`, `sources`, `exports`, `thumbs` and `covers`. The dry run and the import read it as they read a format 2 `full` archive, with the same validation, and count the same tables.
+
+The six roots that format 2 added are not in it: `assistant-domain`, `manifests`, `custom_filaments.json`, `kit-catalog.json`, `kit-catalog.yaml` and `path-hints.yaml`. The report lists no entries for them, the shapes stored there count 0 (for example `file custom_filaments.json`), and the import writes none of them. A format 1 archive written before v3.3.0 can hold a schema below 31, which is refused as [Refusals](#refusals) describes.
+
 ### Report
 
 The report holds keys, names and counts. The only stored values it prints are a printer id or a bed size that the conversion changed, and the `tenant_id` values, which it masks. On the synthetic installation (`npm run fixture:synthetic -- --seed 1138`, [Storage](storage.md#synthetic-installations)) it starts:
@@ -102,7 +108,7 @@ Each refusal exits 1 and writes nothing to the source.
 | Folder without `print-partner.db` | Not a data folder. |
 | Database files that change during the copy | Node is still running. |
 | Archive that fails validation | Unsafe path, unexpected entry, size limit, bad metadata or failed integrity check. |
-| `database-only` or format 1 archive | The import needs the roots a `full` backup holds. |
+| `database-only` archive | The import needs the roots a full backup holds. |
 | Schema below 31 | Start Print Partner v3.3.0 on the Node installation once so it upgrades. |
 | Schema above 34 | Not a Node database, for example a backup a Rust installation made. |
 | Failed `PRAGMA integrity_check` or table-shape check | The database is damaged. |

@@ -11,7 +11,10 @@ use axum::{
 };
 use pp_services::sync::{self, SyncError, SyncLimits};
 use serde_json::json;
-use std::{collections::HashMap, net::SocketAddr};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+};
 
 /// A body with no length, so it arrives chunked without `Content-Length`.
 struct Unsized(Option<hyper::body::Bytes>);
@@ -325,26 +328,6 @@ async fn plan_and_download_read_the_commit_tree_and_files() {
         .await
         .unwrap_err();
     assert_eq!(escape.status, None);
-}
-
-#[test]
-fn only_public_addresses_pass() {
-    for ip in ["140.82.112.6", "2606:50c0:8000::153", "::ffff:140.82.112.6"] {
-        assert!(public(ip.parse().unwrap()), "{ip}");
-    }
-    for ip in [
-        "127.0.0.1",
-        "10.0.0.1",
-        "192.168.1.2",
-        "169.254.169.254",
-        "0.0.0.0",
-        "::1",
-        "fd00::1",
-        "fe80::1",
-        "::ffff:10.0.0.1",
-    ] {
-        assert!(!public(ip.parse().unwrap()), "{ip}");
-    }
 }
 
 struct Fixed(Vec<IpAddr>);

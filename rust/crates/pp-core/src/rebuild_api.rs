@@ -955,6 +955,7 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "DuplicateBuildRequest" => json!({"name": "Client contract experiment"}),
             "PrinterProbeRequest" => {
                 json!({"kind":"unsupported", "address":"http://fixture.invalid"})
             }
@@ -1148,7 +1149,12 @@ mod tests {
             || (route.name == "restoreInstallation"
                 && status == 400
                 && body["detail"] == "Restore confirmation does not match");
+        // Duplicating the contract Build answers 201 with the new experiment.
+        let duplicated = route.name == "duplicateBuild"
+            && status == 201
+            && body["parent_build_id"].as_i64().is_some();
         status == 200
+            || duplicated
             || handler_not_found(status, body)
             || stale
             || no_layers

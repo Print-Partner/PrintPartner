@@ -224,6 +224,16 @@ The parent's immutable IDs, Accepted history and open drafts stay unchanged.
 An experiment can Accept its choices, but preview and Accept refuse an order
 number with `experiment_order_requires_promotion` until promotion is implemented.
 
+The generated client calls this route `duplicateBuild` (GRE-1258). The
+replacement UI's Accept gate offers it beside a held order: under **Duplicate
+orders** in a ready preview, and under a `duplicate_order` preview refusal whose
+`builds` carry `profile_id`. The user picks the holding Build (a list appears
+only when there are several) and a name, which defaults to
+`<holding Build> experiment`. The option sends no `Idempotency-Key`, so the gate
+never resends it: after a lost answer or a 5xx it tells the user to check the
+Builds list. On 201 it links to the experiment's Plan tab. The draft in the gate
+and the holding Build are not changed. Accept stays refused for the held order.
+
 Deleting a Build with experiments returns 409 `build_has_experiments` with
 `builds: [{build_id, name}]`, ordered by ID, and writes nothing. Archived
 experiments still prevent parent deletion. Delete the experiments first to

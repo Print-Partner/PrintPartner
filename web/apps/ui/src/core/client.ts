@@ -27,18 +27,24 @@ export class CoreError extends Error {
     readonly detail?: string,
     /** The problem's Node-compatible `code`, such as `draft_changed`. */
     readonly code?: string,
-    readonly conflictingBuilds: readonly string[] = [],
+    readonly conflictingBuilds: readonly HoldingBuild[] = [],
   ) {
     super(`Rust core answered ${status} for ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "CoreError";
   }
 }
 
-/** The problem code, detail, holding Build names and refused fields, when present. */
+/** A Build a refusal names, such as the one holding an order. `profileId` is null when absent. */
+export interface HoldingBuild {
+  name: string;
+  profileId: number | null;
+}
+
+/** The problem code, detail, holding Builds and refused fields, when present. */
 async function problem(response: Response): Promise<{
   detail?: string;
   code?: string;
-  conflictingBuilds?: string[];
+  conflictingBuilds?: HoldingBuild[];
   errors?: FieldProblem[];
   files?: UnavailableSourceFile[];
 }> {
@@ -50,9 +56,12 @@ async function problem(response: Response): Promise<{
   };
   const builds: unknown = (body as Record<string, unknown>).builds;
   const conflictingBuilds = Array.isArray(builds)
-    ? builds.flatMap((build: unknown) => {
-        if (typeof build !== "object" || build === null || !("name" in build)) return [];
-        return typeof build.name === "string" && build.name.trim() ? [build.name] : [];
+    ? builds.flatMap((build: unknown): HoldingBuild[] => {
+        if (typeof build !== "object" || build === null) return [];
+        const { name, profile_id } = build as Record<string, unknown>;
+        if (typeof name !== "string" || !name.trim()) return [];
+        const profileId = Number.isSafeInteger(profile_id) && (profile_id as number) > 0;
+        return [{ name, profileId: profileId ? (profile_id as number) : null }];
       })
     : [];
   const listed: unknown = (body as Record<string, unknown>).errors;

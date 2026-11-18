@@ -1,0 +1,165 @@
+{
+  "attribution": {
+    "expected": {
+      "planVersion": 4,
+      "profileId": 1,
+      "requiredUnitMappingDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "revisionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revisionId": 9
+    },
+    "fallback": "recognized_observation",
+    "outcomes": [
+      {
+        "inputIndex": 0,
+        "kind": "required_object_name",
+        "rawName": "frame_corner__ppu_0000000000000000000000000000000b_id_0_copy_0",
+        "unit": {"part_id":1,"unit_index":1}
+      },
+      {"inputIndex":1,"kind":"already_completed","rawName":"'frame_corner__ppu_0000000000000000000000000000000a'"},
+      {
+        "inputIndex": 2,
+        "kind": "duplicate_observation",
+        "rawName": "frame_corner__ppu_0000000000000000000000000000000b_id_1_copy_0"
+      },
+      {
+        "inputIndex": 3,
+        "kind": "legacy_filename",
+        "rawName": "panel_clip_02.stl_id_2_copy_0",
+        "unit": {"part_id":2,"unit_index":0}
+      },
+      {"inputIndex":4,"kind":"legacy_filename","rawName":"'panel_clip_03.stl'","unit":{"part_id":2,"unit_index":1}},
+      {
+        "inputIndex": 5,
+        "kind": "legacy_filename",
+        "rawName": "panel_clip_01.stl (instance 2)",
+        "unit": {"part_id":2,"unit_index":2}
+      },
+      {"inputIndex":6,"kind":"unmatched","rawName":"panel_clip_04.stl"},
+      {"inputIndex":7,"kind":"ambiguous_filename","rawName":"fan_duct.stl_id_4_copy_1"},
+      {"inputIndex":8,"kind":"legacy_filename","rawName":"Frame/frame_corner.stl","unit":{"part_id":1,"unit_index":2}},
+      {"inputIndex":9,"kind":"unmatched","rawName":"handle.stl"},
+      {"inputIndex":10,"kind":"unmatched","rawName":"mystery_widget"},
+      {
+        "inputIndex": 11,
+        "kind": "legacy_filename",
+        "rawName": "frame_cornr.stl_id_9_copy_0",
+        "unit": {"part_id":1,"unit_index":3}
+      }
+    ],
+    "units": [
+      {"part_id":1,"unit_index":1},
+      {"part_id":2,"unit_index":0},
+      {"part_id":2,"unit_index":1},
+      {"part_id":2,"unit_index":2},
+      {"part_id":1,"unit_index":2},
+      {"part_id":1,"unit_index":3}
+    ],
+    "unmatchedObjectNames": [
+      "'frame_corner__ppu_0000000000000000000000000000000a'",
+      "frame_corner__ppu_0000000000000000000000000000000b_id_1_copy_0",
+      "panel_clip_04.stl",
+      "fan_duct.stl_id_4_copy_1",
+      "handle.stl",
+      "mystery_widget"
+    ]
+  },
+  "attribution_positive_only": {
+    "expected": {
+      "planVersion": 4,
+      "profileId": 1,
+      "requiredUnitMappingDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "revisionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revisionId": 9
+    },
+    "fallback": "recognized_observation",
+    "outcomes": [
+      {
+        "inputIndex": 0,
+        "kind": "required_object_name",
+        "rawName": "frame_corner__ppu_0000000000000000000000000000000b_id_0_copy_0",
+        "unit": {"part_id":1,"unit_index":1}
+      },
+      {"inputIndex":1,"kind":"already_completed","rawName":"'frame_corner__ppu_0000000000000000000000000000000a'"},
+      {
+        "inputIndex": 2,
+        "kind": "duplicate_observation",
+        "rawName": "frame_corner__ppu_0000000000000000000000000000000b_id_1_copy_0"
+      },
+      {
+        "inputIndex": 3,
+        "kind": "legacy_filename",
+        "rawName": "panel_clip_02.stl_id_2_copy_0",
+        "unit": {"part_id":2,"unit_index":0}
+      },
+      {"inputIndex":4,"kind":"legacy_filename","rawName":"'panel_clip_03.stl'","unit":{"part_id":2,"unit_index":1}},
+      {
+        "inputIndex": 5,
+        "kind": "legacy_filename",
+        "rawName": "panel_clip_01.stl (instance 2)",
+        "unit": {"part_id":2,"unit_index":2}
+      },
+      {"inputIndex":6,"kind":"unmatched","rawName":"panel_clip_04.stl"},
+      {"inputIndex":7,"kind":"ambiguous_filename","rawName":"fan_duct.stl_id_4_copy_1"},
+      {"inputIndex":8,"kind":"legacy_filename","rawName":"Frame/frame_corner.stl","unit":{"part_id":1,"unit_index":2}},
+      {"inputIndex":9,"kind":"unmatched","rawName":"handle.stl"},
+      {"inputIndex":10,"kind":"unmatched","rawName":"mystery_widget"},
+      {"inputIndex":11,"kind":"unmatched","rawName":"frame_cornr.stl_id_9_copy_0"}
+    ],
+    "units": [
+      {"part_id":1,"unit_index":1},
+      {"part_id":2,"unit_index":0},
+      {"part_id":2,"unit_index":1},
+      {"part_id":2,"unit_index":2},
+      {"part_id":1,"unit_index":2}
+    ],
+    "unmatchedObjectNames": [
+      "'frame_corner__ppu_0000000000000000000000000000000a'",
+      "frame_corner__ppu_0000000000000000000000000000000b_id_1_copy_0",
+      "panel_clip_04.stl",
+      "fan_duct.stl_id_4_copy_1",
+      "handle.stl",
+      "mystery_widget",
+      "frame_cornr.stl_id_9_copy_0"
+    ]
+  },
+  "fallback_after_unmatched": {
+    "expected": {
+      "planVersion": 4,
+      "profileId": 1,
+      "requiredUnitMappingDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "revisionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revisionId": 9
+    },
+    "fallback": "used",
+    "outcomes": [{"inputIndex":0,"kind":"unmatched","rawName":"mystery_widget"}],
+    "units": [{"part_id":2,"unit_index":0}],
+    "unmatchedObjectNames": ["mystery_widget"]
+  },
+  "fallback_only": {
+    "expected": {
+      "planVersion": 4,
+      "profileId": 1,
+      "requiredUnitMappingDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "revisionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revisionId": 9
+    },
+    "fallback": "used",
+    "outcomes": [],
+    "units": [{"part_id":2,"unit_index":0}],
+    "unmatchedObjectNames": []
+  },
+  "names": [
+    "frame_corner__ppu_0000000000000000000000000000000b_id_0_copy_0",
+    "'frame_corner__ppu_0000000000000000000000000000000a'",
+    "frame_corner__ppu_0000000000000000000000000000000b_id_1_copy_0",
+    "panel_clip_02.stl_id_2_copy_0",
+    "'panel_clip_03.stl'",
+    "panel_clip_01.stl (instance 2)",
+    "panel_clip_04.stl",
+    "fan_duct.stl_id_4_copy_1",
+    "Frame/frame_corner.stl",
+    "handle.stl",
+    "mystery_widget",
+    "frame_cornr.stl_id_9_copy_0"
+  ]
+}

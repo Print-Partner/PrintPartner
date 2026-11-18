@@ -141,17 +141,18 @@ an origin or publishes launch credentials; it cannot activate a second mutation
 owner or fall back to the other runtime. Existing migration and restore parity
 fixtures remain the gates for those operations.
 
-Run the parent's acceptance selector with a nonzero count in both builds:
+Run the ticket's acceptance selector; it must run a nonzero count:
 
 ```sh
-cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(ticket_t_8_versions)'
-cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_8_versions)' --success-output immediate
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(ticket_t_8_versions)' --success-output immediate
 ```
 
-The feature-off selector covers storage refusal. The feature-on selector also
-covers both headless modes. The executable proof prints the runtime mode, attempt,
-exit code, version diagnostic and unchanged-byte result for every launch. These
-are disposable installations; no real library or printer is used.
+It runs two tests: the storage writer refusal in `pp-storage` and the headless
+launches in `pp-server`. `pp-server` builds with `desktop_rebuild` by default
+(GRE-1646), so the headless test runs without naming the feature. It prints the
+runtime mode, attempt, exit code, version diagnostic and unchanged-byte result
+for every launch. These are disposable installations; no real library or
+printer is used.
 
 ## Ownership today
 

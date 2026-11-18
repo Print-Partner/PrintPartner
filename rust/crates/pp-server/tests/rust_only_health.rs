@@ -165,9 +165,9 @@ fn healthcheck_help_exits_zero() {
 /// runtime mode, even when a process manager launches it again.
 #[tokio::test]
 async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
-    use pp_storage::versions::{IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA};
+    use pp_core::{IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA};
     use pp_testkit::{Fixture, Installation, node_schema};
-    use std::time::Duration;
+    use std::{ffi::OsStr, time::Duration};
 
     for rust_only in [false, true] {
         let newest = if rust_only { RUST_SCHEMA } else { NODE_SCHEMA };
@@ -185,16 +185,26 @@ async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
                 newest,
             };
 
+            let args: [&OsStr; 12] = [
+                "--data".as_ref(),
+                installation.path().as_os_str(),
+                "--web".as_ref(),
+                bundle.web_root.as_os_str(),
+                "--node".as_ref(),
+                bundle.node.as_os_str(),
+                "--commit".as_ref(),
+                bundle.commit.as_ref(),
+                "--status-file".as_ref(),
+                status.as_os_str(),
+                "--test-credential-file".as_ref(),
+                credential.as_os_str(),
+            ];
+
             for attempt in 1..=3 {
                 let mut command = child_process::command(server_binary());
                 command
                     .env("PP_DESKTOP_REBUILD", if rust_only { "1" } else { "0" })
-                    .args(["--data".as_ref(), installation.path().as_os_str()])
-                    .args(["--web".as_ref(), bundle.web_root.as_os_str()])
-                    .args(["--node".as_ref(), bundle.node.as_os_str()])
-                    .args(["--commit", &bundle.commit])
-                    .args(["--status-file".as_ref(), status.as_os_str()])
-                    .args(["--test-credential-file".as_ref(), credential.as_os_str()]);
+                    .args(args);
                 let output = tokio::time::timeout(
                     Duration::from_secs(30),
                     tokio::process::Command::from(command)

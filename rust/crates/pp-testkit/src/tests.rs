@@ -90,6 +90,7 @@ fn assert_private_installations(umask: &str) {
     };
     let bare = private_temp_dir(None).unwrap();
     assert_eq!(mode(bare.path()), 0o700, "private_temp_dir");
+    assert_private_temp_dir_is_new();
     for fixture in [Fixture::Empty, Fixture::EmptyWithLeaseLeftovers] {
         let created = Installation::create(fixture).unwrap();
         assert_private(&created, &format!("create {fixture:?}"));
@@ -102,13 +103,22 @@ fn assert_private_installations(umask: &str) {
 
 /// `private_temp_dir` makes a new directory each call and never reuses or
 /// re-modes an entry that is already there, including a symlink to a
-/// directory (GRE-1398 review of `server_binary_routes`).
+/// directory (GRE-1398 review of `server_binary_routes`). The umask matrix
+/// above runs it again under each umask.
 #[cfg(unix)]
 #[test]
 fn private_temp_dir_is_new_and_leaves_existing_entries_alone() {
+    assert_private_temp_dir_is_new();
+}
+
+#[cfg(unix)]
+fn assert_private_temp_dir_is_new() {
     use std::os::unix::fs::PermissionsExt;
     let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    // tempfile's own 0o700 is filtered by the umask (0o500 under 0277), so
+    // set the parent's mode after creating it.
     let parent = tempfile::tempdir().unwrap();
+    fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let existing = parent.path().join("existing");
     fs::create_dir(&existing).unwrap();
     fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();

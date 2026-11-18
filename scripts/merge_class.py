@@ -18,16 +18,34 @@ ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
 CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
 VENDOR = re.compile(r"^[a-z][a-z0-9-]*$")
+# What a scorer must disclose it hit while scoring (Chad, 2026-11-17 3:16 PM ET): a model refusal, an
+# agent-guard refusal, or a tool approval that stalled. A record ends with obstacles=none, or with a
+# comma-separated subset of these in any order, each at most once. A score that leaves out an obstacle
+# it hit is invalid. No parser can see whether obstacles=none is true; the scorer brief carries that rule.
+OBSTACLES = ("refusal", "guard", "approval-stall")
+
+
+def parse_obstacles(token):
+    """The obstacles a record discloses: () for none, None when the token is not valid."""
+    if token == "none":
+        return ()
+    names = token.split(",")
+    if any(name not in OBSTACLES for name in names) or len(set(names)) != len(names):
+        return None
+    return tuple(names)
 
 
 def score_pattern(vendors):
-    """The pp-score record pattern for the vendors listed in merge-classes.json."""
+    """The pp-score record pattern for the vendors listed in merge-classes.json.
+
+    obstacles= is optional here so records written before it existed still parse; has_two_scores
+    refuses a record on the current head that lacks it."""
     if not isinstance(vendors, (list, tuple)) or not vendors or any(
             not isinstance(v, str) or not VENDOR.fullmatch(v) for v in vendors):
         raise ValueError("invalid vendor list")
     names = "|".join(re.escape(v) for v in sorted(set(vendors)))
     return re.compile(rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({names})"
-                      rf" score=([0-9]+) author=({names})")
+                      rf" score=([0-9]+) author=({names})(?: obstacles=(\S+))?")
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -100,8 +118,8 @@ def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
     (scorer_seats and vendors in merge-classes.json), so a seat or vendor change is data only. Malformed records, unknown seats and same-vendor-as-author records refuse.
 
     A score record is a line that starts with "pp-score " at column 0; every record must parse,
-    including old ones. Other lines are ignored, including prose that mentions the
-    token. Records for another head never count and are not checked against allowed_seats.
+    including old ones. A record on the exact head must disclose obstacles=.
+    Other lines are ignored, including prose that mentions the token. Records for another head never count and are not checked against allowed_seats.
     """
     try:
         record_pattern = score_pattern(vendors)
@@ -125,10 +143,14 @@ def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
             match = record_pattern.fullmatch(line)
             if not match:
                 return False
-            record_head, seat, vendor, score, author = match.groups()
+            record_head, seat, vendor, score, author, obstacles = match.groups()
+            if obstacles is not None and parse_obstacles(obstacles) is None:
+                return False
             # Older heads' records may name seats the owner has since dropped; they never count.
             if record_head != head:
                 continue
+            if obstacles is None:
+                return False
             if allowed_seats.get(seat) != vendor or vendor == author:
                 return False
             if author != author_vendor:

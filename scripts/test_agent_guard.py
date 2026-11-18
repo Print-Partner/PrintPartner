@@ -980,11 +980,12 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             return guard.check_command(MERGE_FORM, "/coordinator")
 
     def scores(self, author="trusted", head=SHA, seats=(("claude-opus-5-5", "anthropic"), ("grok-4.7", "xai")),
-               score=9, author_vendor="openai"):
+               score=9, author_vendor="openai", obstacles=" obstacles=none"):
         # Separate pages prove the guard includes all paginated results.
         stamp = "2026-11-11T00:00:00Z"
         return [[{"user": {"login": author}, "created_at": stamp, "updated_at": stamp,
-                  "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"}]
+                  "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"
+                          f"{obstacles}"}]
                 for seat, vendor in seats]
 
     def test_edited_score_record_refused(self):
@@ -1022,6 +1023,11 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_sensitive_opus_and_grok_for_openai_author(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["poitee"], self.scores(author="poitee")))
+
+    def test_sensitive_records_must_disclose_obstacles(self):
+        self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(obstacles="")))
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"],
+                                     self.scores(obstacles=" obstacles=guard,approval-stall")))
 
     def test_sensitive_one_vendor_or_author_vendor_refused(self):
         for seats in ((("claude-opus-5-5", "anthropic"),) * 2, (("claude-opus-5-5", "anthropic"), ("gpt-6.1-sol", "openai"))):
@@ -1128,7 +1134,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 MARKER = f"<!-- pp-review-gate head={SHA} reviewer=gpt-5.6-sol findings=0 -->"
 
 
-SCORE_LINE = f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=10 author=anthropic"
+SCORE_LINE = f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=10 author=anthropic obstacles=none"
 
 
 class ScoreRecordTests(unittest.TestCase):
@@ -1157,6 +1163,93 @@ class ScoreRecordTests(unittest.TestCase):
             for result in self.results(command, self.coordinator, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+
+def scorer_repo(path, branch="t3/score-1842-gpt-6.1-sol-20261117"):
+    """A checkout on a scorer branch, as the score tail's t3_thread_launch makes one."""
+    subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+    return str(Path(path).resolve())
+
+
+class ScorerWorktreeTests(unittest.TestCase):
+    """A scorer worktree (branch t3/score-<pr>-<seat>-<yyyymmdd>) posts its own score record as a new comment,
+    and nothing else the coordinator may do."""
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+
+    def setUp(self):
+        self.make_worktrees()
+        self.scorer = scorer_repo(Path(self.lane).parent / "scorer")
+        for folder in (self.scorer, self.lane):
+            Path(folder, "score.md").write_text(f"{SCORE_LINE}\n\nVerdict: no defects.\n")
+        Path(self.scorer, "both.md").write_text(f"{SCORE_LINE}\n{MARKER}\n")
+
+    # New comments only: the first four of ScoreRecordTests.POSTS, the encoded forms, and a body file.
+    NEW_POSTS = ScoreRecordTests.POSTS[:4] + ScoreRecordTests.POSTS[5:] + (
+        "gh pr comment 12 --body-file score.md", "gh api repos/o/r/issues/12/comments -F body=@score.md",
+        f"gh pr comment 12 -R Print-Partner/PrintPartner --body '{SCORE_LINE}'")
+
+    def assert_all(self, command, cwd, returncode, reason=None, coordinators=(None,)):
+        for coordinator in coordinators:
+            for result in self.results(command, cwd, coordinator):
+                with self.subTest(command=command, cwd=cwd, coordinator=coordinator):
+                    self.assertEqual(result.returncode, returncode, result.stderr)
+                    if reason:
+                        self.assertIn(reason, result.stderr)
+
+    def test_scorer_worktree_posts_its_own_score_record(self):
+        for command in self.NEW_POSTS:
+            self.assert_all(command, self.scorer, 0, coordinators=(None, self.coordinator))
+        # A subdirectory of the scorer checkout is still the scorer worktree.
+        Path(self.scorer, "sub").mkdir()
+        self.assert_all(self.NEW_POSTS[0], str(Path(self.scorer, "sub")), 0)
+
+    def test_other_branches_are_lanes(self):
+        for branch in ("t3/score-x", "t3/score-1842-gpt-6.1-sol", "t3/score-1842-gpt-6.1-sol-2026111",
+                       "t3/score-0-gpt-6.1-sol-20261117", "t3/scorer-1842-gpt-6.1-sol-20261117",
+                       "x/t3/score-1842-gpt-6.1-sol-20261117", "t3/score-1842-GPT-20261117",
+                       "gate/score-1842-gpt-6.1-sol-20261117", "main"):
+            lane = scorer_repo(Path(self.lane).parent / branch.replace("/", "_"), branch)
+            self.assert_all(ScoreRecordTests.POSTS[0], lane, 2, "pp-score records")
+        for command in self.NEW_POSTS:
+            self.assert_all(command, self.lane, 2, "pp-score records", (None, self.coordinator))
+
+    def test_coordinator_still_posts_scores_and_markers(self):
+        for command in self.NEW_POSTS[:3] + (f"gh pr comment 12 -b '{MARKER}'",):
+            self.assert_all(command, self.coordinator, 0, coordinators=(self.coordinator,))
+
+    def test_scorer_cannot_edit_or_delete_comments(self):
+        for command in CommentEditTests.EDITS + (
+                f"gh api -X PATCH repos/o/r/issues/comments/34 -f body='{SCORE_LINE}'",
+                f"gh pr comment 12 --edit-last -b '{SCORE_LINE}'", "gh pr comment 12 --edit-last --body-file score.md"):
+            self.assert_all(command, self.scorer, 2, "edits or deletes PR comments")
+
+    def test_scorer_cannot_post_review_markers(self):
+        for command in (f"gh pr comment 12 -b '{MARKER}'", f"gh api repos/o/r/issues/12/comments -f body='{MARKER}'",
+                        f"gh pr comment 12 -b '{SCORE_LINE}\n{MARKER}'", "gh pr comment 12 --body-file both.md",
+                        f"gh pr comment 12 -b '{MARKER.upper()}'", f"gh pr comment 12 -b 'pp%2Dreview-gate head={SHA}'",
+                        f"echo '{MARKER}' > m.md", f"bash -c 'gh pr comment 12 -b \"{MARKER}\"'"):
+            self.assert_all(command, self.scorer, 2, "pp-review-gate review markers")
+
+    def test_scorer_cannot_merge(self):
+        for command in (MERGE_FORM, "gh pr merge 12 --squash", f"{MERGE_FORM} --admin",
+                        "gh api -X PUT repos/o/r/pulls/12/merge"):
+            self.assert_all(command, self.scorer, 2, coordinators=(None, self.coordinator))
+
+    def test_scorer_rules_follow_the_command_directory(self):
+        # A line that starts in the scorer worktree and moves to a lane posts from the lane.
+        self.assert_all(f"cd {self.lane} && gh pr comment 12 -b '{SCORE_LINE}'", self.scorer, 2, "pp-score records")
+        self.assert_all(f"cd {self.scorer} && gh pr comment 12 -b '{SCORE_LINE}'", self.lane, 2, "pp-score records")
+
+    def test_git_location_variables_turn_the_scorer_into_a_lane(self):
+        guard = load(CLI, "agent_guard_scorer")
+        self.assertTrue(guard.scorer_worktree(self.scorer))
+        self.assertEqual(guard.refused_words(self.scorer), (guard.MARKER_WORD,))
+        for variable in ("GIT_DIR", "GIT_WORK_TREE"):
+            with self.subTest(variable=variable), patch.dict(os.environ, {variable: self.scorer}):
+                self.assertFalse(guard.scorer_worktree(self.scorer))
+                self.assertIn("pp-score records", guard.check_command(self.NEW_POSTS[0], self.scorer))
+        self.assertFalse(guard.scorer_worktree(None))
+        self.assertFalse(guard.scorer_worktree(self.lane))
 
 
 class CommentEditTests(unittest.TestCase):

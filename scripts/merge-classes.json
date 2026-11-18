@@ -76,6 +76,7 @@
     "deepseek-v4.1-flash-free": "deepseek"
   },
   "pp_score_seats": {
-    "gpt-6.1-sol": "openai"
+    "gpt-6.1-sol": "openai",
+    "gpt-6.2-sol": "openai"
   }
 }

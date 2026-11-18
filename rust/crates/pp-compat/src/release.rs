@@ -304,6 +304,12 @@ fn snapshot_rust_only_with(
     Ok(Arc::new(files))
 }
 
+/// Whether the embedded manifest measures a replacement UI: it does when
+/// `web/apps/ui/dist` was built before the manifest was written.
+pub fn release_measures_replacement() -> Result<bool> {
+    Ok(!manifest()?.replacement_frontend.is_empty())
+}
+
 /// Verify the legacy frontend when no replacement bundle is installed.
 pub fn verify_rust_only_legacy_release(bundle: &Bundle, assets: &Path) -> Result<()> {
     let release = manifest()?;

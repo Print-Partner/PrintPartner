@@ -28,6 +28,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `AssetSnapshot`, `snapshot_rust_only_release` | Immutable replacement UI bytes retained after identity, `replacement_frontend` and community-manifest verification. |
 | `verify_rust_only_release` | Verifies identity, `replacement_frontend` and community manifests without retaining the bytes. |
 | `verify_rust_only_legacy_release` | Verifies identity, `frontend` and community manifests when the replacement bundle is absent. |
+| `release_measures_replacement` | Whether the embedded manifest has a `replacement_frontend` inventory. The launcher test reads it instead of the disk. |
 | `drain` | Process-group stop helpers: `drive_shutdown_group`, `reap_process_group`, `SIGTERM_GRACE`. On Windows the group is the child's Job Object. |
 | `redact` | `Scrubber`, `scrub`, `REDACTED`: the scrub policy for logs, the Logs view, and opt-in Sentry. |
 | `settings` | `ENVIRONMENT` maps each Node env name to an `Owner`; `fixed_env`. |

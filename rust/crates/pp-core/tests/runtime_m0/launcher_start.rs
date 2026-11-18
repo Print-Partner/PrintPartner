@@ -50,12 +50,7 @@ async fn slice0_mount_launcher_gates() {
 async fn slice0_mount_launcher_in_child() {
     let data = std::path::PathBuf::from(std::env::var_os("PP_SLICE0_DATA").unwrap());
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
-    let absent = std::env::var_os("PP_UI_ABSENT").is_some();
-    let input = launcher_input(data, absent);
-    // The digests are compiled in, so no fixture can stand in for the built
-    // replacement UI. A runner without it (a CI test partition) checks the
-    // fallback to the legacy UI instead.
-    let replacement = input.bundle.web_root.join("apps/ui/dist").exists();
+    let (input, replacement) = launcher_case(data, rust);
     let mut runtime = CoreRuntime::start_for_launcher(input).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
     // The desktop tray holds a handle and its subscription for the process lifetime.
@@ -212,6 +207,27 @@ async fn assert_served_ui(origin: &str, desktop: &str, rust: bool) {
             "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
         );
     }
+}
+
+/// The launch for one case, and whether it serves the replacement UI. The
+/// digests are compiled in, so no fixture can stand in for the built
+/// replacement UI, and the compiled manifest, not the disk, decides which UI
+/// the case expects. A manifest written before `web/apps/ui` was built measures
+/// none: the Rust-only case then starts from a copy without it, so a later UI
+/// build cannot turn the legacy check into an inventory refusal.
+fn launcher_case(data: std::path::PathBuf, rust: bool) -> (pp_core::DesktopLaunch, bool) {
+    let measured = pp_compat::release_measures_replacement().unwrap();
+    let absent = std::env::var_os("PP_UI_ABSENT").is_some() || (rust && !measured);
+    let input = launcher_input(data, absent);
+    let replacement = measured && !absent;
+    if rust && replacement {
+        assert!(
+            input.bundle.web_root.join("apps/ui/dist").is_dir(),
+            "rust/bundle-manifest.json measures web/apps/ui/dist, which is missing; \
+             rebuild both with `just ci --only web-assets`"
+        );
+    }
+    (input, replacement)
 }
 
 pub(super) fn launcher_input(data: std::path::PathBuf, absent: bool) -> pp_core::DesktopLaunch {

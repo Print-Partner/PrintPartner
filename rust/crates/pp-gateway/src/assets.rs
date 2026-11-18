@@ -1,5 +1,6 @@
+use anyhow::Context as _;
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     http::{HeaderMap, Method, Response, StatusCode},
 };
 use http_body::Body as _;
@@ -130,17 +131,6 @@ async fn open_contained(root: &Path, path: &Path) -> Option<AssetFile> {
     })
 }
 
-/// The Content-Security-Policy every asset response carries.
-pub(super) enum Policy {
-    /// The Node-backed runtime: frame, object, base and ancestor rules only.
-    Legacy,
-    /// The Rust-only runtime, which only a `desktop_rebuild` build started with
-    /// `PP_DESKTOP_REBUILD` runs: `replacement-csp.txt`, with the WebSocket
-    /// origin of the authority each request was admitted on for the printer
-    /// event stream.
-    Replacement { files: pp_compat::AssetSnapshot },
-}
-
 const LEGACY_POLICY: &str =
     "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 /// Shared with `web/apps/ui/test/browser/csp.browser.mjs`, which loads the
@@ -150,14 +140,32 @@ const REPLACEMENT_POLICY: &str = include_str!("replacement-csp.txt");
 /// `web/apps/ui/src/csp.ts` hands it to the libraries that insert
 /// `<style>` elements at run time (Radix scroll lock).
 const NONCE_META_NAME: &str = "pp-style-nonce";
-/// `index.html` is read whole to add the nonce; the built one is under 1 KiB.
-const MAX_DOCUMENT_BYTES: u64 = 1 << 20;
+/// The replacement document every client path serves.
+const DOCUMENT: &str = "index.html";
+/// The replacement document is copied once per request to add the nonce; the
+/// built one is under 1 KiB. Startup refuses a larger one.
+const MAX_DOCUMENT_BYTES: usize = 1 << 20;
 
-impl Policy {
+impl super::ServedUi {
+    /// Refuse, at startup, a replacement build whose document no request could
+    /// serve: one without `index.html`, or with one over [`MAX_DOCUMENT_BYTES`].
+    pub(super) fn check_document(&self) -> anyhow::Result<()> {
+        if let Self::Replacement(files) = self {
+            let document = files
+                .get(DOCUMENT)
+                .context("Replacement UI has no index.html")?;
+            anyhow::ensure!(
+                document.len() <= MAX_DOCUMENT_BYTES,
+                "Replacement UI index.html exceeds 1 MiB"
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn is_spa_client_path(&self, path: &str) -> bool {
         match self {
-            Self::Legacy => super::is_spa_client_path(path),
-            Self::Replacement { .. } => is_replacement_client_path(path),
+            Self::Legacy(_) => super::is_spa_client_path(path),
+            Self::Replacement(_) => is_replacement_client_path(path),
         }
     }
 
@@ -167,8 +175,8 @@ impl Policy {
     /// validated, so a LAN browser gets its own WebSocket origin.
     fn header(&self, nonce: Option<&str>, authority: &str) -> axum::http::HeaderValue {
         match self {
-            Self::Legacy => axum::http::HeaderValue::from_static(LEGACY_POLICY),
-            Self::Replacement { .. } => {
+            Self::Legacy(_) => axum::http::HeaderValue::from_static(LEGACY_POLICY),
+            Self::Replacement(_) => {
                 let template = REPLACEMENT_POLICY.trim_end();
                 let policy = match nonce {
                     Some(nonce) => template.replace("{nonce}", nonce),
@@ -184,16 +192,14 @@ impl Policy {
     }
 }
 
-/// Template only the immutable, measured document bytes.
-fn nonce_document(bytes: &[u8], nonce: &str) -> Option<Vec<u8>> {
-    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return None;
-    }
+/// Template a copy of the immutable, measured document bytes; startup bounded
+/// their size (`ServedUi::check_document`).
+fn nonce_document(bytes: &[u8], nonce: &str) -> Vec<u8> {
     let mut html = bytes.to_vec();
     let element = format!("<meta name=\"{NONCE_META_NAME}\" nonce=\"{nonce}\">");
     let at = nonce_position(&html);
     html.splice(at..at, element.into_bytes());
-    Some(html)
+    html
 }
 
 /// The byte offset just after the first `<head ...>` start tag, in any letter
@@ -233,10 +239,9 @@ fn nonce_position(html: &[u8]) -> usize {
 }
 
 pub(super) async fn serve(
-    root: &Path,
     relative: &str,
     document: bool,
-    (policy, authority): (&Policy, &str),
+    (policy, authority): (&super::ServedUi, &str),
     method: &Method,
     request_headers: &HeaderMap,
 ) -> Response<Body> {
@@ -248,16 +253,19 @@ pub(super) async fn serve(
             .insert("allow", axum::http::HeaderValue::from_static("GET, HEAD"));
         return response;
     }
-    if let Policy::Replacement { files, .. } = policy {
-        return serve_snapshot(
-            files,
-            relative,
-            document,
-            (policy, authority),
-            method,
-            request_headers,
-        );
-    }
+    let root = match policy {
+        super::ServedUi::Legacy(root) => root,
+        super::ServedUi::Replacement(files) => {
+            return serve_snapshot(
+                files,
+                relative,
+                document,
+                (policy, authority),
+                method,
+                request_headers,
+            );
+        }
+    };
     let identity = match open_contained(root, &root.join(relative)).await {
         Some(asset) => asset,
         _ => return super::error(StatusCode::NOT_FOUND, "Asset not found"),
@@ -301,7 +309,7 @@ fn asset_response(
     body: Body,
     length: u64,
     mime: &'static str,
-    (policy, authority): (&Policy, &str),
+    (policy, authority): (&super::ServedUi, &str),
     nonce: Option<&str>,
     content_encoding: Option<&'static str>,
 ) -> Response<Body> {
@@ -356,7 +364,7 @@ fn serve_snapshot(
     files: &pp_compat::AssetSnapshot,
     relative: &str,
     document: bool,
-    (policy, authority): (&Policy, &str),
+    (policy, authority): (&super::ServedUi, &str),
     method: &Method,
     headers: &HeaderMap,
 ) -> Response<Body> {
@@ -365,15 +373,13 @@ fn serve_snapshot(
     };
     let nonce = document.then(|| hex::encode(rand::random::<[u8; 16]>()));
     let bytes = if let Some(nonce) = &nonce {
-        let Some(html) = nonce_document(bytes, nonce) else {
-            return super::error(StatusCode::INTERNAL_SERVER_ERROR, "Document unreadable");
-        };
-        html
+        Bytes::from(nonce_document(bytes, nonce))
     } else {
         if !Preferences::parse(headers).accepts_identity() {
             return unacceptable_encoding(method);
         }
-        bytes.to_vec()
+        // Shares the retained allocation; the verified bytes are never copied.
+        Bytes::from_owner(std::sync::Arc::clone(bytes))
     };
     let length = bytes.len() as u64;
     let body = if *method == Method::HEAD {
@@ -389,36 +395,6 @@ fn serve_snapshot(
         nonce.as_deref(),
         None,
     )
-}
-
-impl super::Gateway {
-    /// Start with the replacement bytes retained by release verification.
-    pub fn start_rust_only_with_assets(
-        listener: tokio::net::TcpListener,
-        assets: PathBuf,
-        files: pp_compat::AssetSnapshot,
-        product: impl FnOnce(super::MoonrakerStatus) -> axum::Router + 'static,
-        status: tokio::sync::watch::Receiver<super::RustStatus>,
-        hosts: std::sync::Arc<dyn super::MoonrakerHosts>,
-        sign_out: super::SignOut,
-    ) -> anyhow::Result<Self> {
-        Self::start_inner(
-            listener,
-            assets,
-            (super::ServedUi::Replacement, Some(files)),
-            pp_compat::CompatHandle::unpublished(),
-            &super::OperationOwners::node_only(),
-            Some(Box::new(product)),
-            Some((
-                status,
-                hosts,
-                super::RustOnlyMode {
-                    network: false,
-                    sign_out,
-                },
-            )),
-        )
-    }
 }
 
 fn content_type(path: &Path, relative: &str) -> &'static str {

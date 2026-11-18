@@ -31,6 +31,11 @@ jobs:
       packages: write
     env:
       IMAGE: ghcr.io/print-partner/print-partner
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+      version: ${{ steps.identity.outputs.version }}
+      build_date: ${{ steps.identity.outputs.build_date }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -259,3 +264,203 @@ jobs:
           else
             echo "Skipping latest: GitHub currently marks $latest_release as the latest release."
           fi
+
+  # The Rust-only image (Dockerfile.rust, GRE-1295). It follows the release
+  # policy above: amd64 and arm64, OCI annotations, signed by digest with the
+  # release key, and an immutable version alias. It adds SBOM and provenance
+  # attestations. Each architecture builds, passes the smoke test and is pushed
+  # from its own native runner, because a multi-arch manifest alone does not
+  # prove an image runs. It never moves `latest`.
+  rust-image:
+    name: rust image release (${{ matrix.arch }})
+    needs: release
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/print-partner/pp-server
+      ARCH: ${{ matrix.arch }}
+      COMMIT: ${{ needs.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the release commit
+        run: test "$(git rev-parse 'HEAD^{commit}')" = "$COMMIT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for an existing architecture candidate
+        id: candidate
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:commit-$COMMIT-$ARCH" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # No GitHub Actions cache: a release builds from the tagged sources only.
+      - name: Build the image for the smoke test
+        if: steps.candidate.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.rust
+          platforms: linux/${{ matrix.arch }}
+          tags: pp-server:release
+          load: true
+          push: false
+          build-args: |
+            PP_APP_VERSION=${{ needs.release.outputs.version }}
+            PP_COMMIT=${{ needs.release.outputs.commit }}
+            PP_BUILD_DATE=${{ needs.release.outputs.build_date }}
+
+      - name: Smoke-test the image on this architecture
+        if: steps.candidate.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' pp-server:release)" = "linux/$ARCH"
+          python3 scripts/docker-rust-smoke.py pp-server:release
+
+      # Same inputs on the same builder, so every layer comes from the build
+      # above; the next step proves it.
+      - name: Push the architecture candidate with SBOM and provenance
+        if: steps.candidate.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.rust
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          sbom: true
+          provenance: mode=max
+          build-args: |
+            PP_APP_VERSION=${{ needs.release.outputs.version }}
+            PP_COMMIT=${{ needs.release.outputs.commit }}
+            PP_BUILD_DATE=${{ needs.release.outputs.build_date }}
+          tags: |
+            ${{ env.IMAGE }}:commit-${{ needs.release.outputs.commit }}-${{ matrix.arch }}
+
+      - name: Check the pushed candidate is the smoke-tested image
+        if: steps.candidate.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          pushed="$(docker buildx imagetools inspect "$IMAGE:commit-$COMMIT-$ARCH" --format '{{json .Image}}' | jq -c .rootfs.diff_ids)"
+          tested="$(docker image inspect --format '{{json .RootFS.Layers}}' pp-server:release | jq -c .)"
+          test "$pushed" = "$tested"
+
+  rust-image-publish:
+    name: rust image release (publish)
+    needs: [release, rust-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/print-partner/pp-server
+      TAG: ${{ needs.release.outputs.tag }}
+      COMMIT: ${{ needs.release.outputs.commit }}
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.6.1
+
+      - name: Create or reuse the multi-arch candidate
+        run: |
+          set -euo pipefail
+          candidate="$IMAGE:commit-$COMMIT"
+          if ! docker buildx imagetools inspect "$candidate" >/dev/null 2>&1; then
+            docker buildx imagetools create --tag "$candidate" \
+              --annotation "index:org.opencontainers.image.source=https://github.com/Print-Partner/PrintPartner" \
+              --annotation "index:org.opencontainers.image.version=$VERSION" \
+              --annotation "index:org.opencontainers.image.revision=$COMMIT" \
+              --annotation "index:org.opencontainers.image.ref.name=$TAG" \
+              "$IMAGE:commit-$COMMIT-amd64" "$IMAGE:commit-$COMMIT-arm64"
+          fi
+
+      - name: Verify the candidate, its SBOM and its provenance
+        id: image
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "$IMAGE:commit-$COMMIT" | awk '/^Digest:/ { print $2; exit }')"
+          test -n "$digest"
+          docker buildx imagetools inspect "$IMAGE@$digest" --raw > rust-candidate-manifest.json
+          # One image per architecture, and one attestation manifest for each.
+          jq -e \
+            --arg version "$VERSION" \
+            --arg commit "$COMMIT" \
+            --arg tag "$TAG" \
+            '.annotations["org.opencontainers.image.version"] == $version and
+             .annotations["org.opencontainers.image.revision"] == $commit and
+             .annotations["org.opencontainers.image.ref.name"] == $tag and
+             ([.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort) == ["amd64", "arm64"] and
+             ([.manifests[] | select(.platform.os == "linux") | .digest] | sort) ==
+             ([.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")
+               | .annotations["vnd.docker.reference.digest"]] | sort)' \
+            rust-candidate-manifest.json
+          for arch in amd64 arm64; do
+            docker buildx imagetools inspect "$IMAGE@$digest" --format "{{json (index .SBOM \"linux/$arch\")}}" \
+              | jq -e '.SPDX.spdxVersion | startswith("SPDX-")'
+            docker buildx imagetools inspect "$IMAGE@$digest" --format "{{json (index .Provenance \"linux/$arch\")}}" \
+              | jq -e '.SLSA.buildDefinition.externalParameters.request.args["build-arg:PP_COMMIT"] == env.COMMIT'
+          done
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Sign image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+
+      - name: Create or verify immutable version alias
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            existing="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ { print $2; exit }')"
+            test "$existing" = "$DIGEST"
+          else
+            docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
+          fi
+          test "$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ { print $2; exit }')" = "$DIGEST"
+
+      - name: Verify signature
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: cosign verify --key cosign.pub "$IMAGE@$DIGEST" >/dev/null

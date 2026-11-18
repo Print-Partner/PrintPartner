@@ -3,7 +3,7 @@
 Two images exist:
 
 - The **Node image** (`Dockerfile`) is the released image. It runs the Node server. [Install](INSTALL.md) describes it.
-- The **Rust-only image** (`Dockerfile.rust`) runs `pp-server` with the `desktop_rebuild` feature compiled in and `PP_DESKTOP_REBUILD=1`. No release workflow builds or publishes it yet. It is a try-it build, and the [limits below](#what-the-rust-only-image-cannot-do-yet) apply.
+- The **Rust-only image** (`Dockerfile.rust`) runs `pp-server` with the `desktop_rebuild` feature compiled in and `PP_DESKTOP_REBUILD=1`. A version tag publishes it as `ghcr.io/print-partner/pp-server` ([Release image](#release-image)). It is a try-it build, and the [limits below](#what-the-rust-only-image-cannot-do-yet) apply.
 
 The rest of this page describes the Rust-only image.
 
@@ -175,7 +175,6 @@ Signing out (`POST /auth/logout`) revokes the account session and clears its coo
 - **No DNS names or reverse proxy.** The explicit listener accepts literal IP addresses only. Desktop [Network sharing](network-sharing.md) remains unimplemented and off by default.
 - **MCP has keys only.** MCP needs an API key ([Connect an MCP client](#connect-an-mcp-client)). There is no OAuth, no per-tool permission, no TLS and no key screen in the replacement UI yet.
 - **No GitHub or Discord sign-in.** These providers are unavailable on the explicit listener: their callback URL is built from the loopback origin, and the listener refuses the provider's cross-site redirect back to `/auth/callback`. This image configures neither provider ([GRE-974](https://linear.app/greetz/issue/GRE-974)); sign in with the owner account's email and password.
-- **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test
 
@@ -184,6 +183,31 @@ python3 scripts/docker-rust-smoke.py pp-server:test
 ```
 
 The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. With that sign-in, `GET /` must return the image's `apps/ui/dist/index.html` with one style nonce element added, and `docker logs` must not contain `Replacement UI bundle absent`. Its CSP `connect-src` must name `ws://127.0.0.1:<published port>/ws/printers`, the authority the browser used. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches /health and sign-in through the published host loopback port over the Docker bridge. It verifies non-loopback login requirements. Over the published port, from a non-loopback peer, it makes an API key with the signed-in session, connects to `/mcp` and `/api/v1/mcp` with it, lists tools and runs `list_plans`, and checks that no key or a wrong key gets `401` (`403` without an Origin either) and no session. It records the bound address 0.0.0.0:8080. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
+
+## CI and release builds
+
+Every pull request, push to `main` and merge group builds the image twice in `.github/workflows/rust-image.yml`, each on its own native runner, and runs the smoke test on each: `rust image` on amd64 (`ubuntu-latest`) and `rust image (arm64)` on arm64 (`ubuntu-24.04-arm`). The arm64 job also checks that the loaded image is `linux/arm64`. Neither is a required check.
+
+### Release image
+
+A version tag (`v*.*.*`) runs `.github/workflows/release.yml`. After the Node release job passes, the `rust-image` jobs build `Dockerfile.rust` on the same two native runners, without the GitHub Actions cache. Each job:
+
+1. Builds and loads the image for its architecture, then runs `scripts/docker-rust-smoke.py` on it.
+2. Pushes the same build as `ghcr.io/print-partner/pp-server:commit-<commit>-<arch>`, with an SPDX SBOM (`sbom: true`) and SLSA provenance (`provenance: mode=max`) attestation.
+3. Checks that the pushed image's layer digests equal the smoke-tested image's.
+
+`rust-image-publish` then joins the two into `:commit-<commit>` with the release's OCI annotations. It checks that the index holds exactly one amd64 and one arm64 image, each with an attestation manifest, and that each has an SPDX SBOM and provenance that records the release commit. It then signs the index by digest with the release key, as the Node image is signed, and adds the immutable `:<version>` alias. It never moves `latest`. A rerun reuses a candidate that already exists. The Node image and its `release-identity.json` are unchanged and do not wait for this image.
+
+Verify a release by digest:
+
+```sh
+DIGEST="$(docker buildx imagetools inspect ghcr.io/print-partner/pp-server:<version> | awk '/^Digest:/ { print $2; exit }')"
+cosign verify --key cosign.pub "ghcr.io/print-partner/pp-server@$DIGEST"
+docker buildx imagetools inspect "ghcr.io/print-partner/pp-server@$DIGEST" --format '{{ json (index .SBOM "linux/arm64") }}'
+docker buildx imagetools inspect "ghcr.io/print-partner/pp-server@$DIGEST" --format '{{ json (index .Provenance "linux/arm64") }}'
+```
+
+`scripts/test_rust_image_workflows.py` pins these jobs and runs the publish job's index check on sample indexes.
 
 ## Importing Node data
 

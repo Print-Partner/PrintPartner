@@ -107,12 +107,15 @@ pub(crate) fn api_key(value: Option<std::ffi::OsString>) -> Result<String> {
 
 /// Connects to the core, then serves stdio until the client closes stdin.
 pub(crate) async fn run(url: Url, key: String) -> Result<()> {
+    // `core_url` checks only this URL, so a redirect, which would carry the
+    // request body and session header to any other origin, is never followed.
+    let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     // `core_url` allows plain http only to loopback. An inherited HTTP proxy
     // would carry that request, key included, off the machine in the clear,
     // so loopback goes direct. https may still use a proxy: it tunnels.
     let http = match url.scheme() {
-        "http" => reqwest::Client::builder().no_proxy(),
-        _ => reqwest::Client::builder(),
+        "http" => http.no_proxy(),
+        _ => http,
     }
     .build()
     .context("Build the HTTP client")?;

@@ -226,6 +226,47 @@ fn mcp_stdio_sends_loopback_http_direct_never_through_a_proxy() {
     );
 }
 
+/// A loopback listener that answers every request with a 307 redirect to
+/// `location`, which keeps the method, body and session header.
+fn redirecting_listener(location: String) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match std::io::Read::read(&mut stream, &mut buffer) {
+                    Ok(read @ 1..) => request.extend_from_slice(&buffer[..read]),
+                    _ => break,
+                }
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    });
+    port
+}
+
+#[test]
+fn mcp_stdio_never_follows_a_redirect_away_from_the_url() {
+    // `--url` is the only destination checked; a followed redirect could
+    // carry the request body and session header anywhere, plain http included.
+    let (target, received) = silent_listener();
+    let port = redirecting_listener(format!("http://127.0.0.1:{target}/elsewhere"));
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    assert_refused(&url, Some(UNKNOWN_KEY), "No Print Partner core accepted");
+    let received = received.lock().unwrap();
+    assert!(
+        received.is_empty(),
+        "the redirect target got {}",
+        String::from_utf8_lossy(&received)
+    );
+}
+
 #[cfg(all(unix, feature = "desktop_rebuild"))]
 mod with_a_core {
     use super::*;

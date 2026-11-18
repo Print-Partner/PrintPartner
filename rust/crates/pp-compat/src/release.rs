@@ -7,6 +7,11 @@ use tokio_util::sync::CancellationToken;
 
 /// Immutable file bytes retained by release verification.
 pub type AssetSnapshot = Arc<BTreeMap<String, Arc<[u8]>>>;
+/// The replacement document every client path serves.
+pub const REPLACEMENT_DOCUMENT: &str = "index.html";
+/// The gateway copies the replacement document once per request to add its
+/// style nonce, so a larger one refuses startup. The built one is under 1 KiB.
+pub const MAX_REPLACEMENT_DOCUMENT_BYTES: usize = 1 << 20;
 
 #[derive(Deserialize)]
 struct DependencyInventory {
@@ -285,6 +290,12 @@ fn snapshot_rust_only_with(
         );
     }
     let root = file_inventory_root(assets, &release.replacement_frontend, true, stop)?;
+    ensure!(
+        release
+            .replacement_frontend
+            .contains_key(REPLACEMENT_DOCUMENT),
+        "Replacement UI has no index.html"
+    );
     let mut files = BTreeMap::new();
     for (key, digest) in &release.replacement_frontend {
         ensure!(!stop.is_cancelled(), "Release verification cancelled");
@@ -294,6 +305,12 @@ fn snapshot_rust_only_with(
             .context("Release artifact missing")?;
         ensure!(path.starts_with(&root), "Release artifact escaped root");
         let bytes = std::fs::read(path)?;
+        // Checked before the digest, so even a measured document this large
+        // refuses startup here, before recovery or the listener bind.
+        ensure!(
+            key != REPLACEMENT_DOCUMENT || bytes.len() <= MAX_REPLACEMENT_DOCUMENT_BYTES,
+            "Replacement UI index.html exceeds 1 MiB"
+        );
         ensure!(
             hex::encode(Sha256::digest(&bytes)) == *digest,
             "Release artifact content mismatch"
@@ -630,6 +647,41 @@ mod tests {
             error.to_string(),
             "Release inventory empty; rebuild the desktop manifest with just ci --only web-assets"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A measured document over the limit, or none at all, refuses the
+    /// release check itself, so startup stops before recovery and bind.
+    #[test]
+    fn replacement_snapshot_bounds_a_measured_document() {
+        let (root, bundle, mut release) = rust_only_fixture();
+        let assets = root.join("web/apps/ui/dist");
+        let stop = CancellationToken::new();
+        let document = assets.join(REPLACEMENT_DOCUMENT);
+        let mut html = std::fs::read(&document).unwrap();
+        html.resize(MAX_REPLACEMENT_DOCUMENT_BYTES, b' ');
+        std::fs::write(&document, &html).unwrap();
+        release
+            .replacement_frontend
+            .insert(REPLACEMENT_DOCUMENT.into(), measure(&document).unwrap());
+        let snapshot = snapshot_rust_only_with(&release, &bundle, &assets, &stop).unwrap();
+        assert_eq!(
+            snapshot[REPLACEMENT_DOCUMENT].len(),
+            MAX_REPLACEMENT_DOCUMENT_BYTES
+        );
+
+        html.push(b' ');
+        std::fs::write(&document, &html).unwrap();
+        release
+            .replacement_frontend
+            .insert(REPLACEMENT_DOCUMENT.into(), measure(&document).unwrap());
+        let error = snapshot_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Replacement UI index.html exceeds 1 MiB");
+
+        std::fs::remove_file(&document).unwrap();
+        release.replacement_frontend.remove(REPLACEMENT_DOCUMENT);
+        let error = snapshot_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Replacement UI has no index.html");
         std::fs::remove_dir_all(root).unwrap();
     }
 

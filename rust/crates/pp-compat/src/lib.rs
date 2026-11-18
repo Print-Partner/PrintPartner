@@ -29,8 +29,9 @@ use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 pub use release::{
-    AssetSnapshot, MeasuredBundle, release_measures_replacement, snapshot_rust_only_release,
-    verify_bundle, verify_rust_only_legacy_release, verify_rust_only_release,
+    AssetSnapshot, MAX_REPLACEMENT_DOCUMENT_BYTES, MeasuredBundle, REPLACEMENT_DOCUMENT,
+    release_measures_replacement, snapshot_rust_only_release, verify_bundle,
+    verify_rust_only_legacy_release, verify_rust_only_release,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;

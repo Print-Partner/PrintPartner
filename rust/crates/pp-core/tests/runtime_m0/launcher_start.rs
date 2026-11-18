@@ -281,3 +281,82 @@ async fn assert_legacy_navigation(origin: &str, desktop: &str) {
     // This is not a legacy SPA path: the unchanged API admission rejects it.
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// A measured replacement `index.html` over 1 MiB refuses the Rust-only
+/// launch during release verification, before the listener bind: the saved
+/// port stays in `desktop.toml` even while another process holds it.
+#[cfg(feature = "desktop_rebuild")]
+#[tokio::test]
+async fn oversized_replacement_document_refuses_before_the_saved_port_moves() {
+    let data = temporary("oversized-document");
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "launcher_start::oversized_replacement_document_in_child",
+            "--nocapture",
+        ])
+        .env("PP_SLICE0_DATA", &data)
+        .env("PP_DESKTOP_REBUILD", "1")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[cfg(feature = "desktop_rebuild")]
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with PP_DESKTOP_REBUILD=1"]
+async fn oversized_replacement_document_in_child() {
+    assert!(
+        pp_compat::release_measures_replacement().unwrap(),
+        "rust/bundle-manifest.json measures no web/apps/ui/dist; \
+         rebuild both with `just ci --only web-assets`"
+    );
+    let data = std::path::PathBuf::from(std::env::var_os("PP_SLICE0_DATA").unwrap());
+    let source = launch(data.clone()).bundle.web_root;
+    let copied = || {
+        let input = launcher_input(data.clone(), true);
+        super::copy_directory(
+            &source.join("apps/ui/dist"),
+            &input.bundle.web_root.join("apps/ui/dist"),
+        );
+        input
+    };
+    // A first launch from the copied release saves its port.
+    let input = copied();
+    let config = input.data_dir.join("desktop.toml");
+    let document = input.bundle.web_root.join("apps/ui/dist/index.html");
+    let runtime = CoreRuntime::start_for_launcher(input).await.unwrap();
+    assert!(runtime.rust_only());
+    let port: u16 = runtime
+        .origin()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(runtime.shutdown().await.complete());
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(saved, format!("port = {port}\n"));
+
+    // Occupy the saved port, so a bind would move it, then grow the document.
+    let _occupied = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let input = copied();
+    let mut html = std::fs::read(&document).unwrap();
+    html.resize(pp_compat::MAX_REPLACEMENT_DOCUMENT_BYTES + 1, b' ');
+    std::fs::write(&document, html).unwrap();
+    let error = match CoreRuntime::start_for_launcher(input).await {
+        Ok(_) => panic!("an oversized replacement document started the runtime"),
+        Err(error) => error,
+    };
+    assert_eq!(error.to_string(), "Replacement UI index.html exceeds 1 MiB");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), saved);
+}

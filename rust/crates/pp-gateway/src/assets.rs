@@ -140,22 +140,18 @@ const REPLACEMENT_POLICY: &str = include_str!("replacement-csp.txt");
 /// `web/apps/ui/src/csp.ts` hands it to the libraries that insert
 /// `<style>` elements at run time (Radix scroll lock).
 const NONCE_META_NAME: &str = "pp-style-nonce";
-/// The replacement document every client path serves.
-const DOCUMENT: &str = "index.html";
-/// The replacement document is copied once per request to add the nonce; the
-/// built one is under 1 KiB. Startup refuses a larger one.
-const MAX_DOCUMENT_BYTES: usize = 1 << 20;
-
 impl super::ServedUi {
-    /// Refuse, at startup, a replacement build whose document no request could
-    /// serve: one without `index.html`, or with one over [`MAX_DOCUMENT_BYTES`].
+    /// Refuse a replacement snapshot whose document no request could serve.
+    /// `pp_compat::snapshot_rust_only_release` already refuses one during
+    /// release verification, before `pp-core` binds; this repeats the check for
+    /// a snapshot built any other way.
     pub(super) fn check_document(&self) -> anyhow::Result<()> {
         if let Self::Replacement(files) = self {
             let document = files
-                .get(DOCUMENT)
+                .get(pp_compat::REPLACEMENT_DOCUMENT)
                 .context("Replacement UI has no index.html")?;
             anyhow::ensure!(
-                document.len() <= MAX_DOCUMENT_BYTES,
+                document.len() <= pp_compat::MAX_REPLACEMENT_DOCUMENT_BYTES,
                 "Replacement UI index.html exceeds 1 MiB"
             );
         }

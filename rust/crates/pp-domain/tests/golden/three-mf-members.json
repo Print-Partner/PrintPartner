@@ -1,0 +1,63 @@
+[
+  {
+    "case": "model only",
+    "classification": {"format":"3mf","kind":"model_package"},
+    "members": ["3D/3dmodel.model"],
+    "next_action": "That 3MF holds only geometry, so it needs preparation and slicing",
+    "print_ready": false
+  },
+  {
+    "case": "model and slicer state",
+    "classification": {"format":"3mf","kind":"slicer_project"},
+    "members": ["3D/3dmodel.model","Metadata/model_settings.config"],
+    "next_action": "That 3MF is a slicer project, so it needs slicing before a printer can run it",
+    "print_ready": false
+  },
+  {
+    "case": "PrusaSlicer project",
+    "classification": {"format":"3mf","kind":"slicer_project"},
+    "members": ["3D/3dmodel.model","Metadata/Slic3r_PE.config"],
+    "next_action": "That 3MF is a slicer project, so it needs slicing before a printer can run it",
+    "print_ready": false
+  },
+  {
+    "case": "toolpath plate",
+    "classification": {"format":"3mf","kind":"toolpath_package"},
+    "members": ["3D/3dmodel.model","Metadata/plate_1.gcode","Metadata/plate_1.json"],
+    "next_action": "",
+    "print_ready": true
+  },
+  {
+    "case": "upper-case members",
+    "classification": {"format":"3mf","kind":"slicer_project"},
+    "members": ["3D/Object.MODEL","METADATA/Project_Settings.CONFIG"],
+    "next_action": "That 3MF is a slicer project, so it needs slicing before a printer can run it",
+    "print_ready": false
+  },
+  {
+    "case": "state without a model",
+    "classification": {"format":"3mf","kind":"unsupported"},
+    "members": ["Metadata/model_settings.config"],
+    "next_action": "PrintPartner cannot interpret that 3MF, so it can be downloaded but not printed",
+    "print_ready": false
+  },
+  {
+    "case": "model as a directory",
+    "classification": {"format":"3mf","kind":"unsupported"},
+    "members": ["3D/3dmodel.model/"],
+    "next_action": "PrintPartner cannot interpret that 3MF, so it can be downloaded but not printed",
+    "print_ready": false
+  },
+  {
+    "case": "model outside 3D/",
+    "classification": {"format":"3mf","kind":"unsupported"},
+    "members": ["3dmodel.model","Metadata/notes.ini"],
+    "next_action": "PrintPartner cannot interpret that 3MF, so it can be downloaded but not printed",
+    "print_ready": false
+  },
+  {
+    "case": "member outside the package",
+    "message": "That 3MF package holds an unsafe entry name",
+    "refused": "archive_unsafe_entry"
+  }
+]

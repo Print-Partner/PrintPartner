@@ -204,11 +204,13 @@ const HEADER_FIELDS = [
   { field: "due_date", label: "Due date", type: "date", orders: true },
 ] as const;
 
-/** A header write not yet settled, and the fields typed for it. */
+/** A header write not yet settled, and the values typed for it. */
 interface HeldWrite {
   key: string;
-  fields: ReadonlySet<keyof HeaderFields>;
+  changes: Partial<HeaderFields>;
 }
+
+const carries = (write: HeldWrite, field: keyof HeaderFields) => field in write.changes;
 
 /**
  * The header form. Each field saves to the draft when it loses focus or on Enter, and each
@@ -236,7 +238,9 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
     // A failed write's field counts as typed again, unless a later write carries it.
     const restored = held.flatMap((write, i) =>
       failed.has(write.key)
-        ? [...write.fields].filter((f) => !held.slice(i + 1).some((later) => later.fields.has(f)))
+        ? (Object.keys(write.changes) as (keyof HeaderFields)[]).filter(
+            (f) => !held.slice(i + 1).some((later) => carries(later, f)),
+          )
         : [],
     );
     kept = new Set([...typed, ...restored]);
@@ -267,16 +271,23 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
     const header = headerOf(fields);
     setInvalid(header.name === "");
     if (header.name === "" || offline || typed.size === 0) return;
+    // A field is sent only when it differs from the value it will hold without this write:
+    // the latest unsettled write's value for it, or else the saved value.
+    const base = fieldsOf(saved);
+    const value = (field: keyof HeaderFields, text: string) =>
+      headerOf({ ...base, [field]: text })[field];
     const changes: Partial<HeaderFields> = Object.fromEntries(
-      [...typed].map((field) => [field, fields[field]]),
+      [...typed]
+        .filter((field) => {
+          const pending = held.findLast((write) => carries(write, field))?.changes[field];
+          return value(field, fields[field]) !== value(field, pending ?? base[field]);
+        })
+        .map((field) => [field, fields[field]]),
     );
     setTyped(new Set());
-    // Typing the saved value back sends nothing, unless an earlier write may still change it.
-    if (held.length === 0 && sameHeader(headerOf({ ...fieldsOf(saved), ...changes }), saved)) {
-      return;
-    }
+    if (Object.keys(changes).length === 0) return;
     const key = newKey();
-    setHeld([...held, { key, fields: typed }]);
+    setHeld([...held, { key, changes }]);
     writes.header.mutate({ changes, key });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {

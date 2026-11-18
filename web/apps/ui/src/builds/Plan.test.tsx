@@ -2206,6 +2206,121 @@ describe("GRE-1183 rapid Plan edits stay draft-only through every failure", () =
     expect(saved.draft!.header).toMatchObject({ name: "Bracket kit v4", customer: "Beta" });
     await waitFor(() => expect(name.value).toBe("Bracket kit v4"));
   });
+
+  it("sends nothing for a field typed back to its saved value while another field saves", async () => {
+    let saved = draftHeader(1);
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let otherWindow = false;
+    const bump = (header: BuildHeaderView["build"]) => ({
+      ...saved,
+      draft: { ...saved.draft!, header, header_version: saved.draft!.header_version + 1 },
+    });
+    const inner = core();
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/9/header") {
+        if (otherWindow) {
+          // Another window changes the Customer before this tab's refetch reads the header.
+          otherWindow = false;
+          saved = bump({ ...saved.draft!.header, customer: "Gamma" });
+        }
+        return json(saved);
+      }
+      if (path !== "/api/v2/plans/2/drafts/header" || init?.method !== "PUT") {
+        return inner(path, init);
+      }
+      const body = JSON.parse(String(init.body));
+      if (writes(fetchMock as unknown as ReturnType<typeof core>).length === 1) {
+        await held;
+        otherWindow = true;
+      }
+      if (body.expected_header_version !== saved.draft!.header_version) {
+        return problem(409, "header_changed");
+      }
+      saved = bump(body.header);
+      return json({ receipt: { profile_id: 2, draft_id: 9, header: saved.draft }, header: saved });
+    });
+    const sent = () => writes(fetchMock as unknown as ReturnType<typeof core>);
+    renderAt(fetchMock as unknown as ReturnType<typeof core>);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    const customer = field("Customer");
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    fireEvent.change(customer, { target: { value: "Beta" } });
+    fireEvent.change(customer, { target: { value: "Acme" } });
+    fireEvent.blur(customer);
+    release();
+    await screen.findByText(/Saved to the draft/);
+    await waitFor(() => expect(customer.value).toBe("Gamma"));
+    await act(async () => {});
+    expect(sent()).toHaveLength(1);
+    expect(saved.draft!.header).toMatchObject({ name: "Bracket kit v3", customer: "Gamma" });
+    expect(name.value).toBe("Bracket kit v3");
+  });
+
+  it("lets the core refuse a queued write that names the cached draft after a failed refetch", async () => {
+    let lifecycle = 2;
+    let gear = false;
+    let bracket: number | null = null;
+    let reads = true;
+    const current = (): DraftWorkspace => ({
+      ...workspace({ ...DRAFT, lifecycle_version: lifecycle }),
+      parts: [part(11, "bracket.stl", true, bracket), part(12, "gear.stl", gear, 4)],
+    });
+    const plan = core({
+      draft: current,
+      write: (path, init) => {
+        if (path !== "/api/v2/plans/2/drafts/save") return undefined;
+        const body = JSON.parse(String(init!.body));
+        if (reads) {
+          // Another window saves the draft, then this tab's reads start to fail.
+          reads = false;
+          lifecycle += 1;
+        }
+        if (body.expected_draft.lifecycle_version !== lifecycle) {
+          return problem(409, "draft_changed");
+        }
+        const [decision] = body.decisions;
+        if (decision.kind === "set_included") gear = decision.value;
+        else bracket = decision.value;
+        lifecycle += 1;
+        return json({
+          receipt: {
+            profile_id: 2,
+            draft_id: 9,
+            reconciliation_id: 1,
+            snapshot_digest: DIGEST,
+            saved_at: "2026-11-18T00:00:00.000Z",
+          },
+          workspace: current(),
+        });
+      },
+    });
+    const fetchMock = vi.fn((path: string, init?: RequestInit) =>
+      !reads && !init?.method && path !== "/health"
+        ? Promise.resolve(problem(500, "internal"))
+        : plan(path, init),
+    ) as unknown as ReturnType<typeof core>;
+    renderAt(fetchMock);
+    const gearBox = await screen.findByRole<HTMLInputElement>("checkbox", {
+      name: "Include gear.stl",
+    });
+    const quantity = screen.getByRole<HTMLInputElement>("textbox", {
+      name: /Quantity of bracket\.stl/,
+    });
+    fireEvent.click(gearBox);
+    fireEvent.change(quantity, { target: { value: "5" } });
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
+    await screen.findByText(/^Not saved: The draft changed somewhere else/);
+    expect(writes(fetchMock).map((w) => w.body.expected_draft.lifecycle_version)).toEqual([2, 2]);
+    expect(gear).toBe(false);
+    expect(bracket).toBe(null);
+    expect(lifecycle).toBe(3);
+    expect(quantity.value).toBe("5");
+    expect(writes(fetchMock).some((w) => w.path.endsWith("/apply"))).toBe(false);
+  });
 });
 
 const target = (file: string) => ({

@@ -33,8 +33,11 @@ Builds has a **Create Build** button under its heading in every state
 (`web/apps/ui/src/builds/CreateBuildDialog.tsx`). The dialog takes a name and a
 **Base Source** from the Library, preselected to the first Source, with
 **No base Source** as the other choice. With no Sources it links to Library
-instead. **Create** sends `createBuild` once, is disabled without a name and
-offline, and opens the new Build's Overview. A 4xx keeps the dialog open with
+instead. While the Source list loads, **Create** waits; if the list fails, the
+dialog says so and offers **Try again**, so Create never sends "No base Source"
+the user did not choose. **Create** is also disabled without a name, with a name
+over the core's 4,096-character limit (it says to shorten it), and offline.
+It sends `createBuild` once and opens the new Build's Overview. A 4xx keeps the dialog open with
 the reason; a 5xx or lost answer says the create could not be confirmed and
 reads the list again. The core refuses a second Build with the same name, so
 pressing Create again cannot make a duplicate.

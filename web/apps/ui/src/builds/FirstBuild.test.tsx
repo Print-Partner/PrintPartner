@@ -14,7 +14,7 @@ import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
 import { refusalText } from "../screen/SourceSelect";
-import { buildRequest } from "./CreateBuildDialog";
+import { buildRequest, nameProblem } from "./CreateBuildDialog";
 import { FIRST_BUILD_STEPS } from "./planCopy";
 
 // GRE-1401: a scripted core on disposable, in-memory data. It keeps Sources, Builds and
@@ -361,6 +361,32 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
     expect(core.buildPosts).toHaveLength(1);
   });
 
+  it("a name over the core's limit says so before anything is sent", async () => {
+    const core = scriptedCore({ sources: ["Kit A"] });
+    renderAt("/builds", core.fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+    const form = dialog("Create Build");
+    await within(form).findByLabelText("Base Source");
+    const create = within(form).getByRole("button", { name: "Create" });
+    // 4,097 characters, each two UTF-16 units: the limit counts characters.
+    fireEvent.change(within(form).getByLabelText("Name"), {
+      target: { value: "\u{1f9f5}".repeat(4097) },
+    });
+    expect(within(form).getByText("Shorten the name to 4,096 characters or fewer.")).toBeTruthy();
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(create);
+    await settle();
+    expect(core.buildPosts).toEqual([]);
+    expect(within(form).queryByRole("alert")).toBeNull();
+
+    // At the limit, with surrounding spaces trimmed, Create sends it.
+    const longest = "\u{1f9f5}".repeat(4096);
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: ` ${longest} ` } });
+    expect(create.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(create);
+    await waitFor(() => expect(core.buildPosts).toEqual([{ name: longest, base_project_id: 1 }]));
+  });
+
   it("Create sends nothing without a name, and offline it says why", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = scriptedCore({ sources: ["Kit A"] });
@@ -405,23 +431,45 @@ describe("Create Build waits for the Source list before it picks a base", () => 
     expect(core.buildPosts).toEqual([{ name: "Rack", base_project_id: 1 }]);
   });
 
-  it("sends nothing after the list failed, and a reopened dialog reads it again", async () => {
+  it("sends nothing after the list failed, and Try again reads it again", async () => {
     const core = scriptedCore({ sources: ["Kit A"], sourceList: "failed" });
     renderAt("/builds", core.fetchMock);
     fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
-    let form = dialog("Create Build");
+    const form = dialog("Create Build");
     fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Rack" } });
     expect(await within(form).findByText(/^Could not load the Library's Sources: /)).toBeTruthy();
     expect(
-      within(form).getByText(
-        "The Library's Sources did not load. Close and open Create Build to try again.",
-      ),
+      within(form).getByText("The Library's Sources did not load. Press Try again."),
     ).toBeTruthy();
     const create = within(form).getByRole("button", { name: "Create" });
     expect(create.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(create);
     await settle();
     expect(core.buildPosts).toEqual([]);
+
+    // Try again while the core still fails keeps Create held.
+    fireEvent.click(within(form).getByRole("button", { name: "Try again" }));
+    expect(await within(form).findByText(/^Could not load the Library's Sources: /)).toBeTruthy();
+    fireEvent.click(create);
+    await settle();
+    expect(core.buildPosts).toEqual([]);
+
+    core.releaseSources();
+    fireEvent.click(within(form).getByRole("button", { name: "Try again" }));
+    const base = (await within(form).findByLabelText("Base Source")) as HTMLSelectElement;
+    expect(base.selectedOptions[0]!.textContent).toBe("Kit A");
+    expect(create.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(create);
+    await heading("Rack");
+    expect(core.buildPosts).toEqual([{ name: "Rack", base_project_id: 1 }]);
+  });
+
+  it("a reopened dialog reads a failed list again", async () => {
+    const core = scriptedCore({ sources: ["Kit A"], sourceList: "failed" });
+    renderAt("/builds", core.fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+    let form = dialog("Create Build");
+    expect(await within(form).findByText(/^Could not load the Library's Sources: /)).toBeTruthy();
 
     core.releaseSources();
     fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
@@ -517,6 +565,15 @@ describe("UI13-03: every empty state names the next useful action", () => {
 });
 
 describe("Create Build request and refusals", () => {
+  it("names the problem with a name the core would refuse", () => {
+    expect(nameProblem("  ")).toBe("Enter a name.");
+    expect(nameProblem("a".repeat(4096))).toBeNull();
+    expect(nameProblem("a".repeat(4097))).toBe("Shorten the name to 4,096 characters or fewer.");
+    expect(nameProblem("Rack \uD800")).toBe(
+      "The name has a character the core cannot store. Retype it.",
+    );
+  });
+
   it("trims the name and sends the chosen base Source or null", () => {
     expect(buildRequest("  Rack ", 4)).toEqual({ name: "Rack", base_project_id: 4 });
     expect(buildRequest("Rack", null)).toEqual({ name: "Rack", base_project_id: null });

@@ -22,7 +22,8 @@ export function refusalText(detail: string): string {
 
 /**
  * The Library's Sources as a select. `null` is "No base Source" when `allowNone`, and
- * otherwise means nothing is chosen yet. While the Sources load or fail, says so instead.
+ * otherwise means nothing is chosen yet. While the Sources load, says so instead; when they
+ * fail, says so and offers Try again.
  */
 export function SourceSelect({
   id,
@@ -37,11 +38,21 @@ export function SourceSelect({
 }) {
   const sources = useQuery(sourcesQuery);
   if (!sources.data) {
+    if (sources.isError && !sources.isFetching) {
+      return (
+        <>
+          <p id={id} className="pp-muted">
+            Could not load the Library's Sources: {sources.error.message}
+          </p>
+          <button type="button" className="pp-button" onClick={() => void sources.refetch()}>
+            Try again
+          </button>
+        </>
+      );
+    }
     return (
       <p id={id} className="pp-muted">
-        {sources.isError
-          ? `Could not load the Library's Sources: ${sources.error.message}`
-          : "Loading the Library's Sources."}
+        Loading the Library's Sources.
       </p>
     );
   }

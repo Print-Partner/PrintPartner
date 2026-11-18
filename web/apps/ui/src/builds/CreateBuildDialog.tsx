@@ -1,9 +1,9 @@
-import type { CreateBuildRequest } from "@print-partner/rust-client";
+import { createBuildRequestSchema, type CreateBuildRequest } from "@print-partner/rust-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { CoreError } from "../core/client";
-import { writeCore } from "../core/rust";
+import { RequestContractError, writeCore } from "../core/rust";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
 import { sourcesQuery } from "../core/sources";
@@ -12,6 +12,19 @@ import { refusalText, SourceSelect } from "../screen/SourceSelect";
 /** The `createBuild` body: the trimmed name, and the base Source when one is chosen. */
 export function buildRequest(name: string, sourceId: number | null): CreateBuildRequest {
   return { name: name.trim(), base_project_id: sourceId };
+}
+
+/** The longest Build name the core stores, in characters; `BuildName` in `pp-api-types`. */
+const NAME_MAX = 4096;
+
+/** Why the core would refuse this name before it is sent, or null when it fits `BuildName`. */
+export function nameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "Enter a name.";
+  if (createBuildRequestSchema.shape.name.safeParse(trimmed).success) return null;
+  return [...trimmed].length > NAME_MAX
+    ? `Shorten the name to ${NAME_MAX.toLocaleString("en-US")} characters or fewer.`
+    : "The name has a character the core cannot store. Retype it.";
 }
 
 /** Builds' "Create Build" button and its dialog. */
@@ -62,13 +75,12 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
     ? OFFLINE_REASON
     : create.isPending
       ? "Creating the Build."
-      : !name.trim()
-        ? "Enter a name."
-        : sourceId !== undefined
+      : (nameProblem(name) ??
+        (sourceId !== undefined
           ? null
-          : sources.isError
-            ? "The Library's Sources did not load. Close and open Create Build to try again."
-            : "Waiting for the Library's Sources.";
+          : sources.isError && !sources.isFetching
+            ? "The Library's Sources did not load. Press Try again."
+            : "Waiting for the Library's Sources."));
   const blocked = why !== null || create.isPending;
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -83,11 +95,14 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
         void navigate(`/builds/${build.id}`);
       },
       onError: (error: Error) => {
-        // A 4xx is the core's refusal; anything else may have created the Build.
-        const refused = error instanceof CoreError && error.status < 500;
+        // A 4xx is the core's refusal, and a request the contract refused was never sent;
+        // anything else may have created the Build.
+        const refused =
+          error instanceof RequestContractError ||
+          (error instanceof CoreError && error.status < 500);
         setFailure(
           refused
-            ? refusalText(error.detail ?? error.message)
+            ? refusalText((error instanceof CoreError && error.detail) || error.message)
             : `Could not confirm the Build was created: ${error.message}. The list is read again; check it before you press Create again.`,
         );
       },

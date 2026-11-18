@@ -4,9 +4,11 @@
 //! rmcp. Every request needs a valid API key for the routed tenant: a session
 //! cookie alone is refused, and so is a key the auth worker does not resolve
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
-//! the listener exactly; then the request counts against MCP's budget of
-//! 1000 a minute, Node's limit, before its key is checked
-//! (`mcp/rate_limit.rs`). Write tools only propose; `confirm_apply` applies.
+//! the listener exactly. A request with a valid key then counts against
+//! MCP's shared budget of 1000 a minute, Node's limit; one without counts
+//! against its peer's own bucket, and a peer that used up its bucket is
+//! refused before its key is checked (`mcp/rate_limit.rs`). Write tools only
+//! propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
 //! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
 //! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
@@ -143,6 +145,7 @@ struct Guard {
     auth: RebuildAuthClient,
     admission: Arc<Semaphore>,
     budget: Arc<rate_limit::Budget>,
+    failures: Arc<rate_limit::PeerBudgets>,
 }
 
 /// The clients ported tools use: `get_build_workflow` reads the same client as
@@ -231,9 +234,9 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
     };
-    let budget = rate_limit::Budget::new(config.limit, config.window);
+    let rule = rate_limit::Rule::new(config.limit, config.window);
     #[cfg(test)]
-    let budget = budget.with_clock(config.clock.clone());
+    let rule = rule.with_clock(config.clock.clone());
     let service = StreamableHttpService::new(
         move || Ok(ProductMcp::new(reads.clone())),
         Arc::new(LocalSessionManager::default()),
@@ -244,7 +247,8 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         .route_service("/api/v1/mcp", service)
         .layer(middleware::from_fn_with_state(
             Guard {
-                budget: Arc::new(budget),
+                budget: Arc::new(rate_limit::Budget::new(rule.clone())),
+                failures: Arc::new(rate_limit::PeerBudgets::new(rule)),
                 config,
                 auth,
                 admission: Arc::new(Semaphore::new(ADMISSION_PERMITS)),
@@ -325,8 +329,9 @@ async fn guard(
         auth,
         admission,
         budget,
+        failures,
     }): axum::extract::State<Guard>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
     if let Err((status, detail)) = admit(
@@ -337,40 +342,64 @@ async fn guard(
     ) {
         return failure(status, detail);
     }
-    let quota = budget.consume();
-    if let Some(refused) = quota.rejection() {
+    let peer = match crate::NetworkAdmission::peer(&request) {
+        Ok(peer) => peer.ip(),
+        Err((status, detail)) => return failure(status, detail),
+    };
+    // A peer whose bucket is spent costs no key check.
+    if let Some(refused) = failures.check(peer).rejection() {
         return refused;
     }
-    let mut response = authenticated(config, auth, admission, request, next).await;
-    quota.apply(&mut response);
-    response
+    let credential = principal(request.headers(), &config.api_key_tenant);
+    match resolve(credential, config.wait, auth, admission).await {
+        Ok((key, presented)) => {
+            let quota = budget.consume();
+            if let Some(refused) = quota.rejection() {
+                return refused;
+            }
+            // rmcp copies the request parts into each handler's context.
+            request.extensions_mut().insert(key);
+            request.extensions_mut().insert(presented);
+            let mut response = next.run(request).await;
+            quota.apply(&mut response);
+            response
+        }
+        Err((status, detail)) => {
+            let quota = failures.consume(peer);
+            if let Some(limited) = quota.as_ref().and_then(rate_limit::Quota::rejection) {
+                return limited;
+            }
+            let mut refused = failure(status, detail);
+            if let Some(quota) = quota {
+                quota.apply(&mut refused);
+            }
+            refused
+        }
+    }
 }
 
-/// Resolves the request's API key for the routed tenant and runs the request
-/// with it, or refuses.
-async fn authenticated(
-    config: McpHttpConfig,
+/// Resolves the request's API key for the routed tenant, or the refusal's
+/// status and detail.
+async fn resolve(
+    credential: Option<PresentedCredential>,
+    wait: Duration,
     auth: RebuildAuthClient,
     admission: Arc<Semaphore>,
-    mut request: axum::extract::Request,
-    next: Next,
-) -> Response {
-    let Some(PresentedCredential::ApiKey { tenant, secret }) =
-        principal(request.headers(), &config.api_key_tenant)
-    else {
-        return failure(StatusCode::UNAUTHORIZED, KEY_REQUIRED);
+) -> Result<(KeyPrincipal, PresentedCredential), (StatusCode, &'static str)> {
+    let Some(PresentedCredential::ApiKey { tenant, secret }) = credential else {
+        return Err((StatusCode::UNAUTHORIZED, KEY_REQUIRED));
     };
     let presented = PresentedCredential::ApiKey {
         tenant: tenant.clone(),
         secret: secret.clone(),
     };
+    let unavailable = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "API key check temporarily unavailable",
+    );
     let Ok(permit) = admission.try_acquire_owned() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "API key check temporarily unavailable",
-        );
+        return Err(unavailable);
     };
-    let wait = config.wait;
     let resolved = tokio::task::spawn_blocking(move || {
         let outcome = auth
             .submit(
@@ -395,17 +424,9 @@ async fn authenticated(
     .await;
     drop(permit);
     match resolved {
-        Ok(Some(Some(key))) => {
-            // rmcp copies the request parts into each handler's context.
-            request.extensions_mut().insert(key);
-            request.extensions_mut().insert(presented);
-            next.run(request).await
-        }
-        Ok(Some(None)) => failure(StatusCode::UNAUTHORIZED, KEY_REQUIRED),
-        _ => failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "API key check temporarily unavailable",
-        ),
+        Ok(Some(Some(key))) => Ok((key, presented)),
+        Ok(Some(None)) => Err((StatusCode::UNAUTHORIZED, KEY_REQUIRED)),
+        _ => Err(unavailable),
     }
 }
 

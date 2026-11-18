@@ -5,6 +5,7 @@ import type {
   DraftWorkspace,
   Health,
 } from "@print-partner/rust-client";
+import { onlineManager } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -485,6 +486,25 @@ describe("UI7-02 duplicate order experiment option", () => {
       "The core could not confirm the experiment. Check the Builds list before you try again.",
     );
     expect(duplicates(fetchMock)).toHaveLength(1);
+  });
+
+  it("sends at once while the browser reports offline, never queueing the copy for later", async () => {
+    const fetchMock = core({
+      write: (path) => (path.endsWith("/duplicate") ? json(COPY, 201) : undefined),
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const start = await within(gate).findByRole("button", {
+      name: "Start an experiment from Other kit",
+    });
+    onlineManager.setOnline(false);
+    try {
+      fireEvent.click(start);
+      await within(gate).findByText(/as an experiment of Other kit/);
+      expect(duplicates(fetchMock)).toHaveLength(1);
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
 
   it("offers no experiment when no other Build holds the order", async () => {

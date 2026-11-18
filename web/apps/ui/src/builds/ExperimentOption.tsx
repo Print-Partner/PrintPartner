@@ -46,6 +46,8 @@ export function ExperimentOption({ holders }: { holders: readonly OrderHolder[] 
     mutationFn: (body: { parent: OrderHolder; name: string }) =>
       writeCore("duplicateBuild", { id: body.parent.profileId }, { name: body.name }),
     retry: false,
+    // Send now or fail now: a paused mutation would create the Build after the gate closed.
+    networkMode: "always",
     onSuccess: () => client.invalidateQueries({ queryKey: ["core", "builds"] }),
   });
   if (!parent) return null;

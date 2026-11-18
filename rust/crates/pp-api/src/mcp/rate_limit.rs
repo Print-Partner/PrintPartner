@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 pub(super) const LIMIT: u32 = 1000;
 pub(super) const WINDOW: Duration = Duration::from_secs(60);
-/// Peers tracked at once. Past this, new peers share one overflow bucket
-/// until windows expire, so many addresses cannot grow the table.
+/// Peers tracked at once. While the table is full of live windows, a new
+/// peer's failures are not counted, so many addresses cannot grow it.
 const PEERS: usize = 1024;
 
 /// One fixed window: when it started and how many requests it counted.
@@ -47,7 +47,7 @@ pub(super) struct Budget {
 /// grouped by their /64, which one LAN host can fill with addresses.
 pub(super) struct PeerBudgets {
     rule: Rule,
-    peers: Mutex<HashMap<Option<IpAddr>, Window>>,
+    peers: Mutex<HashMap<IpAddr, Window>>,
 }
 
 /// Test clock: a fixed start plus the time a test has advanced it.
@@ -159,42 +159,38 @@ impl PeerBudgets {
         }
     }
 
-    /// `peer`'s place without counting, exceeded once `peer` has used its
-    /// whole bucket, so the guard can refuse before checking a key.
+    /// `peer`'s place without counting. It is exceeded only once `peer`
+    /// itself has used its whole bucket, so the guard can refuse it before
+    /// checking a key; a peer with nothing counted is never refused.
     pub fn check(&self, peer: IpAddr) -> Quota {
-        self.count(peer, 0)
+        let peers = self
+            .peers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut used = peers.get(&bucket(peer)).copied().flatten();
+        self.rule.count(&mut used, self.rule.now(), 0)
     }
 
-    /// Counts one request without a valid key against `peer`.
-    pub fn consume(&self, peer: IpAddr) -> Quota {
-        self.count(peer, 1)
-    }
-
-    fn count(&self, peer: IpAddr, cost: u32) -> Quota {
+    /// Counts one request without a valid key against `peer`, or `None` when
+    /// `peer` is new and the table is still full after expired windows are
+    /// dropped.
+    pub fn consume(&self, peer: IpAddr) -> Option<Quota> {
         let mut peers = self
             .peers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = self.rule.now();
-        let mut key = Some(bucket(peer));
+        let key = bucket(peer);
         if !peers.contains_key(&key) && peers.len() >= PEERS {
-            if cost > 0 {
-                peers.retain(|_, used| {
-                    matches!(used, Some((start, _)) if now.duration_since(*start) < self.rule.window)
-                });
-            }
+            let window = self.rule.window;
+            peers.retain(
+                |_, used| matches!(used, Some((start, _)) if now.duration_since(*start) < window),
+            );
             if peers.len() >= PEERS {
-                key = None;
+                return None;
             }
         }
-        // A check counts nothing, so it adds no entry.
-        let mut unseen = None;
-        let used = if cost == 0 {
-            peers.get_mut(&key).unwrap_or(&mut unseen)
-        } else {
-            peers.entry(key).or_default()
-        };
-        self.rule.count(used, now, cost)
+        Some(self.rule.count(peers.entry(key).or_default(), now, 1))
     }
 }
 

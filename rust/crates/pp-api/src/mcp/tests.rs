@@ -717,25 +717,32 @@ async fn ticket_gre_1463_a_keyless_flood_leaves_valid_keys_their_budget() {
     assert_refused(send(flooder, None).await.unwrap(), "2").await;
 }
 
-/// GRE-1463: the peer table is bounded. Once it holds its limit of live
-/// peers, new peers share one overflow bucket until windows expire.
+/// GRE-1463: the peer table is bounded. While it holds its limit of live
+/// peers, a new peer's failures go uncounted: it is never refused for another
+/// peer's failures, and tracked peers keep their own buckets. Expired windows
+/// free the table for the next new peer.
 #[test]
-fn ticket_gre_1463_new_peers_overflow_into_one_bucket_when_the_table_is_full() {
+fn ticket_gre_1463_a_full_peer_table_never_refuses_a_new_peer() {
     let clock = rate_limit::ManualClock::new();
     let budgets = rate_limit::PeerBudgets::new(
         rate_limit::Rule::new(1, Duration::from_secs(60)).with_clock(Some(clock.clone())),
     );
     let peer = |n: u32| std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+    let refused = |quota: Option<rate_limit::Quota>| quota.unwrap().rejection().is_some();
     for n in 0..1024 {
-        assert!(budgets.consume(peer(n)).rejection().is_none(), "{n}");
+        assert!(!refused(budgets.consume(peer(n))), "{n}");
     }
-    // Peers already tracked keep their own buckets.
     assert!(budgets.check(peer(0)).rejection().is_some());
-    assert!(budgets.consume(peer(1024)).rejection().is_none());
-    assert!(budgets.consume(peer(1025)).rejection().is_some());
-    assert!(budgets.check(peer(1026)).rejection().is_some());
-    // Expired windows free the table on the next new peer.
-    clock.advance(Duration::from_secs(60));
-    assert!(budgets.consume(peer(1027)).rejection().is_none());
-    assert!(budgets.consume(peer(1028)).rejection().is_none());
+    assert!(refused(budgets.consume(peer(0))));
+    for _ in 0..3 {
+        assert!(budgets.consume(peer(1024)).is_none());
+        assert!(budgets.check(peer(1024)).rejection().is_none());
+    }
+    // Half a window later nothing has expired; at a full window all have.
+    clock.advance(Duration::from_secs(30));
+    assert!(budgets.consume(peer(1025)).is_none());
+    clock.advance(Duration::from_secs(30));
+    assert!(!refused(budgets.consume(peer(1025))));
+    assert!(budgets.check(peer(1025)).rejection().is_some());
+    assert!(budgets.check(peer(0)).rejection().is_none());
 }

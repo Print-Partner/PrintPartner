@@ -366,11 +366,13 @@ async fn guard(
         }
         Err((status, detail)) => {
             let quota = failures.consume(peer);
-            if let Some(limited) = quota.rejection() {
+            if let Some(limited) = quota.as_ref().and_then(rate_limit::Quota::rejection) {
                 return limited;
             }
             let mut refused = failure(status, detail);
-            quota.apply(&mut refused);
+            if let Some(quota) = quota {
+                quota.apply(&mut refused);
+            }
             refused
         }
     }

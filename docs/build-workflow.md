@@ -229,7 +229,9 @@ replacement UI's Accept gate offers it beside a held order: under **Duplicate
 orders** in a ready preview, and under a `duplicate_order` preview refusal whose
 `builds` carry `profile_id`. The user picks the holding Build (a list appears
 only when there are several) and a name, which defaults to
-`<holding Build> experiment`. The option sends no `Idempotency-Key`, so the gate
+`<holding Build> experiment`. The holder's name is shortened so the default fits
+the 4,096-code-point Build name limit, and the gate refuses a longer edited name
+before sending. The option sends no `Idempotency-Key`, so the gate
 sends it when clicked, even while the browser reports offline, and never queues
 or resends it: after a lost answer or a 5xx it tells the user to check the
 Builds list. On 201 it links to the experiment's Plan tab. The draft in the gate

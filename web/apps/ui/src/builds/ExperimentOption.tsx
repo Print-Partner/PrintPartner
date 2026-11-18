@@ -22,7 +22,27 @@ export function holdersOf(error: Error | null): OrderHolder[] {
   );
 }
 
-const defaultName = (parent: string) => `${parent} experiment`;
+/** Rust's Build name limit (`BuildName::parse`), in Unicode code points after trimming. */
+const NAME_MAX = 4096;
+const SUFFIX = " experiment";
+const codePoints = (text: string) => Array.from(text);
+
+/** `<parent> experiment`, with the parent shortened so the whole name fits `NAME_MAX`. */
+const defaultName = (parent: string) =>
+  codePoints(parent)
+    .slice(0, NAME_MAX - SUFFIX.length)
+    .join("") + SUFFIX;
+
+/** Why Start is off, or null when it can send. */
+function blockedReason(offline: boolean, name: string, pending: boolean): string | null {
+  if (offline) return OFFLINE_REASON;
+  const trimmed = name.trim();
+  if (!trimmed) return "An experiment needs a name.";
+  if (codePoints(trimmed).length > NAME_MAX) {
+    return `An experiment name can have at most ${NAME_MAX.toLocaleString("en-US")} characters.`;
+  }
+  return pending ? "Starting the experiment." : null;
+}
 
 // Duplication takes no idempotency key, so an unknown outcome is never resent: a second
 // send could make a second experiment. The Builds list shows whether the first one landed.
@@ -51,13 +71,7 @@ export function ExperimentOption({ holders }: { holders: readonly OrderHolder[] 
     onSuccess: () => client.invalidateQueries({ queryKey: ["core", "builds"] }),
   });
   if (!parent) return null;
-  const blocked = offline
-    ? OFFLINE_REASON
-    : !name.trim()
-      ? "An experiment needs a name."
-      : create.isPending
-        ? "Starting the experiment."
-        : null;
+  const blocked = blockedReason(offline, name, create.isPending);
   const copied: ExperimentCopy | undefined = create.data;
   return (
     <div className="pp-experiment">

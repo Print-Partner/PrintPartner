@@ -455,6 +455,46 @@ describe("UI7-02 duplicate order experiment option", () => {
     expect(duplicates(fetchMock)).toHaveLength(0);
   });
 
+  it("keeps the suggested name within the core's limit for a long holder name", async () => {
+    // "🧵" is one code point and two UTF-16 units; the core counts code points.
+    const long = "🧵".repeat(4090);
+    const held = preview(1);
+    held.changes.duplicate_orders = [{ profile_id: 5, name: long, order_number: "PO-7" }];
+    const fetchMock = core({
+      preview: () => json(held),
+      write: (path) => (path.endsWith("/duplicate") ? json(COPY, 201) : undefined),
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const name = await within(gate).findByRole<HTMLInputElement>("textbox", {
+      name: "Experiment name",
+    });
+    expect(Array.from(name.value)).toHaveLength(4096);
+    expect(name.value).toBe("🧵".repeat(4085) + " experiment");
+    fireEvent.click(within(gate).getByRole("button", { name: /^Start an experiment from/ }));
+    await within(gate).findByText(/as an experiment of/);
+    expect(Array.from(duplicates(fetchMock)[0]!.body.name as string)).toHaveLength(4096);
+  });
+
+  it("refuses a name over the core's limit before sending", async () => {
+    const fetchMock = core();
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const name = await within(gate).findByRole<HTMLInputElement>("textbox", {
+      name: "Experiment name",
+    });
+    const start = within(gate).getByRole("button", { name: "Start an experiment from Other kit" });
+    fireEvent.change(name, { target: { value: ` ${"🧵".repeat(4096)} ` } });
+    expect(start.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.change(name, { target: { value: "🧵".repeat(4097) } });
+    expect(start.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      within(gate).getByText("An experiment name can have at most 4,096 characters."),
+    ).toBeTruthy();
+    fireEvent.click(start);
+    expect(duplicates(fetchMock)).toHaveLength(0);
+  });
+
   it("says when the name is taken", async () => {
     const fetchMock = core({
       write: (path) =>

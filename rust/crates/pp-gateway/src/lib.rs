@@ -37,16 +37,18 @@ mod stall;
 
 use ownership::{Owner, cutover::OperationOwners};
 
-/// The web UI build in the gateway's asset root. Only a Rust-only runtime
-/// that serves the replacement UI (`web/apps/ui`) sends the replacement
-/// Content-Security-Policy (`replacement-csp.txt`); every other runtime keeps
-/// the legacy policy. See docs/network-sharing.md#content-security-policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The web UI build the gateway serves, and the Content-Security-Policy every
+/// asset response carries. Only a Rust-only runtime serves the replacement UI
+/// (`web/apps/ui`) and sends the replacement policy (`replacement-csp.txt`);
+/// every other runtime keeps the legacy policy. See
+/// docs/network-sharing.md#content-security-policy.
 pub enum ServedUi {
-    /// The old `web/apps/web` build.
-    Legacy,
-    /// The replacement `web/apps/ui` build.
-    Replacement,
+    /// The old `web/apps/web` build, read from this root on each request with
+    /// frame, object, base and ancestor rules only.
+    Legacy(PathBuf),
+    /// The replacement `web/apps/ui` build: only the bytes release verification
+    /// retained (`pp_compat::snapshot_rust_only_release`), never the disk.
+    Replacement(pp_compat::AssetSnapshot),
 }
 
 /// The status of a runtime with no Node child, where the Rust writer owns the
@@ -310,9 +312,8 @@ struct GatewayState {
     host: String,
     network: bool,
     cookie_name: String,
-    assets: PathBuf,
-    /// The replacement policy only on a Rust-only runtime serving `ServedUi::Replacement`.
-    asset_policy: assets::Policy,
+    /// `ServedUi::Replacement` only on a Rust-only runtime.
+    served_ui: ServedUi,
     compat: CompatHandle,
     rate_limits: Option<tokio::sync::Mutex<rate_limit::Budgets>>,
     access: Arc<Mutex<Sessions>>,
@@ -380,8 +381,7 @@ impl Gateway {
         let product = product.map(|routes| Box::new(move |_| routes) as ProductRoutes);
         Self::start_inner(
             listener,
-            assets,
-            (ServedUi::Legacy, None),
+            ServedUi::Legacy(assets),
             compat,
             owners,
             product,
@@ -391,8 +391,7 @@ impl Gateway {
 
     fn start_inner(
         listener: TcpListener,
-        assets: PathBuf,
-        (ui, replacement_assets): (ServedUi, Option<pp_compat::AssetSnapshot>),
+        served_ui: ServedUi,
         compat: CompatHandle,
         owners: &OperationOwners,
         product: Option<ProductRoutes>,
@@ -413,6 +412,9 @@ impl Gateway {
                 },
             ),
         };
+        // Only the Rust-only entry points take a `ServedUi`; Node-backed
+        // starts pass `ServedUi::Legacy`.
+        served_ui.check_document()?;
         let mut address = listener.local_addr()?;
         anyhow::ensure!(
             network || address.ip().is_loopback(),
@@ -471,13 +473,6 @@ impl Gateway {
             None => Watchers::new()?,
         };
         let observations = watchers.observations();
-        let asset_policy = if rust_status.is_some() && ui == ServedUi::Replacement {
-            assets::Policy::Replacement {
-                files: replacement_assets.context("Replacement UI requires verified bytes")?,
-            }
-        } else {
-            assets::Policy::Legacy
-        };
         let state = Arc::new(GatewayState {
             watchers: tokio::sync::Mutex::new(watchers),
             hosts,
@@ -492,8 +487,7 @@ impl Gateway {
             host,
             network,
             cookie_name: format!("pp_desktop_{}", address.port()),
-            assets,
-            asset_policy,
+            served_ui,
             compat,
             rate_limits: (owners.owner_of("http.GET /legal/summary") == Owner::Rust)
                 .then(|| tokio::sync::Mutex::new(rate_limit::Budgets::default())),
@@ -1116,7 +1110,7 @@ async fn handle(
     let document = matches!(request.method().as_str(), "GET" | "HEAD")
         && (header(&request, "sec-fetch-mode") == Some("navigate")
             || header(&request, "accept").is_some_and(|v| v.contains("text/html")));
-    let spa = state.asset_policy.is_spa_client_path(&path);
+    let spa = state.served_ui.is_spa_client_path(&path);
     if (document && spa)
         || path.starts_with("/assets/")
         || path.starts_with("/icons/")
@@ -1131,10 +1125,9 @@ async fn handle(
             path.trim_start_matches('/')
         };
         let response = assets::serve(
-            &state.assets,
             relative,
             document && spa,
-            (&state.asset_policy, &expected_host),
+            (&state.served_ui, &expected_host),
             request.method(),
             request.headers(),
         )

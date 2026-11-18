@@ -456,10 +456,12 @@ fn extract_archive(
         }
         _ => ImportError::InvalidArchive(format!("{error:#}")),
     })?;
-    // A format 1 archive holds only the five legacy roots; it imports too.
-    if metadata.scope == archive::MetadataScope::DatabaseOnly {
-        return Err(ImportError::DatabaseOnlyArchive);
-    }
+    let has_root = || {
+        archive::LEGACY_ROOTS
+            .iter()
+            .any(|root| stage.join(root).exists())
+    };
+    super::refuse_database_only(metadata.scope, has_root)?;
     // Everything is extracted; the upgrade still needs its working space.
     ensure_room(stage, room_needed(0, staged_database(stage)))?;
     // The archive passed its caps; listing what it wrote needs none.

@@ -191,9 +191,10 @@ fn a_full_archive_imports_the_same_data() {
 
 /// A format 1 archive, as Print Partner v3.3.0 and earlier wrote it, imports
 /// the same tables as a format 2 one. It lacks the roots format 2 added, here
-/// `custom_filaments.json`. A `database-only` archive writes nothing.
+/// `custom_filaments.json`. An archive that holds only the database, format 2
+/// `database-only` or format 1 without roots, writes nothing.
 #[test]
-fn a_format_1_archive_imports_and_a_database_only_archive_is_refused() {
+fn a_format_1_archive_imports_and_a_database_only_one_is_refused() {
     let source = node_folder();
     let parent = tempfile::tempdir().unwrap();
     let full = archive_of(source.path(), 2, "full");
@@ -233,14 +234,18 @@ fn a_format_1_archive_imports_and_a_database_only_archive_is_refused() {
     expected.retain(|name| name != "custom_filaments.json");
     assert_eq!(entries(&parent.path().join("legacy")), expected);
 
-    let database_only = archive_of(source.path(), 2, "database-only");
-    let refused = parent.path().join("database-only");
-    let error = import(database_only.path(), &refused).unwrap_err();
-    assert!(
-        matches!(error, ImportError::DatabaseOnlyArchive),
-        "{error:?}"
-    );
-    assert!(!refused.exists() || entries(&refused).is_empty());
+    for (index, (archive, _)) in database_only_archives(source.path())
+        .into_iter()
+        .enumerate()
+    {
+        let refused = parent.path().join(format!("database-only-{index}"));
+        let error = import(archive.path(), &refused).unwrap_err();
+        assert!(
+            matches!(error, ImportError::DatabaseOnlyArchive(_)),
+            "{error:?}"
+        );
+        assert!(!refused.exists() || entries(&refused).is_empty());
+    }
 }
 
 /// A folder is copied whatever its size: the caps on total bytes, entry

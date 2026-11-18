@@ -68,7 +68,7 @@ The test `a_folder_over_the_archive_size_cap_is_dry_run_and_its_archive_is_refus
 
 ### Format 1 archives
 
-Print Partner v3.3.0 and earlier wrote format 1: `formatVersion` 1 and no `scope`. Its roots are the five that Node's `LEGACY_BACKUP_ROOTS` names: `repos`, `sources`, `exports`, `thumbs` and `covers`. The dry run and the import read it as they read a format 2 `full` archive, with the same validation, and count the same tables.
+Print Partner v3.3.0 and earlier wrote format 1: `formatVersion` 1 and no `scope`. Its roots are the five that Node's `LEGACY_BACKUP_ROOTS` names: `repos`, `sources`, `exports`, `thumbs` and `covers`. The dry run and the import read it as they read a format 2 `full` archive, with the same validation, and count the same tables. v3.3.0 also wrote its pre-update backups (`backups/print-partner-pre-update-to-*.tar.gz`) as format 1 with only the database. A format 1 archive with no entry under any of the five roots is one of those, and is refused as a database-only archive.
 
 The six roots that format 2 added are not in it: `assistant-domain`, `manifests`, `custom_filaments.json`, `kit-catalog.json`, `kit-catalog.yaml` and `path-hints.yaml`. The report lists no entries for them, the shapes stored there count 0 (for example `file custom_filaments.json`), and the import writes none of them. A format 1 archive written before v3.3.0 can hold a schema below 31, which is refused as [Refusals](#refusals) describes.
 
@@ -108,7 +108,7 @@ Each refusal exits 1 and writes nothing to the source.
 | Folder without `print-partner.db` | Not a data folder. |
 | Database files that change during the copy | Node is still running. |
 | Archive that fails validation | Unsafe path, unexpected entry, size limit, bad metadata or failed integrity check. |
-| `database-only` archive | The import needs the roots a full backup holds. |
+| `database-only` archive, or a format 1 archive with no entry under its roots | The import needs the roots a full backup holds. v3.3.0 wrote its pre-update backups as format 1 with only the database. |
 | Schema below 31 | Start Print Partner v3.3.0 on the Node installation once so it upgrades. |
 | Schema above 34 | Not a Node database, for example a backup a Rust installation made. |
 | Failed `PRAGMA integrity_check` or table-shape check | The database is damaged. |

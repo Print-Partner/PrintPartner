@@ -117,6 +117,25 @@ fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFil
     file
 }
 
+/// The two kinds of archive that hold only `folder`'s database, each with the
+/// end of its refusal: format 2 `database-only`, and format 1 without roots,
+/// as v3.3.0 wrote before each schema upgrade.
+fn database_only_archives(folder: &Path) -> [(tempfile::NamedTempFile, &'static str); 2] {
+    let bare = tempfile::tempdir().unwrap();
+    let database = archive::DATABASE_FILE;
+    std::fs::copy(folder.join(database), bare.path().join(database)).unwrap();
+    [
+        (
+            archive_of(folder, 2, "database-only"),
+            "this archive is database-only",
+        ),
+        (
+            archive_of(bare.path(), 1, ""),
+            "pre-update backups of v3.3.0 and earlier do",
+        ),
+    ]
+}
+
 /// The rows per tenant of `table` in `report`.
 fn by_tenant(report: &DryRunReport, table: &str) -> Vec<(String, u64)> {
     let table = report.tables.iter().find(|count| count.table == table);
@@ -680,12 +699,14 @@ fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
 #[test]
 fn a_database_only_archive_and_a_file_that_is_no_archive_are_refused() {
     let folder = node_folder();
-    let error = run(archive_of(folder.path(), 2, "database-only").path()).unwrap_err();
-    assert!(
-        matches!(error, ImportError::DatabaseOnlyArchive),
-        "{error:?}"
-    );
-    assert!(error.to_string().ends_with("database-only"), "{error}");
+    for (archive, reason) in database_only_archives(folder.path()) {
+        let error = run(archive.path()).unwrap_err();
+        assert!(
+            matches!(error, ImportError::DatabaseOnlyArchive(_)),
+            "{error:?}"
+        );
+        assert!(error.to_string().ends_with(reason), "{error}");
+    }
     let not_an_archive = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(not_an_archive.path(), "synthetic text").unwrap();
     let error = run(not_an_archive.path()).unwrap_err();

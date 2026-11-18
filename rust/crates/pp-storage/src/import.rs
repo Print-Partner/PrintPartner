@@ -55,9 +55,9 @@ pub enum ImportError {
     /// The database files changed while they were read.
     Changed,
     InvalidArchive(String),
-    /// The archive is a format 2 `database-only` backup: it holds no roots.
-    /// Format 1 (no scope, the five legacy roots) and format 2 `full` are read.
-    DatabaseOnlyArchive,
+    /// The archive holds only the database: format 2 `database-only`, or
+    /// format 1 with no entry under its roots. See [`refuse_database_only`].
+    DatabaseOnlyArchive(archive::MetadataScope),
     /// The stored schema is outside 31 to 34, the range the import upgrades.
     Schema(versions::IncompatibleSchema),
     /// The database failed its integrity or schema checks.
@@ -152,7 +152,11 @@ impl fmt::Display for ImportError {
                 archive::DATABASE_FILE
             ),
             Self::InvalidArchive(detail) => write!(f, "Invalid backup archive: {detail}"),
-            Self::DatabaseOnlyArchive => write!(
+            Self::DatabaseOnlyArchive(archive::MetadataScope::Legacy) => write!(
+                f,
+                "The import needs a full backup; this format 1 archive holds only the database, as the pre-update backups of v3.3.0 and earlier do"
+            ),
+            Self::DatabaseOnlyArchive(_) => write!(
                 f,
                 "The import needs a full backup; this archive is database-only"
             ),
@@ -1159,6 +1163,22 @@ fn stage_directory(source: &Path, scratch: &Path) -> Result<Files, ImportError> 
     })
 }
 
+/// Refuses an archive that holds only the database. Format 2 says so in its
+/// scope. Format 1 (v3.3.0 and earlier) has no scope, and its entries are
+/// confined to the five legacy roots. v3.3.0 also wrote its pre-update
+/// backups as format 1 without those roots, so a format 1 archive with no
+/// entry under any root (`has_root` false) is one of those.
+fn refuse_database_only(
+    scope: archive::MetadataScope,
+    has_root: impl FnOnce() -> bool,
+) -> Result<(), ImportError> {
+    match scope {
+        archive::MetadataScope::Full => Ok(()),
+        archive::MetadataScope::Legacy if has_root() => Ok(()),
+        _ => Err(ImportError::DatabaseOnlyArchive(scope)),
+    }
+}
+
 /// Validates a backup archive and extracts its database and single-file
 /// roots into `scratch`.
 fn stage_archive(
@@ -1173,11 +1193,7 @@ fn stage_archive(
             Some(io) if io.kind() == ErrorKind::StorageFull => io_error(scratch, io.kind().into()),
             _ => ImportError::InvalidArchive(format!("{error:#}")),
         })?;
-    // Format 1 (Print Partner v3.3.0 and earlier) declares no scope; it holds
-    // the five legacy roots, which extraction already confined it to.
-    if metadata.scope == archive::MetadataScope::DatabaseOnly {
-        return Err(ImportError::DatabaseOnlyArchive);
-    }
+    refuse_database_only(metadata.scope, || !listed_roots(&paths).is_empty())?;
     // The archive's size says nothing here: it also holds `repos/`, which a
     // dry run only lists. The database size is known once it is extracted.
     let extracted = |name| scratch.join(name).metadata().map_or(0, |file| file.len());

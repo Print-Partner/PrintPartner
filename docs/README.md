@@ -63,6 +63,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 | [Change a CI workflow](development/ci-controls.md) | You are editing a workflow or required check. |
 | [Run the stress-runner self-tests](development/stress-runner-self-tests.md) | You changed the stress runner. |
 | [Golden kit export](examples/golden-ldo-voron-2.4-export.md) | You need the regression and release smoke-test kit bundle. |
+| [Golden tests for old-screen behaviour](development/golden-tests.md) | You change the STL pack, checklist, Checkoff matching, Plate packing or 3MF classification. |
 | [Gate evidence](contributing/gate-evidence.md) | You are filling in a PR's Evidence section. |
 
 ## Reference

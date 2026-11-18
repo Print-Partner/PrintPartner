@@ -1,0 +1,31 @@
+{
+  "all": [
+    ["primary/Frame_Corners/frame_corner_01.stl",0],
+    ["primary/Frame_Corners/frame_corner_02.stl",0],
+    ["primary/Frame_Corners/frame_corner_03.stl",0],
+    ["primary/_root/frame_corner_01.stl",1],
+    ["primary/Frame_Corners/FRAME_CORNER_01_2.stl",2],
+    ["primary/Frame_Corners/FRAME_CORNER_02_2.stl",2],
+    ["accent/Frame_Corners/frame_corner_01.stl",3],
+    ["_root/.._vil_dir/weird_name__01.stl",4],
+    ["a_b_c/x_._.._/__01.stl",5]
+  ],
+  "archive_hex": "504b030414000808000000002100000000000000000000000000290000007072696d6172792f4672616d655f436f726e6572732f6672616d655f636f726e65725f30312e73746c736f6c696420610a656e64736f6c696420610a504b070813b6ba651300000013000000504b03041400080800000000210000000000000000000000000018000000616363656e742f5f726f6f742f636c69705f30322e73746c736f6c696420636c69700a656e64736f6c696420636c69700a504b070891479c171900000019000000504b010214001400080800000000210013b6ba6513000000130000002900000000000000000000000000000000007072696d6172792f4672616d655f436f726e6572732f6672616d655f636f726e65725f30312e73746c504b010214001400080800000000210091479c17190000001900000018000000000000000000000000006a000000616363656e742f5f726f6f742f636c69705f30322e73746c504b050600000000020002009d000000c90000000000",
+  "filenames": [
+    "voron-2-4-ldo-kit-v7-stl.zip",
+    "build-v1-stl.zip",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-v12-stl.zip"
+  ],
+  "nothing_remaining": {"refused":"nothing_to_pack"},
+  "remaining": [
+    ["primary/Frame_Corners/frame_corner_02.stl",0],
+    ["primary/Frame_Corners/frame_corner_03.stl",0],
+    ["primary/_root/frame_corner_01.stl",1],
+    ["primary/Frame_Corners/FRAME_CORNER_01.stl",2],
+    ["primary/Frame_Corners/FRAME_CORNER_02_2.stl",2],
+    ["accent/Frame_Corners/frame_corner_01.stl",3],
+    ["_root/.._vil_dir/weird_name__01.stl",4]
+  ],
+  "too_large": {"bytes":796,"limit":600,"refused":"too_large"},
+  "too_many_entries": {"entries":9,"limit":2,"refused":"too_many_entries"}
+}

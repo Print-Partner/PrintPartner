@@ -510,6 +510,28 @@ async fn ticket_t_16_mcp_refuses_a_key_from_another_tenant() {
     }
 }
 
+/// A server whose MCP budgets allow 3 requests a minute on a clock the test
+/// advances, optionally as the explicit listener, and a valid key's
+/// `Authorization` value.
+async fn budgeted(explicit: bool) -> (McpServer, Arc<rate_limit::ManualClock>, String) {
+    let clock = rate_limit::ManualClock::new();
+    let server = McpServer::configured(Some("1"), "default", |config| {
+        config
+            .with_budget(3, Duration::from_secs(60), clock.clone())
+            .explicit_listener(explicit)
+    })
+    .await;
+    let (_, key) = server.create_key().await;
+    (server, clock, format!("Bearer {key}"))
+}
+
+fn header(response: &reqwest::Response, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .map(|value| value.to_str().unwrap().to_owned())
+}
+
 /// GRE-1039: Node's application budget on Rust MCP. Requests with a valid
 /// key share it; past the limit even a valid key gets the gateway's 429 until
 /// the window resets. Keyless requests count against the peer's own bucket
@@ -517,25 +539,13 @@ async fn ticket_t_16_mcp_refuses_a_key_from_another_tenant() {
 /// costs nothing. The test clock moves only when the test advances it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
-    let clock = rate_limit::ManualClock::new();
-    let server = McpServer::configured(Some("1"), "default", |config| {
-        config.with_budget(3, Duration::from_secs(60), clock.clone())
-    })
-    .await;
-    let (_, key) = server.create_key().await;
-    let bearer = format!("Bearer {key}");
+    let (server, clock, bearer) = budgeted(false).await;
     let send = |path: &'static str, headers: Vec<(&'static str, String)>| {
         let headers: Vec<(&str, &str)> = headers
             .iter()
             .map(|(name, value)| (*name, value.as_str()))
             .collect();
         server.request(path, &headers, &initialize()).send()
-    };
-    let header = |response: &reqwest::Response, name: &str| {
-        response
-            .headers()
-            .get(name)
-            .map(|value| value.to_str().unwrap().to_owned())
     };
     let keyed_headers = || vec![("authorization", bearer.clone())];
 
@@ -626,15 +636,7 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
 /// one per /64, and refusals keep their 401 status and body.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_gre_1463_a_keyless_flood_leaves_valid_keys_their_budget() {
-    let clock = rate_limit::ManualClock::new();
-    let server = McpServer::configured(Some("1"), "default", |config| {
-        config
-            .with_budget(3, Duration::from_secs(60), clock.clone())
-            .explicit_listener(true)
-    })
-    .await;
-    let (_, key) = server.create_key().await;
-    let bearer = format!("Bearer {key}");
+    let (server, clock, bearer) = budgeted(true).await;
     let origin = server.origin.clone();
     let send = |peer: &str, credential: Option<&str>| {
         // Keyless requests carry the listener's Origin; keyed ones none.
@@ -644,12 +646,6 @@ async fn ticket_gre_1463_a_keyless_flood_leaves_valid_keys_their_budget() {
             None => headers.push(("origin", origin.as_str())),
         }
         server.request("/mcp", &headers, &initialize()).send()
-    };
-    let header = |response: &reqwest::Response, name: &str| {
-        response
-            .headers()
-            .get(name)
-            .map(|value| value.to_str().unwrap().to_owned())
     };
     let assert_refused = |response: reqwest::Response, remaining: &'static str| async move {
         assert_eq!(response.status(), 401);
@@ -726,8 +722,9 @@ async fn ticket_gre_1463_a_keyless_flood_leaves_valid_keys_their_budget() {
 #[test]
 fn ticket_gre_1463_new_peers_overflow_into_one_bucket_when_the_table_is_full() {
     let clock = rate_limit::ManualClock::new();
-    let budgets =
-        rate_limit::PeerBudgets::new(1, Duration::from_secs(60)).with_clock(Some(clock.clone()));
+    let budgets = rate_limit::PeerBudgets::new(
+        rate_limit::Rule::new(1, Duration::from_secs(60)).with_clock(Some(clock.clone())),
+    );
     let peer = |n: u32| std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + n));
     for n in 0..1024 {
         assert!(budgets.consume(peer(n)).rejection().is_none(), "{n}");

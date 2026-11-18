@@ -28,23 +28,26 @@ const PEERS: usize = 1024;
 /// One fixed window: when it started and how many requests it counted.
 type Window = Option<(Instant, u32)>;
 
-/// The bucket requests with a valid key share.
-pub(super) struct Budget {
+/// A bucket's limit and window, and in tests the clock it reads.
+#[derive(Clone)]
+pub(super) struct Rule {
     limit: u32,
     window: Duration,
-    used: Mutex<Window>,
     #[cfg(test)]
     clock: Option<Arc<ManualClock>>,
+}
+
+/// The bucket requests with a valid key share.
+pub(super) struct Budget {
+    rule: Rule,
+    used: Mutex<Window>,
 }
 
 /// One bucket per peer for requests without a valid key. IPv6 peers are
 /// grouped by their /64, which one LAN host can fill with addresses.
 pub(super) struct PeerBudgets {
-    limit: u32,
-    window: Duration,
+    rule: Rule,
     peers: Mutex<HashMap<Option<IpAddr>, Window>>,
-    #[cfg(test)]
-    clock: Option<Arc<ManualClock>>,
 }
 
 /// Test clock: a fixed start plus the time a test has advanced it.
@@ -81,12 +84,11 @@ pub(super) struct Quota {
     exceeded: bool,
 }
 
-impl Budget {
+impl Rule {
     pub fn new(limit: u32, window: Duration) -> Self {
         Self {
             limit,
             window,
-            used: Mutex::new(None),
             #[cfg(test)]
             clock: None,
         }
@@ -96,6 +98,45 @@ impl Budget {
     pub fn with_clock(mut self, clock: Option<Arc<ManualClock>>) -> Self {
         self.clock = clock;
         self
+    }
+
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(clock) = &self.clock {
+            return clock.now();
+        }
+        Instant::now()
+    }
+
+    /// Adds `cost` requests to `used` at `now`. With a cost of 0 the place
+    /// is exceeded once the window is full, so the next request would
+    /// exceed it.
+    fn count(&self, used: &mut Window, now: Instant, cost: u32) -> Quota {
+        let (start, count) = match *used {
+            Some((start, count)) if now.duration_since(start) < self.window => (start, count),
+            _ => (now, 0),
+        };
+        let count = count.saturating_add(cost);
+        if cost > 0 {
+            *used = Some((start, count));
+        }
+        let left = self.window.saturating_sub(now.duration_since(start));
+        Quota {
+            limit: self.limit,
+            remaining: self.limit.saturating_sub(count),
+            // Within a window `left` is positive, so this is 1 to 60.
+            reset: left.as_nanos().div_ceil(1_000_000_000) as u64,
+            exceeded: count > self.limit || (cost == 0 && count >= self.limit),
+        }
+    }
+}
+
+impl Budget {
+    pub fn new(rule: Rule) -> Self {
+        Self {
+            rule,
+            used: Mutex::new(None),
+        }
     }
 
     /// Counts one request.
@@ -105,29 +146,17 @@ impl Budget {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Read under the lock, so a later request never starts an earlier window.
-        let now = now(
-            #[cfg(test)]
-            &self.clock,
-        );
-        count(&mut used, now, self.limit, self.window, 1)
+        let now = self.rule.now();
+        self.rule.count(&mut used, now, 1)
     }
 }
 
 impl PeerBudgets {
-    pub fn new(limit: u32, window: Duration) -> Self {
+    pub fn new(rule: Rule) -> Self {
         Self {
-            limit,
-            window,
+            rule,
             peers: Mutex::new(HashMap::new()),
-            #[cfg(test)]
-            clock: None,
         }
-    }
-
-    #[cfg(test)]
-    pub fn with_clock(mut self, clock: Option<Arc<ManualClock>>) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// `peer`'s place without counting, exceeded once `peer` has used its
@@ -146,15 +175,12 @@ impl PeerBudgets {
             .peers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now = now(
-            #[cfg(test)]
-            &self.clock,
-        );
+        let now = self.rule.now();
         let mut key = Some(bucket(peer));
         if !peers.contains_key(&key) && peers.len() >= PEERS {
             if cost > 0 {
                 peers.retain(|_, used| {
-                    matches!(used, Some((start, _)) if now.duration_since(*start) < self.window)
+                    matches!(used, Some((start, _)) if now.duration_since(*start) < self.rule.window)
                 });
             }
             if peers.len() >= PEERS {
@@ -168,7 +194,7 @@ impl PeerBudgets {
         } else {
             peers.entry(key).or_default()
         };
-        count(used, now, self.limit, self.window, cost)
+        self.rule.count(used, now, cost)
     }
 }
 
@@ -177,35 +203,6 @@ fn bucket(peer: IpAddr) -> IpAddr {
     match peer.to_canonical() {
         IpAddr::V6(address) => IpAddr::V6((u128::from(address) & !u128::from(u64::MAX)).into()),
         address => address,
-    }
-}
-
-fn now(#[cfg(test)] clock: &Option<Arc<ManualClock>>) -> Instant {
-    #[cfg(test)]
-    if let Some(clock) = clock {
-        return clock.now();
-    }
-    Instant::now()
-}
-
-/// Adds `cost` requests to `used` at `now`. With a cost of 0 the place is
-/// exceeded once the window is full, so the next request would exceed it.
-fn count(used: &mut Window, now: Instant, limit: u32, window: Duration, cost: u32) -> Quota {
-    let (start, count) = match *used {
-        Some((start, count)) if now.duration_since(start) < window => (start, count),
-        _ => (now, 0),
-    };
-    let count = count.saturating_add(cost);
-    if cost > 0 {
-        *used = Some((start, count));
-    }
-    let left = window.saturating_sub(now.duration_since(start));
-    Quota {
-        limit,
-        remaining: limit.saturating_sub(count),
-        // Within a window `left` is positive, so this is 1 to 60.
-        reset: left.as_nanos().div_ceil(1_000_000_000) as u64,
-        exceeded: count > limit || (cost == 0 && count >= limit),
     }
 }
 

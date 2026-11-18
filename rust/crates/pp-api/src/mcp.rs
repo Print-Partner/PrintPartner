@@ -234,13 +234,9 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
     };
-    let budget = rate_limit::Budget::new(config.limit, config.window);
-    let failures = rate_limit::PeerBudgets::new(config.limit, config.window);
+    let rule = rate_limit::Rule::new(config.limit, config.window);
     #[cfg(test)]
-    let (budget, failures) = (
-        budget.with_clock(config.clock.clone()),
-        failures.with_clock(config.clock.clone()),
-    );
+    let rule = rule.with_clock(config.clock.clone());
     let service = StreamableHttpService::new(
         move || Ok(ProductMcp::new(reads.clone())),
         Arc::new(LocalSessionManager::default()),
@@ -251,8 +247,8 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         .route_service("/api/v1/mcp", service)
         .layer(middleware::from_fn_with_state(
             Guard {
-                budget: Arc::new(budget),
-                failures: Arc::new(failures),
+                budget: Arc::new(rate_limit::Budget::new(rule.clone())),
+                failures: Arc::new(rate_limit::PeerBudgets::new(rule)),
                 config,
                 auth,
                 admission: Arc::new(Semaphore::new(ADMISSION_PERMITS)),

@@ -148,7 +148,7 @@ class CoverageTests(unittest.TestCase):
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek",
                                                 "gpt-6.2-sol": "openai", "composer-2.5": "cursor"})
-        # The Codex seat counts for the pp/score status only, not for the sensitive merge guard.
+        # gpt-6.1-sol counts for the pp/score status only, not for the sensitive merge guard.
         self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
 
 

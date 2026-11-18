@@ -367,13 +367,16 @@ pub fn allowed_in_node_lease(name: &str) -> bool {
     matches!(name, "owner.json" | "previous-marker.json")
 }
 
-/// A `pp-testkit-` temp directory builder that pins mode `0o700`.
+/// Creates a `pp-testkit-` temp directory with mode `0o700`, under `parent`
+/// or the system temporary directory.
 ///
 /// Rust storage refuses a data directory that other accounts can write to.
-/// tempfile otherwise creates `0o777` minus the umask, so under `umask 0002`
-/// the directory would be `0o775` and storage would reject it. Windows has no
-/// mode bits; the directory inherits the temp root's ACL.
-fn private_builder() -> tempfile::Builder<'static, 'static> {
+/// A mode given at creation is still filtered by the umask: tempfile and
+/// `DirBuilder` give `0o775` under `umask 0002` and `0o500` under
+/// `umask 0200`. The directory is created `0o700` so it is never more open,
+/// then set to `0o700`, which the umask does not filter. Windows has no mode
+/// bits; the directory inherits the temp root's ACL.
+fn private_temp_dir(parent: Option<&Path>) -> io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix("pp-testkit-");
     #[cfg(unix)]
@@ -381,7 +384,25 @@ fn private_builder() -> tempfile::Builder<'static, 'static> {
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(fs::Permissions::from_mode(0o700));
     }
-    builder
+    let directory = match parent {
+        Some(parent) => builder.tempdir_in(parent)?,
+        None => builder.tempdir()?,
+    };
+    pin_mode(directory.path(), 0o700)?;
+    Ok(directory)
+}
+
+/// Sets `path`'s permission bits to exactly `mode`. Unlike a mode given at
+/// creation, `chmod` ignores the umask. Does nothing on Windows.
+fn pin_mode(path: &Path, mode: u32) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+    Ok(())
 }
 
 /// A disposable data directory, deleted when dropped.
@@ -402,7 +423,7 @@ impl fmt::Debug for Installation {
 impl Installation {
     /// Creates the installation under the system temporary directory.
     pub fn create(spec: impl Into<Spec>) -> io::Result<Self> {
-        Self::build(private_builder().tempdir()?, spec.into())
+        Self::build(private_temp_dir(None)?, spec.into())
     }
 
     /// Copies the required-unit database with its recorded authenticated session.
@@ -419,7 +440,7 @@ impl Installation {
     /// that need a specific filesystem. Nothing outside the new directory is
     /// written.
     pub fn create_in(parent: &Path, spec: impl Into<Spec>) -> io::Result<Self> {
-        Self::build(private_builder().tempdir_in(parent)?, spec.into())
+        Self::build(private_temp_dir(Some(parent))?, spec.into())
     }
 
     fn build(directory: tempfile::TempDir, spec: Spec) -> io::Result<Self> {
@@ -547,7 +568,8 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(path)
+    builder.create(path)?;
+    pin_mode(path, 0o700)
 }
 
 fn create_new(path: &Path) -> io::Result<File> {
@@ -555,7 +577,9 @@ fn create_new(path: &Path) -> io::Result<File> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)
+    let file = options.open(path)?;
+    pin_mode(path, 0o600)?;
+    Ok(file)
 }
 
 /// A bound loopback listener and its HTTP origin for disposable HTTP fixtures.

@@ -240,12 +240,16 @@ fn slice0_mount_server_binary_serves_rust_routes() {
         let root =
             std::env::temp_dir().join(format!("pp-slice0-server-{value}-{}", std::process::id()));
         // Storage refuses a data directory whose parent other accounts can
-        // write to, so pin 0o700 rather than 0o777 minus the umask.
+        // write to. A creation mode is still filtered by the umask, so create
+        // the root 0o700 and then set 0o700, which the umask does not filter.
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         builder.create(&root).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
         run(value, &root, compiled);
         std::fs::remove_dir_all(&root).unwrap();
     }

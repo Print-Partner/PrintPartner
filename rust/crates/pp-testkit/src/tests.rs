@@ -24,18 +24,78 @@ fn assert_only_lease_leftovers(installation: &Installation) {
     }
 }
 
-/// Storage refuses a data directory other accounts can write to, so both
-/// constructors pin 0o700 instead of 0o777 minus the umask (GRE-1398).
+/// Set in the child that `data_directory_is_private_whatever_the_umask`
+/// starts under a given umask.
+#[cfg(unix)]
+const UMASK_CHILD: &str = "PP_TESTKIT_UMASK_CHILD";
+
+/// Storage refuses a data directory other accounts can write to, and a test
+/// cannot write into one its owner cannot. Both constructors give the data
+/// directory exactly 0700, and pp-testkit's lease leftovers 0700 directories
+/// and 0600 files, whatever the umask (GRE-1398). The umask is per process,
+/// so the test runs itself again under `/bin/sh` with each umask.
 #[cfg(unix)]
 #[test]
 fn data_directory_is_private_whatever_the_umask() {
+    if let Some(umask) = std::env::var_os(UMASK_CHILD) {
+        return assert_private_installations(umask.to_str().unwrap());
+    }
+    for umask in ["0002", "0022", "0077", "0277"] {
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "umask {umask} && exec \"$0\" --exact \
+                 tests::data_directory_is_private_whatever_the_umask --nocapture"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .env(UMASK_CHILD, umask)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "umask {umask}:\n{stdout}\n{stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn assert_private_installations(umask: &str) {
     use std::os::unix::fs::PermissionsExt;
-    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
-    let created = Installation::create(Fixture::Empty).unwrap();
-    assert_eq!(mode(created.path()), 0o700, "create");
-    let parent = tempfile::tempdir().unwrap();
-    let created_in = Installation::create_in(parent.path(), Fixture::Empty).unwrap();
-    assert_eq!(mode(created_in.path()), 0o700, "create_in");
+    let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    if let Ok(status) = fs::read_to_string("/proc/self/status") {
+        assert!(
+            status
+                .lines()
+                .any(|line| line == format!("Umask:\t{umask}")),
+            "child umask is not {umask}"
+        );
+    }
+    let assert_private = |installation: &Installation, label: &str| {
+        let mut pending = vec![installation.path().to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            assert_eq!(mode(&directory), 0o700, "{label}: {}", directory.display());
+            for entry in fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    assert_eq!(mode(&path), 0o600, "{label}: {}", path.display());
+                }
+            }
+        }
+        fs::write(installation.path().join("written-by-the-owner"), b"x")
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+    };
+    for fixture in [Fixture::Empty, Fixture::EmptyWithLeaseLeftovers] {
+        let created = Installation::create(fixture).unwrap();
+        assert_private(&created, &format!("create {fixture:?}"));
+        let parent = tempfile::tempdir().unwrap();
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let created_in = Installation::create_in(parent.path(), fixture).unwrap();
+        assert_private(&created_in, &format!("create_in {fixture:?}"));
+    }
 }
 
 #[test]

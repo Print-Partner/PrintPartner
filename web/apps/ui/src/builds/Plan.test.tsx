@@ -2023,6 +2023,189 @@ describe("GRE-1183 rapid Plan edits stay draft-only through every failure", () =
     expect(writes(fetchMock as unknown as ReturnType<typeof core>)).toHaveLength(1);
     expect(saved.draft!.header.name).toBe("Bracket kit v4");
   });
+
+  it("follows another window that restores the quantity after a confirmed save, and sends nothing", async () => {
+    let lifecycle = 2;
+    let bracket: number | null = null;
+    const current = (): DraftWorkspace => ({
+      ...workspace({ ...DRAFT, lifecycle_version: lifecycle }),
+      parts: [part(11, "bracket.stl", true, bracket), part(12, "gear.stl", false, 4)],
+    });
+    const fetchMock = core({
+      draft: current,
+      write: (path, init) => {
+        if (path !== "/api/v2/plans/2/drafts/save") return undefined;
+        bracket = JSON.parse(String(init!.body)).decisions[0].value;
+        lifecycle += 1;
+        const confirmed = current();
+        // Another window clears the quantity again before this tab refetches.
+        bracket = null;
+        lifecycle += 1;
+        return json({
+          receipt: {
+            profile_id: 2,
+            draft_id: 9,
+            reconciliation_id: 1,
+            snapshot_digest: DIGEST,
+            saved_at: "2026-11-18T00:00:00.000Z",
+          },
+          workspace: confirmed,
+        });
+      },
+    });
+    renderAt(fetchMock);
+    const quantity = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: /Quantity of bracket\.stl/,
+    });
+    fireEvent.change(quantity, { target: { value: "5" } });
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    await waitFor(() => expect(quantity.value).toBe(""));
+    fireEvent.blur(quantity);
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    await act(async () => {});
+    expect(writes(fetchMock)).toHaveLength(1);
+    expect(bracket).toBe(null);
+  });
+
+  it("follows another window that restores the name after a confirmed save, and sends nothing", async () => {
+    let saved = draftHeader(1);
+    const inner = core();
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/9/header") return Promise.resolve(json(saved));
+      if (path !== "/api/v2/plans/2/drafts/header" || init?.method !== "PUT") {
+        return inner(path, init);
+      }
+      const bump = (header: BuildHeaderView["build"]) => ({
+        ...saved,
+        draft: { ...saved.draft!, header, header_version: saved.draft!.header_version + 1 },
+      });
+      saved = bump(JSON.parse(String(init.body)).header);
+      const confirmed = saved;
+      // Another window puts the old name back before this tab refetches.
+      saved = bump({ ...saved.draft!.header, name: "Bracket kit v2" });
+      return Promise.resolve(
+        json({
+          receipt: { profile_id: 2, draft_id: 9, header: confirmed.draft },
+          header: confirmed,
+        }),
+      );
+    });
+    renderAt(fetchMock as unknown as ReturnType<typeof core>);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await screen.findByText(/Saved to the draft/);
+    await waitFor(() => expect(name.value).toBe("Bracket kit v2"));
+    fireEvent.blur(name);
+    await act(async () => {});
+    expect(writes(fetchMock as unknown as ReturnType<typeof core>)).toHaveLength(1);
+    expect(saved.draft!.header.name).toBe("Bracket kit v2");
+  });
+
+  it("retries a refused queued field alone, keeping a newer value another window saved", async () => {
+    let saved = draftHeader(1);
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const inner = core();
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/9/header") return json(saved);
+      if (path !== "/api/v2/plans/2/drafts/header" || init?.method !== "PUT") {
+        return inner(path, init);
+      }
+      const body = JSON.parse(String(init.body));
+      const bump = (header: BuildHeaderView["build"]) => ({
+        ...saved,
+        draft: { ...saved.draft!, header, header_version: saved.draft!.header_version + 1 },
+      });
+      const sent = writes(fetchMock as unknown as ReturnType<typeof core>).length;
+      if (sent === 1) await held;
+      if (sent === 2) {
+        // Another window renames the Build just before the queued Customer edit lands.
+        saved = bump({ ...saved.draft!.header, name: "Bracket kit v4" });
+      }
+      if (body.expected_header_version !== saved.draft!.header_version) {
+        return problem(409, "header_changed");
+      }
+      saved = bump(body.header);
+      return json({ receipt: { profile_id: 2, draft_id: 9, header: saved.draft }, header: saved });
+    });
+    const sent = () => writes(fetchMock as unknown as ReturnType<typeof core>);
+    renderAt(fetchMock as unknown as ReturnType<typeof core>);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    const customer = field("Customer");
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    fireEvent.change(customer, { target: { value: "Beta" } });
+    fireEvent.blur(customer);
+    release();
+    await screen.findByText(/^Not saved/);
+    await waitFor(() => expect(name.value).toBe("Bracket kit v4"));
+    expect(customer.value).toBe("Beta");
+    fireEvent.blur(customer);
+    await screen.findByText(/Saved to the draft/);
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.body).toMatchObject({
+      expected_header_version: 3,
+      header: { name: "Bracket kit v4", customer: "Beta" },
+    });
+    expect(saved.draft!.header).toMatchObject({ name: "Bracket kit v4", customer: "Beta" });
+    expect(name.value).toBe("Bracket kit v4");
+  });
+
+  it("sends a queued field over a newer value another window saved before it started", async () => {
+    let saved = draftHeader(1);
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let otherWindow = false;
+    const bump = (header: BuildHeaderView["build"]) => ({
+      ...saved,
+      draft: { ...saved.draft!, header, header_version: saved.draft!.header_version + 1 },
+    });
+    const inner = core();
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/9/header") {
+        if (otherWindow) {
+          // Another window renames the Build before this tab's refetch reads the header.
+          otherWindow = false;
+          saved = bump({ ...saved.draft!.header, name: "Bracket kit v4" });
+        }
+        return json(saved);
+      }
+      if (path !== "/api/v2/plans/2/drafts/header" || init?.method !== "PUT") {
+        return inner(path, init);
+      }
+      const body = JSON.parse(String(init.body));
+      if (writes(fetchMock as unknown as ReturnType<typeof core>).length === 1) {
+        await held;
+        otherWindow = true;
+      }
+      if (body.expected_header_version !== saved.draft!.header_version) {
+        return problem(409, "header_changed");
+      }
+      saved = bump(body.header);
+      return json({ receipt: { profile_id: 2, draft_id: 9, header: saved.draft }, header: saved });
+    });
+    const sent = () => writes(fetchMock as unknown as ReturnType<typeof core>);
+    renderAt(fetchMock as unknown as ReturnType<typeof core>);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    const customer = field("Customer");
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    fireEvent.change(customer, { target: { value: "Beta" } });
+    fireEvent.blur(customer);
+    release();
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    await screen.findByText(/Saved to the draft/);
+    expect(sent()[1]!.body).toMatchObject({
+      expected_header_version: 3,
+      header: { name: "Bracket kit v4", customer: "Beta" },
+    });
+    expect(saved.draft!.header).toMatchObject({ name: "Bracket kit v4", customer: "Beta" });
+    await waitFor(() => expect(name.value).toBe("Bracket kit v4"));
+  });
 });
 
 const target = (file: string) => ({

@@ -106,15 +106,18 @@ function useDraftWrites(id: number) {
     mutationKey,
     // A 401 keeps the page, so the typed edit stays on screen (`SignedOutNote`).
     meta: KEEP_EDITS,
-    mutationFn: ({ fields, key }: { fields: HeaderFields; key: string }) => {
+    // `changes` holds only the fields typed for this write. The rest come from the header
+    // saved when the write starts, so a queued write never resends an older field value.
+    mutationFn: ({ changes, key }: { changes: Partial<HeaderFields>; key: string }) => {
       const body = once(key, () => {
         const data = latest();
         if (!data) throw new Error("The Plan has not loaded yet");
+        const saved = data.draft?.header?.header ?? data.build;
         return {
           expected_base: data.draft?.workspace.draft.base ?? data.base,
           expected_draft: data.draft ? identityOf(data.draft.workspace.draft) : null,
           expected_header_version: data.draft?.header?.header_version ?? null,
-          header: headerOf(fields),
+          header: headerOf({ ...fieldsOf(saved), ...changes }),
         };
       });
       return writeCore("saveDraftHeader", { id }, body, key);
@@ -156,21 +159,22 @@ const keyOf = (mutation: { state: { variables: unknown } }) =>
   (mutation.state.variables as { key?: string } | undefined)?.key;
 
 /**
- * Whether the draft write sent with `key` has settled, and whether it failed: refused, or
- * its outcome never confirmed. A field that sent it keeps its value only when it failed.
+ * The draft writes sent with `keys` that have settled, and whether each failed: refused,
+ * or its outcome never confirmed. A field that sent one keeps its value only when it failed.
  */
-function useSettledWrite(writes: Writes, key: string | null) {
-  const [settled] = useMutationState({
+function useSettledWrites(writes: Writes, keys: readonly string[]) {
+  return useMutationState({
     filters: {
       mutationKey: writes.mutationKey,
       predicate: (mutation) =>
-        key !== null &&
-        keyOf(mutation) === key &&
+        keys.includes(keyOf(mutation) ?? "") &&
         (mutation.state.status === "success" || mutation.state.status === "error"),
     },
-    select: (mutation) => mutation.state.status === "error",
+    select: (mutation) => ({
+      key: keyOf(mutation) ?? "",
+      failed: mutation.state.status === "error",
+    }),
   });
-  return settled === undefined ? null : { failed: settled };
 }
 
 /** What the last write did, read out politely. */
@@ -200,40 +204,60 @@ const HEADER_FIELDS = [
   { field: "due_date", label: "Due date", type: "date", orders: true },
 ] as const;
 
+/** A header write not yet settled, and the fields typed for it. */
+interface HeldWrite {
+  key: string;
+  fields: ReadonlySet<keyof HeaderFields>;
+}
+
 /**
- * The header form. Each field saves to the draft when it loses focus or on Enter. Once the
- * draft writes settle, the saved header replaces every field not typed in since the last
- * save was sent. If that save fails, even because another window saved the same field, its
- * fields count as typed again, so they keep their values and the next blur sends them.
+ * The header form. Each field saves to the draft when it loses focus or on Enter, and each
+ * write carries only the fields typed since the last one. Once the draft writes settle, the
+ * saved header replaces every field not typed since. A field whose write fails, even because
+ * another window saved the same field, counts as typed again: it keeps its value and the
+ * next blur sends it. A blur with nothing typed sends nothing.
  */
 function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; busy: boolean }) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
-  const [shown, setShown] = useState(saved);
+  // The header the fields last took, or null after a write settles, so they take it again.
+  const [shown, setShown] = useState<BuildHeader | null>(saved);
   const [typed, setTyped] = useState<ReadonlySet<keyof HeaderFields>>(new Set());
-  const [sent, setSent] = useState<BuildHeader | null>(null);
-  // The latest header write, and every field typed for it or for an earlier unsettled one.
-  const [held, setHeld] = useState<{
-    key: string;
-    fields: ReadonlySet<keyof HeaderFields>;
-  } | null>(null);
-  const settled = useSettledWrite(writes, held?.key ?? null);
-  const kept = settled?.failed && held ? new Set([...typed, ...held.fields]) : typed;
-  if (settled) {
-    setHeld(null);
+  // Header writes not yet settled, oldest first.
+  const [held, setHeld] = useState<readonly HeldWrite[]>([]);
+  const settled = useSettledWrites(
+    writes,
+    held.map((write) => write.key),
+  );
+  let kept = typed;
+  if (settled.length > 0) {
+    const failed = new Set(settled.filter((write) => write.failed).map((write) => write.key));
+    const done = new Set(settled.map((write) => write.key));
+    // A failed write's field counts as typed again, unless a later write carries it.
+    const restored = held.flatMap((write, i) =>
+      failed.has(write.key)
+        ? [...write.fields].filter((f) => !held.slice(i + 1).some((later) => later.fields.has(f)))
+        : [],
+    );
+    kept = new Set([...typed, ...restored]);
+    setHeld(held.filter((write) => !done.has(write.key)));
     setTyped(kept);
   }
-  if (!busy && !sameHeader(saved, shown)) {
-    const after = fieldsOf(saved);
-    setShown(saved);
-    setFields(
-      Object.fromEntries(
-        Object.entries(fields).map(([field, v]) => [
-          field,
-          kept.has(field as keyof HeaderFields) ? v : after[field as keyof HeaderFields],
-        ]),
-      ) as HeaderFields,
-    );
+  if (settled.length > 0 || shown === null || !sameHeader(saved, shown)) {
+    if (busy) {
+      if (shown !== null) setShown(null);
+    } else {
+      const after = fieldsOf(saved);
+      setShown(saved);
+      setFields(
+        Object.fromEntries(
+          Object.entries(fields).map(([field, v]) => [
+            field,
+            kept.has(field as keyof HeaderFields) ? v : after[field as keyof HeaderFields],
+          ]),
+        ) as HeaderFields,
+      );
+    }
   }
   const [invalid, setInvalid] = useState(false);
   const offline = useConnection() === "offline";
@@ -242,16 +266,18 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
   const commit = () => {
     const header = headerOf(fields);
     setInvalid(header.name === "");
-    if (header.name === "" || sameHeader(header, sent ?? saved) || offline) return;
-    setSent(header);
-    const key = newKey();
-    setHeld({ key, fields: new Set([...(held?.fields ?? []), ...typed]) });
-    setTyped(new Set());
-    // Only the latest header write calls this, and only it can still be the one sent.
-    writes.header.mutate(
-      { fields, key },
-      { onSettled: () => setSent((current) => (current === header ? null : current)) },
+    if (header.name === "" || offline || typed.size === 0) return;
+    const changes: Partial<HeaderFields> = Object.fromEntries(
+      [...typed].map((field) => [field, fields[field]]),
     );
+    setTyped(new Set());
+    // Typing the saved value back sends nothing, unless an earlier write may still change it.
+    if (held.length === 0 && sameHeader(headerOf({ ...fieldsOf(saved), ...changes }), saved)) {
+      return;
+    }
+    const key = newKey();
+    setHeld([...held, { key, fields: typed }]);
+    writes.header.mutate({ changes, key });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") commit();
@@ -317,17 +343,22 @@ function useQuantityField(
   save: (choice: PlanChoice) => string,
 ) {
   const [text, setText] = useState(part.quantity_override?.toString() ?? "");
-  const [shown, setShown] = useState(part.quantity_override);
+  // The quantity the text last took, or undefined after a write settles, so it takes it again.
+  const [shown, setShown] = useState<number | null | undefined>(part.quantity_override);
   const [edited, setEdited] = useState(false);
   const [sentKey, setSentKey] = useState<string | null>(null);
-  const settled = useSettledWrite(writes, sentKey);
+  const [settled] = useSettledWrites(writes, sentKey === null ? [] : [sentKey]);
   if (settled) {
     setSentKey(null);
     if (settled.failed) setEdited(true);
   }
-  if (!queued && part.quantity_override !== shown) {
-    setShown(part.quantity_override);
-    if (!edited && !settled?.failed) setText(part.quantity_override?.toString() ?? "");
+  if (settled || shown === undefined || part.quantity_override !== shown) {
+    if (queued) {
+      if (shown !== undefined) setShown(undefined);
+    } else {
+      setShown(part.quantity_override);
+      if (!edited && !settled?.failed) setText(part.quantity_override?.toString() ?? "");
+    }
   }
   const [invalid, setInvalid] = useState(false);
   const sent = queued?.kind === "set_quantity_override" ? queued.value : part.quantity_override;
@@ -341,7 +372,8 @@ function useQuantityField(
     commit: () => {
       const value = quantityValue(text);
       setInvalid(value === "invalid");
-      if (value === "invalid" || offline) return;
+      // A blur with nothing typed since the last write sends nothing.
+      if (value === "invalid" || offline || !edited) return;
       setEdited(false);
       if (value === sent) return;
       setSentKey(save(quantityChoice(part, value)));
@@ -762,9 +794,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
           </MutationButton>
         ) : (
           <MutationButton
-            onClick={() =>
-              !saving() && writes.header.mutate({ fields: fieldsOf(data.build), key: newKey() })
-            }
+            onClick={() => !saving() && writes.header.mutate({ changes: {}, key: newKey() })}
           >
             Start a draft
           </MutationButton>

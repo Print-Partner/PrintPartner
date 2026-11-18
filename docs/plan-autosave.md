@@ -35,11 +35,12 @@ The Plan tab runs Part and header writes one at a time per Build (`useDraftWrite
 - A lost reply is resent with the same key and the same body. If the first send committed, the core replays its receipt and the edit is kept once.
 - A refusal, such as `draft_changed` after another window saved the draft, refetches the Plan before the next queued write starts, so that write names the newer draft.
 - A refused checkbox shows the saved value.
-- A typed field (a quantity or a header field) whose save fails, refused or never confirmed, keeps its typed value, even when another window saved a different value to the same field. The next blur or Enter sends it again with a new key against the newer draft.
-- A typed field whose save succeeds shows the saved draft once the refetch lands, including a newer value another window saved after it. A blur without typing then sends nothing, so a confirmed edit never overwrites a later one.
+- A blur or Enter sends a field only when the user typed in it since its last write, or its last write failed. A header write carries only the fields typed for it; the other header fields come from the header saved when the write starts, so a queued write never resends an older value of a field it did not type.
+- A typed field (a quantity or a header field) whose write fails, refused or never confirmed, keeps its typed value, even when another window saved a different value to the same field. The next blur or Enter sends it again with a new key against the newer draft, and that send replaces the other window's value for that field. A header field that a later write also carries is not restored by the earlier write's failure.
+- Once a write settles, every field not typed since takes the saved draft when the refetch lands, including a value another window saved after a confirmed write, even when that value equals the one the field showed before. A blur without typing then sends nothing.
 - No failure abandons, recomputes or accepts the draft.
 
-The `GRE-1183 rapid Plan edits stay draft-only through every failure` tests in `web/apps/ui/src/builds/Plan.test.tsx` cover three Part edits before the first reply (a committed-but-lost reply, a refusal after another window's save, and a later resend), another window saving the same quantity or header field first (the field keeps the typed value), and another window saving it just after a confirmed save (the field shows the newer value and sends nothing):
+The `GRE-1183 rapid Plan edits stay draft-only through every failure` tests in `web/apps/ui/src/builds/Plan.test.tsx` cover three Part edits before the first reply (a committed-but-lost reply, a refusal after another window's save, and a later resend), another window saving the same quantity or header field first (the field keeps the typed value), another window saving it just after a confirmed save, including restoring the earlier value (the field shows the saved value and sends nothing), and a queued Customer edit refused after another window renamed the Build (the retry sends Customer over the newer name):
 
 ```sh
 npm --prefix web run test -w @print-partner/ui -- src/builds/Plan.test.tsx

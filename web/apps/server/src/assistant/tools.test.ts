@@ -2137,6 +2137,51 @@ option_groups:
     expect(repo.listSources().some((s) => s.name === "New-Mod")).toBe(true);
   });
 
+  it("propose_add_source adds a name that contains an existing Source name, and refuses the same repository", async () => {
+    // Proposed before A4T exists, applied after: Apply checks again.
+    const stale = await invokeAssistantTool(
+      "propose_add_source",
+      { name: "A4T Mirror", url: "https://github.com/Armchair-Heavy-Industries/A4T", source_kind: "github" },
+      { repo },
+    );
+    repo.createSource({
+      name: "A4T",
+      url: "https://github.com/Armchair-Heavy-Industries/A4T",
+      source_kind: "github",
+    });
+    const apply = (action: NonNullable<Awaited<ReturnType<typeof invokeAssistantTool>>["proposedAction"]>) =>
+      applyAssistantAction(action, { repo, jobs: { start: async () => "x" } as never });
+
+    const added = await invokeAssistantTool(
+      "propose_add_source",
+      { name: "A4Tv2", url: "https://github.com/DW-Tas/A4Tv2", source_kind: "github" },
+      { repo },
+    );
+    expect(added.proposedAction?.type).toBe("propose_add_source");
+    expect((await apply(added.proposedAction!)).ok).toBe(true);
+    expect(repo.listSources().map((s) => s.name)).toEqual(expect.arrayContaining(["A4T", "A4Tv2"]));
+
+    const sameRepository = await invokeAssistantTool(
+      "propose_add_source",
+      { name: "DW-Tas-A4Tv2", url: "https://github.com/dw-tas/a4tv2.git", source_kind: "github" },
+      { repo },
+    );
+    expect(sameRepository.proposedAction).toBeUndefined();
+    expect(JSON.parse(sameRepository.content).error).toBe("Source already exists: A4Tv2");
+
+    const sameName = await invokeAssistantTool(
+      "propose_add_source",
+      { name: "a4t", source_kind: "github" },
+      { repo },
+    );
+    expect(JSON.parse(sameName.content).error).toBe("Source already exists: A4T");
+
+    expect(await apply(stale.proposedAction!)).toMatchObject({
+      ok: false,
+      detail: "Source already exists: A4T",
+    });
+  });
+
   it("propose_add_source Apply chains a Sync follow-up card when a plan is active", async () => {
     const plan = repo.createProfile("Chain plan");
     const { proposedAction } = await invokeAssistantTool(

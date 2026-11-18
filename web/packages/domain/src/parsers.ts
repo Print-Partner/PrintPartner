@@ -64,21 +64,42 @@ export function parseRole(pathOrName: string, profile?: NamingProfile | null): P
   return "primary";
 }
 
+const MODEL_EXTENSION_RE = /\.(?:stl|3mf)$/i;
+
+/**
+ * Quantity regexes, including ones users saved, end in `\.stl$`. A `.3mf` part is read as
+ * if it were the `.stl` of the same name so those regexes count it too.
+ */
+function asStlName(filename: string): string {
+  return filename.replace(/\.3mf$/i, ".stl");
+}
+
+/** Removes `marker` and one separator next to it; keeps one separator between remaining words. */
+function stripMarker(stem: string, markerRe: RegExp): string {
+  return stem.replace(
+    markerRe,
+    (match: string, before: string, after: string, offset: number, whole: string) => {
+      const hasTextBefore = offset > 0;
+      const hasTextAfter = offset + match.length < whole.length;
+      return hasTextBefore && hasTextAfter ? before || after : "";
+    },
+  );
+}
+
 export function parseQuantity(filename: string, profile?: NamingProfile | null): number {
   const prof = resolveProfile(profile);
-  const m = prof.quantityRe.exec(filename);
+  const m = prof.quantityRe.exec(asStlName(filename));
   if (m?.[1]) return Math.max(1, parseInt(m[1], 10));
   return Math.max(1, prof.quantityDefault);
 }
 
 export function parsePartSlug(filename: string, profile?: NamingProfile | null): string {
   const prof = resolveProfile(profile);
-  let name = basename(filename);
-  if (name.toLowerCase().endsWith(".stl")) name = name.slice(0, -4);
+  const name = basename(filename).replace(MODEL_EXTENSION_RE, "");
   let stem = name;
   if (prof.slugStripMarkers) {
-    for (const prefixRe of prof.rolePrefixRes) {
-      stem = stem.replace(prefixRe, "");
+    for (const markerRe of prof.markerStripRes) {
+      stem = stripMarker(stem, markerRe);
     }
   }
   if (prof.slugStripQuantity && prof.quantityStripRe) {

@@ -36,7 +36,8 @@ export type NamingProfile = {
   exportRoleOrder: readonly StlNamingRoleId[];
   quantityRe: RegExp;
   markerRoleMap: ReadonlyArray<readonly [string, StlNamingRoleId]>;
-  rolePrefixRes: readonly RegExp[];
+  /** One global regex per marker; each match also holds the separator on either side. */
+  markerStripRes: readonly RegExp[];
   quantityStripRe: RegExp | null;
   toDict(): StlNamingProfileDict;
 };
@@ -63,12 +64,13 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
   const quantityDefault = data.quantity.default;
 
   const markerPairs: Array<[string, StlNamingRoleId]> = [];
-  const prefixRes: RegExp[] = [];
+  const stripRes: RegExp[] = [];
   for (const role of roles) {
     for (const marker of role.markers) {
       if (!marker.trim()) continue;
       markerPairs.push([marker, role.id]);
-      prefixRes.push(new RegExp(`^${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"));
+      const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      stripRes.push(new RegExp(`([ _-]?)${escaped}([ _-]?)`, "gi"));
     }
   }
   markerPairs.sort((a, b) => b[0].length - a[0].length);
@@ -85,7 +87,7 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
     exportRoleOrder: exportOrder,
     quantityRe,
     markerRoleMap: markerPairs,
-    rolePrefixRes: prefixRes,
+    markerStripRes: stripRes,
     quantityStripRe: compileQuantityStrip(quantityRegex),
     toDict() {
       return {

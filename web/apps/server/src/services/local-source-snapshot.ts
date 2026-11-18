@@ -8,7 +8,32 @@ import { chargeTenantDiskBytes } from "../lib/tenant-disk-quota.js";
 import { isRecord } from "../lib/guards.js";
 
 export const SOURCE_SNAPSHOT_MANIFEST_FILE = ".printpartner-source-snapshot.json";
-export const MAX_SOURCE_SNAPSHOT_BYTES = 1024 * 1024 * 1024;
+/** Default cap on the bytes one Source snapshot stores. Raised from 1 GiB by GRE-1396. */
+export const DEFAULT_SOURCE_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const SOURCE_SNAPSHOT_MAX_BYTES_ENV = "PP_SOURCE_SNAPSHOT_MAX_BYTES";
+
+/**
+ * The stored-content cap for one Source snapshot: `PP_SOURCE_SNAPSHOT_MAX_BYTES` when set,
+ * else 2 GiB. Read at each sync so a restart is the only step after changing it.
+ */
+export function sourceSnapshotMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[SOURCE_SNAPSHOT_MAX_BYTES_ENV]?.trim();
+  if (!raw) return DEFAULT_SOURCE_SNAPSHOT_MAX_BYTES;
+  const bytes = Number(raw);
+  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(bytes)) {
+    throw new Error(`${SOURCE_SNAPSHOT_MAX_BYTES_ENV} must be a whole number of bytes above 0`);
+  }
+  return bytes;
+}
+
+/** Bytes a snapshot may still store, and the cap they come from (for the error text). */
+type SnapshotByteBudget = { remainingBytes: number; limitBytes: number };
+
+function snapshotLimitError(budget: SnapshotByteBudget): Error {
+  return new Error(
+    `Source snapshot exceeds the ${budget.limitBytes} byte stored-content limit; set ${SOURCE_SNAPSHOT_MAX_BYTES_ENV} to raise it`,
+  );
+}
 
 const SOURCE_SNAPSHOT_MANIFEST_VERSION = 1;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -295,7 +320,7 @@ function sameContentFiles(
 }
 
 function byteMeter(
-  maxBytes = Number.POSITIVE_INFINITY,
+  budget: SnapshotByteBudget | null = null,
   options: { chargeBytes?: boolean } = {},
 ): {
   stream: Transform;
@@ -314,12 +339,8 @@ function byteMeter(
         return;
       }
       sizeBytes += buffer.byteLength;
-      if (sizeBytes > maxBytes) {
-        callback(
-          new Error(
-            `Source snapshot exceeds the ${MAX_SOURCE_SNAPSHOT_BYTES} byte stored-content limit`,
-          ),
-        );
+      if (budget && sizeBytes > budget.remainingBytes) {
+        callback(snapshotLimitError(budget));
         return;
       }
       if (options.chargeBytes && buffer.byteLength > 0) {
@@ -344,7 +365,7 @@ async function writeSnapshotFile(args: {
   candidateDir: string;
   file: SnapshotFile;
   openFile(file: SnapshotFile): Promise<SnapshotFileResponse>;
-  maxBytes: number;
+  budget: SnapshotByteBudget;
   beforePublish?: () => undefined;
 }): Promise<SnapshotContentFile> {
   const destination = join(args.candidateDir, ...args.file.path.split("/"));
@@ -356,17 +377,15 @@ async function writeSnapshotFile(args: {
       response.contentLengthBytes,
       `Content-Length for ${args.file.path}`,
     );
-    if (contentLengthBytes != null && contentLengthBytes > args.maxBytes) {
-      throw new Error(
-        `Source snapshot exceeds the ${MAX_SOURCE_SNAPSHOT_BYTES} byte stored-content limit`,
-      );
+    if (contentLengthBytes != null && contentLengthBytes > args.budget.remainingBytes) {
+      throw snapshotLimitError(args.budget);
     }
     args.beforePublish?.();
   } catch (error) {
     response.stream.destroy();
     throw error;
   }
-  const meter = byteMeter(args.maxBytes, { chargeBytes: true });
+  const meter = byteMeter(args.budget, { chargeBytes: true });
   await pipeline(response.stream, meter.stream, createWriteStream(destination, { flags: "wx" }));
   const measured = meter.result();
   if (contentLengthBytes !== null && measured.sizeBytes !== contentLengthBytes) {
@@ -741,6 +760,7 @@ export class LocalSourceSnapshotStore {
     });
     if (reused) return reused;
 
+    const limitBytes = sourceSnapshotMaxBytes();
     input.beforePublish?.();
     const candidateDir = await mkdtemp(
       join(revisionsRoot, `.candidate-${input.upstreamRevisionKey}-`),
@@ -754,7 +774,7 @@ export class LocalSourceSnapshotStore {
           file,
           openFile: input.openFile,
           beforePublish: input.beforePublish,
-          maxBytes: MAX_SOURCE_SNAPSHOT_BYTES - storedBytes,
+          budget: { remainingBytes: limitBytes - storedBytes, limitBytes },
         });
         storedBytes += written.sizeBytes;
       }

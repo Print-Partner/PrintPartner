@@ -3,12 +3,13 @@ import type { AppRepository } from "../db/repository.js";
 import {
   categoryNotFoundError,
   countSourcesUnderCategory,
+  existingSourceFor,
   sourceByName,
   sourceNotFoundError,
   summarizeSourceCategories,
 } from "./source-tool-model.js";
 
-type Source = { id: number; name: string; category: string | null };
+type Source = { id: number; name: string; category: string | null; url?: string };
 
 function repoStub(sources: Source[], categories: string[]): AppRepository {
   return {
@@ -31,6 +32,39 @@ describe("assistant source tool model", () => {
     expect(sourceByName(repo, "voron-parts")?.id).toBe(1);
     expect(sourceByName(repo, "Voron Parts")?.id).toBe(1);
     expect(sourceByName(repo, "Voron Parts R2 release")?.id).toBe(2);
+  });
+
+  describe("existingSourceFor", () => {
+    const repo = repoStub(
+      [
+        { id: 44, name: "A4T", category: null, url: "https://github.com/Armchair-Heavy-Industries/A4T" },
+        { id: 54, name: "Nevermore-StealthMax", category: null, url: "https://github.com/nevermore3d/StealthMax" },
+      ],
+      [],
+    );
+
+    it.each([
+      ["A4Tv2", "https://github.com/DW-Tas/A4Tv2"],
+      ["DW-Tas-A4Tv2", "https://github.com/DW-Tas/A4Tv2"],
+      ["Nevermore-StealthMax-V2", null],
+      ["StealthMax", null],
+    ])("lets %s through when it only contains or is contained in another name", (name, url) => {
+      expect(existingSourceFor(repo, name, url)).toBeNull();
+      // Lookups by name still resolve these to the closest Source.
+      expect(sourceByName(repo, name)).not.toBeNull();
+    });
+
+    it.each([
+      ["A4T", null, 44],
+      [" a4t ", null, 44],
+      ["nevermore stealthmax", null, 54],
+      ["Nevermore_StealthMax", null, 54],
+      ["Renamed A4T", "https://github.com/armchair-heavy-industries/a4t.git", 44],
+      ["Renamed A4T", "git@github.com:Armchair-Heavy-Industries/A4T.git", 44],
+      ["Renamed A4T", "https://github.com/Armchair-Heavy-Industries/A4T/tree/main/", 44],
+    ])("rejects %s from %s as Source %i", (name, url, id) => {
+      expect(existingSourceFor(repo, name, url)?.id).toBe(id);
+    });
   });
 
   it("summarizes nested categories with direct and recursive counts", () => {

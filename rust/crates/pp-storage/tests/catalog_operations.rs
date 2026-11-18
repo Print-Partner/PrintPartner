@@ -1604,7 +1604,7 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
             "AA.stl",
             json!({"roles":[{"id":"accent","markers":["A"]},{"id":"clear","markers":["AA"]}]}),
             "clear",
-            "A",
+            "AA",
         ),
         (
             "tag.stl",
@@ -1643,9 +1643,9 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
             "😀gear",
         ),
         ("[o]/[a]gear.stl", json!({}), "opaque", "gear"),
-        ("[a][a]gear.stl", json!({}), "accent", "[a]gear"),
+        ("[a][a]gear.stl", json!({}), "accent", "gear"),
         ("[a][c]gear.stl", json!({}), "accent", "gear"),
-        ("[c][a]gear.stl", json!({}), "accent", "[a]gear"),
+        ("[c][a]gear.stl", json!({}), "accent", "gear"),
         (
             "[A]gear.stl",
             json!({"roles":[{"id":"accent","label":" Renamed "}]}),
@@ -1688,6 +1688,61 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
         );
     }
     assert_eq!(rows(&fixture.0), before);
+    owner.shutdown().unwrap();
+}
+
+// GRE-1396: role markers are stripped anywhere in the name with one adjacent
+// separator, and `.3mf` names parse like `.stl` names. The Node parser tests in
+// web/packages/domain/src/parsers.test.ts cover the same file names.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let client = owner.local_source_catalog();
+    for (path, role, quantity, slug) in [
+        ("STLs/[a]_belt_clip.stl", "accent", 1, "belt_clip"),
+        ("FlowChamber_BPM[a].stl", "accent", 1, "FlowChamber_BPM"),
+        ("FlowChamber_BPM_[a].stl", "accent", 1, "FlowChamber_BPM"),
+        ("Duct_[c]_Left.stl", "clear", 1, "Duct_Left"),
+        ("Duct-[o]-Left.stl", "opaque", 1, "Duct-Left"),
+        ("Duct[A]Left.stl", "accent", 1, "DuctLeft"),
+        ("[o] Cover x2.stl", "opaque", 2, "Cover"),
+        ("[a]_Bracket_x4.STL", "accent", 4, "Bracket"),
+        ("[a].stl", "accent", 1, "[a]"),
+        (
+            "STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf",
+            "accent",
+            2,
+            "Skirt_Duct",
+        ),
+        ("Panel_Clip.3MF", "primary", 1, "Panel_Clip"),
+        (
+            "STLs/Dual_4010/[a]_4010_Front_Mount_High.stl",
+            "accent",
+            1,
+            "4010_Front_Mount_High",
+        ),
+        (
+            "STLs/Common_Parts/Hotend_Mounts/Dragon_Ace_Mount_MZE.stl",
+            "primary",
+            1,
+            "Dragon_Ace_Mount_MZE",
+        ),
+        (
+            "STLs/probe_mounts/[a]_probe_mount_klicky.stl",
+            "accent",
+            1,
+            "probe_mount_klicky",
+        ),
+    ] {
+        let filename = path.rsplit('/').next().unwrap();
+        assert_eq!(
+            preview(&client, path, Value::Null),
+            json!({"role":role,"quantity":quantity,"part_slug":slug,"filename":filename}),
+            "{path}"
+        );
+    }
     owner.shutdown().unwrap();
 }
 

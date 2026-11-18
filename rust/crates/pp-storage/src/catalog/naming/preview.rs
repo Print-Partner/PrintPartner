@@ -185,6 +185,35 @@ fn quantity_strip(pattern: &str) -> Option<regress::Regex> {
     pattern = replace_first(&pattern, r"\.stl$", "$");
     regress::Regex::with_flags(&pattern, "i").ok()
 }
+/// The file name without a `.stl` or `.3mf` extension, in any case.
+fn model_stem(filename: &str) -> Option<&str> {
+    let split = filename.len().checked_sub(4)?;
+    let extension = filename.get(split..)?;
+    (extension.eq_ignore_ascii_case(".stl") || extension.eq_ignore_ascii_case(".3mf"))
+        .then(|| &filename[..split])
+}
+/// Removes every `marker` and one separator next to it, keeping one separator
+/// between the words left on both sides. Matches Node's `parsePartSlug`.
+fn strip_marker(stem: &str, marker: &str) -> String {
+    let pattern = format!("([ _-]?){}([ _-]?)", escape_regex(marker));
+    let Ok(regex) = regress::Regex::with_flags(&pattern, "i") else {
+        return stem.to_owned();
+    };
+    let mut out = String::with_capacity(stem.len());
+    let mut last = 0;
+    for m in regex.find_iter(stem) {
+        let range = m.range();
+        out.push_str(&stem[last..range.start]);
+        if range.start > 0 && range.end < stem.len() {
+            let side = |group: usize| m.group(group).map(|r| &stem[r]).unwrap_or("");
+            let before = side(1);
+            out.push_str(if before.is_empty() { side(2) } else { before });
+        }
+        last = range.end;
+    }
+    out.push_str(&stem[last..]);
+    out
+}
 fn parse_integer(text: &str) -> f64 {
     let text = trim(text);
     let mut end = 0;
@@ -242,10 +271,15 @@ pub(in crate::catalog) fn preview(
         .unwrap_or(RoleId::Primary);
     let quantity_re = regress::Regex::with_flags(&profile.quantity.regex, "i")
         .map_err(|_| CatalogFailure::Input("Invalid quantity regex".into()))?;
+    // Quantity regexes end in `\.stl$`; a `.3mf` part is read as the `.stl` of the same name.
+    let quantity_name = match model_stem(&filename) {
+        Some(stem) => format!("{stem}.stl"),
+        None => filename.clone(),
+    };
     let captured = quantity_re
-        .find(&filename)
+        .find(&quantity_name)
         .and_then(|m| m.captures.first().cloned().flatten())
-        .map(|r| &filename[r])
+        .map(|r| &quantity_name[r])
         .filter(|s| !s.is_empty());
     let quantity = captured
         .map(parse_integer)
@@ -258,11 +292,7 @@ pub(in crate::catalog) fn preview(
         }
         other => serde_json::Number::from_f64(other),
     };
-    let name = if filename.to_lowercase().ends_with(".stl") {
-        &filename[..filename.len() - 4]
-    } else {
-        &filename
-    };
+    let name = model_stem(&filename).unwrap_or(&filename);
     let mut slug = name.to_owned();
     if profile.slug.strip_markers {
         for marker in profile
@@ -271,7 +301,7 @@ pub(in crate::catalog) fn preview(
             .flat_map(|r| &r.markers)
             .filter(|m| !trim(m).is_empty())
         {
-            slug = replace_first(&slug, &format!("^{}", escape_regex(marker)), "")
+            slug = strip_marker(&slug, marker);
         }
     }
     if profile.slug.strip_quantity

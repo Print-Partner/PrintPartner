@@ -1711,3 +1711,129 @@ describe("UI6-05 keyboard, focus, disabled reasons and states", () => {
     expect(await screen.findByRole("textbox", { name: "Name" })).toBeTruthy();
   });
 });
+
+describe("GRE-1183 rapid Plan edits stay draft-only through every failure", () => {
+  it("keeps intent, the draft and Part identities through a lost reply, a refusal and a retry", async () => {
+    // A core that holds one open draft and commits each new key once.
+    let lifecycle = 2;
+    const included = { "bracket.stl": true, "gear.stl": false };
+    let bracket: number | null = null;
+    let gear = 4;
+    const digest = () => lifecycle.toString(16).repeat(64);
+    const current = (): DraftWorkspace => ({
+      ...workspace({ ...DRAFT, lifecycle_version: lifecycle, snapshot_digest: digest() }),
+      parts: [
+        part(11, "bracket.stl", included["bracket.stl"], bracket),
+        part(12, "gear.stl", included["gear.stl"], gear),
+      ],
+    });
+    const receipts = new Map<string, unknown>();
+    const commits: string[] = [];
+    let lose = true;
+    let otherWindow = true;
+    const fetchMock = core({
+      draft: current,
+      write: (path, init) => {
+        if (path !== "/api/v2/plans/2/drafts/save") return undefined;
+        const key = new Headers(init!.headers).get("idempotency-key")!;
+        const replay = receipts.get(key);
+        if (replay) return json({ receipt: replay, workspace: current() });
+        const body = JSON.parse(String(init!.body));
+        const [decision] = body.decisions;
+        if (decision.kind === "set_quantity_override" && otherWindow) {
+          // Another window saves the draft just before this edit lands.
+          otherWindow = false;
+          gear = 6;
+          lifecycle += 1;
+        }
+        if (body.expected_draft.lifecycle_version !== lifecycle) {
+          return problem(409, "draft_changed");
+        }
+        const file = decision.target.part_key as keyof typeof included;
+        if (decision.kind === "set_included") included[file] = decision.value;
+        else bracket = decision.value;
+        lifecycle += 1;
+        commits.push(key);
+        const receipt = {
+          profile_id: 2,
+          draft_id: 9,
+          reconciliation_id: commits.length,
+          snapshot_digest: digest(),
+          saved_at: "2026-11-18T00:00:00.000Z",
+        };
+        receipts.set(key, receipt);
+        if (lose) {
+          // The first save commits, but its reply never arrives.
+          lose = false;
+          return Promise.reject(new TypeError("Failed to fetch"));
+        }
+        return json({ receipt, workspace: current() });
+      },
+    });
+    const client = renderAt(fetchMock);
+    const gearBox = await screen.findByRole<HTMLInputElement>("checkbox", {
+      name: "Include gear.stl",
+    });
+    const bracketBox = screen.getByRole<HTMLInputElement>("checkbox", {
+      name: "Include bracket.stl",
+    });
+    const quantity = screen.getByRole<HTMLInputElement>("textbox", {
+      name: /Quantity of bracket\.stl/,
+    });
+
+    // Three edits before the first save answers.
+    fireEvent.click(gearBox);
+    fireEvent.change(quantity, { target: { value: "5" } });
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    fireEvent.click(bracketBox);
+
+    await waitFor(() => expect(commits).toHaveLength(2));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    // The lost save committed once, so the box keeps it; the later click stays too.
+    expect(gearBox.checked).toBe(true);
+    expect(bracketBox.checked).toBe(false);
+    // The refused quantity stays typed, and Enter sends it again against the newer draft.
+    expect(quantity.value).toBe("5");
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    await waitFor(() => expect(commits).toHaveLength(3));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+
+    const sent = writes(fetchMock);
+    // Only draft autosave: no publishing Save, Accept, abandon or recompute.
+    expect(sent.every((w) => w.path === "/api/v2/plans/2/drafts/save")).toBe(true);
+    const [lost, resend, refused, toggle, again] = sent;
+    expect(sent).toHaveLength(5);
+    expect(resend).toEqual(lost);
+    expect(refused!.key).not.toBe(lost!.key);
+    expect(again!.key).not.toBe(refused!.key);
+    expect(commits).toEqual([lost!.key, toggle!.key, again!.key]);
+    // Each write names the draft the previous answer or refetch left.
+    expect(sent.map((w) => w.body.expected_draft.lifecycle_version)).toEqual([2, 2, 3, 4, 5]);
+    expect(sent.map((w) => w.body.expected_draft.snapshot_digest)).toEqual(
+      [2, 2, 3, 4, 5].map((v) => v.toString(16).repeat(64)),
+    );
+    expect(new Set(sent.map((w) => w.body.expected_draft.draft_id))).toEqual(new Set([9]));
+    expect(sent.map((w) => w.body.decisions)).toEqual([
+      [{ kind: "set_included", target: target("gear.stl"), value: true }],
+      [{ kind: "set_included", target: target("gear.stl"), value: true }],
+      [{ kind: "set_quantity_override", target: target("bracket.stl"), value: 5 }],
+      [{ kind: "set_included", target: target("bracket.stl"), value: false }],
+      [{ kind: "set_quantity_override", target: target("bracket.stl"), value: 5 }],
+    ]);
+    // The same draft and Parts remain, with every edit and the other window's save.
+    const plan = client.getQueryData<{ draft: { workspace: DraftWorkspace } }>(["core", "plan", 2]);
+    expect(plan!.draft.workspace.draft.draft_id).toBe(9);
+    expect(
+      plan!.draft.workspace.parts.map((p) => [p.draft_part_id, p.included, p.quantity_override]),
+    ).toEqual([
+      [11, false, 5],
+      [12, true, 6],
+    ]);
+  });
+});
+
+const target = (file: string) => ({
+  part_key: file,
+  relative_path: `stl/${file}`,
+  source_layer: "base:Kit",
+});

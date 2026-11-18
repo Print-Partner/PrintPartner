@@ -533,13 +533,21 @@ impl Installation {
         create_new(&root.join(".desktop-owner.json"))?.write_all(marker.as_bytes())?;
         create_new(&root.join(format!(".desktop-owner-release-{LEFTOVER_INSTANCE}.json")))?
             .write_all(marker.as_bytes())?;
-        fs::create_dir(root.join("lost+found"))
+        create_private_dir(&root.join("lost+found"))
     }
 }
 
 fn write_owner_directory(path: &Path, owner: &str) -> io::Result<()> {
-    fs::create_dir(path)?;
+    create_private_dir(path)?;
     create_new(&path.join("owner.json"))?.write_all(owner.as_bytes())
+}
+
+/// Creates one directory with mode `0o700` whatever the umask.
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path)
 }
 
 fn create_new(path: &Path) -> io::Result<File> {

@@ -329,7 +329,7 @@ fn import_inputs_reuses_or_creates_a_git_source() {
         vec![
             git(kit, Some(" dev ")),
             git(&format!("{kit}.git"), None),
-            git("https://github.com/other/kit", None),
+            git("https://github.com/other/kit/tree/dev", None),
         ],
     )
     .unwrap();
@@ -345,7 +345,7 @@ fn import_inputs_reuses_or_creates_a_git_source() {
         .collect();
     let other = format!(
         "other-kit-{}",
-        &evidence_id("https://github.com/other/kit")[..6]
+        &evidence_id("https://github.com/other/kit/tree/dev")[..6]
     );
     assert_eq!(
         new,
@@ -354,7 +354,7 @@ fn import_inputs_reuses_or_creates_a_git_source() {
             (
                 json!(other),
                 json!("https://github.com/other/kit"),
-                json!("main")
+                json!("dev")
             ),
         ]
     );

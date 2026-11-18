@@ -346,7 +346,8 @@ fn git_sources(
 
 /// The git Source `item` needs, named as Node names it: the last two path
 /// segments joined by `-`, without `.git`, made unique with the start of the
-/// evidence id and then a number.
+/// evidence id and then a number. On GitHub the two segments are the owner
+/// and repository, so a `/tree/<branch>` URL is not named `tree-<branch>`.
 fn new_source(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -365,7 +366,12 @@ fn new_source(
         .skip(3)
         .filter(|segment| !segment.is_empty())
         .collect();
-    let mut base = segments[segments.len().saturating_sub(2)..].join("-");
+    let two = if github {
+        &segments[..segments.len().min(2)]
+    } else {
+        &segments[segments.len().saturating_sub(2)..]
+    };
+    let mut base = two.join("-");
     if base.to_lowercase().ends_with(".git") {
         base.truncate(base.len() - ".git".len());
     }

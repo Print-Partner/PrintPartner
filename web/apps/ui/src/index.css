@@ -803,6 +803,10 @@ body {
   margin-top: 4px;
 }
 
+.pp-experiment {
+  margin-top: 8px;
+}
+
 .pp-gate-snapshot,
 .pp-gate-restored {
   margin: 0 0 8px;

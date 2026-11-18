@@ -117,7 +117,7 @@ Configure the MCP client with the URL and the header `Authorization: Bearer ppk_
 
 - A valid key opens an MCP session; `tools/list` and the read tools work.
 - No key, or a key that is unknown, revoked or expired: `401` with `{"detail":"Valid API key required"}`, and no session. A POST or DELETE with neither a key nor an Origin is refused earlier with `403`, and so is any request whose Origin does not match the listener, even with a valid key.
-- Host, Origin, forwarded headers and DNS names follow the [Admission](#run) rules above. MCP also has its own budget of 1000 requests a minute ([Assistant MCP](assistant-mcp.md)).
+- Host, Origin, forwarded headers and DNS names follow the [Admission](#run) rules above. MCP also has its own budget of 1000 requests a minute for valid keys, and a separate bucket per peer for requests without one ([Assistant MCP](assistant-mcp.md)).
 
 Over a LAN, plain HTTP sends the key unencrypted. Prefer the loopback-only mapping, or reach the host through an encrypted tunnel.
 

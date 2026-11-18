@@ -133,8 +133,10 @@ def verify_locked_closure(root, web, lock):
         if 'node_modules/' in name and not package.get('dev') and not package.get('devOptional'):
             relative_path(name)
             if package.get('link') and web / relative_path(package.get('resolved', '')) not in shipped:
-                # stage_dependencies.py skips a workspace link whose target the bundle does not ship
-                # as a Node workspace. A static build such as apps/ui/dist ships without its alias.
+                # A link to a workspace outside ARTIFACTS must be absent, even when its directory
+                # is in the bundle: a static build such as apps/ui/dist ships without its alias.
+                # stage_dependencies.py still keys on the target's presence, so it links apps/ui
+                # whenever apps/ui exists; the GRE-1387 follow-up aligns it with this rule.
                 require(not (web / name).exists() and not (web / name).is_symlink(),
                         'Workspace link to an unshipped target: '+name)
                 continue

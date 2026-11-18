@@ -20,7 +20,7 @@ use rmcp::{
         streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
-use std::net::IpAddr;
+use std::{net::IpAddr, time::Duration};
 
 pub(crate) const USAGE: &str = "Usage: pp-server mcp-stdio --url <url>
 
@@ -36,6 +36,8 @@ exits 1 before reading stdin. It never opens the data directory.";
 /// The variable that carries the API key, as for the Cursor plugin.
 pub(crate) const KEY_VARIABLE: &str = "PRINT_PARTNER_API_KEY";
 const DEFAULT_PATH: &str = "/api/v1/mcp";
+/// How long the core may take to answer `initialize` before the bridge gives up.
+const HANDSHAKE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
@@ -105,20 +107,41 @@ pub(crate) fn api_key(value: Option<std::ffi::OsString>) -> Result<String> {
 
 /// Connects to the core, then serves stdio until the client closes stdin.
 pub(crate) async fn run(url: Url, key: String) -> Result<()> {
-    let config = StreamableHttpClientTransportConfig::with_uri(url.as_str()).auth_header(key);
+    // `core_url` allows plain http only to loopback. An inherited HTTP proxy
+    // would carry that request, key included, off the machine in the clear,
+    // so loopback goes direct. https may still use a proxy: it tunnels.
+    let http = match url.scheme() {
+        "http" => reqwest::Client::builder().no_proxy(),
+        _ => reqwest::Client::builder(),
+    }
+    .build()
+    .context("Build the HTTP client")?;
+    // One session per process: a session the core forgot (a restart) is an
+    // error, not a silent new session without the pending proposals.
+    let config = StreamableHttpClientTransportConfig::with_uri(url.as_str())
+        .auth_header(key)
+        .reinit_on_expired_session(false);
     let client = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("pp-server-mcp-stdio", env!("CARGO_PKG_VERSION")),
     );
-    let upstream = client
-        .serve(StreamableHttpClientTransport::from_config(config))
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "No Print Partner core accepted the connection at {url}: {error}. \
-                 Start Print Partner and check {KEY_VARIABLE}; mcp-stdio never opens the database."
-            )
-        })?;
+    let refused = |reason: String| {
+        anyhow::anyhow!(
+            "No Print Partner core accepted the connection at {url}: {reason}. \
+             Start Print Partner and check {KEY_VARIABLE}; mcp-stdio never opens the database."
+        )
+    };
+    let handshake = client.serve(StreamableHttpClientTransport::with_client(http, config));
+    let upstream = match tokio::time::timeout(HANDSHAKE, handshake).await {
+        Ok(Ok(upstream)) => upstream,
+        Ok(Err(error)) => return Err(refused(error.to_string())),
+        Err(_) => {
+            return Err(refused(format!(
+                "no answer within {} seconds",
+                HANDSHAKE.as_secs()
+            )));
+        }
+    };
     let bridge = Bridge::new(upstream.peer().clone());
     let stdio = bridge
         .serve(stdio_pipes())

@@ -25,6 +25,14 @@ use std::{
 const KEY_VARIABLE: &str = "PRINT_PARTNER_API_KEY";
 const UNKNOWN_KEY: &str = "ppk_0000000000000000000000000000000000000000";
 const WAIT: Duration = Duration::from_secs(30);
+const PROXY_VARIABLES: [&str; 6] = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
 
 fn server_binary() -> std::path::PathBuf {
     if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
@@ -43,7 +51,17 @@ struct Bridge {
 
 impl Bridge {
     fn start(url: &str, key: Option<&str>, cwd: &Path) -> Self {
+        Self::start_with(url, key, cwd, &[])
+    }
+
+    /// `start` with extra environment. Inherited proxy settings are removed
+    /// first, so only `env` can set one.
+    fn start_with(url: &str, key: Option<&str>, cwd: &Path, env: &[(&str, &str)]) -> Self {
         let mut command = child_process::command(server_binary());
+        for variable in PROXY_VARIABLES {
+            command.env_remove(variable);
+        }
+        command.envs(env.iter().copied());
         command
             .args(["mcp-stdio", "--url", url])
             .env_remove(KEY_VARIABLE)
@@ -107,8 +125,12 @@ fn initialize() -> Value {
 /// Starts a bridge that must refuse: it exits 1, writes no MCP message, says
 /// why on stderr, and leaves `cwd` empty.
 fn assert_refused(url: &str, key: Option<&str>, reason: &str) {
+    assert_refused_with(url, key, &[], reason);
+}
+
+fn assert_refused_with(url: &str, key: Option<&str>, env: &[(&str, &str)], reason: &str) {
     let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
-    let mut bridge = Bridge::start(url, key, &cwd);
+    let mut bridge = Bridge::start_with(url, key, &cwd, env);
     // A client writes `initialize` at once; the bridge must not answer it.
     bridge.send(
         &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize() }),
@@ -147,6 +169,65 @@ fn mcp_stdio_refuses_with_no_core_running() {
         "http://192.0.2.1:8080/mcp",
         Some(UNKNOWN_KEY),
         "--url must use https unless the host is a loopback address",
+    );
+}
+
+/// A loopback listener that accepts connections, records what each sends
+/// and never answers. Returns its port and the bytes received so far.
+fn silent_listener() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = received.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().map_while(Result::ok) {
+            let sink = sink.clone();
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buffer = [0; 4096];
+                while let Ok(read @ 1..) = std::io::Read::read(&mut stream, &mut buffer) {
+                    sink.lock().unwrap().extend_from_slice(&buffer[..read]);
+                }
+            });
+        }
+    });
+    (port, received)
+}
+
+#[test]
+fn mcp_stdio_gives_up_on_a_listener_that_never_answers() {
+    let (port, received) = silent_listener();
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let started = Instant::now();
+    assert_refused(&url, Some(UNKNOWN_KEY), "no answer within 10 seconds");
+    assert!(started.elapsed() < WAIT, "{:?}", started.elapsed());
+    // It did reach the listener: the deadline, not a refused connect, ended it.
+    assert!(!received.lock().unwrap().is_empty());
+}
+
+#[test]
+fn mcp_stdio_sends_loopback_http_direct_never_through_a_proxy() {
+    let (proxy, received) = silent_listener();
+    let proxy = format!("http://127.0.0.1:{proxy}");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let env = [
+        ("HTTP_PROXY", proxy.as_str()),
+        ("http_proxy", proxy.as_str()),
+        ("ALL_PROXY", proxy.as_str()),
+    ];
+    // Direct, the closed port refuses at once; through the proxy the request
+    // and its key would reach the proxy instead.
+    assert_refused_with(&url, Some(UNKNOWN_KEY), &env, "error sending request");
+    let received = received.lock().unwrap();
+    assert!(
+        received.is_empty(),
+        "the proxy got {}",
+        String::from_utf8_lossy(&received)
     );
 }
 
@@ -333,6 +414,46 @@ mod with_a_core {
             before,
             "the bridge touched the data directory"
         );
+    }
+
+    /// A core restart forgets the bridge's MCP session and its proposal. The
+    /// bridge reports the lost session instead of quietly opening a new one
+    /// in which the proposal is gone.
+    #[test]
+    fn mcp_stdio_reports_a_lost_session_instead_of_replacing_it() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let address = format!("127.0.0.1:{port}");
+        let root = scratch::Scratch::new("pp-mcp-stdio-restart-");
+        let server = rust_only::Server::start_with_listener(&root, Some(&address), None);
+        let origin = server.origin().to_owned();
+        let key = api_key(&origin, &server.data);
+        let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
+        let mut bridge = Bridge::start(&format!("{origin}/mcp"), Some(&key), &cwd);
+        bridge.request(1, "initialize", initialize());
+        bridge.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        let proposal = bridge.tool(
+            2,
+            "propose_create_build",
+            json!({ "name": "Before restart", "request": "Lost with the session." }),
+        );
+        assert_eq!(proposal["status"], "proposed", "{proposal}");
+
+        let (exit, _, _) = server.stop();
+        assert!(exit.success());
+        let server = rust_only::Server::start_with_listener(&root, Some(&address), None);
+        assert_eq!(server.origin(), origin);
+
+        bridge.send(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": { "name": "list_pending_actions", "arguments": {} } }));
+        let reply = bridge.receive();
+        assert_eq!(reply["id"], 3, "{reply}");
+        assert!(reply["result"].is_null(), "a new session answered: {reply}");
+        assert!(reply["error"]["message"].is_string(), "{reply}");
+        drop(server);
     }
 
     /// Every entry under `dir` with its length and modification time.

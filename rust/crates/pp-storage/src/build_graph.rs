@@ -14,7 +14,7 @@ pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
 pub mod role_filament;
 pub use role_filament::{AssignedRole, RoleFilamentError};
 pub mod import_inputs;
-pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, Target};
+pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, RepoKey, Target};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;

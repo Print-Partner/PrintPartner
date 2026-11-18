@@ -3,7 +3,9 @@
 
 Reads trusted pp-score lines and plans one pp/score status per exact head SHA they name.
 Never invents or re-derives a score. A record whose seat vendor equals its author= vendor
-is a self-score and fails the head. author=cursor-auto or author=unknown requires trusted
+is a self-score and fails the head. A record must end with obstacles=, the scorer's disclosure
+of any refusal, guard refusal or approval stall it hit; a line without it does not count.
+author=cursor-auto or author=unknown requires trusted
 anthropic and openai records on that exact head; the lower score is the bar. In --merge-group mode it checks every PR in a merge
 queue entry and posts one pp/score status on the merge group SHA, failing closed.
 Default is a dry run that prints the gh api POST that would be sent. Pass --post to apply.
@@ -18,6 +20,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+# obstacles= is required here: a record without it does not count. merge_class.py holds the vocabulary.
+from merge_class import parse_obstacles
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
@@ -44,6 +49,7 @@ class Record:
     vendor: str
     author: str
     score: float
+    obstacles: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -70,7 +76,7 @@ def score_pattern(vendors, author_names=None):
     author_names = "|".join(re.escape(v) for v in sorted(set(vendors) | extra))
     return re.compile(
         rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({vendor_names})"
-        rf" score=([0-9]+) author=({author_names})$"
+        rf" score=([0-9]+) author=({author_names}) obstacles=(\S+)$"
     )
 
 
@@ -129,10 +135,11 @@ def parse_line(line: str, pattern, seats) -> Record | None:
     match = pattern.fullmatch(text)
     if not match:
         return None
-    head, seat, vendor, score, author = match.groups()
-    if seats.get(seat) != vendor:
+    head, seat, vendor, score, author, token = match.groups()
+    obstacles = parse_obstacles(token)
+    if seats.get(seat) != vendor or obstacles is None:
         return None
-    return Record(head, seat, vendor, author, float(score))
+    return Record(head, seat, vendor, author, float(score), obstacles)
 
 
 def trusted_records(comments, trust) -> list[Record]:
@@ -317,7 +324,8 @@ def apply_plan(repo: str, plan: StatusPlan) -> None:
 def show(repo: str, plan: StatusPlan, post: bool) -> None:
     print(format_call(repo, plan))
     seats = ", ".join(
-        f"{r.seat} {format_score(r.score)} (vendor={r.vendor} author={r.author}) on {r.head[:7]}"
+        f"{r.seat} {format_score(r.score)} (vendor={r.vendor} author={r.author}"
+        f" obstacles={','.join(r.obstacles) or 'none'}) on {r.head[:7]}"
         for r in plan.records
     )
     print(f"# {plan.state} on {plan.head}: {seats or plan.description}")

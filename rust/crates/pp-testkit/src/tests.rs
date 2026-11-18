@@ -24,6 +24,20 @@ fn assert_only_lease_leftovers(installation: &Installation) {
     }
 }
 
+/// Storage refuses a data directory other accounts can write to, so both
+/// constructors pin 0o700 instead of 0o777 minus the umask (GRE-1398).
+#[cfg(unix)]
+#[test]
+fn data_directory_is_private_whatever_the_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let created = Installation::create(Fixture::Empty).unwrap();
+    assert_eq!(mode(created.path()), 0o700, "create");
+    let parent = tempfile::tempdir().unwrap();
+    let created_in = Installation::create_in(parent.path(), Fixture::Empty).unwrap();
+    assert_eq!(mode(created_in.path()), 0o700, "create_in");
+}
+
 #[test]
 fn empty_has_no_entries() {
     let installation = Installation::create(Fixture::Empty).unwrap();

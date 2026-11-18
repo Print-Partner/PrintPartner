@@ -367,6 +367,23 @@ pub fn allowed_in_node_lease(name: &str) -> bool {
     matches!(name, "owner.json" | "previous-marker.json")
 }
 
+/// A `pp-testkit-` temp directory builder that pins mode `0o700`.
+///
+/// Rust storage refuses a data directory that other accounts can write to.
+/// tempfile otherwise creates `0o777` minus the umask, so under `umask 0002`
+/// the directory would be `0o775` and storage would reject it. Windows has no
+/// mode bits; the directory inherits the temp root's ACL.
+fn private_builder() -> tempfile::Builder<'static, 'static> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("pp-testkit-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    builder
+}
+
 /// A disposable data directory, deleted when dropped.
 pub struct Installation {
     directory: tempfile::TempDir,
@@ -385,10 +402,7 @@ impl fmt::Debug for Installation {
 impl Installation {
     /// Creates the installation under the system temporary directory.
     pub fn create(spec: impl Into<Spec>) -> io::Result<Self> {
-        Self::build(
-            tempfile::Builder::new().prefix("pp-testkit-").tempdir()?,
-            spec.into(),
-        )
+        Self::build(private_builder().tempdir()?, spec.into())
     }
 
     /// Copies the required-unit database with its recorded authenticated session.
@@ -405,12 +419,7 @@ impl Installation {
     /// that need a specific filesystem. Nothing outside the new directory is
     /// written.
     pub fn create_in(parent: &Path, spec: impl Into<Spec>) -> io::Result<Self> {
-        Self::build(
-            tempfile::Builder::new()
-                .prefix("pp-testkit-")
-                .tempdir_in(parent)?,
-            spec.into(),
-        )
+        Self::build(private_builder().tempdir_in(parent)?, spec.into())
     }
 
     fn build(directory: tempfile::TempDir, spec: Spec) -> io::Result<Self> {

@@ -50,13 +50,8 @@ struct Bridge {
 }
 
 impl Bridge {
-    fn start(url: &str, key: Option<&str>, cwd: &Path) -> Self {
-        Self::start_with(url, key, cwd, &[])
-    }
-
-    /// `start` with extra environment. Inherited proxy settings are removed
-    /// first, so only `env` can set one.
-    fn start_with(url: &str, key: Option<&str>, cwd: &Path, env: &[(&str, &str)]) -> Self {
+    /// Inherited proxy settings are removed first, so only `env` can set one.
+    fn start(url: &str, key: Option<&str>, cwd: &Path, env: &[(&str, &str)]) -> Self {
         let mut command = child_process::command(server_binary());
         for variable in PROXY_VARIABLES {
             command.env_remove(variable);
@@ -130,7 +125,7 @@ fn assert_refused(url: &str, key: Option<&str>, reason: &str) {
 
 fn assert_refused_with(url: &str, key: Option<&str>, env: &[(&str, &str)], reason: &str) {
     let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
-    let mut bridge = Bridge::start_with(url, key, &cwd, env);
+    let mut bridge = Bridge::start(url, key, &cwd, env);
     // A client writes `initialize` at once; the bridge must not answer it.
     bridge.send(
         &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize() }),
@@ -343,7 +338,7 @@ mod with_a_core {
         let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
 
         for path in ["/mcp", "/api/v1/mcp"] {
-            let mut bridge = Bridge::start(&format!("{origin}{path}"), Some(&key), &cwd);
+            let mut bridge = Bridge::start(&format!("{origin}{path}"), Some(&key), &cwd, &[]);
             let result = bridge.request(1, "initialize", initialize());
             assert_eq!(
                 result["serverInfo"]["name"], "print-partner-assistant",
@@ -432,7 +427,7 @@ mod with_a_core {
         let origin = server.origin().to_owned();
         let key = api_key(&origin, &server.data);
         let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
-        let mut bridge = Bridge::start(&format!("{origin}/mcp"), Some(&key), &cwd);
+        let mut bridge = Bridge::start(&format!("{origin}/mcp"), Some(&key), &cwd, &[]);
         bridge.request(1, "initialize", initialize());
         bridge.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         let proposal = bridge.tool(

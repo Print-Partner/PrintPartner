@@ -512,7 +512,7 @@ fn upsert(brief: &mut BuildPlanningBrief, mut item: BuildEvidence) -> &BuildEvid
     };
     let Some(index) = brief.evidence.iter().position(same) else {
         brief.evidence.push(item);
-        return brief.evidence.last().expect("just pushed");
+        return &brief.evidence[brief.evidence.len() - 1];
     };
     let kept = &mut brief.evidence[index];
     if kept.source_role.is_some() {

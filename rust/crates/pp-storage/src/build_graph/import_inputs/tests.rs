@@ -374,7 +374,7 @@ fn import_inputs_reuses_or_creates_a_git_source() {
         .set(&[(&evidence_id(kit), SourceRole::Overlay)])
         .unwrap();
     let again = import(&fixture, vec![git("https://github.com/OWNER/Kit", None)]).unwrap();
-    assert_eq!(again[0].source_created, false);
+    assert!(!again[0].source_created);
     assert_eq!(again[0].evidence_id, evidence_id(kit));
     let stored = fixture.brief()["evidence"].clone();
     let kept: Vec<_> = stored

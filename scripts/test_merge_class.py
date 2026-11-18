@@ -140,12 +140,14 @@ class CoverageTests(unittest.TestCase):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors",
                                                    "pp_score_seats"})
-        self.assertEqual(data["vendors"], ["anthropic", "deepseek", "openai", "xai", "zhipu"])
+        self.assertEqual(data["vendors"], ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu"])
         self.assertEqual(data["scorer_authors"], ["poitee"])
-        # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max. Sol is not a seat.
+        # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max.
+        # Owner decision 2026-11-18: gpt-6.2-sol and composer-2.5 join the council scorer pool.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
-                                                "deepseek-v4.1-flash-free": "deepseek"})
+                                                "deepseek-v4.1-flash-free": "deepseek",
+                                                "gpt-6.2-sol": "openai", "composer-2.5": "cursor"})
         # The Codex seat counts for the pp/score status only, not for the sensitive merge guard.
         self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
 
@@ -192,6 +194,16 @@ class ScoreTests(unittest.TestCase):
         # The refusal holds even beside two qualifying seats.
         self.assertFalse(self.check([opus, self.glm(author="anthropic"), self.deepseek(author="anthropic")],
                                     author="anthropic"))
+
+    def test_sol_and_composer_pass_on_a_claude_pr(self):
+        # Chad's council pool of 2026-11-18, read from merge-classes.json itself.
+        sol = self.line("gpt-6.2-sol", vendor="openai", author="anthropic", score=9)
+        composer = self.line("composer-2.5", vendor="cursor", author="anthropic", score=10)
+        self.assertTrue(self.check([sol, composer], author="anthropic"))
+        # composer-2.5 is a Cursor seat; a record naming another vendor refuses.
+        wrong = self.line("composer-2.5", vendor="openai", author="anthropic")
+        self.assertFalse(self.check([sol, wrong], author="anthropic"))
+        self.assertFalse(self.check([sol, composer, wrong], author="anthropic"))
 
     def test_sol_seat_on_a_sol_pr_refused(self):
         self.assertFalse(self.check([self.line(), self.line("gpt-6.1-sol", vendor="openai")]))

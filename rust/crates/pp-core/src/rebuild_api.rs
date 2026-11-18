@@ -689,7 +689,11 @@ fn filaments(
 }
 
 #[cfg(test)]
+mod contract_samples;
+
+#[cfg(test)]
 mod tests {
+    use super::contract_samples::{contract_routes, sample, sample_body};
     use super::*;
     use pp_storage::{Limits, auth::Secret, build_graph::BuildCommand, read_model::Credential};
     use serde_json::{Value, json};
@@ -928,7 +932,7 @@ mod tests {
 
     /// A second session for the account `session` registered.
     async fn sign_in(client: &reqwest::Client, origin: &str) -> String {
-        let body = Some(sample_body("SignInRequest"));
+        let body = Some(sample("signIn"));
         let request = contract_request(client, origin, ("POST", "/auth/login"), &[], None, body);
         let signed_in = request.send().await.unwrap();
         assert_eq!(signed_in.status(), 200);
@@ -947,67 +951,6 @@ mod tests {
         route.path == "/auth/register"
             && status == 403
             && body["detail"] == pp_storage::auth::AuthFailure::SingleAccountExists.to_string()
-    }
-
-    /// A body each client route's request DTO accepts.
-    fn sample_body(dto: &str) -> Value {
-        match dto {
-            "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
-                "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
-            "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
-            "PrinterProbeRequest" => {
-                json!({"kind":"unsupported", "address":"http://fixture.invalid"})
-            }
-            "SetModuleRequest" => json!({"on": true}),
-            "CreateSourceRequest" => json!({"name": "Client contract", "source_kind": "archive"}),
-            "StartSourceSyncRequest" => json!({"project_ids": [1]}),
-            "CreateIntegrationRequest" => {
-                json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"})
-            }
-            "CreatePrinterRequest" => json!({"name": "Client contract", "model": "fixture",
-                "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220}),
-            "UpdateIntegrationRequest" | "UpdatePrinterRequest" => {
-                json!({"name": "Client contract"})
-            }
-            "SaveDraftHeaderRequest" => {
-                json!({"expected_base": {"revision_id": null, "plan_version": 0},
-                "expected_draft": null, "expected_header_version": null,
-                "header": {"name": "Client contract", "order_number": null, "customer": null, "due_date": null}})
-            }
-            "SavePlanChoicesRequest" => {
-                json!({"expected_base": {"revision_id": null, "plan_version": 0},
-                "expected_draft": null, "remap_checkoff_links": false, "decisions": [{"kind": "set_included",
-                    "target": {"part_key": "client.stl", "relative_path": "client.stl", "source_layer": null},
-                    "value": true}]})
-            }
-            "AcceptDraftRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
-                "expected_lifecycle_version": 0,
-                "expected_base": {"revision_id": null, "plan_version": 0}}),
-            "ReconcileDraftRequest" => {
-                json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
-            }
-            "RestoreSnapshotRequest" => json!({"mode": "draft",
-                "expected_base": {"revision_id": null, "plan_version": 0}, "expected_draft": null}),
-            "VerifyBatchRequest" => json!({"idempotency_key": "client-contract",
-                "beds": [{"link_id": "no-such-link", "decisions": [
-                    {"part_id": 1, "unit_index": 0, "result": "confirmed"}]}]}),
-            "UndoBatchRequest" => json!({"undo_token": "ppb_unknown"}),
-            "ManualBurstRequest" => json!({"idempotency_key": "client-contract",
-                "expected": {"profile_id": 1, "plan_version": 1, "plan_revision_id": 1,
-                    "plan_revision_digest": "0".repeat(64), "required_unit_mapping_digest": "0".repeat(64)},
-                "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
-            "ClaimUnattributedRequest" => json!({"profile_id": 1}),
-            "DismissUnattributedRequest" => json!({}),
-            "ReconcileDeductionRequest" => json!({"answer": "dismiss"}),
-            "ReconcileSendRequest" => json!({"printed": false, "job_id": null}),
-            // A wrong confirmation is refused before any stage is looked up.
-            "RestoreRequest" => json!({"restore_id": "0".repeat(32), "confirmation": "yes"}),
-            "SignInRequest" => json!({"email": "client@example.com", "password": "password-1234"}),
-            "RegisterRequest" => {
-                json!({"email": "second@example.com", "password": "password-1234"})
-            }
-            other => panic!("no sample body for {other}"),
-        }
     }
 
     /// One request to the composed routers, with the route's required
@@ -1218,7 +1161,6 @@ mod tests {
 
     #[tokio::test]
     async fn client_routes_match_registrations() {
-        use pp_api::client_contract::CLIENT_ROUTES;
         let (owner, directory, listener, origin) = bound().await;
         let rebuild = DesktopRebuild::from_value(Some("1"));
         let (policy, lifetimes) = (desktop_policy(), lifetimes());
@@ -1278,19 +1220,14 @@ mod tests {
         assert_eq!(unregistered.text().await.unwrap(), "");
         // Sign-out revokes the session it is sent with, so it gets its own.
         let spare = sign_in(&client, &origin).await;
-        for route in CLIENT_ROUTES
-            .iter()
-            .chain(std::iter::once(&pp_api::printer_host::probe::CLIENT_ROUTE))
-            .chain(&pp_api::catalog::contract::CLIENT_ROUTES)
-            .chain(&pp_api::send_queue::CLIENT_ROUTES)
-        {
+        for route in contract_routes() {
             let path = route
                 .path
                 .replace("{id}", &build)
                 .replace("{draft_id}", "1")
                 .replace("{snapshot_id}", "1")
                 .replace("{module}", "orders");
-            let body = route.request.map(sample_body);
+            let body = sample_body(route);
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await
                 .unwrap();
@@ -1359,7 +1296,7 @@ mod tests {
             let refused = client
                 .post(format!("{origin}/auth/register"))
                 .header("Origin", sent_origin)
-                .json(&sample_body("RegisterRequest"))
+                .json(&sample("registerOwner"))
                 .send()
                 .await
                 .unwrap();

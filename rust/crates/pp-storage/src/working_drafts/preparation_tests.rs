@@ -510,20 +510,21 @@ fn naming_comparisons_are_cumulative_and_cancellable() {
 fn parse_strips_role_markers_anywhere_like_the_preview() {
     use crate::catalog::naming::{NamingProfile, Role, RoleId};
     let default = LayerNaming::new(Arc::new(NamingProfile::default()));
-    let mut letter = NamingProfile::default();
-    letter.roles = vec![
-        Role {
-            id: RoleId::Primary,
-            label: "Primary".into(),
-            markers: vec![],
-        },
-        Role {
-            id: RoleId::Accent,
-            label: "Accent".into(),
-            markers: vec!["A".into()],
-        },
-    ];
-    let letter = LayerNaming::new(Arc::new(letter));
+    let letter = LayerNaming::new(Arc::new(NamingProfile {
+        roles: vec![
+            Role {
+                id: RoleId::Primary,
+                label: "Primary".into(),
+                markers: vec![],
+            },
+            Role {
+                id: RoleId::Accent,
+                label: "Accent".into(),
+                markers: vec!["A".into()],
+            },
+        ],
+        ..NamingProfile::default()
+    }));
     let cancelled = AtomicBool::new(false);
     for (path, naming, slug) in [
         ("STLs/[a]_belt_clip.stl", &default, "belt_clip"),

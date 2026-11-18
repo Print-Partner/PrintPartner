@@ -25,6 +25,7 @@ import { NotFound } from "../screen/screens";
 import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { plural } from "../today/beds";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { ExperimentOption, holdersOf } from "./ExperimentOption";
 import { planKey, useMatchStep } from "./PlanReconcile";
 import { DRAFT_OPEN, NO_DRAFT, PLATES_CLEARED } from "./planCopy";
 import {
@@ -499,6 +500,14 @@ function Changes({ changes }: { changes: PreviewChanges }) {
             (d) => `Order ${d.order_number} is also on ${d.name}`,
           )}
         />
+        {changes.duplicate_orders.length > 0 && (
+          <ExperimentOption
+            holders={changes.duplicate_orders.map((d) => ({
+              profileId: d.profile_id,
+              name: d.name,
+            }))}
+          />
+        )}
       </Section>
     </>
   );
@@ -615,6 +624,9 @@ function AcceptGate({
             Check again
           </button>
         </div>
+      )}
+      {preview.isError && !match.needed && holdersOf(preview.error).length > 0 && (
+        <ExperimentOption holders={holdersOf(preview.error)} />
       )}
       {data && (
         <>

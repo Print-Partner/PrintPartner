@@ -121,6 +121,8 @@ Configure the MCP client with the URL and the header `Authorization: Bearer ppk_
 
 Over a LAN, plain HTTP sends the key unencrypted. Prefer the loopback-only mapping, or reach the host through an encrypted tunnel.
 
+A client that launches only stdio MCP servers can run the bridge inside the container: `docker exec -i -e PRINT_PARTNER_API_KEY print-partner pp-server mcp-stdio --url http://127.0.0.1:8080/api/v1/mcp`. It forwards to this server with the key and never opens `/data`; see [Stdio bridge to the running core](assistant-mcp.md#stdio-bridge-to-the-running-core).
+
 ## Volumes and the data directory
 
 `/data` holds the SQLite database (`print-partner.db` with its WAL), the ownership marker `.pp-rust-owned.json`, the lock `printpartner.lock`, the sign-in socket `.pp-server-bootstrap.sock` while the server runs, and the `sources`, `repos`, `covers`, `thumbs` and `exports` folders. `desktop.toml` appears only on a volume created by an image without `PP_LISTEN_ADDR`. This image ignores its saved port, and a fresh volume started from this image has no `desktop.toml`. Use a named volume or a local directory. Do not use a network filesystem.

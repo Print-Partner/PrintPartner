@@ -10,6 +10,7 @@ mod bootstrap;
 mod health;
 #[cfg(feature = "desktop_rebuild")]
 mod import;
+mod mcp_stdio;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -32,6 +33,10 @@ fn main() -> Result<()> {
     if args.peek().map(String::as_str) == Some("import") {
         args.next();
         return import(args);
+    }
+    if args.peek().map(String::as_str) == Some("mcp-stdio") {
+        args.next();
+        return mcp_stdio(args);
     }
     // The headless server's tracing events go to stderr, which a container
     // collects (provisional, GRE-1457). The subcommands above print only
@@ -156,6 +161,29 @@ fn import(args: impl Iterator<Item = String>) -> Result<()> {
 #[cfg(not(feature = "desktop_rebuild"))]
 fn import(_: impl Iterator<Item = String>) -> Result<()> {
     bail!("pp-server import needs a build with the desktop_rebuild feature")
+}
+
+/// `pp-server mcp-stdio`: MCP on stdio, forwarded to the running core.
+/// Stdout carries only MCP messages; a refusal goes to stderr with exit 1.
+fn mcp_stdio(args: impl Iterator<Item = String>) -> Result<()> {
+    let result = mcp_stdio::parse(args).and_then(|command| match command {
+        mcp_stdio::Command::Help => {
+            println!("{}", mcp_stdio::USAGE);
+            Ok(())
+        }
+        mcp_stdio::Command::Bridge { url } => {
+            let key = mcp_stdio::api_key(std::env::var_os(mcp_stdio::KEY_VARIABLE))?;
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(mcp_stdio::run(url, key))
+        }
+    });
+    if let Err(error) = result {
+        eprintln!("mcp-stdio: {error:#}");
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 async fn serve(args: Vec<String>) -> Result<()> {

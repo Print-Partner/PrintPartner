@@ -51,16 +51,42 @@ fn page(url: &str, normalized: &str, page: Page) -> ImportInput {
     }
 }
 
+/// Stands in for the caller's repository key: the URL lowercased, without
+/// `.git`, for `github.com` URLs only.
+fn repo_key(url: &str) -> Option<String> {
+    let url = url.to_lowercase();
+    url.starts_with("https://github.com/")
+        .then(|| url.trim_end_matches(".git").to_owned())
+}
+
+/// A git repository input, as the caller classifies a `github.com` URL.
+fn git(url: &str, branch: Option<&str>) -> ImportInput {
+    ImportInput {
+        target: Target::Git {
+            url: url.into(),
+            normalized: url.into(),
+            github: true,
+            branch: branch.map(str::to_owned),
+        },
+        ..source(1)
+    }
+}
+
 fn import(fixture: &Fixture, inputs: Vec<ImportInput>) -> Result<Vec<Imported>, ImportInputsError> {
-    fixture
-        .client
-        .import_inputs(fixture.session(), fixture.build, inputs, &IDLE, WAIT)
+    fixture.client.import_inputs(
+        fixture.session(),
+        fixture.build,
+        inputs,
+        repo_key,
+        &IDLE,
+        WAIT,
+    )
 }
 
 fn check(fixture: &Fixture, inputs: Vec<ImportInput>) -> Result<(), ImportInputsError> {
     fixture
         .client
-        .check_import_inputs(fixture.session(), fixture.build, inputs, WAIT)
+        .check_import_inputs(fixture.session(), fixture.build, inputs, repo_key, WAIT)
 }
 
 /// Every Library Source row, as JSON text.
@@ -101,6 +127,7 @@ fn import_inputs_attaches_a_source_and_clears_the_selected_draft() {
             source_id: Some(3),
             url: "printpartner:source:3".into(),
             upload_required: false,
+            source_created: false,
         }]
     );
     let after = fixture.brief();
@@ -181,16 +208,23 @@ fn import_inputs_refuses_and_stores_nothing() {
     }
 
     let other = PositiveId::new(fixture.build.get() + 1).unwrap();
-    let missing =
-        fixture
-            .client
-            .import_inputs(fixture.session(), other, vec![source(3)], &IDLE, WAIT);
+    let missing = fixture.client.import_inputs(
+        fixture.session(),
+        other,
+        vec![source(3)],
+        repo_key,
+        &IDLE,
+        WAIT,
+    );
     assert!(matches!(missing, Err(ImportInputsError::NoBrief)));
     let stranger = Credential::Session(Secret::new("not-a-session".into()));
-    let refused =
-        fixture
-            .client
-            .check_import_inputs(stranger, fixture.build, vec![source(3)], WAIT);
+    let refused = fixture.client.check_import_inputs(
+        stranger,
+        fixture.build,
+        vec![source(3)],
+        repo_key,
+        WAIT,
+    );
     assert!(matches!(
         refused,
         Err(ImportInputsError::Writer(WriterFailure::Auth(_)))
@@ -260,4 +294,95 @@ fn import_inputs_attaches_model_pages_and_links_by_url() {
     );
     assert!(!link.contains_key("derived_from_evidence_id"), "{link:?}");
     assert_eq!(library(&fixture), sources, "a page creates no Source");
+}
+
+#[test]
+fn import_inputs_reuses_or_creates_a_git_source() {
+    let fixture = fixture();
+    let sources = library(&fixture);
+    // S3's URL, written another way: the key matches it, so S3 is reused.
+    let s3 = "https://github.com/Example/S3.git";
+    check(&fixture, vec![git(s3, None)]).unwrap();
+    assert_eq!(library(&fixture), sources, "the check writes nothing");
+    let imported = import(&fixture, vec![git(s3, None)]).unwrap();
+    assert_eq!(
+        (imported[0].source_id, imported[0].source_created),
+        (Some(3), false)
+    );
+    assert_eq!(library(&fixture), sources, "S3 is reused, not changed");
+    let item = fixture.brief()["evidence"][2].clone();
+    assert_eq!(item["kind"], "mod", "{item}");
+    assert_eq!(item["input_kind"], "url");
+    assert_eq!(item["source_role"], "addon");
+    assert_eq!(item["sync_status"], "pending");
+    assert_eq!(item["normalized_url"], s3);
+
+    // A repository the Library lacks, twice in one confirm, plus one whose
+    // name S3's folder name already takes: two new Sources.
+    fixture
+        .database()
+        .execute("UPDATE projects SET name='other-kit' WHERE id=3", [])
+        .unwrap();
+    let kit = "https://github.com/owner/kit";
+    let imported = import(
+        &fixture,
+        vec![
+            git(kit, Some(" dev ")),
+            git(&format!("{kit}.git"), None),
+            git("https://github.com/other/kit/tree/dev", None),
+        ],
+    )
+    .unwrap();
+    let created: Vec<_> = imported
+        .iter()
+        .map(|item| (item.source_id, item.source_created))
+        .collect();
+    assert_eq!(created, [(Some(4), true), (Some(4), true), (Some(5), true)]);
+    let rows: Value = serde_json::from_str(&library(&fixture)).unwrap();
+    let new: Vec<_> = rows.as_array().unwrap()[1..]
+        .iter()
+        .map(|row| (row[1].clone(), row[2].clone(), row[4].clone()))
+        .collect();
+    let other = format!(
+        "other-kit-{}",
+        &evidence_id("https://github.com/other/kit/tree/dev")[..6]
+    );
+    assert_eq!(
+        new,
+        [
+            (json!("owner-kit"), json!(kit), json!("dev")),
+            (
+                json!(other),
+                json!("https://github.com/other/kit"),
+                json!("dev")
+            ),
+        ]
+    );
+    // Both URLs for owner/kit share one item, keyed by the first.
+    let evidence = fixture.brief()["evidence"].clone();
+    let for_kit: Vec<_> = evidence
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["source_id"] == 4)
+        .collect();
+    assert_eq!(for_kit.len(), 1, "{evidence}");
+    assert_eq!(for_kit[0]["id"], json!(evidence_id(kit)));
+
+    // A re-import keeps a role the Build already gave the Source's item.
+    fixture
+        .set(&[(&evidence_id(kit), SourceRole::Overlay)])
+        .unwrap();
+    let again = import(&fixture, vec![git("https://github.com/OWNER/Kit", None)]).unwrap();
+    assert!(!again[0].source_created);
+    assert_eq!(again[0].evidence_id, evidence_id(kit));
+    let stored = fixture.brief()["evidence"].clone();
+    let kept: Vec<_> = stored
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["source_id"] == 4)
+        .map(|item| item["source_role"].clone())
+        .collect();
+    assert_eq!(kept, [json!("overlay")], "{stored}");
 }

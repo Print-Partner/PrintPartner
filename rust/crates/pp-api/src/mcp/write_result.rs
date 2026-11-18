@@ -71,7 +71,6 @@ pub(super) enum Code {
     // propose_import_build_inputs
     InvalidInputs,
     InvalidInput,
-    UrlInputsNotSupported,
     InvalidEvidenceKind,
     InvalidUrl,
     SourceNotFound,
@@ -134,7 +133,6 @@ impl Code {
             Self::SpoolmanUnavailable => "spoolman_unavailable",
             Self::InvalidInputs => "invalid_inputs",
             Self::InvalidInput => "invalid_input",
-            Self::UrlInputsNotSupported => "url_inputs_not_supported",
             Self::InvalidEvidenceKind => "invalid_evidence_kind",
             Self::InvalidUrl => "invalid_url",
             Self::SourceNotFound => "source_not_found",

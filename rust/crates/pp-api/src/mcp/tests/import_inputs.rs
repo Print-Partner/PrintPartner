@@ -1,11 +1,11 @@
 //! `propose_import_build_inputs` and its `confirm_apply`: `source_id` inputs
-//! (GRE-1300 part 2, GRE-1521) and model-page and link `url` inputs (part 3a,
-//! GRE-1526), through the MCP router with an API key, on the Build the
-//! Source-roles tests seed.
+//! (GRE-1300 part 2, GRE-1521), model-page and link `url` inputs (part 3a,
+//! GRE-1526) and git repository `url` inputs (part 3b, GRE-1533), through the
+//! MCP router with an API key, on the Build the Source-roles tests seed.
 use super::create_build::{confirm, database, execute, pending};
 use super::source_roles::Seeded;
 use super::*;
-use pp_storage::read_model::planning::EvidenceKind;
+use pp_storage::{catalog::Request as CatalogRequest, read_model::planning::EvidenceKind};
 
 const TOOL: &str = "propose_import_build_inputs";
 /// Library Source S3, synced, which B's brief does not name yet.
@@ -178,9 +178,9 @@ async fn mcp_import_inputs_propose_refuses_with_a_code() {
         (
             args(
                 &seeded,
-                json!([{ "url": "https://github.com/example/kit" }]),
+                json!([{ "url": "https://github.com/own%20er/kit" }]),
             ),
-            "url_inputs_not_supported",
+            "invalid_url",
         ),
         (
             args(&seeded, json!([{ "url": "ftp://example.com/kit.zip" }])),
@@ -275,4 +275,191 @@ async fn mcp_import_inputs_without_a_key_is_refused_and_proposes_nothing() {
     let seeded = seeded().await;
     let arguments = args(&seeded, json!([{ "source_id": S3 }]));
     seeded.unkeyed_proposes_nothing(TOOL, arguments).await;
+}
+
+/// The Library as `GET /sources` lists it: the catalog's `List` request,
+/// which that route runs.
+fn listed(seeded: &Seeded) -> Vec<pp_storage::catalog::SourceSummary> {
+    let catalog = seeded.server.owner.local_source_catalog();
+    let listed = tokio::task::block_in_place(|| catalog.execute(CatalogRequest::List {}));
+    let Ok(pp_storage::catalog::Outcome::Sources(sources)) = listed else {
+        panic!("Source list");
+    };
+    sources
+}
+
+/// The brief's evidence items for Source `id`.
+fn items_for(seeded: &Seeded, id: i64) -> Vec<Value> {
+    let evidence = seeded.brief()["evidence"].clone();
+    evidence
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["source_id"] == id)
+        .cloned()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_import_inputs_create_a_git_source_once_and_reuse_it() {
+    let seeded = seeded().await;
+    let before = listed(&seeded).len();
+    let kit = "https://github.com/Owner/Repo";
+    let confirmed = imported(&seeded, json!([{ "url": kit }])).await;
+    let created = confirmed["result"]["created_source_ids"].clone();
+    let id = created[0].as_i64().unwrap();
+    assert_eq!(created, json!([id]), "{confirmed}");
+    assert_eq!(
+        confirmed["result"]["evidence"],
+        // Node's id for the URL; the classifier test in pp-services pins it.
+        json!([{ "id": "8d325f3875d513dbc4e3", "kind": "mod", "source_id": id,
+                 "url": kit, "upload_required": false }])
+    );
+
+    let sources = listed(&seeded);
+    assert_eq!(sources.len(), before + 1);
+    let new: Vec<_> = sources.iter().filter(|source| source.url == kit).collect();
+    assert_eq!(new.len(), 1, "GET /sources lists it once");
+    let source = new[0];
+    assert_eq!(
+        (
+            source.id,
+            source.name.as_str(),
+            source.branch.as_str(),
+            source.source_kind.as_str(),
+            source.source_type.as_str(),
+        ),
+        (id, "Owner-Repo", "main", "github", "git"),
+    );
+    assert_eq!(source.last_synced_at, None, "nothing is fetched");
+    let items = items_for(&seeded, id);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["source_role"], "addon", "{items:?}");
+    assert_eq!(items[0]["input_kind"], "url");
+    assert_eq!(items[0]["sync_status"], "pending");
+    assert_eq!(seeded.planning().await.brief.draft_id, None);
+
+    // The Build gives the repository a role; each re-import, however the
+    // URL is written, reuses the Source and keeps the role.
+    let mut brief = seeded.brief();
+    for item in brief["evidence"].as_array_mut().unwrap() {
+        if item["source_id"] == id {
+            item["source_role"] = json!("structural_base");
+        }
+    }
+    seeded.store(&brief);
+    let library_rows = library(&seeded);
+    for again in [
+        "https://github.com/Owner/Repo",
+        "https://github.com/Owner/Repo/",
+        "https://github.com/owner/repo.git",
+        " HTTPS://GITHUB.COM/OWNER/REPO.git/ ",
+    ] {
+        let confirmed = imported(&seeded, json!([{ "url": again }])).await;
+        assert_eq!(
+            confirmed["result"]["created_source_ids"],
+            json!([]),
+            "{again}"
+        );
+        assert_eq!(
+            confirmed["result"]["evidence"][0]["source_id"], id,
+            "{again}"
+        );
+        assert_eq!(library(&seeded), library_rows, "{again}: no Source changes");
+        let items = items_for(&seeded, id);
+        assert_eq!(items.len(), 1, "{again}: {items:?}");
+        assert_eq!(items[0]["source_role"], "structural_base", "{again}");
+    }
+    assert_eq!(listed(&seeded).len(), before + 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_import_inputs_reuse_a_library_source_with_its_role_and_branch() {
+    let seeded = seeded().await;
+    // S1 is https://github.com/example/s1 and the brief's E1. Its URL ends
+    // in .git here, and it names a branch: the Source stays as it is.
+    let rows = library(&seeded);
+    let s1 = seeded.sources[0];
+    let mut brief = seeded.brief();
+    brief["evidence"][0]["source_role"] = json!("overlay");
+    seeded.store(&brief);
+    let confirmed = imported(
+        &seeded,
+        json!([{ "url": "https://github.com/Example/S1.git", "branch": "dev" }]),
+    )
+    .await;
+    assert_eq!(confirmed["result"]["created_source_ids"], json!([]));
+    assert_eq!(confirmed["result"]["evidence"][0]["source_id"], s1);
+    assert_eq!(library(&seeded), rows);
+    // E1 is a Source upload item, so the git item is a second item for S1,
+    // with the default role.
+    let items = items_for(&seeded, s1);
+    let roles: Vec<_> = items
+        .iter()
+        .map(|item| item["source_role"].clone())
+        .collect();
+    assert_eq!(roles, [json!("overlay"), json!("addon")], "{items:?}");
+
+    // A new repository with a branch stores that branch.
+    let confirmed = imported(
+        &seeded,
+        json!([{ "url": "https://github.com/owner/other", "branch": "dev" }]),
+    )
+    .await;
+    let id = confirmed["result"]["created_source_ids"][0]
+        .as_i64()
+        .unwrap();
+    let branch = listed(&seeded)
+        .into_iter()
+        .find(|source| source.id == id)
+        .unwrap()
+        .branch;
+    assert_eq!(branch, "dev");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_import_inputs_git_url_propose_writes_nothing_and_connects_nowhere() {
+    let seeded = seeded().await;
+    // A loopback "git host": any fetch or probe would connect to it.
+    let host = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    host.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/owner/kit.git", host.local_addr().unwrap());
+    let rows = library(&seeded);
+    let id = seeded
+        .proposed_call(TOOL, args(&seeded, json!([{ "url": url }])))
+        .await;
+    assert_eq!(library(&seeded), rows, "propose creates no Source");
+    let (confirmed, error) = confirm(&seeded.server, &seeded.headers, &id).await;
+    assert!(!error, "{confirmed}");
+    let created = confirmed["result"]["created_source_ids"][0]
+        .as_i64()
+        .unwrap();
+    let source = listed(&seeded)
+        .into_iter()
+        .find(|source| source.id == created)
+        .unwrap();
+    assert_eq!(
+        (
+            source.url.as_str(),
+            source.source_kind.as_str(),
+            source.branch.as_str()
+        ),
+        (url.as_str(), "git", "main")
+    );
+    let accepted = host.accept().map(drop);
+    assert!(
+        accepted
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock),
+        "nothing connected to the repository host: {accepted:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_import_inputs_git_url_without_a_key_is_refused_and_creates_nothing() {
+    let seeded = seeded().await;
+    let rows = library(&seeded);
+    let arguments = args(&seeded, json!([{ "url": "https://github.com/owner/kit" }]));
+    seeded.unkeyed_proposes_nothing(TOOL, arguments).await;
+    assert_eq!(library(&seeded), rows);
 }

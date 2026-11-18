@@ -1,0 +1,135 @@
+{
+  "groups": [
+    {
+      "count": 1,
+      "objects": [
+        {
+          "copy_index": 0.0,
+          "format": "exclude_object_orca",
+          "name": "frame_corner_01.stl_id_0_copy_0",
+          "stl_basename": "frame_corner_01.stl"
+        }
+      ],
+      "stl_basename": "frame_corner_01.stl"
+    },
+    {
+      "count": 1,
+      "objects": [
+        {
+          "copy_index": 0.0,
+          "format": "exclude_object_orca",
+          "name": "frame_corner_02.stl_id_1_copy_0",
+          "stl_basename": "frame_corner_02.stl"
+        }
+      ],
+      "stl_basename": "frame_corner_02.stl"
+    },
+    {
+      "count": 1,
+      "objects": [
+        {
+          "copy_index": 1.0,
+          "format": "exclude_object_orca",
+          "name": "Frame_Corner_03.STL_id_2_copy_1",
+          "stl_basename": "Frame_Corner_03.STL"
+        }
+      ],
+      "stl_basename": "frame_corner_03.stl"
+    },
+    {
+      "count": 2,
+      "objects": [
+        {
+          "copy_index": 0.0,
+          "format": "exclude_object_prusa",
+          "name": "'panel_clip_01.stl'",
+          "stl_basename": "panel_clip_01.stl"
+        },
+        {
+          "copy_index": 1.0,
+          "format": "exclude_object_prusa",
+          "name": "panel_clip_01.stl_instance_2",
+          "stl_basename": "panel_clip_01.stl"
+        }
+      ],
+      "stl_basename": "panel_clip_01.stl"
+    },
+    {
+      "count": 1,
+      "objects": [
+        {
+          "copy_index": 2.0,
+          "format": "exclude_object_prusa",
+          "name": "panel_clip.stl (instance 3)",
+          "stl_basename": "panel_clip.stl"
+        }
+      ],
+      "stl_basename": "panel_clip.stl"
+    },
+    {
+      "count": 2,
+      "objects": [
+        {"copy_index":0.0,"format":"m486","name":"fan_duct.stl","stl_basename":"fan_duct.stl"},
+        {"copy_index":0.0,"format":"m486","name":"fan_duct_stl","stl_basename":"fan_duct.stl"}
+      ],
+      "stl_basename": "fan_duct.stl"
+    },
+    {
+      "count": 1,
+      "objects": [{"copy_index":0.0,"format":"m486","name":"Toolhead%2Fsb_cowl_01.stl","stl_basename":"Toolhead/sb_cowl_01.stl"}],
+      "stl_basename": "toolhead/sb_cowl_01.stl"
+    },
+    {
+      "count": 1,
+      "objects": [
+        {
+          "copy_index": 0.0,
+          "format": "exclude_object_orca",
+          "name": "z_belt_clip_x2.stl_id_7_copy_0",
+          "stl_basename": "z_belt_clip_x2.stl"
+        }
+      ],
+      "stl_basename": "z_belt_clip_x2.stl"
+    },
+    {
+      "count": 1,
+      "objects": [{"copy_index":0.0,"format":"m486","name":"mystery_widget","stl_basename":"mystery_widget"}],
+      "stl_basename": "mystery_widget"
+    },
+    {"count":1,"objects":[{"copy_index":0.0,"format":"m486","name":"","stl_basename":""}],"stl_basename":""}
+  ],
+  "library": [
+    "Frame/frame_corner.stl",
+    "Panels/panel_clip.stl",
+    "Toolhead/fan_duct.stl",
+    "Spare/fan_duct.stl",
+    "Toolhead/sb_cowl.stl",
+    "Gantry/z_belt_clip_x2.stl"
+  ],
+  "matches": [
+    ["frame_corner_01.stl",["Frame/frame_corner.stl"]],
+    ["frame_corner_02.stl",["Frame/frame_corner.stl"]],
+    ["frame_corner_03.stl",["Frame/frame_corner.stl"]],
+    ["panel_clip_01.stl",["Panels/panel_clip.stl"]],
+    ["panel_clip.stl",["Panels/panel_clip.stl"]],
+    ["fan_duct.stl",["Toolhead/fan_duct.stl","Spare/fan_duct.stl"]],
+    ["toolhead/sb_cowl_01.stl",["Toolhead/sb_cowl.stl"]],
+    ["z_belt_clip_x2.stl",["Gantry/z_belt_clip_x2.stl"]],
+    ["mystery_widget",[]],
+    ["",[]]
+  ],
+  "names": [
+    "frame_corner_01.stl_id_0_copy_0",
+    "frame_corner_02.stl_id_1_copy_0",
+    "Frame_Corner_03.STL_id_2_copy_1",
+    "'panel_clip_01.stl'",
+    "panel_clip_01.stl_instance_2",
+    "panel_clip.stl (instance 3)",
+    "fan_duct.stl",
+    "fan_duct_stl",
+    "Toolhead%2Fsb_cowl_01.stl",
+    "z_belt_clip_x2.stl_id_7_copy_0",
+    "mystery_widget",
+    ""
+  ]
+}

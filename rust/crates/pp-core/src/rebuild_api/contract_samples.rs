@@ -38,6 +38,7 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
                 "value": true}]})
     }),
     ("claimUnattributedPrint", || json!({"profile_id": 1})),
+    ("createBuild", || json!({"name": "Client contract create"})),
     (
         "createIntegration",
         || json!({"kind": "moonraker", "name": "Client contract", "base_url": "http://fixture.invalid"}),
@@ -46,7 +47,6 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
         json!({"name": "Client contract", "model": "fixture",
             "bed_width_mm": 250, "bed_depth_mm": 210, "bed_height_mm": 220})
     }),
-    ("createBuild", || json!({"name": "Client contract create"})),
     (
         "createSource",
         || json!({"name": "Client contract", "source_kind": "archive"}),

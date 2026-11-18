@@ -128,9 +128,15 @@ impl McpServer {
             .0;
         let (listener, origin) = mcp_rpc::listen().await;
         let config = configure(McpHttpConfig::from_startup(&origin, tenant, flag).unwrap());
+        let explicit = config.explicit_listener;
         let (router, _) = match observations {
             Some(observations) => test_router_watching(&owner, config, policy(), observations),
             None => test_router(&owner, config, policy()),
+        };
+        let router = if explicit {
+            lan_peers(router, &origin)
+        } else {
+            router
         };
         let task = tokio::spawn(async move {
             axum::serve(
@@ -254,6 +260,34 @@ impl McpServer {
         }
         request
     }
+}
+
+/// Stands in for the headless explicit listener: a request with `x-test-peer`
+/// arrives from that address with the listener's validated authority, as
+/// `pp-core`'s `network_admission` would hand it over.
+fn lan_peers(router: Router, origin: &str) -> Router {
+    let origin = origin.to_owned();
+    let host = origin.trim_start_matches("http://").to_owned();
+    router.layer(middleware::from_fn(
+        move |mut request: axum::extract::Request, next: Next| {
+            let admission = crate::NetworkAdmission {
+                origin: origin.clone(),
+                host: host.clone(),
+            };
+            async move {
+                let peer = request
+                    .headers()
+                    .get("x-test-peer")
+                    .and_then(|value| value.to_str().ok()?.parse::<std::net::IpAddr>().ok());
+                if let Some(peer) = peer {
+                    let extensions = request.extensions_mut();
+                    extensions.insert(axum::extract::ConnectInfo(SocketAddr::new(peer, 50_000)));
+                    extensions.insert(admission);
+                }
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 impl Drop for McpServer {
@@ -476,11 +510,11 @@ async fn ticket_t_16_mcp_refuses_a_key_from_another_tenant() {
     }
 }
 
-/// GRE-1039: Node's application budget on Rust MCP. An admitted request
-/// counts before its key is checked, so keyless guesses use it up too; past
-/// the limit even a valid key gets the gateway's 429 until the window resets.
-/// A foreign Origin is refused first and costs nothing. The test clock moves
-/// only when the test advances it.
+/// GRE-1039: Node's application budget on Rust MCP. Requests with a valid
+/// key share it; past the limit even a valid key gets the gateway's 429 until
+/// the window resets. Keyless requests count against the peer's own bucket
+/// (GRE-1463), whose headers they carry. A foreign Origin is refused first and
+/// costs nothing. The test clock moves only when the test advances it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
     let clock = rate_limit::ManualClock::new();
@@ -524,12 +558,14 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
             "{path}"
         );
     }
-    let admitted = send("/mcp", keyed_headers()).await.unwrap();
-    assert_eq!(admitted.status(), 200);
-    assert_eq!(
-        header(&admitted, "x-ratelimit-remaining").as_deref(),
-        Some("0")
-    );
+    for remaining in ["2", "1", "0"] {
+        let admitted = send("/mcp", keyed_headers()).await.unwrap();
+        assert_eq!(admitted.status(), 200);
+        assert_eq!(
+            header(&admitted, "x-ratelimit-remaining").as_deref(),
+            Some(remaining)
+        );
+    }
 
     // 1.5 s and then 0.5 s left: `retry-after` rounds the remainder up.
     for (advance, reset, after) in [
@@ -580,4 +616,129 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
         Some("2")
     );
     assert_eq!(header(&reset, "x-ratelimit-reset").as_deref(), Some("60"));
+}
+
+/// GRE-1463: on the headless explicit listener, keyless and wrong-key
+/// requests count against their peer's own bucket. A LAN peer that floods
+/// them gets 429 once its bucket is spent, even with a valid key, while the
+/// owner's valid key on another peer still answers 200 from the shared budget
+/// in the same window. Other peers keep their own buckets, IPv6 peers share
+/// one per /64, and refusals keep their 401 status and body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ticket_gre_1463_a_keyless_flood_leaves_valid_keys_their_budget() {
+    let clock = rate_limit::ManualClock::new();
+    let server = McpServer::configured(Some("1"), "default", |config| {
+        config
+            .with_budget(3, Duration::from_secs(60), clock.clone())
+            .explicit_listener(true)
+    })
+    .await;
+    let (_, key) = server.create_key().await;
+    let bearer = format!("Bearer {key}");
+    let origin = server.origin.clone();
+    let send = |peer: &str, credential: Option<&str>| {
+        // Keyless requests carry the listener's Origin; keyed ones none.
+        let mut headers = vec![("x-test-peer", peer)];
+        match credential {
+            Some(credential) => headers.push(("authorization", credential)),
+            None => headers.push(("origin", origin.as_str())),
+        }
+        server.request("/mcp", &headers, &initialize()).send()
+    };
+    let header = |response: &reqwest::Response, name: &str| {
+        response
+            .headers()
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_owned())
+    };
+    let assert_refused = |response: reqwest::Response, remaining: &'static str| async move {
+        assert_eq!(response.status(), 401);
+        assert_eq!(
+            response.headers()["x-ratelimit-remaining"]
+                .to_str()
+                .unwrap(),
+            remaining
+        );
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body, json!({ "detail": KEY_REQUIRED }));
+    };
+    let assert_limited = |response: reqwest::Response| async move {
+        assert_eq!(response.status(), 429);
+        assert_eq!(response.headers()["retry-after"].to_str().unwrap(), "60");
+        assert_eq!(
+            response.headers()["x-ratelimit-remaining"]
+                .to_str()
+                .unwrap(),
+            "0"
+        );
+        assert!(response.headers().get("mcp-session-id").is_none());
+        let expected = json!({
+            "statusCode": 429,
+            "error": "Too Many Requests",
+            "message": "Rate limit exceeded, retry in 1 minute",
+        });
+        assert_eq!(response.json::<Value>().await.unwrap(), expected);
+    };
+    let flooder = "192.168.1.66";
+    let owner = "192.168.1.20";
+
+    // The flood: keyless with the listener's Origin, and a bogus key without.
+    for (credential, remaining) in [(None, "2"), (Some("Bearer ppk_bogus"), "1"), (None, "0")] {
+        assert_refused(send(flooder, credential).await.unwrap(), remaining).await;
+    }
+    for credential in [None, Some("Bearer ppk_bogus"), Some(bearer.as_str())] {
+        assert_limited(send(flooder, credential).await.unwrap()).await;
+    }
+
+    // The owner's valid key still answers 200 in the same window, from the
+    // shared budget the flood never touched.
+    let admitted = send(owner, Some(&bearer)).await.unwrap();
+    assert_eq!(admitted.status(), 200);
+    assert!(header(&admitted, "mcp-session-id").is_some());
+    assert_eq!(header(&admitted, "x-ratelimit-limit").as_deref(), Some("3"));
+    assert_eq!(
+        header(&admitted, "x-ratelimit-remaining").as_deref(),
+        Some("2")
+    );
+    // Another peer's wrong key starts its own bucket.
+    assert_refused(
+        send("192.168.1.30", Some("Bearer ppk_bogus"))
+            .await
+            .unwrap(),
+        "2",
+    )
+    .await;
+
+    // One host's IPv6 addresses share their /64's bucket.
+    for (peer, remaining) in [("fd00::1", "2"), ("fd00::2", "1"), ("fd00::3", "0")] {
+        assert_refused(send(peer, None).await.unwrap(), remaining).await;
+    }
+    assert_limited(send("fd00::4", None).await.unwrap()).await;
+    assert_refused(send("fd00:0:0:1::1", None).await.unwrap(), "2").await;
+
+    // The flooder's bucket resets with its window.
+    clock.advance(Duration::from_secs(60));
+    assert_refused(send(flooder, None).await.unwrap(), "2").await;
+}
+
+/// GRE-1463: the peer table is bounded. Once it holds its limit of live
+/// peers, new peers share one overflow bucket until windows expire.
+#[test]
+fn ticket_gre_1463_new_peers_overflow_into_one_bucket_when_the_table_is_full() {
+    let clock = rate_limit::ManualClock::new();
+    let budgets =
+        rate_limit::PeerBudgets::new(1, Duration::from_secs(60)).with_clock(Some(clock.clone()));
+    let peer = |n: u32| std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+    for n in 0..1024 {
+        assert!(budgets.consume(peer(n)).rejection().is_none(), "{n}");
+    }
+    // Peers already tracked keep their own buckets.
+    assert!(budgets.check(peer(0)).rejection().is_some());
+    assert!(budgets.consume(peer(1024)).rejection().is_none());
+    assert!(budgets.consume(peer(1025)).rejection().is_some());
+    assert!(budgets.check(peer(1026)).rejection().is_some());
+    // Expired windows free the table on the next new peer.
+    clock.advance(Duration::from_secs(60));
+    assert!(budgets.consume(peer(1027)).rejection().is_none());
+    assert!(budgets.consume(peer(1028)).rejection().is_none());
 }

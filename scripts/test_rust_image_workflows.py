@@ -11,10 +11,12 @@ image indexes shaped like the ones buildx 0.38 writes.
 """
 
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -88,12 +90,19 @@ class ReleaseImageTest(unittest.TestCase):
         steps = job["steps"]
         load_build = step_index(steps, lambda s: builds(s) and s["with"].get("load") == "true", "loads")
         smoke = step_index(steps, lambda s: SMOKE in s.get("run", ""), "runs the smoke test")
-        push = step_index(steps, lambda s: builds(s) and s["with"].get("push") == "true", "pushes")
-        same = step_index(steps, lambda s: ".rootfs.diff_ids" in s.get("run", ""),
-                          "compares the pushed layers with the tested ones")
+        push = step_index(steps, lambda s: builds(s) and "push-by-digest=true" in s["with"].get("outputs", ""),
+                          "pushes by digest")
+        tag = step_index(steps, lambda s: '--tag "$IMAGE:commit-$COMMIT-$ARCH"' in s.get("run", ""),
+                         "tags the architecture candidate")
         self.assertLess(load_build, smoke)
         self.assertLess(smoke, push)
-        self.assertLess(push, same)
+        self.assertLess(push, tag)
+        # The tag is the proof a rerun trusts, so the push writes none and the
+        # tag follows the layer comparison in the same step.
+        self.assertNotIn("tags", steps[push]["with"])
+        tag_run = steps[tag]["run"]
+        self.assertLess(tag_run.index('test "$pushed" = "$tested"'), tag_run.index("imagetools create"))
+        self.assertIn("${{ steps.push.outputs.digest }}", steps[tag]["env"]["DIGEST"])
         pushed = steps[push]["with"]
         self.assertEqual(pushed["sbom"], "true")
         self.assertEqual(pushed["provenance"], "mode=max")
@@ -115,7 +124,46 @@ class ReleaseImageTest(unittest.TestCase):
         self.assertIn(".SPDX.spdxVersion", steps[verify]["run"])
         self.assertIn(".SLSA.buildDefinition", steps[verify]["run"])
         self.assertNotIn(":latest", json.dumps(self.jobs["rust-image-publish"]))
+
+    def test_existence_checks_fail_closed(self):
+        runs = [step.get("run", "") for job in ("rust-image", "rust-image-publish")
+                for step in self.jobs[job]["steps"]]
+        self.assertFalse([run for run in runs if ">/dev/null 2>&1" in run],
+                         "an inspect that hides its error treats a registry failure as a missing tag")
+        checks = [run for run in runs if "scripts/registry-tag-state.sh" in run]
+        self.assertEqual(len(checks), 3)
         self.assertNotIn(":latest", json.dumps(self.jobs["rust-image"]))
+
+
+class RegistryTagStateTest(unittest.TestCase):
+    """scripts/registry-tag-state.sh against a fake docker on PATH."""
+
+    REF = "ghcr.io/print-partner/pp-server:1.2.3"
+
+    def state(self, exit_code, stderr):
+        with tempfile.TemporaryDirectory() as bin_dir:
+            fake = Path(bin_dir) / "docker"
+            fake.write_text('#!/bin/sh\nprintf "%s" "$FAKE_STDERR" >&2\nexit "$FAKE_EXIT"\n')
+            fake.chmod(0o755)
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                   "FAKE_EXIT": str(exit_code), "FAKE_STDERR": stderr}
+            result = subprocess.run(["bash", str(ROOT / "scripts/registry-tag-state.sh"), self.REF],
+                                    env=env, capture_output=True, text=True)
+        return result.returncode, result.stdout.strip()
+
+    def test_present(self):
+        self.assertEqual(self.state(0, ""), (0, "present"))
+
+    def test_absent_only_on_buildx_not_found_for_that_reference(self):
+        self.assertEqual(self.state(1, f"ERROR: {self.REF}: not found\n"), (0, "absent"))
+
+    def test_registry_errors_fail_closed(self):
+        for stderr in ('ERROR: failed to do request: Head "https://ghcr.io/v2/x": dial tcp: i/o timeout\n',
+                       "ERROR: denied: requested access to the resource is denied\n",
+                       "ERROR: ghcr.io/print-partner/pp-server:9.9.9: not found\n",
+                       ""):
+            with self.subTest(stderr=stderr):
+                self.assertEqual(self.state(1, stderr), (1, ""))
 
 
 @unittest.skipUnless(shutil.which("jq"), "jq is not installed")

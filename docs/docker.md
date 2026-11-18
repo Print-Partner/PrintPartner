@@ -193,10 +193,12 @@ Every pull request, push to `main` and merge group builds the image twice in `.g
 A version tag (`v*.*.*`) runs `.github/workflows/release.yml`. After the Node release job passes, the `rust-image` jobs build `Dockerfile.rust` on the same two native runners, without the GitHub Actions cache. Each job:
 
 1. Builds and loads the image for its architecture, then runs `scripts/docker-rust-smoke.py` on it.
-2. Pushes the same build as `ghcr.io/print-partner/pp-server:commit-<commit>-<arch>`, with an SPDX SBOM (`sbom: true`) and SLSA provenance (`provenance: mode=max`) attestation.
-3. Checks that the pushed image's layer digests equal the smoke-tested image's.
+2. Pushes the same build by digest, with no tag, with an SPDX SBOM (`sbom: true`) and SLSA provenance (`provenance: mode=max`) attestation.
+3. Checks that the pushed image's layer digests equal the smoke-tested image's, and only then tags that digest `ghcr.io/print-partner/pp-server:commit-<commit>-<arch>`.
 
-`rust-image-publish` then joins the two into `:commit-<commit>` with the release's OCI annotations. It checks that the index holds exactly one amd64 and one arm64 image, each with an attestation manifest, and that each has an SPDX SBOM and provenance that records the release commit. It then signs the index by digest with the release key, as the Node image is signed, and adds the immutable `:<version>` alias. It never moves `latest`. A rerun reuses a candidate that already exists. The Node image and its `release-identity.json` are unchanged and do not wait for this image.
+A rerun skips an architecture whose tag exists, because only a verified image gets that tag.
+
+`rust-image-publish` then joins the two into `:commit-<commit>` with the release's OCI annotations. It checks that the index holds exactly one amd64 and one arm64 image, each with an attestation manifest, and that each has an SPDX SBOM and provenance that records the release commit. It then signs the index by digest with the release key, as the Node image is signed, and adds the immutable `:<version>` alias. It never moves `latest`. A rerun reuses a candidate that already exists. `scripts/registry-tag-state.sh` decides whether a tag exists: only buildx's not-found error for that reference counts as absent, and any other registry error fails the job, so an unreadable `:<version>` is never overwritten. The Node image and its `release-identity.json` are unchanged and do not wait for this image.
 
 Verify a release by digest:
 
@@ -207,7 +209,7 @@ docker buildx imagetools inspect "ghcr.io/print-partner/pp-server@$DIGEST" --for
 docker buildx imagetools inspect "ghcr.io/print-partner/pp-server@$DIGEST" --format '{{ json (index .Provenance "linux/arm64") }}'
 ```
 
-`scripts/test_rust_image_workflows.py` pins these jobs and runs the publish job's index check on sample indexes.
+`scripts/test_rust_image_workflows.py` pins these jobs, runs the publish job's index check on sample indexes, and runs `registry-tag-state.sh` against a fake `docker`.
 
 ## Importing Node data
 

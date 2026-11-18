@@ -307,15 +307,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The architecture tag is written only after the smoke test and the
+      # layer check pass, so an existing tag means a verified image.
       - name: Check for an existing architecture candidate
         id: candidate
         run: |
           set -euo pipefail
-          if docker buildx imagetools inspect "$IMAGE:commit-$COMMIT-$ARCH" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          state="$(scripts/registry-tag-state.sh "$IMAGE:commit-$COMMIT-$ARCH")"
+          echo "exists=$([ "$state" = present ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       # No GitHub Actions cache: a release builds from the tagged sources only.
       - name: Build the image for the smoke test
@@ -341,31 +340,35 @@ jobs:
           python3 scripts/docker-rust-smoke.py pp-server:release
 
       # Same inputs on the same builder, so every layer comes from the build
-      # above; the next step proves it.
-      - name: Push the architecture candidate with SBOM and provenance
+      # above. Pushed by digest, with no tag, until the next step proves it.
+      - name: Push the architecture image by digest with SBOM and provenance
+        id: push
         if: steps.candidate.outputs.exists == 'false'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.rust
           platforms: linux/${{ matrix.arch }}
-          push: true
           sbom: true
           provenance: mode=max
           build-args: |
             PP_APP_VERSION=${{ needs.release.outputs.version }}
             PP_COMMIT=${{ needs.release.outputs.commit }}
             PP_BUILD_DATE=${{ needs.release.outputs.build_date }}
-          tags: |
-            ${{ env.IMAGE }}:commit-${{ needs.release.outputs.commit }}-${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
-      - name: Check the pushed candidate is the smoke-tested image
+      - name: Tag the architecture candidate once it matches the smoke-tested image
         if: steps.candidate.outputs.exists == 'false'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          pushed="$(docker buildx imagetools inspect "$IMAGE:commit-$COMMIT-$ARCH" --format '{{json .Image}}' | jq -c .rootfs.diff_ids)"
+          test -n "$DIGEST"
+          pushed="$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Image}}' | jq -c .rootfs.diff_ids)"
           tested="$(docker image inspect --format '{{json .RootFS.Layers}}' pp-server:release | jq -c .)"
           test "$pushed" = "$tested"
+          docker buildx imagetools create --tag "$IMAGE:commit-$COMMIT-$ARCH" "$IMAGE@$DIGEST"
+          test "$(docker buildx imagetools inspect "$IMAGE:commit-$COMMIT-$ARCH" | awk '/^Digest:/ { print $2; exit }')" = "$DIGEST"
 
   rust-image-publish:
     name: rust image release (publish)
@@ -401,7 +404,8 @@ jobs:
         run: |
           set -euo pipefail
           candidate="$IMAGE:commit-$COMMIT"
-          if ! docker buildx imagetools inspect "$candidate" >/dev/null 2>&1; then
+          state="$(scripts/registry-tag-state.sh "$candidate")"
+          if [ "$state" = absent ]; then
             docker buildx imagetools create --tag "$candidate" \
               --annotation "index:org.opencontainers.image.source=https://github.com/Print-Partner/PrintPartner" \
               --annotation "index:org.opencontainers.image.version=$VERSION" \
@@ -452,10 +456,9 @@ jobs:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
-            existing="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ { print $2; exit }')"
-            test "$existing" = "$DIGEST"
-          else
+          # A registry error fails here; only a confirmed absence creates the alias.
+          state="$(scripts/registry-tag-state.sh "$IMAGE:$VERSION")"
+          if [ "$state" = absent ]; then
             docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
           fi
           test "$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ { print $2; exit }')" = "$DIGEST"

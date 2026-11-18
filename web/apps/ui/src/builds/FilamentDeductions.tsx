@@ -1,35 +1,6 @@
 import type { DeductionView } from "@print-partner/rust-client";
 import { Link } from "react-router";
-import { readCore } from "../core/rust";
-
-/**
- * `GET /api/v2/spoolman/deductions`: the newest 100 deductions of every Build, newest first.
- * It reads Print Partner's own rows and never asks Spoolman. The caller keeps one Build's
- * rows and enables the read only while the Spoolman Module is on.
- */
-export const deductionsQuery = {
-  queryKey: ["core", "spoolman-deductions"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listSpoolmanDeductions", {}, signal),
-  refetchOnReconnect: false,
-};
-
-const STATE: Record<string, string> = {
-  pending: "waiting to send",
-  sending: "sending",
-  applied: "applied",
-  unknown: "outcome unknown",
-  failed: "failed",
-  dismissed: "dismissed",
-};
-
-const SKIP: Record<string, string> = {
-  no_grams: "the print recorded no grams",
-  no_pinned_spool: "no spool is pinned",
-  integration_missing: "its Spoolman integration is not set up",
-  integration_disabled: "its Spoolman integration is turned off",
-  integrations_unreadable: "the Spoolman integrations could not be read",
-  module_setting_unreadable: "the Spoolman Module setting could not be read",
-};
+import { DEDUCTION_STATE as STATE, SKIP_REASON as SKIP } from "../core/deductions";
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const skipWhy = (reason: string | null) =>

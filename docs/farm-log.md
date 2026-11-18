@@ -28,6 +28,34 @@ the screen says it was undone. If every send is lost, it says the undo may not
 have reached the core and shows the reloaded log. With the Farm module off the
 screen says so and never reads the log.
 
+## Filament deductions
+
+Above the log, the screen lists Spoolman deductions under **Filament deductions**
+(GRE-411). It reads `GET /api/v2/spoolman/deductions` (`listSpoolmanDeductions`),
+the newest 100 rows of every Build, newest first, and shows each row's time,
+spool, grams, Build and state. A skipped row gives its reason. With the Spoolman
+module off the list says so and never reads deductions.
+
+An `unknown` or `failed` row also reads `GET /api/v2/spoolman/deductions/{id}`
+(`readSpoolmanDeduction`) and shows the grams Spoolman reported for the spool
+before the send and reports now, or "not known". It offers the answers that
+`POST /api/v2/spoolman/deductions/{id}/reconcile` takes for its state:
+
+| State | Answers |
+| --- | --- |
+| `unknown` | **Deducted** (record it as applied; nothing is sent), **Retry** (send once more), **Dismiss** (nothing is sent) |
+| `failed` | **Retry**, **Dismiss**. The core refuses `deducted` for a failed send. |
+
+One answer is sent at a time; clicks while it is in flight send nothing. The
+core's answer replaces the row in the shared deduction cache, so the row changes
+in place without reading the list again, and the Build Overview's Filament
+section shows the same row. A refused answer shows the core's detail and reads
+the list again. An answer whose reply is lost is not resent: the screen says it
+may not have reached the core and reads the list again.
+
+The list is part of the log's loaded state, so an empty farm log shows its
+empty message and no list. Every deduction comes from a logged Checkoff burst.
+
 ## What is logged
 
 | `kind` | Source | Undo |

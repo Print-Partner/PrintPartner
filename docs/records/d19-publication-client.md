@@ -1614,7 +1614,8 @@ This is a separate operation from Node's `POST /plans/:id/save`, which
 publishes. Only the old UI sends that path. It stays on Node with its
 publishing semantics, and no Rust router mounts it, so Node and Rust never
 write the same operation. The replacement UI's Plan tab (UI slice 6, GRE-1120)
-autosaves through `drafts/save` and publishes only through Accept (GRE-1183). Node has no route at
+autosaves Part edits through `drafts/save` and header edits through
+`drafts/header`, and publishes only through Accept (GRE-1183). Node has no route at
 `/plans/{id}/drafts/save`, which is why the gateway manifests do not list it.
 
 ### Draft header fields (GRE-1197)

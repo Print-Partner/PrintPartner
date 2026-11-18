@@ -7,7 +7,7 @@ Two different operations exist, and each path has one meaning in every runtime:
 - `POST /plans/:id/save` is Node's publishing Save, described in the rest of this page. Only the old UI (`web/apps/web`) sends it, and it stays on Node with its publishing semantics. No Rust router serves `/plans/:id/save` with the flag on or off, so Node remains the only writer of that operation.
 - `POST /plans/{id}/drafts/save` is the Rust draft-only autosave (GRE-418). It exists only with the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD=1` or `true`, and Node has no route at that path. It writes Plan choices into a working draft and never publishes: Accept (`POST /plans/{id}/drafts/{draft_id}/apply`) is the only path that writes an Accepted Plan.
 
-The replacement UI (`web/apps/ui`, UI slice 6, GRE-1120) never calls `/plans/:id/save`. Its Plan tab saves each edit to the draft through `POST /api/v2/plans/{id}/drafts/save` and changes the Build only through Accept. The Rust-only image serves that UI. Making the Rust routes the default for every start is the gateway cutover (GRE-593).
+The replacement UI (`web/apps/ui`, UI slice 6, GRE-1120) never calls `/plans/:id/save`. Its Plan tab saves Part edits (Included and quantity) to the draft through `POST /api/v2/plans/{id}/drafts/save` and header edits (name, order number, customer and due date) through `PUT /api/v2/plans/{id}/drafts/header`. It changes the Build only through Accept. The Rust-only image serves that UI. Making the Rust routes the default for every start is the gateway cutover (GRE-593).
 
 ### Rust draft-only autosave
 
@@ -30,13 +30,14 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 
 ### Rapid edits in the replacement UI
 
-The Plan tab runs draft writes one at a time per Build (`useDraftWrites` in `web/apps/ui/src/builds/BuildPlan.tsx`). Each write builds its body when it starts, from the draft the previous answer or refetch left, and each Part decision names the Part by `part_key`, `relative_path` and `source_layer`, never by a draft row ID.
+The Plan tab runs Part and header writes one at a time per Build (`useDraftWrites` in `web/apps/ui/src/builds/BuildPlan.tsx`). Each write builds its body when it starts, from the draft the previous answer or refetch left, and each Part decision names the Part by `part_key`, `relative_path` and `source_layer`, never by a draft row ID.
 
 - A lost reply is resent with the same key and the same body. If the first send committed, the core replays its receipt and the edit is kept once.
-- A refusal, such as `draft_changed` after another window saved the draft, refetches the Plan before the next queued write starts, so that write names the newer draft. A refused checkbox shows the saved value; a refused typed field keeps the typed value and sends it again on the next blur or Enter.
+- A refusal, such as `draft_changed` after another window saved the draft, refetches the Plan before the next queued write starts, so that write names the newer draft.
+- A refused checkbox shows the saved value. A typed field (a quantity or a header field) keeps its typed value until the saved draft holds that value, even when another window saved a different value to the same field. The next blur or Enter sends it again with a new key against the newer draft.
 - No failure abandons, recomputes or accepts the draft.
 
-`GRE-1183 rapid Plan edits stay draft-only through every failure` in `web/apps/ui/src/builds/Plan.test.tsx` runs three edits before the first reply, with a committed-but-lost reply, a refusal after another window's save, and a later resend:
+The `GRE-1183 rapid Plan edits stay draft-only through every failure` tests in `web/apps/ui/src/builds/Plan.test.tsx` cover three Part edits before the first reply (a committed-but-lost reply, a refusal after another window's save, and a later resend), and another window saving the same quantity or the same header field first:
 
 ```sh
 npm --prefix web run test -w @print-partner/ui -- src/builds/Plan.test.tsx

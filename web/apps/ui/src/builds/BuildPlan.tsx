@@ -181,23 +181,27 @@ const HEADER_FIELDS = [
 
 /**
  * The header form. Each field saves to the draft when it loses focus or on Enter. Once the
- * draft writes settle, the saved header replaces every field not typed in since the last
- * save was sent.
+ * draft writes settle, the saved header replaces every field except a typed one whose value
+ * the saved header does not hold yet. A refused save, even one another window's save to
+ * the same field caused, leaves the typed value to send again.
  */
 function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; busy: boolean }) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
   const [shown, setShown] = useState(saved);
-  const [typed, setTyped] = useState<ReadonlySet<string>>(new Set());
+  const [typed, setTyped] = useState<ReadonlySet<keyof HeaderFields>>(new Set());
   const [sent, setSent] = useState<BuildHeader | null>(null);
   if (!busy && !sameHeader(saved, shown)) {
     const after = fieldsOf(saved);
+    const mine = fieldsOf(headerOf(fields));
+    const kept = new Set([...typed].filter((field) => mine[field] !== after[field]));
     setShown(saved);
+    setTyped(kept);
     setFields(
       Object.fromEntries(
         Object.entries(fields).map(([field, v]) => [
           field,
-          typed.has(field) ? v : after[field as keyof HeaderFields],
+          kept.has(field as keyof HeaderFields) ? v : after[field as keyof HeaderFields],
         ]),
       ) as HeaderFields,
     );
@@ -211,7 +215,6 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
     setInvalid(header.name === "");
     if (header.name === "" || sameHeader(header, sent ?? saved) || offline) return;
     setSent(header);
-    setTyped(new Set());
     // Only the latest header write calls this, and only it can still be the one sent.
     writes.header.mutate(
       { fields, key: newKey() },
@@ -290,10 +293,15 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
       : part.quantity_override;
   const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
   const [shown, setShown] = useState(part.quantity_override);
+  // Typed, and not yet held by the saved draft. A refused save, even one another window's
+  // save to this Part caused, leaves the typed value to send again.
   const [edited, setEdited] = useState(false);
   if (!queuedQuantity && part.quantity_override !== shown) {
     setShown(part.quantity_override);
-    if (!edited) setQuantity(part.quantity_override?.toString() ?? "");
+    if (!edited || quantityValue(quantity) === part.quantity_override) {
+      setEdited(false);
+      setQuantity(part.quantity_override?.toString() ?? "");
+    }
   }
   const [invalid, setInvalid] = useState(false);
   const errorId = useId();
@@ -302,7 +310,7 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
     const value = quantityValue(quantity);
     setInvalid(value === "invalid");
     if (value === "invalid" || offline) return;
-    setEdited(false);
+    if (value === part.quantity_override) setEdited(false);
     if (value === sentQuantity) return;
     save(quantityChoice(part, value));
   };

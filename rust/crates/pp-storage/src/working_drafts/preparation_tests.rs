@@ -504,6 +504,45 @@ fn naming_comparisons_are_cumulative_and_cancellable() {
     }
 }
 
+// GRE-1396: draft slugs use the same marker rule as the naming preview and
+// Node's `parsePartSlug`, so a merge conflict follows the slug the user saw.
+#[test]
+fn parse_strips_role_markers_anywhere_like_the_preview() {
+    use crate::catalog::naming::{NamingProfile, Role, RoleId};
+    let default = LayerNaming::new(Arc::new(NamingProfile::default()));
+    let mut letter = NamingProfile::default();
+    letter.roles = vec![
+        Role {
+            id: RoleId::Primary,
+            label: "Primary".into(),
+            markers: vec![],
+        },
+        Role {
+            id: RoleId::Accent,
+            label: "Accent".into(),
+            markers: vec!["A".into()],
+        },
+    ];
+    let letter = LayerNaming::new(Arc::new(letter));
+    let cancelled = AtomicBool::new(false);
+    for (path, naming, slug) in [
+        ("STLs/[a]_belt_clip.stl", &default, "belt_clip"),
+        ("FlowChamber_BPM[a].stl", &default, "FlowChamber_BPM"),
+        ("Duct_[c]_Left.stl", &default, "Duct_Left"),
+        ("[a]_[a]_belt_clip.stl", &default, "belt_clip"),
+        ("belt_clip_[a]_[a].stl", &default, "belt_clip"),
+        ("belt_[a]_[o]_clip.stl", &default, "belt_clip"),
+        ("[a]_Bracket_x4.STL", &default, "Bracket"),
+        ("[a].stl", &default, "[a]"),
+        ("gear.stl", &letter, "gear"),
+        ("Bracket_A.stl", &letter, "Bracket_A"),
+        ("A_gear.stl", &letter, "gear"),
+    ] {
+        let mut b = PreparationBudget::new(&cancelled, PreparationLimits::default()).unwrap();
+        assert_eq!(parse(path, naming, &mut b).unwrap().1, slug, "{path}");
+    }
+}
+
 #[test]
 fn capture_processes_global_naming_once_across_layers() {
     let case = cases()

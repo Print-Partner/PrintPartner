@@ -24,6 +24,27 @@ export type StlNamingProfileDict = StlNamingProfile;
 
 export const DEFAULT_NAMING_PROFILE = DEFAULT_STL_NAMING_PROFILE;
 
+/**
+ * How a role marker leaves a part slug. A marker that starts and ends with a symbol, like
+ * `[a]`, cannot be part of a word, so it is removed anywhere in the name (`anywhere`). A
+ * marker that starts or ends with a letter or digit, like a custom `A`, is removed only as
+ * a prefix, so `gear` keeps its `a`. `re` also captures one separator on each side.
+ */
+export type MarkerStrip = { re: RegExp; anywhere: boolean };
+
+const WORD_CHARACTER = /^[\p{Alphabetic}\p{N}]$/u;
+
+function markerStrip(marker: string): MarkerStrip {
+  const characters = [...marker];
+  const anywhere =
+    !WORD_CHARACTER.test(characters[0]!) && !WORD_CHARACTER.test(characters.at(-1)!);
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return {
+    re: new RegExp(anywhere ? `([ _-]?)${escaped}([ _-]?)` : `^()${escaped}([ _-]?)`, "i"),
+    anywhere,
+  };
+}
+
 export type PartFunctionalClass = "functional" | "cosmetic" | "unclassified";
 
 export type NamingProfile = {
@@ -36,8 +57,8 @@ export type NamingProfile = {
   exportRoleOrder: readonly StlNamingRoleId[];
   quantityRe: RegExp;
   markerRoleMap: ReadonlyArray<readonly [string, StlNamingRoleId]>;
-  /** One global regex per marker; each match also holds the separator on either side. */
-  markerStripRes: readonly RegExp[];
+  /** One per marker, in role order. See `MarkerStrip`. */
+  markerStrips: readonly MarkerStrip[];
   quantityStripRe: RegExp | null;
   toDict(): StlNamingProfileDict;
 };
@@ -64,13 +85,12 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
   const quantityDefault = data.quantity.default;
 
   const markerPairs: Array<[string, StlNamingRoleId]> = [];
-  const stripRes: RegExp[] = [];
+  const strips: MarkerStrip[] = [];
   for (const role of roles) {
     for (const marker of role.markers) {
       if (!marker.trim()) continue;
       markerPairs.push([marker, role.id]);
-      const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      stripRes.push(new RegExp(`([ _-]?)${escaped}([ _-]?)`, "gi"));
+      strips.push(markerStrip(marker));
     }
   }
   markerPairs.sort((a, b) => b[0].length - a[0].length);
@@ -87,7 +107,7 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
     exportRoleOrder: exportOrder,
     quantityRe,
     markerRoleMap: markerPairs,
-    markerStripRes: stripRes,
+    markerStrips: strips,
     quantityStripRe: compileQuantityStrip(quantityRegex),
     toDict() {
       return {

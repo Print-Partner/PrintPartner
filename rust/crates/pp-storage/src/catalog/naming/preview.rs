@@ -154,16 +154,6 @@ fn merge(mut base: NamingProfile, overrides: NamingOverride) -> Result<NamingPro
     }
     base.validate_input()
 }
-fn escape_regex(text: &str) -> String {
-    let mut out = String::new();
-    for ch in text.chars() {
-        if ".*+?^${}()|[]\\".contains(ch) {
-            out.push('\\')
-        }
-        out.push(ch)
-    }
-    out
-}
 fn replace_first(text: &str, pattern: &str, replacement: &str) -> String {
     if let Ok(regex) = regress::Regex::with_flags(pattern, "i")
         && let Some(m) = regex.find(text)
@@ -184,35 +174,6 @@ fn quantity_strip(pattern: &str) -> Option<regress::Regex> {
     pattern = pattern.replacen(r"\.stl$", "$", 1);
     pattern = replace_first(&pattern, r"\.stl$", "$");
     regress::Regex::with_flags(&pattern, "i").ok()
-}
-/// The file name without a `.stl` or `.3mf` extension, in any case.
-fn model_stem(filename: &str) -> Option<&str> {
-    let split = filename.len().checked_sub(4)?;
-    let extension = filename.get(split..)?;
-    (extension.eq_ignore_ascii_case(".stl") || extension.eq_ignore_ascii_case(".3mf"))
-        .then(|| &filename[..split])
-}
-/// Removes every `marker` and one separator next to it, keeping one separator
-/// between the words left on both sides. Matches Node's `parsePartSlug`.
-fn strip_marker(stem: &str, marker: &str) -> String {
-    let pattern = format!("([ _-]?){}([ _-]?)", escape_regex(marker));
-    let Ok(regex) = regress::Regex::with_flags(&pattern, "i") else {
-        return stem.to_owned();
-    };
-    let mut out = String::with_capacity(stem.len());
-    let mut last = 0;
-    for m in regex.find_iter(stem) {
-        let range = m.range();
-        out.push_str(&stem[last..range.start]);
-        if range.start > 0 && range.end < stem.len() {
-            let side = |group: usize| m.group(group).map(|r| &stem[r]).unwrap_or("");
-            let before = side(1);
-            out.push_str(if before.is_empty() { side(2) } else { before });
-        }
-        last = range.end;
-    }
-    out.push_str(&stem[last..]);
-    out
 }
 fn parse_integer(text: &str) -> f64 {
     let text = trim(text);

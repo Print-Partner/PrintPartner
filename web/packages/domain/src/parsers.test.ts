@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parsePartSlug, parseQuantity, parseRole, parseStlPath } from "./parsers.js";
+import {
+  DEFAULT_NAMING_PROFILE,
+  mergeNamingProfiles,
+  namingProfileFromDict,
+  validateNamingProfile,
+} from "./stl-naming.js";
 
 describe("parsers", () => {
   it("parses accent quantity", () => {
@@ -42,6 +48,28 @@ describe("parsers", () => {
     ["[a]_Bracket_x4.STL", "Bracket"],
   ])("strips role markers anywhere in %s", (filename, slug) => {
     expect(parsePartSlug(filename)).toBe(slug);
+  });
+
+  it.each([
+    ["[a]_[a]_belt_clip.stl", "belt_clip"],
+    ["belt_clip_[a]_[a].stl", "belt_clip"],
+    ["[c][a]belt_clip.stl", "belt_clip"],
+    ["belt_[a]_[o]_clip.stl", "belt_clip"],
+  ])("strips a run of markers in %s without leaving a separator", (filename, slug) => {
+    expect(parsePartSlug(filename)).toBe(slug);
+    expect(parsePartSlug(filename)).toBe(parsePartSlug("belt_clip.stl"));
+  });
+
+  it("strips a letter or digit marker only as a prefix", () => {
+    const profile = namingProfileFromDict(
+      mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {
+        roles: [{ id: "accent", markers: ["A"] }],
+      }),
+    );
+    expect(parsePartSlug("gear.stl", profile)).toBe("gear");
+    expect(parsePartSlug("Bracket_A.stl", profile)).toBe("Bracket_A");
+    expect(parsePartSlug("A_gear.stl", profile)).toBe("gear");
+    expect(parsePartSlug("Agear.stl", profile)).toBe("gear");
   });
 
   it("keeps the marker text when it is the whole name", () => {

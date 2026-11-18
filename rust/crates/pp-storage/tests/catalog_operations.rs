@@ -1604,7 +1604,7 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
             "AA.stl",
             json!({"roles":[{"id":"accent","markers":["A"]},{"id":"clear","markers":["AA"]}]}),
             "clear",
-            "AA",
+            "A",
         ),
         (
             "tag.stl",
@@ -1641,6 +1641,18 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
             json!({"roles":[{"id":"accent","markers":["ab"]}]}),
             "accent",
             "😀gear",
+        ),
+        (
+            "gear.stl",
+            json!({"roles":[{"id":"accent","markers":["A"]}]}),
+            "accent",
+            "gear",
+        ),
+        (
+            "Bracket_A.stl",
+            json!({"roles":[{"id":"accent","markers":["A"]}]}),
+            "accent",
+            "Bracket_A",
         ),
         ("[o]/[a]gear.stl", json!({}), "opaque", "gear"),
         ("[a][a]gear.stl", json!({}), "accent", "gear"),
@@ -1710,6 +1722,9 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
         ("[o] Cover x2.stl", "opaque", 2, "Cover"),
         ("[a]_Bracket_x4.STL", "accent", 4, "Bracket"),
         ("[a].stl", "accent", 1, "[a]"),
+        ("[a]_[a]_belt_clip.stl", "accent", 1, "belt_clip"),
+        ("belt_clip_[a]_[a].stl", "accent", 1, "belt_clip"),
+        ("belt_[a]_[o]_clip.stl", "accent", 1, "belt_clip"),
         (
             "STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf",
             "accent",

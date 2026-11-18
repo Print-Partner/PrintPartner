@@ -1,7 +1,9 @@
 # GRE-1396: Source snapshot cap, duplicate names, and part slugs
 
-These rules apply to the Node server. The Rust naming preview (`pp-storage`
-`catalog/naming/preview.rs`) follows the same slug and quantity rules.
+These rules apply to the Node server. In Rust, the naming preview
+(`catalog/naming/preview.rs`) and working-draft preparation
+(`working_drafts/preparation.rs`) call the same `naming::strip_marker`, so the
+slug the preview shows is the one draft merge conflicts use.
 
 ## Snapshot cap
 
@@ -31,11 +33,15 @@ look a Source up by name still use the looser `sourceByName` match.
 
 ## Part slugs and quantities
 
-- The role markers `[a]`, `[c]` and `[o]` (or a profile's own markers) are
-  removed anywhere in the file name, with one separator (space, `_` or `-`)
-  next to them. When words remain on both sides, one separator stays between
-  them: `[a]_belt_clip` is `belt_clip`, `FlowChamber_BPM[a]` is
-  `FlowChamber_BPM`, and `Duct_[c]_Left` is `Duct_Left`.
+- The role markers `[a]`, `[c]` and `[o]` are removed anywhere in the file
+  name, with one separator (space, `_` or `-`) next to them. When words remain
+  on both sides, one separator stays between them: `[a]_belt_clip` is
+  `belt_clip`, `FlowChamber_BPM[a]` is `FlowChamber_BPM`, and `Duct_[c]_Left`
+  is `Duct_Left`. Removal repeats until none is left, so a run such as
+  `[a]_[a]_belt_clip` or `belt_clip_[a]_[a]` is also `belt_clip`.
+- This applies to any marker that starts and ends with a symbol. A custom
+  marker that starts or ends with a letter or digit, such as `A`, is removed
+  only as a prefix, so `gear` stays `gear` and `A_gear` becomes `gear`.
 - `.3mf` names parse like `.stl` names. The extension is dropped from the
   slug, and the quantity regex reads `Fan_Spring_x2.3mf` as
   `Fan_Spring_x2.stl`, so profiles saved with a `\.stl$` regex count it too.

@@ -1,6 +1,6 @@
 /** STL filename conventions (ported from Python parsers.py). */
 
-import type { NamingProfile } from "./stl-naming.js";
+import type { MarkerStrip, NamingProfile } from "./stl-naming.js";
 import { getDefaultNamingProfile } from "./stl-naming.js";
 
 export type PartRole = "primary" | "accent" | "clear" | "opaque";
@@ -74,16 +74,22 @@ function asStlName(filename: string): string {
   return filename.replace(/\.3mf$/i, ".stl");
 }
 
-/** Removes `marker` and one separator next to it; keeps one separator between remaining words. */
-function stripMarker(stem: string, markerRe: RegExp): string {
-  return stem.replace(
-    markerRe,
-    (match: string, before: string, after: string, offset: number, whole: string) => {
-      const hasTextBefore = offset > 0;
-      const hasTextAfter = offset + match.length < whole.length;
-      return hasTextBefore && hasTextAfter ? before || after : "";
-    },
-  );
+/**
+ * Removes one marker and one separator next to it, keeping one separator when words remain
+ * on both sides. An `anywhere` marker repeats on the shortened name until none is left, so
+ * a run like `[a]_[a]_` leaves no stray separator. Each pass shortens the name.
+ */
+function stripMarker(stem: string, strip: MarkerStrip): string {
+  let current = stem;
+  for (;;) {
+    const match = strip.re.exec(current);
+    if (!match) return current;
+    const [whole, before = "", after = ""] = match;
+    const end = match.index + whole.length;
+    const keep = match.index > 0 && end < current.length ? before || after : "";
+    current = current.slice(0, match.index) + keep + current.slice(end);
+    if (!strip.anywhere) return current;
+  }
 }
 
 export function parseQuantity(filename: string, profile?: NamingProfile | null): number {
@@ -98,8 +104,8 @@ export function parsePartSlug(filename: string, profile?: NamingProfile | null):
   const name = basename(filename).replace(MODEL_EXTENSION_RE, "");
   let stem = name;
   if (prof.slugStripMarkers) {
-    for (const markerRe of prof.markerStripRes) {
-      stem = stripMarker(stem, markerRe);
+    for (const strip of prof.markerStrips) {
+      stem = stripMarker(stem, strip);
     }
   }
   if (prof.slugStripQuantity && prof.quantityStripRe) {

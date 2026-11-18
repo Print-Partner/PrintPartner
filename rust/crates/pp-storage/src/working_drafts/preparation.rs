@@ -4,7 +4,10 @@ use super::{
 };
 use crate::manifest_text::{DraftPart, PartManifestMetadata};
 use crate::required_units::storage::{normalize_parts, num, one, part_rows, rows, text};
-use crate::{catalog::naming::NamingProfile, required_units};
+use crate::{
+    catalog::naming::{self, NamingProfile},
+    required_units,
+};
 use anyhow::{Result, anyhow, ensure};
 use pp_domain::build_identity::trim_js;
 use rusqlite::{Connection, Transaction};
@@ -505,12 +508,6 @@ fn strip_pattern(regex: &str) -> Result<String, regress::Error> {
     strip = regress::Regex::with_flags(r"\.stl$", "i")?.replace(&strip, "$");
     Ok(strip)
 }
-fn replace_first(input: &str, pattern: &str, replacement: &str) -> String {
-    match regress::Regex::with_flags(pattern, "i") {
-        Ok(re) => replace_match(input, &re, replacement),
-        Err(_) => input.into(),
-    }
-}
 fn replace_match(input: &str, re: &regress::Regex, replacement: &str) -> String {
     if let Some(m) = re.find(input) {
         return format!(
@@ -597,29 +594,25 @@ pub(super) fn parse(
             }
         })
         .unwrap_or(profile.quantity.default as f64);
-    let name = if filename.to_lowercase().ends_with(".stl") {
-        filename[..filename.len() - 4].to_owned()
-    } else {
-        filename.clone()
-    };
+    let name = naming::model_stem(&filename)
+        .unwrap_or(&filename)
+        .to_owned();
     let mut slug = name.clone();
     if profile.slug.strip_markers {
         for r in &profile.roles {
             b.visit(0)?;
             for marker in &r.markers {
                 b.visit(0)?;
-                b.comparison(slug.len().saturating_add(marker.len().saturating_mul(2)))?;
+                // A marker run can take one pass per occurrence.
+                b.comparison(
+                    slug.len()
+                        .saturating_add(marker.len().saturating_mul(2))
+                        .saturating_mul(slug.len() / marker.len().max(1) + 1),
+                )?;
                 if trim_js(marker).is_empty() {
                     continue;
                 }
-                let mut escaped = String::new();
-                for c in marker.chars() {
-                    if ".*+?^${}()|[]\\".contains(c) {
-                        escaped.push('\\')
-                    }
-                    escaped.push(c)
-                }
-                slug = replace_first(&slug, &format!("^{escaped}"), "");
+                slug = naming::strip_marker(&slug, marker);
             }
         }
     }

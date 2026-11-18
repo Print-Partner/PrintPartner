@@ -756,6 +756,60 @@ pub(super) fn save(
     get(tx, tenant, id)
 }
 
+/// The file name without a `.stl` or `.3mf` extension, in any case.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn model_stem(filename: &str) -> Option<&str> {
+    let split = filename.len().checked_sub(4)?;
+    let extension = filename.get(split..)?;
+    (extension.eq_ignore_ascii_case(".stl") || extension.eq_ignore_ascii_case(".3mf"))
+        .then(|| &filename[..split])
+}
+
+/// Removes a role marker from a part slug, as Node's `parsePartSlug` does.
+///
+/// A marker that starts and ends with a symbol, like `[a]`, cannot be part of
+/// a word, so every occurrence goes, repeating on the shortened name until
+/// none is left. A marker that starts or ends with a letter or digit, like a
+/// custom `A`, goes only as a prefix, so `gear` keeps its `a`. Each removal
+/// takes one separator (space, `_` or `-`) next to the marker, and keeps one
+/// when words remain on both sides: `Duct_[c]_Left` becomes `Duct_Left`.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn strip_marker(stem: &str, marker: &str) -> String {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    let anywhere = !word(marker.chars().next()) && !word(marker.chars().next_back());
+    let mut escaped = String::new();
+    for c in marker.chars() {
+        if ".*+?^${}()|[]\\".contains(c) {
+            escaped.push('\\')
+        }
+        escaped.push(c)
+    }
+    let pattern = if anywhere {
+        format!("([ _-]?){escaped}([ _-]?)")
+    } else {
+        format!("^(){escaped}([ _-]?)")
+    };
+    let Ok(regex) = regress::Regex::with_flags(&pattern, "i") else {
+        return stem.to_owned();
+    };
+    let mut current = stem.to_owned();
+    // Each pass removes the non-empty marker, so the name shrinks every time.
+    while let Some(m) = regex.find(&current) {
+        let range = m.range();
+        let side = |group: usize| m.group(group).map_or("", |r| &current[r]);
+        let keep = if range.start > 0 && range.end < current.len() {
+            if side(1).is_empty() { side(2) } else { side(1) }
+        } else {
+            ""
+        };
+        current = format!("{}{keep}{}", &current[..range.start], &current[range.end..]);
+        if !anywhere {
+            break;
+        }
+    }
+    current
+}
+
 #[cfg(feature = "desktop_rebuild")]
 mod preview;
 #[cfg(feature = "desktop_rebuild")]

@@ -1,14 +1,16 @@
 //! MCP `propose_import_build_inputs` and its `confirm_apply` on Rust storage
-//! (GRE-1300 parts 2 and 3a): Library Sources by `source_id`, and model pages
-//! and other links by `url`. A git repository URL is refused until part 3b.
+//! (GRE-1300 parts 2, 3a and 3b): Library Sources by `source_id`, and model
+//! pages, other links and git repositories by `url`.
 //!
 //! Propose checks `plan_id` and every input, classifying each `url` with
 //! `pp_services::build_url` (no network call), then proves the API key and
 //! runs `BuildGraphClient::check_import_inputs`, which finds the brief, each
 //! Source and each `derived_from_evidence_id`. It writes nothing. Confirm
 //! checks the stored params again and runs `BuildGraphClient::import_inputs`,
-//! which puts one evidence item per input in the brief and clears its
-//! selected draft in one transaction. It creates and changes no Source.
+//! which, in one transaction, creates a git Source for each repository the
+//! Library does not hold (`build_url::repo_key` matches them), puts one
+//! evidence item per input in the brief and clears its selected draft.
+//! Neither fetches a repository; sync is a separate step (GRE-429).
 
 use super::{
     checkoff::CheckoffDomain,
@@ -31,7 +33,7 @@ pub(super) const PROPOSE: &str = "propose_import_build_inputs";
 const INPUTS: &str = "inputs";
 const INVALID_INPUTS: Refusal = Refusal::new(
     Code::InvalidInputs,
-    "inputs must be a non-empty list of { source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }.",
+    "inputs must be a non-empty list of { source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id?, branch? }.",
 );
 /// Confirm adds the unknown id as `source_id`.
 const SOURCE_NOT_FOUND: Refusal = Refusal::new(
@@ -57,10 +59,13 @@ impl CheckoffDomain {
             Err(refusal) => return Ok(refusal.invocation()),
         };
         let credential = self.caller()?.into_credential();
-        if let Err(error) = self
-            .builds
-            .check_import_inputs(credential, build, inputs, self.wait)
-        {
+        if let Err(error) = self.builds.check_import_inputs(
+            credential,
+            build,
+            inputs,
+            build_url::repo_key,
+            self.wait,
+        ) {
             return Ok(storage_refusal(&error).invocation());
         }
         brief_proposal(
@@ -68,7 +73,7 @@ impl CheckoffDomain {
             build,
             (INPUTS, args[INPUTS].clone()),
             "Attach evidence to Build",
-            "Attach Library Sources and pages to the Build's planning brief and clear its selected draft. No Source changes.",
+            "Attach Library Sources, pages and git repositories to the Build's planning brief and clear its selected draft. A git repository the Library does not hold becomes a new Source; nothing is fetched.",
         )
     }
 
@@ -83,17 +88,33 @@ impl CheckoffDomain {
         let credential = self.caller()?.into_credential();
         let cancelled = AtomicBool::new(false);
         Ok(
-            match self
-                .builds
-                .import_inputs(credential, build, inputs, &cancelled, self.wait)
-            {
-                Ok(imported) => json!({
-                    "ok": true,
-                    "result": {
-                        "evidence": imported.iter().map(item).collect::<Vec<_>>(),
-                        "created_source_ids": [],
-                    },
-                }),
+            match self.builds.import_inputs(
+                credential,
+                build,
+                inputs,
+                build_url::repo_key,
+                &cancelled,
+                self.wait,
+            ) {
+                Ok(imported) => {
+                    let mut created = Vec::new();
+                    for id in imported
+                        .iter()
+                        .filter(|item| item.source_created)
+                        .filter_map(|item| item.source_id)
+                    {
+                        if !created.contains(&id) {
+                            created.push(id);
+                        }
+                    }
+                    json!({
+                        "ok": true,
+                        "result": {
+                            "evidence": imported.iter().map(item).collect::<Vec<_>>(),
+                            "created_source_ids": created,
+                        },
+                    })
+                }
                 Err(ImportInputsError::SourceNotFound(id)) => {
                     let mut refused = SOURCE_NOT_FOUND.confirmation();
                     refused["source_id"] = id.into();
@@ -129,7 +150,7 @@ fn input(row: &Value) -> Result<ImportInput, Refusal> {
     let given = |field: &str| row.get(field).filter(|value| !value.is_null());
     let target = match (given("source_id"), given("url")) {
         (Some(_), None) => source(row)?,
-        (None, Some(url)) => page(url)?,
+        (None, Some(url)) => by_url(url, row)?,
         _ => return Err(one_of),
     };
     let kind = match row.get("kind") {
@@ -170,8 +191,8 @@ fn source(row: &Map<String, Value>) -> Result<Target, Refusal> {
     Ok(Target::Source { id, filenames })
 }
 
-/// A model page or link, classified as Node classifies it.
-fn page(url: &Value) -> Result<Target, Refusal> {
+/// A model page, link or git repository, classified as Node classifies it.
+fn by_url(url: &Value, row: &Map<String, Value>) -> Result<Target, Refusal> {
     let url = url.as_str().unwrap_or_default();
     let classified = build_url::classify(url).ok_or(Refusal::new(
         Code::InvalidUrl,
@@ -180,11 +201,13 @@ fn page(url: &Value) -> Result<Target, Refusal> {
     let page = match classified.class {
         UrlClass::ModelPage => Page::Model,
         UrlClass::Link => Page::Link,
-        UrlClass::Git { .. } => {
-            return Err(Refusal::new(
-                Code::UrlInputsNotSupported,
-                "Git repository URLs are not supported yet. Add the repository as a Library Source, then attach it by source_id.",
-            ));
+        UrlClass::Git { github } => {
+            return Ok(Target::Git {
+                url: url.to_owned(),
+                normalized: classified.normalized,
+                github,
+                branch: row.get("branch").and_then(Value::as_str).map(str::to_owned),
+            });
         }
     };
     Ok(Target::Url {
@@ -210,6 +233,10 @@ fn storage_refusal(error: &ImportInputsError) -> Refusal {
         ImportInputsError::BriefInvalid => BRIEF_INVALID,
         ImportInputsError::SourceNotFound(_) => SOURCE_NOT_FOUND,
         ImportInputsError::DerivedEvidenceNotFound(_) => DERIVED_NOT_FOUND,
+        ImportInputsError::GitSourceRefused(_) => Refusal::new(
+            Code::InvalidUrl,
+            "A git repository url cannot become a Library Source. A GitHub url needs a valid owner and repository.",
+        ),
         ImportInputsError::Writer(failure) => writer_failure(failure),
     }
 }

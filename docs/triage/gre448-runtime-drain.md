@@ -1025,3 +1025,71 @@ Of those, 16 are `runtime_m0` `drain::` tests: 13 in `drain.rs`, 2 in its
 
 Still open: the remaining operation inventory and cutover (GRE-593, blocked by
 GRE-401), Plan Apply's queue remap, and actual Mac logout (parent gate).
+
+## Rust-only runtime drain
+
+[ADR 0010](../adr/0010-whole-runtime-cutover.md) replaces the per-route cutover
+with a whole-runtime switch, so the runtime that ships after cutover is the
+Rust-only one: `CoreRuntime::start_for_launcher` with `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1`, no Node child. Its shutdown is `stop_rust` in
+`pp-core/src/lib.rs`. The tests above cover only the Node-backed runtime.
+`rust/crates/pp-core/tests/runtime_m0/rust_only_drain.rs` runs the same
+sequence on the Rust-only runtime. Each case runs in a child process with
+`PP_DESKTOP_REBUILD=1`.
+
+- `ticket_t_3_drain_rust_only_runtime_cancels_rejects_and_restarts`: three
+  start and stop cycles on one directory. Each start has no Node child
+  (`compat_status()` is `None`) and holds `printpartner.lock`. A second start on
+  the same directory is refused while it runs. Shutdown cancels tracked work
+  within two seconds, refuses new tracked work, and answers `POST /auth/login`
+  with 503 while the work is held. It finishes only after the work ends, with a
+  complete receipt and the lock released.
+- `ticket_t_3_drain_rust_only_runtime_timeout_retains_storage_until_exit`: held
+  tracked work makes shutdown return after 5.006 s with exactly
+  `tracked_drain_timed_out` and `storage_ownership_retained`. The lock stays
+  held. A start from the same process is refused ("Data directory already
+  owned") before and after the work ends. A new process then starts and stops
+  cleanly on the same directory.
+- `ticket_t_3_drain_rust_only_runtime_shares_one_deadline`: held tracked work
+  plus a `POST /auth/login` that got `100 Continue` but no body. Shutdown
+  returns after 5.005 s with `tracked_drain_timed_out`,
+  `gateway_drain_timed_out` and `storage_ownership_retained`, so both drains
+  share one five-second budget.
+
+Red control: changing `if !tracked_idle || !imports_idle` to
+`if !imports_idle` in `stop_rust` released storage after a timed-out drain.
+`ticket_t_3_drain_rust_only_runtime_shares_one_deadline` failed at
+`rust_only_drain.rs:80` with `storage_released: true`. With the line restored
+all three passed.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --test runtime_m0 --features desktop_rebuild --no-tests=fail -E 'test(rust_only_drain::)' --success-output immediate
+```
+
+The interrupted-upload case for the Rust-only runtime is
+`send_queue::send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome`:
+an upload whose connection closes without an answer is recorded as an unknown
+outcome and is not resent, before or after a restart.
+
+## Closing evidence
+
+GRE-448 acceptance, as of this section:
+
+| Item | Evidence |
+| --- | --- |
+| Tracked tasks reject new mutations, drain within five seconds and terminate compat after the deadlines | Node-backed: `drain.rs` cases above (#304, #365, #996). Rust-only: `rust_only_drain.rs`. Compat SIGTERM grace and forced kill: `ticket_t_3_drain_runtime_forced_compat_refuses_cutover` and `pp-compat`'s `ticket_t_3_drain_process_stop_*` tests. |
+| Repeated start/stop, EOF and interrupted-upload fixtures prove no duplicate child or automatic resend | `runtime_m0/repeated_upload.rs` (#1014), the built-backend EOF and upload proofs (#443, #457), the three Rust-only cycles above, and the Rust-only send-queue test. Mac logout stays with the parent, GRE-334. |
+| All route aliases and associated workers switch as one complete operation after parity fixtures pass | Met for `profile.sync`, `source.sync`, the export jobs, the printer send queue and the catalog aliases (sections above). The other operations, including Plan Apply's queue remap, moved verbatim to GRE-1782 (`pp:later`), because ADR 0010 replaces per-route cutover. |
+| Nonzero test counts and exact failure and restart evidence | The run below, the receipts printed by each case, and the red controls in each section. |
+
+The ticket command with the feature, run on 2026-11-18 from `main` at
+`576e3e93e` plus this change, with the measured desktop manifest built first:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --workspace --features pp-core/desktop_rebuild --no-tests=fail -E 'test(ticket_t_3_drain)'
+```
+
+86 tests ran and 86 passed in 342 s: 22 in `pp-compat`, 3 in the `pp-core`
+library, 7 in `pp-core` `process_group_drain`, 19 in `pp-core` `runtime_m0`
+(3 of them in `rust_only_drain`), 7 in the `pp-gateway` library and 28 in
+`pp-gateway` `ticket_t_3_drain_cutover`. The previous record above was 83.

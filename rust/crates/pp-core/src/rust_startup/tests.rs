@@ -15,7 +15,7 @@ use pp_storage::{
 };
 use pp_testkit::{Fixture, Installation, MarkerState, Spec};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -273,4 +273,97 @@ async fn refused_cutover_record_skips_admission_and_releases_the_lease() {
     );
     assert!(!installation.path().join(SOURCE_SYNC_RECEIPT).exists());
     reopen_and_close(&installation);
+}
+
+/// A web root holding the legacy build, for `select_frontend`.
+fn web_root() -> (tempfile::TempDir, pp_compat::Bundle, std::path::PathBuf) {
+    let temporary = tempfile::tempdir().unwrap();
+    let web_root = temporary.path().join("web");
+    let legacy = web_root.join("apps/web/dist");
+    std::fs::create_dir_all(&legacy).unwrap();
+    let bundle = pp_compat::Bundle {
+        node: temporary.path().join("node"),
+        entry: web_root.join("apps/server/dist/current/desktop.js"),
+        web_root,
+        runtime_version: "0.0.0".into(),
+        commit: "0".repeat(40),
+    };
+    (temporary, bundle, legacy)
+}
+
+fn select(bundle: &pp_compat::Bundle, legacy: &Path) -> Result<(PathBuf, bool), String> {
+    rust_startup::select_frontend(bundle, legacy.to_owned()).map_err(|error| error.to_string())
+}
+
+#[test]
+fn select_frontend_serves_an_installed_replacement_and_falls_back_when_absent() {
+    let (_temporary, bundle, legacy) = web_root();
+    assert_eq!(
+        select(&bundle, &legacy),
+        Ok((legacy.canonicalize().unwrap(), false))
+    );
+    // `apps/ui` without `dist` is still absence.
+    let ui = bundle.web_root.join("apps/ui");
+    std::fs::create_dir(&ui).unwrap();
+    assert_eq!(
+        select(&bundle, &legacy),
+        Ok((legacy.canonicalize().unwrap(), false))
+    );
+    std::fs::create_dir(ui.join("dist")).unwrap();
+    assert_eq!(
+        select(&bundle, &legacy),
+        Ok((ui.join("dist").canonicalize().unwrap(), true))
+    );
+}
+
+/// A link at `apps/ui/dist` or `apps/ui`, dangling or not, refuses startup
+/// instead of counting as absence or being followed.
+#[cfg(unix)]
+#[test]
+fn select_frontend_refuses_a_linked_or_dangling_replacement_root() {
+    use std::os::unix::fs::symlink;
+    for linked in ["apps/ui/dist", "apps/ui"] {
+        for target in ["missing", "built"] {
+            let (temporary, bundle, legacy) = web_root();
+            let built = temporary.path().join("built");
+            std::fs::create_dir_all(built.join("dist")).unwrap();
+            let link = bundle.web_root.join(linked);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            let target = match (linked, target) {
+                (_, "missing") => temporary.path().join("missing"),
+                ("apps/ui/dist", _) => built.join("dist"),
+                _ => built.clone(),
+            };
+            symlink(&target, &link).unwrap();
+            assert_eq!(
+                select(&bundle, &legacy),
+                Err("Release inventory contains a symlink".to_owned()),
+                "{linked} -> {}",
+                target.display()
+            );
+        }
+    }
+}
+
+/// `apps` is shared with the legacy build and is not checked: a linked `apps`
+/// keeps the fallback it had, and the replacement under it is selected through
+/// the link. Release verification then canonicalizes the root it measures.
+#[cfg(unix)]
+#[test]
+fn select_frontend_resolves_a_linked_apps_directory() {
+    let (temporary, bundle, _) = web_root();
+    let apps = bundle.web_root.join("apps");
+    let moved = temporary.path().join("moved-apps");
+    std::fs::rename(&apps, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &apps).unwrap();
+    let legacy = apps.join("web/dist");
+    assert_eq!(
+        select(&bundle, &legacy),
+        Ok((moved.join("web/dist").canonicalize().unwrap(), false))
+    );
+    std::fs::create_dir_all(moved.join("ui/dist")).unwrap();
+    assert_eq!(
+        select(&bundle, &legacy),
+        Ok((moved.join("ui/dist").canonicalize().unwrap(), true))
+    );
 }

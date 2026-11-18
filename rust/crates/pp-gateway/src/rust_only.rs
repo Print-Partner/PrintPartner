@@ -5,7 +5,7 @@ use super::{
 };
 use anyhow::Result;
 use pp_compat::CompatHandle;
-use std::{borrow::Cow, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 use tokio::net::TcpListener;
 
 impl Gateway {
@@ -21,11 +21,10 @@ impl Gateway {
     /// requests, nothing is forwarded, and `/__runtime` reports `status`.
     /// Moonraker watchers poll the hosts `hosts` reads; `product` receives
     /// the status lookup so an authenticated route can answer from them.
-    /// Use [`Self::start_rust_only_with_assets`] for a verified replacement
-    /// bundle; this entry point serves the legacy build from disk.
+    /// `ui` is the legacy build's root, or the replacement bytes release
+    /// verification retained.
     pub fn start_rust_only(
         listener: TcpListener,
-        assets: PathBuf,
         ui: ServedUi,
         product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
@@ -38,30 +37,25 @@ impl Gateway {
                 network: false,
                 sign_out,
             },
-            assets,
-            (ui, None),
+            ui,
             product,
             status,
             hosts,
         )
     }
 
-    /// Explicit headless listener. Desktop callers use `start_rust_only` or
-    /// `start_rust_only_with_assets`. `served` pairs the UI with the replacement
-    /// bytes retained by release verification, when present.
+    /// Explicit headless listener. Desktop callers use `start_rust_only`.
     pub fn start_rust_only_with_network(
         listener: TcpListener,
         mode: RustOnlyMode,
-        assets: PathBuf,
-        served: (ServedUi, Option<pp_compat::AssetSnapshot>),
+        ui: ServedUi,
         product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
         hosts: Arc<dyn MoonrakerHosts>,
     ) -> Result<Self> {
         Self::start_inner(
             listener,
-            assets,
-            served,
+            ui,
             CompatHandle::unpublished(),
             &OperationOwners::node_only(),
             Some(Box::new(product)),

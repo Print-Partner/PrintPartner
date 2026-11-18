@@ -152,6 +152,27 @@ function useDraftWrites(id: number) {
 
 type Writes = ReturnType<typeof useDraftWrites>;
 
+const keyOf = (mutation: { state: { variables: unknown } }) =>
+  (mutation.state.variables as { key?: string } | undefined)?.key;
+
+/**
+ * Whether the draft write sent with `key` has settled, and whether it failed: refused, or
+ * its outcome never confirmed. A field that sent it keeps its value only when it failed.
+ */
+function useSettledWrite(writes: Writes, key: string | null) {
+  const [settled] = useMutationState({
+    filters: {
+      mutationKey: writes.mutationKey,
+      predicate: (mutation) =>
+        key !== null &&
+        keyOf(mutation) === key &&
+        (mutation.state.status === "success" || mutation.state.status === "error"),
+    },
+    select: (mutation) => mutation.state.status === "error",
+  });
+  return settled === undefined ? null : { failed: settled };
+}
+
 /** What the last write did, read out politely. */
 function SaveStatus({ writes }: { writes: Writes }) {
   // Writes run one at a time, so the last submitted is the last settled.
@@ -181,9 +202,9 @@ const HEADER_FIELDS = [
 
 /**
  * The header form. Each field saves to the draft when it loses focus or on Enter. Once the
- * draft writes settle, the saved header replaces every field except a typed one whose value
- * the saved header does not hold yet. A refused save, even one another window's save to
- * the same field caused, leaves the typed value to send again.
+ * draft writes settle, the saved header replaces every field not typed in since the last
+ * save was sent. If that save fails, even because another window saved the same field, its
+ * fields count as typed again, so they keep their values and the next blur sends them.
  */
 function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; busy: boolean }) {
   const saved = data.draft?.header?.header ?? data.build;
@@ -191,12 +212,20 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
   const [shown, setShown] = useState(saved);
   const [typed, setTyped] = useState<ReadonlySet<keyof HeaderFields>>(new Set());
   const [sent, setSent] = useState<BuildHeader | null>(null);
+  // The latest header write, and every field typed for it or for an earlier unsettled one.
+  const [held, setHeld] = useState<{
+    key: string;
+    fields: ReadonlySet<keyof HeaderFields>;
+  } | null>(null);
+  const settled = useSettledWrite(writes, held?.key ?? null);
+  const kept = settled?.failed && held ? new Set([...typed, ...held.fields]) : typed;
+  if (settled) {
+    setHeld(null);
+    setTyped(kept);
+  }
   if (!busy && !sameHeader(saved, shown)) {
     const after = fieldsOf(saved);
-    const mine = fieldsOf(headerOf(fields));
-    const kept = new Set([...typed].filter((field) => mine[field] !== after[field]));
     setShown(saved);
-    setTyped(kept);
     setFields(
       Object.fromEntries(
         Object.entries(fields).map(([field, v]) => [
@@ -215,9 +244,12 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
     setInvalid(header.name === "");
     if (header.name === "" || sameHeader(header, sent ?? saved) || offline) return;
     setSent(header);
+    const key = newKey();
+    setHeld({ key, fields: new Set([...(held?.fields ?? []), ...typed]) });
+    setTyped(new Set());
     // Only the latest header write calls this, and only it can still be the one sent.
     writes.header.mutate(
-      { fields, key: newKey() },
+      { fields, key },
       { onSettled: () => setSent((current) => (current === header ? null : current)) },
     );
   };
@@ -273,6 +305,51 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
 }
 
 /**
+ * A Part's quantity field. It shows the saved quantity, except text typed since the last
+ * save was sent, or sent by a save that failed, even because another window saved this
+ * Part: the field keeps that text, and the next blur or Enter sends it.
+ */
+function useQuantityField(
+  part: PartView,
+  writes: Writes,
+  queued: PlanChoice | undefined,
+  offline: boolean,
+  save: (choice: PlanChoice) => string,
+) {
+  const [text, setText] = useState(part.quantity_override?.toString() ?? "");
+  const [shown, setShown] = useState(part.quantity_override);
+  const [edited, setEdited] = useState(false);
+  const [sentKey, setSentKey] = useState<string | null>(null);
+  const settled = useSettledWrite(writes, sentKey);
+  if (settled) {
+    setSentKey(null);
+    if (settled.failed) setEdited(true);
+  }
+  if (!queued && part.quantity_override !== shown) {
+    setShown(part.quantity_override);
+    if (!edited && !settled?.failed) setText(part.quantity_override?.toString() ?? "");
+  }
+  const [invalid, setInvalid] = useState(false);
+  const sent = queued?.kind === "set_quantity_override" ? queued.value : part.quantity_override;
+  return {
+    text,
+    invalid,
+    type: (value: string) => {
+      setText(value);
+      setEdited(true);
+    },
+    commit: () => {
+      const value = quantityValue(text);
+      setInvalid(value === "invalid");
+      if (value === "invalid" || offline) return;
+      setEdited(false);
+      if (value === sent) return;
+      setSentKey(save(quantityChoice(part, value)));
+    },
+  };
+}
+
+/**
  * One Part row: whether it is included and its quantity override. While an Included save
  * is queued or running, the box shows its value, and the next click toggles from that.
  */
@@ -286,34 +363,13 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
   const queued = (kind: PlanChoice["kind"]) => pending.findLast((choice) => choice?.kind === kind);
   const queuedInclude = queued("set_included");
   const included = queuedInclude?.kind === "set_included" ? queuedInclude.value : part.included;
-  const queuedQuantity = queued("set_quantity_override");
-  const sentQuantity =
-    queuedQuantity?.kind === "set_quantity_override"
-      ? queuedQuantity.value
-      : part.quantity_override;
-  const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
-  const [shown, setShown] = useState(part.quantity_override);
-  // Typed, and not yet held by the saved draft. A refused save, even one another window's
-  // save to this Part caused, leaves the typed value to send again.
-  const [edited, setEdited] = useState(false);
-  if (!queuedQuantity && part.quantity_override !== shown) {
-    setShown(part.quantity_override);
-    if (!edited || quantityValue(quantity) === part.quantity_override) {
-      setEdited(false);
-      setQuantity(part.quantity_override?.toString() ?? "");
-    }
-  }
-  const [invalid, setInvalid] = useState(false);
   const errorId = useId();
-  const save = (choice: PlanChoice) => writes.parts.mutate({ choice, key: newKey() });
-  const commitQuantity = () => {
-    const value = quantityValue(quantity);
-    setInvalid(value === "invalid");
-    if (value === "invalid" || offline) return;
-    if (value === part.quantity_override) setEdited(false);
-    if (value === sentQuantity) return;
-    save(quantityChoice(part, value));
+  const save = (choice: PlanChoice) => {
+    const key = newKey();
+    writes.parts.mutate({ choice, key });
+    return key;
   };
+  const quantity = useQuantityField(part, writes, queued("set_quantity_override"), offline, save);
   return (
     <tr>
       <th scope="row">
@@ -338,22 +394,20 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
         <input
           className="pp-quantity num"
           inputMode="numeric"
-          value={quantity}
+          value={quantity.text}
           placeholder={String(part.quantity_inferred)}
           readOnly={offline}
           aria-label={`Quantity of ${part.filename}, blank for ${part.quantity_inferred} from the Source`}
-          aria-invalid={invalid || undefined}
+          aria-invalid={quantity.invalid || undefined}
           aria-describedby={
-            [invalid && errorId, offline && reasonId].filter(Boolean).join(" ") || undefined
+            [quantity.invalid && errorId, offline && reasonId].filter(Boolean).join(" ") ||
+            undefined
           }
-          onChange={(event) => {
-            setQuantity(event.target.value);
-            setEdited(true);
-          }}
-          onBlur={commitQuantity}
-          onKeyDown={(event) => event.key === "Enter" && commitQuantity()}
+          onChange={(event) => quantity.type(event.target.value)}
+          onBlur={quantity.commit}
+          onKeyDown={(event) => event.key === "Enter" && quantity.commit()}
         />
-        {invalid && (
+        {quantity.invalid && (
           <span id={errorId} className="pp-field-error">
             A whole number from 1 to 10,000, or blank.
           </span>

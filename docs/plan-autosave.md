@@ -34,10 +34,12 @@ The Plan tab runs Part and header writes one at a time per Build (`useDraftWrite
 
 - A lost reply is resent with the same key and the same body. If the first send committed, the core replays its receipt and the edit is kept once.
 - A refusal, such as `draft_changed` after another window saved the draft, refetches the Plan before the next queued write starts, so that write names the newer draft.
-- A refused checkbox shows the saved value. A typed field (a quantity or a header field) keeps its typed value until the saved draft holds that value, even when another window saved a different value to the same field. The next blur or Enter sends it again with a new key against the newer draft.
+- A refused checkbox shows the saved value.
+- A typed field (a quantity or a header field) whose save fails, refused or never confirmed, keeps its typed value, even when another window saved a different value to the same field. The next blur or Enter sends it again with a new key against the newer draft.
+- A typed field whose save succeeds shows the saved draft once the refetch lands, including a newer value another window saved after it. A blur without typing then sends nothing, so a confirmed edit never overwrites a later one.
 - No failure abandons, recomputes or accepts the draft.
 
-The `GRE-1183 rapid Plan edits stay draft-only through every failure` tests in `web/apps/ui/src/builds/Plan.test.tsx` cover three Part edits before the first reply (a committed-but-lost reply, a refusal after another window's save, and a later resend), and another window saving the same quantity or the same header field first:
+The `GRE-1183 rapid Plan edits stay draft-only through every failure` tests in `web/apps/ui/src/builds/Plan.test.tsx` cover three Part edits before the first reply (a committed-but-lost reply, a refusal after another window's save, and a later resend), another window saving the same quantity or header field first (the field keeps the typed value), and another window saving it just after a confirmed save (the field shows the newer value and sends nothing):
 
 ```sh
 npm --prefix web run test -w @print-partner/ui -- src/builds/Plan.test.tsx

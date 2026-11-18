@@ -30,7 +30,7 @@ screen says so and never reads the log.
 
 ## Filament deductions
 
-Above the log, the screen lists Spoolman deductions under **Filament deductions**
+The screen opens with a **Filament deductions** list of Spoolman deductions
 (GRE-411). It reads `GET /api/v2/spoolman/deductions` (`listSpoolmanDeductions`),
 the newest 100 rows of every Build, newest first, and shows each row's time,
 spool, grams, Build and state. A skipped row gives its reason. With the Spoolman
@@ -53,8 +53,10 @@ section shows the same row. A refused answer shows the core's detail and reads
 the list again. An answer whose reply is lost is not resent: the screen says it
 may not have reached the core and reads the list again.
 
-The list is part of the log's loaded state, so an empty farm log shows its
-empty message and no list. Every deduction comes from a logged Checkoff burst.
+The list shows whatever state the log itself is in (loading, empty, error), so a
+deduction whose burst entry the log no longer keeps can still be answered. The
+log follows under **Actions**. With the Farm module off the screen shows only
+that the module is off.
 
 ## What is logged
 

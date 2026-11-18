@@ -247,7 +247,7 @@ export function FarmDeductions() {
   }
   const asked = answer.variables;
   return (
-    <section aria-labelledby={headingId}>
+    <section aria-labelledby={headingId} className="pp-farm-deductions">
       <h2 id={headingId}>Filament deductions</h2>
       {answer.isSuccess && asked && <p role="status">{doneText(asked)}</p>}
       {answer.isError && asked && (

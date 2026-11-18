@@ -104,7 +104,12 @@ type Reconcile = (id: number, answer: string) => Response | Promise<Response>;
  * each POST; by default it applies the answer the way the core does and returns the row.
  */
 function core(
-  options: { spoolman?: "on" | "off"; reconcile?: Reconcile; rows?: DeductionView[] } = {},
+  options: {
+    spoolman?: "on" | "off";
+    reconcile?: Reconcile;
+    rows?: DeductionView[];
+    log?: FarmLogPage;
+  } = {},
 ) {
   let rows = options.rows ?? [SKIPPED, UNKNOWN, FAILED, APPLIED];
   const apply: Reconcile = (id, answer) => {
@@ -119,7 +124,7 @@ function core(
   const reconcile = options.reconcile ?? apply;
   return vi.fn((path: string, init?: RequestInit) => {
     if (path === "/health") return Promise.resolve(json(health(options.spoolman ?? "on")));
-    if (path === "/api/v2/farm-log") return Promise.resolve(json(LOG));
+    if (path === "/api/v2/farm-log") return Promise.resolve(json(options.log ?? LOG));
     if (path === LIST) return Promise.resolve(json({ deductions: rows }));
     const match = /^\/api\/v2\/spoolman\/deductions\/(\d+)(\/reconcile)?$/.exec(path);
     if (match && match[2] && init?.method === "POST") {
@@ -300,6 +305,14 @@ describe("GRE-411 PR 4: Filament deductions on the Farm log", () => {
     );
     await vi.waitFor(() => expect(requested(fetchMock).filter((p) => p === LIST)).toHaveLength(2));
     expect(posts(fetchMock)).toHaveLength(1);
+  });
+
+  it("lists deductions while the farm log itself is empty", async () => {
+    renderAt(core({ log: { entries: [], next_cursor: null } }));
+    await screen.findByText("No farm actions yet. Checkoff bursts and sends appear here.");
+    await screen.findByRole("table", { name: "Filament deductions" });
+    expect(buttons(row("Spool 7"))).toEqual(["Deducted", "Retry", "Dismiss"]);
+    expect(screen.getByRole("heading", { name: "Actions" })).toBeTruthy();
   });
 
   it("says when there are no deductions yet", async () => {

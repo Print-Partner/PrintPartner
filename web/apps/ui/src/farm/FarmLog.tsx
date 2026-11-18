@@ -140,9 +140,19 @@ export function FarmLog() {
     <ScreenTemplate
       title="Farm log"
       state={state}
+      // The deduction list stands apart from the log's own state: a deduction can outlive
+      // the log entry of the burst that recorded it.
+      subnav={
+        farm !== undefined &&
+        farm.state !== "off" && (
+          <>
+            <FarmDeductions />
+            <h2>Actions</h2>
+          </>
+        )
+      }
       renderData={(data) => (
         <>
-          <FarmDeductions />
           <UndoOutcome
             undo={undo}
             message={message}

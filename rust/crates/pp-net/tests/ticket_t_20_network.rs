@@ -65,6 +65,27 @@ fn chain(error: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
+/// The rustls certificate error inside a reqwest error, whatever text the
+/// platform verifier gives it. `io::Error::source` skips the error it wraps,
+/// so each `io::Error` is opened with `get_ref`.
+fn certificate_error(error: &reqwest::Error) -> Option<rustls::CertificateError> {
+    let mut next: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = next {
+        if let Some(rustls::Error::InvalidCertificate(certificate)) =
+            current.downcast_ref::<rustls::Error>()
+        {
+            return Some(certificate.clone());
+        }
+        next = match current.downcast_ref::<std::io::Error>() {
+            Some(io) => io
+                .get_ref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static)),
+            None => current.source(),
+        };
+    }
+    None
+}
+
 /// Reads one request head and returns its path.
 async fn request_path(socket: &mut TcpStream) -> String {
     let mut head = Vec::new();
@@ -304,7 +325,16 @@ async fn ticket_t_20_network_tls_verifies_the_original_host_name() {
         .send()
         .await
         .unwrap_err();
-    assert!(chain(&error).contains("not valid for name"), "{error:?}");
+    assert!(
+        matches!(
+            certificate_error(&error),
+            Some(
+                rustls::CertificateError::NotValidForName
+                    | rustls::CertificateError::NotValidForNameContext { .. }
+            )
+        ),
+        "{error:?}"
+    );
 
     // Without the test CA only the platform roots are trusted.
     let untrusted = checked_client(dns.checked(Policy::Lan))
@@ -317,7 +347,7 @@ async fn ticket_t_20_network_tls_verifies_the_original_host_name() {
         .send()
         .await
         .unwrap_err();
-    assert!(chain(&error).contains("certificate"), "{error:?}");
+    assert!(certificate_error(&error).is_some(), "{error:?}");
 
     assert_eq!(
         server.names(),

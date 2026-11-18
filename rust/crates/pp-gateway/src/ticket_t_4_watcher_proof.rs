@@ -83,8 +83,7 @@ async fn started(hosts: &Hosts) -> (Gateway, String, Scratch) {
     let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
     let mut gateway = Gateway::start_rust_only(
         listener,
-        root.to_path_buf(),
-        ServedUi::Legacy,
+        ServedUi::Legacy(root.to_path_buf()),
         product,
         receiver,
         Arc::new(hosts.clone()),

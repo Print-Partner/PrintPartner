@@ -147,7 +147,7 @@ class CoverageTests(unittest.TestCase):
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek"})
         # The Codex seat counts for the pp/score status only, not for the sensitive merge guard.
-        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai"})
+        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
 
 
 class ScoreTests(unittest.TestCase):
@@ -156,8 +156,10 @@ class ScoreTests(unittest.TestCase):
         data = json.loads(mc.CLASSES.read_text())
         self.allowed, self.vendors = data["scorer_seats"], data["vendors"]
 
-    def line(self, seat="claude-opus-5-5", sha=SHA, score=9, vendor="anthropic", author="openai"):
-        return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}"
+    def line(self, seat="claude-opus-5-5", sha=SHA, score=9, vendor="anthropic", author="openai",
+             obstacles="none"):
+        tail = "" if obstacles is None else f" obstacles={obstacles}"
+        return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}{tail}"
 
     def grok(self, **kwargs):
         return self.line("grok-4.7", vendor="xai", **kwargs)
@@ -241,6 +243,8 @@ class ScoreTests(unittest.TestCase):
             self.line("unknown"), self.line(vendor="xai"),
             self.line(vendor="unknown"), self.line(author="unknown"),
             self.line().replace(" author=openai", ""),
+            self.line(obstacles=None), self.line(obstacles="nope"), self.line(obstacles="guard,guard"),
+            self.line(obstacles="None"), self.line(obstacles=""),
             self.line().replace(" vendor=anthropic", ""),
             self.line().replace("score=9", "score=nine"),
             self.line().replace("score=9", "score=" + "9" * 5000),
@@ -251,6 +255,13 @@ class ScoreTests(unittest.TestCase):
         ):
             with self.subTest(bad=bad):
                 self.assertFalse(self.check(good + [bad]))
+
+    def test_listed_obstacles_still_qualify(self):
+        self.assertTrue(self.check([self.line(obstacles="guard,approval-stall"), self.grok(obstacles="refusal")]))
+
+    def test_older_head_records_without_obstacles_still_parse(self):
+        self.assertTrue(self.check([self.line(sha=OTHER, obstacles=None), self.line(), self.grok()]))
+        self.assertFalse(self.check([self.line(sha=OTHER, obstacles="bogus"), self.line(), self.grok()]))
 
     def test_all_unapproved_seats_refused(self):
         for seat in ("opencode/pulse-alpha-free", "cursor/grok-4.7", "gpt-6.1-sol", "pi/halo/qwen38-flash"):

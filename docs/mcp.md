@@ -103,17 +103,21 @@ It also answers the four shared codes above.
 
 ### `propose_import_build_inputs`
 
-`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), and model pages and other links by `url` (part 3a, GRE-1526). It creates and changes no Source, and the Build's layers, drafts and Accepted Plan stay as they are. A git repository URL is refused until GRE-1300 part 3b.
+`propose_import_build_inputs` `{ plan_id, inputs: [{ source_id or url, kind?, title?, extract?, filenames?, derived_from_evidence_id?, branch? }] }` attaches evidence to the Build's planning brief: existing Library Sources by `source_id` (GRE-1300 part 2, GRE-1521), model pages and other links by `url` (part 3a, GRE-1526), and git repositories by `url` (part 3b, GRE-1533). Only a git repository the Library does not hold creates a Source. No Source is changed, and the Build's layers, drafts and Accepted Plan stay as they are.
 
-- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source and each `derived_from_evidence_id`. It writes nothing and makes no network call.
-- **Confirm** runs the same checks and then one transaction: one evidence item per input goes in the brief, the selected draft is cleared, and the brief is stored. The inputs of one confirm are attached together or not at all. Each item's `id` is the first 20 hex digits of the SHA-256 of its normalized URL, as Node makes it. Importing an input the brief already holds, by that URL, updates its one item in place and keeps its `source_role`; Node drops the role there.
+- **Propose** checks `plan_id` and every input, then, with the request's API key, finds the brief, each Source, each `derived_from_evidence_id` and the Library Source for each git repository. It writes nothing and makes no network call.
+- **Confirm** runs the same checks and then one transaction: each new git Source is created, one evidence item per input goes in the brief, the selected draft is cleared, and the brief is stored. The inputs of one confirm are attached together or not at all. Confirm makes no network call either: it does not fetch or sync a repository. Sync is a separate step (GRE-429). Each item's `id` is the first 20 hex digits of the SHA-256 of its normalized URL, as Node makes it. Importing an input the brief already holds, by that URL, updates its one item in place and keeps its `source_role`; Node drops the role there.
   - **A Source** gets the URL `printpartner:source:<id>`. `kind` defaults to `model_source`, and `title` to the Source's name. `filenames` are stored trimmed, without blanks or repeats. Rust does not scan the Source's folder for artifacts as Node does; `propose_rebuild_plan` reads the Source's files.
   - **A URL** is classified as Node's `classifyBuildUrl` does (`pp_services::build_url`). It must be http or https. The normalized URL is the trimmed URL without its fragment and without trailing slashes on its path; `url` keeps the value as sent.
     - A page on Printables, MakerWorld, Thingiverse, Thangs, Cults3D or MyMiniFactory, or one of their subdomains, is a model page: `kind` defaults to `model_source`, `input_kind` is `model_page`, and `upload_required` is `true`. Upload its files into a Source, then attach that Source by `source_id`.
-    - Any other non-git URL is a link: `kind` defaults to `informational_evidence` and `input_kind` is `url`.
+    - A git repository is a `github.com` URL or one whose path ends `.git`. `kind` defaults to `mod`, `input_kind` is `url`, `source_role` is `addon` as Node stores it, and `sync_status` is `pending`. The item's `source_id` is a Library Source for that repository:
+      - **Reuse.** A Library Source whose URL names the same repository is attached as it is; its branch is not changed. Two URLs name the same repository when they match after the clean-up `pp_services::build_url::repo_key` does: the normalized URL without `.git` or trailing slashes, and on `github.com` only `/owner/repo`, lowercased. So `https://github.com/Owner/Repo/` and `https://github.com/owner/repo.git` reuse one Source.
+      - **Create.** Otherwise a git Source is created as `POST /sources` creates one: its URL is the normalized URL, through the same GitHub location rules, its branch is `branch`, or `main` when the input names none, and its kind is `github` or `git`. Rust does not ask the remote for its default branch (GRE-429). The name is the URL's last two path segments joined by `-`, without `.git`, as Node names it (on GitHub, the owner and repository), with the start of the evidence id and then a number added if the name is taken. Its id is in `created_source_ids`.
+      - Importing the same repository again, by any URL that names it, updates its one git item in place and keeps the item's `id`, its `normalized_url` and any `source_role` the Build gave it.
+    - Any other URL is a link: `kind` defaults to `informational_evidence` and `input_kind` is `url`.
     - `title` is stored when given. `derived_from_evidence_id` is checked but, as in Node, not stored on a URL's item.
   - **`extract`**, on any input, is stored trimmed with its SHA-256 as `content_hash` and the time as `retrieved_at`.
-- It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required" }], "created_source_ids": [] } }`, one item per input in input order. `source_id` is `null` for a URL.
+- It answers `{ "ok": true, "result": { "evidence": [{ "id", "kind", "source_id", "url", "upload_required" }], "created_source_ids": [...] } }`, one item per input in input order. `source_id` is `null` for a model page or link. `created_source_ids` lists each git Source this confirm created, once.
 
 A refused propose or confirm answers as for `propose_create_build`. Confirm refusals write nothing and keep the proposal pending.
 
@@ -122,8 +126,7 @@ A refused propose or confirm answers as for `propose_create_build`. Confirm refu
 | `invalid_plan_id` | `plan_id` is missing or not a positive whole number. |
 | `invalid_inputs` | `inputs` is missing, not a list, or empty. |
 | `invalid_input` | An input is not an object, has both or neither of `source_id` and `url`, or its `source_id` is not a positive whole number. |
-| `invalid_url` | A `url` is not an http or https URL. |
-| `url_inputs_not_supported` | A `url` is a git repository: a `github.com` URL or a path ending `.git` (until GRE-1300 part 3b). |
+| `invalid_url` | A `url` is not an http or https URL, or it is a git repository that `POST /sources` would refuse, such as a GitHub URL whose owner or repository is not a valid name. |
 | `invalid_evidence_kind` | A `kind` is not `canonical_design`, `vendor_overlay`, `mod`, `component`, `model_source` or `informational_evidence`. |
 | `no_planning_brief` | The Build has no planning brief. `propose_create_build` creates one. |
 | `planning_brief_invalid` | The stored brief does not parse. |

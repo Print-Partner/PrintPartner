@@ -109,7 +109,7 @@ The Checkoff burst types (`pp_storage::checkoff_progress::wire`) are the subset 
 
 Every route needs a session cookie or API key except `/health` and the account routes a signed-out owner uses: `/auth/status`, `/auth/login`, `/auth/register` and `/auth/logout`. The login and register handlers read their bodies field by field; `SignInRequest` and `RegisterRequest` describe the bodies the UI sends. 200 bodies are typed per route; every error body is `Problem`. The `/api/v1` mounts answer with the legacy Plan summary and are not covered.
 
-`pp-core`'s `client_routes_match_registrations` test sends each route to the composed routers. It checks that the route is registered, refuses anonymous requests when it needs a credential, and reaches its handler.
+`pp-core`'s `client_routes_match_registrations` test sends each route to the composed routers. It checks that the route is registered, refuses anonymous requests when it needs a credential, and reaches its handler. A route with a JSON request body also adds one row, keyed by its route name, to `SAMPLE_BODIES` in [`contract_samples.rs`](../../../rust/crates/pp-core/src/rebuild_api/contract_samples.rs); `sample_bodies_cover_every_body_route` fails when a row is missing, out of order, or names no body route.
 
 ## Effects and flags
 

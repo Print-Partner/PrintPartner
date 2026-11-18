@@ -285,6 +285,16 @@ The generated client names the routes `stageInstallationRestore` (no request DTO
 
 Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Installation::with_builds_drafts_and_history` (copied schema-34 database, valid marker, the same seed the storage restore tests use). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals. `pp-core/tests/installation_backup_http.rs` checks that the routes are absent with the flag off. `pp_api::restore`'s unit tests pin every refusal's body.
 
+### Backup and restore from Settings
+
+The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`) that calls these routes:
+
+1. **Create backup** posts `createInstallationBackup` once and shows the archive's file name, time, app version, size and SHA-256. **Download** is a plain same-origin link to `GET /api/v2/installation/backup/archive`, so the browser saves the file. The page keeps only the backup it made; after a reload, create one again. A 503 shows the core's reason, such as `A backup is already running`.
+2. **Restore from a backup**: choose the file, then **Check backup** posts it as the body of the stage route and shows the backup's time, app version and schema version. Nothing is sent when the section opens or a file is chosen.
+3. **Restore this backup** opens a dialog that shows the core's confirmation text as sent. Focus starts on Cancel. Only **Replace this installation** calls the restore route, once, with the `restore_id` and that text. On success the dialog says `Restore complete` and offers Reload; the restored database brings its own sessions, so the page then asks for sign-in.
+
+A 4xx, `restore_rolled_back`, or a 503 with no problem code is shown as a refusal that left the installation unchanged; `restore_not_found` and `restore_rolled_back` also ask for the file again. A lost answer, an unreadable 200, `restart_required`, `outcome_unknown` or a bare 500 shows `The answer was lost. Reload to see which installation is open.` and the section never sends that restore again.
+
 ## Source thumbnail cache
 
 `GET /sources/{id}/thumbnail?path=` (GRE-430) renders a 256 x 256 PNG of one STL in a Source's current revision and caches it at `thumbs/sources/<revision id>/<SHA-256 of the path>-v<renderer version>.png`. Rust writes nothing else under `thumbs/`. Node writes only flat files directly in `thumbs/`: part thumbnails and previews as `thumbs/<16-hex digest>.png` (`globalThumbnailPath`, `globalPreviewPath` in `web/apps/server/src/lib/thumbnails.ts`) and the accepted-media cache as `thumbs/<basis>.png` (`web/apps/server/src/lib/accepted-media-cache.ts`). Node never creates a folder there, so its files and `thumbs/sources/` cannot collide.

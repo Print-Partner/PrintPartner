@@ -100,6 +100,8 @@ interface Seed {
   answer?: (stored: ProfileSummary) => Response;
   /** How the Source list answers: held until `releaseSources`, or a 500. */
   sourceList?: "held" | "failed";
+  /** Replaces the set-base reply after the base layer is stored, as a lost answer. */
+  baseAnswer?: () => Response;
 }
 
 function scriptedCore({
@@ -107,6 +109,7 @@ function scriptedCore({
   builds: buildSeeds = [],
   answer,
   sourceList,
+  baseAnswer,
 }: Seed = {}) {
   const sources = sourceNames.map((name, i) => storedSource(i + 1, name));
   const builds: ProfileSummary[] = [];
@@ -162,7 +165,7 @@ function scriptedCore({
     const source = sources.find((s) => s.id === request.project_id);
     if (!source) return problem(404, "Project not found");
     layers.set(build.id, [baseLayer(build.id, source)]);
-    return json({ profile_id: build.id, layers: layers.get(build.id) });
+    return baseAnswer ? baseAnswer() : json({ profile_id: build.id, layers: layers.get(build.id) });
   };
   const planRoute = (path: string, method: string, body: Body): Response => {
     if (path === "/api/v2/plans") {
@@ -190,8 +193,14 @@ function scriptedCore({
   };
   let listMode = sourceList;
   const held: (() => void)[] = [];
+  let layerMode: "held" | "failed" | undefined;
+  const heldLayers: (() => void)[] = [];
   const fetchMock = vi.fn((path: string, init?: RequestInit): Promise<Response> => {
     if (down) return Promise.reject(new TypeError("Failed to fetch"));
+    if (/^\/api\/v2\/plans\/\d+\/layers$/.test(path) && !init?.method && layerMode) {
+      if (layerMode === "failed") return Promise.resolve(problem(503, "Layers unreadable"));
+      return new Promise((resolve) => heldLayers.push(() => resolve(route(path, init))));
+    }
     if (path === "/api/v1/sources" && !init?.method && listMode === "held") {
       return new Promise((resolve) => held.push(() => resolve(route(path, init))));
     }
@@ -213,6 +222,13 @@ function scriptedCore({
     releaseSources: () => {
       listMode = undefined;
       for (const answerHeld of held.splice(0)) answerHeld();
+    },
+    /** Holds or fails every later read of a Build's layers until `releaseLayers`. */
+    holdLayers: () => (layerMode = "held"),
+    failLayers: () => (layerMode = "failed"),
+    releaseLayers: () => {
+      layerMode = undefined;
+      for (const answerHeld of heldLayers.splice(0)) answerHeld();
     },
   };
 }
@@ -504,6 +520,67 @@ describe("UI13-03: every empty state names the next useful action", () => {
     expect(core.basePuts).toEqual([{ id: 1000, body: { project_id: 2 } }]);
   });
 
+  it("Set base Source stays closed until the Build is read again", async () => {
+    const core = scriptedCore({ sources: ["Kit A", "Kit B"], builds: [["Bare", null]] });
+    renderAt("/builds/1000/sources", core.fetchMock);
+    const form = await screen.findByRole("form", { name: "Set base Source" });
+    const select = await within(form).findByLabelText("Base Source");
+    fireEvent.change(select, { target: { value: "2" } });
+    core.holdLayers();
+    const set = within(form).getByRole("button", { name: "Set base Source" });
+    fireEvent.click(set);
+    await waitFor(() => expect(core.basePuts).toEqual([{ id: 1000, body: { project_id: 2 } }]));
+    await settle();
+    // The PUT has committed; a second one would replace Kit B, so nothing is sent.
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(set);
+    await settle();
+    expect(core.basePuts).toHaveLength(1);
+    expect(within(form).getByText("Reading the Build again.")).toBeTruthy();
+    expect(set.getAttribute("aria-disabled")).toBe("true");
+
+    core.releaseLayers();
+    const table = await screen.findByRole("table", { name: "Build Sources" });
+    expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
+    expect(core.basePuts).toHaveLength(1);
+  });
+
+  it("a lost set-base answer and a failed re-read keep the form closed until Read again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = scriptedCore({
+      sources: ["Kit A", "Kit B"],
+      builds: [["Bare", null]],
+      baseAnswer: () => problem(502, "Bad Gateway"),
+    });
+    renderAt("/builds/1000/sources", core.fetchMock);
+    const form = await screen.findByRole("form", { name: "Set base Source" });
+    fireEvent.change(await within(form).findByLabelText("Base Source"), {
+      target: { value: "2" },
+    });
+    core.failLayers();
+    const set = within(form).getByRole("button", { name: "Set base Source" });
+    fireEvent.click(set);
+    expect((await within(form).findByRole("alert")).textContent).toMatch(
+      /^Could not confirm the base Source was set: /,
+    );
+    // The Build read retries before it gives up.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(
+      await within(form).findByText(
+        "Could not read the Build again. Press Read again to see whether the base Source was set.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(set);
+    await settle();
+    expect(core.basePuts).toHaveLength(1);
+
+    core.releaseLayers();
+    fireEvent.click(within(form).getByRole("button", { name: "Read again" }));
+    const table = await screen.findByRole("table", { name: "Build Sources" });
+    expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
+    expect(core.basePuts).toHaveLength(1);
+  });
+
   it("a Build with no layers and an empty Library leads to Library", async () => {
     const core = scriptedCore({ builds: [["Bare", null]] });
     renderAt("/builds/1000/sources", core.fetchMock);
@@ -512,12 +589,32 @@ describe("UI13-03: every empty state names the next useful action", () => {
     await heading("Library");
   });
 
-  it("Library with no Source activity says how activity is recorded", async () => {
+  it("Library with only ZIP Sources and no activity points to adding a GitHub Source", async () => {
     const core = scriptedCore({ sources: ["Kit A"] });
     renderAt("/library", core.fetchMock);
     expect(
-      await screen.findByText(/^No Source activity yet\. Sync a GitHub Source from its row/),
+      await screen.findByText(
+        "No Source activity yet. Activity records GitHub Source syncs, and this Library has none. Press Add Source and choose GitHub repository to track one.",
+      ),
     ).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Sources" });
+    expect(within(table).queryByRole("button", { name: /^Sync / })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add Source" }));
+    const form = dialog("Add Source");
+    expect(within(form).getByRole("radio", { name: "GitHub repository" })).toBeTruthy();
+  });
+
+  it("Library with a GitHub Source and no activity points to its Sync button", async () => {
+    const core = scriptedCore({ sources: ["Kit A", "Repo"] });
+    core.sources[1] = { ...core.sources[1]!, source_kind: "github", source_type: "github" };
+    renderAt("/library", core.fetchMock);
+    expect(
+      await screen.findByText(
+        "No Source activity yet. Sync a GitHub Source from its row to record updates and failed syncs here.",
+      ),
+    ).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Sources" });
+    expect(within(table).getByRole("button", { name: "Sync Repo" })).toBeTruthy();
   });
 
   it("Farm with no printers links to adding one in Settings", async () => {

@@ -13,11 +13,12 @@ confirms printed units or sends a printer command.
 | Builds has no Builds | Create Build, and the first-Build steps | Opens the Create Build dialog (GRE-1401). The steps are `FIRST_BUILD_STEPS` in `planCopy.ts`, the same list Help shows. |
 | Create Build with an empty Library | Add a Source in Library | Opens `/library`. The dialog can still create a Build with no base Source. |
 | No Builds match a due-date filter | Show all Builds | Selects All without changing any Build. |
-| A Build has no layers (Sources tab) | Set base Source | Sends `setBuildBase` once with the chosen Library Source. With an empty Library it links to Library instead. |
+| A Build has no layers (Sources tab) | Set base Source | Sends `setBuildBase` once with the chosen Library Source, then stays disabled until the Build has been read again, so a second send cannot replace the base the first set. A failed re-read offers Read again. With an empty Library it links to Library instead. |
 | A Build has no layers (Overview) | Choose its base Source | Opens the Build's Sources tab. |
 | Build History has no entries | Open Plan | Opens that Build's Plan tab. Shared `HISTORY_EMPTY` copy still explains snapshots and restore. |
 | Library has no Sources | Add Source | Opens the Add Source dialog (GRE-1513). A non-GitHub row can upload a ZIP (GRE-1725). A GitHub Source starts one sync (GRE-1728). |
-| Library has no Source activity | Sync a GitHub Source from its row | Activity lists sync updates and failures; the row's Sync button starts one. |
+| Library has no Source activity, with a GitHub Source | Sync a GitHub Source from its row | Activity lists sync updates and failures; the row's Sync button starts one. |
+| Library has no Source activity, with only ZIP Sources | Add Source, choosing GitHub repository | Activity records only GitHub syncs and update checks, and a ZIP Source has no Sync button, so the text names Add Source under the heading. |
 | Farm has no printers | Add a printer in Settings | Opens `/settings#printers`, where Add a printer lives. |
 | A Module is off | See Modules in Settings | `ModuleOff` links to `/settings#modules`. |
 | Command palette has no match | Clear search | Says the search matched nothing, suggests a screen name or "help", and clears the search back to every command. |

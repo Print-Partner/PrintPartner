@@ -43,4 +43,6 @@ reads the list again. The core refuses a second Build with the same name, so
 pressing Create again cannot make a duplicate.
 
 A Build with no layers shows **Set base Source** on its Sources tab, and its
-Overview links there. It sends `setBuildBase` once and reads the Build again.
+Overview links there. It sends `setBuildBase` once and stays disabled until the
+Build has been read again; a failed re-read keeps it disabled and offers
+**Read again**.

@@ -104,15 +104,20 @@ function SourcesTable({
   );
 }
 
-function RecentActivity({ events }: { events: SourceEvent[] }) {
+/**
+ * Activity records GitHub syncs and update checks only, so a Library of ZIP Sources has
+ * nothing to sync; its next action is adding a GitHub Source.
+ */
+function RecentActivity({ events, hasGithub }: { events: SourceEvent[]; hasGithub: boolean }) {
   const headingId = useId();
   return (
     <section aria-labelledby={headingId}>
       <h2 id={headingId}>Recent activity</h2>
       {events.length === 0 ? (
         <p className="pp-muted">
-          No Source activity yet. Sync a GitHub Source from its row to record updates and failed
-          syncs here.
+          {hasGithub
+            ? "No Source activity yet. Sync a GitHub Source from its row to record updates and failed syncs here."
+            : "No Source activity yet. Activity records GitHub Source syncs, and this Library has none. Press Add Source and choose GitHub repository to track one."}
         </p>
       ) : (
         <ul className="pp-reasons">
@@ -171,7 +176,12 @@ export function LibraryScreen() {
                   : `None in the last ${ACTIVITY_LIMIT} events`
               }
             />
-            {events && <RecentActivity events={events} />}
+            {events && (
+              <RecentActivity
+                events={events}
+                hasGithub={data.sources.some((source) => source.source_kind === "github")}
+              />
+            )}
           </>
         );
       }}

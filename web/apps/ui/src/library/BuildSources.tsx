@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router";
 import {
   BuildTabs,
@@ -37,9 +37,14 @@ function sourcesInLayerOrder(
   return sources;
 }
 
+/** Where the Build's re-read after a send stands. Set base Source waits for it. */
+type Reread = "idle" | "reading" | "failed";
+
 /**
  * A Build with no layers: choose a Library Source as its base. Set base Source sends
- * `setBuildBase` once; the Build is read again whatever the answer.
+ * `setBuildBase` once, then stays closed until the Build has been read again: a second
+ * send would replace a base the first one already set. A failed re-read keeps it closed
+ * and offers Read again.
  */
 function SetBaseSource({ buildId }: { buildId: number }) {
   const client = useQueryClient();
@@ -47,13 +52,23 @@ function SetBaseSource({ buildId }: { buildId: number }) {
   const ids = useId();
   const [sourceId, setSourceId] = useState<number | null>(null);
   const [failure, setFailure] = useState("");
+  const [reread, setReread] = useState<Reread>("idle");
+  const sending = useRef(false);
+  const readAgain = async () => {
+    setReread("reading");
+    const queryKey = buildQuery(buildId).queryKey;
+    await client.invalidateQueries({ queryKey });
+    setReread(client.getQueryState(queryKey)?.status === "error" ? "failed" : "idle");
+    sending.current = false;
+  };
   const set = useMutation({
     retry: false,
     networkMode: "always",
     mutationFn: (projectId: number) =>
       writeCore("setBuildBase", { id: buildId }, { project_id: projectId }),
+    // Runs before the mutation stops pending, so the form never reopens on old layers.
     onSettled: () => {
-      void client.invalidateQueries({ queryKey: ["core", "build", buildId] });
+      void readAgain();
       void client.invalidateQueries({ queryKey: ["core", "workflow", buildId] });
       void client.invalidateQueries({ queryKey: ["core", "tasks"] });
     },
@@ -70,12 +85,17 @@ function SetBaseSource({ buildId }: { buildId: number }) {
     ? OFFLINE_REASON
     : set.isPending
       ? "Setting the base Source."
-      : sourceId === null
-        ? "Choose a Source."
-        : null;
+      : reread === "reading"
+        ? "Reading the Build again."
+        : reread === "failed"
+          ? "Could not read the Build again. Press Read again to see whether the base Source was set."
+          : sourceId === null
+            ? "Choose a Source."
+            : null;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (why !== null || sourceId === null) return;
+    if (why !== null || sourceId === null || sending.current) return;
+    sending.current = true;
     setFailure("");
     set.mutate(sourceId);
   };
@@ -110,6 +130,11 @@ function SetBaseSource({ buildId }: { buildId: number }) {
         >
           Set base Source
         </button>
+        {reread === "failed" && (
+          <button type="button" className="pp-button" onClick={() => void readAgain()}>
+            Read again
+          </button>
+        )}
         <span id={`${ids}-why`} role="status" className="pp-mutation-reason">
           {why}
         </span>

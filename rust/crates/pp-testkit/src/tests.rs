@@ -88,6 +88,8 @@ fn assert_private_installations(umask: &str) {
         fs::write(installation.path().join("written-by-the-owner"), b"x")
             .unwrap_or_else(|error| panic!("{label}: {error}"));
     };
+    let bare = private_temp_dir(None).unwrap();
+    assert_eq!(mode(bare.path()), 0o700, "private_temp_dir");
     for fixture in [Fixture::Empty, Fixture::EmptyWithLeaseLeftovers] {
         let created = Installation::create(fixture).unwrap();
         assert_private(&created, &format!("create {fixture:?}"));
@@ -96,6 +98,36 @@ fn assert_private_installations(umask: &str) {
         let created_in = Installation::create_in(parent.path(), fixture).unwrap();
         assert_private(&created_in, &format!("create_in {fixture:?}"));
     }
+}
+
+/// `private_temp_dir` makes a new directory each call and never reuses or
+/// re-modes an entry that is already there, including a symlink to a
+/// directory (GRE-1398 review of `server_binary_routes`).
+#[cfg(unix)]
+#[test]
+fn private_temp_dir_is_new_and_leaves_existing_entries_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    let parent = tempfile::tempdir().unwrap();
+    let existing = parent.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(existing.join("keep"), b"x").unwrap();
+    std::os::unix::fs::symlink(&existing, parent.path().join("link")).unwrap();
+
+    let made: Vec<_> = (0..8)
+        .map(|_| private_temp_dir(Some(parent.path())).unwrap())
+        .collect();
+    let paths: BTreeSet<_> = made.iter().map(|dir| dir.path().to_path_buf()).collect();
+    assert_eq!(paths.len(), made.len(), "a path was handed out twice");
+    for path in &paths {
+        assert_eq!(path.parent(), Some(parent.path()));
+        assert!(!fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+        assert_eq!(mode(path), 0o700, "{}", path.display());
+        assert_eq!(fs::read_dir(path).unwrap().count(), 0, "{}", path.display());
+    }
+    assert_eq!(mode(&existing), 0o755);
+    assert_eq!(fs::read(existing.join("keep")).unwrap(), b"x");
 }
 
 #[test]

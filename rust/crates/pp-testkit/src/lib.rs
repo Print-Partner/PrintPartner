@@ -368,8 +368,11 @@ pub fn allowed_in_node_lease(name: &str) -> bool {
     matches!(name, "owner.json" | "previous-marker.json")
 }
 
-/// Creates a `pp-testkit-` temp directory with mode `0o700`, under `parent`
-/// or the system temporary directory.
+/// Creates a new, empty `pp-testkit-` temp directory with mode `0o700`,
+/// under `parent` or the system temporary directory, deleted when dropped.
+///
+/// The name is random and the directory is created exclusively, so an
+/// existing directory or symlink is never reused or re-moded.
 ///
 /// Rust storage refuses a data directory that other accounts can write to.
 /// A mode given at creation is still filtered by the umask: tempfile and
@@ -377,7 +380,7 @@ pub fn allowed_in_node_lease(name: &str) -> bool {
 /// `umask 0200`. The directory is created `0o700` so it is never more open,
 /// then set to `0o700`, which the umask does not filter. Windows has no mode
 /// bits; the directory inherits the temp root's ACL.
-fn private_temp_dir(parent: Option<&Path>) -> io::Result<tempfile::TempDir> {
+pub fn private_temp_dir(parent: Option<&Path>) -> io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix("pp-testkit-");
     #[cfg(unix)]
@@ -566,6 +569,7 @@ fn write_owner_directory(path: &Path, owner: &str) -> io::Result<()> {
 
 /// Creates one directory with mode `0o700` whatever the umask.
 fn create_private_dir(path: &Path) -> io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

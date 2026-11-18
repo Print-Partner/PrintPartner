@@ -237,20 +237,51 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
 fn slice0_mount_server_binary_serves_rust_routes() {
     let compiled = pp_core::DesktopRebuild::from_value(Some("1")).enabled();
     for value in ["1", "true"] {
-        let root =
+        // The root used to be `pp-slice0-server-<value>-<pid>` under the temp
+        // directory, created recursively and then chmodded, so a directory
+        // already at that name was reused, re-moded, and deleted. Put one
+        // there and check the test leaves it alone.
+        let old_name =
             std::env::temp_dir().join(format!("pp-slice0-server-{value}-{}", std::process::id()));
-        // Storage refuses a data directory whose parent other accounts can
-        // write to. A creation mode is still filtered by the umask, so create
-        // the root 0o700 and then set 0o700, which the umask does not filter.
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&root).unwrap();
-        #[cfg(unix)]
-        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-            .unwrap();
-        run(value, &root, compiled);
-        std::fs::remove_dir_all(&root).unwrap();
+        let planted = std::fs::create_dir(&old_name).is_ok();
+        if planted {
+            set_mode(&old_name, 0o755);
+            std::fs::write(old_name.join("keep"), b"x").unwrap();
+        }
+        // Storage refuses a data directory other accounts can write to, so
+        // the root is a new, empty 0o700 directory under any umask.
+        let root = pp_testkit::private_temp_dir(None).unwrap();
+        assert_ne!(root.path(), old_name);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        assert_mode(root.path(), 0o700);
+        run(value, root.path(), compiled);
+        root.close().unwrap();
+        if planted {
+            assert_mode(&old_name, 0o755);
+            assert_eq!(std::fs::read(old_name.join("keep")).unwrap(), b"x");
+            std::fs::remove_dir_all(&old_name).unwrap();
+        }
     }
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
+fn assert_mode(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let actual = std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual, mode, "{}", path.display());
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
 }

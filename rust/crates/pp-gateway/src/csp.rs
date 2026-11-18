@@ -13,7 +13,8 @@ const INDEX: &str = "<!doctype html><html><head><title>PP</title></head><body></
 #[derive(Clone, Copy)]
 enum Runtime {
     NodeBacked,
-    RustOnly(ServedUi),
+    RustOnlyLegacy,
+    RustOnlyReplacement,
 }
 
 struct Fixture {
@@ -38,7 +39,7 @@ impl Fixture {
         let root = root.canonicalize().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut gateway = match runtime {
-            Runtime::RustOnly(ui) => {
+            Runtime::RustOnlyLegacy | Runtime::RustOnlyReplacement => {
                 let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
                 let product = |_| {
                     axum::Router::new()
@@ -51,32 +52,25 @@ impl Fixture {
                             axum::routing::get(|| async { "settings response" }),
                         )
                 };
-                match ui {
-                    ServedUi::Replacement => Gateway::start_rust_only_with_assets(
-                        listener,
-                        root,
-                        Arc::new(std::collections::BTreeMap::from([
-                            ("index.html".into(), Arc::<[u8]>::from(index.as_bytes())),
-                            (
-                                "assets/app.js".into(),
-                                Arc::<[u8]>::from(&b"export default 1;"[..]),
-                            ),
-                        ])),
-                        product,
-                        receiver,
-                        Arc::new(NoHosts),
-                        SignOut::EndsRuntime,
-                    ),
-                    ServedUi::Legacy => Gateway::start_rust_only(
-                        listener,
-                        root,
-                        ui,
-                        product,
-                        receiver,
-                        Arc::new(NoHosts),
-                        SignOut::EndsRuntime,
-                    ),
-                }
+                let ui = if matches!(runtime, Runtime::RustOnlyReplacement) {
+                    ServedUi::Replacement(Arc::new(std::collections::BTreeMap::from([
+                        ("index.html".into(), Arc::<[u8]>::from(index.as_bytes())),
+                        (
+                            "assets/app.js".into(),
+                            Arc::<[u8]>::from(&b"export default 1;"[..]),
+                        ),
+                    ])))
+                } else {
+                    ServedUi::Legacy(root)
+                };
+                Gateway::start_rust_only(
+                    listener,
+                    ui,
+                    product,
+                    receiver,
+                    Arc::new(NoHosts),
+                    SignOut::EndsRuntime,
+                )
                 .unwrap()
             }
             Runtime::NodeBacked => Gateway::start(
@@ -151,7 +145,7 @@ fn nonce_of(html: &str) -> &str {
 
 #[tokio::test]
 async fn csp_rust_only_document_limits_every_source_to_self_and_the_event_stream() {
-    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let fixture = Fixture::start(Runtime::RustOnlyReplacement).await;
     let first = fixture.get("GET", "/builds", Some("gzip")).await;
     assert_eq!(first.status(), StatusCode::OK);
     let header = policy(&first);
@@ -183,7 +177,7 @@ async fn csp_rust_only_document_limits_every_source_to_self_and_the_event_stream
 
 #[tokio::test]
 async fn csp_rust_only_assets_allow_no_inline_style() {
-    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let fixture = Fixture::start(Runtime::RustOnlyReplacement).await;
     let response = fixture.get("GET", "/assets/app.js", None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(policy(&response), fixture.replacement(None));
@@ -194,7 +188,7 @@ async fn csp_rust_only_assets_allow_no_inline_style() {
 /// Node-backed one, and a Rust-only one that still serves that build.
 #[tokio::test]
 async fn csp_old_ui_keeps_the_legacy_policy_and_document_in_every_runtime() {
-    for runtime in [Runtime::NodeBacked, Runtime::RustOnly(ServedUi::Legacy)] {
+    for runtime in [Runtime::NodeBacked, Runtime::RustOnlyLegacy] {
         let fixture = Fixture::start(runtime).await;
         let document = fixture.get("GET", "/builds", None).await;
         assert_eq!(policy(&document), LEGACY);
@@ -218,7 +212,7 @@ async fn csp_old_ui_keeps_the_legacy_policy_and_document_in_every_runtime() {
 /// identity gets it uncoded rather than a 406 page.
 #[tokio::test]
 async fn csp_replacement_document_is_sent_uncoded_to_an_identity_refusing_client() {
-    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let fixture = Fixture::start(Runtime::RustOnlyReplacement).await;
     let response = fixture
         .get("GET", "/builds", Some("gzip, identity;q=0"))
         .await;
@@ -244,7 +238,7 @@ async fn csp_nonce_element_lands_in_head_and_never_before_the_doctype() {
         ("<p>bare", ""),
     ];
     for (index, prefix) in cases {
-        let fixture = Fixture::with_index(Runtime::RustOnly(ServedUi::Replacement), index).await;
+        let fixture = Fixture::with_index(Runtime::RustOnlyReplacement, index).await;
         let response = fixture.get("GET", "/builds", None).await;
         let header = policy(&response);
         let html = body(response).await;
@@ -272,7 +266,7 @@ fn csp_template_is_one_header_line_with_both_placeholders() {
 
 #[tokio::test]
 async fn replacement_spa_documents_and_deep_links_keep_the_nonce_policy() {
-    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let fixture = Fixture::start(Runtime::RustOnlyReplacement).await;
     for path in [
         "/",
         "/today",
@@ -324,7 +318,7 @@ fn replacement_fallback_excludes_service_namespaces_and_file_paths() {
 
 #[tokio::test]
 async fn replacement_navigation_preserves_root_api_routes() {
-    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let fixture = Fixture::start(Runtime::RustOnlyReplacement).await;
     for (path, expected) in [
         ("/printers/1/files/content", "printer bytes"),
         ("/settings/api-keys", "settings response"),
@@ -338,7 +332,7 @@ async fn replacement_navigation_preserves_root_api_routes() {
 /// The measured copy remains authoritative after files on disk change.
 #[tokio::test]
 async fn replacement_assets_remain_pinned_after_startup() {
-    let fixture = Fixture::start(Runtime::RustOnly(ServedUi::Replacement)).await;
+    let fixture = Fixture::start(Runtime::RustOnlyReplacement).await;
     let root = fixture._scratch.join("site");
     std::fs::write(root.join("index.html"), b"changed document").unwrap();
     std::fs::write(root.join("assets/app.js"), b"changed script").unwrap();
@@ -368,7 +362,6 @@ async fn replacement_assets_remain_pinned_after_startup() {
 /// used, not the loopback origin the gateway reports.
 #[tokio::test]
 async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
-    let scratch = Scratch::new("pp-csp-");
     let status = tokio::sync::watch::channel(RustStatus::Ready);
     let mut gateway = Gateway::start_rust_only_with_network(
         TcpListener::bind("127.0.0.1:0").await.unwrap(),
@@ -376,14 +369,10 @@ async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
             network: true,
             sign_out: SignOut::KeepsServing,
         },
-        scratch.to_path_buf(),
-        (
-            ServedUi::Replacement,
-            Some(Arc::new(std::collections::BTreeMap::from([(
-                "index.html".into(),
-                Arc::<[u8]>::from(INDEX.as_bytes()),
-            )]))),
-        ),
+        ServedUi::Replacement(Arc::new(std::collections::BTreeMap::from([(
+            "index.html".into(),
+            Arc::<[u8]>::from(INDEX.as_bytes()),
+        )]))),
         |_| axum::Router::new(),
         status.1,
         Arc::new(NoHosts),
@@ -419,4 +408,79 @@ async fn csp_explicit_listener_names_the_admitted_host_for_the_event_stream() {
     assert!(!csp.contains("127.0.0.1"), "{csp}");
     drop(response);
     gateway.stop().await.unwrap();
+}
+
+async fn start_replacement(
+    files: std::collections::BTreeMap<String, Arc<[u8]>>,
+) -> anyhow::Result<Gateway> {
+    let (_status, receiver) = tokio::sync::watch::channel(RustStatus::Ready);
+    Gateway::start_rust_only(
+        TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        ServedUi::Replacement(Arc::new(files)),
+        |_| axum::Router::new(),
+        receiver,
+        Arc::new(NoHosts),
+        SignOut::EndsRuntime,
+    )
+}
+
+/// A non-document asset is the retained allocation itself, not a per-request
+/// copy, and repeated requests still serve the same verified bytes.
+#[tokio::test]
+async fn replacement_asset_bodies_share_the_verified_bytes() {
+    let script = Arc::<[u8]>::from(&b"export default 1;"[..]);
+    let mut gateway = start_replacement(std::collections::BTreeMap::from([
+        ("index.html".into(), Arc::<[u8]>::from(INDEX.as_bytes())),
+        ("assets/app.js".into(), Arc::clone(&script)),
+    ]))
+    .await
+    .unwrap();
+    let cookie = gateway.test_session().await;
+    for _ in 0..2 {
+        let request = get(&gateway, "/assets/app.js", Some(&cookie), None);
+        let response = handle(State(gateway.state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-length"], "17");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], &script[..]);
+        assert_eq!(bytes.as_ptr(), script.as_ptr(), "the body copied the asset");
+    }
+}
+
+/// Every replacement document request copies `index.html` to add its nonce, so
+/// startup refuses one over 1 MiB, or none at all, before serving anything.
+#[tokio::test]
+async fn replacement_startup_bounds_the_document() {
+    const LIMIT: usize = 1 << 20;
+    let document = |length: usize| {
+        let mut html = INDEX.as_bytes().to_vec();
+        html.resize(length, b' ');
+        std::collections::BTreeMap::from([("index.html".into(), Arc::<[u8]>::from(html))])
+    };
+    let mut gateway = start_replacement(document(LIMIT)).await.unwrap();
+    let cookie = gateway.test_session().await;
+    let mut request = get(&gateway, "/builds", Some(&cookie), None);
+    request
+        .headers_mut()
+        .insert("accept", HeaderValue::from_static("text/html"));
+    let response = handle(State(gateway.state.clone()), request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    nonce_of(body(response).await.trim_end());
+
+    let refusal = |started: anyhow::Result<Gateway>| match started {
+        Ok(_) => panic!("startup accepted the document"),
+        Err(error) => error.to_string(),
+    };
+    assert_eq!(
+        refusal(start_replacement(document(LIMIT + 1)).await),
+        "Replacement UI index.html exceeds 1 MiB"
+    );
+    let script = std::collections::BTreeMap::from([(
+        "assets/app.js".into(),
+        Arc::<[u8]>::from(&b"export default 1;"[..]),
+    )]);
+    assert_eq!(
+        refusal(start_replacement(script).await),
+        "Replacement UI has no index.html"
+    );
 }

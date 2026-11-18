@@ -46,5 +46,4 @@ they report a merge conflict, which is what marker stripping is for: an addon's
 are keyed by path, so the new slugs change only conflict status, not part
 identity or Required units.
 
-GitHub sync still skips `.3mf` files. Importing them as parts is a separate
-ticket.
+GitHub sync still skips `.3mf` files. GRE-1776 tracks importing them as parts.

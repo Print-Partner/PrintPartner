@@ -232,7 +232,12 @@ only when there are several) and a name, which defaults to
 `<holding Build> experiment`. The option sends no `Idempotency-Key`, so the gate
 never resends it: after a lost answer or a 5xx it tells the user to check the
 Builds list. On 201 it links to the experiment's Plan tab. The draft in the gate
-and the holding Build are not changed. Accept stays refused for the held order.
+and the holding Build are not changed. The gate's text says the experiment
+starts with a draft only when the holding Build has an Accepted Plan, and on a
+201 with `draft_id: null` it says the experiment has no draft yet. A draft that
+proposes a held order stays refused at Accept (`duplicate_order`). A Build that
+already shared its order in copied data keeps it, so its ready preview lists the
+duplicate and Accept stays available.
 
 Deleting a Build with experiments returns 409 `build_has_experiments` with
 `builds: [{build_id, name}]`, ordered by ID, and writes nothing. Archived

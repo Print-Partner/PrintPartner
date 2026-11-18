@@ -31,8 +31,9 @@ const UNKNOWN =
 
 /**
  * The experiment option beside a held order: a detached copy of a holding Build, made with
- * `POST /api/v2/plans/{id}/duplicate`. The copy takes the holder's Accepted Plan as a draft
- * and no order number. This draft and the holding Build stay as they are.
+ * `POST /api/v2/plans/{id}/duplicate`. The copy takes no order number, and the holder's
+ * Accepted Plan as a draft when it has one; `draft_id` is null when it has none. This draft
+ * and the holding Build stay as they are.
  */
 export function ExperimentOption({ holders }: { holders: readonly OrderHolder[] }) {
   const client = useQueryClient();
@@ -60,8 +61,8 @@ export function ExperimentOption({ holders }: { holders: readonly OrderHolder[] 
     <div className="pp-experiment">
       <p>
         To try another Plan for this order without taking it, start an experiment from the Build
-        that holds it. The experiment copies that Build&apos;s Accepted Plan into a draft and has no
-        order number.
+        that holds it. The experiment has no order number. If that Build has an Accepted Plan, the
+        experiment starts with a draft of it; otherwise it starts with no draft.
       </p>
       <div className="pp-fields">
         {holders.length > 1 && (
@@ -113,8 +114,11 @@ export function ExperimentOption({ holders }: { holders: readonly OrderHolder[] 
       </div>
       {copied && (
         <p role="status">
-          Started {create.variables?.name} as an experiment of {create.variables?.parent.name}. This
-          draft is unchanged.{" "}
+          Started {create.variables?.name} as an experiment of {create.variables?.parent.name}.{" "}
+          {copied.draft_id === null
+            ? `${create.variables?.parent.name} has no Accepted Plan, so the experiment has no draft yet.`
+            : `It has a draft of ${create.variables?.parent.name}'s Accepted Plan.`}{" "}
+          This draft is unchanged.{" "}
           <Link to={`/builds/${copied.build_id}/plan`}>Open {create.variables?.name}</Link>
         </p>
       )}

@@ -354,7 +354,7 @@ describe("UI7-02 duplicate order experiment option", () => {
     const done = await within(gate).findByText(/as an experiment of Other kit/);
     expect(done.getAttribute("role")).toBe("status");
     expect(done.textContent).toContain(
-      "Started Other kit experiment as an experiment of Other kit. This draft is unchanged.",
+      "Started Other kit experiment as an experiment of Other kit. It has a draft of Other kit's Accepted Plan. This draft is unchanged.",
     );
     expect(
       within(gate).getByRole("link", { name: "Open Other kit experiment" }).getAttribute("href"),
@@ -367,6 +367,30 @@ describe("UI7-02 duplicate order experiment option", () => {
         body: { name: "Other kit experiment" },
       },
     ]);
+  });
+
+  it("says so when the holding Build has no Accepted Plan to copy", async () => {
+    const fetchMock = core({
+      write: (path) =>
+        path.endsWith("/duplicate") ? json({ ...COPY, draft_id: null }, 201) : undefined,
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    expect(
+      (await within(gate).findByText(/start an experiment from the Build that holds it/))
+        .textContent,
+    ).toContain("otherwise it starts with no draft");
+    fireEvent.click(
+      within(gate).getByRole("button", { name: "Start an experiment from Other kit" }),
+    );
+    const done = await within(gate).findByText(/as an experiment of Other kit/);
+    expect(done.textContent).toContain(
+      "Other kit has no Accepted Plan, so the experiment has no draft yet.",
+    );
+    expect(done.textContent).not.toContain("It has a draft");
+    expect(
+      within(gate).getByRole("link", { name: "Open Other kit experiment" }).getAttribute("href"),
+    ).toBe("/builds/77/plan");
   });
 
   it("offers each holding Build from a duplicate-order refusal and sends the chosen name", async () => {

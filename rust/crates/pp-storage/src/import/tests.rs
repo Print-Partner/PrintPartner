@@ -78,6 +78,16 @@ fn execute(folder: &Installation, sql: &str) {
 /// database and each root of the backup's scope that the folder holds.
 /// Format 1 declares no scope; its roots are the five legacy ones.
 fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFile {
+    archive_packing(folder, format, scope, &[])
+}
+
+/// [`archive_of`], also packing the `extra` roots its scope leaves out.
+fn archive_packing(
+    folder: &Path,
+    format: u64,
+    scope: &str,
+    extra: &[&str],
+) -> tempfile::NamedTempFile {
     let roots: Vec<&str> = match (format, scope) {
         (1, _) => archive::LEGACY_ROOTS.to_vec(),
         (_, "full") => archive::FULL_ROOTS.iter().map(|(root, _)| *root).collect(),
@@ -105,7 +115,7 @@ fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFil
     builder
         .append_path_with_name(folder.join(database), database)
         .unwrap();
-    for root in roots {
+    for &root in roots.iter().chain(extra) {
         let path = folder.join(root);
         if path.is_dir() {
             builder.append_dir_all(root, path).unwrap();
@@ -707,6 +717,14 @@ fn a_database_only_archive_and_a_file_that_is_no_archive_are_refused() {
         );
         assert!(error.to_string().ends_with(reason), "{error}");
     }
+    // Format 1 holds only the five legacy roots; a format 2 root in it fails
+    // validation.
+    let archive = archive_packing(folder.path(), 1, "", &["custom_filaments.json"]);
+    let error = run(archive.path()).unwrap_err();
+    assert!(
+        matches!(&error, ImportError::InvalidArchive(detail) if detail.contains("outside the declared scope: custom_filaments.json")),
+        "{error:?}"
+    );
     let not_an_archive = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(not_an_archive.path(), "synthetic text").unwrap();
     let error = run(not_an_archive.path()).unwrap_err();

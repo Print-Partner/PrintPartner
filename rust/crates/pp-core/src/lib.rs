@@ -634,8 +634,8 @@ async fn start_rust_resources(
         network::for_listener(product.merge(status_routes.mount(status)), listen)
     };
     let served = match snapshot {
-        Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
-        None => (pp_gateway::ServedUi::Legacy, None),
+        Some(files) => pp_gateway::ServedUi::Replacement(files),
+        None => pp_gateway::ServedUi::Legacy(assets),
     };
     let sign_out = if server_updates {
         pp_gateway::SignOut::KeepsServing
@@ -646,9 +646,8 @@ async fn start_rust_resources(
         network: listen.is_some(),
         sign_out,
     };
-    let gateway = Gateway::start_rust_only_with_network(
-        listener, mode, assets, served, product, receiver, hosts,
-    )?;
+    let gateway =
+        Gateway::start_rust_only_with_network(listener, mode, served, product, receiver, hosts)?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
     let stop_sends = Arc::new(std::sync::atomic::AtomicBool::new(false));

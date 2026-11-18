@@ -25,9 +25,10 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `CompatHandle` | Clonable handle: `status` (`watch` of `Status`), `endpoint()`, `recover()` after the crash guard trips. |
 | `Endpoint` | `forward`, `rate_limit_bucket`, `bound_to`. |
 | `Bundle`, `MeasuredBundle`, `verify_bundle` | Release identity and the proof that the legacy frontend and backend match the manifest. |
-| `AssetSnapshot`, `snapshot_rust_only_release` | Immutable replacement UI bytes retained after identity, `replacement_frontend` and community-manifest verification. |
+| `AssetSnapshot`, `snapshot_rust_only_release` | Immutable replacement UI bytes retained after identity, `replacement_frontend` and community-manifest verification. Refuses an inventory without `REPLACEMENT_DOCUMENT` (`index.html`) or one over `MAX_REPLACEMENT_DOCUMENT_BYTES` (1 MiB), before the digest check. |
 | `verify_rust_only_release` | Verifies identity, `replacement_frontend` and community manifests without retaining the bytes. |
 | `verify_rust_only_legacy_release` | Verifies identity, `frontend` and community manifests when the replacement bundle is absent. |
+| `release_measures_replacement` | Whether the embedded manifest has a `replacement_frontend` inventory. The launcher test reads it instead of the disk. |
 | `drain` | Process-group stop helpers: `drive_shutdown_group`, `reap_process_group`, `SIGTERM_GRACE`. On Windows the group is the child's Job Object. |
 | `redact` | `Scrubber`, `scrub`, `REDACTED`: the scrub policy for logs, the Logs view, and opt-in Sentry. |
 | `settings` | `ENVIRONMENT` maps each Node env name to an `Owner`; `fixed_env`. |

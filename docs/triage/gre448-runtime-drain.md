@@ -1056,11 +1056,22 @@ sequence on the Rust-only runtime. Each case runs in a child process with
   `gateway_drain_timed_out` and `storage_ownership_retained`, so both drains
   share one five-second budget.
 
-Red control: changing `if !tracked_idle || !imports_idle` to
-`if !imports_idle` in `stop_rust` released storage after a timed-out drain.
-`ticket_t_3_drain_rust_only_runtime_shares_one_deadline` failed at
-`rust_only_drain.rs:80` with `storage_released: true`. With the line restored
-all three passed.
+The two timeout cases own their budget: a test constant of five seconds,
+checked against `MUTATION_DRAIN`, plus two seconds for the gateway stop, the
+idle worker joins and the writer shutdown. Shutdown must end at or after five
+seconds and before seven, so a drain lengthened to seven seconds or more fails.
+
+Red controls, each reverted:
+
+- Changing `if !tracked_idle || !imports_idle` to `if !imports_idle` in
+  `stop_rust` released storage after a timed-out drain.
+  `ticket_t_3_drain_rust_only_runtime_shares_one_deadline` failed at its
+  receipt assertion with `storage_released: true`.
+- Passing `MUTATION_DRAIN + 3 s` as the drain bound in `stop_rust`, with the
+  constant unchanged, failed both timeout cases with "shutdown took 8.006s;
+  the drain budget is 5s".
+
+With production code restored, all three passed.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --test runtime_m0 --features desktop_rebuild --no-tests=fail -E 'test(rust_only_drain::)' --success-output immediate

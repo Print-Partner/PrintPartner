@@ -14,6 +14,23 @@ use serde_json::json;
 use std::{fs, path::Path, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// GRE-448's drain budget, owned by the test rather than read from production.
+const BUDGET: Duration = Duration::from_secs(5);
+/// Allowance after the budget for the gateway stop, the idle worker joins and
+/// the writer shutdown. There is no Node child to wait for. Two seconds stays
+/// under any budget of seven seconds or more, so a lengthened drain fails.
+const SCHEDULING: Duration = Duration::from_secs(2);
+
+/// The shutdown ended within the five-second budget plus scheduling, and not
+/// before the budget ran out.
+fn assert_budget(elapsed: Duration) {
+    assert_eq!(MUTATION_DRAIN, BUDGET, "the shared drain budget changed");
+    assert!(
+        elapsed >= BUDGET && elapsed < BUDGET + SCHEDULING,
+        "shutdown took {elapsed:?}; the drain budget is {BUDGET:?}"
+    );
+}
+
 /// Runs the ignored `rust_only_drain::{case}` in a child and prints the
 /// evidence lines it wrote.
 async fn in_child(case: &str, data: &Path) {
@@ -186,10 +203,7 @@ async fn ticket_t_3_drain_rust_only_runtime_timeout_retains_storage_until_exit_i
     let started = tokio::time::Instant::now();
     let receipt = runtime.shutdown().await;
     let elapsed = started.elapsed();
-    assert!(
-        elapsed >= MUTATION_DRAIN && elapsed < Duration::from_secs(12),
-        "{elapsed:?}"
-    );
+    assert_budget(elapsed);
     assert!(work.cancellation().is_cancelled());
     assert!(handle.track_shutdown_work().is_err());
     let errors = ["tracked_drain_timed_out", "storage_ownership_retained"];
@@ -240,10 +254,8 @@ async fn ticket_t_3_drain_rust_only_runtime_shares_one_deadline_in_child() {
     let started = tokio::time::Instant::now();
     let receipt = runtime.shutdown().await;
     let elapsed = started.elapsed();
-    assert!(
-        elapsed >= MUTATION_DRAIN && elapsed < MUTATION_DRAIN + Duration::from_secs(4),
-        "the gateway and tracked work must share one five-second deadline, got {elapsed:?}"
-    );
+    // One shared budget: two sequential five-second waits would take ten.
+    assert_budget(elapsed);
     let errors = [
         "tracked_drain_timed_out",
         "gateway_drain_timed_out",

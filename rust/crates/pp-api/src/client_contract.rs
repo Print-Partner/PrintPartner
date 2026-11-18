@@ -7,6 +7,8 @@
 //! [`crate::spoolman_deductions`], [`crate::backup`], [`crate::restore`] or [`crate::auth`].
 //! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
+//! A route with a `request` DTO also needs a row for its `name` in that test's
+//! route-keyed sample table, `pp-core/src/rebuild_api/contract_samples.rs`.
 //!
 //! The document's `descriptors` list holds constant tables the generator writes
 //! out as data: today only the printer display descriptors.

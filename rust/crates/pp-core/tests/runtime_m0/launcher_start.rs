@@ -285,9 +285,19 @@ async fn assert_legacy_navigation(origin: &str, desktop: &str) {
 /// A measured replacement `index.html` over 1 MiB refuses the Rust-only
 /// launch during release verification, before the listener bind: the saved
 /// port stays in `desktop.toml` even while another process holds it.
+///
+/// The digests are compiled in, so only a manifest that measures
+/// `web/apps/ui/dist` has a document to grow. A manifest written before the
+/// UI was built measures none, as in [`launcher_case`]: this case then has
+/// nothing to launch, and `replacement_snapshot_bounds_a_measured_document`
+/// in `pp-compat` still checks the limit on its own measured fixture.
 #[cfg(feature = "desktop_rebuild")]
 #[tokio::test]
 async fn oversized_replacement_document_refuses_before_the_saved_port_moves() {
+    if !pp_compat::release_measures_replacement().unwrap() {
+        println!("the compiled manifest measures no replacement UI; no document to grow");
+        return;
+    }
     let data = temporary("oversized-document");
     let output = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([

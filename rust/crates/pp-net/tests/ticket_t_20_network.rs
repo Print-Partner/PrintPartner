@@ -394,55 +394,81 @@ async fn ticket_t_20_network_raw_sockets_connect_only_to_checked_addresses() {
     assert!(accepted.is_err());
 }
 
-#[test]
-fn ticket_t_20_network_ambient_proxies_are_never_used() {
-    let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
-    // SAFETY: nextest runs each test in its own process, and no other thread
-    // exists yet to read the environment.
-    unsafe {
-        for name in [
-            "HTTP_PROXY",
-            "http_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-        ] {
-            std::env::set_var(name, &proxy_url);
-        }
-        std::env::remove_var("NO_PROXY");
-        std::env::remove_var("no_proxy");
-    }
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let proxy = TcpListener::from_std({
-            proxy.set_nonblocking(true).unwrap();
-            proxy
-        })
-        .unwrap();
-        let (port, paths) = http_server(|_, _| OK.to_owned()).await;
-        let dns = FakeDns::default().with("printer.test", &["127.0.0.1"]);
-        let url = format!("http://printer.test:{port}/direct");
-        let checked = checked_client(dns.checked(Policy::Lan))
-            .unwrap()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        assert_eq!(checked.get(&url).send().await.unwrap().status(), 200);
-        assert_eq!(*paths.lock().unwrap(), ["/direct"]);
-        let reached = tokio::time::timeout(Duration::from_millis(200), proxy.accept()).await;
-        assert!(reached.is_err(), "the checked client used the proxy");
+/// Set only on the child process that
+/// `ticket_t_20_network_ambient_proxies_are_never_used` starts.
+const PROXY_CHILD: &str = "PP_NET_PROXY_CHILD";
+const PROXY_ORIGIN: &str = "PP_NET_PROXY_ORIGIN";
+const PROXY_VARIABLES: [&str; 6] = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
 
-        // Control: a stock client honours the same environment.
-        let stock = reqwest::Client::builder()
-            .timeout(Duration::from_millis(500))
-            .build()
-            .unwrap();
-        let _ = stock.get(&url).send().await;
-        let reached = tokio::time::timeout(Duration::from_secs(2), proxy.accept()).await;
-        assert!(reached.is_ok(), "the proxy fixture was not live");
-    });
+/// This test binary again, running only `proxy_environment_child`, with the
+/// proxy variables set on that child process alone.
+fn proxy_child(mode: &str, origin: &str, proxy: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "proxy_environment_child", "--nocapture"])
+        .env(PROXY_CHILD, mode)
+        .env(PROXY_ORIGIN, origin)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy");
+    for name in PROXY_VARIABLES {
+        command.env(name, proxy);
+    }
+    command
+}
+
+/// The client half of the proxy test. Without `PP_NET_PROXY_CHILD` it
+/// returns at once, so a normal run passes it.
+#[tokio::test]
+async fn proxy_environment_child() {
+    let Ok(mode) = std::env::var(PROXY_CHILD) else {
+        return;
+    };
+    let origin = std::env::var(PROXY_ORIGIN).unwrap();
+    let builder = if mode == "checked" {
+        let dns = FakeDns::default().with("printer.test", &["127.0.0.1"]);
+        checked_client(dns.checked(Policy::Lan)).unwrap()
+    } else {
+        reqwest::Client::builder()
+    };
+    let client = builder.timeout(Duration::from_secs(2)).build().unwrap();
+    let sent = client.get(&origin).send().await;
+    if mode == "checked" {
+        assert_eq!(sent.unwrap().status(), 200);
+    }
+}
+
+#[tokio::test]
+async fn ticket_t_20_network_ambient_proxies_are_never_used() {
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let (port, paths) = http_server(|_, _| OK.to_owned()).await;
+    let origin = format!("http://printer.test:{port}/direct");
+
+    let checked = proxy_child("checked", &origin, &proxy_url)
+        .status()
+        .await
+        .unwrap();
+    assert!(checked.success(), "the checked child failed");
+    assert_eq!(*paths.lock().unwrap(), ["/direct"]);
+    let reached = tokio::time::timeout(Duration::from_millis(200), proxy.accept()).await;
+    assert!(reached.is_err(), "the checked client used the proxy");
+
+    // Control: a stock client in the same environment goes to the proxy.
+    let mut stock = proxy_child("stock", &origin, &proxy_url);
+    let (reached, stock) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(5), proxy.accept()),
+        stock.status()
+    );
+    assert!(stock.unwrap().success());
+    assert!(reached.is_ok(), "the proxy fixture was not live");
+    assert_eq!(*paths.lock().unwrap(), ["/direct"]);
 }
 
 /// Reads until the peer closes; `true` if it closed within `limit`.

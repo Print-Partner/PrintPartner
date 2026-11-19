@@ -289,11 +289,13 @@ Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Install
 
 The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`) that calls these routes:
 
-1. **Create backup** posts `createInstallationBackup` once and shows the archive's file name, time, app version, size and SHA-256. **Download** is a plain same-origin link to `GET /api/v2/installation/backup/archive`, so the browser saves the file. The page keeps only the backup it made; after a reload, create one again. A 503 shows the core's reason, such as `A backup is already running`.
+1. **Create backup** posts `createInstallationBackup` once and shows the archive's file name, time, app version, size and SHA-256. **Download** first asks `HEAD /api/v2/installation/backup/archive?sha256=<shown digest>`. On 200 it starts a browser download of the same URL, so the file saved is the one whose size and SHA-256 the page shows. On 404 or 409 it removes the shown backup and says to create one again; nothing is saved. The `GET` carries the digest too, so a create between the two requests is refused instead of sent. The page keeps only the backup it made; after a reload, create one again. A 503 shows the core's reason, such as `A backup is already running`.
 2. **Restore from a backup**: choose the file, then **Check backup** posts it as the body of the stage route and shows the backup's time, app version and schema version. Nothing is sent when the section opens or a file is chosen.
 3. **Restore this backup** opens a dialog that shows the core's confirmation text as sent. Focus starts on Cancel. Only **Replace this installation** calls the restore route, once, with the `restore_id` and that text. On success the dialog says `Restore complete` and offers Reload; the restored database brings its own sessions, so the page then asks for sign-in.
 
-A 4xx, `restore_rolled_back`, or a 503 with no problem code is shown as a refusal that left the installation unchanged; `restore_not_found` and `restore_rolled_back` also ask for the file again. A lost answer, an unreadable 200, `restart_required`, `outcome_unknown` or a bare 500 shows `The answer was lost. Reload to see which installation is open.` and the section never sends that restore again.
+A 4xx, `restore_rolled_back`, or a 503 whose problem body was read and has no code is shown as a refusal that left the installation unchanged; `restore_not_found` and `restore_rolled_back` also ask for the file again. A lost answer, an unreadable 200, a 503 whose body could not be read, `restart_required`, `outcome_unknown` or a bare 500 shows `The answer was lost. Reload to see which installation is open.` and the section never sends that restore again.
+
+The restore's outcome lives for the page load (`web/apps/ui/src/settings/restoreOutcome.ts`), not in the Settings screen. Leaving Settings and coming back, or leaving while the restore runs, keeps a running, complete or lost restore with its Reload button, and keeps Create backup, Check backup and the file field off. Only a reload clears it.
 
 ## Source thumbnail cache
 
@@ -357,7 +359,7 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two r
 
 `POST /api/v2/installation/backup` calls `export_backup` with this build's version and answers the archive file name, `created_at`, app version, size in bytes, SHA-256 and warnings. The name is `print-partner-backup.tar.gz`. The router keeps that one archive. A later create drops the previous one, which removes its folder. Not enough free disk answers 503 `Not enough free disk space`, with `needed` and `available`. A restore in progress answers 503 `A restore is in progress`.
 
-`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
+`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The optional `sha256` query names the archive the client wants by the digest the create answered. When a later create, from any window or client, has replaced it, the route answers 409 `A newer backup replaced this one; create a backup again` and sends no bytes. `HEAD` answers the same status and headers with no body and does not hold the one-request slot, so a `GET` right after it is not refused as busy. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
 
 Tests: `pp-storage/src/restore/tests/export.rs` and `pp-core/tests/installation_backup_http.rs`.
 

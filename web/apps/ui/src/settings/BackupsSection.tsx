@@ -5,12 +5,31 @@ import { ContractError, RequestContractError, writeCore } from "../core/rust";
 import { reason } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
+import { currentRestore, restoreSent, setRestore, useRestore, type Restore } from "./restoreOutcome";
 
 type Backup = RouteResponse<"createInstallationBackup">;
 type Preview = RouteResponse<"stageInstallationRestore">;
 
-/** The archive route. A plain same-origin link: the body is a file the browser saves. */
+/** The archive route. The body is a file the browser saves. */
 export const ARCHIVE_PATH = "/api/v2/installation/backup/archive";
+
+/**
+ * The archive URL for one backup. The core refuses it with 409 once a later create, from any
+ * window, has replaced that archive, so the file saved is always the one whose size and
+ * SHA-256 this page shows.
+ */
+export const archiveUrl = (backup: Backup) => `${ARCHIVE_PATH}?${new URLSearchParams({ sha256: backup.sha256 })}`;
+
+/** Starts a browser download of `href`. The session cookie authenticates the same-origin GET. */
+function save(href: string, name: string): void {
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = name;
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+}
 
 export const LOST_RESTORE = "The answer was lost. Reload to see which installation is open.";
 
@@ -47,17 +66,12 @@ async function stageBackup(file: File): Promise<Preview> {
   return parsed.data;
 }
 
-/** What the restore request became. `refused` left this installation unchanged. */
-type Restore =
-  | { kind: "restoring" }
-  | { kind: "done" }
-  | { kind: "refused"; text: string; chooseAgain?: true }
-  | { kind: "lost"; text: string };
-
 /**
- * A 4xx, a rolled-back restore, and a 503 with no problem code (other work running, no disk
- * space) leave this installation as it was. An unknown or rolled-back stage needs the file again. Anything else may have swapped it: a lost
- * answer, an unreadable 200, `restart_required`, `outcome_unknown` or a bare 500.
+ * A 4xx, a rolled-back restore, and a 503 whose problem body was read and has no code (other
+ * work running, no disk space) leave this installation as it was. An unknown or rolled-back
+ * stage needs the file again. Anything else may have swapped it: a lost answer, an unreadable
+ * 200, a 503 whose body was lost (it may have been `restart_required`), `restart_required`,
+ * `outcome_unknown` or a bare 500.
  */
 function restoreFailure(failure: unknown): Restore {
   if (failure instanceof CoreError && failure.code === "restore_not_found") {
@@ -78,7 +92,10 @@ function restoreFailure(failure: unknown): Restore {
   const unchanged =
     failure instanceof RequestContractError ||
     (failure instanceof CoreError &&
-      (failure.status < 500 || (failure.status === 503 && failure.code === undefined)));
+      (failure.status < 500 ||
+        // Every refusal the core sends as 503 has a detail. No detail means the body was not
+        // read, and the 503 may have been `restart_required`.
+        (failure.status === 503 && failure.code === undefined && failure.detail !== undefined)));
   if (unchanged) {
     return { kind: "refused", text: `The restore was refused: ${why(failure)}. This installation is unchanged.` };
   }
@@ -91,6 +108,7 @@ function CreateBackup({ offline, locked }: { offline: boolean; locked: boolean }
   const [backup, setBackup] = useState<Backup | null>(null);
   const [note, setNote] = useState("");
   const sending = useRef(false);
+  const fetching = useRef(false);
   const reasonId = useId();
   const off = offline || creating || locked;
   const create = async () => {
@@ -112,6 +130,32 @@ function CreateBackup({ offline, locked }: { offline: boolean; locked: boolean }
     } finally {
       sending.current = false;
       setCreating(false);
+    }
+  };
+  /**
+   * Asks the core with HEAD whether it still keeps this archive, then starts the download. A
+   * replaced or dropped archive removes the backup shown here, so a different file is never
+   * saved under these facts. The GET carries the digest too, so a create between the two
+   * requests is refused rather than sent.
+   */
+  const download = async (shown: Backup) => {
+    if (fetching.current) return;
+    fetching.current = true;
+    setNote("");
+    try {
+      await fetchCore(archiveUrl(shown), { method: "HEAD", headers: { accept: "*/*" } });
+      save(archiveUrl(shown), shown.name);
+    } catch (failure) {
+      if (failure instanceof CoreError && (failure.status === 404 || failure.status === 409)) {
+        setBackup((now) => (now === shown ? null : now));
+        setNote(
+          "The core no longer keeps the backup shown here; a newer backup may have been made in another window. Create backup again to download one.",
+        );
+      } else {
+        setNote(`The download did not start: ${why(failure)}. Try Download again.`);
+      }
+    } finally {
+      fetching.current = false;
     }
   };
   return (
@@ -139,7 +183,16 @@ function CreateBackup({ offline, locked }: { offline: boolean; locked: boolean }
             <dd>
               <span className="num pp-digest">{backup.name}</span>
               <span className="pp-fact-detail">
-                <a href={ARCHIVE_PATH} download={backup.name}>Download</a>
+                <a
+                  href={archiveUrl(backup)}
+                  download={backup.name}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void download(backup);
+                  }}
+                >
+                  Download
+                </a>
               </span>
             </dd>
           </div>
@@ -235,9 +288,9 @@ function ReloadButton() {
   );
 }
 
-/** The restore's outcome in the section, after its dialog is closed. */
+/** The restore's outcome in the section, after its dialog is closed or Settings reopened. */
 function RestoreNote({ restore }: { restore: Restore }) {
-  if (restore.kind === "restoring") return null;
+  if (restore.kind === "restoring") return <p role="status">Restoring. Keep this page open.</p>;
   return (
     <>
       <p role={restore.kind === "done" ? "status" : "alert"}>
@@ -293,11 +346,7 @@ type Check =
   | { kind: "checked"; preview: Preview }
   | { kind: "refused"; text: string };
 
-function RestoreBackup({ offline, restore, setRestore }: {
-  offline: boolean;
-  restore: Restore | null;
-  setRestore: (restore: Restore | null) => void;
-}) {
+function RestoreBackup({ offline, restore }: { offline: boolean; restore: Restore | null }) {
   const fileId = useId();
   const reasonId = useId();
   const [file, setFile] = useState<File | null>(null);
@@ -306,10 +355,7 @@ function RestoreBackup({ offline, restore, setRestore }: {
   const [check, setCheck] = useState<Check>({ kind: "none" });
   const [confirming, setConfirming] = useState(false);
   const checking = useRef(false);
-  // Set once a restore request leaves; cleared only by a refusal that left this installation
-  // unchanged. A lost answer keeps it set until the page reloads.
-  const sent = useRef(false);
-  const settled = restore !== null && restore.kind !== "refused";
+  const settled = restoreSent(restore);
   const checkOff = offline || !file || check.kind === "checking" || settled;
   const preview = check.kind === "checked" ? check.preview : null;
 
@@ -332,8 +378,8 @@ function RestoreBackup({ offline, restore, setRestore }: {
   };
 
   const replace = async () => {
-    if (!preview || offline || sent.current) return;
-    sent.current = true;
+    // Read from the store, not this render: a second click before React renders sees the send.
+    if (!preview || offline || restoreSent(currentRestore())) return;
     setRestore({ kind: "restoring" });
     let outcome: Restore;
     try {
@@ -345,9 +391,9 @@ function RestoreBackup({ offline, restore, setRestore }: {
     } catch (failure) {
       outcome = restoreFailure(failure);
     }
+    // Settings may have closed while the request ran; the store keeps the outcome either way.
     setRestore(outcome);
     if (outcome.kind !== "refused") return;
-    sent.current = false;
     if (outcome.chooseAgain) {
       setConfirming(false);
       setCheck({ kind: "none" });
@@ -422,12 +468,11 @@ function RestoreBackup({ offline, restore, setRestore }: {
  */
 export function BackupsSection() {
   const offline = useConnection() !== "online";
-  const [restore, setRestore] = useState<Restore | null>(null);
-  const locked = restore !== null && restore.kind !== "refused";
+  const restore = useRestore();
   return (
     <>
-      <CreateBackup offline={offline} locked={locked} />
-      <RestoreBackup offline={offline} restore={restore} setRestore={setRestore} />
+      <CreateBackup offline={offline} locked={restoreSent(restore)} />
+      <RestoreBackup offline={offline} restore={restore} />
     </>
   );
 }

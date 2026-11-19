@@ -4,7 +4,8 @@ import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
-import { LOST_RESTORE } from "./BackupsSection";
+import { ARCHIVE_PATH, LOST_RESTORE } from "./BackupsSection";
+import { forgetRestore } from "./restoreOutcome";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -55,7 +56,13 @@ const RESTORE = "/api/v2/installation/restore";
 type Answer = (init?: RequestInit) => Response | Promise<Response>;
 
 /** A fake core: /health and empty Printers and Integrations; the backup routes as given. */
-function core({ create, stage, restore }: { create?: Answer; stage?: Answer; restore?: Answer } = {}) {
+function core({ create, stage, restore, archive }: {
+  create?: Answer;
+  stage?: Answer;
+  restore?: Answer;
+  /** The archive route, given its `sha256` query and the request. */
+  archive?: (sha256: string | null, init?: RequestInit) => Response;
+} = {}) {
   let down = false;
   const fetchMock = vi.fn((path: string, init?: RequestInit) =>
     Promise.resolve().then((): Response | Promise<Response> => {
@@ -66,6 +73,8 @@ function core({ create, stage, restore }: { create?: Answer; stage?: Answer; res
       if (path === CREATE && init?.method === "POST" && create) return create(init);
       if (path === STAGE && init?.method === "POST" && stage) return stage(init);
       if (path === RESTORE && init?.method === "POST" && restore) return restore(init);
+      const url = new URL(path, "http://core.test");
+      if (url.pathname === ARCHIVE_PATH && archive) return archive(url.searchParams.get("sha256"), init);
       return problem(404, `unexpected ${path}`);
     }),
   );
@@ -79,8 +88,28 @@ function renderSettings(fetchMock: ReturnType<typeof core>["fetchMock"], contain
   const queryClient = createQueryClient();
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } });
   render(<App router={router} queryClient={queryClient} />, container ? { container } : undefined);
-  return { queryClient };
+  return { queryClient, router };
 }
+
+/** Every anchor the page clicked to start a download, with its href and download attribute. */
+function captureDownloads() {
+  const clicked: { href: string | null; download: string | null }[] = [];
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    clicked.push({ href: this.getAttribute("href"), download: this.getAttribute("download") });
+  });
+  return clicked;
+}
+
+/** A 503 whose headers arrived and whose body stream then broke, so its problem cannot be read. */
+const unreadable503 = () =>
+  new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new TypeError("network error"));
+      },
+    }),
+    { status: 503, headers: { "content-type": "application/problem+json" } },
+  );
 
 const backups = async (root: HTMLElement = document.body) =>
   within(root).findByRole("region", { name: "Backups" });
@@ -108,6 +137,7 @@ async function chooseAndCheck(region: HTMLElement, file = archive()) {
 
 afterEach(() => {
   cleanup();
+  forgetRestore();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -143,7 +173,7 @@ describe("Backups: create and download", () => {
     expect(within(facts).getByText(SHA)).toBeTruthy();
     expect(within(facts).getByText(/app version 0\.42\.0/)).toBeTruthy();
     const link = within(facts).getByRole("link", { name: "Download" });
-    expect(link.getAttribute("href")).toBe("/api/v2/installation/backup/archive");
+    expect(link.getAttribute("href")).toBe(`/api/v2/installation/backup/archive?sha256=${SHA}`);
     expect(link.getAttribute("download")).toBe(BACKUP.name);
     expect(within(region).queryByText("Creating backup")).toBeNull();
     expect(fake.calls(CREATE)).toHaveLength(1);
@@ -177,6 +207,56 @@ describe("Backups: create and download", () => {
     await act(async () => first.resolve(json(BACKUP)));
     expect(await within(one).findByText(SHA)).toBeTruthy();
     expect(within(two).queryByText(SHA)).toBeNull();
+  });
+
+  it("after a second tab replaces the kept archive, the first tab's Download saves nothing and drops its stale facts", async () => {
+    const NEWER = { ...BACKUP, size_bytes: 2_345_678, sha256: "a1".repeat(32) };
+    let kept: typeof BACKUP | null = null;
+    const made = [BACKUP, NEWER];
+    const fake = core({
+      create: () => {
+        kept = made.shift() ?? null;
+        return json(kept);
+      },
+      archive: (sha256) => {
+        if (kept === null) return problem(404, "No backup has been created");
+        if (sha256 !== null && sha256 !== kept.sha256) {
+          return problem(409, "A newer backup replaced this one; create a backup again");
+        }
+        return new Response(null, { status: 200, headers: { "content-type": "application/gzip" } });
+      },
+    });
+    const saved = captureDownloads();
+    const tabOne = document.body.appendChild(document.createElement("div"));
+    const tabTwo = document.body.appendChild(document.createElement("div"));
+    renderSettings(fake.fetchMock, tabOne);
+    renderSettings(fake.fetchMock, tabTwo);
+    const one = await backups(tabOne);
+    const two = await backups(tabTwo);
+    await online(one);
+    await online(two);
+    fireEvent.click(within(one).getByRole("button", { name: "Create backup" }));
+    expect(await within(one).findByText(SHA)).toBeTruthy();
+    fireEvent.click(within(two).getByRole("button", { name: "Create backup" }));
+    expect(await within(two).findByText(NEWER.sha256)).toBeTruthy();
+
+    fireEvent.click(within(one).getByRole("link", { name: "Download" }));
+    expect((await within(one).findByRole("alert")).textContent).toBe(
+      "The core no longer keeps the backup shown here; a newer backup may have been made in another window. Create backup again to download one.",
+    );
+    expect(within(one).queryByText(SHA)).toBeNull();
+    expect(within(one).queryByRole("link", { name: "Download" })).toBeNull();
+    expect(saved).toEqual([]);
+
+    fireEvent.click(within(two).getByRole("link", { name: "Download" }));
+    await waitFor(() =>
+      expect(saved).toEqual([{ href: `${ARCHIVE_PATH}?sha256=${NEWER.sha256}`, download: NEWER.name }]),
+    );
+    const heads = fake.fetchMock.mock.calls.filter(([path]) => path.startsWith(ARCHIVE_PATH));
+    expect(heads.map(([path, init]) => [path, init?.method])).toEqual([
+      [`${ARCHIVE_PATH}?sha256=${SHA}`, "HEAD"],
+      [`${ARCHIVE_PATH}?sha256=${NEWER.sha256}`, "HEAD"],
+    ]);
   });
 
   it("offline: Create backup is off with the offline reason and sends nothing", async () => {
@@ -340,6 +420,59 @@ describe("Backups: check and restore", () => {
     expect((await within(dialog).findByRole("alert")).textContent).toBe(
       `Restore did not finish; restart Print Partner to recover. ${LOST_RESTORE}`,
     );
+    expect(fake.calls(RESTORE)).toHaveLength(1);
+  });
+
+  it("a 503 whose body cannot be read is an unknown outcome: no 'unchanged', no retry, Reload only", async () => {
+    const fake = core({ stage: () => json(PREVIEW), restore: unreadable503 });
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    await chooseAndCheck(region);
+    fireEvent.click(await within(region).findByRole("button", { name: "Restore this backup" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(LOST_RESTORE);
+    expect(within(dialog).queryByText(/unchanged/)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Reload" })).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(region).queryByRole("button", { name: "Restore this backup" })).toBeNull();
+    expect(within(region).getByRole("button", { name: "Check backup" }).getAttribute("aria-disabled")).toBe("true");
+    expect(fake.calls(RESTORE)).toHaveLength(1);
+  });
+
+  it("leaving Settings and coming back keeps a lost restore's outcome and lock until a reload", async () => {
+    const answer = deferred();
+    const fake = core({ stage: () => json(PREVIEW), restore: () => answer.promise });
+    const { router } = renderSettings(fake.fetchMock);
+    let region = await backups();
+    await online(region);
+    await chooseAndCheck(region);
+    fireEvent.click(await within(region).findByRole("button", { name: "Restore this backup" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Replace this installation" }));
+    expect(await screen.findByText("Restoring. Keep this page open.")).toBeTruthy();
+
+    // Settings closes while the restore runs; its answer is lost after that.
+    await act(() => router.navigate("/builds"));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Backups" })).toBeNull());
+    await act(async () => answer.resolve(Promise.reject(new TypeError("Failed to fetch")) as never));
+
+    await act(() => router.navigate("/settings"));
+    region = await backups();
+    expect((await within(region).findByRole("alert")).textContent).toBe(LOST_RESTORE);
+    expect(within(region).getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(within(region).getByRole("button", { name: "Check backup" }).getAttribute("aria-disabled")).toBe("true");
+    expect((within(region).getByLabelText("Backup file") as HTMLInputElement).disabled).toBe(true);
+    expect(within(region).getByRole("button", { name: "Create backup" }).getAttribute("aria-disabled")).toBe("true");
+
+    // Leaving and coming back once more still keeps it.
+    await act(() => router.navigate("/builds"));
+    await act(() => router.navigate("/settings"));
+    region = await backups();
+    expect(within(region).getByRole("alert").textContent).toBe(LOST_RESTORE);
+    expect(within(region).queryByRole("button", { name: "Restore this backup" })).toBeNull();
     expect(fake.calls(RESTORE)).toHaveLength(1);
   });
 

@@ -204,6 +204,7 @@ pub async fn idle_printer(access_code: &str, serial: &str) -> std::io::Result<(B
 pub struct Broker {
     pub addr: SocketAddr,
     log: Arc<Mutex<Vec<String>>>,
+    names: Arc<Mutex<Vec<String>>>,
     identity: Arc<Mutex<Identity>>,
     script: Arc<Mutex<Script>>,
     held: watch::Sender<bool>,
@@ -221,11 +222,17 @@ impl Broker {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let log = Arc::new(Mutex::new(Vec::new()));
+        let names = Arc::new(Mutex::new(Vec::new()));
         let identity = Arc::new(Mutex::new(identity));
         let script = Arc::new(Mutex::new(script));
         let (held, _) = watch::channel(false);
-        let (shared_log, shared_identity, shared_script, shared_held) =
-            (log.clone(), identity.clone(), script.clone(), held.clone());
+        let (shared_log, shared_names, shared_identity, shared_script, shared_held) = (
+            log.clone(),
+            names.clone(),
+            identity.clone(),
+            script.clone(),
+            held.clone(),
+        );
         let task = tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
@@ -234,6 +241,7 @@ impl Broker {
                 let server = lock(&shared_identity).server();
                 let script = lock(&shared_script).clone();
                 let log = shared_log.clone();
+                let names = shared_names.clone();
                 let held = shared_held.subscribe();
                 tokio::spawn(async move {
                     lock(&log).push("TCP".into());
@@ -247,6 +255,8 @@ impl Broker {
                         return;
                     };
                     lock(&log).push("TLS".into());
+                    let name = stream.get_ref().1.server_name().unwrap_or_default();
+                    lock(&names).push(name.to_owned());
                     serve(stream, &script, &log, held).await;
                 });
             }
@@ -254,11 +264,18 @@ impl Broker {
         Ok(Self {
             addr,
             log,
+            names,
             identity,
             script,
             held,
             task,
         })
+    }
+
+    /// The TLS server name (SNI) of each completed handshake, in order; empty
+    /// when the client sent none, as for an IP address.
+    pub fn server_names(&self) -> Vec<String> {
+        lock(&self.names).clone()
     }
 
     /// Everything the client did, in order, one line per event.

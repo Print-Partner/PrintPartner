@@ -5,6 +5,7 @@ import type {
   DraftWorkspace,
   Health,
 } from "@print-partner/rust-client";
+import { onlineManager } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -316,14 +317,244 @@ describe("Order fields in the Accept gate", () => {
       const alert = await within(gate).findByRole("alert");
       expect(alert.textContent).toContain("Order already held by: Other kit, Spare kit");
       expect(writes(fetchMock)).toHaveLength(stage === "accept" ? 1 : 0);
-      if (stage === "preview")
+      if (stage === "preview") {
         expect(
           within(gate)
             .getByRole("button", { name: /^Accept$/ })
             .getAttribute("aria-disabled"),
         ).toBe("true");
+        // A refusal that names no Build IDs gives the option nothing to copy.
+        expect(within(gate).queryByRole("button", { name: /Start an experiment/ })).toBeNull();
+      }
     },
   );
+});
+
+describe("UI7-02 duplicate order experiment option", () => {
+  const COPY = { build_id: 77, parent_build_id: 5, draft_id: 31 };
+  const duplicates = (fetchMock: ReturnType<typeof core>) =>
+    writes(fetchMock).filter((w) => w.path.endsWith("/duplicate"));
+  const openGate = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    return screen.findByRole("dialog");
+  };
+
+  it("starts an experiment from the Build listed under Duplicate orders", async () => {
+    const fetchMock = core({
+      write: (path) => (path.endsWith("/duplicate") ? json(COPY, 201) : undefined),
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    expect(await within(gate).findByText("Order PO-7 is also on Other kit")).toBeTruthy();
+    expect(
+      within(gate).getByRole<HTMLInputElement>("textbox", { name: "Experiment name" }).value,
+    ).toBe("Other kit experiment");
+    fireEvent.click(
+      within(gate).getByRole("button", { name: "Start an experiment from Other kit" }),
+    );
+    const done = await within(gate).findByText(/as an experiment of Other kit/);
+    expect(done.getAttribute("role")).toBe("status");
+    expect(done.textContent).toContain(
+      "Started Other kit experiment as an experiment of Other kit. It has a draft of Other kit's Accepted Plan. This draft is unchanged.",
+    );
+    expect(
+      within(gate).getByRole("link", { name: "Open Other kit experiment" }).getAttribute("href"),
+    ).toBe("/builds/77/plan");
+    expect(writes(fetchMock)).toEqual([
+      {
+        path: "/api/v2/plans/5/duplicate",
+        method: "POST",
+        key: null,
+        body: { name: "Other kit experiment" },
+      },
+    ]);
+  });
+
+  it("says so when the holding Build has no Accepted Plan to copy", async () => {
+    const fetchMock = core({
+      write: (path) =>
+        path.endsWith("/duplicate") ? json({ ...COPY, draft_id: null }, 201) : undefined,
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    expect(
+      (await within(gate).findByText(/start an experiment from the Build that holds it/))
+        .textContent,
+    ).toContain("otherwise it starts with no draft");
+    fireEvent.click(
+      within(gate).getByRole("button", { name: "Start an experiment from Other kit" }),
+    );
+    const done = await within(gate).findByText(/as an experiment of Other kit/);
+    expect(done.textContent).toContain(
+      "Other kit has no Accepted Plan, so the experiment has no draft yet.",
+    );
+    expect(done.textContent).not.toContain("It has a draft");
+    expect(
+      within(gate).getByRole("link", { name: "Open Other kit experiment" }).getAttribute("href"),
+    ).toBe("/builds/77/plan");
+  });
+
+  it("offers each holding Build from a duplicate-order refusal and sends the chosen name", async () => {
+    const fetchMock = core({
+      preview: () =>
+        json(
+          {
+            code: "duplicate_order",
+            order_number: "PO-7",
+            builds: [
+              { profile_id: 5, name: "Other kit", order_number: "PO-7" },
+              { profile_id: 6, name: "Spare kit", order_number: "po-7" },
+            ],
+          },
+          409,
+        ),
+      write: (path) =>
+        path.endsWith("/duplicate") ? json({ ...COPY, parent_build_id: 6 }, 201) : undefined,
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const from = await within(gate).findByRole<HTMLSelectElement>("combobox", {
+      name: "Start from",
+    });
+    const name = within(gate).getByRole<HTMLInputElement>("textbox", { name: "Experiment name" });
+    expect(name.value).toBe("Other kit experiment");
+    fireEvent.change(from, { target: { value: "6" } });
+    expect(name.value).toBe("Spare kit experiment");
+    fireEvent.change(name, { target: { value: "  Spare kit, lighter infill  " } });
+    fireEvent.click(
+      within(gate).getByRole("button", { name: "Start an experiment from Spare kit" }),
+    );
+    await within(gate).findByText(/as an experiment of Spare kit/);
+    expect(duplicates(fetchMock)).toEqual([
+      {
+        path: "/api/v2/plans/6/duplicate",
+        method: "POST",
+        key: null,
+        body: { name: "Spare kit, lighter infill" },
+      },
+    ]);
+    expect(
+      within(gate)
+        .getByRole("button", { name: /^Accept$/ })
+        .getAttribute("aria-disabled"),
+    ).toBe("true");
+  });
+
+  it("refuses a blank name before sending", async () => {
+    const fetchMock = core();
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const name = await within(gate).findByRole<HTMLInputElement>("textbox", {
+      name: "Experiment name",
+    });
+    fireEvent.change(name, { target: { value: "   " } });
+    const start = within(gate).getByRole("button", { name: "Start an experiment from Other kit" });
+    expect(start.getAttribute("aria-disabled")).toBe("true");
+    expect(within(gate).getByText("An experiment needs a name.")).toBeTruthy();
+    fireEvent.click(start);
+    expect(duplicates(fetchMock)).toHaveLength(0);
+  });
+
+  it("keeps the suggested name within the core's limit for a long holder name", async () => {
+    // "🧵" is one code point and two UTF-16 units; the core counts code points.
+    const long = "🧵".repeat(4090);
+    const held = preview(1);
+    held.changes.duplicate_orders = [{ profile_id: 5, name: long, order_number: "PO-7" }];
+    const fetchMock = core({
+      preview: () => json(held),
+      write: (path) => (path.endsWith("/duplicate") ? json(COPY, 201) : undefined),
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const name = await within(gate).findByRole<HTMLInputElement>("textbox", {
+      name: "Experiment name",
+    });
+    expect(Array.from(name.value)).toHaveLength(4096);
+    expect(name.value).toBe("🧵".repeat(4085) + " experiment");
+    fireEvent.click(within(gate).getByRole("button", { name: /^Start an experiment from/ }));
+    await within(gate).findByText(/as an experiment of/);
+    expect(Array.from(duplicates(fetchMock)[0]!.body.name as string)).toHaveLength(4096);
+  });
+
+  it("refuses a name over the core's limit before sending", async () => {
+    const fetchMock = core();
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const name = await within(gate).findByRole<HTMLInputElement>("textbox", {
+      name: "Experiment name",
+    });
+    const start = within(gate).getByRole("button", { name: "Start an experiment from Other kit" });
+    fireEvent.change(name, { target: { value: ` ${"🧵".repeat(4096)} ` } });
+    expect(start.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.change(name, { target: { value: "🧵".repeat(4097) } });
+    expect(start.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      within(gate).getByText("An experiment name can have at most 4,096 characters."),
+    ).toBeTruthy();
+    fireEvent.click(start);
+    expect(duplicates(fetchMock)).toHaveLength(0);
+  });
+
+  it("says when the name is taken", async () => {
+    const fetchMock = core({
+      write: (path) =>
+        path.endsWith("/duplicate") ? problem(409, "duplicate_build_name") : undefined,
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    fireEvent.click(
+      await within(gate).findByRole("button", { name: "Start an experiment from Other kit" }),
+    );
+    const alert = await within(gate).findByRole("alert");
+    expect(alert.textContent).toBe("Another Build already has this name. Choose a different name.");
+  });
+
+  it("never resends after an unknown outcome, because a resend could copy twice", async () => {
+    const fetchMock = core({
+      write: (path) =>
+        path.endsWith("/duplicate")
+          ? json({ type: "about:blank", title: "Internal Server Error", status: 500 }, 500)
+          : undefined,
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    fireEvent.click(
+      await within(gate).findByRole("button", { name: "Start an experiment from Other kit" }),
+    );
+    const alert = await within(gate).findByRole("alert");
+    expect(alert.textContent).toBe(
+      "The core could not confirm the experiment. Check the Builds list before you try again.",
+    );
+    expect(duplicates(fetchMock)).toHaveLength(1);
+  });
+
+  it("sends at once while the browser reports offline, never queueing the copy for later", async () => {
+    const fetchMock = core({
+      write: (path) => (path.endsWith("/duplicate") ? json(COPY, 201) : undefined),
+    });
+    renderAt(fetchMock);
+    const gate = await openGate();
+    const start = await within(gate).findByRole("button", {
+      name: "Start an experiment from Other kit",
+    });
+    onlineManager.setOnline(false);
+    try {
+      fireEvent.click(start);
+      await within(gate).findByText(/as an experiment of Other kit/);
+      expect(duplicates(fetchMock)).toHaveLength(1);
+    } finally {
+      onlineManager.setOnline(true);
+    }
+  });
+
+  it("offers no experiment when no other Build holds the order", async () => {
+    const clean = preview(1);
+    clean.changes.duplicate_orders = [];
+    renderAt(core({ preview: () => json(clean) }));
+    const gate = await openGate();
+    expect(await within(gate).findByText("No other Build has this order number.")).toBeTruthy();
+    expect(within(gate).queryByRole("button", { name: /Start an experiment/ })).toBeNull();
+  });
 });
 
 describe("UI6-01 Plan edits autosave to the draft", () => {

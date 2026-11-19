@@ -1,12 +1,15 @@
-//! The `pp-server` binary that ships refuses an unsupported schema on every
-//! start: exit 78, one refusal on stderr, nothing on stdout, and the data
-//! directory left as it was, however often a process manager starts it again.
+//! `pp-server` refuses an unsupported schema on every start: exit 78, one
+//! refusal on stderr, nothing on stdout, and the data directory left as it
+//! was, however often a process manager starts it again.
 //!
-//! The binary under test is built the way `Dockerfile.rust` builds it:
-//! `cargo build --locked --release -p pp-server`. The workspace test build of
-//! `pp-server` cannot stand in for it. A workspace build turns on pp-storage's
-//! `test-unmarked-writer` feature, which skips the ownership marker gate that
-//! the image enforces.
+//! The default run starts the workspace test build of `pp-server`. That build
+//! turns on pp-storage's `test-unmarked-writer` feature, which skips the
+//! ownership marker gate but not schema admission. The ignored
+//! `ticket_t_8_versions_release_binary_refuses_without_restarts` repeats the
+//! same starts on the binary `Dockerfile.rust` ships, built with `cargo build
+//! --locked --release -p pp-server`, after checking that its ownership gate is
+//! on. That build takes minutes, so it runs only when asked for; the command is
+//! in `docs/storage.md`.
 #![cfg(all(unix, feature = "desktop_rebuild"))]
 
 #[path = "../../pp-storage/tests/common/process.rs"]
@@ -27,6 +30,15 @@ use std::{
 
 /// Starts per runtime mode and schema, standing in for a restart policy.
 const LAUNCHES: u32 = 3;
+
+/// The workspace test build of `pp-server`.
+fn test_server_binary() -> PathBuf {
+    if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
+        child_process::bin_exe("pp-server")
+    } else {
+        env!("CARGO_BIN_EXE_pp-server").into()
+    }
+}
 
 /// The release `pp-server`, built as `Dockerfile.rust` builds it, in its own
 /// target directory beside this test's. Only `-p pp-server` is built, so no
@@ -73,6 +85,10 @@ fn toolchain_pin(repo: &Path) -> String {
         .expect("rust-toolchain.toml names a channel")
 }
 
+/// The config files Cargo reads for a build started in `/`, besides the one
+/// in `CARGO_HOME`.
+const ROOT_CARGO_CONFIGS: [&str; 2] = ["/.cargo/config", "/.cargo/config.toml"];
+
 /// `cargo build --locked --offline --release -p <package>` into `target`,
 /// isolated from the test's environment and from every Cargo config file.
 ///
@@ -81,13 +97,14 @@ fn toolchain_pin(repo: &Path) -> String {
 ///   `parent_env`, the `toolchain` pin as `RUSTUP_TOOLCHAIN`, and empty
 ///   `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER`, so no compiler wrapper
 ///   such as sccache starts. No `HOME` is passed.
-/// - `CARGO_HOME` is `<target>/cargo-home`, which holds only links to the
-///   real Cargo home's `registry` and `git` caches. Cargo never sees the real
-///   home's `config.toml` or `credentials.toml`.
+/// - `CARGO_HOME` is a new, empty `<target>/cargo-home-*` directory for each
+///   build. It holds only links to the real Cargo home's `registry` and `git`
+///   caches, so Cargo never sees a `config.toml` or `credentials.toml` there.
 /// - Cargo runs in `/`. It looks for `.cargo/config.toml` in its working
 ///   directory and every parent, not beside the manifest, so a config file in
-///   the checkout or in a home directory above it is not read. No `[env]`
-///   entry, wrapper, registry token or credential provider reaches the build.
+///   the checkout or in a home directory above it is not read. That leaves
+///   `/.cargo/config` and `/.cargo/config.toml`: if either exists, this
+///   panics before building.
 /// - `--offline` keeps Cargo off the network, so it never asks for registry
 ///   credentials. The test's own build has already fetched every crate that
 ///   `Cargo.lock` names.
@@ -99,6 +116,15 @@ fn isolated_build(
     toolchain: &str,
     parent_env: &[(OsString, OsString)],
 ) -> Command {
+    for config in ROOT_CARGO_CONFIGS {
+        match std::fs::symlink_metadata(config) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => panic!(
+                "{config} exists or cannot be checked. Cargo reads it for every build started \
+                 in /, so the isolated build would not be isolated from it; refusing to build"
+            ),
+        }
+    }
     let parent = |name: &str| {
         parent_env
             .iter()
@@ -147,49 +173,37 @@ fn isolated_build(
     command
 }
 
-/// A Cargo home under `target` that links to `real`'s download caches and
-/// holds no config or credentials file.
+/// A new Cargo home under `target` that links to `real`'s download caches and
+/// holds nothing else. It is kept after the build, not removed.
 fn isolated_cargo_home(target: &Path, real: Option<PathBuf>) -> PathBuf {
-    let home = target.join("cargo-home");
-    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(target).unwrap();
+    let home = tempfile::Builder::new()
+        .prefix("cargo-home-")
+        .tempdir_in(target)
+        .unwrap()
+        .keep();
     for cache in ["registry", "git"] {
-        let link = home.join(cache);
-        let Some(source) = real.as_ref().map(|real| real.join(cache)) else {
-            continue;
-        };
-        if source.is_dir() && std::fs::symlink_metadata(&link).is_err() {
-            std::os::unix::fs::symlink(source, link).unwrap();
+        if let Some(source) = real.as_ref().map(|real| real.join(cache))
+            && source.is_dir()
+        {
+            std::os::unix::fs::symlink(source, home.join(cache)).unwrap();
         }
     }
     home
 }
 
-/// What the test prints when the isolated build fails: the exit status, how
-/// many lines Cargo marked `error`, and the names of the crates that failed.
-/// The build's own output is not printed. A compiler or build script can echo
-/// any value it was given, and no filter can tell a credential from a path.
+/// What the test prints when the isolated build fails: the exit status and
+/// how many lines Cargo marked `error`. Nothing from the build's output is
+/// copied. A compiler or build script can echo any value it was given, and no
+/// filter can tell a credential from a crate name or a path.
 fn build_failure(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let errors = stderr
+    let errors = String::from_utf8_lossy(&output.stderr)
         .lines()
         .filter(|line| line.starts_with("error"))
         .count();
-    let crates: Vec<_> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("error: could not compile `"))
-        .filter_map(|rest| rest.split_once('`').map(|(name, _)| name))
-        .filter(|name| {
-            name.len() <= 64
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        })
-        .take(10)
-        .collect();
     format!(
-        "isolated release build failed: {}; {errors} error lines; crates that failed to \
-         compile: {crates:?}. Its output is not shown. To see it, run `cargo build --locked \
-         --release -p pp-server` in rust/.",
+        "isolated build failed: {}; {errors} error lines. Its output is not shown. To see the \
+         release build's output, run `cargo build --locked --release -p pp-server` in rust/.",
         output.status
     )
 }
@@ -231,13 +245,41 @@ const FAKE_SECRETS: [(&str, &str); 14] = [
     ),
 ];
 
-/// A probe package's build script records the environment Cargo gives it,
-/// which includes every inherited variable and every `[env]` entry from a
-/// config file Cargo read. Fake credentials sit in the parent environment
-/// and in three config files; each file also names a missing compiler
-/// wrapper, so reading any of them fails the build. Then the probe is made
-/// to fail with a fake credential in its compiler error, and the test's
-/// failure message must not carry it.
+/// The probe's build script. It sees every variable Cargo inherited and every
+/// `[env]` entry from a config file Cargo read. It writes one line per check
+/// to `checks`, never the environment itself: `absent` or `present` for each
+/// fake value, whether `PP_FAKE_CONFIG` was set, and whether `CARGO_HOME`
+/// starts with `home_prefix`.
+fn probe_build_script(home_prefix: &Path) -> String {
+    let needles: Vec<_> = FAKE_SECRETS.iter().map(|(_, value)| *value).collect();
+    format!(
+        "const NEEDLES: [&str; {}] = {needles:?};\n\
+         fn main() {{\n\
+         \x20   let values: Vec<String> = std::env::vars_os()\n\
+         \x20       .map(|(_, value)| value.to_string_lossy().into_owned())\n\
+         \x20       .collect();\n\
+         \x20   let mut checks = String::new();\n\
+         \x20   for needle in NEEDLES {{\n\
+         \x20       let present = values.iter().any(|value| value.contains(needle));\n\
+         \x20       checks.push_str(if present {{ \"present\\n\" }} else {{ \"absent\\n\" }});\n\
+         \x20   }}\n\
+         \x20   let config = std::env::var_os(\"PP_FAKE_CONFIG\").is_some();\n\
+         \x20   checks.push_str(if config {{ \"config read\\n\" }} else {{ \"no config\\n\" }});\n\
+         \x20   let home = std::env::var(\"CARGO_HOME\").unwrap_or_default();\n\
+         \x20   let isolated = home.starts_with({:?});\n\
+         \x20   checks.push_str(if isolated {{ \"isolated home\\n\" }} else {{ \"other home\\n\" }});\n\
+         \x20   std::fs::write(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/checks\"), checks).unwrap();\n\
+         }}\n",
+        needles.len(),
+        home_prefix.display().to_string(),
+    )
+}
+
+/// A probe package goes through [`isolated_build`]. Fake credentials sit in
+/// the parent environment and in three config files; each file also names a
+/// missing compiler wrapper. The probe's build script reports which fake
+/// values reached it. Then the probe is made to fail with a fake credential in
+/// its compiler error, and the test's failure message must not carry it.
 #[test]
 fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() {
     let root = scratch::Scratch::new("pp-isolated-build-");
@@ -277,10 +319,7 @@ fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() 
     );
     write(
         probe.join("build.rs"),
-        "fn main() {\n    let seen: String = std::env::vars_os()\n        .map(|(name, value)| \
-         format!(\"{}={}\\n\", name.to_string_lossy(), value.to_string_lossy()))\n        \
-         .collect();\n    std::fs::write(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/seen-env\"), \
-         seen).unwrap();\n}\n",
+        &probe_build_script(&target.join("cargo-home-")),
     );
     write(probe.join("src/lib.rs"), "");
 
@@ -314,8 +353,17 @@ fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() 
             &parent_env,
         )
     };
+    let cargo_home_of = |command: &Command| {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == "CARGO_HOME")
+            .and_then(|(_, value)| value)
+            .map(PathBuf::from)
+            .unwrap()
+    };
 
-    let mut names: Vec<_> = build()
+    let command = build();
+    let mut names: Vec<_> = command
         .get_envs()
         .map(|(name, _)| name.to_string_lossy().into_owned())
         .collect();
@@ -333,24 +381,28 @@ fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() 
         expected.sort();
     }
     assert_eq!(names, expected);
+    let first_home = cargo_home_of(&command);
+    assert_eq!(
+        std::fs::read_dir(&first_home).unwrap().count(),
+        0,
+        "a new Cargo home starts empty when the real one has no caches"
+    );
 
     let output = build().output().unwrap();
     assert!(output.status.success(), "{}", build_failure(&output));
-    let seen = std::fs::read_to_string(probe.join("seen-env")).unwrap();
-    for (planted_in, value) in FAKE_SECRETS {
-        assert!(
-            !seen.contains(value),
+    let checks = std::fs::read_to_string(probe.join("checks")).unwrap();
+    let checks: Vec<_> = checks.lines().collect();
+    assert_eq!(checks.len(), FAKE_SECRETS.len() + 2);
+    for ((planted_in, _), check) in FAKE_SECRETS.iter().zip(&checks) {
+        assert_eq!(
+            *check, "absent",
             "the build received the fake value planted in {planted_in}"
         );
     }
-    assert!(
-        !seen.contains("PP_FAKE_CONFIG"),
-        "the build read a Cargo config file"
-    );
-    assert!(
-        seen.lines()
-            .any(|line| line == format!("CARGO_HOME={}", target.join("cargo-home").display())),
-        "the build did not use the isolated Cargo home"
+    assert_eq!(
+        checks[FAKE_SECRETS.len()..],
+        ["no config", "isolated home"],
+        "the build read a Cargo config file or used another Cargo home"
     );
 
     let leaked = "pp-fake-compiler-output-0015";
@@ -358,7 +410,13 @@ fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() 
         probe.join("src/lib.rs"),
         &format!("compile_error!(\"token={leaked}\");\n"),
     );
-    let output = build().output().unwrap();
+    let mut command = build();
+    assert_ne!(
+        cargo_home_of(&command),
+        first_home,
+        "each build gets a new Cargo home"
+    );
+    let output = command.output().unwrap();
     assert!(!output.status.success(), "the failing probe built");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(leaked),
@@ -366,13 +424,10 @@ fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() 
     );
     let message = build_failure(&output);
     assert!(
-        !message.contains(leaked),
-        "the failure message carries build output"
+        !message.contains(leaked) && !message.contains("pp-isolated-build-probe"),
+        "the failure message copies build output"
     );
-    assert!(
-        message.contains("crates that failed to compile: [\"pp-isolated-build-probe\"]"),
-        "{message}"
-    );
+    assert!(!message.contains("; 0 error lines"), "{message}");
 }
 
 /// One start, bounded so a start that never exits fails the test with
@@ -445,15 +500,34 @@ fn only_the_lease_lock_was_added(
     after
 }
 
-/// Rust-only starts use the image's environment and arguments, with a loopback
-/// listener: `pp-server --data … --web … --commit … --status-file …`.
-/// Node-backed starts add `--node`, which that mode requires, and a test
-/// credential file, which a successful start writes.
+/// The 12 starts on the workspace test build of `pp-server`. Its
+/// `test-unmarked-writer` feature skips the ownership gate, not schema
+/// admission, so the refusal checks hold for it too. Part of the default run.
 #[tokio::test]
 async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
+    refusals_exit_without_restarts(&test_server_binary(), "test-build").await;
+}
+
+/// The same 12 starts on the binary `Dockerfile.rust` ships, after checking
+/// that its ownership gate is on. Builds the release `pp-server` first, which
+/// takes minutes, so it runs only when asked for:
+/// `cargo test --locked --manifest-path rust/Cargo.toml -p pp-server --test
+/// unsupported_schema -- --ignored --exact
+/// ticket_t_8_versions_release_binary_refuses_without_restarts --nocapture`.
+#[tokio::test]
+#[ignore = "builds the release pp-server; run it with the command in docs/storage.md"]
+async fn ticket_t_8_versions_release_binary_refuses_without_restarts() {
     let binary = release_server_binary();
     production_gate_is_on(&binary).await;
+    refusals_exit_without_restarts(&binary, "release").await;
+}
 
+/// Starts `binary` [`LAUNCHES`] times for each runtime mode and each of schema
+/// 30 and 51. Rust-only starts use the image's environment and arguments, with
+/// a loopback listener: `pp-server --data … --web … --commit … --status-file
+/// …`. Node-backed starts add `--node`, which that mode requires, and a test
+/// credential file, which a successful start writes.
+async fn refusals_exit_without_restarts(binary: &Path, build: &str) {
     for rust_only in [false, true] {
         let newest = if rust_only { RUST_SCHEMA } else { NODE_SCHEMA };
         for found in [OLDEST_UPGRADABLE - 1, RUST_SCHEMA + 1] {
@@ -494,7 +568,7 @@ async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
 
             for attempt in 1..=LAUNCHES {
                 let output = launch(
-                    &binary,
+                    binary,
                     env,
                     &argv,
                     "pp-server did not exit; possible reopen loop",
@@ -532,7 +606,7 @@ async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
                     "rust_only={rust_only} schema={found} attempt={attempt}: data directory changed"
                 );
                 println!(
-                    "release pp-server rust_only={rust_only} attempt={attempt} exit=78 {diagnostic}; \
+                    "{build} pp-server rust_only={rust_only} attempt={attempt} exit=78 {diagnostic}; \
                      recovery line once; data unchanged; no origin, status file or credential"
                 );
             }

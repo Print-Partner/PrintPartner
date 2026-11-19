@@ -134,7 +134,7 @@ start preserves the database, SQLite sidecars and recovery copies.
 | Fresh and Node schemas 31–34 | `ticket_t_7_migrations` checks the named paths and historical migration inputs. |
 | Version range and actionable recovery text | `schema_versions` checks the typed writer refusal and the Node lease refusal without changing database bytes. |
 | Downgrade preserves recovery copies | `downgrade_recovery` checks repeated refusal, an uncheckpointed WAL version, saved archives and staged copies. |
-| No headless reopen loop or partial startup | `pp-server/tests/unsupported_schema.rs` builds the release `pp-server` the way `Dockerfile.rust` does and starts it three times for each of schema 30 and 51 in each runtime mode, 12 starts in all. The Rust-only starts use the image's arguments and `PP_DESKTOP_REBUILD=1` on a Rust-owned directory; the Node-backed starts use an unmarked Node directory. Each start must exit 78 within 30 seconds, print the `incompatible_storage:` diagnostic line once and the recovery line once on stderr, print nothing on stdout, and leave no status file or test credential file after it exits. The first start may add only the empty `printpartner.lock` lease file; every other file in the data directory, the database and its SQLite sidecars included, stays byte for byte the same, and the second and third starts change nothing. |
+| No headless reopen loop or partial startup | `pp-server/tests/unsupported_schema.rs` starts `pp-server` three times for each of schema 30 and 51 in each runtime mode, 12 starts in all: on the workspace test build in the default run, and on the release build `Dockerfile.rust` ships in an ignored test you run by hand (below). The Rust-only starts use the image's arguments and `PP_DESKTOP_REBUILD=1` on a Rust-owned directory; the Node-backed starts use an unmarked Node directory. Each start gets only the variables it sets. Each must exit 78 within 30 seconds, print the `incompatible_storage:` diagnostic line once and the recovery line once on stderr, print nothing on stdout, and leave no status file or test credential file after it exits. The first start may add only the empty `printpartner.lock` lease file; every other file in the data directory, the database and its SQLite sidecars included, stays byte for byte the same, and the second and third starts change nothing. The comparison is by content; modification times are not compared. |
 
 Schema admission changes no routes or workers. A refused startup never announces
 an origin or publishes launch credentials; it cannot activate a second mutation
@@ -147,22 +147,54 @@ Run the ticket's acceptance selector; it must run a nonzero count:
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(ticket_t_8_versions)' --success-output immediate
 ```
 
-It runs two tests: the storage writer refusal in `pp-storage` and the headless
-starts in `pp-server`. `pp-server` builds with `desktop_rebuild` by default
-(GRE-1646), so the headless test runs without naming the feature.
+It runs two tests: the storage writer refusal in `pp-storage` and the 12
+headless starts on the workspace test build of `pp-server`. `pp-server` builds
+with `desktop_rebuild` by default (GRE-1646), so the headless test runs without
+naming the feature. The test build turns on pp-storage's `test-unmarked-writer`
+feature, which skips the ownership marker gate but not schema admission, so the
+refusal is the same one the shipped binary makes.
 
-The headless test does not start the workspace test build of `pp-server`. That
-build turns on pp-storage's `test-unmarked-writer` feature, which skips the
-ownership marker gate. The test instead runs `cargo build --locked --offline
---release -p pp-server` into `<target>/pp-server-release`, or starts the binary
-that `PP_SERVER_RELEASE_BINARY` names. That build gets no credentials from the
-test's environment or from any Cargo config file; the
-[CI guide](development/ci.md#test-groups-and-flaky-tests) lists what it gets.
-Before the 12 starts it checks that the binary refuses an unmarked Node
-directory in Rust-only mode with exit 1, which a build without the gate would
-not do. It prints the runtime mode, attempt, exit code
-and version diagnostic for every start. These are disposable installations; no
-real library or printer is used.
+#### Release binary proof
+
+`ticket_t_8_versions_release_binary_refuses_without_restarts` repeats the 12
+starts on the binary the image ships. It is `#[ignore]`d, because it first
+builds the release `pp-server`, so neither the selector above nor CI runs it.
+On a fleet VM at two jobs the test took 21 minutes. Expect that on every run:
+each build gets a new Cargo home, and both runs so far rebuilt every crate. Run it from the
+repository root after `just ci --only web-assets`:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-server --test unsupported_schema -- --ignored --exact ticket_t_8_versions_release_binary_refuses_without_restarts --nocapture
+```
+
+`cargo test` is used because nextest's default profile stops a test after 10
+minutes. Set `PP_SERVER_RELEASE_BINARY` to a binary built with `cargo build
+--locked --release -p pp-server` to skip the build. Before the 12 starts the
+test checks that the binary refuses an unmarked Node directory in Rust-only
+mode with exit 1, which a build without the ownership gate would not do. It
+prints the runtime mode, attempt, exit code and version diagnostic for every
+start. These are disposable installations; no real library or printer is used.
+
+The test runs `cargo build --locked --offline --release -p pp-server` into
+`<target>/pp-server-release`, isolated so that no credential reaches the build
+or the test's output:
+
+- The build starts from an empty environment. It gets `PATH`, `RUSTUP_HOME`,
+  `PP_DESKTOP_RELEASE_MANIFEST` and a numeric `CARGO_BUILD_JOBS`, the channel
+  in `rust-toolchain.toml` as `RUSTUP_TOOLCHAIN`, and empty `RUSTC_WRAPPER` and
+  `RUSTC_WORKSPACE_WRAPPER`, so sccache never starts. It gets no `HOME`.
+- Each build gets a new, empty `CARGO_HOME` under the target directory that
+  only links to the real Cargo home's `registry` and `git` caches.
+- Cargo runs in `/`, so it reads no `.cargo/config.toml` in the checkout or in
+  a home directory above it. If `/.cargo/config` or `/.cargo/config.toml`
+  exists, the test refuses to build.
+- `--offline` keeps Cargo off the network and away from registry credentials.
+- A failed build reports only its exit status and its count of `error` lines.
+
+`ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output`,
+in the default run, checks this with a small probe package. It puts fake
+credentials in the parent environment and in three Cargo config files, and
+fails if any reaches the probe's build script or the failure message.
 
 ## Ownership today
 

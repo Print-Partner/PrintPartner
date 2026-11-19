@@ -579,6 +579,28 @@ describe("LocalSourceSnapshotStore", () => {
     expect(await candidateNames(reposDir, 105)).toEqual([]);
   });
 
+  it("reuses a stored revision without reading the cap setting", async () => {
+    const reposDir = tempReposDir();
+    const store = new LocalSourceSnapshotStore({ reposDir });
+    const part = file("a.stl", "stl", "solid");
+    const sync = () =>
+      store.materialize({
+        sourceId: 106,
+        upstreamRevisionKey: "stored",
+        files: [part.descriptor],
+        selection: selection(),
+        openFile: async () => response(part.content),
+      });
+    const first = await sync();
+    // Both a bad value and a cap below the stored size leave the stored revision usable.
+    for (const cap of ["lots", "1"]) {
+      vi.stubEnv(SOURCE_SNAPSHOT_MAX_BYTES_ENV, cap);
+      const reused = await sync();
+      expect(reused.publication).toBe("reused");
+      expect(reused.manifestDigest).toBe(first.manifestDigest);
+    }
+  });
+
   it("enforces the documentation budget using actual bytes when tree size is unknown", async () => {
     const reposDir = tempReposDir();
     const store = new LocalSourceSnapshotStore({ reposDir });

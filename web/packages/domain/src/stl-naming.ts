@@ -59,11 +59,14 @@ export type NamingProfile = {
   markerRoleMap: ReadonlyArray<readonly [string, StlNamingRoleId]>;
   /** One per marker, in role order. See `MarkerStrip`. */
   markerStrips: readonly MarkerStrip[];
+  /** Removes the quantity suffix from an `.stl` slug. */
   quantityStripRe: RegExp | null;
+  /** The same for a `.3mf` slug, which also accepts a regex anchored on `\.3mf$`. */
+  quantityStrip3mfRe: RegExp | null;
   toDict(): StlNamingProfileDict;
 };
 
-function compileQuantityStrip(quantityRegex: string): RegExp | null {
+function compileQuantityStrip(quantityRegex: string, extension: "stl" | "3mf"): RegExp | null {
   let strip = quantityRegex.trim();
   if (!strip) return null;
   strip = strip.replace(/\(\?P<\w+>/g, "(");
@@ -71,6 +74,10 @@ function compileQuantityStrip(quantityRegex: string): RegExp | null {
   strip = strip.replace(/\([^?][^)]*\)/, "[0-9]+");
   strip = strip.replace(/\\\.stl\$/, "$");
   strip = strip.replace(/\.stl$/i, "$");
+  if (extension === "3mf") {
+    strip = strip.replace(/\\\.3mf\$/, "$");
+    strip = strip.replace(/\.3mf$/i, "$");
+  }
   try {
     return new RegExp(strip, "i");
   } catch {
@@ -108,7 +115,8 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
     quantityRe,
     markerRoleMap: markerPairs,
     markerStrips: strips,
-    quantityStripRe: compileQuantityStrip(quantityRegex),
+    quantityStripRe: compileQuantityStrip(quantityRegex, "stl"),
+    quantityStrip3mfRe: compileQuantityStrip(quantityRegex, "3mf"),
     toDict() {
       return {
         roles: [...this.roles],

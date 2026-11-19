@@ -1761,6 +1761,28 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
     owner.shutdown().unwrap();
 }
 
+// A saved quantity regex written for the `.3mf` name keeps its meaning.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn gre1396_preview_reads_quantity_from_the_3mf_name_before_the_stl_name() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let client = owner.local_source_catalog();
+    for (path, regex, quantity, slug) in [
+        ("Duct_x2.3mf", r"_x([0-9]+)\.3mf$", 2, "Duct"),
+        ("Duct_x2.stl", r"_x([0-9]+)\.3mf$", 1, "Duct_x2"),
+        ("Duct_qty3.3mf", r"_qty([0-9]+)", 3, "Duct"),
+        ("Duct_x4.3mf", r"_x([0-9]+)\.stl$", 4, "Duct"),
+    ] {
+        assert_eq!(
+            preview(&client, path, json!({"quantity":{"regex":regex}})),
+            json!({"role":"primary","quantity":quantity,"part_slug":slug,"filename":path}),
+            "{path} with {regex}"
+        );
+    }
+    owner.shutdown().unwrap();
+}
+
 #[cfg(feature = "desktop_rebuild")]
 #[test]
 fn gre601_preview_quantity_strips_only_literal_stl_suffixes() {

@@ -65,14 +65,7 @@ export function parseRole(pathOrName: string, profile?: NamingProfile | null): P
 }
 
 const MODEL_EXTENSION_RE = /\.(?:stl|3mf)$/i;
-
-/**
- * Quantity regexes, including ones users saved, end in `\.stl$`. A `.3mf` part is read as
- * if it were the `.stl` of the same name so those regexes count it too.
- */
-function asStlName(filename: string): string {
-  return filename.replace(/\.3mf$/i, ".stl");
-}
+const THREE_MF_RE = /\.3mf$/i;
 
 /**
  * Removes one marker and one separator next to it, keeping one separator when words remain
@@ -94,22 +87,28 @@ function stripMarker(stem: string, strip: MarkerStrip): string {
 
 export function parseQuantity(filename: string, profile?: NamingProfile | null): number {
   const prof = resolveProfile(profile);
-  const m = prof.quantityRe.exec(asStlName(filename));
+  // The regex reads the name as written, so saved regexes keep their meaning. Most end in
+  // `\.stl$`, so a `.3mf` name they miss is read again as the `.stl` of the same name.
+  const m =
+    prof.quantityRe.exec(filename) ??
+    (THREE_MF_RE.test(filename) ? prof.quantityRe.exec(filename.replace(THREE_MF_RE, ".stl")) : null);
   if (m?.[1]) return Math.max(1, parseInt(m[1], 10));
   return Math.max(1, prof.quantityDefault);
 }
 
 export function parsePartSlug(filename: string, profile?: NamingProfile | null): string {
   const prof = resolveProfile(profile);
-  const name = basename(filename).replace(MODEL_EXTENSION_RE, "");
+  const file = basename(filename);
+  const name = file.replace(MODEL_EXTENSION_RE, "");
   let stem = name;
   if (prof.slugStripMarkers) {
     for (const strip of prof.markerStrips) {
       stem = stripMarker(stem, strip);
     }
   }
-  if (prof.slugStripQuantity && prof.quantityStripRe) {
-    stem = stem.replace(prof.quantityStripRe, "");
+  const quantityStrip = THREE_MF_RE.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
+  if (prof.slugStripQuantity && quantityStrip) {
+    stem = stem.replace(quantityStrip, "");
   }
   return stem || name;
 }

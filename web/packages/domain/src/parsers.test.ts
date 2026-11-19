@@ -86,6 +86,27 @@ describe("parsers", () => {
     });
     expect(parsePartSlug("Panel_Clip.3MF")).toBe("Panel_Clip");
   });
+
+  it("keeps a saved quantity regex written for the .3mf name", () => {
+    const profile = (regex: string) =>
+      namingProfileFromDict(
+        mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {
+          quantity: { regex, default: 1 },
+        }),
+      );
+    const threeMf = profile("_x([0-9]+)\\.3mf$");
+    expect(parseStlPath("Duct_x2.3mf", threeMf)).toMatchObject({ quantity: 2, partSlug: "Duct" });
+    // The regex does not match an .stl name, so the slug keeps its suffix, as before.
+    expect(parseStlPath("Duct_x2.stl", threeMf)).toMatchObject({ quantity: 1, partSlug: "Duct_x2" });
+
+    // A regex for any name matches the .3mf name as written.
+    const anyName = profile("_qty([0-9]+)");
+    expect(parseQuantity("Duct_qty3.3mf", anyName)).toBe(3);
+
+    // A regex that matches the .3mf name without a number gives the default, as before.
+    const optional = profile("(?:_x([0-9]+))?\\.3mf$");
+    expect(parseQuantity("Duct.3mf", optional)).toBe(1);
+  });
 });
 
 // File paths copied from VoronDesign/voron-chariot and VoronDesign/voron-downdraft (created

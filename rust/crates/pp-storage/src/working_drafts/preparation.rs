@@ -478,34 +478,44 @@ pub(super) struct LayerNaming {
     /// `None` when `strip_quantity` is off or the derived pattern does not
     /// compile; an invalid pattern leaves the slug unchanged.
     strip: Option<regress::Regex>,
+    /// `strip` for a `.3mf` slug.
+    strip_3mf: Option<regress::Regex>,
 }
 impl LayerNaming {
     pub(super) fn new(profile: Arc<NamingProfile>) -> Self {
         #[cfg(test)]
         LAYER_NAMING_COMPILES.with(|count| count.set(count.get() + 1));
         let regex = &profile.quantity.regex;
-        let strip = profile
-            .slug
-            .strip_quantity
-            .then(|| strip_pattern(regex).ok())
-            .flatten()
-            .and_then(|pattern| regress::Regex::with_flags(&pattern, "i").ok());
+        let strip = |three_mf| {
+            profile
+                .slug
+                .strip_quantity
+                .then(|| strip_pattern(regex, three_mf).ok())
+                .flatten()
+                .and_then(|pattern| regress::Regex::with_flags(&pattern, "i").ok())
+        };
         Self {
             quantity: regress::Regex::with_flags(regex, "i"),
-            strip,
+            strip: strip(false),
+            strip_3mf: strip(true),
             profile,
         }
     }
 }
 /// Turns the quantity regex into one that matches the quantity suffix of a
-/// slug, which has no `.stl` extension.
-fn strip_pattern(regex: &str) -> Result<String, regress::Error> {
+/// slug, which has no `.stl` extension. For a `.3mf` slug a regex anchored on
+/// `\.3mf$` counts too.
+fn strip_pattern(regex: &str, three_mf: bool) -> Result<String, regress::Error> {
     let mut strip = trim_js(regex).to_owned();
     strip = regress::Regex::new(r"\(\?P<\w+>")?.replace_all(&strip, "(");
     strip = regress::Regex::new(r"\(\?:")?.replace_all(&strip, "(");
     strip = regress::Regex::new(r"\([^?][^)]*\)")?.replace(&strip, "[0-9]+");
     strip = regress::Regex::new(r"\\\.stl\$")?.replace(&strip, "$");
     strip = regress::Regex::with_flags(r"\.stl$", "i")?.replace(&strip, "$");
+    if three_mf {
+        strip = regress::Regex::new(r"\\\.3mf\$")?.replace(&strip, "$");
+        strip = regress::Regex::with_flags(r"\.3mf$", "i")?.replace(&strip, "$");
+    }
     Ok(strip)
 }
 fn replace_match(input: &str, re: &regress::Regex, replacement: &str) -> String {
@@ -567,15 +577,19 @@ pub(super) fn parse(
             }
         }
     }
-    b.comparison(filename.len().saturating_add(profile.quantity.regex.len()))?;
-    let quantity = naming
+    // A `.3mf` name the regex misses is read a second time as `.stl`.
+    let quantity_passes = if naming::is_3mf(&filename) { 2 } else { 1 };
+    b.comparison(
+        filename
+            .len()
+            .saturating_add(profile.quantity.regex.len())
+            .saturating_mul(quantity_passes),
+    )?;
+    let quantity_re = naming
         .quantity
         .as_ref()
-        .map_err(|error| anyhow!(error.clone()))?
-        .find(&filename)
-        .and_then(|m| m.captures.first().cloned().flatten())
-        .map(|r| filename[r].to_owned())
-        .filter(|s| !s.is_empty())
+        .map_err(|error| anyhow!(error.clone()))?;
+    let quantity = naming::quantity_capture(quantity_re, &filename)
         .map(|s| {
             let s = trim_js(&s);
             let mut end = 0;
@@ -621,7 +635,12 @@ pub(super) fn parse(
             slug.len()
                 .saturating_add(profile.quantity.regex.len().saturating_mul(8)),
         )?;
-        if let Some(strip) = &naming.strip {
+        let strip = if naming::is_3mf(&filename) {
+            &naming.strip_3mf
+        } else {
+            &naming.strip
+        };
+        if let Some(strip) = strip {
             slug = replace_match(&slug, strip, "");
         }
     }

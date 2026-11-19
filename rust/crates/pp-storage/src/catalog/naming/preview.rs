@@ -164,7 +164,9 @@ fn replace_first(text: &str, pattern: &str, replacement: &str) -> String {
     }
     text.to_owned()
 }
-fn quantity_strip(pattern: &str) -> Option<regress::Regex> {
+/// Turns the quantity regex into one that matches the quantity suffix of a
+/// slug. For a `.3mf` slug a regex anchored on `\.3mf$` counts too.
+fn quantity_strip(pattern: &str, three_mf: bool) -> Option<regress::Regex> {
     let mut pattern = pattern.replace("(?:", "(");
     let named = regress::Regex::new(r"\(\?P<\w+>").ok()?;
     while let Some(m) = named.find(&pattern) {
@@ -173,6 +175,10 @@ fn quantity_strip(pattern: &str) -> Option<regress::Regex> {
     pattern = replace_first(&pattern, r"\([^?][^)]*\)", "[0-9]+");
     pattern = pattern.replacen(r"\.stl$", "$", 1);
     pattern = replace_first(&pattern, r"\.stl$", "$");
+    if three_mf {
+        pattern = pattern.replacen(r"\.3mf$", "$", 1);
+        pattern = replace_first(&pattern, r"\.3mf$", "$");
+    }
     regress::Regex::with_flags(&pattern, "i").ok()
 }
 fn parse_integer(text: &str) -> f64 {
@@ -232,17 +238,8 @@ pub(in crate::catalog) fn preview(
         .unwrap_or(RoleId::Primary);
     let quantity_re = regress::Regex::with_flags(&profile.quantity.regex, "i")
         .map_err(|_| CatalogFailure::Input("Invalid quantity regex".into()))?;
-    // Quantity regexes end in `\.stl$`; a `.3mf` part is read as the `.stl` of the same name.
-    let quantity_name = match model_stem(&filename) {
-        Some(stem) => format!("{stem}.stl"),
-        None => filename.clone(),
-    };
-    let captured = quantity_re
-        .find(&quantity_name)
-        .and_then(|m| m.captures.first().cloned().flatten())
-        .map(|r| &quantity_name[r])
-        .filter(|s| !s.is_empty());
-    let quantity = captured
+    let quantity = quantity_capture(&quantity_re, &filename)
+        .as_deref()
         .map(parse_integer)
         .unwrap_or(profile.quantity.default as f64);
     // JSON.stringify writes a whole number without a fraction (`2`, not `2.0`).
@@ -266,7 +263,7 @@ pub(in crate::catalog) fn preview(
         }
     }
     if profile.slug.strip_quantity
-        && let Some(regex) = quantity_strip(&profile.quantity.regex)
+        && let Some(regex) = quantity_strip(&profile.quantity.regex, is_3mf(&filename))
         && let Some(m) = regex.find(&slug)
     {
         slug.replace_range(m.range(), "");

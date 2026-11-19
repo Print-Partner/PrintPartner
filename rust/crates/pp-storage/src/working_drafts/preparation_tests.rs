@@ -544,6 +544,36 @@ fn parse_strips_role_markers_anywhere_like_the_preview() {
     }
 }
 
+// GRE-1396: a saved quantity regex written for the `.3mf` name keeps its
+// meaning; a regex anchored on `\.stl$` also counts the `.3mf` of that name.
+#[test]
+fn parse_reads_quantity_from_the_3mf_name_before_the_stl_name() {
+    use crate::catalog::naming::{NamingProfile, Quantity};
+    let with_regex = |regex: &str| {
+        LayerNaming::new(Arc::new(NamingProfile {
+            quantity: Quantity {
+                regex: regex.into(),
+                default: 1,
+            },
+            ..NamingProfile::default()
+        }))
+    };
+    let default = LayerNaming::new(Arc::new(NamingProfile::default()));
+    let three_mf = with_regex(r"_x([0-9]+)\.3mf$");
+    let any_name = with_regex(r"_qty([0-9]+)");
+    let cancelled = AtomicBool::new(false);
+    for (path, naming, slug, quantity) in [
+        ("[a]_Skirt_Duct_x2.3mf", &default, "Skirt_Duct", 2.0),
+        ("Duct_x2.3mf", &three_mf, "Duct", 2.0),
+        ("Duct_x2.stl", &three_mf, "Duct_x2", 1.0),
+        ("Duct_qty3.3mf", &any_name, "Duct", 3.0),
+    ] {
+        let mut b = PreparationBudget::new(&cancelled, PreparationLimits::default()).unwrap();
+        let parsed = parse(path, naming, &mut b).unwrap();
+        assert_eq!((parsed.1.as_str(), parsed.3), (slug, quantity), "{path}");
+    }
+}
+
 #[test]
 fn capture_processes_global_naming_once_across_layers() {
     let case = cases()

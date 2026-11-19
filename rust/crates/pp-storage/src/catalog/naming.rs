@@ -765,6 +765,42 @@ pub(crate) fn model_stem(filename: &str) -> Option<&str> {
         .then(|| &filename[..split])
 }
 
+/// Whether `filename` ends in `.3mf`, in any case.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn is_3mf(filename: &str) -> bool {
+    filename
+        .len()
+        .checked_sub(4)
+        .and_then(|split| filename.get(split..))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(".3mf"))
+}
+
+/// The text the quantity regex's first group captures from `filename`, as
+/// Node's `parseQuantity` reads it. The regex reads the name as written, so
+/// saved regexes keep their meaning. Most end in `\.stl$`, so a `.3mf` name
+/// they miss is read again as the `.stl` of the same name. `None` when
+/// nothing matched or the group is empty.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn quantity_capture(regex: &regress::Regex, filename: &str) -> Option<String> {
+    let capture = |name: &str| {
+        regex.find(name).map(|m| {
+            m.captures
+                .first()
+                .cloned()
+                .flatten()
+                .map(|r| name[r].to_owned())
+        })
+    };
+    let captured = match capture(filename) {
+        Some(group) => group,
+        None if is_3mf(filename) => {
+            capture(&format!("{}.stl", &filename[..filename.len() - 4])).flatten()
+        }
+        None => None,
+    };
+    captured.filter(|s| !s.is_empty())
+}
+
 /// Removes a role marker from a part slug, as Node's `parsePartSlug` does.
 ///
 /// A marker that starts and ends with a symbol, like `[a]`, cannot be part of

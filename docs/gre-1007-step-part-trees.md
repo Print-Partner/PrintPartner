@@ -17,7 +17,9 @@ occt-import-js 0.0.23 took 417 s and about 2.7 GB to load the 185 MB Trident STE
 
 A definition that no occurrence places is a root. A sub-assembly used twice appears twice. The file is streamed once. Only those four entity kinds are buffered (64 KiB per record at most), so memory follows the part count, not the file size. Strings may hold `;` and `''`, comments are skipped, and `\X2\`, `\X4\`, `\X\`, `\S\` and `\P..\` string directives are decoded.
 
-Refusals: not an ISO 10303-21 file (`not_step`), no product structure (`no_products`), more than 100,000 nodes or 64 levels (`too_large`), and an assembly that contains itself (`cycle`).
+The 60-level cap keeps every accepted tree readable from the cache: the cached JSON nests two values per level plus two, under serde_json's limit of 128.
+
+Refusals: not an ISO 10303-21 file (`not_step`), no product structure (`no_products`), more than 100,000 nodes or 60 levels (`too_large`), and an assembly that contains itself (`cycle`).
 
 ## Background job and cache
 
@@ -27,7 +29,8 @@ Refusals: not an ISO 10303-21 file (`not_step`), no product structure (`no_produ
 2. Looks up the file's job, keyed by revision id and path. A revision never changes.
 3. On the first open it queues the file and answers `queued`. One worker thread per client takes the queue in order and marks the file `converting`.
 4. The worker hashes the file (SHA-256). When `thumbs/sources/step/<sha256>-v1.json` already holds a whole tree for that hash, it reads no STEP. Otherwise it reads the tree and writes that file through a temporary name, synced before the rename.
-5. Later opens answer `done` with the tree read from that cached file. A failure is kept as `failed` until the next start, and nothing is cached for it.
+5. The worker writes the cache file inside a reader checkout, then reads it back. `WriterOwner::close` refuses new checkouts and waits for active ones before it releases the data-folder lease, so no worker publishes after shutdown starts, and the next owner either finds a whole entry or converts the file itself. A file it cannot read back is `cache_unwritable`, so an entry never loops between converting and done.
+6. Later opens answer `done` with the tree read from that cached file. A failure is kept as `failed` until the next start, and nothing is cached for it.
 
 The same bytes at another path, in another Source, or after a restart reuse the cached file. After a restart the first open is `queued` again while the worker re-hashes the file, then answers from the cache without a conversion. A deleted or damaged cache file is converted again on the next open.
 

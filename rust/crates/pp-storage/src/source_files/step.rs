@@ -18,18 +18,26 @@
 //!
 //! The worker starts on the first open and stops when the last clone of the
 //! client is dropped; a conversion in progress then stops at its next check.
+//!
+//! Publication is fenced against shutdown. The worker writes the cache file
+//! inside a reader checkout. `WriterOwner::close` refuses new checkouts and
+//! waits for the active ones before it releases the data-folder lease, so no
+//! worker publishes after shutdown starts, and a publish already running ends
+//! before the next owner can start. After writing, the worker reads the file
+//! back, so a tree the cache cannot return is a failure, never a loop.
 
 use super::{
     SourceFilesClient, SourceFilesError,
     thumbnail::{read_cached, revision_file, store},
 };
-use crate::read_model::Credential;
+use crate::{SettingsClient, read_model::Credential};
 use pp_domain::step_assembly::{self, PartNode, PartTree, StepError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
@@ -43,6 +51,8 @@ pub const PART_TREE_FORMAT: u32 = 1;
 /// The folder under `thumbs/sources`; not a revision id, so pruning skips it.
 const STEP_FOLDER: &str = "step";
 const STEP_EXTENSIONS: &[&str] = &[".step", ".stp"];
+/// How long a publish waits for a reader checkout.
+const PUBLISH_WAIT: Duration = Duration::from_secs(5);
 
 /// What an open answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,11 +99,16 @@ struct State {
 
 struct Shared {
     data: PathBuf,
+    /// Fences each publish against owner shutdown.
+    readers: SettingsClient,
     state: Mutex<State>,
     wake: Condvar,
     /// Set when the last client is dropped; also cancels a running read.
     stopping: AtomicBool,
     converted: AtomicU64,
+    /// Test only: the worker waits on this before it publishes.
+    #[cfg(test)]
+    publish_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl Shared {
@@ -110,14 +125,17 @@ pub(super) struct StepJobs {
 }
 
 impl StepJobs {
-    pub(super) fn new(data: PathBuf) -> Self {
+    pub(super) fn new(data: PathBuf, readers: SettingsClient) -> Self {
         Self {
             shared: Arc::new(Shared {
                 data,
+                readers,
                 state: Mutex::default(),
                 wake: Condvar::new(),
                 stopping: AtomicBool::new(false),
                 converted: AtomicU64::new(0),
+                #[cfg(test)]
+                publish_gate: Mutex::default(),
             }),
             worker: OnceLock::new(),
         }
@@ -203,6 +221,24 @@ impl SourceFilesClient {
     pub fn step_files_converted(&self) -> u64 {
         self.steps.shared.converted.load(Ordering::Relaxed)
     }
+
+    /// Test only: the worker's next publish waits until the sender sends or
+    /// is dropped.
+    #[cfg(test)]
+    pub(super) fn hold_step_publish(&self) -> std::sync::mpsc::Sender<()> {
+        let (send, receive) = std::sync::mpsc::channel();
+        let gate = self.steps.shared.publish_gate.lock();
+        *gate.unwrap_or_else(PoisonError::into_inner) = Some(receive);
+        send
+    }
+
+    /// Test only: true when no STEP file is queued or converting.
+    #[cfg(test)]
+    pub(super) fn step_jobs_idle(&self) -> bool {
+        let state = self.steps.shared.lock();
+        let busy = |job: &Job| matches!(job, Job::Queued | Job::Converting);
+        state.queue.is_empty() && !state.jobs.values().any(busy)
+    }
 }
 
 fn work(shared: &Shared) {
@@ -233,7 +269,7 @@ fn work(shared: &Shared) {
 
 /// Hashes `file`, and reads and caches its tree unless that hash is cached.
 fn convert(shared: &Shared, file: &Path) -> Result<String, StepFailure> {
-    let sha256 = hash(file).map_err(|_| StepFailure::Unreadable)?;
+    let sha256 = hash(file, &shared.stopping).map_err(|_| StepFailure::Unreadable)?;
     if read_tree(&shared.data, &sha256).is_some() {
         return Ok(sha256);
     }
@@ -252,11 +288,37 @@ fn convert(shared: &Shared, file: &Path) -> Result<String, StepFailure> {
         roots: tree.roots,
     };
     let bytes = serde_json::to_vec(&cached).map_err(|_| StepFailure::CacheUnwritable)?;
-    store(&shared.data, STEP_FOLDER, &cache_name(&sha256), &bytes).map_err(|error| {
-        tracing::warn!(error = %error, "step_part_tree_cache_write_failed");
-        StepFailure::CacheUnwritable
-    })?;
-    Ok(sha256)
+    #[cfg(test)]
+    {
+        let mut gate = shared.publish_gate.lock();
+        let gate = gate
+            .as_mut()
+            .unwrap_or_else(|poisoned| poisoned.get_mut())
+            .take();
+        if let Some(gate) = gate {
+            let _ = gate.recv();
+        }
+    }
+    let name = cache_name(&sha256);
+    let published = shared.readers.read(
+        "source_files.step_publish",
+        &shared.stopping,
+        PUBLISH_WAIT,
+        |_| store(&shared.data, STEP_FOLDER, &name, &bytes),
+    );
+    match published {
+        Ok(Ok(_)) => {}
+        // The owner is closing, or the client is gone: publish nothing.
+        Err(_) => return Err(StepFailure::Unreadable),
+        Ok(Err(error)) => {
+            tracing::warn!(error = %error, "step_part_tree_cache_write_failed");
+            return Err(StepFailure::CacheUnwritable);
+        }
+    }
+    match read_tree(&shared.data, &sha256) {
+        Some(_) => Ok(sha256),
+        None => Err(StepFailure::CacheUnwritable),
+    }
 }
 
 /// The cached file: the part tree, nested, with what it was read from.
@@ -282,8 +344,18 @@ fn read_tree(data: &Path, sha256: &str) -> Option<PartTree> {
     })
 }
 
-fn hash(file: &Path) -> io::Result<String> {
+/// The file's SHA-256, checking `stopping` between 1 MiB reads.
+fn hash(file: &Path, stopping: &AtomicBool) -> io::Result<String> {
     let mut hasher = Sha256::new();
-    io::copy(&mut fs::File::open(file)?, &mut hasher)?;
-    Ok(hex::encode(hasher.finalize()))
+    let mut opened = fs::File::open(file)?;
+    let mut buffer = vec![0; 1 << 20];
+    loop {
+        if stopping.load(Ordering::Relaxed) {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        match opened.read(&mut buffer)? {
+            0 => return Ok(hex::encode(hasher.finalize())),
+            read => hasher.update(&buffer[..read]),
+        }
+    }
 }

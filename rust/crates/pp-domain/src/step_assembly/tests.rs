@@ -155,16 +155,26 @@ fn refuses_an_assembly_that_contains_itself() {
     assert!(matches!(read(&file(&body)), Err(StepError::Cycle)));
 }
 
-#[test]
-fn refuses_a_tree_deeper_than_the_cap() {
+/// A chain of `levels` parts, each the only child of the one before.
+fn chain(levels: u64) -> String {
     let mut body = String::new();
-    for level in 0..=(MAX_DEPTH as u64 + 1) {
+    for level in 0..levels {
         body.push_str(&part(10 * level + 10, &format!("L{level}"), "Level"));
         if level > 0 {
             body.push_str(&usage(100_000 + level, "", 10 * level + 2, 10 * level + 12));
         }
     }
-    assert!(matches!(read(&file(&body)), Err(StepError::TooLarge)));
+    file(&body)
+}
+
+#[test]
+fn accepts_a_tree_at_the_level_cap_and_refuses_one_level_more() {
+    let tree = read(&chain(MAX_LEVELS as u64)).unwrap();
+    assert_eq!(depth(&tree.roots[0]), MAX_LEVELS);
+    assert!(matches!(
+        read(&chain(MAX_LEVELS as u64 + 1)),
+        Err(StepError::TooLarge)
+    ));
 }
 
 #[test]
@@ -186,8 +196,7 @@ fn refuses_a_tree_with_too_many_uses() {
 #[test]
 fn stops_when_cancelled() {
     let cancelled = AtomicBool::new(true);
-    let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n".repeat(CANCEL_EVERY as usize);
-    let text = file(&format!("{}{body}", part(10, "P", "Part")));
+    let text = file(&part(10, "P", "Part"));
     assert!(matches!(
         part_tree(text.as_bytes(), &cancelled),
         Err(StepError::Cancelled)

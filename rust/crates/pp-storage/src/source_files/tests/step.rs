@@ -1,7 +1,7 @@
 //! GRE-1007: STEP part trees, read once per file hash and answered from the
 //! cache under `thumbs/sources/step`.
 use super::*;
-use pp_domain::step_assembly::PartNode;
+use pp_domain::step_assembly::{MAX_LEVELS, PartNode};
 use sha2::Digest;
 use std::time::Instant;
 
@@ -41,6 +41,37 @@ impl Fixture {
         names.sort();
         names
     }
+}
+
+/// Polls `ready` until it holds.
+fn wait_for(mut ready: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !ready() {
+        assert!(started.elapsed() < WAIT, "never ready");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A STEP file whose tree is a chain `levels` deep.
+fn chain(levels: usize) -> Vec<u8> {
+    let mut text = String::from("ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n");
+    for level in 0..levels {
+        let n = 10 * level + 10;
+        text += &format!(
+            "#{n}=PRODUCT('L{level}','Level {level}','',(#2));\n#{}=PRODUCT_DEFINITION_FORMATION('','',#{n});\n#{}=PRODUCT_DEFINITION('design','',#{},#3);\n",
+            n + 1,
+            n + 2,
+            n + 1
+        );
+        if level > 0 {
+            let (parent, child) = (n - 8, n + 2);
+            text += &format!(
+                "#{}=NEXT_ASSEMBLY_USAGE_OCCURRENCE('U{level}','','',#{parent},#{child},$);\n",
+                100_000 + level
+            );
+        }
+    }
+    (text + "ENDSEC;\nEND-ISO-10303-21;\n").into_bytes()
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -222,4 +253,87 @@ fn a_thumbnail_prune_keeps_the_step_cache() {
     fixture.thumbnail("part.stl").unwrap();
     assert!(!fixture.revision_folders().contains(&"99".to_owned()));
     assert_eq!(fixture.step_cache().len(), 1);
+}
+
+/// Sol round 1 on 95b2896: a worker still converting when its owner shut
+/// down published after the next owner took the lease, so the same hash was
+/// converted and published twice. Now a publish needs a reader checkout,
+/// which a closed owner refuses.
+#[test]
+fn a_worker_publishes_nothing_after_its_owner_shuts_down() {
+    let fixture = Fixture::new();
+    fixture.snapshot("1/revisions/r1", &[("printer.step", NESTED)]);
+    fixture.sql(FIRST);
+    let release = fixture.client.hold_step_publish();
+    assert_eq!(
+        fixture.step("printer.step").unwrap(),
+        StepConversion::Queued
+    );
+    wait_for(|| fixture.step("printer.step").unwrap() == StepConversion::Converting);
+
+    let Fixture {
+        directory,
+        owner,
+        client: stopped,
+        token,
+    } = fixture;
+    owner.shutdown().unwrap();
+    // The next runtime takes the data folder while the old worker holds a
+    // finished tree, then the old worker tries to publish it.
+    let (next, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
+    drop(release);
+    wait_for(|| stopped.step_jobs_idle());
+    let fixture = Fixture {
+        client: next
+            .source_files(POLICY)
+            .unwrap()
+            .skipping_at_root(WRITER_ENTRY),
+        owner: next,
+        directory,
+        token,
+    };
+    assert!(
+        fixture.step_cache().is_empty(),
+        "{:?}",
+        fixture.step_cache()
+    );
+
+    done(fixture.settled("printer.step"));
+    assert_eq!(fixture.client.step_files_converted(), 1);
+    assert_eq!(fixture.step_cache().len(), 1);
+}
+
+/// Sol round 1 on 95b2896: trees of 63 to 65 levels were accepted but too
+/// deep for the cache reader, so every open converted them again. Every tree
+/// within the cap now reads back from the cache; one level more fails once.
+#[test]
+fn a_tree_at_the_level_cap_round_trips_and_a_deeper_one_fails_once() {
+    let fixture = Fixture::new();
+    let (cap, over, old_bound) = (chain(MAX_LEVELS), chain(MAX_LEVELS + 1), chain(64));
+    fixture.snapshot(
+        "1/revisions/r1",
+        &[
+            ("cap.step", &cap),
+            ("over.step", &over),
+            ("old.step", &old_bound),
+        ],
+    );
+    fixture.sql(FIRST);
+
+    let (_, tree) = done(fixture.settled("cap.step"));
+    assert_eq!(depth(&tree.roots[0]), MAX_LEVELS);
+    let too_large = StepConversion::Failed(StepFailure::TooLarge);
+    assert_eq!(fixture.settled("over.step"), too_large);
+    assert_eq!(fixture.settled("old.step"), too_large);
+    assert_eq!(fixture.step("old.step").unwrap(), too_large);
+    assert_eq!(fixture.client.step_files_converted(), 1);
+    assert_eq!(fixture.step_cache().len(), 1);
+
+    let restarted = fixture.owner.source_files(POLICY).unwrap();
+    let fixture = Fixture {
+        client: restarted.skipping_at_root(WRITER_ENTRY),
+        ..fixture
+    };
+    assert_eq!(done(fixture.settled("cap.step")).1, tree);
+    assert_eq!(fixture.client.step_files_converted(), 0);
 }

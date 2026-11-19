@@ -130,7 +130,7 @@ impl WriterOwner {
             repos: lease.data_dir().join("repos"),
             data: lease.data_dir().to_path_buf(),
             internal: Vec::new(),
-            steps: Arc::new(StepJobs::new(lease.data_dir().to_path_buf())),
+            steps: Arc::new(StepJobs::new(lease.data_dir().to_path_buf(), self.client())),
         })
     }
 }

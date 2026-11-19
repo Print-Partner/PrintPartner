@@ -21,13 +21,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The most nodes one tree may hold, counting every use of a shared part.
 pub const MAX_PARTS: usize = 100_000;
-/// The deepest nesting accepted; a root is depth 0.
-pub const MAX_DEPTH: usize = 64;
+/// The most levels a tree may have; a lone root is 1 level. A cached tree
+/// nests two JSON values per level plus two (`roots` and its object), so 60
+/// levels stay under serde_json's 128-value nesting limit and every accepted
+/// tree reads back from the cache.
+pub const MAX_LEVELS: usize = 60;
 /// The longest product-structure record buffered. Geometry records are never
 /// buffered, so this bounds only names and ids.
 const MAX_RECORD_BYTES: usize = 64 * 1024;
-/// How many records pass between checks of the cancel flag.
-const CANCEL_EVERY: u32 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartTree {
@@ -54,7 +55,7 @@ pub enum StepError {
     NotStep,
     /// No product definition resolves to a product.
     NoProducts,
-    /// Over [`MAX_PARTS`] nodes or [`MAX_DEPTH`] levels.
+    /// Over [`MAX_PARTS`] nodes or [`MAX_LEVELS`] levels.
     TooLarge,
     /// An assembly contains itself.
     Cycle,
@@ -82,18 +83,16 @@ impl From<io::Error> for StepError {
     }
 }
 
-/// Reads the part tree of the STEP file `input`. `cancelled` is checked as
-/// the file streams; setting it ends the read with [`StepError::Cancelled`].
+/// Reads the part tree of the STEP file `input`. `cancelled` is checked
+/// before each record; setting it ends the read with [`StepError::Cancelled`].
 pub fn part_tree(input: impl Read, cancelled: &AtomicBool) -> Result<PartTree, StepError> {
     let mut scanner = Scanner::new(input);
     if !scanner.starts_with_magic()? {
         return Err(StepError::NotStep);
     }
     let mut entities = Entities::default();
-    let mut seen = 0u32;
     while let Some(record) = scanner.next_record()? {
-        seen = seen.wrapping_add(1);
-        if seen.is_multiple_of(CANCEL_EVERY) && cancelled.load(Ordering::Relaxed) {
+        if cancelled.load(Ordering::Relaxed) {
             return Err(StepError::Cancelled);
         }
         if let Some((id, kind, body)) = record {
@@ -254,7 +253,8 @@ impl Build<'_> {
             return Err(StepError::Cycle);
         }
         self.count += 1;
-        if self.count > MAX_PARTS || self.path.len() > MAX_DEPTH {
+        // `path` holds the node's ancestors, so the node is on level len + 1.
+        if self.count > MAX_PARTS || self.path.len() >= MAX_LEVELS {
             return Err(StepError::TooLarge);
         }
         let (product_id, name) = self

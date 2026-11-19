@@ -26,6 +26,10 @@ mod launcher_start;
 mod watcher_proof;
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/rust_only_drain.rs"]
+mod rust_only_drain;
+
+#[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/farm_reads.rs"]
 mod farm_reads;
 

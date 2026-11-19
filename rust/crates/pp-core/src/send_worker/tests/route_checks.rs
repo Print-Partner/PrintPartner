@@ -122,53 +122,100 @@ fn ready(host: &str) -> Prepared {
     }
 }
 
-/// Waits until the watchers have answered for host `id`.
-async fn heard(targets: &QueueTargets, id: &str) {
+/// Waits until the watchers have observed host `id` in `expected`.
+async fn heard(targets: &QueueTargets, id: &str, expected: HostState) {
     tokio::time::timeout(Duration::from_secs(30), async {
         while !matches!(
             crate::printer_status::observed(&targets.status, id),
-            Observation::Seen { .. }
+            Observation::Seen { state, .. } if state == expected
         ) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("the watchers never answered for {id}"))
+    .unwrap_or_else(|_| panic!("the watchers never saw {id} {expected:?}"))
+}
+
+/// Host types a printer may be linked to: both Read types, Bambu, the
+/// unported types, and types no build of Print Partner knows.
+const KINDS: [&str; 10] = [
+    "moonraker",
+    "prusalink",
+    "bambu",
+    "octoprint",
+    "spoolman",
+    "slicer_sidecar",
+    "ai_assistant",
+    "home_assistant",
+    "resin-vat",
+    "",
+];
+
+/// Whether [`crate::printer_host::host`] makes `kind` a Read host.
+fn read_kind(kind: &str) -> bool {
+    let integration = pp_storage::printer_hosts::StoredIntegration {
+        id: "h".into(),
+        kind: kind.into(),
+        base_url: String::new(),
+        api_key: None,
+        username: String::new(),
+        password: None,
+        storage: None,
+        enabled: true,
+    };
+    matches!(
+        crate::printer_host::host(integration),
+        Some(crate::printer_host::Host::Read(_))
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn gre_1267_send_checks_refuse_every_host_that_is_not_read() {
     let printer = RecordedPrinter::start(vec![(200, MOONRAKER_IDLE)]).unwrap();
-    // Kinds that are not Moonraker or PrusaLink, including ones no build of
-    // Print Partner knows: the refusal is "not Read", not an allow-list.
-    let others = ["bambu", "octoprint", "resin-vat", ""];
-    let mut hosts = vec![host(
-        "moon",
-        "moonraker",
-        json!({"base_url": printer.url()}),
-    )];
-    hosts.extend(others.iter().enumerate().map(|(n, kind)| {
-        host(
-            &format!("other-{n}"),
-            kind,
-            json!({"base_url": "http://127.0.0.1:9"}),
-        )
-    }));
+    let hosts: Vec<Value> = (0..KINDS.len())
+        .map(|n| {
+            host(
+                &format!("h{n}"),
+                KINDS[n],
+                json!({"base_url": printer.url()}),
+            )
+        })
+        .collect();
     let farm = Farm::open(&hosts);
     let (gateway, targets) = watched(&farm).await;
-    for (n, kind) in others.iter().enumerate() {
-        let item = staged_item(&farm, &format!("q{n}"), &format!("p-other-{n}"));
+    // The expected answer comes from the host classification, not a list of
+    // types: a type that becomes Read must become sendable here too.
+    let mut answers = [0, 0];
+    for (n, kind) in KINDS.iter().enumerate() {
+        let item = staged_item(&farm, &format!("q{n}"), &format!("p-h{n}"));
+        let read = read_kind(kind);
+        answers[usize::from(read)] += 1;
         let detail = format!("Upload is not supported for {kind}");
         for idle in [false, true] {
-            assert_eq!(
-                prepare(&targets, &item, idle).await,
-                refused(StatusCode::BAD_REQUEST, &detail),
-                "{kind:?} idle={idle}"
-            );
+            let prepared = prepare(&targets, &item, idle).await;
+            match (read, idle) {
+                (true, false) => assert_eq!(prepared, ready(&format!("h{n}")), "{kind:?}"),
+                // Send ready on a Read host waits on the watchers instead.
+                (true, true) => assert!(
+                    matches!(
+                        &prepared,
+                        Prepared::Ready { .. }
+                            | Prepared::Refused {
+                                status: StatusCode::CONFLICT,
+                                ..
+                            }
+                    ),
+                    "{kind:?}: {prepared:?}"
+                ),
+                (false, _) => assert_eq!(
+                    prepared,
+                    refused(StatusCode::BAD_REQUEST, &detail),
+                    "{kind:?} idle={idle}"
+                ),
+            }
         }
     }
-    let moon = staged_item(&farm, "q-moon", "p-moon");
-    assert_eq!(prepare(&targets, &moon, false).await, ready("moon"));
+    assert!(answers[0] > 0 && answers[1] > 0, "{answers:?}");
     gateway.stop().await.unwrap();
     assert!(
         printer
@@ -207,8 +254,12 @@ async fn gre_1267_send_ready_waits_for_the_watchers_to_see_idle() {
         ),
     ]);
     let (gateway, targets) = watched(&farm).await;
-    for id in ["busy", "idle", "mk4"] {
-        heard(&targets, id).await;
+    for (id, state) in [
+        ("busy", HostState::Printing),
+        ("idle", HostState::Idle),
+        ("mk4", HostState::Printing),
+    ] {
+        heard(&targets, id, state).await;
     }
     let printing_now = || {
         refused(

@@ -916,6 +916,47 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// A retargeted link whose old and new targets are both walked leaves the
+    /// file inventory equal, so the link check is what rejects it. Windows
+    /// runs the junction form in `junctions_are_recorded_links_and_cannot_escape`.
+    #[test]
+    fn retargeted_release_link_is_reported_as_changed() {
+        let root = std::env::temp_dir().join(format!(
+            "pp-retarget-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        let web = root.join("web");
+        let release = web.join("apps/server/dist");
+        let mut files = BTreeMap::new();
+        for version in ["v0", "v1"] {
+            std::fs::create_dir_all(release.join(version)).unwrap();
+            std::fs::write(release.join(version).join("server.js"), b"export {};\n").unwrap();
+            files.insert(
+                format!("web/apps/server/dist/{version}/server.js"),
+                measure(&release.join(version).join("server.js")).unwrap(),
+            );
+        }
+        let current = release.join("current");
+        symlink_dir(Path::new("v1"), &current);
+        let inventory = DependencyInventory {
+            web_path: "web".into(),
+            roots: vec!["web/apps/server/dist".into()],
+            files,
+            links: BTreeMap::from([("web/apps/server/dist/current".into(), "v1".into())]),
+            unshipped_links: Default::default(),
+        };
+        let stop = CancellationToken::new();
+        verify_dependencies(&web, &inventory, &stop).unwrap();
+
+        std::fs::remove_dir(&current)
+            .or_else(|_| std::fs::remove_file(&current))
+            .unwrap();
+        symlink_dir(Path::new("v0"), &current);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link changed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// npm's Windows workspace links are junctions. They are dependency links
     /// like symbolic links: inventoried by key, checked against a target
     /// recorded relative to the link's directory, and followed.
@@ -947,12 +988,14 @@ mod tests {
             );
         }
         let release = web.join("apps/server/dist");
-        std::fs::create_dir_all(release.join("v1")).unwrap();
-        std::fs::write(release.join("v1/server.js"), b"export {};\n").unwrap();
-        files.insert(
-            "web/apps/server/dist/v1/server.js".into(),
-            measure(&release.join("v1/server.js")).unwrap(),
-        );
+        for version in ["v0", "v1"] {
+            std::fs::create_dir_all(release.join(version)).unwrap();
+            std::fs::write(release.join(version).join("server.js"), b"export {};\n").unwrap();
+            files.insert(
+                format!("web/apps/server/dist/{version}/server.js"),
+                measure(&release.join(version).join("server.js")).unwrap(),
+            );
+        }
         junction(&release.join("v1"), &release.join("current"));
         links.insert("web/apps/server/dist/current".into(), "v1".into());
         let mut inventory = DependencyInventory {
@@ -976,11 +1019,24 @@ mod tests {
         let error = verify_dependencies(&web, &walked, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency link inventory mismatch");
 
+        // Both release directories are walked, so retargeting `current`
+        // keeps the file inventory equal and the link check reports it.
+        let current = release.join("current");
+        std::fs::remove_dir(&current).unwrap();
+        junction(&release.join("v0"), &current);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link changed");
+        std::fs::remove_dir(&current).unwrap();
+        junction(&release.join("v1"), &current);
+        verify_dependencies(&web, &inventory, &stop).unwrap();
+
+        // Retargeting the only link to `contracts` also drops its files from
+        // the walk, which the file check reports first.
         let link = scope.join("contracts");
         std::fs::remove_dir(&link).unwrap();
         junction(&web.join("packages/domain"), &link);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Dependency link changed");
+        assert_eq!(error.to_string(), "Dependency file inventory mismatch");
 
         let outside = root.with_extension("outside");
         std::fs::create_dir_all(&outside).unwrap();

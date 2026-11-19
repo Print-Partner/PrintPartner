@@ -11,8 +11,9 @@ use reqwest::Url;
 use rmcp::{
     ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, Implementation,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
+        ContentBlock, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
+        ServerCapabilities, ServerConfig,
     },
     service::{ClientInitializeError, Peer, RequestContext, ServiceError},
     transport::{
@@ -142,7 +143,7 @@ pub(crate) async fn run(url: Url, key: String) -> Result<()> {
     // One session per process: a session the core forgot (a restart) is an
     // error, not a silent new session without the pending proposals.
     let config = StreamableHttpClientTransportConfig::with_uri(url.as_str())
-        .auth_header(key.clone())
+        .auth_header(key)
         .reinit_on_expired_session(false);
     let client = ClientConfig::new(
         ClientCapabilities::default(),
@@ -165,7 +166,7 @@ pub(crate) async fn run(url: Url, key: String) -> Result<()> {
             )));
         }
     };
-    let bridge = Bridge::new(upstream.peer().clone(), key);
+    let bridge = Bridge::new(upstream.peer().clone());
     let stdio = bridge
         .serve(stdio_pipes())
         .await
@@ -182,11 +183,10 @@ pub(crate) async fn run(url: Url, key: String) -> Result<()> {
 struct Bridge {
     core: Peer<RoleClient>,
     info: ServerConfig,
-    key: String,
 }
 
 impl Bridge {
-    fn new(core: Peer<RoleClient>, key: String) -> Self {
+    fn new(core: Peer<RoleClient>) -> Self {
         // Only tools are forwarded, so only tools are advertised.
         let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         if let Some(peer) = core.peer_info() {
@@ -197,32 +197,65 @@ impl Bridge {
                 info = info.with_instructions(instructions);
             }
         }
-        Self { core, info, key }
-    }
-
-    /// The core's own JSON-RPC error passes through unchanged, unless it
-    /// carries the key: something between the bridge and the core echoed the
-    /// request. A broken link to the core becomes an internal error with a
-    /// fixed reason.
-    fn forwarded(&self, error: ServiceError) -> ErrorData {
-        match error {
-            ServiceError::McpError(error) if !names_the_key(&error, &self.key) => error,
-            ServiceError::McpError(error) => ErrorData::new(
-                error.code,
-                "Print Partner core: the error repeated the request's API key, so mcp-stdio withheld it",
-                None,
-            ),
-            ServiceError::TransportSend(error) => ErrorData::internal_error(
-                format!("Print Partner core: {}", transport_failure(&error)),
-                None,
-            ),
-            _ => ErrorData::internal_error("Print Partner core: the connection failed", None),
-        }
+        Self { core, info }
     }
 }
 
-fn names_the_key(error: &ErrorData, key: &str) -> bool {
-    serde_json::to_string(error).map_or(true, |text| text.contains(key))
+// Every failure from upstream is untrusted: a reverse proxy or a faulty
+// server can repeat the request, and its key, in any encoding. So a failure
+// reaches the client as its numeric code, or one of the core's refusal
+// codes, and a fixed message. Results that are not errors pass unchanged.
+
+/// The core's refusal codes, as `pp-api/src/mcp/write_result.rs` lists them.
+const REFUSAL_CODES: &str = "unauthorized unavailable outcome_unknown internal blank_name \
+    name_too_long blank_request invalid_idempotency_key name_taken orders_module_off \
+    module_settings_invalid idempotency_record_invalid arguments_required not_found not_open \
+    parts_required invalid_edit part_not_found edit_empty invalid_digest draft_changed \
+    base_changed accepted_baseline_required edit_refused invalid_plan_id plan_not_found \
+    no_planning_brief invalid_roles planning_brief_invalid invalid_role_assignment \
+    invalid_source_role evidence_not_found multiple_structural_bases farm_module_off \
+    invalid_filament_assignment substitution_unconfirmed catalog_filament_not_found \
+    catalog_color_mismatch catalog_name_mismatch catalog_brand_mismatch spoolman_module_off \
+    spoolman_unavailable invalid_inputs invalid_input invalid_evidence_kind invalid_url \
+    source_not_found derived_evidence_not_found invalid_hours no_structural_base \
+    unresolved_source_choices layer_conflict no_stls would_wipe idempotency_conflict";
+
+/// A failed tool call: `isError` and the refusal code, when it is one.
+fn tool_error(result: &CallToolResult) -> CallToolResult {
+    let code = result
+        .content
+        .iter()
+        .filter_map(|block| serde_json::from_str::<serde_json::Value>(&block.as_text()?.text).ok())
+        .find_map(|text| {
+            let code = text.get("code")?.as_str()?;
+            REFUSAL_CODES.split(' ').find(|known| *known == code)
+        });
+    let text = serde_json::json!({ "error": "The Print Partner core refused the tool call.", "code": code });
+    CallToolResult::error(vec![ContentBlock::text(text.to_string())])
+}
+
+/// A failed request: the JSON-RPC code with a message chosen by that code.
+fn forwarded(error: ServiceError) -> ErrorData {
+    let (code, reason) = match error {
+        ServiceError::McpError(error) => (
+            error.code,
+            match error.code.0 {
+                -32700 => "it could not parse the request".to_owned(),
+                -32600 => "the request was not valid".to_owned(),
+                -32601 => "it has no such method".to_owned(),
+                -32602 => "the arguments were not valid".to_owned(),
+                _ => format!("it answered JSON-RPC error {}", error.code.0),
+            },
+        ),
+        ServiceError::TransportSend(error) => {
+            (ErrorCode::INTERNAL_ERROR, transport_failure(&error))
+        }
+        _ => (
+            ErrorCode::INTERNAL_ERROR,
+            "the connection failed".to_owned(),
+        ),
+    };
+    ErrorData::new(code, format!("Print Partner core: {reason}"), None)
 }
 
 /// Why the core did not accept the handshake, from a fixed set of messages.
@@ -258,9 +291,6 @@ fn transport_failure(error: &DynamicTransportError) -> String {
         StreamableHttpError::Client(error) if error.is_connect() => {
             return "it could not connect there".to_owned();
         }
-        StreamableHttpError::Client(error) if error.is_timeout() => {
-            return "the request timed out".to_owned();
-        }
         StreamableHttpError::Client(error) => error.status().map(|status| status.as_u16()),
         StreamableHttpError::AuthRequired(_) => Some(401),
         StreamableHttpError::InsufficientScope(_) => Some(403),
@@ -287,10 +317,7 @@ impl ServerHandler for Bridge {
         request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        self.core
-            .list_tools(request)
-            .await
-            .map_err(|error| self.forwarded(error))
+        self.core.list_tools(request).await.map_err(forwarded)
     }
 
     async fn call_tool(
@@ -298,10 +325,12 @@ impl ServerHandler for Bridge {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.core
-            .call_tool_once(request)
-            .await
-            .map_err(|error| self.forwarded(error))
+        match self.core.call_tool_once(request).await.map_err(forwarded)? {
+            CallToolResponse::Complete(result) if result.is_error == Some(true) => {
+                Ok(CallToolResponse::Complete(tool_error(&result)))
+            }
+            response => Ok(response),
+        }
     }
 }
 
@@ -382,6 +411,17 @@ mod tests {
             let error = parse_args(args).expect_err(message);
             assert_eq!(error.to_string(), message, "{args:?}");
         }
+    }
+
+    /// A refusal code the core adds must be added here too.
+    #[test]
+    fn the_refusal_codes_are_the_cores() {
+        let core: Vec<&str> = include_str!("../../pp-api/src/mcp/write_result.rs")
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Self::")?.split_once(" => \""))
+            .filter_map(|(_, code)| code.strip_suffix("\","))
+            .collect();
+        assert_eq!(core, REFUSAL_CODES.split(' ').collect::<Vec<_>>());
     }
 
     #[test]

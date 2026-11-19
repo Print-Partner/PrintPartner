@@ -39,6 +39,15 @@ const PROXY_VARIABLES: [&str; 8] = [
     "no_proxy",
 ];
 
+/// A loopback port nothing listens on: bound, then released.
+fn released_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 fn server_binary() -> std::path::PathBuf {
     if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
         child_process::bin_exe("pp-server")
@@ -48,10 +57,11 @@ fn server_binary() -> std::path::PathBuf {
 }
 
 /// A running `pp-server mcp-stdio`, run from `cwd`. Each stdout line arrives
-/// on `lines`. Dropping it kills and reaps the child.
+/// on `lines`, read by `reader`. Dropping it kills and reaps the child.
 struct Bridge {
     child: Child,
     lines: mpsc::Receiver<String>,
+    reader: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Bridge {
@@ -75,14 +85,18 @@ impl Bridge {
         let mut child = command.spawn().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let (sender, lines) = mpsc::channel();
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             for line in stdout.lines().map_while(Result::ok) {
                 if sender.send(line).is_err() {
                     break;
                 }
             }
         });
-        Self { child, lines }
+        Self {
+            child,
+            lines,
+            reader: Some(reader),
+        }
     }
 
     fn send(&mut self, message: &Value) {
@@ -91,7 +105,8 @@ impl Bridge {
         stdin.flush().unwrap();
     }
 
-    /// Waits for exit, then returns the status, the rest of stdout and stderr.
+    /// Waits for exit and for stdout to close, then returns the status, the
+    /// rest of stdout and stderr.
     fn finish(mut self) -> (ExitStatus, Vec<String>, String) {
         let deadline = Instant::now() + WAIT;
         let status = loop {
@@ -103,6 +118,7 @@ impl Bridge {
         };
         let mut stderr = String::new();
         std::io::Read::read_to_string(&mut self.child.stderr.take().unwrap(), &mut stderr).unwrap();
+        let _ = self.reader.take().map(std::thread::JoinHandle::join);
         (status, self.lines.try_iter().collect(), stderr)
     }
 }
@@ -150,12 +166,7 @@ fn assert_refused_with(url: &str, key: Option<&str>, env: &[(&str, &str)], reaso
 
 #[test]
 fn mcp_stdio_refuses_with_no_core_running() {
-    // A port nothing listens on: bound, then released.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let port = released_port();
     let url = format!("http://127.0.0.1:{port}/mcp");
     assert_refused(
         &url,
@@ -211,11 +222,7 @@ fn mcp_stdio_gives_up_on_a_listener_that_never_answers() {
 fn mcp_stdio_sends_loopback_http_direct_never_through_a_proxy() {
     let (proxy, received) = silent_listener();
     let proxy = format!("http://127.0.0.1:{proxy}");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let port = released_port();
     let url = format!("http://127.0.0.1:{port}/mcp");
     let env = [
         ("HTTP_PROXY", proxy.as_str()),
@@ -396,82 +403,72 @@ fn mcp_stdio_never_follows_a_redirect_away_from_the_url() {
 const ECHOED_KEY: &str = "ppk_echoedfakekey_gre1332_never_print";
 
 /// Failures that repeat the request's `Authorization` header, as a reverse
-/// proxy's debug page might: name, status, headers, body. `{a}` is that
-/// header and `{id}` the JSON-RPC id.
-const ECHOES: [(&str, &str, &str, &str); 12] = [
-    (
-        "401 challenge",
-        "401 Unauthorized",
-        "WWW-Authenticate: Bearer error_description=\"{a}\"\r\n",
-        "{a}",
-    ),
-    (
-        "403 challenge",
-        "403 Forbidden",
-        "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"{a}\"\r\n",
-        "{a}",
-    ),
-    (
-        "401 body",
-        "401 Unauthorized",
-        "Content-Type: text/plain\r\n",
-        "{a}",
-    ),
-    (
-        "500 body",
-        "500 Internal Server Error",
-        "Content-Type: text/plain\r\n",
-        "failed for {a}",
-    ),
-    (
-        "500 JSON-RPC error",
-        "500 Internal Server Error",
-        "Content-Type: application/json\r\n",
-        r#"{"jsonrpc":"2.0","id":{id},"error":{"code":-32000,"message":"{a}","data":"{a}"}}"#,
-    ),
-    (
-        "200 JSON-RPC error",
-        "200 OK",
-        "Content-Type: application/json\r\n",
-        r#"{"jsonrpc":"2.0","id":{id},"error":{"code":-32602,"message":"bad {a}"}}"#,
-    ),
-    (
-        "400 JSON",
-        "400 Bad Request",
-        "Content-Type: application/json\r\n",
-        r#"{"echo":"{a}"}"#,
-    ),
-    (
-        "malformed JSON",
-        "200 OK",
-        "Content-Type: application/json\r\n",
-        r#"{"jsonrpc":"2.0","id":{id},"result":"{a}"#,
-    ),
-    (
-        "malformed event",
-        "200 OK",
-        "Content-Type: text/event-stream\r\n",
-        "data: {a}\n\n",
-    ),
-    (
-        "content type",
-        "200 OK",
-        "Content-Type: text/html; echo=\"{a}\"\r\n",
-        "{a}",
-    ),
-    (
-        "redirect",
-        "307 Temporary Redirect",
-        "Location: http://127.0.0.1:9/?auth={a}\r\n",
-        "",
-    ),
-    (
-        "429 Retry-After",
-        "429 Too Many Requests",
-        "Retry-After: {a}\r\n",
-        "{a}",
-    ),
+/// proxy's debug page might, as `name|status|header|body`. `{a}` is that
+/// header in every form of [`key_forms`], `{e}` in the forms JSON does not
+/// decode back to the key, and `{id}` the JSON-RPC id.
+const ECHOES: [&str; 14] = [
+    "401 challenge|401 Unauthorized|WWW-Authenticate: Bearer error_description=\"{a}\"|{a}",
+    "403 challenge|403 Forbidden|WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"{a}\"|{a}",
+    "401 body|401 Unauthorized|Content-Type: text/plain|{a}",
+    "500 body|500 Internal Server Error|Content-Type: text/plain|failed for {a}",
+    r#"500 JSON-RPC error|500 Internal Server Error|Content-Type: application/json|{"jsonrpc":"2.0","id":{id},"error":{"code":-32000,"message":"{a}","data":"{a}"}}"#,
+    r#"200 JSON-RPC error|200 OK|Content-Type: application/json|{"jsonrpc":"2.0","id":{id},"error":{"code":-32602,"message":"bad {e}"}}"#,
+    r#"isError with a code|200 OK|Content-Type: application/json|{"jsonrpc":"2.0","id":{id},"result":{"isError":true,"content":[{"type":"text","text":"{\"error\":\"{a}\",\"code\":\"not_found\"}"}]}}"#,
+    r#"isError with the key as code|200 OK|Content-Type: application/json|{"jsonrpc":"2.0","id":{id},"result":{"isError":true,"content":[{"type":"text","text":"{\"code\":\"{a}\"}"}],"structuredContent":{"echo":"{a}"}}}"#,
+    r#"400 JSON|400 Bad Request|Content-Type: application/json|{"echo":"{a}"}"#,
+    r#"malformed JSON|200 OK|Content-Type: application/json|{"jsonrpc":"2.0","id":{id},"result":"{a}"#,
+    "malformed event|200 OK|Content-Type: text/event-stream|data: {a}\n\n",
+    "content type|200 OK|Content-Type: text/html; echo=\"{a}\"|{a}",
+    "redirect|307 Temporary Redirect|Location: http://127.0.0.1:9/?auth={a}|",
+    "429 Retry-After|429 Too Many Requests|Retry-After: {a}|{a}",
 ];
+
+/// The `Authorization` header as sent, JSON-escaped, percent-encoded, in
+/// base64, and with a mixed-case scheme and an upper-case key.
+fn key_forms(header: &str) -> [String; 5] {
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let base64 = header.as_bytes().chunks(3).flat_map(|chunk| {
+        let n = (chunk.iter().enumerate()).fold(0, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        (0..4).map(move |i| match i <= chunk.len() {
+            true => char::from(BASE64[(n >> (18 - 6 * i) & 63) as usize]),
+            false => '=',
+        })
+    });
+    [
+        header.to_owned(),
+        header
+            .chars()
+            .map(|c| format!("\\u{:04x}", u32::from(c)))
+            .collect(),
+        header.bytes().map(|b| format!("%{b:02X}")).collect(),
+        base64.collect(),
+        header.replacen("Bearer ", "bEaReR  ", 1).to_uppercase(),
+    ]
+}
+
+/// Whether `output`, or any string inside it read as JSON, holds the key in
+/// any of its forms.
+fn leaks(output: &str) -> bool {
+    fn strings(text: &str, found: &mut Vec<String>) {
+        let mut pending: Vec<Value> = serde_json::from_str(text).into_iter().collect();
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::String(text) => strings(&text, found),
+                Value::Array(items) => pending.extend(items),
+                Value::Object(fields) => pending.extend(fields.into_iter().map(|(_, v)| v)),
+                _ => {}
+            }
+        }
+        found.push(text.to_owned());
+    }
+    let mut found = Vec::new();
+    strings(output, &mut found);
+    let forms = key_forms(&format!("Bearer {ECHOED_KEY}"));
+    found.iter().any(|text| {
+        text.to_uppercase().contains(&ECHOED_KEY.to_uppercase())
+            || forms.iter().any(|form| text.contains(form.as_str()))
+    })
+}
 
 /// One HTTP request: its method, its `Authorization` value and its JSON body.
 fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, Value)> {
@@ -510,26 +507,25 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, Val
 /// A fake core on loopback that answers `initialize` with `echo` when
 /// `at_handshake`, or else completes the handshake and answers each later
 /// request with `echo`. Returns its port and how many echoes carried the key.
-fn echoing_core(
-    echo: (&'static str, &'static str, &'static str, &'static str),
-    at_handshake: bool,
-) -> (u16, std::sync::Arc<AtomicUsize>) {
+fn echoing_core(echo: &'static str, at_handshake: bool) -> (u16, std::sync::Arc<AtomicUsize>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let echoed = std::sync::Arc::new(AtomicUsize::new(0));
     let count = echoed.clone();
+    let [_, failure, header, body]: [&str; 4] =
+        echo.split('|').collect::<Vec<_>>().try_into().unwrap();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().map_while(Result::ok) {
-            let Some((method, authorization, body)) = read_request(&mut stream) else {
+            let Some((method, authorization, request)) = read_request(&mut stream) else {
                 continue;
             };
-            let rpc = body["method"].as_str().unwrap_or_default();
+            let rpc = request["method"].as_str().unwrap_or_default();
             let (status, headers, text) = if method != "POST" {
                 ("405 Method Not Allowed", String::new(), String::new())
             } else if rpc.starts_with("notifications/") {
                 ("202 Accepted", String::new(), String::new())
             } else if rpc == "initialize" && !at_handshake {
-                let result = json!({ "jsonrpc": "2.0", "id": body["id"], "result": {
+                let result = json!({ "jsonrpc": "2.0", "id": request["id"], "result": {
                     "protocolVersion": "2025-06-18", "capabilities": { "tools": {} },
                     "serverInfo": { "name": "echoing-core", "version": "0" } } });
                 let headers = "Content-Type: application/json\r\nMcp-Session-Id: echo\r\n";
@@ -538,11 +534,14 @@ fn echoing_core(
                 if authorization.contains(ECHOED_KEY) {
                     count.fetch_add(1, Ordering::SeqCst);
                 }
+                let forms = key_forms(&authorization);
+                let (raw, encoded) = (forms.join(" "), forms[2..].join(" "));
+                let id = request["id"].to_string();
                 let fill = |text: &str| {
-                    let id = body["id"].to_string();
-                    text.replace("{a}", &authorization).replace("{id}", &id)
+                    let text = text.replace("{a}", &raw).replace("{e}", &encoded);
+                    text.replace("{id}", &id)
                 };
-                (echo.1, fill(echo.2), fill(echo.3))
+                (failure, fill(header) + "\r\n", fill(body))
             };
             let _ = write!(
                 stream,
@@ -561,11 +560,7 @@ const LOG_EVERYTHING: [(&str, &str); 1] = [("RUST_LOG", "trace")];
 /// handshake. The refusal on stderr still names only a fixed reason.
 #[test]
 fn mcp_stdio_never_prints_the_key_from_a_failed_handshake() {
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let closed = released_port();
     // A TLS client meets a listener that answers in plain text with the key.
     let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let plain_port = plain.local_addr().unwrap().port();
@@ -587,9 +582,10 @@ fn mcp_stdio_never_prints_the_key_from_a_failed_handshake() {
     ];
     for echo in ECHOES {
         let (port, echoed) = echoing_core(echo, true);
-        cases.push((echo.0, format!("http://127.0.0.1:{port}/mcp"), Some(echoed)));
+        let name = echo.split('|').next().unwrap();
+        cases.push((name, format!("http://127.0.0.1:{port}/mcp"), Some(echoed)));
     }
-    let mut leaks = Vec::new();
+    let mut leaked = Vec::new();
     for (name, url, echoed) in cases {
         let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
         let bridge = Bridge::start(&url, Some(ECHOED_KEY), &cwd, &LOG_EVERYTHING);
@@ -606,19 +602,21 @@ fn mcp_stdio_never_prints_the_key_from_a_failed_handshake() {
                 "{name} never echoed the key"
             );
         }
-        if stderr.contains(ECHOED_KEY) || stdout.iter().any(|line| line.contains(ECHOED_KEY)) {
-            leaks.push(name);
+        if leaks(&stderr) || stdout.iter().any(|line| leaks(line)) {
+            leaked.push(name);
         }
     }
-    assert_eq!(leaks, Vec::<&str>::new(), "these printed the key");
+    assert_eq!(leaked, Vec::<&str>::new(), "these printed the key");
 }
 
-/// The handshake succeeds, then the answer to a tool call repeats the key.
-/// The client gets a JSON-RPC error without it.
+/// The handshake succeeds, then the answer to a tool call repeats the key,
+/// as a JSON-RPC error or as a tool result with `isError`. The client gets
+/// the failure with a fixed message, and a known refusal code survives.
 #[test]
 fn mcp_stdio_never_forwards_the_key_from_a_failed_call() {
-    let mut leaks = Vec::new();
+    let mut leaked = Vec::new();
     for echo in ECHOES {
+        let name = echo.split('|').next().unwrap();
         let (port, echoed) = echoing_core(echo, false);
         let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
         let url = format!("http://127.0.0.1:{port}/mcp");
@@ -633,30 +631,37 @@ fn mcp_stdio_never_forwards_the_key_from_a_failed_call() {
         bridge.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         bridge.send(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": { "name": "list_plans", "arguments": {} } }));
-        let reply = bridge
+        let line = bridge
             .lines
             .recv_timeout(WAIT)
             .expect("tools/call answered");
         drop(bridge.child.stdin.take());
         let (_, rest, stderr) = bridge.finish();
-        println!("{}: {reply}", echo.0);
+        println!("{name}: {line}");
         assert!(
             echoed.load(Ordering::SeqCst) > 0,
-            "{} never echoed the key",
-            echo.0
+            "{name} never echoed the key"
         );
-        let reply: Value = serde_json::from_str(&reply).unwrap();
-        assert_eq!(reply["id"], 2, "{}: {reply}", echo.0);
-        assert!(reply["error"]["message"].is_string(), "{}: {reply}", echo.0);
-        if std::iter::once(reply.to_string())
-            .chain(rest)
-            .chain([stderr])
-            .any(|output| output.contains(ECHOED_KEY))
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], 2, "{name}: {reply}");
+        if [line, stderr]
+            .iter()
+            .chain(&rest)
+            .any(|output| leaks(output))
         {
-            leaks.push(echo.0);
+            leaked.push(name);
+            continue;
+        }
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        match name {
+            "isError with a code" => assert!(text.contains(r#""code":"not_found""#), "{reply}"),
+            "isError with the key as code" => assert!(text.contains(r#""code":null"#), "{reply}"),
+            _ => assert!(reply["error"]["message"].is_string(), "{name}: {reply}"),
         }
     }
-    assert_eq!(leaks, Vec::<&str>::new(), "these forwarded the key");
+    assert_eq!(leaked, Vec::<&str>::new(), "these forwarded the key");
 }
 
 #[cfg(all(unix, feature = "desktop_rebuild"))]
@@ -849,11 +854,7 @@ mod with_a_core {
     /// in which the proposal is gone.
     #[test]
     fn mcp_stdio_reports_a_lost_session_instead_of_replacing_it() {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = released_port();
         let address = format!("127.0.0.1:{port}");
         let root = scratch::Scratch::new("pp-mcp-stdio-restart-");
         let server = rust_only::Server::start_with_listener(&root, Some(&address), None);

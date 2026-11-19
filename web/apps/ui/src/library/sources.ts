@@ -6,11 +6,6 @@ export type Source = SourceList["sources"][number];
 export type SourceEvent = SourceActivity["events"][number];
 type Freshness = ProfileSummary["freshness"];
 
-export const sourcesQuery = {
-  queryKey: ["core", "sources"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listSources", {}, signal),
-} as const;
-
 /** The most events the core returns in one read. */
 export const ACTIVITY_LIMIT = 100;
 

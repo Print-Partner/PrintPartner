@@ -2,6 +2,7 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useId } from "react";
 import { useParams } from "react-router";
 import { dateText } from "../builds/format";
+import { sourcesQuery } from "../core/sources";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
@@ -13,7 +14,6 @@ import {
   eventText,
   latestEvents,
   sourceActivityQuery,
-  sourcesQuery,
   type Line,
   type Source,
   type SourceEvent,
@@ -104,13 +104,21 @@ function SourcesTable({
   );
 }
 
-function RecentActivity({ events }: { events: SourceEvent[] }) {
+/**
+ * Activity records GitHub syncs and update checks only, so a Library of ZIP Sources has
+ * nothing to sync; its next action is adding a GitHub Source.
+ */
+function RecentActivity({ events, hasGithub }: { events: SourceEvent[]; hasGithub: boolean }) {
   const headingId = useId();
   return (
     <section aria-labelledby={headingId}>
       <h2 id={headingId}>Recent activity</h2>
       {events.length === 0 ? (
-        <p className="pp-muted">No Source activity yet.</p>
+        <p className="pp-muted">
+          {hasGithub
+            ? "No Source activity yet. Sync a GitHub Source from its row to record updates and failed syncs here."
+            : "No Source activity yet. Activity records GitHub Source syncs, and this Library has none. Press Add Source and choose GitHub repository to track one."}
+        </p>
       ) : (
         <ul className="pp-reasons">
           {events.map((event) => (
@@ -152,11 +160,7 @@ export function LibraryScreen() {
           <>
             <ActivityNotice query={activity} />
             {selected ? (
-              <SourceFiles
-                key={selected.id}
-                sourceId={selected.id}
-                sourceName={selected.name}
-              />
+              <SourceFiles key={selected.id} sourceId={selected.id} sourceName={selected.name} />
             ) : (
               selectedId != null && <p>That Source is not in the Library.</p>
             )}
@@ -172,11 +176,19 @@ export function LibraryScreen() {
                   : `None in the last ${ACTIVITY_LIMIT} events`
               }
             />
-            {events && <RecentActivity events={events} />}
+            {events && (
+              <RecentActivity
+                events={events}
+                hasGithub={data.sources.some((source) => source.source_kind === "github")}
+              />
+            )}
           </>
         );
       }}
-      empty={{ message: "No Sources yet. Sources you add appear here." }}
+      empty={{
+        message:
+          "No Sources yet. Press Add Source to bring in a kit from a ZIP archive or a GitHub repository. A Build is created from a Source.",
+      }}
     />
   );
 }

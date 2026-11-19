@@ -6,6 +6,8 @@ import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
 import { tasksByBuild, tasksQuery, type Task, type UnavailableBuild } from "../core/workflow";
 import { BuildSourceThumb, useVisibleBuildIds } from "./buildThumb";
+import { CreateBuild } from "./CreateBuildDialog";
+import { FIRST_BUILD_STEPS } from "./planCopy";
 
 type FeedEntries = ReadonlyMap<number, Task | UnavailableBuild>;
 import { useConnection } from "../frame/connection";
@@ -306,8 +308,19 @@ function DueList({
   );
 }
 
+/** The empty list's next actions: the first-Build steps Help also lists. */
+function FirstBuildSteps() {
+  return (
+    <ol className="pp-reasons" aria-label="Your first Build">
+      {FIRST_BUILD_STEPS.map((step) => (
+        <li key={step}>{step}</li>
+      ))}
+    </ol>
+  );
+}
+
 /**
- * Builds, read only. With the Orders module on they sort by due date and filter to overdue or
+ * Builds, and Create Build under the heading. With the Orders module on they sort by due date and filter to overdue or
  * undated Builds, and Builds sharing an order number are each shown, never merged. Otherwise
  * they keep the core's order.
  */
@@ -323,6 +336,13 @@ export function BuildsList() {
   return (
     <ScreenTemplate
       title="Builds"
+      // Under the heading in every state, so an open dialog survives the list going empty,
+      // offline or back.
+      subnav={
+        <p className="pp-screen-actions">
+          <CreateBuild />
+        </p>
+      }
       state={state}
       renderData={(data) => (
         <>
@@ -352,7 +372,10 @@ export function BuildsList() {
           )}
         </>
       )}
-      empty={{ message: "No Builds yet. Builds you create appear here." }}
+      empty={{
+        message: "No Builds yet. Press Create Build to start one from a Library Source.",
+        action: <FirstBuildSteps />,
+      }}
     />
   );
 }

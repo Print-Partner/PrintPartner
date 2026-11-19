@@ -54,4 +54,4 @@ The files come from the Source's revision on disk, so the webview gets no file-s
 
 ## Not in this change
 
-The cache holds the part tree only. Tessellating the STEP geometry into a cached GLB mesh for a 3D view needs a native B-rep tessellator (OCCT) and is tracked as a follow-up ticket.
+The cache holds the part tree only. Tessellating the STEP geometry into a cached GLB mesh for a 3D view needs a native B-rep tessellator (OCCT) and is GRE-1784.

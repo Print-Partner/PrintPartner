@@ -271,13 +271,15 @@ class CodexSeatTests(unittest.TestCase):
         comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=xai score=9 author=anthropic obstacles=none")]
         self.assertEqual(pps.trusted_records(comments, self.trust), [])
 
-    def test_codex_seat_is_not_a_sensitive_merge_seat(self):
+    def test_only_sol_6_2_is_a_sensitive_merge_seat(self):
         import json
 
         data = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
         self.assertNotIn("gpt-6.1-sol", data["scorer_seats"])
         self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
-        self.assertNotIn("gpt-6.2-sol", data["scorer_seats"])
+        # Owner decision 2026-11-18: gpt-6.2-sol joins the council scorer pool.
+        self.assertEqual(data["scorer_seats"]["gpt-6.2-sol"], "openai")
+        self.assertEqual(pps.load_trust()["seats"]["gpt-6.2-sol"], "openai")
 
     def test_sol_6_2_seat_scores_a_claude_pr(self):
         comments = [comment(

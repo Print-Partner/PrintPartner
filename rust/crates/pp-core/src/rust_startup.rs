@@ -97,25 +97,39 @@ async fn release(writer: WriterOwner) {
     }
 }
 
+/// The replacement build's own path components below the bundle's web root.
+const REPLACEMENT_COMPONENTS: [&str; 3] = ["apps", "ui", "dist"];
+/// How many leading components the legacy build (`apps/web/dist`) shares.
+const SHARED_COMPONENTS: usize = 1;
+
 /// Select a replacement only when installed; a linked root is never absence.
+/// `apps/ui` and `apps/ui/dist` must each be a real directory or absent: a link
+/// at either, dangling or not, refuses startup. `apps`, which the legacy build
+/// shares, and the web root with its ancestors are the install location the
+/// launcher resolved; they are not checked here, and release verification
+/// canonicalizes through them for both builds.
 /// It prints nothing: the caller reports the legacy fallback only after the
 /// data directory is admitted, so a refused start prints only its refusal.
 pub(crate) fn select_frontend(
     bundle: &pp_compat::Bundle,
     legacy: PathBuf,
 ) -> Result<(PathBuf, bool)> {
-    let replacement = bundle.web_root.join("apps/ui/dist");
-    let present = match std::fs::symlink_metadata(&replacement) {
-        Ok(metadata) => {
-            anyhow::ensure!(
-                !metadata.is_symlink(),
+    let mut replacement = bundle.web_root.clone();
+    let mut present = true;
+    for (index, component) in REPLACEMENT_COMPONENTS.into_iter().enumerate() {
+        replacement.push(component);
+        match std::fs::symlink_metadata(&replacement) {
+            Ok(metadata) => anyhow::ensure!(
+                index < SHARED_COMPONENTS || !metadata.is_symlink(),
                 "Release inventory contains a symlink"
-            );
-            true
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                present = false;
+                break;
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error.into()),
-    };
+    }
     let assets = if present { replacement } else { legacy }
         .canonicalize()
         .context("React assets unavailable")?;

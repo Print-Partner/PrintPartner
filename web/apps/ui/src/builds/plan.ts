@@ -262,7 +262,8 @@ export function refusalText(
 ): string {
   if (error instanceof CoreError) {
     if (error.code === "duplicate_order" && error.conflictingBuilds.length) {
-      return `Order already held by: ${error.conflictingBuilds.join(", ")}. Change the order number, or archive the holding Build first.`;
+      const names = error.conflictingBuilds.map((build) => build.name);
+      return `Order already held by: ${names.join(", ")}. Change the order number, or archive the holding Build first.`;
     }
     const texts = {
       preview: REFUSALS,

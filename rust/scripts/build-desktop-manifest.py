@@ -4,6 +4,7 @@ import json
 import pathlib
 import re
 import os
+import stat
 import subprocess
 import sys
 
@@ -48,7 +49,12 @@ def is_link(path):
     pp-compat's release verifier counts it as a link. Both treat the two kinds
     the same way: record the link, check its target, and follow the target.
     """
-    return path.is_symlink() or path.is_junction()
+    return path.is_symlink() or is_junction(path)
+
+def is_junction(path):
+    # Path.is_junction() needs Python 3.12; the Rust image's python3 is older.
+    return (os.name == 'nt'
+            and os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
 
 def link_target(path, target):
     """The recorded target: a relative path from the link's directory, /-separated.
@@ -59,7 +65,7 @@ def link_target(path, target):
     its directory. pp-compat resolves the recorded target from the link's
     directory and requires the link to resolve to the same place.
     """
-    if path.is_junction():
+    if is_junction(path):
         return pathlib.PurePath(os.path.relpath(target, path.parent)).as_posix()
     link = os.readlink(path)
     if pathlib.Path(link).is_absolute():

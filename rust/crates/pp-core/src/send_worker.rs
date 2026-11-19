@@ -632,4 +632,7 @@ fn receipt_id(remote_path: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "send_worker/tests/route_checks.rs"]
+mod route_checks;
+#[cfg(test)]
 mod tests;

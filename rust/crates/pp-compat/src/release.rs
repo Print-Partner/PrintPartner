@@ -472,6 +472,13 @@ fn verify_dependencies(
         if !directory.try_exists()? {
             continue;
         }
+        // The walk canonicalizes a root, so a link here would get no link
+        // record. build-desktop-manifest.py refuses it too. std reports a
+        // Windows junction as a symbolic link, so this covers both.
+        ensure!(
+            !std::fs::symlink_metadata(&directory)?.is_symlink(),
+            "Dependency root is a link"
+        );
         ensure!(
             directory.canonicalize()?.starts_with(&root),
             "Dependency root escaped package"
@@ -916,6 +923,35 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// A link at a resolver root would choose which measured directory Node
+    /// resolves from without a link record, so both tools refuse it, whether
+    /// it is a symbolic link or (on Windows) a junction.
+    #[test]
+    fn resolver_root_link_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "pp-root-link-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        let web = root.join("web");
+        let vendor = web.join("vendor/left-pad/index.js");
+        std::fs::create_dir_all(vendor.parent().unwrap()).unwrap();
+        std::fs::write(&vendor, b"module.exports = 1;\n").unwrap();
+        let inventory = DependencyInventory {
+            web_path: "web".into(),
+            roots: vec!["web/node_modules".into()],
+            files: BTreeMap::from([(
+                "web/vendor/left-pad/index.js".into(),
+                measure(&vendor).unwrap(),
+            )]),
+            links: Default::default(),
+            unshipped_links: Default::default(),
+        };
+        symlink_dir(Path::new("vendor"), &web.join("node_modules"));
+        let error = verify_dependencies(&web, &inventory, &CancellationToken::new()).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency root is a link");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A retargeted link whose old and new targets are both walked leaves the
     /// file inventory equal, so the link check is what rejects it. Windows
     /// runs the junction form in `junctions_are_recorded_links_and_cannot_escape`.
@@ -1053,6 +1089,15 @@ mod tests {
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency link inventory mismatch");
         std::fs::remove_dir(&extra).unwrap();
+
+        // A junction at a resolver root is refused, as before GRE-1204.
+        let server_modules = web.join("apps/server/node_modules");
+        junction(&web.join("node_modules"), &server_modules);
+        inventory.roots.push("web/apps/server/node_modules".into());
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency root is a link");
+        std::fs::remove_dir(&server_modules).unwrap();
+        inventory.roots.pop();
 
         inventory.links.insert(
             "web/node_modules/@pp/contracts".into(),

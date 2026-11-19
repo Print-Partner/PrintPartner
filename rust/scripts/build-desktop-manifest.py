@@ -57,7 +57,7 @@ def is_junction(path):
             and os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
 
 def link_target(path, target):
-    """The recorded target: a relative path from the link's directory, /-separated.
+    """The recorded target: a relative path from the link's directory.
 
     A symbolic link records its own text, which must be relative because staging
     and packaging recreate the link from it. Windows stores a junction's target
@@ -68,7 +68,9 @@ def link_target(path, target):
     if is_junction(path):
         return pathlib.PurePath(os.path.relpath(target, path.parent)).as_posix()
     link = os.readlink(path)
-    if pathlib.Path(link).is_absolute():
+    # A non-empty anchor also catches Windows forms that is_absolute() allows
+    # and pp-compat refuses: a leading backslash, or a drive with no root.
+    if pathlib.PurePath(link).anchor:
         raise ValueError('Dependency link must be relative')
     return link
 
@@ -96,6 +98,10 @@ def dependencies():
         roots.append(directory.relative_to(package_root).as_posix())
         if not directory.exists():
             continue
+        # The walk resolves a root, so a link here would get no link record.
+        # pp-compat refuses it too.
+        if is_link(directory):
+            raise ValueError('Dependency root is a link')
         pending.append(directory)
     while pending:
         directory = pending.pop().resolve(strict=True)

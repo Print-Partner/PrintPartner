@@ -203,6 +203,16 @@ class StageWorkspaceLinkTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("FileNotFoundError", result.stderr)
 
+    def test_link_at_a_resolver_root_fails_the_manifest(self):
+        # A link at node_modules itself would choose which measured directory
+        # Node resolves from without a link record; pp-compat refuses it too.
+        stage_locked_dependencies(self.source, self.web, self.lock)
+        (self.web / "node_modules").rename(self.web / "vendor")
+        (self.web / "node_modules").symlink_to("vendor")
+        result = self.build_manifest()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Dependency root is a link", result.stderr)
+
     def test_source_manifest_records_but_does_not_follow_unshipped_workspace_links(self):
         # A source checkout: the build-desktop-manifest step measures web/ in place,
         # with every workspace link npm created, and Vitest keeps a cache in apps/ui.

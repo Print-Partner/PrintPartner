@@ -5,6 +5,9 @@
 //!   upload of one sliced file for a Moonraker or PrusaLink printer. The file
 //!   is staged under `exports/printer-uploads/` and the item is `queued`;
 //!   nothing is sent until Send now or Send ready.
+//! - `GET`/`PUT /api/v2/printer-send-queue/settings/upload-only`: the persisted,
+//!   default-off preference, `{"enabled":true|false}` in both directions.
+//!   Changes never dispatch.
 //! - `POST /api/v2/printer-send-queue/{id}/dispatch` (Send now): sends one
 //!   `queued` or `error` item. With `wait_for_idle` the printer must be
 //!   idle unless the body says `{"force": true}`.
@@ -39,7 +42,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::Response,
-    routing::{delete, post},
+    routing::{delete, get, post},
 };
 use pp_storage::{
     checkoff_progress::print_file::MAX_UPLOAD_BYTES,
@@ -59,6 +62,12 @@ use std::{
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct QueuedSendReceipt {
     pub item: QueuedSend,
+}
+
+/// The upload-only preference, read or just stored.
+#[derive(Debug, Serialize)]
+pub struct UploadOnlyMode {
+    pub enabled: bool,
 }
 
 /// Send now: the claimed `sending` item and the upload job that settles it.
@@ -148,6 +157,10 @@ pub fn send_queue_router(
         .route(
             "/printer-send-queue",
             post(add).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024)),
+        )
+        .route(
+            "/printer-send-queue/settings/upload-only",
+            get(upload_only).put(set_upload_only),
         )
         .route("/printer-send-queue/drain", post(drain))
         .route("/printer-send-queue/{id}/dispatch", post(dispatch))
@@ -278,7 +291,7 @@ fn present(reply: Option<anyhow::Result<Reply>>) -> Response {
             detail,
             code,
         })) => refused(status, detail, code),
-        Some(Ok(Reply::Items(_))) | None => internal(),
+        Some(Ok(Reply::Items(_) | Reply::UploadOnly(_))) | None => internal(),
         Some(Err(error)) => match error.downcast_ref::<Refusal>() {
             Some(Refusal(status, detail)) => failure(*status, detail),
             None => read_error(&error),
@@ -341,6 +354,44 @@ async fn add(
     })
     .await;
     present(added)
+}
+
+fn present_mode(reply: Option<anyhow::Result<Reply>>) -> Response {
+    match reply {
+        Some(Ok(Reply::UploadOnly(enabled))) => ok_json(&UploadOnlyMode { enabled }),
+        other => present(other),
+    }
+}
+
+async fn upload_only(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+) -> Response {
+    present_mode(
+        writes(&app, presented, |writes, _| {
+            writes.apply(Request::UploadOnly)
+        })
+        .await,
+    )
+}
+
+async fn set_upload_only(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    body: Bytes,
+) -> Response {
+    let Some(body) = object(&body) else {
+        return not_object();
+    };
+    let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
+        return failure(StatusCode::BAD_REQUEST, "enabled must be true or false");
+    };
+    present_mode(
+        writes(&app, presented, move |writes, _| {
+            writes.apply(Request::SetUploadOnly { enabled })
+        })
+        .await,
+    )
 }
 
 async fn dispatch(
@@ -463,7 +514,8 @@ async fn drain(
                 Reply::Refused { status, detail, .. } if status != 409 => {
                     results.push(json!({ "item_id": id, "error": detail }));
                 }
-                Reply::Refused { .. } | Reply::Item(_) | Reply::Items(_) => {}
+                Reply::Refused { .. } | Reply::Item(_) | Reply::Items(_) | Reply::UploadOnly(_) => {
+                }
             }
         }
         Ok(Ok(results))

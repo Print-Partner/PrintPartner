@@ -22,8 +22,8 @@ struct Farm {
 impl Farm {
     fn open(hosts: &[Value]) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let (owner, _) =
-            WriterOwner::open_with_job_feature_admission(root.path(), Limits::default()).unwrap();
+        // The checks only read settings, so plain storage is enough.
+        let owner = WriterOwner::open(root.path(), Limits::default()).unwrap().0;
         let printers: Vec<Value> = hosts
             .iter()
             .map(|host| json!({"id": format!("p-{}", host["id"].as_str().unwrap()), "integration_id": host["id"]}))

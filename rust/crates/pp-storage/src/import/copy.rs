@@ -456,9 +456,12 @@ fn extract_archive(
         }
         _ => ImportError::InvalidArchive(format!("{error:#}")),
     })?;
-    if metadata.scope != archive::MetadataScope::Full {
-        return Err(ImportError::PartialArchive(metadata.scope));
-    }
+    let has_root = || {
+        archive::LEGACY_ROOTS
+            .iter()
+            .any(|root| stage.join(root).exists())
+    };
+    super::refuse_database_only(metadata.scope, has_root)?;
     // Everything is extracted; the upgrade still needs its working space.
     ensure_room(stage, room_needed(0, staged_database(stage)))?;
     // The archive passed its caps; listing what it wrote needs none.

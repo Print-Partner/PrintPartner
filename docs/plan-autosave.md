@@ -4,8 +4,10 @@
 
 Two different operations exist, and each path has one meaning in every runtime:
 
-- `POST /plans/:id/save` is Node's publishing Save, described in the rest of this page. It stays on Node, with its publishing semantics, until UI slice 6 moves the browser to draft-then-Accept. No Rust router serves `/plans/:id/save` with the flag on or off, so Node remains the only writer of that operation.
+- `POST /plans/:id/save` is Node's publishing Save, described in the rest of this page. Only the old UI (`web/apps/web`) sends it, and it stays on Node with its publishing semantics. No Rust router serves `/plans/:id/save` with the flag on or off, so Node remains the only writer of that operation.
 - `POST /plans/{id}/drafts/save` is the Rust draft-only autosave (GRE-418). It exists only with the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD=1` or `true`, and Node has no route at that path. It writes Plan choices into a working draft and never publishes: Accept (`POST /plans/{id}/drafts/{draft_id}/apply`) is the only path that writes an Accepted Plan.
+
+The replacement UI (`web/apps/ui`, UI slice 6, GRE-1120) never calls `/plans/:id/save`. Its Plan tab saves Part edits (Included and quantity) to the draft through `POST /api/v2/plans/{id}/drafts/save` and header edits (name, order number, customer and due date) through `PUT /api/v2/plans/{id}/drafts/header`. It changes the Build only through Accept. The Rust-only image serves that UI. Making the Rust routes the default for every start is the gateway cutover (GRE-593).
 
 ### Rust draft-only autosave
 
@@ -24,6 +26,24 @@ Any failure rolls every write back, including the draft creation. Draft and Part
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_autosave)'
+```
+
+### Rapid edits in the replacement UI
+
+The Plan tab runs Part and header writes one at a time per Build (`useDraftWrites` in `web/apps/ui/src/builds/BuildPlan.tsx`). Each write builds its body when it starts, from the draft the previous answer or refetch left, and each Part decision names the Part by `part_key`, `relative_path` and `source_layer`, never by a draft row ID.
+
+- A lost reply is resent with the same key and the same body. If the first send committed, the core replays its receipt and the edit is kept once.
+- A refusal, such as `draft_changed` after another window saved the draft, refetches the Plan before the next queued write starts. If the refetch succeeds, that write names the newer draft. If the refetch fails, the write names the draft the tab still holds, and the core refuses it as stale instead of applying it.
+- A refused checkbox shows the saved value.
+- A blur or Enter sends a field only when the user typed in it since its last write, or its last write failed, and only when the typed value differs from the value the field will hold without it: the latest unsettled write's value for that field, or else the saved value. Typing a field back to that value sends nothing for it. A header write carries only the fields it sends; the other header fields come from the header saved when the write starts, so a queued write never resends an older value of a field it did not type.
+- A typed field (a quantity or a header field) whose write fails, refused or never confirmed, keeps its typed value, even when another window saved a different value to the same field. The next blur or Enter sends it again with a new key against the newer draft, and that send replaces the other window's value for that field. A header field that a later write also carries is not restored by the earlier write's failure.
+- Once a write settles, every field not typed since takes the saved draft when the refetch lands, including a value another window saved after a confirmed write, even when that value equals the one the field showed before. A blur without typing then sends nothing.
+- No failure abandons, recomputes or accepts the draft.
+
+The `GRE-1183 rapid Plan edits stay draft-only through every failure` tests in `web/apps/ui/src/builds/Plan.test.tsx` cover three Part edits before the first reply (a committed-but-lost reply, a refusal after another window's save, and a later resend), another window saving the same quantity or header field first (the field keeps the typed value), another window saving it just after a confirmed save, including restoring the earlier value (the field shows the saved value and sends nothing), a queued Customer edit refused after another window renamed the Build (the retry sends Customer over the newer name), a Customer typed back to its saved value while Name saves (nothing is sent for it), and a queued write after a refusal whose refetch fails (the core refuses it):
+
+```sh
+npm --prefix web run test -w @print-partner/ui -- src/builds/Plan.test.tsx
 ```
 
 ## Node publishing Save

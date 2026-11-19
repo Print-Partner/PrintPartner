@@ -1,7 +1,7 @@
 /** STL filename conventions (ported from Python parsers.py). */
 
 import type { MarkerStrip, NamingProfile } from "./stl-naming.js";
-import { getDefaultNamingProfile } from "./stl-naming.js";
+import { foldCharacter, getDefaultNamingProfile } from "./stl-naming.js";
 
 export type PartRole = "primary" | "accent" | "clear" | "opaque";
 
@@ -67,22 +67,54 @@ export function parseRole(pathOrName: string, profile?: NamingProfile | null): P
 const MODEL_EXTENSION_RE = /\.(?:stl|3mf)$/i;
 const THREE_MF_RE = /\.3mf$/i;
 
+const SEPARATORS = new Set([" ", "_", "-"]);
+
 /**
- * Removes one marker and one separator next to it, keeping one separator when words remain
- * on both sides. An `anywhere` marker repeats on the shortened name until none is left, so
- * a run like `[a]_[a]_` leaves no stray separator. Each pass shortens the name.
+ * Removes role markers from a slug. One left-to-right pass copies the name and drops an
+ * `anywhere` marker, ignoring case, as soon as the copy ends with it, so a marker that
+ * removing a nested one exposes, as in `Panel_[a[c]]_Clip`, goes too. Each removal takes
+ * one separator on each side and puts one back when text remains on both sides. Prefix-only
+ * markers then go once each. Each removal shortens the copy or consumes input, so the work
+ * is linear in the name's length. Rust's `catalog::naming::strip_markers` matches this.
  */
-function stripMarker(stem: string, strip: MarkerStrip): string {
-  let current = stem;
-  for (;;) {
-    const match = strip.re.exec(current);
-    if (!match) return current;
-    const [whole, before = "", after = ""] = match;
-    const end = match.index + whole.length;
-    const keep = match.index > 0 && end < current.length ? before || after : "";
-    current = current.slice(0, match.index) + keep + current.slice(end);
-    if (!strip.anywhere) return current;
+function stripMarkers(stem: string, strips: readonly MarkerStrip[]): string {
+  const markers = strips.filter((strip) => strip.folded.length > 0);
+  const anywhere = markers.filter((strip) => strip.anywhere);
+  const input = [...stem];
+  const out: string[] = [];
+  const folded: string[] = [];
+  const push = (character: string) => {
+    out.push(character);
+    folded.push(foldCharacter(character));
+  };
+  const endsWith = (marker: readonly string[]) =>
+    marker.length <= folded.length &&
+    marker.every((character, index) => folded[folded.length - marker.length + index] === character);
+  let next = 0;
+  while (next < input.length) {
+    push(input[next++]!);
+    for (let match = anywhere.find((strip) => endsWith(strip.folded)); match; ) {
+      out.length -= match.folded.length;
+      folded.length = out.length;
+      const before = SEPARATORS.has(out.at(-1) ?? "") ? out.pop() : undefined;
+      folded.length = out.length;
+      const after = SEPARATORS.has(input[next] ?? "") ? input[next++] : undefined;
+      const keep = before ?? after;
+      if (keep !== undefined && out.length > 0 && next < input.length) push(keep);
+      match = anywhere.find((strip) => endsWith(strip.folded));
+    }
   }
+  let rest = out;
+  for (const strip of markers) {
+    if (strip.anywhere) continue;
+    const prefix = strip.folded.every(
+      (character, index) => rest[index] !== undefined && foldCharacter(rest[index]) === character,
+    );
+    if (!prefix) continue;
+    rest = rest.slice(strip.folded.length);
+    if (SEPARATORS.has(rest[0] ?? "")) rest = rest.slice(1);
+  }
+  return rest.join("");
 }
 
 export function parseQuantity(filename: string, profile?: NamingProfile | null): number {
@@ -102,17 +134,7 @@ export function parsePartSlug(filename: string, profile?: NamingProfile | null):
   const name = file.replace(MODEL_EXTENSION_RE, "");
   let stem = name;
   if (prof.slugStripMarkers) {
-    for (const strip of prof.markerStrips) {
-      stem = stripMarker(stem, strip);
-    }
-    // Removing `[c]` from `Panel_[a[c]]_Clip` exposes `[a]` after its turn, so the markers
-    // that strip anywhere repeat until a pass removes nothing. Each repeat shortens the name.
-    for (let before = name; stem !== before; ) {
-      before = stem;
-      for (const strip of prof.markerStrips) {
-        if (strip.anywhere) stem = stripMarker(stem, strip);
-      }
-    }
+    stem = stripMarkers(stem, prof.markerStrips);
   }
   const quantityStrip = THREE_MF_RE.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
   if (prof.slugStripQuantity && quantityStrip) {

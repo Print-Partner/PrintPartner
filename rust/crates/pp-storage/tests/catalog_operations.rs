@@ -1727,6 +1727,13 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
         ("belt_[a]_[o]_clip.stl", "accent", 1, "belt_clip"),
         ("STLs/Panel_[a[c]]_Clip.stl", "clear", 1, "Panel_Clip"),
         ("[o[a[c]]]_Panel.stl", "clear", 1, "Panel"),
+        // The same matrix is asserted against Node in parsers.test.ts.
+        ("[o]-Panel Clip.STL", "opaque", 1, "Panel Clip"),
+        ("Panel-[c]-Clip.stl", "clear", 1, "Panel-Clip"),
+        ("Panel Clip_[a].stl", "accent", 1, "Panel Clip"),
+        ("[[a]].stl", "accent", 1, "[]"),
+        ("Panel_[a][c]_Clip.stl", "accent", 1, "Panel_Clip"),
+        ("[a][c].stl", "accent", 1, "[a][c]"),
         (
             "STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf",
             "accent",
@@ -1760,6 +1767,23 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
             "{path}"
         );
     }
+    owner.shutdown().unwrap();
+}
+
+// The preview runs on the storage writer and accepts any pasted name, so
+// marker removal must stay linear in the name's length.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn gre1396_preview_strips_markers_from_a_30000_character_name_in_one_pass() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let client = owner.local_source_catalog();
+    let filename = format!("Panel_{}Clip.stl", "[a[c]]_".repeat(4285));
+    let started = std::time::Instant::now();
+    let preview = preview(&client, &filename, Value::Null);
+    let elapsed = started.elapsed();
+    assert_eq!(preview["part_slug"], "Panel_Clip");
+    assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     owner.shutdown().unwrap();
 }
 

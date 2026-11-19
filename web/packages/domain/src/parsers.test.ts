@@ -67,6 +67,27 @@ describe("parsers", () => {
     expect(parsePartSlug(path)).toBe(slug);
   });
 
+  // The same matrix is asserted against the Rust naming preview in catalog_operations.rs.
+  it.each([
+    ["[o]-Panel Clip.STL", "opaque", "Panel Clip"],
+    ["Panel-[c]-Clip.stl", "clear", "Panel-Clip"],
+    ["Panel Clip_[a].stl", "accent", "Panel Clip"],
+    ["Panel_[a[c]]_Clip.stl", "clear", "Panel_Clip"],
+    ["[[a]].stl", "accent", "[]"],
+    ["Panel_[a][c]_Clip.stl", "accent", "Panel_Clip"],
+    ["[a][c].stl", "accent", "[a][c]"],
+    ["[o[a[c]]]_Panel.stl", "clear", "Panel"],
+  ])("reads %s as role %s and slug %s", (filename, role, partSlug) => {
+    expect(parseStlPath(filename)).toEqual({ role, quantity: 1, partSlug, filename });
+  });
+
+  it("strips markers from a 30,000-character name in one pass", () => {
+    const filename = `Panel_${"[a[c]]_".repeat(4285)}Clip.stl`;
+    const started = performance.now();
+    expect(parsePartSlug(filename)).toBe("Panel_Clip");
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
   it("strips a letter or digit marker only as a prefix", () => {
     const profile = namingProfileFromDict(
       mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {

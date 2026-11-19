@@ -1,5 +1,4 @@
 use super::*;
-use std::convert::Infallible;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -261,14 +260,7 @@ pub(in crate::catalog) fn preview(
             .map(String::as_str)
             .filter(|m| !trim(m).is_empty())
             .collect();
-        for marker in &markers {
-            slug = strip_marker(&slug, marker);
-        }
-        if slug != name {
-            let Ok(stripped) =
-                strip_exposed_markers(slug, &markers, |_, _| Ok::<_, Infallible>(()));
-            slug = stripped;
-        }
+        slug = strip_markers(&slug, &markers);
     }
     if profile.slug.strip_quantity
         && let Some(regex) = quantity_strip(&profile.quantity.regex, is_3mf(&filename))

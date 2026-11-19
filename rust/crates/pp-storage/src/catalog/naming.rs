@@ -801,7 +801,7 @@ pub(crate) fn quantity_capture(regex: &regress::Regex, filename: &str) -> Option
     captured.filter(|s| !s.is_empty())
 }
 
-/// Whether `marker` starts and ends with a symbol, so `strip_marker` removes
+/// Whether `marker` starts and ends with a symbol, so `strip_markers` removes
 /// it anywhere in the name rather than only as a prefix.
 #[cfg(feature = "desktop_rebuild")]
 fn strips_anywhere(marker: &str) -> bool {
@@ -809,71 +809,81 @@ fn strips_anywhere(marker: &str) -> bool {
     !word(marker.chars().next()) && !word(marker.chars().next_back())
 }
 
-/// Finishes marker removal after a first pass of `strip_marker` over every
-/// marker changed the slug, as Node's `parsePartSlug` does. Removing `[c]`
-/// from `Panel_[a[c]]_Clip` exposes `[a]` after its turn, so the markers that
-/// strip anywhere repeat until a pass removes nothing. Each repeated pass
-/// shortens the slug, so the loop ends. `charge` runs before each attempt.
+/// `c` in lower case when that is one character, else `c`. Node's
+/// `foldCharacter` does the same, so both compare markers alike.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn strip_exposed_markers<E>(
-    mut slug: String,
-    markers: &[&str],
-    mut charge: impl FnMut(&str, &str) -> Result<(), E>,
-) -> Result<String, E> {
-    loop {
-        let before = slug.len();
-        for marker in markers.iter().filter(|m| strips_anywhere(m)) {
-            charge(&slug, marker)?;
-            slug = strip_marker(&slug, marker);
-        }
-        if slug.len() == before {
-            return Ok(slug);
-        }
+fn fold(c: char) -> char {
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(folded), None) => folded,
+        _ => c,
     }
 }
 
-/// Removes a role marker from a part slug, as Node's `parsePartSlug` does.
+/// Removes role markers from a part slug, as Node's `stripMarkers` does.
 ///
 /// A marker that starts and ends with a symbol, like `[a]`, cannot be part of
-/// a word, so every occurrence goes, repeating on the shortened name until
-/// none is left. A marker that starts or ends with a letter or digit, like a
-/// custom `A`, goes only as a prefix, so `gear` keeps its `a`. Each removal
-/// takes one separator (space, `_` or `-`) next to the marker, and keeps one
-/// when words remain on both sides: `Duct_[c]_Left` becomes `Duct_Left`.
+/// a word, so it goes anywhere in the name. One left-to-right pass copies the
+/// name and drops a marker, ignoring case, as soon as the copy ends with it.
+/// A marker that removing a nested one exposes, as in `Panel_[a[c]]_Clip`,
+/// goes too. Each removal takes one separator (space, `_` or `-`) on each
+/// side, and puts one back when text remains on both sides: `Duct_[c]_Left`
+/// becomes `Duct_Left`. A marker that starts or ends with a letter or digit,
+/// like a custom `A`, then goes once as a prefix, so `gear` keeps its `a`.
+///
+/// Each removal shortens the copy or consumes input, so the work is linear in
+/// the name's length times the markers' total length.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn strip_marker(stem: &str, marker: &str) -> String {
-    let anywhere = strips_anywhere(marker);
-    let mut escaped = String::new();
-    for c in marker.chars() {
-        if ".*+?^${}()|[]\\".contains(c) {
-            escaped.push('\\')
+pub(crate) fn strip_markers(stem: &str, markers: &[&str]) -> String {
+    let separator = |c: &char| matches!(c, ' ' | '_' | '-');
+    let folded: Vec<(bool, Vec<char>)> = markers
+        .iter()
+        .filter(|marker| !marker.is_empty())
+        .map(|marker| (strips_anywhere(marker), marker.chars().map(fold).collect()))
+        .collect();
+    let input: Vec<char> = stem.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(input.len());
+    let mut out_folded: Vec<char> = Vec::with_capacity(input.len());
+    let mut next = 0;
+    while let Some(&c) = input.get(next) {
+        next += 1;
+        out.push(c);
+        out_folded.push(fold(c));
+        while let Some((_, marker)) = folded
+            .iter()
+            .find(|(anywhere, marker)| *anywhere && out_folded.ends_with(marker))
+        {
+            let start = out.len() - marker.len();
+            out.truncate(start);
+            out_folded.truncate(start);
+            let before = out.last().copied().filter(separator);
+            if before.is_some() {
+                out.pop();
+                out_folded.pop();
+            }
+            let after = input.get(next).copied().filter(separator);
+            if after.is_some() {
+                next += 1;
+            }
+            if let Some(keep) = before.or(after)
+                && !out.is_empty()
+                && next < input.len()
+            {
+                out.push(keep);
+                out_folded.push(fold(keep));
+            }
         }
-        escaped.push(c)
     }
-    let pattern = if anywhere {
-        format!("([ _-]?){escaped}([ _-]?)")
-    } else {
-        format!("^(){escaped}([ _-]?)")
-    };
-    let Ok(regex) = regress::Regex::with_flags(&pattern, "i") else {
-        return stem.to_owned();
-    };
-    let mut current = stem.to_owned();
-    // Each pass removes the non-empty marker, so the name shrinks every time.
-    while let Some(m) = regex.find(&current) {
-        let range = m.range();
-        let side = |group: usize| m.group(group).map_or("", |r| &current[r]);
-        let keep = if range.start > 0 && range.end < current.len() {
-            if side(1).is_empty() { side(2) } else { side(1) }
-        } else {
-            ""
-        };
-        current = format!("{}{keep}{}", &current[..range.start], &current[range.end..]);
-        if !anywhere {
-            break;
+    let mut rest = out.as_slice();
+    for (_, marker) in folded.iter().filter(|(anywhere, _)| !anywhere) {
+        if rest.len() >= marker.len() && rest.iter().zip(marker).all(|(&c, &m)| fold(c) == m) {
+            rest = &rest[marker.len()..];
+            if rest.first().is_some_and(separator) {
+                rest = &rest[1..];
+            }
         }
     }
-    current
+    rest.iter().collect()
 }
 
 #[cfg(feature = "desktop_rebuild")]

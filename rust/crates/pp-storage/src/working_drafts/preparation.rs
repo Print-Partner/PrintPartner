@@ -613,39 +613,23 @@ pub(super) fn parse(
         .to_owned();
     let mut slug = name.clone();
     if profile.slug.strip_markers {
+        let mut markers = Vec::new();
         for r in &profile.roles {
             b.visit(0)?;
             for marker in &r.markers {
                 b.visit(0)?;
-                // A marker run can take one pass per occurrence.
+                // One pass compares each character with each marker.
                 b.comparison(
                     slug.len()
-                        .saturating_add(marker.len().saturating_mul(2))
-                        .saturating_mul(slug.len() / marker.len().max(1) + 1),
+                        .saturating_add(1)
+                        .saturating_mul(marker.len().saturating_add(2)),
                 )?;
-                if trim_js(marker).is_empty() {
-                    continue;
+                if !trim_js(marker).is_empty() {
+                    markers.push(marker.as_str());
                 }
-                slug = naming::strip_marker(&slug, marker);
             }
         }
-        if slug != name {
-            let markers: Vec<&str> = profile
-                .roles
-                .iter()
-                .flat_map(|r| &r.markers)
-                .map(String::as_str)
-                .filter(|m| !trim_js(m).is_empty())
-                .collect();
-            slug = naming::strip_exposed_markers(slug, &markers, |slug, marker| {
-                b.visit(0)?;
-                b.comparison(
-                    slug.len()
-                        .saturating_add(marker.len().saturating_mul(2))
-                        .saturating_mul(slug.len() / marker.len().max(1) + 1),
-                )
-            })?;
-        }
+        slug = naming::strip_markers(&slug, &markers);
     }
     if profile.slug.strip_quantity {
         b.comparison(

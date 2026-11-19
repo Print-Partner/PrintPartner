@@ -28,21 +28,24 @@ export const DEFAULT_NAMING_PROFILE = DEFAULT_STL_NAMING_PROFILE;
  * How a role marker leaves a part slug. A marker that starts and ends with a symbol, like
  * `[a]`, cannot be part of a word, so it is removed anywhere in the name (`anywhere`). A
  * marker that starts or ends with a letter or digit, like a custom `A`, is removed only as
- * a prefix, so `gear` keeps its `a`. `re` also captures one separator on each side.
+ * a prefix, so `gear` keeps its `a`. `folded` is the marker's characters through
+ * `foldCharacter`, for comparing without case.
  */
-export type MarkerStrip = { re: RegExp; anywhere: boolean };
+export type MarkerStrip = { folded: readonly string[]; anywhere: boolean };
 
 const WORD_CHARACTER = /^[\p{Alphabetic}\p{N}]$/u;
+
+/** `character` in lower case when that is one character, else `character`. */
+export function foldCharacter(character: string): string {
+  const lower = character.toLowerCase();
+  return [...lower].length === 1 ? lower : character;
+}
 
 function markerStrip(marker: string): MarkerStrip {
   const characters = [...marker];
   const anywhere =
     !WORD_CHARACTER.test(characters[0]!) && !WORD_CHARACTER.test(characters.at(-1)!);
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return {
-    re: new RegExp(anywhere ? `([ _-]?)${escaped}([ _-]?)` : `^()${escaped}([ _-]?)`, "i"),
-    anywhere,
-  };
+  return { folded: characters.map(foldCharacter), anywhere };
 }
 
 export type PartFunctionalClass = "functional" | "cosmetic" | "unclassified";

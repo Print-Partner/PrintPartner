@@ -946,36 +946,40 @@ fn decode(raw: &str) -> Result<String, bool> {
             Some(value << 4 | u32::from(digit))
         })
     };
-    let mut out = String::with_capacity(raw.len());
+    let mut out = String::new();
     let mut rest = raw;
-    while let Some(at) = rest.find('\\') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        let used = if rest.starts_with("\\\\") {
+    // Each `\` starts a directive; every branch answers the text after it.
+    while let Some((plain, directive)) = rest.split_once('\\') {
+        out.push_str(plain);
+        rest = if let Some(after) = directive.strip_prefix('\\') {
             out.push('\\');
-            2
-        } else if rest.starts_with("\\PA\\") {
-            4
-        } else if rest.starts_with("\\P") {
+            after
+        } else if let Some(after) = directive.strip_prefix("PA\\") {
+            after
+        } else if directive.starts_with('P') {
             return Err(true);
-        } else if let Some(after) = rest.strip_prefix("\\X\\") {
+        } else if let Some(after) = directive.strip_prefix("X\\") {
             let value = after.as_bytes().get(..2).and_then(hex).ok_or(false)?;
             out.extend(char::from_u32(value));
-            5
-        } else if let Some(after) = rest.strip_prefix("\\S\\") {
-            match after.bytes().next() {
-                Some(byte @ 0x20..=0x7e) => out.extend(char::from_u32(u32::from(byte) + 128)),
-                _ => return Err(false),
-            }
-            4
+            after.get(2..).ok_or(false)?
+        } else if let Some(after) = directive.strip_prefix("S\\") {
+            let byte = after
+                .bytes()
+                .next()
+                .filter(|byte| (0x20..=0x7e).contains(byte));
+            out.extend(char::from_u32(u32::from(byte.ok_or(false)?) + 128));
+            after.get(1..).ok_or(false)?
         } else {
-            let (width, after) = match (rest.strip_prefix("\\X2\\"), rest.strip_prefix("\\X4\\")) {
+            let (width, after) = match (
+                directive.strip_prefix("X2\\"),
+                directive.strip_prefix("X4\\"),
+            ) {
                 (Some(after), _) => (4, after),
                 (_, Some(after)) => (8, after),
                 _ => return Err(false),
             };
-            let end = after.find("\\X0\\").ok_or(false)?;
-            let run = &after.as_bytes()[..end];
+            let (run, after) = after.split_once("\\X0\\").ok_or(false)?;
+            let run = run.as_bytes();
             if run.is_empty() || run.len() % width != 0 {
                 return Err(false);
             }
@@ -993,9 +997,8 @@ fn decode(raw: &str) -> Result<String, bool> {
                     out.push(char::from_u32(unit).ok_or(false)?);
                 }
             }
-            8 + end
+            after
         };
-        rest = &rest[used..];
     }
     out.push_str(rest);
     Ok(out)

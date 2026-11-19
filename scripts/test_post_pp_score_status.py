@@ -866,6 +866,36 @@ class CommentModeCarryTests(unittest.TestCase):
                       f"-f 'description=no score and no carry: {h1[:7]}: rust (linux) is failure'", out)
         self.assertNotIn(f"statuses/{h2} -f state=success", out)
 
+    def test_merge_group_rechecks_every_hop_before_merging(self):
+        """A carried success already posted on h2 cannot merge once a check on h1 turns red:
+        the merge_group run decides the carry again from live facts."""
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        h0, h1, h2 = self.c.h0, self.c.h1, self.c.h2
+        body = f"pp-score head={h0} seat=gpt-6.2-sol vendor=openai score=9 author=anthropic obstacles=none"
+        trust = pps.load_trust()
+        for failing, state in (({}, "success"), ({h1: "actionlint is failure"}, "failure")):
+            posted = []
+            with mock.patch.object(pps, "fetch_comments", return_value=[comment(body)]), \
+                    mock.patch.object(pps, "fetch_head", return_value=h2), \
+                    mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]), \
+                    mock.patch.object(pps, "GitHubFacts", return_value=RepoFacts(self.c.r, failing)), \
+                    mock.patch.object(pps, "apply_plan", side_effect=lambda repo, plan: posted.append(plan)), \
+                    redirect_stdout(io.StringIO()):
+                pps.run_merge_group("o/r", SHA, OTHER, None, trust, post=True, prs=[7])
+            self.assertEqual([(p.head, p.state) for p in posted], [(SHA, state)])
+
+    def test_pr_number_must_be_canonical(self):
+        import io
+        from contextlib import redirect_stderr
+
+        for bad in ("01865", " 1865", "1865 ", "+1865", "0", "-1"):
+            with self.subTest(pr=bad), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit_:
+                pps.main(["--pr", bad])
+            self.assertEqual(exit_.exception.code, 2)
+
     def test_carry_only_refuses_post_and_merge_group(self):
         import io
         from contextlib import redirect_stderr

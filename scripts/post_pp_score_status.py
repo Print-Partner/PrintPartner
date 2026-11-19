@@ -596,10 +596,18 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
     return 0 if plan.state == "success" else 1
 
 
+def pr_number(text: str) -> int:
+    """A PR number in canonical form only. The workflow's concurrency group uses the raw text,
+    so 01865 must not reach the same PR as 1865 from another group."""
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", text):
+        raise argparse.ArgumentTypeError("pr must be a positive integer without leading zeros or spaces")
+    return int(text)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", default=DEFAULT_REPO, help="owner/name (default: %(default)s)")
-    parser.add_argument("--pr", type=int, help="pull request number (comment mode)")
+    parser.add_argument("--pr", type=pr_number, help="pull request number (comment mode)")
     parser.add_argument("--merge-group", action="store_true",
                         help="check every PR in a merge queue entry and post on its SHA")
     parser.add_argument("--head-sha", help="merge group head SHA (merge-group mode)")

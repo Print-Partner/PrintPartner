@@ -237,10 +237,55 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
 fn slice0_mount_server_binary_serves_rust_routes() {
     let compiled = pp_core::DesktopRebuild::from_value(Some("1")).enabled();
     for value in ["1", "true"] {
-        let root =
+        // The root used to be `pp-slice0-server-<value>-<pid>` under the temp
+        // directory, created recursively and then chmodded, so a directory
+        // already at that name was reused, re-moded, and deleted. Put one
+        // there and check the test leaves it alone.
+        let old_name =
             std::env::temp_dir().join(format!("pp-slice0-server-{value}-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        run(value, &root, compiled);
-        std::fs::remove_dir_all(&root).unwrap();
+        let planted = std::fs::create_dir(&old_name).is_ok();
+        if planted {
+            set_mode(&old_name, 0o755);
+            let keep = old_name.join("keep");
+            std::fs::write(&keep, b"x").unwrap();
+            // `fs::write` is masked. umask 0400 leaves mode 0266, which the
+            // owner cannot read back. chmod is not masked.
+            set_mode(&keep, 0o644);
+        }
+        // Storage refuses a data directory other accounts can write to, so
+        // the root is a new, empty 0o700 directory under any umask.
+        let root = pp_testkit::private_temp_dir(None).unwrap();
+        assert_ne!(root.path(), old_name);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        assert_mode(root.path(), 0o700);
+        run(value, root.path(), compiled);
+        root.close().unwrap();
+        if planted {
+            assert_mode(&old_name, 0o755);
+            assert_eq!(std::fs::read(old_name.join("keep")).unwrap(), b"x");
+            std::fs::remove_dir_all(&old_name).unwrap();
+        }
     }
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
+fn assert_mode(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let actual = std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual, mode, "{}", path.display());
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
 }

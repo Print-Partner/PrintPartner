@@ -18,16 +18,21 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Child, ExitStatus, Stdio},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
 const KEY_VARIABLE: &str = "PRINT_PARTNER_API_KEY";
 const UNKNOWN_KEY: &str = "ppk_0000000000000000000000000000000000000000";
 const WAIT: Duration = Duration::from_secs(30);
-const PROXY_VARIABLES: [&str; 6] = [
+const PROXY_VARIABLES: [&str; 8] = [
     "HTTP_PROXY",
     "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
     "ALL_PROXY",
     "all_proxy",
     "NO_PROXY",
@@ -123,7 +128,8 @@ fn assert_refused(url: &str, key: Option<&str>, reason: &str) {
     assert_refused_with(url, key, &[], reason);
 }
 
-fn assert_refused_with(url: &str, key: Option<&str>, env: &[(&str, &str)], reason: &str) {
+/// Returns stderr.
+fn assert_refused_with(url: &str, key: Option<&str>, env: &[(&str, &str)], reason: &str) -> String {
     let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
     let mut bridge = Bridge::start(url, key, &cwd, env);
     // A client writes `initialize` at once; the bridge must not answer it.
@@ -139,6 +145,7 @@ fn assert_refused_with(url: &str, key: Option<&str>, env: &[(&str, &str)], reaso
         assert!(!stderr.contains(key), "key on stderr");
     }
     assert_eq!(std::fs::read_dir(&*cwd).unwrap().count(), 0, "wrote to cwd");
+    stderr
 }
 
 #[test]
@@ -217,7 +224,7 @@ fn mcp_stdio_sends_loopback_http_direct_never_through_a_proxy() {
     ];
     // Direct, the closed port refuses at once; through the proxy the request
     // and its key would reach the proxy instead.
-    assert_refused_with(&url, Some(UNKNOWN_KEY), &env, "error sending request");
+    assert_refused_with(&url, Some(UNKNOWN_KEY), &env, "it could not connect there");
     let received = received.lock().unwrap();
     assert!(
         received.is_empty(),
@@ -254,6 +261,7 @@ fn redirecting_listener(location: String) -> u16 {
 /// Binds `address` (host:port, port 0 allowed), reads one request from each
 /// connection, records it, and answers 400 so the bridge does not sit out
 /// the handshake deadline.
+#[cfg(target_os = "linux")]
 fn answering_listener(address: &str) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
     let listener = std::net::TcpListener::bind(address).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -285,12 +293,14 @@ fn answering_listener(address: &str) -> (u16, std::sync::Arc<std::sync::Mutex<Ve
     (port, received)
 }
 
+/// Nextest runs each test in its own process, so each compiles its own copy.
+#[cfg(target_os = "linux")]
 fn dns_interposer() -> String {
     static COMPILED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     COMPILED
         .get_or_init(|| {
-            let library =
-                std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("libmcp_stdio_dns.so");
+            let library = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+                .join(format!("libmcp_stdio_dns-{}.so", std::process::id()));
             let source =
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/mcp_stdio_dns.c");
             let status = std::process::Command::new("cc")
@@ -380,6 +390,273 @@ fn mcp_stdio_never_follows_a_redirect_away_from_the_url() {
         "the redirect target got {}",
         String::from_utf8_lossy(&received)
     );
+}
+
+/// A fake key that the echoing core repeats in every failure it can shape.
+const ECHOED_KEY: &str = "ppk_echoedfakekey_gre1332_never_print";
+
+/// Failures that repeat the request's `Authorization` header, as a reverse
+/// proxy's debug page might: name, status, headers, body. `{a}` is that
+/// header and `{id}` the JSON-RPC id.
+const ECHOES: [(&str, &str, &str, &str); 12] = [
+    (
+        "401 challenge",
+        "401 Unauthorized",
+        "WWW-Authenticate: Bearer error_description=\"{a}\"\r\n",
+        "{a}",
+    ),
+    (
+        "403 challenge",
+        "403 Forbidden",
+        "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"{a}\"\r\n",
+        "{a}",
+    ),
+    (
+        "401 body",
+        "401 Unauthorized",
+        "Content-Type: text/plain\r\n",
+        "{a}",
+    ),
+    (
+        "500 body",
+        "500 Internal Server Error",
+        "Content-Type: text/plain\r\n",
+        "failed for {a}",
+    ),
+    (
+        "500 JSON-RPC error",
+        "500 Internal Server Error",
+        "Content-Type: application/json\r\n",
+        r#"{"jsonrpc":"2.0","id":{id},"error":{"code":-32000,"message":"{a}","data":"{a}"}}"#,
+    ),
+    (
+        "200 JSON-RPC error",
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        r#"{"jsonrpc":"2.0","id":{id},"error":{"code":-32602,"message":"bad {a}"}}"#,
+    ),
+    (
+        "400 JSON",
+        "400 Bad Request",
+        "Content-Type: application/json\r\n",
+        r#"{"echo":"{a}"}"#,
+    ),
+    (
+        "malformed JSON",
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        r#"{"jsonrpc":"2.0","id":{id},"result":"{a}"#,
+    ),
+    (
+        "malformed event",
+        "200 OK",
+        "Content-Type: text/event-stream\r\n",
+        "data: {a}\n\n",
+    ),
+    (
+        "content type",
+        "200 OK",
+        "Content-Type: text/html; echo=\"{a}\"\r\n",
+        "{a}",
+    ),
+    (
+        "redirect",
+        "307 Temporary Redirect",
+        "Location: http://127.0.0.1:9/?auth={a}\r\n",
+        "",
+    ),
+    (
+        "429 Retry-After",
+        "429 Too Many Requests",
+        "Retry-After: {a}\r\n",
+        "{a}",
+    ),
+];
+
+/// One HTTP request: its method, its `Authorization` value and its JSON body.
+fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, Value)> {
+    let mut request = Vec::new();
+    let mut buffer = [0; 4096];
+    let mut read = |request: &mut Vec<u8>| match std::io::Read::read(stream, &mut buffer) {
+        Ok(read @ 1..) => {
+            request.extend_from_slice(&buffer[..read]);
+            Some(())
+        }
+        _ => None,
+    };
+    let end = loop {
+        match request.windows(4).position(|window| window == b"\r\n\r\n") {
+            Some(end) => break end + 4,
+            None => read(&mut request)?,
+        }
+    };
+    let head = String::from_utf8_lossy(&request[..end]).into_owned();
+    let header = |name: &str| {
+        head.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_owned())
+        })
+    };
+    let length: usize = header("content-length").map_or(0, |value| value.parse().unwrap());
+    while request.len() < end + length {
+        read(&mut request)?;
+    }
+    let body = serde_json::from_slice(&request[end..]).unwrap_or(Value::Null);
+    let method = head.split(' ').next().unwrap_or_default().to_owned();
+    Some((method, header("authorization").unwrap_or_default(), body))
+}
+
+/// A fake core on loopback that answers `initialize` with `echo` when
+/// `at_handshake`, or else completes the handshake and answers each later
+/// request with `echo`. Returns its port and how many echoes carried the key.
+fn echoing_core(
+    echo: (&'static str, &'static str, &'static str, &'static str),
+    at_handshake: bool,
+) -> (u16, std::sync::Arc<AtomicUsize>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let echoed = std::sync::Arc::new(AtomicUsize::new(0));
+    let count = echoed.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let Some((method, authorization, body)) = read_request(&mut stream) else {
+                continue;
+            };
+            let rpc = body["method"].as_str().unwrap_or_default();
+            let (status, headers, text) = if method != "POST" {
+                ("405 Method Not Allowed", String::new(), String::new())
+            } else if rpc.starts_with("notifications/") {
+                ("202 Accepted", String::new(), String::new())
+            } else if rpc == "initialize" && !at_handshake {
+                let result = json!({ "jsonrpc": "2.0", "id": body["id"], "result": {
+                    "protocolVersion": "2025-06-18", "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "echoing-core", "version": "0" } } });
+                let headers = "Content-Type: application/json\r\nMcp-Session-Id: echo\r\n";
+                ("200 OK", headers.to_owned(), result.to_string())
+            } else {
+                if authorization.contains(ECHOED_KEY) {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+                let fill = |text: &str| {
+                    let id = body["id"].to_string();
+                    text.replace("{a}", &authorization).replace("{id}", &id)
+                };
+                (echo.1, fill(echo.2), fill(echo.3))
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                text.len()
+            );
+        }
+    });
+    (port, echoed)
+}
+
+/// `RUST_LOG` asks for every log line; none may carry the key either.
+const LOG_EVERYTHING: [(&str, &str); 1] = [("RUST_LOG", "trace")];
+
+/// The core, or something in front of it, repeats the key in a failed
+/// handshake. The refusal on stderr still names only a fixed reason.
+#[test]
+fn mcp_stdio_never_prints_the_key_from_a_failed_handshake() {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    // A TLS client meets a listener that answers in plain text with the key.
+    let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let plain_port = plain.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in plain.incoming().map_while(Result::ok) {
+            let _ = write!(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\n\r\nBearer {ECHOED_KEY}"
+            );
+        }
+    });
+    let mut cases = vec![
+        (
+            "connect refused",
+            format!("http://127.0.0.1:{closed}/mcp"),
+            None,
+        ),
+        ("TLS", format!("https://127.0.0.1:{plain_port}/mcp"), None),
+    ];
+    for echo in ECHOES {
+        let (port, echoed) = echoing_core(echo, true);
+        cases.push((echo.0, format!("http://127.0.0.1:{port}/mcp"), Some(echoed)));
+    }
+    let mut leaks = Vec::new();
+    for (name, url, echoed) in cases {
+        let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
+        let bridge = Bridge::start(&url, Some(ECHOED_KEY), &cwd, &LOG_EVERYTHING);
+        let (status, stdout, stderr) = bridge.finish();
+        println!("{name}: {}", stderr.trim_end());
+        assert_eq!(status.code(), Some(1), "{name}: {stderr}");
+        assert!(
+            stderr.starts_with("mcp-stdio: No Print Partner core accepted"),
+            "{name}: {stderr}"
+        );
+        if let Some(echoed) = echoed {
+            assert!(
+                echoed.load(Ordering::SeqCst) > 0,
+                "{name} never echoed the key"
+            );
+        }
+        if stderr.contains(ECHOED_KEY) || stdout.iter().any(|line| line.contains(ECHOED_KEY)) {
+            leaks.push(name);
+        }
+    }
+    assert_eq!(leaks, Vec::<&str>::new(), "these printed the key");
+}
+
+/// The handshake succeeds, then the answer to a tool call repeats the key.
+/// The client gets a JSON-RPC error without it.
+#[test]
+fn mcp_stdio_never_forwards_the_key_from_a_failed_call() {
+    let mut leaks = Vec::new();
+    for echo in ECHOES {
+        let (port, echoed) = echoing_core(echo, false);
+        let cwd = scratch::Scratch::new("pp-mcp-stdio-cwd-");
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        let mut bridge = Bridge::start(&url, Some(ECHOED_KEY), &cwd, &LOG_EVERYTHING);
+        bridge.send(
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize() }),
+        );
+        bridge
+            .lines
+            .recv_timeout(WAIT)
+            .expect("initialize answered");
+        bridge.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        bridge.send(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "list_plans", "arguments": {} } }));
+        let reply = bridge
+            .lines
+            .recv_timeout(WAIT)
+            .expect("tools/call answered");
+        drop(bridge.child.stdin.take());
+        let (_, rest, stderr) = bridge.finish();
+        println!("{}: {reply}", echo.0);
+        assert!(
+            echoed.load(Ordering::SeqCst) > 0,
+            "{} never echoed the key",
+            echo.0
+        );
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["id"], 2, "{}: {reply}", echo.0);
+        assert!(reply["error"]["message"].is_string(), "{}: {reply}", echo.0);
+        if std::iter::once(reply.to_string())
+            .chain(rest)
+            .chain([stderr])
+            .any(|output| output.contains(ECHOED_KEY))
+        {
+            leaks.push(echo.0);
+        }
+    }
+    assert_eq!(leaks, Vec::<&str>::new(), "these forwarded the key");
 }
 
 #[cfg(all(unix, feature = "desktop_rebuild"))]

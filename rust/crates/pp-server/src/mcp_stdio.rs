@@ -14,10 +14,10 @@ use rmcp::{
         CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, Implementation,
         ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
     },
-    service::{Peer, RequestContext, ServiceError},
+    service::{ClientInitializeError, Peer, RequestContext, ServiceError},
     transport::{
-        StreamableHttpClientTransport, stdio_pipes,
-        streamable_http_client::StreamableHttpClientTransportConfig,
+        DynamicTransportError, StreamableHttpClientTransport, stdio_pipes,
+        streamable_http_client::{StreamableHttpClientTransportConfig, StreamableHttpError},
     },
 };
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -142,13 +142,13 @@ pub(crate) async fn run(url: Url, key: String) -> Result<()> {
     // One session per process: a session the core forgot (a restart) is an
     // error, not a silent new session without the pending proposals.
     let config = StreamableHttpClientTransportConfig::with_uri(url.as_str())
-        .auth_header(key)
+        .auth_header(key.clone())
         .reinit_on_expired_session(false);
     let client = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("pp-server-mcp-stdio", env!("CARGO_PKG_VERSION")),
     );
-    let refused = |reason: String| {
+    let refused = |reason: &str| {
         anyhow::anyhow!(
             "No Print Partner core accepted the connection at {url}: {reason}. \
              Start Print Partner and check {KEY_VARIABLE}; mcp-stdio never opens the database."
@@ -157,15 +157,15 @@ pub(crate) async fn run(url: Url, key: String) -> Result<()> {
     let handshake = client.serve(StreamableHttpClientTransport::with_client(http, config));
     let upstream = match tokio::time::timeout(HANDSHAKE, handshake).await {
         Ok(Ok(upstream)) => upstream,
-        Ok(Err(error)) => return Err(refused(error.to_string())),
+        Ok(Err(error)) => return Err(refused(&handshake_failure(&error))),
         Err(_) => {
-            return Err(refused(format!(
+            return Err(refused(&format!(
                 "no answer within {} seconds",
                 HANDSHAKE.as_secs()
             )));
         }
     };
-    let bridge = Bridge::new(upstream.peer().clone());
+    let bridge = Bridge::new(upstream.peer().clone(), key);
     let stdio = bridge
         .serve(stdio_pipes())
         .await
@@ -182,10 +182,11 @@ pub(crate) async fn run(url: Url, key: String) -> Result<()> {
 struct Bridge {
     core: Peer<RoleClient>,
     info: ServerConfig,
+    key: String,
 }
 
 impl Bridge {
-    fn new(core: Peer<RoleClient>) -> Self {
+    fn new(core: Peer<RoleClient>, key: String) -> Self {
         // Only tools are forwarded, so only tools are advertised.
         let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         if let Some(peer) = core.peer_info() {
@@ -196,16 +197,83 @@ impl Bridge {
                 info = info.with_instructions(instructions);
             }
         }
-        Self { core, info }
+        Self { core, info, key }
+    }
+
+    /// The core's own JSON-RPC error passes through unchanged, unless it
+    /// carries the key: something between the bridge and the core echoed the
+    /// request. A broken link to the core becomes an internal error with a
+    /// fixed reason.
+    fn forwarded(&self, error: ServiceError) -> ErrorData {
+        match error {
+            ServiceError::McpError(error) if !names_the_key(&error, &self.key) => error,
+            ServiceError::McpError(error) => ErrorData::new(
+                error.code,
+                "Print Partner core: the error repeated the request's API key, so mcp-stdio withheld it",
+                None,
+            ),
+            ServiceError::TransportSend(error) => ErrorData::internal_error(
+                format!("Print Partner core: {}", transport_failure(&error)),
+                None,
+            ),
+            _ => ErrorData::internal_error("Print Partner core: the connection failed", None),
+        }
     }
 }
 
-/// The core's own JSON-RPC error passes through unchanged; a broken link to
-/// the core becomes an internal error that says so.
-fn forwarded(error: ServiceError) -> ErrorData {
+fn names_the_key(error: &ErrorData, key: &str) -> bool {
+    serde_json::to_string(error).map_or(true, |text| text.contains(key))
+}
+
+/// Why the core did not accept the handshake, from a fixed set of messages.
+/// Upstream text (a response body, a header, a JSON-RPC message, a parse
+/// error quoting the body) can repeat the request and its bearer key, so
+/// none of it is printed: only the error's kind and an HTTP status or
+/// JSON-RPC code, which are numbers.
+fn handshake_failure(error: &ClientInitializeError) -> String {
     match error {
-        ServiceError::McpError(error) => error,
-        other => ErrorData::internal_error(format!("Print Partner core: {other}"), None),
+        ClientInitializeError::TransportError { error, .. } => transport_failure(error),
+        ClientInitializeError::JsonRpcError(error) => {
+            format!(
+                "it refused the MCP handshake (JSON-RPC error {})",
+                error.code.0
+            )
+        }
+        ClientInitializeError::ConnectionClosed(_) => {
+            "it closed the connection during the MCP handshake".to_owned()
+        }
+        _ => "its answer was not a Print Partner MCP handshake".to_owned(),
+    }
+}
+
+/// A failed HTTP exchange with the core, from a fixed set of messages.
+fn transport_failure(error: &DynamicTransportError) -> String {
+    let Some(error) = error
+        .error
+        .downcast_ref::<StreamableHttpError<reqwest::Error>>()
+    else {
+        return "the connection failed".to_owned();
+    };
+    let status = match error {
+        StreamableHttpError::Client(error) if error.is_connect() => {
+            return "it could not connect there".to_owned();
+        }
+        StreamableHttpError::Client(error) if error.is_timeout() => {
+            return "the request timed out".to_owned();
+        }
+        StreamableHttpError::Client(error) => error.status().map(|status| status.as_u16()),
+        StreamableHttpError::AuthRequired(_) => Some(401),
+        StreamableHttpError::InsufficientScope(_) => Some(403),
+        StreamableHttpError::HttpStatus(error) => Some(error.status),
+        StreamableHttpError::SessionExpired => {
+            return "it no longer knows this MCP session; restart mcp-stdio".to_owned();
+        }
+        _ => None,
+    };
+    match status {
+        Some(status @ (401 | 403)) => format!("it refused the API key (HTTP {status})"),
+        Some(status) => format!("it answered HTTP {status}"),
+        None => "its answer was not Print Partner MCP".to_owned(),
     }
 }
 
@@ -219,7 +287,10 @@ impl ServerHandler for Bridge {
         request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        self.core.list_tools(request).await.map_err(forwarded)
+        self.core
+            .list_tools(request)
+            .await
+            .map_err(|error| self.forwarded(error))
     }
 
     async fn call_tool(
@@ -227,7 +298,10 @@ impl ServerHandler for Bridge {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.core.call_tool_once(request).await.map_err(forwarded)
+        self.core
+            .call_tool_once(request)
+            .await
+            .map_err(|error| self.forwarded(error))
     }
 }
 

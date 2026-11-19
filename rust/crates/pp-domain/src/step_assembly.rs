@@ -254,7 +254,6 @@ enum Token {
     Instance(u64),
     /// A string, decoded inside a kept record and empty elsewhere.
     Text(String),
-    /// `$`.
     Null,
     /// `*`, an integer, a real, an enumeration or a binary.
     Value,
@@ -689,16 +688,15 @@ impl<'a, R: Read> Lexer<'a, R> {
                     if self.take()? != b'*' {
                         return Err(StepError::Malformed { at: self.at });
                     }
-                    let (mut length, mut star) = (2, false);
-                    loop {
-                        let byte = self.take()?;
-                        length += 1;
+                    // The cap counts the `/*` just taken, so check before each byte.
+                    let (mut length, mut star, mut closed) = (2, false, false);
+                    while !closed || length > self.limits.max_comment_bytes {
                         if length > self.limits.max_comment_bytes {
                             return Err(StepError::TooLarge(Limit::CommentBytes));
                         }
-                        if star && byte == b'/' {
-                            break;
-                        }
+                        let byte = self.take()?;
+                        length += 1;
+                        closed = star && byte == b'/';
                         star = byte == b'*';
                     }
                 }

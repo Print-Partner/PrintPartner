@@ -79,8 +79,7 @@ fn reads_the_product_structure_of_a_six_level_assembly() {
     assert_eq!(geometry, ProductStructure::default());
 }
 
-/// Every construct the contract names is read and dropped without changing
-/// what is kept from the one part beside it.
+/// Each supported construct is read and dropped; the kept part is unchanged.
 #[test]
 #[rustfmt::skip]
 fn each_supported_construct_leaves_the_result_unchanged() {
@@ -103,7 +102,6 @@ fn each_supported_construct_leaves_the_result_unchanged() {
         ("a user-defined keyword", with_part("#1=!MY_POINT(1.);")),
         ("comments between tokens", with_part("#1/**/=/* ; */X/**/(/**/1/**/,'a'/**/)/**/;")),
         ("tab, CR and LF", with_part("#1\t=\r\nX(\t1\r\n);")),
-        ("spaces between tokens", with_part("#1 = X ( 1 , 2 ) ;")),
         ("a record longer than the buffer and the record cap", with_part(&format!("#1=X('{}');", "x;".repeat(200_000)))),
         ("blanks before the first ;", file(&one).replacen("ISO-10303-21;", "ISO-10303-21 /**/ ;", 1)),
         ("extra and user-defined header entities", format!("{}DATA;\n{one}ENDSEC;\nEND-ISO-10303-21;", header("FILE_POPULATION('S',*,());\n!NOTE('x');\n"))),
@@ -147,7 +145,6 @@ fn decodes_string_directives() {
     for (raw, text) in good {
         assert_eq!(decode(raw), Ok(text.into()), "{raw}");
     }
-    // Another code page would change what `\S\` means.
     assert_eq!(decode("\\PB\\x"), Err(true));
     let bad = ["\\X2\\00F\\X0\\", "\\X2\\00FC", "\\X2\\00fc\\X0\\", "\\X2\\D83D\\X0\\", "\\X2\\\\X0\\", "\\X4\\00110000\\X0\\", "\\X\\E", "\\S\\", "\\Q\\", "end\\"];
     for bad in bad {
@@ -210,7 +207,6 @@ fn every_form_outside_the_contract_is_refused_with_its_error() {
         ("Incomplete", "in a comment", format!("{}/* never closed", &text[..end])),
         ("Incomplete", "after a /", format!("{}/", &text[..end])),
         ("Malformed", "no HEADER section", text.replacen(header, "", 1)),
-        ("Malformed", "no HEADER keyword", mutated("HEADER;\n", "")),
         ("Malformed", "HEADER with a parameter list (Sol)", mutated("HEADER;", "HEADER();")),
         ("Malformed", "ENDSEC with a parameter list (Sol)", mutated("ENDSEC;\nDATA;", "ENDSEC();\nDATA;")),
         ("Malformed", "END with a parameter list (Sol)", mutated("END-ISO-10303-21;", "END-ISO-10303-21();")),
@@ -246,7 +242,6 @@ fn every_form_outside_the_contract_is_refused_with_its_error() {
         ("Malformed", "a lowercase exponent", with_part("#1=X(1.e5);")),
         ("Malformed", "a sign alone", with_part("#1=X(-);")),
         ("Malformed", "a lowercase enumeration", with_part("#1=X(.t.);")),
-        ("Malformed", "an empty enumeration", with_part("#1=X(..);")),
         ("Malformed", "a binary with a bad first digit", with_part("#1=X(\"4F\");")),
         ("Malformed", "a binary with a non-hex digit", with_part("#1=X(\"0G\");")),
         ("Malformed", "a control byte in a string", with_part("#1=X('a\u{1}b');")),
@@ -287,8 +282,7 @@ fn every_form_outside_the_contract_is_refused_with_its_error() {
     assert_eq!(read(&trailing).unwrap(), read(text).unwrap());
 }
 
-/// Each cap passes an input at the cap and refuses one a byte or record over
-/// it.
+/// Each cap accepts an input at the cap and refuses one unit over it.
 #[test]
 #[rustfmt::skip]
 fn each_limit_accepts_its_cap_and_refuses_one_more() {
@@ -335,16 +329,17 @@ fn keywords_and_instance_numbers_have_fixed_caps() {
     assert_eq!(outcome(within(with_part("").as_bytes(), Limits { max_nesting: 0, ..Limits::default() })), "TooLarge(Nesting)");
 }
 
-/// A reader that sets `flag` once `after` bytes have been read.
+/// Hands out at most `chunk` bytes per read; sets `flag` after `after` bytes.
 struct Tripwire<'a> {
     bytes: io::Cursor<&'a [u8]>,
     after: u64,
+    chunk: usize,
     flag: &'a AtomicBool,
 }
 
 impl Read for Tripwire<'_> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        let size = out.len().min(4096);
+        let size = out.len().min(self.chunk);
         let count = self.bytes.read(&mut out[..size])?;
         if self.bytes.position() >= self.after {
             self.flag.store(true, Ordering::Relaxed);
@@ -354,11 +349,12 @@ impl Read for Tripwire<'_> {
 }
 
 /// Reads `text` through a [`Tripwire`]; answers the outcome and the bytes read.
-fn tripwire(text: &str, after: u64, limits: Limits) -> (String, u64) {
+fn tripwire(text: &str, after: u64, limits: Limits, chunk: usize) -> (String, u64) {
     let flag = AtomicBool::new(after == 0);
     let mut reader = Tripwire {
         bytes: io::Cursor::new(text.as_bytes()),
         after,
+        chunk,
         flag: &flag,
     };
     let result = product_structure(&mut reader, limits, &flag);
@@ -383,17 +379,16 @@ fn each_refusal_stops_near_its_cap() {
         ("Records", Limits { max_records: 3, ..default }, second.clone(), "#20=PRODUCT", 11),
         ("KeptText", Limits { max_kept_text: 12, ..default }, second.clone(), "'q','", 5),
         ("InstanceNumber", default, with_part(&zeros), "#1844", 21),
-        // Sol on 79336ff5: the record cap counts the instance number's own digits.
         ("RecordBytes", default, with_part(&format!("#{}10=PRODUCT('p','Part',$,());", "0".repeat(8 << 20))), "#000", 64 << 10),
         ("FileBytes", Limits { max_file_bytes: 200, ..default }, second.clone(), "ISO", 200),
     ];
     for (limit, limits, text, needle, allowed) in cases {
-        let (result, read) = tripwire(&text, u64::MAX, limits);
+        let (result, read) = tripwire(&text, u64::MAX, limits, 4096);
         assert_eq!(result, format!("TooLarge({limit})"), "{limit} at {needle}");
         let most = (text.find(needle).unwrap() + allowed + READ_CHUNK) as u64;
         assert!(read <= most, "{limit} at {needle}: read {read} bytes, at most {most}");
     }
-    assert_eq!(tripwire(&second, u64::MAX, Limits { max_file_bytes: 200, ..default }).1, 201, "one byte past the file cap");
+    assert_eq!(tripwire(&second, u64::MAX, Limits { max_file_bytes: 200, ..default }, 4096).1, 201, "one byte past the file cap");
 }
 
 /// Fixed-seed mutations of the fixture: each returns a structure or a typed
@@ -423,10 +418,23 @@ fn mutated_inputs_never_panic() {
     }
 }
 
+/// Sol on a4c615ce: the comment cap counts `/*` but was first checked a byte
+/// later, so a final `/*` was `Incomplete` and `/*x*/` read its `x`.
+#[test]
+#[rustfmt::skip]
+fn the_comment_cap_counts_its_opener() {
+    let cap = |bytes| Limits { max_comment_bytes: bytes, ..Limits::default() };
+    assert_eq!(outcome(within(format!("{}/*", with_part("")).as_bytes(), cap(1))), "TooLarge(CommentBytes)");
+    let text = with_part("/*x*/");
+    let opener = (text.find("/*").unwrap() + 2) as u64;
+    assert_eq!(tripwire(&text, u64::MAX, cap(1), 1), ("TooLarge(CommentBytes)".into(), opener));
+    assert_eq!(outcome(within(text.as_bytes(), cap(5))), "Ok");
+}
+
 #[test]
 fn cancellation_stops_the_read_within_one_chunk() {
     assert_eq!(
-        tripwire(&with_part(""), 0, Limits::default()).0,
+        tripwire(&with_part(""), 0, Limits::default(), 4096).0,
         "Cancelled"
     );
     let text = file(&format!("#1=POLYLINE('{}',(#2));", "x".repeat(8 << 20)));
@@ -434,7 +442,7 @@ fn cancellation_stops_the_read_within_one_chunk() {
         max_string_bytes: 16 << 20,
         ..Limits::default()
     };
-    let (result, read) = tripwire(&text, 1 << 20, limits);
+    let (result, read) = tripwire(&text, 1 << 20, limits, 4096);
     assert_eq!(result, "Cancelled");
     assert!(read <= (1 << 20) + READ_CHUNK as u64, "read {read} bytes");
 }

@@ -138,6 +138,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Write the e2e receipt
+        id: e2e_receipt
         if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
         env:
           REPO: ${{ github.repository }}
@@ -155,7 +156,7 @@ jobs:
             --runner-host "$RUNNER_NAME" --runner-environment "$RUNNER_ENVIRONMENT" \
             | tee "$PP_EVIDENCE/e2e-receipt.json"
       - name: Upload the e2e receipt
-        if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
+        if: ${{ !cancelled() && steps.e2e_receipt.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-receipt-${{ github.run_id }}-${{ github.run_attempt }}

@@ -129,12 +129,29 @@ def check(receipt: dict, root: Path) -> None:
         raise ReceiptError("screenshots must be a list")
     if not shots and receipt["fail"] == 0 and receipt["errors"] == 0:
         raise ReceiptError("a passing run must carry at least one screenshot")
+    url = receipt.get("artifact_url")
+    artifact = re.compile(rf"^https://[^/]+/{re.escape(receipt['repo'])}/actions/runs/{receipt.get('run_id')}"
+                          r"/artifacts/[1-9][0-9]*$")
+    if shots and not url:
+        raise ReceiptError("screenshots need the URL of their uploaded artifact")
+    if url is not None and not artifact.fullmatch(url):
+        raise ReceiptError("artifact_url must be an artifact of this run")
     for shot in shots:
         path = root / shot["path"]
         if not path.is_file() or path.stat().st_size == 0:
             raise ReceiptError(f"screenshot {shot['path']} is missing or empty")
         if describe(path, root) != shot:
             raise ReceiptError(f"screenshot {shot['path']} does not match its size or sha256")
+
+
+def pr_head(pr: int, remote: str = "origin", cwd: Path | None = None) -> str:
+    """The PR's live head from refs/pull/<pr>/head; works anonymously on a public repository."""
+    out = subprocess.check_output(["git", "ls-remote", remote, f"refs/pull/{pr}/head"],
+                                  cwd=cwd, text=True, timeout=60)
+    shas = [line.split()[0] for line in out.splitlines() if line.strip()]
+    if len(shas) != 1 or not FULL_SHA.fullmatch(shas[0]):
+        raise ReceiptError(f"cannot read the head of PR #{pr}")
+    return shas[0]
 
 
 def build(args, now: datetime | None = None) -> dict:
@@ -148,6 +165,13 @@ def build(args, now: datetime | None = None) -> dict:
         raise ReceiptError("pr must be a positive integer without leading zeros")
     if not RUN_ID.fullmatch(args.run_id):
         raise ReceiptError("run-id must be a positive integer")
+    # The receipt names the commit Playwright tested, and only a PR whose live head is that commit.
+    if not FULL_SHA.fullmatch(args.head):
+        raise ReceiptError("head must be a 40-character lowercase SHA")
+    if args.head != args.checkout_sha:
+        raise ReceiptError(f"head {args.head[:12]} is not the tested checkout {str(args.checkout_sha)[:12]}")
+    if args.pr and pr_head(int(args.pr)) != args.head:
+        raise ReceiptError(f"PR #{args.pr}'s head is not {args.head[:12]}")
     receipt = {
         "repo": args.repo,
         "pr": int(args.pr) if args.pr else None,

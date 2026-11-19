@@ -5,10 +5,13 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 import e2e_receipt as er
 
 HEAD = "1d7950189896bc6fc68ac7a9d4aa5739e845593b"
+OTHER = "f26fcb8fd71cc1215c55b1d6d38c8a9d3cbd68ce"
+ARTIFACT = "https://github.com/Print-Partner/PrintPartner/actions/runs/44460000000/artifacts/4471"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
@@ -52,17 +55,23 @@ class Fixture:
         path.write_text(json.dumps(self.report), encoding="utf-8")
         return path
 
-    def run(self, *extra, pr="1866", head=HEAD):
+    def run(self, *extra, pr="1866", head=HEAD, pr_head=HEAD, artifact=ARTIFACT):
         report = self.write_report()
         args = ["--report", str(report), "--out", str(self.out)]
         err = io.StringIO()
-        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+        self.asked = []
+
+        def live_head(number):
+            self.asked.append(number)
+            return pr_head
+
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), mock.patch.object(er, "pr_head", live_head):
             code = er.main(["collect", *args])
             if code == 0:
                 code = er.main(["write", *args, "--repo", "Print-Partner/PrintPartner", "--pr", pr,
                                 "--head", head, "--checkout-sha", HEAD, "--run-id", "44460000000",
                                 "--suite", "web-playwright", "--runner-host", "GitHub Actions 7",
-                                "--runner-environment", "github-hosted", *extra])
+                                "--runner-environment", "github-hosted", "--artifact-url", artifact, *extra])
         self.err = err.getvalue()
         return code
 
@@ -119,10 +128,25 @@ class HeadTests(unittest.TestCase):
                 self.assertEqual(f.run(head=bad), 1)
                 self.assertIn("40-character", f.err)
 
+    def test_head_must_be_the_tested_checkout(self):
+        f = self.passing()
+        self.assertEqual(f.run(head=OTHER, pr_head=OTHER), 1)
+        self.assertIn("is not the tested checkout", f.err)
+
+    def test_pr_must_point_at_the_tested_head(self):
+        f = self.passing()
+        self.assertEqual(f.run(pr_head=OTHER), 1)
+        self.assertIn("PR #1866's head is not", f.err)
+        self.assertEqual(f.asked, [1866])
+        f = self.passing()
+        self.assertEqual(f.run(), 0, f.err)
+        self.assertEqual((f.receipt()["pr"], f.asked), (1866, [1866]))
+
     def test_pr_is_canonical_or_null(self):
         f = self.passing()
-        self.assertEqual(f.run(pr=""), 0, f.err)
+        self.assertEqual(f.run(pr="", pr_head=OTHER), 0, f.err)
         self.assertIsNone(f.receipt()["pr"])
+        self.assertEqual(f.asked, [])
         for bad in ("01866", "-1", "1866a"):
             self.assertEqual(self.passing().run(pr=bad), 1)
 
@@ -159,7 +183,24 @@ class ScreenshotTests(unittest.TestCase):
 
     def test_a_failing_run_may_have_none(self):
         f = Fixture([spec("help", "unexpected", result())])
-        self.assertEqual(f.run(), 0, f.err)
+        self.assertEqual(f.run(artifact=""), 0, f.err)
+        self.assertIsNone(f.receipt()["artifact_url"])
+
+    def test_screenshots_need_their_artifact_url(self):
+        def passing():
+            f = Fixture([spec("help", "expected", result())])
+            f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+            return f
+        f = passing()
+        self.assertEqual(f.run(artifact=""), 1)
+        self.assertIn("URL of their uploaded artifact", f.err)
+        for bad in ("https://github.com/Print-Partner/PrintPartner/actions/runs/1/artifacts/4471",
+                    "https://github.com/other/repo/actions/runs/44460000000/artifacts/4471",
+                    "https://github.com/Print-Partner/PrintPartner/actions/runs/44460000000"):
+            with self.subTest(url=bad):
+                f = passing()
+                self.assertEqual(f.run(artifact=bad), 1)
+                self.assertIn("artifact of this run", f.err)
 
     def test_a_changed_or_extra_copy_refuses(self):
         f = Fixture([spec("help", "expected", result())])
@@ -169,12 +210,14 @@ class ScreenshotTests(unittest.TestCase):
             er.main(["collect", "--report", str(report), "--out", str(f.out)])
         (f.out / "screenshots" / "999-extra.png").write_bytes(PNG)
         args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "o/r", "--head", HEAD,
-                "--checkout-sha", HEAD, "--run-id", "1", "--suite", "s", "--runner-host", "h"]
+                "--checkout-sha", HEAD, "--run-id", "1", "--suite", "s", "--runner-host", "h",
+                "--artifact-url", "https://github.com/o/r/actions/runs/1/artifacts/2"]
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             self.assertEqual(er.main(args), 1)
         self.assertIn("holds 2 files; the report lists 1", err.getvalue())
         receipt = {"repo": "o/r", "pr": None, "head": HEAD, "pass": 1, "fail": 0, "skipped": 0, "flaky": 0,
-                   "errors": 0, "screenshots": [er.describe(f.out / "screenshots" / "001-help-r0.png", f.out)]}
+                   "errors": 0, "run_id": 1, "artifact_url": "https://github.com/o/r/actions/runs/1/artifacts/2",
+                   "screenshots": [er.describe(f.out / "screenshots" / "001-help-r0.png", f.out)]}
         er.check(receipt, f.out)
         (f.out / "screenshots" / "001-help-r0.png").write_bytes(PNG + b"changed")
         with self.assertRaises(er.ReceiptError):

@@ -23,9 +23,10 @@ on:
 
 permissions: {}
 
-# Runs for one PR post in order, so an older run cannot overwrite a newer run's
-# status on the same head (a fresh failure with an earlier carried success).
-# A merge group gets its own group per SHA.
+# One group per PR (per SHA for a merge group) keeps runs for one PR from
+# overlapping in most cases. It does not keep dispatch order, and a newer
+# pending run replaces an older one, so the script does not rely on it: after
+# posting, a run re-reads the comments and head and decides again if they moved.
 concurrency:
   group: pp-score-${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.issue.number || inputs.pr }}
   cancel-in-progress: false
@@ -43,7 +44,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # A merge group's own SHA holds the queued PRs' code; run the base instead.
-          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+          # Comments and dispatches run the default branch's script and merge-classes.json,
+          # whatever ref a dispatch selected.
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.repository.default_branch }}
           persist-credentials: false
       - name: Run unit tests
         run: python3 -B -m unittest discover -s scripts -p test_post_pp_score_status.py -v

@@ -20,12 +20,14 @@ import json
 import re
 import subprocess
 import sys
-import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
 # obstacles= is required here: a record without it does not count. merge_class.py holds the vocabulary.
-from merge_class import classify, load_classes, parse_obstacles, path_class
+from merge_class import classify, load_classes, parse_obstacles
+# The carry decision is shared with the coordinator's sensitive merge check (agent-guard.py).
+from merge_class import (CARRY_MAX_HOPS, NO_CARRY_VENDORS, Carry, GitHubFacts, LocalGit,  # noqa: F401
+                         decide_carry, gate_file, hop)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
@@ -43,21 +45,6 @@ DUAL_REQUIRED_VENDORS = ("anthropic", "openai")
 QUEUE_REF = re.compile(r"^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-([0-9a-f]{40})$")
 # The queue squashes each PR into one commit whose title GitHub ends with "(#<number>)".
 SQUASH_TITLE = re.compile(r"\(#([0-9]+)\)$")
-MAIN = "main"
-# A carry walks back at most this many merge-of-main hops.
-CARRY_MAX_HOPS = 5
-# Chad's rule says success. A skipped or neutral required check (path-filtered actionlint or
-# zizmor) does not qualify the carried head, although GitHub lets it satisfy the required check.
-PASSING = frozenset({"success"})
-# Grok records never carry.
-NO_CARRY_VENDORS = frozenset({"xai"})
-# The score tooling. With every owner and sensitive path in merge-classes.json, these are the gate
-# files: a merge of main that changes one never carries a score, because the gate changed under it.
-SCORER_FILES = frozenset({
-    "scripts/post_pp_score_status.py",
-    "scripts/test_post_pp_score_status.py",
-    "docs/development/score-records.md",
-})
 
 
 @dataclass(frozen=True)
@@ -233,233 +220,28 @@ def plan_statuses(records: list[Record]) -> list[StatusPlan]:
     return [plan_head(head, group) for head, group in sorted(by_head.items())]
 
 
-class LocalGit:
-    """The checkout the script runs in. Merges need full history so Git finds every merge base."""
-
-    def __init__(self, cwd=ROOT, remote="origin"):
-        self.cwd = Path(cwd)
-        self.remote = remote
-
-    def _git(self, *args, check=True, text=True):
-        return subprocess.run(["git", *args], cwd=self.cwd, text=text, capture_output=True, check=check)
-
-    def ensure(self, *shas: str) -> None:
-        if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-            # The workflow checkout is depth 1. Fetch the commits' full history without blobs
-            # (Git fetches the blobs a merge or diff reads on demand), so every merge base is there.
-            self._git("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
-            return
-        missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
-        if missing:
-            self._git("fetch", "--no-tags", "--quiet", self.remote, *missing)
-
-    def parents(self, sha: str) -> list[str]:
-        return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]
-
-    def tree(self, sha: str) -> str:
-        return self._git("rev-parse", f"{sha}^{{tree}}").stdout.strip()
-
-    def merge_bases(self, a: str, b: str) -> list[str]:
-        done = self._git("merge-base", "--all", a, b, check=False)
-        return done.stdout.split() if done.returncode == 0 else []
-
-    def merge_tree(self, ours: str, theirs: str) -> str | None:
-        """Tree of the clean merge of ours and theirs, or None when it conflicts.
-
-        Plain `git merge-tree --write-tree`, so a criss-cross history merges from all its bases.
-        """
-        done = self._git("merge-tree", "--write-tree", ours, theirs, check=False)
-        if done.returncode == 1:
-            return None
-        if done.returncode != 0:
-            raise RuntimeError(f"git merge-tree failed: {done.stderr.strip()}")
-        return done.stdout.splitlines()[0].strip()
-
-    # Byte-exact and independent of local config: no external diff, textconv, rename pairing or
-    # abbreviated blob IDs, so equal output means equal paths, modes and blobs on both sides.
-    _DIFF = ("-c", "core.quotePath=true", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-             "--no-color", "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/")
-
-    def diff(self, base: str, tip: str) -> bytes:
-        return self._git(*self._DIFF, base, tip, "--", text=False).stdout
-
-    def _paths(self, *args) -> set[str]:
-        raw = self._git(*args, text=False).stdout
-        return {p.decode("utf-8", "surrogateescape") for p in raw.split(b"\0") if p}
-
-    def changed(self, base: str, tip: str) -> set[str]:
-        """Paths that differ between base and tip, both sides of a rename."""
-        return self._paths("diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, tip, "--")
-
-    def touched(self, pr_head: str, base: str, main: str) -> set[str]:
-        """Paths that the main commits a merge brings in changed: every commit in pr_head..main
-        (merges against each parent), plus the net diff base..main. A file that one commit
-        changed and a later commit reverted still counts."""
-        each = self._paths("log", "-m", "--no-renames", "--name-only", "-z", "--format=",
-                           f"{pr_head}..{main}", "--")
-        return each | self.changed(base, main)
-
-
-class GitHubFacts:
-    """What a carry needs to know. Commits, merges and diffs come from local git; GitHub answers
-    whether a commit is on main (main's ruleset forbids force-pushes, so that never reverts) and
-    which required checks passed on the carried head."""
-
-    def __init__(self, repo: str, git: LocalGit | None = None):
-        self.repo = repo
-        self.git = git or LocalGit()
-        self._required = None
-
-    def on_main(self, sha: str) -> bool:
-        data = gh_json(f"repos/{self.repo}/compare/{sha}...{MAIN}")
-        return data.get("status") in ("identical", "ahead")
-
-    def required_checks(self) -> list[dict]:
-        """The required status checks of main's rulesets, except pp/score itself."""
-        if self._required is None:
-            rules = gh_json(f"repos/{self.repo}/rules/branches/{MAIN}")
-            found = {}
-            for rule in rules if isinstance(rules, list) else []:
-                if rule.get("type") != "required_status_checks":
-                    continue
-                for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
-                    if check.get("context") and check["context"] != CONTEXT:
-                        found[(check["context"], check.get("integration_id"))] = check
-            if not found:
-                raise GateError("could not read main's required checks")
-            self._required = list(found.values())
-        return self._required
-
-    def checks_failing(self, sha: str) -> str | None:
-        """None when every required check passed on sha; otherwise the first one that did not."""
-        statuses = None
-        for check in self.required_checks():
-            name, app = check["context"], check.get("integration_id")
-            query = f"check_name={urllib.parse.quote(name)}&filter=latest&per_page=100"
-            if app:
-                query += f"&app_id={app}"
-            runs = gh_json(f"repos/{self.repo}/commits/{sha}/check-runs?{query}").get("check_runs") or []
-            runs = [r for r in runs if r.get("name") == name]
-            if runs:
-                bad = [r for r in runs if r.get("status") != "completed" or r.get("conclusion") not in PASSING]
-                if bad:
-                    return f"{name} is {bad[0].get('conclusion') or bad[0].get('status')}"
-                continue
-            if app:
-                return f"{name} has not run"
-            if statuses is None:
-                statuses = gh_json(f"repos/{self.repo}/commits/{sha}/status").get("statuses") or []
-            state = next((st.get("state") for st in statuses if st.get("context") == name), None)
-            if state != "success":
-                return f"{name} is {state or 'missing'}"
-        return None
-
-
-@dataclass(frozen=True)
-class Carry:
-    source: str | None  # the earlier head whose records count, or None
-    reason: str
-
-
-def gate_file(path: str, classes) -> bool:
-    return path in SCORER_FILES or path_class(path, classes) != "lane"
-
-
-def hop(facts, head: str, classes) -> tuple[str | None, str]:
-    """(P, why) when head is a merge of main into P that leaves the PR's code exactly as scored
-    on P; (None, why) otherwise. Every check reads only commits named by SHA, so the answer for
-    a hop can never change after a status is posted. All must hold:
-
-    1. head has exactly two parents [P, M]: not a rebase, squash, force-push or octopus merge.
-    2. M is on main.
-    3. P and M have exactly one merge base B, and B is neither P nor M.
-    4. `git merge-tree --write-tree P M` is clean and its tree is head's tree: no hand edits.
-    5. The PR's diff B..P is byte-identical to its diff M..head (full blob IDs and modes).
-    6. No commit in P..M changed a path that the PR changes, even if a later commit undid it.
-    7. No commit in P..M changed a gate file: an owner or sensitive path, or the score tooling.
-    """
-    git = facts.git
-    git.ensure(head)
-    parents = git.parents(head)
-    if len(parents) != 2:
-        return None, f"{len(parents)} parents, not a two-parent merge of {MAIN}"
-    previous, main = parents
-    if not facts.on_main(main):
-        return None, f"second parent {main[:7]} is not on {MAIN}"
-    bases = git.merge_bases(previous, main)
-    if len(bases) != 1:
-        return None, f"{len(bases)} merge bases with {MAIN}"
-    if bases[0] in (previous, main):
-        return None, f"the merge brought no new {MAIN} commits" if bases[0] == main \
-            else f"the PR head is already on {MAIN}"
-    base = bases[0]
-    merged = git.merge_tree(previous, main)
-    if merged is None:
-        return None, f"the merge of {MAIN} had conflicts"
-    if merged != git.tree(head):
-        return None, "the merge commit differs from a clean merge"
-    if git.diff(base, previous) != git.diff(main, head):
-        return None, "the PR's own diff changed"
-    touched = git.touched(previous, base, main)
-    overlap = sorted(touched & git.changed(base, previous))
-    if overlap:
-        return None, f"{MAIN} changed {overlap[0]}, which the PR changes"
-    gate = sorted(p for p in touched if gate_file(p, classes))
-    if gate:
-        return None, f"{MAIN} changed gate file {gate[0]}"
-    return previous, f"clean merge of {MAIN}"
-
-
-def find_carry(head: str, scored: set[str], facts, max_hops: int = CARRY_MAX_HOPS) -> Carry:
-    """Walk back from head through hops (see hop) to the nearest head with records.
-
-    The first head with records stops the walk, so newer records always win, even failing ones.
-    """
-    classes = load_classes()
-    current = head
-    for _ in range(max_hops):
-        previous, why = hop(facts, current, classes)
-        if previous is None:
-            return Carry(None, f"{current[:7]}: {why}")
-        if previous in scored:
-            return Carry(previous, why)
-        current = previous
-    return Carry(None, f"no scored head within {max_hops} merges of {MAIN}")
-
-
 def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[StatusPlan | None, str]:
     """pp/score for a head with no records of its own, carried from an earlier head, or (None, why).
 
-    Besides the hops: the source records must pass plan_head without Grok, every record on the
-    PR must name one author family, a strict (owner or sensitive) PR needs every carried seat
-    above 8, and every required check of main must have concluded success on head itself.
+    merge_class.decide_carry finds the source head (the same decision the coordinator's sensitive
+    merge check uses). Then the source's records must pass plan_head as they would on the source
+    itself, Grok included; Grok records are then dropped and at least one must remain; and a
+    strict (owner or sensitive) PR needs every record on the source above 8.
     """
-    scored = {r.head for r in records}
-    if not scored:
-        return None, "no records on this PR"
-    if head in scored:
-        return None, f"{head[:7]} has its own records"
-    families = sorted({r.author for r in records})
-    if len(families) > 1:
-        return None, f"records on this PR disagree on the author family ({', '.join(families)})"
-    carry = find_carry(head, scored, facts)
+    carry = decide_carry(head, {r.head for r in records}, {r.author for r in records}, facts, load_classes())
     if carry.source is None:
         return None, carry.reason
     source = carry.source
-    group = [r for r in records if r.head == source and r.vendor not in NO_CARRY_VENDORS]
-    if not group:
-        return None, f"{source[:7]} has no record that can carry"
-    plan = plan_head(source, group)
+    plan = plan_head(source, [r for r in records if r.head == source])
     if plan.state != "success":
         return None, f"{source[:7]} did not pass: {plan.description}"
     low = [r for r in plan.records if r.score <= PASS_AT]
     if strict and low:
         return None, f"sensitive: {low[0].seat} scored {format_score(low[0].score)} on {source[:7]}"
-    # Only the carried head's own checks count. A superseded hop never merges, and its checks
-    # can be re-run after this status posts with nothing to re-run this workflow.
-    failing = facts.checks_failing(head)
-    if failing:
-        return None, f"{head[:7]}: {failing}"
+    carried = [r for r in plan.records if r.vendor not in NO_CARRY_VENDORS]
+    if not carried:
+        return None, f"{source[:7]} has no record that can carry"
+    plan = plan_head(source, carried)
     prefix = f"carried from {source[:7]}: "
     return StatusPlan(head, "success", _fit(prefix + plan.description, prefix + "scored 8+"),
                       plan.records), f"carried from {source[:7]}"
@@ -658,7 +440,7 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
         print(f"# merge group {head_sha} holds PRs {', '.join(f'#{p}' for p in prs)}")
         heads = {pr: fetch_head(repo, pr) for pr in prs}
         records = {pr: trusted_records(fetch_comments(repo, pr), trust) for pr in prs}
-        facts = GitHubFacts(repo)
+        facts = GitHubFacts(repo, gh_json)
         carried = {pr: carry_for_pr(repo, pr, heads[pr], records[pr], facts) for pr in prs
                    if isinstance(heads[pr], str) and FULL_SHA.fullmatch(heads[pr])
                    and not any(r.head == heads[pr] for r in records[pr])}
@@ -673,6 +455,47 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
                           f"cannot verify merge group: {type(err).__name__} reading GitHub", ())
     show(repo, plan, post)
     return 0 if plan.state == "success" else 1
+
+
+# Runs for one PR can overlap or finish out of order: a concurrency group does not keep dispatch
+# order, and GitHub replaces a pending run with a newer one. So after posting, a run reads the
+# comments and the head again. If either changed since it decided, it decides and posts again.
+# The run that posts last has therefore re-read, after that post, the facts it decided from.
+# Every new comment starts a run of its own, so a change after that re-read gets its own run.
+SETTLE_ROUNDS = 3
+
+
+def snapshot(comments, head):
+    return head, tuple((c.get("id"), c.get("created_at"), c.get("updated_at")) for c in comments)
+
+
+def read_snapshot(repo: str, pr: int):
+    try:
+        return snapshot(fetch_comments(repo, pr), fetch_head(repo, pr))
+    except Exception:  # noqa: BLE001 - an unreadable re-read never matches, so the run decides again
+        return None
+
+
+def comment_pass(repo: str, pr: int, trust, carry_only: bool):
+    """(plans, snapshot, head_ok) from one read of the PR's comments and head."""
+    comments = fetch_comments(repo, pr)
+    records = trusted_records(comments, trust)
+    plans = plan_statuses(records)
+    try:
+        head = fetch_head(repo, pr)
+    except Exception as err:  # noqa: BLE001 - the recorded heads still post; the run then fails
+        head = None
+        print(f"# no carry: cannot read the head of #{pr} ({type(err).__name__})")
+    head_ok = isinstance(head, str) and bool(FULL_SHA.fullmatch(head))
+    if carry_only:
+        # Dry-run aid: decide the carry for the current head as if it had no records of its own.
+        records = [r for r in records if r.head != head]
+        plans = []
+    if head_ok and not any(r.head == head for r in records):
+        carried, why = carry_for_pr(repo, pr, head, records, GitHubFacts(repo, gh_json))
+        print(f"# carry to {head}: {why}")
+        plans.append(carried or no_carry_plan(head, why))
+    return plans, snapshot(comments, head), head_ok
 
 
 def pr_number(text: str) -> int:
@@ -725,22 +548,17 @@ def main(argv=None) -> int:
     if args.pr is None or args.pr <= 0:
         print("pr must be a positive integer", file=sys.stderr)
         return 2
-    records = trusted_records(fetch_comments(args.repo, args.pr), trust)
-    plans = plan_statuses(records)
-    try:
-        head = fetch_head(args.repo, args.pr)
-    except Exception as err:  # noqa: BLE001 - the recorded heads still post; only the carry is skipped
-        head = None
-        print(f"# no carry: cannot read the head of #{args.pr} ({type(err).__name__})")
-    if args.carry_only:
-        # Dry-run aid: decide the carry for the current head as if it had no records of its own.
-        records = [r for r in records if r.head != head]
-        plans = []
-    if isinstance(head, str) and FULL_SHA.fullmatch(head) and not any(r.head == head for r in records):
-        carried, why = carry_for_pr(args.repo, args.pr, head, records, GitHubFacts(args.repo))
-        print(f"# carry to {head}: {why}")
-        plans.append(carried or no_carry_plan(head, why))
-    return render(args.repo, args.pr, plans, args.post)
+    for _ in range(SETTLE_ROUNDS):
+        plans, seen, head_ok = comment_pass(args.repo, args.pr, trust, args.carry_only)
+        render(args.repo, args.pr, plans, args.post)
+        if not args.post or not head_ok or read_snapshot(args.repo, args.pr) == seen:
+            break
+        print("# the comments or the head changed while this run posted; deciding again")
+    if not head_ok:
+        print(f"cannot read the head of #{args.pr}: its pp/score is unchanged; "
+              "the merge_group run decides it again", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

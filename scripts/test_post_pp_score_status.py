@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import json
 import unittest
 import urllib.parse
 
+import merge_class
 import post_pp_score_status as pps
 
 SHA = "d3a9756ded5a914769c8a64680b40f97f0b4a490"
@@ -688,8 +690,8 @@ class RepoFacts(pps.GitHubFacts):
     """GitHubFacts with GitHub's two answers taken from the local repo: a commit is on main when
     it is an ancestor of main_ref, and failing maps a SHA to its first failing required check."""
 
-    def __init__(self, repo, failing=None, main_ref="main"):
-        super().__init__("o/r", pps.LocalGit(repo.path))
+    def __init__(self, repo, failing=None, main_ref="main", git=None):
+        super().__init__("o/r", self.no_api, git or pps.LocalGit(repo.path))
         self.repo_, self.failing, self.main_ref = repo, failing or {}, main_ref
 
     def on_main(self, sha):
@@ -697,6 +699,10 @@ class RepoFacts(pps.GitHubFacts):
 
     def checks_failing(self, sha):
         return self.failing.get(sha)
+
+    @staticmethod
+    def no_api(path):
+        raise AssertionError(f"unexpected GitHub read {path}")
 
 
 def record(head, seat="gpt-6.2-sol", vendor="openai", score=9, author="anthropic"):
@@ -920,6 +926,9 @@ class CarryTests(unittest.TestCase):
         self.assertIn("no record that can carry", self.refused(self.h1, [grok]))
         plan, _ = self.plan(self.h1, [grok, record(self.h0)])
         self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
+        # A failing Grok record still fails the source, so it fails the carry too.
+        low_grok = record(self.h0, seat="grok-4.7", vendor="xai", score=5)
+        self.assertIn(f"{self.h0[:7]} did not pass", self.refused(self.h1, [low_grok, record(self.h0)]))
 
     def test_a_record_with_a_wrong_author_family_never_carries(self):
         # The seat is the author's own family.
@@ -1079,6 +1088,191 @@ class CommentModeCarryTests(unittest.TestCase):
             self.assertIn("comment-mode dry runs only", err.getvalue())
 
 
+def body(rec, obstacles="none"):
+    return (f"pp-score head={rec.head} seat={rec.seat} vendor={rec.vendor} score={pps.format_score(rec.score)} "
+            f"author={rec.author} obstacles={obstacles}")
+
+
+class GuardAgreementTests(unittest.TestCase):
+    """The pp/score status (plan_carry, strict as for a sensitive PR) and the coordinator's
+    sensitive merge check (merge_class.sensitive_scores, as agent-guard.py calls it) on the same
+    carry fixtures. Both use merge_class.decide_carry. The guard never accepts what the status
+    refuses, and when it accepts, it accepts the same source head. The guard additionally needs
+    two different non-Grok vendors from scorer_seats, so one seat, one vendor or a Grok second
+    seat passes the status but not the guard: those cases are listed explicitly below."""
+
+    @classmethod
+    def setUpClass(cls):
+        CarryTests.setUpClass()
+        cls.c = CarryTests
+        cls.config = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
+        cls.classes = merge_class.load_classes()
+
+    def both(self, head, records, main_ref="main", failing=None):
+        facts = RepoFacts(self.c.r, failing, main_ref)
+        status, status_why = pps.plan_carry(head, records, True, facts)
+        source, guard_why = merge_class.sensitive_scores([body(r) for r in records], head, self.config,
+                                                         RepoFacts(self.c.r, failing, main_ref), self.classes)
+        if source is not None:
+            self.assertIsNotNone(status, f"guard accepted what the status refused: {status_why}")
+            self.assertEqual(status_why, f"carried from {source[:7]}")
+        return status is not None, source is not None, status_why, guard_why
+
+    def two(self, head):
+        return [record(head), record(head, seat="glm-5.3-flash-free", vendor="zhipu")]
+
+    def test_both_carry_a_clean_hop_and_a_second_clean_hop(self):
+        c = self.c
+        for head in (c.h1, c.h2):
+            with self.subTest(head=head):
+                self.assertEqual(self.both(head, self.two(c.h0))[:2], (True, True))
+
+    def test_both_refuse_every_failing_hop(self):
+        c = self.c
+        cases = [(c.edited, "main"), (c.hidden, "main"), (c.conflicted, "main-conflict"), (c.rebased, "main"),
+                 (c.reversed, "main"), (c.octopus, "main"), (c.feature, "main"), (c.hunk, "main-hunk"),
+                 (c.revert, "main-revert"), (c.gate, "main-gate"), (c.rewritten, "main"),
+                 (c.second, "main-hunk")]
+        for head, main_ref in cases:
+            with self.subTest(head=head, main_ref=main_ref):
+                ok_status, ok_guard, status_why, guard_why = self.both(head, self.two(c.h0), main_ref)
+                self.assertEqual((ok_status, ok_guard), (False, False))
+                self.assertIn(status_why, guard_why)
+
+    def test_both_refuse_failing_records_and_checks(self):
+        c = self.c
+        h0, h1 = c.h0, c.h1
+        glm = dict(seat="glm-5.3-flash-free", vendor="zhipu")
+        cases = {
+            "a seat at 8": [record(h0), record(h0, score=8, **glm)],
+            "a failing Grok record": self.two(h0) + [record(h0, seat="grok-4.7", vendor="xai", score=7)],
+            "the author's own family": self.two(h0) + [record(h0, seat="claude-opus-5-5", vendor="anthropic")],
+            "two author families": [record(h0), record(h0, author="cursor", **glm)],
+            "newer failing records": self.two(h0) + [record(h1, score=7)],
+        }
+        for name, records in cases.items():
+            head = c.h2 if name == "newer failing records" else h1
+            with self.subTest(name):
+                self.assertEqual(self.both(head, records)[:2], (False, False))
+        with self.subTest("a failing check on the carried head"):
+            self.assertEqual(self.both(h1, self.two(h0), failing={h1: "zizmor is failure"})[:2], (False, False))
+
+    def test_the_status_accepts_one_seat_but_the_guard_needs_two_vendors(self):
+        h0, h1 = self.c.h0, self.c.h1
+        for name, records in {
+            "one seat": [record(h0)],
+            "two seats, one vendor": [record(h0), record(h0, seat="gpt-6.2-astra")],
+            "Grok as the second seat": [record(h0), record(h0, seat="grok-4.7", vendor="xai")],
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.both(h1, records)[:2], (True, False))
+
+    def test_the_guard_reads_the_exact_head_first(self):
+        h1 = self.c.h1
+        source, _ = merge_class.sensitive_scores([body(r) for r in self.two(h1)], h1, self.config,
+                                                 RepoFacts(self.c.r), self.classes)
+        self.assertEqual(source, h1)
+
+
+class CarryLimitTests(unittest.TestCase):
+    def test_five_hops_carry_and_six_do_not(self):
+        r = CarryRepo()
+        base = r.commit("a.txt", "a\n", "base")
+        r.branch("pr", base)
+        h0 = r.commit("p.txt", "pr\n", "pr")
+        heads = []
+        for i in range(6):
+            r.git("checkout", "-q", "main")
+            main = r.commit(f"m{i}.txt", f"{i}\n", f"main {i}")
+            r.git("checkout", "-q", "pr")
+            heads.append(r.merge(main))
+        plan, why = pps.plan_carry(heads[4], [record(h0)], False, RepoFacts(r))
+        self.assertEqual((plan.state, why), ("success", f"carried from {h0[:7]}"))
+        self.assertEqual(pps.plan_carry(heads[5], [record(h0)], False, RepoFacts(r)),
+                         (None, "no scored head within 5 merges of main"))
+
+    def test_a_failed_unshallow_fetch_refuses(self):
+        import subprocess
+
+        CarryTests.setUpClass()
+        c = CarryTests
+        clone = c.r.path + "-shallow"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", "pr", f"file://{c.r.path}", clone],
+                       check=True, env=c.r.env, capture_output=True)
+        subprocess.run(["git", "-C", clone, "remote", "set-url", "origin", clone + "-missing"],
+                       check=True, env=c.r.env, capture_output=True)
+        git = pps.LocalGit(clone)
+        self.assertEqual(git._git("rev-parse", "--is-shallow-repository").stdout.strip(), "true")
+        facts = RepoFacts(c.r, git=git)
+        from unittest import mock
+
+        with mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]):
+            plan, why = pps.carry_for_pr("o/r", 7, c.h2, [record(c.h0)], facts)
+        self.assertIsNone(plan)
+        self.assertTrue(why.startswith("cannot verify carry: CalledProcessError"), why)
+        with self.assertRaises(subprocess.CalledProcessError):
+            merge_class.sensitive_scores([body(record(c.h0))], c.h2, json.loads(pps.CLASSES.read_text()),
+                                         facts, merge_class.load_classes())
+
+
+class CommentModeOrderTests(unittest.TestCase):
+    """Runs for one PR can finish out of order. Each run re-reads after posting, so the status the
+    last run leaves reflects the facts after its last post, never a stale carried success."""
+
+    @classmethod
+    def setUpClass(cls):
+        CarryTests.setUpClass()
+        cls.c = CarryTests
+
+    def run_posting(self, comment_lists, head):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+
+        reads = iter(comment_lists)
+        last = []
+
+        def comments(repo, pr):
+            last[:] = [next(reads, last[0] if last else [])]
+            return last[0]
+
+        posted = []
+        with mock.patch.object(pps, "fetch_comments", side_effect=comments), \
+                mock.patch.object(pps, "fetch_head", side_effect=head), \
+                mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]), \
+                mock.patch.object(pps, "GitHubFacts", return_value=RepoFacts(self.c.r)), \
+                mock.patch.object(pps, "apply_plan", side_effect=lambda repo, plan: posted.append(plan)), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            code = pps.main(["--pr", "7", "--post"])
+        return code, posted, err.getvalue()
+
+    def comment(self, score, id_):
+        line = body(record(self.c.h0, score=score))
+        return dict(comment(line), id=id_)
+
+    def test_a_run_that_decided_before_a_new_record_posts_again(self):
+        # This run read only the 9. A newer run posted failure for the 7 before this run posted
+        # its carried success; the re-read after posting sees the 7 and posts failure again.
+        old = [self.comment(9, 1)]
+        new = [self.comment(9, 1), self.comment(7, 2)]
+        code, posted, _ = self.run_posting([old, new], lambda repo, pr: self.c.h2)
+        on_h2 = [p.state for p in posted if p.head == self.c.h2]
+        self.assertEqual((code, on_h2), (0, ["success", "failure"]))
+
+    def test_a_settled_run_posts_once(self):
+        code, posted, _ = self.run_posting([[self.comment(9, 1)]], lambda repo, pr: self.c.h2)
+        self.assertEqual((code, [(p.head, p.state) for p in posted]),
+                         (0, [(self.c.h0, "success"), (self.c.h2, "success")]))
+
+    def test_an_unreadable_head_fails_the_run_and_posts_nothing_for_it(self):
+        def no_head(repo, pr):
+            raise RuntimeError("GitHub is down")
+
+        code, posted, err = self.run_posting([[self.comment(9, 1)]], no_head)
+        self.assertEqual((code, [(p.head, p.state) for p in posted]), (1, [(self.c.h0, "success")]))
+        self.assertIn("its pp/score is unchanged; the merge_group run decides it again", err)
+
+
 class ChangedPathTests(unittest.TestCase):
     @staticmethod
     def entry(name, status="modified", previous=None):
@@ -1099,7 +1293,7 @@ class ChangedPathTests(unittest.TestCase):
             with self.assertRaises(pps.GateError):
                 pps.changed_paths(entries, count)
 
-    def test_workflow_runs_for_one_pr_in_order(self):
+    def test_workflow_runs_for_one_pr_share_a_concurrency_group(self):
         from pathlib import Path
 
         text = Path(pps.ROOT, ".github/workflows/post-pp-score-status.yml").read_text(encoding="utf-8")
@@ -1108,6 +1302,14 @@ class ChangedPathTests(unittest.TestCase):
         self.assertIn("github.event.merge_group.head_sha", block)
         self.assertIn("cancel-in-progress: false", block)
 
+    def test_every_run_checks_out_the_default_branch_or_the_queue_base(self):
+        # A dispatch from another ref must not run that ref's copy of the script or merge-classes.json.
+        from pathlib import Path
+
+        text = Path(pps.ROOT, ".github/workflows/post-pp-score-status.yml").read_text(encoding="utf-8")
+        self.assertIn("ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha"
+                      " || github.event.repository.default_branch }}", text)
+
 
 class RequiredCheckTests(unittest.TestCase):
     RULES = [
@@ -1115,14 +1317,13 @@ class RequiredCheckTests(unittest.TestCase):
         {"type": "required_status_checks", "parameters": {"required_status_checks": [
             {"context": "actionlint", "integration_id": 15368},
             {"context": "rust (linux)", "integration_id": 15368},
+            {"context": "legacy status"},
             {"context": "pp/score"},
         ]}},
     ]
 
-    def facts(self, runs, statuses=()):
-        from unittest import mock
-
-        def fake(path, paginate=False):
+    def facts(self, runs, statuses=({"context": "legacy status", "state": "success"},)):
+        def fake(path):
             if "/rules/branches/" in path:
                 return self.RULES
             if "/check-runs?" in path:
@@ -1132,40 +1333,53 @@ class RequiredCheckTests(unittest.TestCase):
                 return {"statuses": list(statuses)}
             raise AssertionError(path)
 
-        patcher = mock.patch.object(pps, "gh_json", side_effect=fake)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return pps.GitHubFacts("o/r")
+        return pps.GitHubFacts("o/r", fake)
 
     @staticmethod
     def run_(name, conclusion, status="completed"):
         return {"name": name, "status": status, "conclusion": conclusion}
 
+    def green(self, **override):
+        runs = {"actionlint": self.run_("actionlint", "success"), "rust (linux)": self.run_("rust (linux)", "success")}
+        runs.update(override)
+        return [r for r in runs.values() if r is not None]
+
     def test_reads_required_checks_from_main_rules_without_pp_score(self):
         facts = self.facts([])
-        self.assertEqual([c["context"] for c in facts.required_checks()], ["actionlint", "rust (linux)"])
+        self.assertEqual([c["context"] for c in facts.required_checks()],
+                         ["actionlint", "rust (linux)", "legacy status"])
 
     def test_only_success_passes(self):
-        facts = self.facts([self.run_("actionlint", "success"), self.run_("rust (linux)", "success")])
-        self.assertIsNone(facts.checks_failing(SHA))
-        # Chad's rule says success: a path-filtered skip or a neutral result does not qualify a hop.
-        for conclusion in ("skipped", "neutral"):
-            facts = self.facts([self.run_("actionlint", conclusion), self.run_("rust (linux)", "success")])
-            self.assertEqual(facts.checks_failing(SHA), f"actionlint is {conclusion}")
+        self.assertIsNone(self.facts(self.green()).checks_failing(SHA))
+        # Fail closed: the gate cannot prove that a skip came from the path filter rather than a
+        # draft, a failed needs job or a cancelled run, so no outcome but success qualifies.
+        for conclusion in ("skipped", "neutral", "cancelled", "timed_out", "action_required", "stale",
+                           "failure", "startup_failure", None):
+            with self.subTest(conclusion=conclusion):
+                facts = self.facts(self.green(actionlint=self.run_("actionlint", conclusion)))
+                self.assertEqual(facts.checks_failing(SHA), f"actionlint is {conclusion or 'completed'}")
 
     def test_running_failed_or_missing_checks_block(self):
-        facts = self.facts([self.run_("actionlint", "success"), self.run_("rust (linux)", None, "in_progress")])
-        self.assertEqual(facts.checks_failing(SHA), "rust (linux) is in_progress")
-        facts = self.facts([self.run_("actionlint", "failure"), self.run_("rust (linux)", "success")])
-        self.assertEqual(facts.checks_failing(SHA), "actionlint is failure")
-        facts = self.facts([self.run_("actionlint", "success")])
+        for status in ("queued", "in_progress", "pending", "waiting"):
+            with self.subTest(status=status):
+                facts = self.facts(self.green(**{"rust (linux)": self.run_("rust (linux)", None, status)}))
+                self.assertEqual(facts.checks_failing(SHA), f"rust (linux) is {status}")
+        # One success among the latest runs does not hide a failing one.
+        facts = self.facts(self.green() + [self.run_("rust (linux)", "failure")])
+        self.assertEqual(facts.checks_failing(SHA), "rust (linux) is failure")
+        facts = self.facts(self.green(**{"rust (linux)": None}))
         self.assertEqual(facts.checks_failing(SHA), "rust (linux) has not run")
+
+    def test_a_required_commit_status_must_be_success(self):
+        for state, why in (("pending", "pending"), ("failure", "failure"), ("error", "error"), (None, "missing")):
+            with self.subTest(state=state):
+                statuses = [{"context": "legacy status", "state": state}] if state else []
+                self.assertEqual(self.facts(self.green(), statuses).checks_failing(SHA), f"legacy status is {why}")
 
     def test_no_required_checks_fails_closed(self):
         self.RULES = [{"type": "deletion"}]
-        facts = self.facts([])
-        with self.assertRaises(pps.GateError):
-            facts.checks_failing(SHA)
+        with self.assertRaises(ValueError):
+            self.facts([]).checks_failing(SHA)
 
 
 if __name__ == "__main__":

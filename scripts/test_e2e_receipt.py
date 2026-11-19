@@ -223,6 +223,28 @@ class ScreenshotTests(unittest.TestCase):
         with self.assertRaises(er.ReceiptError):
             er.check(receipt, f.out)
 
+    def test_a_copy_changed_after_collect_refuses(self):
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        report = f.write_report()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(er.main(["collect", "--report", str(report), "--out", str(f.out)]), 0)
+        # Same name, same size, non-empty, different bytes: what a swap after the upload would look like.
+        (f.out / "screenshots" / "001-help-r0.png").write_bytes(PNG[:-1] + b"X")
+        args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "Print-Partner/PrintPartner",
+                "--head", HEAD, "--checkout-sha", HEAD, "--run-id", "44460000000", "--suite", "s",
+                "--runner-host", "h", "--artifact-url", ARTIFACT]
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(er.main(args), 1)
+        self.assertIn("differs from the report's attachment", err.getvalue())
+        self.assertFalse((f.out / "receipt.json").exists())
+        # A changed source attachment is refused the same way.
+        (f.out / "screenshots" / "001-help-r0.png").write_bytes(PNG)
+        f.png("help.png", PNG + b"later")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(er.main(args), 1)
+        self.assertIn("differs from the report's attachment", err.getvalue())
+
     def test_collect_refuses_a_used_directory(self):
         f = Fixture([spec("help", "expected", result())])
         f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))

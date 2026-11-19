@@ -157,10 +157,16 @@ def pr_head(pr: int, remote: str = "origin", cwd: Path | None = None) -> str:
 def build(args, now: datetime | None = None) -> dict:
     report = json.loads(Path(args.report).read_text(encoding="utf-8"))
     out = Path(args.out)
-    expected = [name for _, name in screenshot_sources(report, Path(args.report).parent)]
+    sources = screenshot_sources(report, Path(args.report).parent)
+    expected = [name for _, name in sources]
     present = sorted(p.name for p in (out / SCREENSHOTS).glob("*")) if (out / SCREENSHOTS).is_dir() else []
     if present != expected:
         raise ReceiptError(f"{out / SCREENSHOTS} holds {len(present)} files; the report lists {len(expected)}")
+    # The staged copies are what CI uploaded; each must still equal the attachment Playwright wrote.
+    for source, name in sources:
+        if not source.is_file() or hashlib.sha256(source.read_bytes()).digest() != \
+                hashlib.sha256((out / SCREENSHOTS / name).read_bytes()).digest():
+            raise ReceiptError(f"{SCREENSHOTS}/{name} differs from the report's attachment {source}")
     if args.pr and not PR.fullmatch(args.pr):
         raise ReceiptError("pr must be a positive integer without leading zeros")
     if not RUN_ID.fullmatch(args.run_id):

@@ -881,6 +881,36 @@ class CommentModeCarryTests(unittest.TestCase):
             self.assertIn("comment-mode dry runs only", err.getvalue())
 
 
+class ChangedPathTests(unittest.TestCase):
+    @staticmethod
+    def entry(name, status="modified", previous=None):
+        return {"filename": name, "status": status, "previous_filename": previous}
+
+    def test_a_rename_out_of_a_sensitive_path_is_strict(self):
+        moved = self.entry("rust/crates/pp-storage/src/schema_old.rs", "renamed",
+                           "rust/crates/pp-storage/src/schema.rs")
+        paths = pps.changed_paths([moved], 1)
+        self.assertEqual(paths, ["rust/crates/pp-storage/src/schema_old.rs", "rust/crates/pp-storage/src/schema.rs"])
+        self.assertTrue(pps.strict_class(paths))
+        self.assertFalse(pps.strict_class(paths[:1]))
+
+    def test_incomplete_or_capped_lists_refuse(self):
+        one = [self.entry("docs/x.md")]
+        for entries, count in (([], 0), (one, 2), (one, None), (one * 3000, 3000),
+                               ([self.entry("a", "renamed", None)], 1)):
+            with self.assertRaises(pps.GateError):
+                pps.changed_paths(entries, count)
+
+    def test_workflow_runs_for_one_pr_in_order(self):
+        from pathlib import Path
+
+        text = Path(pps.ROOT, ".github/workflows/post-pp-score-status.yml").read_text(encoding="utf-8")
+        block = text.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("github.event.issue.number || inputs.pr", block)
+        self.assertIn("github.event.merge_group.head_sha", block)
+        self.assertIn("cancel-in-progress: false", block)
+
+
 class RequiredCheckTests(unittest.TestCase):
     RULES = [
         {"type": "deletion"},

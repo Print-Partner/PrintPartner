@@ -507,13 +507,33 @@ def fetch_comments(repo: str, pr: int) -> list[dict]:
     return data
 
 
+# The REST file list stops at 3000 entries; a list that size may be incomplete.
+FILE_LIST_CAP = 3000
+
+
+def changed_paths(entries, changed_files) -> list[str]:
+    """Every path a PR touches, both sides of each rename, as the merge guard reads them.
+
+    Refuses an empty, incomplete or capped list, so an unreadable class never carries.
+    """
+    if not isinstance(entries, list) or not entries or type(changed_files) is not int \
+            or changed_files != len(entries) or changed_files >= FILE_LIST_CAP:
+        raise GateError("missing, incomplete or capped PR file list")
+    paths = []
+    for entry in entries:
+        paths.append(entry.get("filename"))
+        if entry.get("status") == "renamed":
+            paths.append(entry.get("previous_filename"))
+    if any(not isinstance(path, str) or not path for path in paths):
+        raise GateError("missing PR file path")
+    return paths
+
+
 def fetch_files(repo: str, pr: int) -> list[str]:
     out = subprocess.check_output(["gh", "api", "--paginate", f"repos/{repo}/pulls/{pr}/files",
-                                   "--jq", ".[].filename"], text=True)
-    files = [line for line in out.splitlines() if line]
-    if not files:
-        raise RuntimeError(f"no changed files for {repo}#{pr}")
-    return files
+                                   "--jq", ".[] | {filename, status, previous_filename}"], text=True)
+    entries = [json.loads(line) for line in out.splitlines() if line.strip()]
+    return changed_paths(entries, gh_json(f"repos/{repo}/pulls/{pr}").get("changed_files"))
 
 
 def fetch_head(repo: str, pr: int) -> str:

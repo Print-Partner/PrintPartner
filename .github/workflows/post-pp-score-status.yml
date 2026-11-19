@@ -23,6 +23,13 @@ on:
 
 permissions: {}
 
+# Runs for one PR post in order, so an older run cannot overwrite a newer run's
+# status on the same head (a fresh failure with an earlier carried success).
+# A merge group gets its own group per SHA.
+concurrency:
+  group: pp-score-${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.issue.number || inputs.pr }}
+  cancel-in-progress: false
+
 jobs:
   post:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group' || github.event.issue.pull_request

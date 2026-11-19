@@ -12,7 +12,7 @@ npm --prefix web run test --workspace @print-partner/rust-client
 (cd web && node --conditions=development --import tsx scripts/probe-connection-oracle.mjs)
 ```
 
-`pp-api` compiles `desktop_rebuild` by default. The flag stays because `pp-drivers` does not.
+`pp-api` and `pp-core` compile `desktop_rebuild` by default. `pp-drivers` does not, but its probe module is not behind the feature, so `--features desktop_rebuild` is optional for these commands.
 
 The mounted route contract is covered by
 `rebuild_api::tests::client_routes_match_registrations`. Its probe request uses

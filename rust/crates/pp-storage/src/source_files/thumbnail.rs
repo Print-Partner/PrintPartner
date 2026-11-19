@@ -72,7 +72,7 @@ impl SourceFilesClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<SourceThumbnail, SourceFilesError> {
-        if !self.requestable(path) {
+        if !self.requestable(path, &[".stl"]) {
             return Err(SourceFilesError::FileNotFound);
         }
         let name = "source_files.thumbnail";
@@ -86,7 +86,8 @@ impl SourceFilesClient {
         let cached = format!("{digest}-v{RENDERER_VERSION}.png");
         // A file that is not a whole PNG, as a crash between write and sync
         // could leave, is rendered again and replaced.
-        if let Ok(png) = read_cached(&self.data, revision_id, &cached)
+        let folder = revision_id.to_string();
+        if let Ok(png) = read_cached(&self.data, &folder, &cached)
             && png.starts_with(PNG_SIGNATURE)
         {
             return Ok(SourceThumbnail {
@@ -96,9 +97,9 @@ impl SourceFilesClient {
             });
         }
         let limits = GeometryLimits::default();
-        let stl = read_stl(&stl_file(&root, path)?, limits.max_bytes)?;
+        let stl = read_stl(&revision_file(&root, path)?, limits.max_bytes)?;
         let png = render(&stl, limits).map_err(|_| SourceFilesError::Unrenderable)?;
-        match store(&self.data, revision_id, &cached, &png) {
+        match store(&self.data, &folder, &cached, &png) {
             Ok(Folder::Created) => self.prune(&credential, cancelled, wait),
             Ok(Folder::Existed) => {}
             Err(error) => tracing::warn!(error = %error, "source_thumbnail_cache_write_failed"),
@@ -150,21 +151,25 @@ impl SourceFilesClient {
         }
     }
 
-    /// A path the file list could show for an STL. No name may hold a `:`:
-    /// on Windows a later `D:` segment would replace the whole path.
-    fn requestable(&self, path: &str) -> bool {
+    /// A path the file list could show for a file ending in one of
+    /// `extensions` (lowercase, with the dot). No name may hold a `:`: on
+    /// Windows a later `D:` segment would replace the whole path.
+    pub(super) fn requestable(&self, path: &str, extensions: &[&str]) -> bool {
         let first = path.split('/').next().unwrap_or_default();
+        let lower = path.to_ascii_lowercase();
         path.len() <= 4096
             && safe_path(path)
             && !path.contains(':')
-            && path.to_ascii_lowercase().ends_with(".stl")
+            && extensions
+                .iter()
+                .any(|extension| lower.ends_with(extension))
             && !self.internal.iter().any(|name| name == first)
     }
 }
 
-/// The STL at `path` under `root`, reached through real folders only. Each
+/// The file at `path` under `root`, reached through real folders only. Each
 /// name must be one plain path component, and the result stays under `root`.
-fn stl_file(root: &Path, path: &str) -> Result<PathBuf, SourceFilesError> {
+pub(super) fn revision_file(root: &Path, path: &str) -> Result<PathBuf, SourceFilesError> {
     let not_found = |_| SourceFilesError::FileNotFound;
     let mut file = root.to_path_buf();
     let names: Vec<&str> = path.split('/').collect();
@@ -209,20 +214,20 @@ fn read_stl(file: &Path, max_bytes: usize) -> Result<Vec<u8>, SourceFilesError> 
 
 /// Whether [`cache_folder`] made the revision's folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Folder {
+pub(super) enum Folder {
     Created,
     Existed,
 }
 
-/// `thumbs/sources/<revision id>` under the data folder, each folder opened
-/// relative to the one above without following a link, so a symbolic link or
-/// a file at any of those names fails instead of leading outside. Missing
-/// folders are made only when `create` is set.
-fn cache_folder(data: &Path, revision_id: i64, create: bool) -> io::Result<(Dir, Folder)> {
-    let revision = revision_id.to_string();
+/// `thumbs/sources/<leaf>` under the data folder, each folder opened relative
+/// to the one above without following a link, so a symbolic link or a file at
+/// any of those names fails instead of leading outside. Missing folders are
+/// made only when `create` is set. `leaf` is a revision id for thumbnails and
+/// `step` for STEP part trees.
+fn cache_folder(data: &Path, leaf: &str, create: bool) -> io::Result<(Dir, Folder)> {
     let mut folder = Dir::open(data)?;
     let mut made = Folder::Existed;
-    for name in SOURCE_THUMBNAIL_CACHE.split('/').chain([revision.as_str()]) {
+    for name in SOURCE_THUMBNAIL_CACHE.split('/').chain([leaf]) {
         folder = match folder.open_dir_nofollow(name) {
             Ok(next) => next,
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
@@ -289,25 +294,27 @@ fn remove_revision_folder(sources: &Dir, name: &str) -> io::Result<()> {
     sources.remove_dir(name)
 }
 
-/// The cached file `name`, read without following a link.
-fn read_cached(data: &Path, revision_id: i64, name: &str) -> io::Result<Vec<u8>> {
-    let (folder, _) = cache_folder(data, revision_id, false)?;
+/// The cached file `name` in `thumbs/sources/<leaf>`, read without following
+/// a link.
+pub(super) fn read_cached(data: &Path, leaf: &str, name: &str) -> io::Result<Vec<u8>> {
+    let (folder, _) = cache_folder(data, leaf, false)?;
     let mut file = folder.open_read_nofollow(name)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
-/// Writes `png` as `name` through a temporary file in the same folder, synced
-/// before the rename so a crash leaves the old state or the whole file. Every
-/// step is relative to the folder handle, so nothing is written through a link.
-fn store(data: &Path, revision_id: i64, name: &str, png: &[u8]) -> io::Result<Folder> {
-    let (folder, made) = cache_folder(data, revision_id, true)?;
+/// Writes `bytes` as `name` in `thumbs/sources/<leaf>` through a temporary
+/// file in the same folder, synced before the rename so a crash leaves the old
+/// state or the whole file. Every step is relative to the folder handle, so
+/// nothing is written through a link.
+pub(super) fn store(data: &Path, leaf: &str, name: &str, bytes: &[u8]) -> io::Result<Folder> {
+    let (folder, made) = cache_folder(data, leaf, true)?;
     let temporary = format!(".{:016x}.tmp", rand::random::<u64>());
     let written = folder
         .create_new_nofollow(&temporary)
         .and_then(|mut file| {
-            file.write_all(png)?;
+            file.write_all(bytes)?;
             file.sync_all()
         })
         .and_then(|()| folder.rename_replace(&temporary, name))

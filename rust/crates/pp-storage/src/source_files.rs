@@ -27,7 +27,7 @@ use rusqlite::{OptionalExtension, Transaction};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -86,9 +86,10 @@ pub enum SourceFilesError {
     SnapshotUnavailable,
     #[error("the revision holds more than {MAX_FILES} files")]
     TooManyFiles,
-    /// The path names no regular STL file of the current revision, or the
-    /// Source has no revision.
-    #[error("the current revision has no STL file at that path")]
+    /// The path names no regular file of the requested kind (an STL for a
+    /// thumbnail, a STEP file for a part tree) in the current revision, or
+    /// the Source has no revision.
+    #[error("the current revision has no such file at that path")]
     FileNotFound,
     /// The STL is corrupt or over the reader's caps. Nothing was cached.
     #[error("the STL cannot be rendered")]
@@ -112,6 +113,8 @@ pub struct SourceFilesClient {
     data: PathBuf,
     /// Names at a revision's root that belong to the snapshot writer.
     internal: Vec<String>,
+    /// The STEP part-tree queue and its worker.
+    steps: Arc<StepJobs>,
 }
 
 impl WriterOwner {
@@ -127,6 +130,7 @@ impl WriterOwner {
             repos: lease.data_dir().join("repos"),
             data: lease.data_dir().to_path_buf(),
             internal: Vec::new(),
+            steps: Arc::new(StepJobs::new(lease.data_dir().to_path_buf())),
         })
     }
 }
@@ -257,7 +261,11 @@ fn walk(root: &Path, internal: &[String]) -> Result<Vec<SourceFile>, SourceFiles
     Ok(files)
 }
 
+mod step;
 mod thumbnail;
+pub use pp_domain::step_assembly::{PartNode, PartTree};
+use step::StepJobs;
+pub use step::{PART_TREE_FORMAT, StepConversion, StepFailure};
 pub use thumbnail::{SourceThumbnail, THUMBNAIL_CONCURRENCY};
 
 #[cfg(test)]

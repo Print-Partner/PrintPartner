@@ -308,3 +308,149 @@ async fn each_family_answers_its_refusal_and_a_busy_storage_the_same_way() {
     drop(reader);
     sql.execute_batch("ROLLBACK").unwrap();
 }
+
+const NESTED_STEP: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../fixtures/step/nested-assembly.step"
+));
+
+/// GET `path` until the conversion leaves queued and converting.
+async fn settled(router: &Router, path: &str) -> Value {
+    let started = std::time::Instant::now();
+    loop {
+        let (status, body) = loopback::send(router, "GET", path, None, Some(COOKIE)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        if !matches!(body["state"].as_str(), Some("queued" | "converting")) {
+            return body;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{path} never settled"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// GRE-1007: a STEP file is queued on first open, converted once in the
+/// background, and every later open at either prefix answers the cached tree.
+#[tokio::test]
+async fn a_step_file_is_converted_once_and_answered_from_the_cache() {
+    let root = tempfile::tempdir().unwrap();
+    installation(root.path());
+    let snapshot = root.path().join("repos/1/revisions/accepted");
+    std::fs::create_dir_all(snapshot.join("cad")).unwrap();
+    std::fs::write(snapshot.join("cad/printer.step"), NESTED_STEP).unwrap();
+    std::fs::write(snapshot.join("cad/broken.stp"), b"solid not step").unwrap();
+    let owner = WriterOwner::open(root.path(), Limits::default()).unwrap().0;
+    let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some("1")).unwrap();
+    let client = owner.source_files(POLICY).unwrap();
+    let router = source_files_router(config, client.clone());
+
+    let path = "/api/v1/sources/1/step-conversion?path=cad%2Fprinter.step";
+    let (status, first) = loopback::send(&router, "GET", path, None, Some(COOKIE)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        first,
+        json!({"source_id": 1, "path": "cad/printer.step", "state": "queued",
+            "sha256": null, "failure": null, "parts": []})
+    );
+    let done = settled(&router, path).await;
+    let part = |name: &str, product_id: &str, instance: Option<&str>, depth: u32| json!({"name": name, "product_id": product_id, "instance": instance, "depth": depth});
+    let sha256 = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(NESTED_STEP));
+    assert_eq!(
+        done,
+        json!({
+            "source_id": 1,
+            "path": "cad/printer.step",
+            "state": "done",
+            "sha256": sha256,
+            "failure": null,
+            "parts": [
+                part("Printer", "PRN-1", None, 0),
+                part("Frame", "FRM-1", Some("Frame:1"), 1),
+                part("Gantry", "GNT-1", Some("Gantry:1"), 2),
+                part("Carriage", "CAR-1", Some("Carriage:1"), 3),
+                part("Hotend", "HOT-1", Some("Hotend:1"), 4),
+                part("D\u{fc}se 0.4", "NOZ-1", Some("Nozzle:1"), 5),
+                part("SCR-M3", "SCR-M3", Some("Screw:1"), 4),
+                part("SCR-M3", "SCR-M3", Some("Screw:2"), 4),
+                part("SCR-M3", "SCR-M3", Some("NAUO8"), 2),
+                part("Bed; 'heated'", "BED-1", Some("Bed:1"), 1),
+            ],
+        })
+    );
+    let (status, again) = loopback::send(
+        &router,
+        "GET",
+        "/sources/1/step-conversion?path=cad/printer.step",
+        None,
+        Some(COOKIE),
+    )
+    .await;
+    assert_eq!((status, &again), (StatusCode::OK, &done));
+    assert_eq!(client.step_files_converted(), 1);
+    let cached = root
+        .path()
+        .join(format!("thumbs/sources/step/{sha256}-v1.json"));
+    assert!(cached.is_file(), "{}", cached.display());
+
+    let failed = settled(
+        &router,
+        "/api/v1/sources/1/step-conversion?path=cad%2Fbroken.stp",
+    )
+    .await;
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(failed["failure"], "not_step");
+    assert_eq!(failed["parts"], json!([]));
+}
+
+#[tokio::test]
+async fn step_conversion_refusals_are_problems() {
+    let (_root, _owner, router) = with_file("part.stl", PART);
+    let cases = [
+        (
+            "/api/v1/sources/1/step-conversion",
+            400,
+            "source_file_path_required",
+        ),
+        (
+            "/api/v1/sources/1/step-conversion?path=",
+            400,
+            "source_file_path_required",
+        ),
+        (
+            "/api/v1/sources/1/step-conversion?path=part.stl",
+            404,
+            "source_file_not_found",
+        ),
+        (
+            "/api/v1/sources/1/step-conversion?path=missing.step",
+            404,
+            "source_file_not_found",
+        ),
+        (
+            "/api/v1/sources/2/step-conversion?path=a.step",
+            404,
+            "source_file_not_found",
+        ),
+        (
+            "/api/v1/sources/9/step-conversion?path=a.step",
+            404,
+            "source_not_found",
+        ),
+    ];
+    for (path, status, code) in cases {
+        let (answered, body) = loopback::send(&router, "GET", path, None, Some(COOKIE)).await;
+        assert_eq!(answered.as_u16(), status, "{path}: {body}");
+        assert_eq!(body["code"], code, "{path}");
+    }
+    let (status, _) = loopback::send(
+        &router,
+        "GET",
+        "/api/v1/sources/1/step-conversion?path=a.step",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

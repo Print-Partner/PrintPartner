@@ -390,6 +390,14 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "SourceFileList",
     ),
+    // Takes `?path=`, the STEP file's path as `listSourceFiles` gives it.
+    route(
+        "readStepPartTree",
+        "GET",
+        "/api/v1/sources/{id}/step-conversion",
+        None,
+        "StepPartTree",
+    ),
     ClientRoute {
         text_params: &["module"],
         ..route(
@@ -826,6 +834,10 @@ pub(crate) mod codegen {
         schema(
             "SourceFileList",
             schemars::schema_for!(crate::source_files::SourceFileList),
+        )?;
+        schema(
+            "StepPartTree",
+            schemars::schema_for!(crate::source_files::StepPartTree),
         )?;
         schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
         schema("FarmLogEntry", schemars::schema_for!(FarmLogEntry))?;
@@ -1854,6 +1866,62 @@ pub(crate) mod codegen {
         ])
     }
 
+    /// A STEP part tree in each state: queued, converting, done three levels
+    /// deep, and failed.
+    fn step_part_tree_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::source_files::{
+            StepConversionFailure, StepConversionState, StepPart, StepPartTree,
+        };
+        let part = |name: &str, instance: Option<&str>, depth| StepPart {
+            name: name.into(),
+            product_id: format!("{name}-id"),
+            instance: instance.map(Into::into),
+            depth,
+        };
+        let tree = |state, sha256: Option<String>, failure, parts| StepPartTree {
+            source_id: MAX_SAFE,
+            path: format!("cad/{UNICODE}.step"),
+            state,
+            sha256,
+            failure,
+            parts,
+        };
+        let done = vec![
+            part("Printer", None, 0),
+            part("Frame", Some("Frame:1"), 1),
+            part("Carriage", Some("Carriage:1"), 2),
+            part(UNICODE, Some(UNICODE), 3),
+            part("Bed", Some("Bed:1"), 1),
+        ];
+        Ok(vec![
+            served(
+                "StepPartTree",
+                "queued",
+                tree(StepConversionState::Queued, None, None, vec![]),
+            )?,
+            served(
+                "StepPartTree",
+                "converting",
+                tree(StepConversionState::Converting, None, None, vec![]),
+            )?,
+            served(
+                "StepPartTree",
+                "done",
+                tree(StepConversionState::Done, Some("ab".repeat(32)), None, done),
+            )?,
+            served(
+                "StepPartTree",
+                "failed",
+                tree(
+                    StepConversionState::Failed,
+                    None,
+                    Some(StepConversionFailure::NoProducts),
+                    vec![],
+                ),
+            )?,
+        ])
+    }
+
     fn installation_backup_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         use crate::backup::{InstallationBackup, InstallationBackupWarning};
         let created = InstallationBackup {
@@ -2532,6 +2600,7 @@ pub(crate) mod codegen {
         cases.push(served("SendQueue", "every-state", queue)?);
         cases.extend(catalog_fixtures()?);
         cases.extend(source_file_fixtures()?);
+        cases.extend(step_part_tree_fixtures()?);
         cases.extend(installation_backup_fixtures()?);
         cases.extend(installation_restore_fixtures()?);
         let log = farm_log();

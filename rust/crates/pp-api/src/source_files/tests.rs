@@ -65,7 +65,7 @@ async fn each_storage_failure_answers_one_whole_body() {
         (SourceFilesError::TooManyFiles,
             body("validation", "Validation Failed", 422, "The revision holds more than 20000 files", "source_too_many_files")),
         (SourceFilesError::FileNotFound,
-            body("not-found", "Not Found", 404, "The current revision has no STL file at that path", "source_file_not_found")),
+            body("not-found", "Not Found", 404, "The current revision has no such file at that path", "source_file_not_found")),
         (SourceFilesError::Unrenderable,
             body("validation", "Validation Failed", 422, "The STL file cannot be rendered", "source_file_unrenderable")),
         (SourceFilesError::Writer(WriterFailure::Busy),

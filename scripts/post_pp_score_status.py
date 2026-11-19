@@ -9,7 +9,7 @@ author=cursor-auto or author=unknown requires trusted
 anthropic and openai records on that exact head; the lower score is the bar. In --merge-group mode it checks every PR in a merge
 queue entry and posts one pp/score status on the merge group SHA, failing closed.
 A PR head with no records of its own can carry the records of an earlier head across clean
-merges of main (Chad, 2026-11-18 11:02 PM ET); see find_carry.
+merges of main (Chad, 2026-11-18 11:02 PM ET); hop and plan_carry list every condition.
 Default is a dry run that prints the gh api POST that would be sent. Pass --post to apply.
 """
 
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # obstacles= is required here: a record without it does not count. merge_class.py holds the vocabulary.
-from merge_class import classify, load_classes, parse_obstacles
+from merge_class import classify, load_classes, parse_obstacles, path_class
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
@@ -47,10 +47,17 @@ MAIN = "main"
 # A carry walks back at most this many merge-of-main hops.
 CARRY_MAX_HOPS = 5
 # Chad's rule says success. A skipped or neutral required check (path-filtered actionlint or
-# zizmor) does not qualify a hop, although GitHub lets it satisfy the required check.
+# zizmor) does not qualify the carried head, although GitHub lets it satisfy the required check.
 PASSING = frozenset({"success"})
 # Grok records never carry.
 NO_CARRY_VENDORS = frozenset({"xai"})
+# The score tooling. With every owner and sensitive path in merge-classes.json, these are the gate
+# files: a merge of main that changes one never carries a score, because the gate changed under it.
+SCORER_FILES = frozenset({
+    "scripts/post_pp_score_status.py",
+    "scripts/test_post_pp_score_status.py",
+    "docs/development/score-records.md",
+})
 
 
 @dataclass(frozen=True)
@@ -233,25 +240,34 @@ class LocalGit:
         self.cwd = Path(cwd)
         self.remote = remote
 
-    def _git(self, *args, check=True):
-        return subprocess.run(["git", *args], cwd=self.cwd, text=True, capture_output=True, check=check)
+    def _git(self, *args, check=True, text=True):
+        return subprocess.run(["git", *args], cwd=self.cwd, text=text, capture_output=True, check=check)
 
     def ensure(self, *shas: str) -> None:
         if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
             # The workflow checkout is depth 1. Fetch the commits' full history without blobs
-            # (Git fetches the blobs a merge reads on demand), so merge-tree sees every merge base.
+            # (Git fetches the blobs a merge or diff reads on demand), so every merge base is there.
             self._git("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
             return
         missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
         if missing:
             self._git("fetch", "--no-tags", "--quiet", self.remote, *missing)
 
+    def parents(self, sha: str) -> list[str]:
+        return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]
+
+    def tree(self, sha: str) -> str:
+        return self._git("rev-parse", f"{sha}^{{tree}}").stdout.strip()
+
+    def merge_bases(self, a: str, b: str) -> list[str]:
+        done = self._git("merge-base", "--all", a, b, check=False)
+        return done.stdout.split() if done.returncode == 0 else []
+
     def merge_tree(self, ours: str, theirs: str) -> str | None:
         """Tree of the clean merge of ours and theirs, or None when it conflicts.
 
         Plain `git merge-tree --write-tree`, so a criss-cross history merges from all its bases.
         """
-        self.ensure(ours, theirs)
         done = self._git("merge-tree", "--write-tree", ours, theirs, check=False)
         if done.returncode == 1:
             return None
@@ -259,25 +275,44 @@ class LocalGit:
             raise RuntimeError(f"git merge-tree failed: {done.stderr.strip()}")
         return done.stdout.splitlines()[0].strip()
 
+    # Byte-exact and independent of local config: no external diff, textconv, rename pairing or
+    # abbreviated blob IDs, so equal output means equal paths, modes and blobs on both sides.
+    _DIFF = ("-c", "core.quotePath=true", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+             "--no-color", "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/")
+
+    def diff(self, base: str, tip: str) -> bytes:
+        return self._git(*self._DIFF, base, tip, "--", text=False).stdout
+
+    def _paths(self, *args) -> set[str]:
+        raw = self._git(*args, text=False).stdout
+        return {p.decode("utf-8", "surrogateescape") for p in raw.split(b"\0") if p}
+
+    def changed(self, base: str, tip: str) -> set[str]:
+        """Paths that differ between base and tip, both sides of a rename."""
+        return self._paths("diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, tip, "--")
+
+    def touched(self, pr_head: str, base: str, main: str) -> set[str]:
+        """Paths that the main commits a merge brings in changed: every commit in pr_head..main
+        (merges against each parent), plus the net diff base..main. A file that one commit
+        changed and a later commit reverted still counts."""
+        each = self._paths("log", "-m", "--no-renames", "--name-only", "-z", "--format=",
+                           f"{pr_head}..{main}", "--")
+        return each | self.changed(base, main)
+
 
 class GitHubFacts:
-    """What a carry needs to know about commits. Reads GitHub; merges with local git."""
+    """What a carry needs to know. Commits, merges and diffs come from local git; GitHub answers
+    whether a commit is on main (main's ruleset forbids force-pushes, so that never reverts) and
+    which required checks passed on the carried head."""
 
     def __init__(self, repo: str, git: LocalGit | None = None):
         self.repo = repo
         self.git = git or LocalGit()
         self._required = None
 
-    def commit(self, sha: str) -> tuple[list[str], str]:
-        data = gh_json(f"repos/{self.repo}/git/commits/{sha}")
-        return [p["sha"] for p in data["parents"]], data["tree"]["sha"]
-
     def on_main(self, sha: str) -> bool:
         data = gh_json(f"repos/{self.repo}/compare/{sha}...{MAIN}")
         return data.get("status") in ("identical", "ahead")
-
-    def merged_tree(self, ours: str, theirs: str) -> str | None:
-        return self.git.merge_tree(ours, theirs)
 
     def required_checks(self) -> list[dict]:
         """The required status checks of main's rulesets, except pp/score itself."""
@@ -326,48 +361,87 @@ class Carry:
     reason: str
 
 
-def hop(facts, head: str) -> tuple[str | None, str]:
-    """The previous head when head is a clean merge of main into it with CI passing; else (None, why)."""
-    parents, tree = facts.commit(head)
+def gate_file(path: str, classes) -> bool:
+    return path in SCORER_FILES or path_class(path, classes) != "lane"
+
+
+def hop(facts, head: str, classes) -> tuple[str | None, str]:
+    """(P, why) when head is a merge of main into P that leaves the PR's code exactly as scored
+    on P; (None, why) otherwise. Every check reads only commits named by SHA, so the answer for
+    a hop can never change after a status is posted. All must hold:
+
+    1. head has exactly two parents [P, M]: not a rebase, squash, force-push or octopus merge.
+    2. M is on main.
+    3. P and M have exactly one merge base B, and B is neither P nor M.
+    4. `git merge-tree --write-tree P M` is clean and its tree is head's tree: no hand edits.
+    5. The PR's diff B..P is byte-identical to its diff M..head (full blob IDs and modes).
+    6. No commit in P..M changed a path that the PR changes, even if a later commit undid it.
+    7. No commit in P..M changed a gate file: an owner or sensitive path, or the score tooling.
+    """
+    git = facts.git
+    git.ensure(head)
+    parents = git.parents(head)
     if len(parents) != 2:
-        return None, "not a merge commit"
+        return None, f"{len(parents)} parents, not a two-parent merge of {MAIN}"
     previous, main = parents
     if not facts.on_main(main):
         return None, f"second parent {main[:7]} is not on {MAIN}"
-    merged = facts.merged_tree(previous, main)
+    bases = git.merge_bases(previous, main)
+    if len(bases) != 1:
+        return None, f"{len(bases)} merge bases with {MAIN}"
+    if bases[0] in (previous, main):
+        return None, f"the merge brought no new {MAIN} commits" if bases[0] == main \
+            else f"the PR head is already on {MAIN}"
+    base = bases[0]
+    merged = git.merge_tree(previous, main)
     if merged is None:
-        return None, "the merge of main had conflicts"
-    if merged != tree:
+        return None, f"the merge of {MAIN} had conflicts"
+    if merged != git.tree(head):
         return None, "the merge commit differs from a clean merge"
-    failing = facts.checks_failing(head)
-    if failing:
-        return None, failing
-    return previous, "clean merge of main"
+    if git.diff(base, previous) != git.diff(main, head):
+        return None, "the PR's own diff changed"
+    touched = git.touched(previous, base, main)
+    overlap = sorted(touched & git.changed(base, previous))
+    if overlap:
+        return None, f"{MAIN} changed {overlap[0]}, which the PR changes"
+    gate = sorted(p for p in touched if gate_file(p, classes))
+    if gate:
+        return None, f"{MAIN} changed gate file {gate[0]}"
+    return previous, f"clean merge of {MAIN}"
 
 
 def find_carry(head: str, scored: set[str], facts, max_hops: int = CARRY_MAX_HOPS) -> Carry:
-    """Walk back from head through clean merges of main to the nearest head with records.
+    """Walk back from head through hops (see hop) to the nearest head with records.
 
-    Each hop H1 -> H0 needs: H1's parents are exactly [H0, M] with M on main, a clean
-    `git merge-tree` of H0 and M equal to H1's tree, and every other required check passing on H1.
-    The first head with records stops the walk, so newer fresh records always win.
+    The first head with records stops the walk, so newer records always win, even failing ones.
     """
+    classes = load_classes()
     current = head
     for _ in range(max_hops):
-        previous, why = hop(facts, current)
+        previous, why = hop(facts, current, classes)
         if previous is None:
             return Carry(None, f"{current[:7]}: {why}")
         if previous in scored:
             return Carry(previous, why)
         current = previous
-    return Carry(None, f"no scored head within {max_hops} merges of main")
+    return Carry(None, f"no scored head within {max_hops} merges of {MAIN}")
 
 
 def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[StatusPlan | None, str]:
-    """pp/score for a head with no records of its own, carried from an earlier head, or (None, why)."""
+    """pp/score for a head with no records of its own, carried from an earlier head, or (None, why).
+
+    Besides the hops: the source records must pass plan_head without Grok, every record on the
+    PR must name one author family, a strict (owner or sensitive) PR needs every carried seat
+    above 8, and every required check of main must have concluded success on head itself.
+    """
     scored = {r.head for r in records}
+    if not scored:
+        return None, "no records on this PR"
     if head in scored:
         return None, f"{head[:7]} has its own records"
+    families = sorted({r.author for r in records})
+    if len(families) > 1:
+        return None, f"records on this PR disagree on the author family ({', '.join(families)})"
     carry = find_carry(head, scored, facts)
     if carry.source is None:
         return None, carry.reason
@@ -381,6 +455,11 @@ def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[S
     low = [r for r in plan.records if r.score <= PASS_AT]
     if strict and low:
         return None, f"sensitive: {low[0].seat} scored {format_score(low[0].score)} on {source[:7]}"
+    # Only the carried head's own checks count. A superseded hop never merges, and its checks
+    # can be re-run after this status posts with nothing to re-run this workflow.
+    failing = facts.checks_failing(head)
+    if failing:
+        return None, f"{head[:7]}: {failing}"
     prefix = f"carried from {source[:7]}: "
     return StatusPlan(head, "success", _fit(prefix + plan.description, prefix + "scored 8+"),
                       plan.records), f"carried from {source[:7]}"
@@ -388,7 +467,7 @@ def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[S
 
 def no_carry_plan(head: str, why: str) -> StatusPlan:
     """Failure on a head with no records and no carry. It replaces a carried success posted
-    before a hop stopped qualifying, so a stale carry cannot stand."""
+    earlier, for example before a newer record on the source head failed it."""
     return StatusPlan(head, "failure", _fit(f"no score and no carry: {why}", "no score and no carry"), ())
 
 

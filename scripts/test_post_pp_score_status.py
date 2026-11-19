@@ -609,8 +609,9 @@ class CursorAutoMergeGroupTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+TEN = "".join(f"{i}\n" for i in range(1, 11))
+PR_TEN = TEN.replace("1\n", "1 from the PR\n", 1)
+MAIN_TEN = TEN.replace("10\n", "10 from main\n")
 
 
 class CarryRepo:
@@ -635,6 +636,12 @@ class CarryRepo:
             raise RuntimeError(done.stderr)
         return done.stdout.strip()
 
+    def is_ancestor(self, sha, ref):
+        import subprocess
+
+        return subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref], cwd=self.path,
+                              env=self.env, capture_output=True).returncode == 0
+
     def write(self, name, text):
         from pathlib import Path
 
@@ -644,31 +651,49 @@ class CarryRepo:
         self.write(name, text)
         self.git("add", name)
         self.git("commit", "-q", "-m", message)
+        return self.head()
+
+    def head(self):
         return self.git("rev-parse", "HEAD")
 
-    def merge_main(self, main):
-        """Merge main into the checked-out branch like GitHub's update-branch; parents [head, main]."""
-        self.git("merge", "-q", "--no-ff", "--no-edit", main, check=False)
-        return self.git("rev-parse", "HEAD")
+    def branch(self, name, start):
+        self.git("checkout", "-q", "-b", name, start)
+
+    def line(self, name, start, *edits):
+        """A branch from start with one commit per (path, text) edit; returns its tip."""
+        self.branch(name, start)
+        for path, text in edits:
+            self.commit(path, text, f"{name}: {path}")
+        return self.head()
+
+    def merge(self, *others):
+        """Merge into the checked-out branch like GitHub's update-branch; parents [head, *others]."""
+        self.git("merge", "-q", "--no-ff", "--no-edit", *others, check=False)
+        return self.head()
+
+    def amend(self, name, text):
+        self.write(name, text)
+        self.git("add", name)
+        self.git("commit", "-q", "--amend", "--no-edit")
+        return self.head()
+
+    def merge_commit(self, tree_of, *parents):
+        args = ["commit-tree", f"{tree_of}^{{tree}}", "-m", "hand-built merge"]
+        for parent in parents:
+            args += ["-p", parent]
+        return self.git(*args)
 
 
 class RepoFacts(pps.GitHubFacts):
-    """GitHubFacts with the GitHub reads answered from the local repo; merges still run LocalGit."""
+    """GitHubFacts with GitHub's two answers taken from the local repo: a commit is on main when
+    it is an ancestor of main_ref, and failing maps a SHA to its first failing required check."""
 
-    def __init__(self, repo, failing=None):
+    def __init__(self, repo, failing=None, main_ref="main"):
         super().__init__("o/r", pps.LocalGit(repo.path))
-        self.repo_ = repo
-        self.failing = failing or {}
-
-    def commit(self, sha):
-        parents = self.repo_.git("rev-list", "--parents", "-n1", sha).split()[1:]
-        return parents, self.repo_.git("rev-parse", f"{sha}^{{tree}}")
+        self.repo_, self.failing, self.main_ref = repo, failing or {}, main_ref
 
     def on_main(self, sha):
-        import subprocess
-
-        return subprocess.run(["git", "merge-base", "--is-ancestor", sha, "main"], cwd=self.repo_.path,
-                              env=self.repo_.env).returncode == 0
+        return self.repo_.is_ancestor(sha, self.main_ref)
 
     def checks_failing(self, sha):
         return self.failing.get(sha)
@@ -679,51 +704,77 @@ def record(head, seat="gpt-6.2-sol", vendor="openai", score=9, author="anthropic
 
 
 class CarryTests(unittest.TestCase):
-    """Chad's rule of 2026-11-18 11:02 PM ET: records carry only across clean merges of main."""
+    """Chad's rule of 2026-11-18 11:02 PM ET, tightened so every hop fact is fixed by its SHAs.
+    One test per condition in hop() and plan_carry() failing, plus the clean cases."""
 
     @classmethod
     def setUpClass(cls):
         r = cls.r = CarryRepo()
-        cls.base = r.commit("a.txt", "a1\n", "base")
-        r.write("b.txt", "b1\n")
-        cls.base = r.commit("b.txt", "b1\n", "base b")
-        r.git("checkout", "-q", "-b", "pr")
-        cls.h0 = r.commit("a.txt", "a2 from the PR\n", "pr change")
+        r.write("a.txt", TEN)
+        r.git("add", "a.txt")
+        cls.base = r.commit("b.txt", "b1\n", "base")
+        r.branch("pr", cls.base)
+        cls.h0 = r.commit("a.txt", PR_TEN, "pr changes line 1")
         r.git("checkout", "-q", "main")
         cls.m1 = r.commit("b.txt", "b2 from main\n", "main change")
         r.git("checkout", "-q", "pr")
-        cls.h1 = r.merge_main("main")
-        # A second clean update on top of the first.
+        cls.h1 = r.merge(cls.m1)
         r.git("checkout", "-q", "main")
         cls.m2 = r.commit("c.txt", "c1\n", "main adds c")
         r.git("checkout", "-q", "pr")
-        cls.h2 = r.merge_main("main")
-        # The same merge with a hand edit folded in.
-        r.git("checkout", "-q", "-b", "edited", cls.h0)
-        r.merge_main(cls.m1)
-        r.write("a.txt", "a2 from the PR, edited during the merge\n")
-        r.git("commit", "-q", "-a", "--amend", "--no-edit")
-        cls.edited = r.git("rev-parse", "HEAD")
-        # main changes the PR's file: the merge conflicts and is resolved by hand.
-        r.git("checkout", "-q", "main")
-        cls.m_conflict = r.commit("a.txt", "a3 from main\n", "main touches a")
-        r.git("checkout", "-q", "-b", "conflicted", cls.h0)
-        r.merge_main(cls.m_conflict)
+        cls.h2 = r.merge(cls.m2)
+        # Each case below merges a branch that the facts treat as main when named as main_ref.
+        r.branch("edited", cls.h0)
+        r.merge(cls.m1)
+        cls.edited = r.amend("a.txt", PR_TEN + "edited during the merge\n")
+        r.branch("hidden", cls.h0)
+        r.merge(cls.m1)
+        cls.hidden = r.amend("evil.txt", "not in the PR or main\n")
+        conflict = r.line("main-conflict", cls.m1, ("a.txt", TEN.replace("1\n", "1 from main\n", 1)))
+        r.branch("conflicted", cls.h0)
+        r.merge(conflict)
         r.write("a.txt", "resolved\n")
         r.git("add", "a.txt")
         r.git("commit", "-q", "--no-edit")
-        cls.conflicted = r.git("rev-parse", "HEAD")
-        # The PR rebased onto main: one parent, a new SHA.
-        r.git("checkout", "-q", "-b", "rebased", cls.m1)
+        cls.conflicted = r.head()
+        r.branch("rebased", cls.m1)
         r.git("cherry-pick", cls.h0)
-        cls.rebased = r.git("rev-parse", "HEAD")
-        # Parents in the wrong order: main merged with the PR, not the PR updated from main.
-        r.git("checkout", "-q", "-b", "reversed", cls.m1)
-        r.merge_main(cls.h0)
-        cls.reversed = r.git("rev-parse", "HEAD")
+        cls.rebased = r.head()
+        r.branch("reversed", cls.m1)
+        cls.reversed = r.merge(cls.h0)
+        side_o = r.line("side-o", cls.m1, ("o.txt", "o\n"))
+        side_p = r.line("side-p", cls.m1, ("p.txt", "p\n"))
+        r.branch("octopus", cls.h0)
+        cls.octopus = r.merge(side_o, side_p)
+        r.branch("feature", cls.h0)
+        cls.feature = r.merge(side_o)
+        cls.hunk_main = r.line("main-hunk", cls.m1, ("a.txt", MAIN_TEN))
+        r.branch("hunk", cls.h0)
+        cls.hunk = r.merge(cls.hunk_main)
+        revert = r.line("main-revert", cls.m1, ("a.txt", MAIN_TEN), ("a.txt", TEN))
+        r.branch("revert", cls.h0)
+        cls.revert = r.merge(revert)
+        gate = r.line("main-gate", cls.m1, ("Dockerfile", "FROM scratch\n"))
+        r.branch("gate", cls.h0)
+        cls.gate = r.merge(gate)
+        r.branch("rewritten", cls.h0)
+        r.git("commit", "-q", "--amend", "-m", "pr changes line 1, rewritten")
+        cls.rewritten = r.merge(cls.m1)
+        # A second update on top of the carried h1 whose main side edits the PR's file.
+        r.branch("second", cls.h1)
+        cls.second = r.merge(cls.hunk_main)
+        cls.no_new = r.merge_commit(cls.h1, cls.h1, cls.m1)
+        cls.on_main = r.merge_commit(cls.m1, cls.base, cls.m1)
 
-    def plan(self, head, records, strict=False, failing=None):
-        return pps.plan_carry(head, records, strict, RepoFacts(self.r, failing))
+    def plan(self, head, records, strict=False, failing=None, main_ref="main"):
+        return pps.plan_carry(head, records, strict, RepoFacts(self.r, failing, main_ref))
+
+    def refused(self, head, records=None, main_ref="main", **kw):
+        plan, why = self.plan(head, records or [record(self.h0)], main_ref=main_ref, **kw)
+        self.assertIsNone(plan, why)
+        return why
+
+    # The clean cases.
 
     def test_clean_update_carries(self):
         plan, why = self.plan(self.h1, [record(self.h0)])
@@ -731,73 +782,159 @@ class CarryTests(unittest.TestCase):
         self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
         self.assertEqual(why, f"carried from {self.h0[:7]}")
 
-    def test_conflicted_merge_does_not_carry(self):
-        plan, why = self.plan(self.conflicted, [record(self.h0)])
-        self.assertIsNone(plan)
-        self.assertIn("conflicts", why)
-
-    def test_merge_with_an_extra_edit_does_not_carry(self):
-        plan, why = self.plan(self.edited, [record(self.h0)])
-        self.assertIsNone(plan)
-        self.assertIn("differs from a clean merge", why)
-
-    def test_rebased_head_does_not_carry(self):
-        plan, why = self.plan(self.rebased, [record(self.h0)])
-        self.assertIsNone(plan)
-        self.assertIn("not a merge commit", why)
-
-    def test_reversed_parents_do_not_carry(self):
-        plan, why = self.plan(self.reversed, [record(self.h0)])
-        self.assertIsNone(plan)
-
-    def test_ci_not_green_on_the_new_head_does_not_carry(self):
-        plan, why = self.plan(self.h1, [record(self.h0)], failing={self.h1: "rust (linux) is in_progress"})
-        self.assertIsNone(plan)
-        self.assertEqual(why, f"{self.h1[:7]}: rust (linux) is in_progress")
-
-    def test_chain_of_two_clean_updates_carries(self):
+    def test_a_second_clean_merge_on_top_of_a_carried_score_carries(self):
         plan, _ = self.plan(self.h2, [record(self.h0)])
         self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
 
-    def test_chain_needs_every_hop_green(self):
-        plan, why = self.plan(self.h2, [record(self.h0)], failing={self.h1: "zizmor is failure"})
-        self.assertIsNone(plan)
-        self.assertEqual(why, f"{self.h1[:7]}: zizmor is failure")
+    # hop condition 1: exactly two parents [P, M].
+
+    def test_rebased_head_does_not_carry(self):
+        self.assertEqual(self.refused(self.rebased),
+                         f"{self.rebased[:7]}: 1 parents, not a two-parent merge of main")
+
+    def test_octopus_merge_does_not_carry(self):
+        self.assertEqual(len(self.r.git("rev-list", "--parents", "-n1", self.octopus).split()), 4)
+        self.assertEqual(self.refused(self.octopus),
+                         f"{self.octopus[:7]}: 3 parents, not a two-parent merge of main")
+
+    def test_force_pushed_or_rewritten_history_does_not_carry(self):
+        # h0 rewritten with the same tree: its new SHA has no records and is not itself a merge.
+        rewritten = self.r.git("rev-parse", f"{self.rewritten}^1")
+        self.assertNotEqual(rewritten, self.h0)
+        self.assertEqual(self.refused(self.rewritten),
+                         f"{rewritten[:7]}: 1 parents, not a two-parent merge of main")
+
+    def test_reversed_parents_do_not_carry(self):
+        self.assertIn("is not on main", self.refused(self.reversed))
+
+    # hop condition 2: M is on main.
+
+    def test_merging_a_branch_that_is_not_main_does_not_carry(self):
+        side = self.r.git("rev-parse", "side-o")
+        self.assertEqual(self.refused(self.feature),
+                         f"{self.feature[:7]}: second parent {side[:7]} is not on main")
+
+    # hop condition 3: one merge base, neither side.
+
+    def test_no_new_main_commits_or_a_head_already_on_main_does_not_carry(self):
+        self.assertEqual(self.refused(self.no_new, [record(self.h1)]),
+                         f"{self.no_new[:7]}: the merge brought no new main commits")
+        self.assertEqual(self.refused(self.on_main, [record(self.base)]),
+                         f"{self.on_main[:7]}: the PR head is already on main")
+
+    # hop condition 4: clean merge-tree equal to the head's tree.
+
+    def test_conflicted_merge_does_not_carry(self):
+        self.assertEqual(self.refused(self.conflicted, main_ref="main-conflict"),
+                         f"{self.conflicted[:7]}: the merge of main had conflicts")
+
+    def test_merge_with_an_extra_edit_does_not_carry(self):
+        for head in (self.edited, self.hidden):
+            with self.subTest(head=head):
+                self.assertEqual(self.refused(head),
+                                 f"{head[:7]}: the merge commit differs from a clean merge")
+
+    # hop condition 5: the PR's own diff is byte-identical.
+
+    def test_main_editing_another_hunk_of_a_pr_file_changes_the_diff(self):
+        # git merges this cleanly, but the scorer never saw line 10 of the PR's file as main has it.
+        self.assertEqual(self.r.git("merge-tree", "--write-tree", self.h0, self.hunk_main),
+                         self.r.git("rev-parse", f"{self.hunk}^{{tree}}"))
+        self.assertEqual(self.refused(self.hunk, main_ref="main-hunk"),
+                         f"{self.hunk[:7]}: the PR's own diff changed")
+
+    def test_a_second_merge_that_changes_the_diff_drops_the_carry(self):
+        self.assertEqual(self.plan(self.h1, [record(self.h0)], main_ref="main-hunk")[0].state, "success")
+        self.assertEqual(self.refused(self.second, main_ref="main-hunk"),
+                         f"{self.second[:7]}: the PR's own diff changed")
+
+    # hop condition 6: no main commit touched a PR path.
+
+    def test_main_touching_a_pr_file_and_reverting_it_does_not_carry(self):
+        self.assertEqual(self.refused(self.revert, main_ref="main-revert"),
+                         f"{self.revert[:7]}: main changed a.txt, which the PR changes")
+
+    # hop condition 7: no main commit touched a gate file.
+
+    def test_main_changing_a_gate_file_does_not_carry(self):
+        self.assertEqual(self.refused(self.gate, main_ref="main-gate"),
+                         f"{self.gate[:7]}: main changed gate file Dockerfile")
+
+    def test_gate_files_are_owner_sensitive_or_score_tooling(self):
+        classes = pps.load_classes()
+        for path in (".github/workflows/ci.yml", "scripts/merge-classes.json", "Dockerfile",
+                     "rust/crates/pp-storage/src/schema.rs", "AGENTS.md",
+                     "scripts/post_pp_score_status.py", "scripts/test_post_pp_score_status.py",
+                     "docs/development/score-records.md"):
+            self.assertTrue(pps.gate_file(path, classes), path)
+        self.assertFalse(pps.gate_file("docs/product/daily-loop.md", classes))
+
+    # hop condition 3, two merge bases: CrissCrossTests.
+
+    # plan_carry: the records and the carried head's own checks.
+
+    def test_ci_not_green_on_the_new_head_does_not_carry(self):
+        self.assertEqual(self.refused(self.h1, failing={self.h1: "rust (linux) is in_progress"}),
+                         f"{self.h1[:7]}: rust (linux) is in_progress")
+
+    def test_only_the_carried_heads_own_checks_count(self):
+        # h1 never merges, and a re-run of its checks would not re-run the workflow. Its hop is
+        # judged on fixed git facts only; GitHub requires the checks on h2 and on the queue SHA.
+        plan, _ = self.plan(self.h2, [record(self.h0)], failing={self.h1: "zizmor is failure"})
+        self.assertEqual(plan.state, "success")
+        self.assertEqual(self.refused(self.h2, failing={self.h2: "zizmor is failure"}),
+                         f"{self.h2[:7]}: zizmor is failure")
 
     def test_newer_records_stop_the_walk(self):
         # h1 was scored 7: its records win over h0's 9, so h2 does not carry.
-        plan, why = self.plan(self.h2, [record(self.h0), record(self.h1, score=7)])
-        self.assertIsNone(plan)
-        self.assertIn(f"{self.h1[:7]} did not pass", why)
+        self.assertIn(f"{self.h1[:7]} did not pass", self.refused(self.h2, [record(self.h0), record(self.h1, score=7)]))
 
     def test_head_with_its_own_records_does_not_carry(self):
-        plan, _ = self.plan(self.h1, [record(self.h0), record(self.h1, score=7)])
-        self.assertIsNone(plan)
+        self.assertEqual(self.refused(self.h1, [record(self.h0), record(self.h1, score=7)]),
+                         f"{self.h1[:7]} has its own records")
+
+    def test_no_records_do_not_carry(self):
+        self.assertEqual(self.plan(self.h1, []), (None, "no records on this PR"))
 
     def test_sensitive_class_needs_every_carried_seat_above_eight(self):
         records = [record(self.h0, score=9), record(self.h0, seat="composer-2.5", vendor="cursor", score=8)]
-        plan, why = self.plan(self.h1, records, strict=True)
-        self.assertIsNone(plan)
-        self.assertEqual(why, f"sensitive: composer-2.5 scored 8 on {self.h0[:7]}")
+        self.assertEqual(self.refused(self.h1, records, strict=True),
+                         f"sensitive: composer-2.5 scored 8 on {self.h0[:7]}")
         plan, _ = self.plan(self.h1, records, strict=False)
         self.assertEqual(plan.state, "success")
         plan, _ = self.plan(self.h1, [record(self.h0, score=9)], strict=True)
         self.assertEqual(plan.state, "success")
 
-    def test_grok_and_author_family_records_never_carry(self):
+    def test_sensitive_pr_class_comes_from_its_live_file_list(self):
+        from unittest import mock
+
+        records = [record(self.h0, score=8)]
+        for paths, state in ((["rust/crates/pp-storage/src/import.rs"], None),
+                             (["scripts/merge-classes.json"], None), (["docs/x.md"], "success")):
+            with self.subTest(paths=paths), mock.patch.object(pps, "fetch_files", return_value=paths):
+                plan, why = pps.carry_for_pr("o/r", 7, self.h1, records, RepoFacts(self.r))
+                self.assertEqual(plan and plan.state, state, why)
+
+    def test_grok_records_never_carry(self):
         grok = record(self.h0, seat="grok-4.7", vendor="xai")
-        plan, why = self.plan(self.h1, [grok])
-        self.assertIsNone(plan)
-        self.assertIn("no record that can carry", why)
+        self.assertIn("no record that can carry", self.refused(self.h1, [grok]))
         plan, _ = self.plan(self.h1, [grok, record(self.h0)])
         self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
-        plan, why = self.plan(self.h1, [record(self.h0, seat="claude-opus-5-5", vendor="anthropic")])
-        self.assertIsNone(plan)
-        self.assertIn("author's own family", why)
+
+    def test_a_record_with_a_wrong_author_family_never_carries(self):
+        # The seat is the author's own family.
+        own = record(self.h0, seat="claude-opus-5-5", vendor="anthropic")
+        self.assertIn("author's own family", self.refused(self.h1, [own]))
+        # The records on this PR name two author families, on any head.
+        for records in ([record(self.h0), record(self.h0, seat="claude-opus-5-5", vendor="anthropic",
+                                                 author="openai")],
+                        [record(self.base, author="openai", seat="grok-4.7", vendor="xai"), record(self.h0)]):
+            with self.subTest(records=records):
+                self.assertEqual(self.refused(self.h1, records),
+                                 "records on this PR disagree on the author family (anthropic, openai)")
 
     def test_failing_source_does_not_carry(self):
-        plan, why = self.plan(self.h1, [record(self.h0, score=7)])
-        self.assertIsNone(plan)
+        self.assertIn(f"{self.h0[:7]} did not pass", self.refused(self.h1, [record(self.h0, score=7)]))
 
     def test_sensitive_and_owner_paths_are_strict(self):
         self.assertTrue(pps.strict_class(["rust/crates/pp-storage/src/import.rs"]))
@@ -816,9 +953,9 @@ class CarryTests(unittest.TestCase):
 
 
 class CrissCrossTests(unittest.TestCase):
-    """Two best merge bases: Git's own merge conflicts, so a hand-resolved merge must not carry."""
+    """Two best merge bases: the PR's diff has no single base, so nothing carries."""
 
-    def test_criss_cross_conflict_does_not_carry(self):
+    def test_criss_cross_merge_does_not_carry(self):
         r = CarryRepo()
         r.commit("f.txt", "0\n", "base")
         r.git("checkout", "-q", "-b", "pr")
@@ -829,26 +966,25 @@ class CrissCrossTests(unittest.TestCase):
         r.git("merge", "-q", "--no-edit", y1, check=False)
         r.write("f.txt", "x\n")
         r.git("commit", "-q", "-a", "--no-edit")
-        h0 = r.git("rev-parse", "HEAD")
+        h0 = r.head()
         r.git("checkout", "-q", "main")
         r.git("merge", "-q", "--no-edit", x1, check=False)
         r.write("f.txt", "y\n")
         r.git("commit", "-q", "-a", "--no-edit")
-        m = r.git("rev-parse", "HEAD")
+        m = r.head()
         self.assertEqual(len(r.git("merge-base", "--all", h0, m).split()), 2)
         # Merging from either single base is clean and gives "y"; the hand resolution matches it.
         r.git("checkout", "-q", "pr")
         r.git("merge", "-q", "--no-edit", m, check=False)
         r.write("f.txt", "y\n")
         r.git("commit", "-q", "-a", "--no-edit")
-        h1 = r.git("rev-parse", "HEAD")
+        h1 = r.head()
         self.assertEqual(r.git("rev-list", "--parents", "-n1", h1).split()[1:], [h0, m])
         # One explicit base (what GitHub's compare API returns) would certify the hand resolution.
         self.assertEqual(r.git("merge-tree", "--write-tree", f"--merge-base={x1}", h0, m),
                          r.git("rev-parse", f"{h1}^{{tree}}"))
         plan, why = pps.plan_carry(h1, [record(h0)], False, RepoFacts(r))
-        self.assertIsNone(plan)
-        self.assertIn("conflicts", why)
+        self.assertEqual((plan, why), (None, f"{h1[:7]}: 2 merge bases with main"))
 
 
 class CommentModeCarryTests(unittest.TestCase):
@@ -859,15 +995,19 @@ class CommentModeCarryTests(unittest.TestCase):
         CarryTests.setUpClass()
         cls.c = CarryTests
 
-    def run_main(self, head, failing=None, argv=()):
+    def body(self, score=9):
+        return (f"pp-score head={self.c.h0} seat=gpt-6.2-sol vendor=openai score={score} "
+                "author=anthropic obstacles=none")
+
+    def run_main(self, head, failing=None, argv=(), bodies=None):
         import io
         from contextlib import redirect_stdout
         from unittest import mock
 
-        body = f"pp-score head={self.c.h0} seat=gpt-6.2-sol vendor=openai score=9 author=anthropic obstacles=none"
         facts = RepoFacts(self.c.r, failing)
         buf = io.StringIO()
-        with mock.patch.object(pps, "fetch_comments", return_value=[comment(body)]), \
+        with mock.patch.object(pps, "fetch_comments",
+                               return_value=[comment(b) for b in bodies or [self.body()]]), \
                 mock.patch.object(pps, "fetch_head", return_value=head), \
                 mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]), \
                 mock.patch.object(pps, "GitHubFacts", return_value=facts), \
@@ -875,36 +1015,45 @@ class CommentModeCarryTests(unittest.TestCase):
             code = pps.main(["--pr", "7", *argv])
         return code, buf.getvalue()
 
-    def test_carry_then_a_failed_hop_replaces_the_carried_success(self):
-        h0, h1, h2 = self.c.h0, self.c.h1, self.c.h2
+    def test_carry_then_a_failed_check_on_the_head_replaces_the_carried_success(self):
+        h0, h2 = self.c.h0, self.c.h2
         _, out = self.run_main(h2)
         self.assertIn(f"statuses/{h2} -f state=success -f context=pp/score "
                       f"-f 'description=carried from {h0[:7]}: 9/10 from gpt-6.2-sol'", out)
-        _, out = self.run_main(h2, failing={h1: "rust (linux) is failure"})
+        _, out = self.run_main(h2, failing={h2: "rust (linux) is failure"})
         self.assertIn(f"statuses/{h2} -f state=failure -f context=pp/score "
-                      f"-f 'description=no score and no carry: {h1[:7]}: rust (linux) is failure'", out)
+                      f"-f 'description=no score and no carry: {h2[:7]}: rust (linux) is failure'", out)
         self.assertNotIn(f"statuses/{h2} -f state=success", out)
 
-    def test_merge_group_rechecks_every_hop_before_merging(self):
-        """A carried success already posted on h2 cannot merge once a check on h1 turns red:
-        the merge_group run decides the carry again from live facts."""
+    def test_a_newer_failing_record_on_the_source_withdraws_the_carry(self):
+        # The new record's comment runs the workflow, which posts failure on the current head.
+        _, out = self.run_main(self.c.h2, bodies=[self.body(9), self.body(7)])
+        self.assertIn(f"statuses/{self.c.h2} -f state=failure", out)
+        self.assertNotIn(f"statuses/{self.c.h2} -f state=success", out)
+
+    def test_merge_group_decides_the_carry_again(self):
+        """The merge_group run decides the carry from live facts: a failing check on the carried
+        head or a failing newer record fails the queue entry. A superseded hop's checks do not."""
         import io
         from contextlib import redirect_stdout
         from unittest import mock
 
-        h0, h1, h2 = self.c.h0, self.c.h1, self.c.h2
-        body = f"pp-score head={h0} seat=gpt-6.2-sol vendor=openai score=9 author=anthropic obstacles=none"
+        h1, h2 = self.c.h1, self.c.h2
         trust = pps.load_trust()
-        for failing, state in (({}, "success"), ({h1: "actionlint is failure"}, "failure")):
+        for failing, bodies, state in (({}, [self.body()], "success"),
+                                       ({h1: "actionlint is failure"}, [self.body()], "success"),
+                                       ({h2: "actionlint is failure"}, [self.body()], "failure"),
+                                       ({}, [self.body(9), self.body(7)], "failure")):
             posted = []
-            with mock.patch.object(pps, "fetch_comments", return_value=[comment(body)]), \
+            with self.subTest(failing=failing, bodies=len(bodies)), \
+                    mock.patch.object(pps, "fetch_comments", return_value=[comment(b) for b in bodies]), \
                     mock.patch.object(pps, "fetch_head", return_value=h2), \
                     mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]), \
                     mock.patch.object(pps, "GitHubFacts", return_value=RepoFacts(self.c.r, failing)), \
                     mock.patch.object(pps, "apply_plan", side_effect=lambda repo, plan: posted.append(plan)), \
                     redirect_stdout(io.StringIO()):
                 pps.run_merge_group("o/r", SHA, OTHER, None, trust, post=True, prs=[7])
-            self.assertEqual([(p.head, p.state) for p in posted], [(SHA, state)])
+                self.assertEqual([(p.head, p.state) for p in posted], [(SHA, state)])
 
     def test_pr_number_must_be_canonical(self):
         import io
@@ -1017,3 +1166,7 @@ class RequiredCheckTests(unittest.TestCase):
         facts = self.facts([])
         with self.assertRaises(pps.GateError):
             facts.checks_failing(SHA)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -37,7 +37,7 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 use std::{sync::atomic::AtomicBool, time::Duration};
 
-const FLEET_KEY: &str = "printer.fleet";
+const FLEET_KEY: &str = crate::FLEET_SETTING;
 pub const MAX_BED_MM: u32 = 10_000;
 pub const MAX_FILAMENT_SLOTS: u8 = 4;
 

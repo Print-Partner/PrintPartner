@@ -392,6 +392,13 @@ impl From<ReaderFailure> for anyhow::Error {
         }
     }
 }
+/// The settings documents whose typed shape `printer_setup` owns. Only its
+/// writes change them: [`SettingsClient::submit`] refuses both keys, so a
+/// generic write cannot store a document the typed shape then refuses.
+pub(crate) const PRINTER_SETUP_SETTINGS: [&str; 2] = [INTEGRATIONS_SETTING, FLEET_SETTING];
+pub(crate) const INTEGRATIONS_SETTING: &str = "integrations";
+pub(crate) const FLEET_SETTING: &str = "printer.fleet";
+
 pub struct WriterOwner {
     client: SettingsClient,
     join: Option<JoinHandle<()>>,
@@ -587,6 +594,11 @@ impl SettingsClient {
         ensure!(
             !auth::OWNED_SETTINGS.contains(&setting.key.as_str()),
             "Setting {} is owned by auth and changes only through auth requests",
+            setting.key
+        );
+        ensure!(
+            !PRINTER_SETUP_SETTINGS.contains(&setting.key.as_str()),
+            "Setting {} is owned by printer setup and changes only through printer setup requests",
             setting.key
         );
         self.enqueue(Work::Setting(command), cancelled, wait)

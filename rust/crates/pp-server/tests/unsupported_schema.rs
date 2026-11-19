@@ -19,9 +19,9 @@ mod scratch;
 use pp_core::{IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA};
 use pp_testkit::{Fixture, Installation, Marker, node_schema};
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
-    process::Output,
+    process::{Command, Output},
     time::Duration,
 };
 
@@ -48,31 +48,56 @@ fn release_server_binary() -> PathBuf {
         .unwrap()
         .join("pp-server-release");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = child_process::command(cargo)
-        .current_dir(&workspace)
-        .env_clear()
-        .envs(std::env::vars_os().filter(|(name, _)| build_env(&name.to_string_lossy())))
-        .args(["build", "--locked", "--release", "--manifest-path"])
-        .arg(workspace.join("Cargo.toml"))
-        .args(["-p", "pp-server", "--target-dir"])
-        .arg(&target)
+    let parent_env: Vec<_> = std::env::vars_os().collect();
+    let output = release_build(&cargo, &workspace, &target, &parent_env)
         .output()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let tail: Vec<_> = stderr.lines().rev().take(40).collect();
     assert!(
         output.status.success(),
-        "release build failed:\n{}",
-        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+        "release build failed; last {TAIL_LINES} lines of stderr, with the value of every \
+         variable the build did not get redacted:\n{}",
+        failure_tail(&output.stderr, &parent_env)
     );
     target.join("release/pp-server")
 }
 
+/// `cargo build --locked --release -p pp-server` into `target`, with only the
+/// variables [`build_env`] admits from `parent_env` and no compiler wrapper.
+/// The empty `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` also override a
+/// wrapper named in a Cargo config file. sccache reads its storage
+/// credentials from the environment and can print that environment in an
+/// error, so this one build runs uncached. Hosted Linux runners have no
+/// sccache, so they lose nothing.
+fn release_build(
+    cargo: &OsStr,
+    workspace: &Path,
+    target: &Path,
+    parent_env: &[(OsString, OsString)],
+) -> Command {
+    let mut command = child_process::command(cargo);
+    command
+        .current_dir(workspace)
+        .env_clear()
+        .envs(
+            parent_env
+                .iter()
+                .filter(|(name, _)| build_env(&name.to_string_lossy()))
+                .map(|(name, value)| (name, value)),
+        )
+        .env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "")
+        .args(["build", "--locked", "--release", "--manifest-path"])
+        .arg(workspace.join("Cargo.toml"))
+        .args(["-p", "pp-server", "--target-dir"])
+        .arg(target);
+    command
+}
+
 /// The variables the release build sees. The rest of the test environment,
-/// including nextest's library path and any token a runner sets, stays out;
-/// a compiler wrapper's error can print its whole environment.
+/// including nextest's library path, compiler-cache settings and any token a
+/// runner sets, stays out.
 fn build_env(name: &str) -> bool {
-    matches!(
+    let admitted = matches!(
         name,
         "PATH"
             | "HOME"
@@ -81,13 +106,122 @@ fn build_env(name: &str) -> bool {
             | "CARGO_HOME"
             | "RUSTUP_HOME"
             | "RUSTUP_TOOLCHAIN"
-            | "RUSTC_WRAPPER"
             | "RUSTFLAGS"
             | "PP_DESKTOP_RELEASE_MANIFEST"
-    ) || ["CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_NET_", "SCCACHE_"]
+    ) || ["CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_NET_"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
-        || (name.starts_with("CARGO_TARGET_") && name != "CARGO_TARGET_TMPDIR")
+        || (name.starts_with("CARGO_TARGET_") && name != "CARGO_TARGET_TMPDIR");
+    admitted && !name.contains("WRAPPER")
+}
+
+/// Lines of a failed build's stderr that the test prints.
+const TAIL_LINES: usize = 40;
+
+/// Values shorter than this stay: they are flags such as `1`, and replacing
+/// them would garble every line.
+const SHORTEST_REDACTED: usize = 6;
+
+/// The last [`TAIL_LINES`] lines of `stderr`, with the value of every
+/// variable in `parent_env` that [`build_env`] keeps from the build replaced
+/// by `[redacted]`.
+fn failure_tail(stderr: &[u8], parent_env: &[(OsString, OsString)]) -> String {
+    let mut withheld: Vec<_> = parent_env
+        .iter()
+        .filter(|(name, _)| !build_env(&name.to_string_lossy()))
+        .map(|(_, value)| value.to_string_lossy().into_owned())
+        .filter(|value| value.len() >= SHORTEST_REDACTED)
+        .collect();
+    // Longest first, so a value that contains another is replaced whole.
+    withheld.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    let stderr = withheld.iter().fold(
+        String::from_utf8_lossy(stderr).into_owned(),
+        |stderr, value| stderr.replace(value.as_str(), "[redacted]"),
+    );
+    let lines: Vec<_> = stderr.lines().collect();
+    lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
+}
+
+#[test]
+fn ticket_t_8_release_build_gets_no_credentials_or_compiler_wrapper() {
+    let parent_env: Vec<(OsString, OsString)> = [
+        ("PATH", "/usr/bin"),
+        ("CARGO_HOME", "/cargo"),
+        ("CARGO_BUILD_JOBS", "2"),
+        ("SCCACHE_REDIS_PASSWORD", "redis-secret"),
+        ("SCCACHE_AZURE_CONNECTION_STRING", "azure-secret"),
+        ("SCCACHE_BUCKET", "bucket-name"),
+        ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+        ("GITHUB_TOKEN", "github-secret"),
+        ("CARGO_REGISTRY_TOKEN", "registry-secret"),
+        ("RUSTC_WRAPPER", "/opt/sccache"),
+        ("CARGO_BUILD_RUSTC_WRAPPER", "/opt/sccache"),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.into(), value.into()))
+    .collect();
+    let command = release_build(
+        OsStr::new("cargo"),
+        Path::new("/workspace"),
+        Path::new("/target"),
+        &parent_env,
+    );
+    let mut env: Vec<_> = command
+        .get_envs()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    env.sort();
+    let set = |name: &str, value: &str| (name.to_owned(), Some(value.to_owned()));
+    assert_eq!(
+        env,
+        [
+            set("CARGO_BUILD_JOBS", "2"),
+            set("CARGO_HOME", "/cargo"),
+            set("PATH", "/usr/bin"),
+            set("RUSTC_WORKSPACE_WRAPPER", ""),
+            set("RUSTC_WRAPPER", ""),
+        ]
+    );
+}
+
+#[test]
+fn ticket_t_8_release_build_failure_redacts_withheld_values() {
+    let parent_env: Vec<(OsString, OsString)> = [
+        ("PATH", "/usr/local/bin"),
+        ("SCCACHE_REDIS_PASSWORD", "redis-secret"),
+        ("AWS_SECRET_ACCESS_KEY", "aws-secret-key"),
+        ("SHORT", "1"),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.into(), value.into()))
+    .collect();
+    let mut stderr = String::new();
+    for line in 0..50 {
+        stderr.push_str(&format!("   Compiling crate-{line}\n"));
+    }
+    stderr.push_str(
+        "sccache: error: SCCACHE_REDIS_PASSWORD=redis-secret \
+         AWS_SECRET_ACCESS_KEY=aws-secret-key PATH=/usr/local/bin SHORT=1\n",
+    );
+    stderr.push_str("error: could not compile `pp-server`\n");
+    let tail = failure_tail(stderr.as_bytes(), &parent_env);
+    let lines: Vec<_> = tail.lines().collect();
+    assert_eq!(lines.len(), TAIL_LINES);
+    assert_eq!(lines[0], "   Compiling crate-12");
+    assert_eq!(
+        lines[TAIL_LINES - 2],
+        "sccache: error: SCCACHE_REDIS_PASSWORD=[redacted] \
+         AWS_SECRET_ACCESS_KEY=[redacted] PATH=/usr/local/bin SHORT=1"
+    );
+    assert_eq!(
+        lines[TAIL_LINES - 1],
+        "error: could not compile `pp-server`"
+    );
 }
 
 /// One start, bounded so a start that never exits fails the test with

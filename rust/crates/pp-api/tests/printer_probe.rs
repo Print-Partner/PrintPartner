@@ -190,6 +190,13 @@ async fn authenticated_probe_does_not_write_and_limits_requests_before_network_w
     owner.shutdown().unwrap();
 }
 
+/// Lets tasks woken by a paused-clock `advance` run to their next await.
+async fn settle() {
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn probe_deadline_uses_eight_seconds_of_paused_time() {
     let (_data, owner, fake) = fixture();
@@ -208,10 +215,19 @@ async fn probe_deadline_uses_eight_seconds_of_paused_time() {
     fake.entered.notified().await;
     tokio::time::pause();
     let started = tokio::time::Instant::now();
-    tokio::time::advance(std::time::Duration::from_secs(7)).await;
-    assert!(!request.is_finished());
-    // A timer created before pause can round up to the next millisecond tick.
-    tokio::time::advance(std::time::Duration::from_millis(1001)).await;
+    // The deadline was set just before the pause, so it falls a little under
+    // eight seconds from `started`, rounded up to the next millisecond tick.
+    // `advance` can return before the woken request task runs, so yield
+    // before each check.
+    tokio::time::advance(std::time::Duration::from_millis(7_900)).await;
+    settle().await;
+    assert!(
+        !request.is_finished(),
+        "the probe ended before eight seconds"
+    );
+    tokio::time::advance(std::time::Duration::from_millis(101)).await;
+    settle().await;
+    assert!(request.is_finished(), "the probe outlived eight seconds");
     let timed = request.await.unwrap();
     assert_eq!(started.elapsed(), std::time::Duration::from_millis(8001));
     tokio::time::resume();

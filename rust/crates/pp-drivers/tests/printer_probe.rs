@@ -77,6 +77,13 @@ async fn probe_refuses_metadata_addresses_and_reports_closed_loopback_as_unreach
     }
 }
 
+/// Lets tasks woken by a paused-clock `advance` run to their next await.
+async fn settle() {
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn probe_deadline_expires_before_the_longer_transport_deadline() {
     struct Hung(Arc<tokio::sync::Notify>);
@@ -102,9 +109,14 @@ async fn probe_deadline_expires_before_the_longer_transport_deadline() {
         },
     ));
     entered.notified().await;
-    tokio::time::advance(Duration::from_secs(7)).await;
-    assert!(!task.is_finished());
-    tokio::time::advance(Duration::from_secs(1)).await;
+    // `advance` can return before the woken probe task runs, so yield before
+    // each check.
+    tokio::time::advance(Duration::from_millis(7_999)).await;
+    settle().await;
+    assert!(!task.is_finished(), "the probe ended before eight seconds");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    settle().await;
+    assert!(task.is_finished(), "the probe outlived eight seconds");
     let result = task.await.unwrap();
     assert!(!result.reachable);
     assert_eq!(result.reason, "Printer probe timed out.");

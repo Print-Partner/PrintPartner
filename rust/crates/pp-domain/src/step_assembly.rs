@@ -13,13 +13,20 @@
 //! skipped as it streams past. [`Limits`] bounds what is kept while reading
 //! and what the finished tree holds, so memory follows the caps, not the file.
 //!
-//! A tree is returned only for a whole exchange: every statement ends with
-//! `;`, a `DATA` section is closed by `ENDSEC;`, and `END-ISO-10303-21;`
-//! follows it. A file cut anywhere before that fails as
-//! [`StepError::Incomplete`], so a partial tree is never returned.
+//! A tree is returned only for a well-formed exchange:
+//!
+//! ```text
+//! ISO-10303-21; HEADER; <header entities> ENDSEC; DATA; <#id=...; records> ENDSEC; END-ISO-10303-21;
+//! ```
+//!
+//! followed only by whitespace and closed comments. Every statement is a
+//! name, at most one balanced parameter list, and `;`. A file that ends early
+//! is [`StepError::Incomplete`]; any other departure, such as a missing `;`
+//! between two records, is [`StepError::Malformed`]. A partial or altered
+//! tree is never returned.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,8 +51,9 @@ pub struct Limits {
     pub max_levels: usize,
     /// Product-structure records kept while reading.
     pub max_records: usize,
-    /// Bytes in one product-structure record. Geometry records are skipped
-    /// unbuffered whatever their size.
+    /// Bytes in one product-structure record, from its `#` through its `;`,
+    /// comments included. Geometry records are skipped unbuffered whatever
+    /// their size.
     pub max_record_bytes: usize,
     /// Bytes of ids and names kept while reading.
     pub max_kept_text: usize,
@@ -89,9 +97,13 @@ pub enum StepError {
     Io(io::Error),
     /// The file does not start with `ISO-10303-21;`.
     NotStep,
-    /// The file ends before a closed `DATA` section and `END-ISO-10303-21;`,
-    /// or inside a statement.
+    /// The file ends before `END-ISO-10303-21;`, inside a statement, or
+    /// inside a comment.
     Incomplete,
+    /// The exchange is not well formed: a section out of order or missing, a
+    /// statement that is not a name, one parameter list and `;`, text after
+    /// the end, or a product-structure id used twice.
+    Malformed,
     /// No product definition resolves to a product.
     NoProducts,
     /// Over one of the [`Limits`].
@@ -107,6 +119,7 @@ impl fmt::Display for StepError {
             Self::Io(error) => write!(f, "{error}"),
             Self::NotStep => f.write_str("not a STEP file"),
             Self::Incomplete => f.write_str("the STEP file is incomplete"),
+            Self::Malformed => f.write_str("the STEP file is not well formed"),
             Self::NoProducts => f.write_str("no product structure"),
             Self::TooLarge => f.write_str("part tree over the size limit"),
             Self::Cycle => f.write_str("an assembly contains itself"),
@@ -141,35 +154,41 @@ pub fn part_tree_within(
         return Err(StepError::NotStep);
     }
     let mut entities = Entities::new(limits);
-    let mut section = Section::Outside;
-    let mut data_closed = false;
-    loop {
-        match scanner.next_statement()?.ok_or(StepError::Incomplete)? {
-            Statement::Keyword(word) => match word.as_slice() {
-                b"HEADER" => section = Section::Header,
-                b"DATA" => section = Section::Data,
-                b"ENDSEC" => {
-                    data_closed |= section == Section::Data;
-                    section = Section::Outside;
-                }
-                b"END-ISO-10303-21" if section == Section::Outside && data_closed => break,
-                b"END-ISO-10303-21" => return Err(StepError::Incomplete),
-                _ => {}
-            },
-            Statement::Entity(id, kind, body) if section == Section::Data => {
+    let mut stage = Stage::Start;
+    while stage != Stage::End {
+        let statement = scanner.next_statement()?.ok_or(StepError::Incomplete)?;
+        stage = match (stage, statement) {
+            (Stage::Start, Statement::Keyword(word)) if word == b"HEADER" => Stage::Header,
+            (Stage::Header, Statement::Keyword(word)) if word == b"ENDSEC" => Stage::BeforeData,
+            (Stage::Header, Statement::Keyword(_)) => Stage::Header,
+            (Stage::BeforeData, Statement::Keyword(word)) if word == b"DATA" => Stage::Data,
+            (Stage::Data, Statement::Keyword(word)) if word == b"ENDSEC" => Stage::AfterData,
+            (Stage::Data, Statement::Entity(id, kind, body)) => {
                 entities.add(id, kind, &params(&body))?;
+                Stage::Data
             }
-            Statement::Entity(..) | Statement::Other => {}
-        }
+            (Stage::Data, Statement::Other) => Stage::Data,
+            (Stage::AfterData, Statement::Keyword(word)) if word == b"END-ISO-10303-21" => {
+                Stage::End
+            }
+            _ => return Err(StepError::Malformed),
+        };
+    }
+    if scanner.skip_blank()?.is_some() {
+        return Err(StepError::Malformed);
     }
     entities.tree(cancelled)
 }
 
+/// Where the exchange is: one HEADER section, then one DATA section.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Section {
-    Outside,
+enum Stage {
+    Start,
     Header,
+    BeforeData,
     Data,
+    AfterData,
+    End,
 }
 
 /// The four kinds of record the tree is built from.
@@ -198,7 +217,8 @@ impl Kind {
 
 /// One statement of the exchange.
 enum Statement {
-    /// A section keyword such as `DATA` or `ENDSEC`, or a header entity.
+    /// A statement that starts with a name: a section keyword such as `DATA`
+    /// or `ENDSEC`, or a header entity.
     Keyword(Vec<u8>),
     /// A product-structure record: its entity id, kind and parameter text.
     Entity(u64, Kind, Vec<u8>),
@@ -225,6 +245,8 @@ struct Entities {
     /// Records and text bytes kept so far.
     records: usize,
     text: usize,
+    /// Every product-structure id seen, to refuse one used twice.
+    ids: HashSet<u64>,
     /// Entity id to (product id, name).
     products: HashMap<u64, (String, String)>,
     /// Formation to its product.
@@ -241,6 +263,7 @@ impl Entities {
             limits,
             records: 0,
             text: 0,
+            ids: HashSet::new(),
             products: HashMap::new(),
             formations: HashMap::new(),
             definitions: BTreeMap::new(),
@@ -250,6 +273,9 @@ impl Entities {
 
     /// Keeps one record, counting it and its text against the limits first.
     fn add(&mut self, id: u64, kind: Kind, params: &[Param]) -> Result<(), StepError> {
+        if !self.ids.insert(id) {
+            return Err(StepError::Malformed);
+        }
         let text = |index: usize| match params.get(index) {
             Some(Param::Text(value)) => Some(value.clone()),
             _ => None,
@@ -402,6 +428,8 @@ struct Scanner<'a, R> {
     cancelled: &'a AtomicBool,
     max_record_bytes: usize,
     buffer: Box<[u8]>,
+    /// Bytes of the file before `buffer`.
+    base: u64,
     start: usize,
     end: usize,
 }
@@ -413,6 +441,7 @@ impl<'a, R: Read> Scanner<'a, R> {
             cancelled,
             max_record_bytes,
             buffer: vec![0; READ_CHUNK].into_boxed_slice(),
+            base: 0,
             start: 0,
             end: 0,
         }
@@ -425,6 +454,7 @@ impl<'a, R: Read> Scanner<'a, R> {
             if self.cancelled.load(Ordering::Relaxed) {
                 return Err(StepError::Cancelled);
             }
+            self.base += self.end as u64;
             self.end = loop {
                 match self.input.read(&mut self.buffer) {
                     Ok(read) => break read,
@@ -438,6 +468,11 @@ impl<'a, R: Read> Scanner<'a, R> {
             }
         }
         Ok(Some(self.buffer[self.start]))
+    }
+
+    /// How many bytes of the file have been taken.
+    fn position(&self) -> u64 {
+        self.base + self.start as u64
     }
 
     fn next(&mut self) -> Result<Option<u8>, StepError> {
@@ -457,8 +492,11 @@ impl<'a, R: Read> Scanner<'a, R> {
                 }
                 Some(b'/') => {
                     self.start += 1;
-                    if self.peek()? != Some(b'*') {
-                        return Ok(Some(b'/'));
+                    match self.peek()? {
+                        // A `/` at the end of the file is a cut-off `/*`.
+                        None => return Err(StepError::Incomplete),
+                        Some(b'*') => {}
+                        Some(_) => return Ok(Some(b'/')),
                     }
                     self.start += 1;
                     self.skip_comment()?;
@@ -487,7 +525,7 @@ impl<'a, R: Read> Scanner<'a, R> {
                 return Ok(false);
             }
         }
-        Ok(self.skip_blank()? == Some(b';'))
+        Ok(self.skip_blank()? == Some(b';') && self.next()?.is_some())
     }
 
     /// Reads the bytes of a name, `[A-Za-z0-9_-]`, uppercased; at most 64.
@@ -510,9 +548,13 @@ impl<'a, R: Read> Scanner<'a, R> {
         };
         if first != b'#' {
             let word = self.word()?;
+            if word.is_empty() {
+                return Err(StepError::Malformed);
+            }
             self.rest(None)?;
             return Ok(Some(Statement::Keyword(word)));
         }
+        let begin = self.position();
         self.start += 1;
         let mut id = 0u64;
         let mut digits = 0;
@@ -521,9 +563,10 @@ impl<'a, R: Read> Scanner<'a, R> {
             id = id.saturating_mul(10).saturating_add(u64::from(byte - b'0'));
             digits += 1;
         }
-        if digits == 0 || self.skip_blank()? != Some(b'=') {
-            self.rest(None)?;
-            return Ok(Some(Statement::Other));
+        match self.skip_blank()? {
+            None => return Err(StepError::Incomplete),
+            Some(b'=') if digits > 0 => {}
+            Some(_) => return Err(StepError::Malformed),
         }
         self.start += 1;
         self.skip_blank()?;
@@ -534,26 +577,42 @@ impl<'a, R: Read> Scanner<'a, R> {
         };
         let mut body = Vec::new();
         self.rest(Some(&mut body))?;
+        if self.position() - begin > self.max_record_bytes as u64 {
+            return Err(StepError::TooLarge);
+        }
         Ok(Some(Statement::Entity(id, kind, body)))
     }
 
-    /// Consumes up to and including the statement's `;`, copying the bytes
-    /// into `keep` when given. The file ending first is
-    /// [`StepError::Incomplete`]; a kept statement over the record cap is
+    /// Consumes the rest of a statement after its name: blanks, at most one
+    /// balanced parameter list, blanks, then `;`. Copies the bytes into `keep`
+    /// when given. The file ending first is [`StepError::Incomplete`];
+    /// anything else, such as a second record run on after a missing `;`, is
+    /// [`StepError::Malformed`]. A kept statement over the record cap is
     /// [`StepError::TooLarge`].
     fn rest(&mut self, mut keep: Option<&mut Vec<u8>>) -> Result<(), StepError> {
-        let mut quoted = false;
+        let (mut quoted, mut depth, mut closed) = (false, 0usize, false);
         while let Some(byte) = self.next()? {
-            if !quoted && byte == b';' {
-                return Ok(());
-            }
-            if !quoted && byte == b'/' && self.peek()? == Some(b'*') {
-                self.start += 1;
-                self.skip_comment()?;
-                continue;
-            }
-            if byte == b'\'' {
-                quoted = !quoted;
+            if quoted {
+                quoted = byte != b'\'';
+            } else {
+                match byte {
+                    b';' if depth == 0 => return Ok(()),
+                    b'/' if self.peek()? == Some(b'*') => {
+                        self.start += 1;
+                        self.skip_comment()?;
+                        continue;
+                    }
+                    _ if byte.is_ascii_whitespace() => {}
+                    b'(' if !closed => depth += 1,
+                    b')' if depth > 0 => {
+                        depth -= 1;
+                        closed = depth == 0;
+                    }
+                    b'\'' if depth > 0 => quoted = true,
+                    b';' => return Err(StepError::Malformed),
+                    _ if depth == 0 => return Err(StepError::Malformed),
+                    _ => {}
+                }
             }
             if let Some(kept) = keep.as_deref_mut() {
                 if kept.len() == self.max_record_bytes {

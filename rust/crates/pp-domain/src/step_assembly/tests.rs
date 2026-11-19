@@ -264,12 +264,6 @@ fn a_cut_at_each_kind_of_point_is_incomplete() {
             "{name}: {result:?}"
         );
     }
-    let unclosed = text.replace("ENDSEC;\nEND-ISO", "END-ISO");
-    let result = part_tree(unclosed.as_bytes(), &IDLE);
-    assert!(
-        matches!(result, Err(StepError::Incomplete)),
-        "END inside DATA: {result:?}"
-    );
     let comment = format!("{}/* never closed", &text[..at("END-ISO-10303-21;")]);
     let result = part_tree(comment.as_bytes(), &IDLE);
     assert!(
@@ -400,4 +394,96 @@ fn cancellation_stops_the_tree_build() {
     };
     let result = part_tree(&mut reader, &flag);
     assert!(matches!(result, Err(StepError::Cancelled)), "{result:?}");
+}
+
+/// The fixture with `from` replaced by `to`, once.
+fn mutated(from: &str, to: &str) -> String {
+    let text = std::str::from_utf8(NESTED).unwrap();
+    assert_eq!(text.matches(from).count(), 1, "{from}");
+    text.replacen(from, to, 1)
+}
+
+/// Sol on d15ed842 found six altered exchanges the reader accepted, and
+/// asked for four more. Each is refused, and none returns a tree.
+#[test]
+fn an_exchange_that_is_not_well_formed_is_refused() {
+    let text = std::str::from_utf8(NESTED).unwrap();
+    let header = &text[text.find("HEADER;").unwrap()..text.find("DATA;").unwrap()];
+    let data = &text[text.find("DATA;").unwrap()..text.rfind("END-ISO").unwrap()];
+    let cases = [
+        ("no HEADER section", text.replacen(header, "", 1)),
+        ("no HEADER keyword", mutated("HEADER;\n", "")),
+        ("a partial record after the end", format!("{text}#109=PROD")),
+        (
+            "a missing ; between records",
+            mutated("#72,$);\n#108=", "#72,$)\n#108="),
+        ),
+        (
+            "a second DATA section",
+            mutated("ENDSEC;\nEND-ISO", "ENDSEC;\nDATA;\nENDSEC;\nEND-ISO"),
+        ),
+        (
+            "DATA before HEADER",
+            format!("ISO-10303-21;\n{data}{header}END-ISO-10303-21;\n"),
+        ),
+        (
+            "text between ENDSEC and DATA",
+            mutated("ENDSEC;\nDATA;", "ENDSEC;\nNOTE('x');\nDATA;"),
+        ),
+        (
+            "an entity in the header",
+            mutated("ENDSEC;\nDATA;", "#1=X('');\nENDSEC;\nDATA;"),
+        ),
+        ("END inside DATA", mutated("ENDSEC;\nEND-ISO", "END-ISO")),
+        (
+            "a duplicated product id",
+            mutated("#20=PRODUCT(", "#10=PRODUCT("),
+        ),
+        ("a bare word in DATA", mutated("#100=", "STRAY;\n#100=")),
+        (
+            "text after a parameter list",
+            mutated("#12,#22,$);\n#101", "#12,#22,$) x;\n#101"),
+        ),
+        (
+            "an unclosed parameter list",
+            mutated("#12,#82,$);", "#12,#82,$;"),
+        ),
+    ];
+    for (name, text) in cases {
+        let result = part_tree(text.as_bytes(), &IDLE);
+        assert!(
+            matches!(result, Err(StepError::Malformed)),
+            "{name}: {result:?}"
+        );
+    }
+    let open_comment = format!("{text}/* open");
+    let result = part_tree(open_comment.as_bytes(), &IDLE);
+    assert!(matches!(result, Err(StepError::Incomplete)), "{result:?}");
+    // Whitespace, CRLF and closed comments after the end keep the tree.
+    let trailing = format!("{text}\r\n  /* closed */\r\n");
+    assert_eq!(
+        part_tree(trailing.as_bytes(), &IDLE).unwrap(),
+        part_tree(NESTED, &IDLE).unwrap()
+    );
+}
+
+/// Sol on d15ed842: the record cap counted only the buffered body. It now
+/// counts the whole record, `#` through `;`, comments included.
+#[test]
+fn the_record_cap_counts_the_whole_record() {
+    let cap = Limits::default().max_record_bytes;
+    // A PRODUCT record of exactly `length` bytes, with a comment inside.
+    let product = |length: usize| {
+        let shell = "#10=PRODUCT('P','',/**/'',(#2));";
+        let record = format!(
+            "#10=PRODUCT('P','{}',/**/'',(#2));",
+            "N".repeat(length - shell.len())
+        );
+        assert_eq!(record.len(), length);
+        let rest = "\n#11=PRODUCT_DEFINITION_FORMATION('','',#10);\n#12=PRODUCT_DEFINITION('design','',#11,#3);";
+        file(&format!("{record}{rest}"))
+    };
+    assert!(part_tree(product(cap).as_bytes(), &IDLE).is_ok());
+    let result = part_tree(product(cap + 1).as_bytes(), &IDLE);
+    assert!(matches!(result, Err(StepError::TooLarge)), "{result:?}");
 }

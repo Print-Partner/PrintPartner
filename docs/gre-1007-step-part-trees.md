@@ -23,15 +23,29 @@ A definition that no occurrence places is a root. A sub-assembly used twice appe
 
 On the pinned Trident file (185,183,500 bytes), an optimized build returns one root, 1,625 nodes and 9 levels in about 3 s, with about 3 MiB peak RSS (gpt-6.2-sol score on `4c2445ee`).
 
-## A whole exchange only
+## A well-formed exchange only
 
-A tree is returned only when the file is a whole exchange:
+A tree is returned only for this shape, followed by nothing but whitespace and closed comments:
 
-- every statement ends with `;`;
-- a `DATA` section is closed by `ENDSEC;`;
-- `END-ISO-10303-21;` follows that section.
+```text
+ISO-10303-21; HEADER; <header entities> ENDSEC; DATA; <#id=...; records> ENDSEC; END-ISO-10303-21;
+```
 
-A file that ends anywhere before that, mid-record, mid-string, between records, before `ENDSEC;`, or without the final line, fails as `Incomplete`. So does an unclosed comment, or `END-ISO-10303-21;` inside a `DATA` section. A cut-off copy never yields a partial tree.
+- Every statement is a name (or `#id=` and a name), at most one balanced parameter list, and `;`.
+- There is exactly one `HEADER` section and one `DATA` section, in that order. The header holds named entities only; the data section holds `#id=` records only.
+
+Departures fail in one of two ways:
+
+- `Incomplete`: the file ends early, mid-record, mid-string, mid-comment, before `ENDSEC;`, or without the final line. A trailing unclosed comment counts too.
+- `Malformed`:
+  - a missing or extra section, or sections out of order;
+  - a second `DATA` section (edition 3 `ANCHOR`, `REFERENCE` and multiple `DATA` sections are not supported);
+  - text between sections, or a record in the header;
+  - a statement that runs on past its parameter list, which is how a missing `;` between two records shows up;
+  - anything after `END-ISO-10303-21;`;
+  - a product-structure id used twice. Ids of skipped geometry records are not tracked.
+
+A cut-off or altered file never yields a partial or different tree.
 
 ## Bounds
 
@@ -42,7 +56,7 @@ A file that ends anywhere before that, mid-record, mid-string, between records, 
 | Nodes in the tree, counting every use of a shared part | 100,000 |
 | Levels in the tree (a lone root is 1) | 60 |
 | Product-structure records kept while reading | 400,000 |
-| Bytes in one product-structure record | 64 KiB |
+| Bytes in one product-structure record, from its `#` through its `;`, comments included | 64 KiB (65,536) |
 | Bytes of ids and names kept while reading | 16 MiB |
 | Bytes of ids and names in the finished tree | 32 MiB |
 
@@ -52,7 +66,7 @@ Geometry records are never buffered, whatever their size. The 60-level cap keeps
 
 The cancel flag is checked before every 64 KiB read, so one long record or comment cannot delay it. It is also checked for every node while the tree is built.
 
-Other refusals: not an ISO 10303-21 file (`NotStep`), no product structure (`NoProducts`), and an assembly that contains itself (`Cycle`).
+Other refusals: a file that does not start with `ISO-10303-21;` (`NotStep`), no product structure (`NoProducts`), and an assembly that contains itself (`Cycle`).
 
 ## Not in this change
 

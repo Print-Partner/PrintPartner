@@ -3676,7 +3676,12 @@ dependencies = [
  "hyper",
  "hyper-util",
  "proptest",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

@@ -383,8 +383,7 @@ async fn started_rust_only(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut gateway = Gateway::start_rust_only(
         listener,
-        root.to_path_buf(),
-        ServedUi::Legacy,
+        ServedUi::Legacy(root.to_path_buf()),
         |_| stub(),
         status,
         Arc::new(NoHosts),

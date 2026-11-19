@@ -37,11 +37,10 @@ use windows_sys::Win32::{
     },
     Security::{Authorization::SE_FILE_OBJECT, SECURITY_ATTRIBUTES},
     Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FileAttributeTagInfo,
-        GetFileInformationByHandleEx, OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND,
-        READ_CONTROL, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_FIRST_PIPE_INSTANCE,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, READ_CONTROL,
+        SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
     },
     System::{
         IO::{CreateIoCompletionPort, GetQueuedCompletionStatus},
@@ -55,7 +54,6 @@ use windows_sys::Win32::{
         Pipes::{
             CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
         },
-        SystemServices::IO_REPARSE_TAG_MOUNT_POINT,
         SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO,
         Threading::{
             CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
@@ -702,29 +700,6 @@ pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsStrin
                 "Preload path is not a file URL",
             )
         })
-}
-
-/// Whether `path` is itself a junction (a mount-point reparse point), which
-/// std reports as a symbolic link. npm and the package build create junctions
-/// on Windows, and the manifest builder walks them as directories.
-pub(crate) fn is_junction(path: &Path) -> std::io::Result<bool> {
-    let file = OpenOptions::new()
-        .access_mode(0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
-    check(unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle() as HANDLE,
-            FileAttributeTagInfo,
-            (&raw mut information).cast(),
-            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
-        )
-    })?;
-    Ok(
-        information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            && information.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT,
-    )
 }
 
 /// A regular file, not a reparse point, owned by this user and open to no

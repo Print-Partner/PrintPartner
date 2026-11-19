@@ -103,11 +103,6 @@ pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsStrin
     Ok(path.into())
 }
 
-/// Junctions exist only on Windows.
-pub(crate) fn is_junction(_path: &Path) -> std::io::Result<bool> {
-    Ok(false)
-}
-
 /// A regular file owned by this user with mode 0600.
 pub(crate) fn private_file(file: &File) -> std::io::Result<bool> {
     let metadata = file.metadata()?;

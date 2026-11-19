@@ -67,59 +67,6 @@ fn inventory_key(path: &Path, root: &Path) -> Result<String> {
         .join("/"))
 }
 
-/// A junction whose path after the last `node_modules` segment (in any letter
-/// case, since Windows paths are case-insensitive) is exactly `name` or
-/// `@scope/name` is a module root: npm creates workspace links such as
-/// `node_modules/@print-partner/contracts` as junctions on Windows. It must
-/// resolve to the package its path names: the `package.json` `name` at its
-/// target equals that suffix, and a target without a readable `package.json`
-/// fails. A junction at a `node_modules` segment itself, or at a bare
-/// `@scope`, names no module and fails. Other junctions are only walked, with
-/// their canonical target inside the root: build-output junctions such as
-/// `apps/server/dist/current` and `packages/contracts/dist/current`, which
-/// `web/scripts/atomic-package-build.mjs` creates, whether they sit outside
-/// `node_modules` or deeper inside a package, where Node resolves only
-/// subpaths and never a package name.
-///
-/// `key` is the logical path from the inventory root, the path Node resolves
-/// through, not the canonical target. A walk root that is itself a junction is
-/// checked the same way, so a `node_modules` root junction fails as naming no
-/// module. The walk visits a directory once outside `node_modules` and once
-/// inside it, so reaching it first through a non-module junction cannot skip
-/// the check.
-fn verify_junction_package(junction: &Path, key: &str) -> Result<()> {
-    #[derive(Deserialize)]
-    struct Package {
-        name: String,
-    }
-    let parts: Vec<&str> = key.split('/').collect();
-    let Some(segment) = parts
-        .iter()
-        .rposition(|part| part.eq_ignore_ascii_case("node_modules"))
-    else {
-        return Ok(());
-    };
-    let module = match &parts[segment + 1..] {
-        [] => None,
-        [scope] if scope.starts_with('@') => None,
-        module @ [_] => Some(module),
-        module @ [scope, _] if scope.starts_with('@') => Some(module),
-        _ => return Ok(()),
-    }
-    .with_context(|| format!("Dependency junction {key} names no module"))?
-    .join("/");
-    let package: Package = std::fs::read(junction.join("package.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .with_context(|| format!("Dependency junction {key} has no readable package.json"))?;
-    ensure!(
-        package.name == module,
-        "Dependency junction {key} targets package {}",
-        package.name
-    );
-    Ok(())
-}
-
 fn verify_files(
     root: &Path,
     expected: &BTreeMap<String, String>,
@@ -480,6 +427,27 @@ pub(crate) fn package_root(bundle: &Bundle) -> Result<std::path::PathBuf> {
     inventory_root(&bundle.web_root, &manifest()?.dependencies)
 }
 
+/// A dependency link's recorded target: a relative path from the link's own
+/// directory, `/`-separated. build-desktop-manifest.py records a symbolic
+/// link's own (relative) text and a junction's target made relative, since
+/// Windows stores junction targets as absolute paths. Verification resolves
+/// the recorded target from the link's directory and requires the link to
+/// resolve to the same place, for both kinds.
+fn link_target(target: &str) -> Result<&Path> {
+    let path = Path::new(target);
+    ensure!(
+        !target.is_empty()
+            && path.components().all(|part| matches!(
+                part,
+                std::path::Component::Normal(_)
+                    | std::path::Component::CurDir
+                    | std::path::Component::ParentDir
+            )),
+        "Invalid dependency link target"
+    );
+    Ok(path)
+}
+
 fn verify_dependencies(
     web: &Path,
     inventory: &DependencyInventory,
@@ -499,8 +467,8 @@ fn verify_dependencies(
     let mut actual_files = std::collections::BTreeSet::new();
     let mut actual_links = std::collections::BTreeSet::new();
     let mut visited = std::collections::BTreeSet::new();
-    for root_key in &inventory.roots {
-        let directory = root.join(relative(root_key)?);
+    for directory in &inventory.roots {
+        let directory = root.join(relative(directory)?);
         if !directory.try_exists()? {
             continue;
         }
@@ -508,33 +476,26 @@ fn verify_dependencies(
             directory.canonicalize()?.starts_with(&root),
             "Dependency root escaped package"
         );
-        if std::fs::symlink_metadata(&directory)?.is_symlink()
-            && crate::platform::is_junction(&directory)?
-        {
-            verify_junction_package(&directory, root_key)?;
-        }
-        let mut pending = vec![(directory, root_key.clone())];
-        while let Some((directory, logical)) = pending.pop() {
+        let mut pending = vec![directory];
+        while let Some(directory) = pending.pop() {
             ensure!(!stop.is_cancelled(), "Release verification cancelled");
             let directory = directory.canonicalize()?;
             ensure!(
                 directory.starts_with(&root),
                 "Dependency root escaped package"
             );
-            let in_modules = logical
-                .split('/')
-                .any(|part| part.eq_ignore_ascii_case("node_modules"));
-            if !visited.insert((directory.clone(), in_modules)) {
+            if !visited.insert(directory.clone()) {
                 continue;
             }
             for entry in std::fs::read_dir(directory)? {
                 let entry = entry?;
                 let path = entry.path();
                 let key = inventory_key(&path, &root)?;
-                let logical = format!("{logical}/{}", entry.file_name().to_string_lossy());
                 let kind = entry.file_type()?;
-                let junction = kind.is_symlink() && crate::platform::is_junction(&path)?;
-                if kind.is_symlink() && !junction {
+                // std reports a Windows junction, which npm creates for
+                // workspace links, as a symbolic link. Both are dependency
+                // links, as in build-desktop-manifest.py.
+                if kind.is_symlink() {
                     actual_links.insert(key.clone());
                     if inventory.unshipped_links.contains(&key) {
                         continue;
@@ -544,15 +505,12 @@ fn verify_dependencies(
                     if target.is_file() {
                         actual_files.insert(inventory_key(&target, &root)?);
                     } else if target.is_dir() {
-                        pending.push((target, logical));
+                        pending.push(target);
                     } else {
                         anyhow::bail!("Unexpected dependency link target");
                     }
-                } else if junction {
-                    verify_junction_package(&path, &logical)?;
-                    pending.push((path, logical));
                 } else if kind.is_dir() {
-                    pending.push((path, logical));
+                    pending.push(path);
                 } else {
                     ensure!(kind.is_file(), "Unexpected dependency file type");
                     actual_files.insert(key);
@@ -569,8 +527,16 @@ fn verify_dependencies(
         "Dependency link inventory mismatch"
     );
     for (path, target) in &inventory.links {
+        let link = root.join(relative(path)?);
+        let recorded = link
+            .parent()
+            .context("Dependency link has no directory")?
+            .join(link_target(target)?);
         ensure!(
-            std::fs::read_link(root.join(relative(path)?))? == Path::new(target),
+            matches!(
+                (link.canonicalize(), recorded.canonicalize()),
+                (Ok(actual), Ok(recorded)) if actual == recorded
+            ),
             "Dependency link changed"
         );
     }
@@ -901,6 +867,15 @@ mod tests {
             error.to_string(),
             "Unshipped dependency link is not inventoried"
         );
+        inventory
+            .links
+            .insert(link.clone(), web.join("apps/ui").to_string_lossy().into());
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Invalid dependency link target");
+        inventory
+            .links
+            .insert(link.clone(), "../../apps/./ui".into());
+        verify_dependencies(&web, &inventory, &stop).unwrap();
         inventory.links.insert(link.clone(), "../../apps/ui".into());
 
         std::fs::create_dir_all(web.join("apps/other")).unwrap();
@@ -914,9 +889,12 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// npm's Windows workspace links are junctions. They are dependency links
+    /// like symbolic links: inventoried by key, checked against a target
+    /// recorded relative to the link's directory, and followed.
     #[cfg(windows)]
     #[test]
-    fn junctions_are_walked_as_directories_and_cannot_escape() {
+    fn junctions_are_recorded_links_and_cannot_escape() {
         use crate::logs::test_support::junction;
         let root = std::env::temp_dir().join(format!(
             "pp-junctions-{}",
@@ -926,31 +904,21 @@ mod tests {
         let scope = web.join("node_modules/@pp");
         std::fs::create_dir_all(&scope).unwrap();
         let mut files = BTreeMap::new();
+        let mut links = BTreeMap::new();
         for name in ["contracts", "domain"] {
             let package = web.join("packages").join(name);
             std::fs::create_dir_all(&package).unwrap();
-            std::fs::write(
-                package.join("package.json"),
-                format!(r#"{{"name":"@pp/{name}"}}"#),
-            )
-            .unwrap();
             std::fs::write(package.join("index.js"), b"export {};\n").unwrap();
-            for file in ["package.json", "index.js"] {
-                files.insert(
-                    format!("web/packages/{name}/{file}"),
-                    measure(&package.join(file)).unwrap(),
-                );
-            }
+            files.insert(
+                format!("web/packages/{name}/index.js"),
+                measure(&package.join("index.js")).unwrap(),
+            );
             junction(&package, &scope.join(name));
+            links.insert(
+                format!("web/node_modules/@pp/{name}"),
+                format!("../../packages/{name}"),
+            );
         }
-        let build = web.join("packages/contracts/dist");
-        std::fs::create_dir_all(build.join("v1")).unwrap();
-        std::fs::write(build.join("v1/index.js"), b"export {};\n").unwrap();
-        files.insert(
-            "web/packages/contracts/dist/v1/index.js".into(),
-            measure(&build.join("v1/index.js")).unwrap(),
-        );
-        junction(&build.join("v1"), &build.join("current"));
         let release = web.join("apps/server/dist");
         std::fs::create_dir_all(release.join("v1")).unwrap();
         std::fs::write(release.join("v1/server.js"), b"export {};\n").unwrap();
@@ -959,90 +927,58 @@ mod tests {
             measure(&release.join("v1/server.js")).unwrap(),
         );
         junction(&release.join("v1"), &release.join("current"));
-        let inventory = DependencyInventory {
+        links.insert("web/apps/server/dist/current".into(), "v1".into());
+        let mut inventory = DependencyInventory {
             web_path: "web".into(),
             roots: vec!["web/apps/server/dist".into(), "web/node_modules".into()],
             files,
-            links: Default::default(),
+            links,
             unshipped_links: Default::default(),
         };
         let stop = CancellationToken::new();
         verify_dependencies(&web, &inventory, &stop).unwrap();
 
-        let decoy = web.join("decoy/@pp");
-        std::fs::create_dir_all(&decoy).unwrap();
-        junction(&web.join("packages/domain"), &decoy.join("contracts"));
-        let server_modules = web.join("apps/server/node_modules");
-        let decoyed = DependencyInventory {
-            web_path: "web".into(),
-            roots: vec![
-                "web/apps/server/dist".into(),
-                "web/node_modules".into(),
-                "web/apps/server/node_modules".into(),
-            ],
+        // The pre-GRE-1204 manifest, which walked junctions as directories.
+        let walked = DependencyInventory {
+            web_path: inventory.web_path.clone(),
+            roots: inventory.roots.clone(),
             files: inventory.files.clone(),
             links: Default::default(),
             unshipped_links: Default::default(),
         };
-        junction(&web.join("decoy"), &server_modules);
-        let error = verify_dependencies(&web, &decoyed, &stop).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Dependency junction web/apps/server/node_modules names no module"
-        );
-        std::fs::remove_dir(&server_modules).unwrap();
-        std::fs::create_dir(&server_modules).unwrap();
-        crate::logs::test_support::symlink_dir(&decoy, &server_modules.join("@pp"));
-        let error = verify_dependencies(&web, &decoyed, &stop).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Dependency junction web/apps/server/node_modules/@pp/contracts targets package @pp/domain"
-        );
-        std::fs::remove_dir_all(&server_modules).unwrap();
+        let error = verify_dependencies(&web, &walked, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link inventory mismatch");
 
         let link = scope.join("contracts");
         std::fs::remove_dir(&link).unwrap();
         junction(&web.join("packages/domain"), &link);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Dependency junction web/node_modules/@pp/contracts targets package @pp/domain"
-        );
-        std::fs::rename(web.join("node_modules"), web.join("Node_Modules")).unwrap();
-        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Dependency junction web/node_modules/@pp/contracts targets package @pp/domain"
-        );
-        std::fs::rename(web.join("Node_Modules"), web.join("node_modules")).unwrap();
-
-        let bare = web.join("packages/bare");
-        std::fs::create_dir_all(&bare).unwrap();
-        std::fs::remove_dir(&link).unwrap();
-        junction(&bare, &link);
-        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Dependency junction web/node_modules/@pp/contracts has no readable package.json"
-        );
+        assert_eq!(error.to_string(), "Dependency link changed");
 
         let outside = root.with_extension("outside");
         std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("package.json"), br#"{"name":"@pp/contracts"}"#).unwrap();
         std::fs::remove_dir(&link).unwrap();
         junction(&outside, &link);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Dependency root escaped package");
+        assert_eq!(error.to_string(), "Dependency link escaped package");
         std::fs::remove_dir(&link).unwrap();
+        junction(&web.join("packages/contracts"), &link);
+        verify_dependencies(&web, &inventory, &stop).unwrap();
 
-        let unnamed = release.join("Node_Modules");
-        junction(&release.join("v1"), &unnamed);
+        let extra = scope.join("extra");
+        junction(&web.join("packages/domain"), &extra);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Dependency junction web/apps/server/dist/Node_Modules names no module"
+        assert_eq!(error.to_string(), "Dependency link inventory mismatch");
+        std::fs::remove_dir(&extra).unwrap();
+
+        inventory.links.insert(
+            "web/node_modules/@pp/contracts".into(),
+            web.join("packages/contracts")
+                .to_string_lossy()
+                .into_owned(),
         );
-        std::fs::remove_dir(&unnamed).unwrap();
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Invalid dependency link target");
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
     }

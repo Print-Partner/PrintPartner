@@ -40,6 +40,32 @@ def inventory(root):
         raise ValueError('Empty artifact root')
     return files
 
+def is_link(path):
+    """A symbolic link or a Windows junction.
+
+    npm creates workspace links as junctions on Windows. pathlib's is_symlink()
+    is false for a junction, but Rust's FileType::is_symlink() is true, so
+    pp-compat's release verifier counts it as a link. Both treat the two kinds
+    the same way: record the link, check its target, and follow the target.
+    """
+    return path.is_symlink() or path.is_junction()
+
+def link_target(path, target):
+    """The recorded target: a relative path from the link's directory, /-separated.
+
+    A symbolic link records its own text, which must be relative because staging
+    and packaging recreate the link from it. Windows stores a junction's target
+    as an absolute path, so a junction records its resolved target relative to
+    its directory. pp-compat resolves the recorded target from the link's
+    directory and requires the link to resolve to the same place.
+    """
+    if path.is_junction():
+        return pathlib.PurePath(os.path.relpath(target, path.parent)).as_posix()
+    link = os.readlink(path)
+    if pathlib.Path(link).is_absolute():
+        raise ValueError('Dependency link must be relative')
+    return link
+
 def dependencies():
     roots = []
     files = {}
@@ -74,14 +100,11 @@ def dependencies():
         visited.add(directory)
         for path in directory.iterdir():
             relative = path.relative_to(package_root).as_posix()
-            if path.is_symlink():
+            if is_link(path):
                 target = path.resolve(strict=True)
                 if not target.is_relative_to(package_root):
                     raise ValueError('Dependency link escapes package root')
-                link = os.readlink(path)
-                if pathlib.Path(link).is_absolute():
-                    raise ValueError('Dependency link must be relative')
-                links[relative] = link
+                links[relative] = link_target(path, target)
                 if target.parent in WORKSPACE_PARENTS and target not in SHIPPED_WORKSPACES:
                     # A workspace link the desktop does not ship, such as
                     # node_modules/@print-partner/ui in a source checkout. Record the link

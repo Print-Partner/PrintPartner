@@ -8,10 +8,17 @@ pub struct ExperimentBuild {
     pub name: String,
 }
 
+/// The 201 answer to duplicating a Build. `draft_id` is null when the parent
+/// had no Accepted revision to copy.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct ExperimentCopy {
     pub build_id: i64,
     pub parent_build_id: i64,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub draft_id: Option<i64>,
 }
 

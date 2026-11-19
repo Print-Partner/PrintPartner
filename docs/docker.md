@@ -34,7 +34,7 @@ The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-
 A Rust-only start checks the release without Node. When `web/apps/ui/dist` is installed, `pp-core` calls `pp_compat::snapshot_rust_only_release`, which checks the `replacement_frontend` inventory and keeps the verified bytes for serving. When it is absent, as in an image built before GRE-1387, `pp-core` calls `pp_compat::verify_rust_only_legacy_release`, which checks the `frontend` inventory instead, and writes `Replacement UI bundle absent` to stderr once the data directory is admitted. A refused start writes only its refusal. Both check:
 
 - The runtime version and commit match the manifest embedded in the binary.
-- The selected frontend's file list and digests match exactly.
+- The selected frontend's file list and digests match exactly. The replacement inventory must include `index.html`, at most 1 MiB.
 - The community manifests' file list and digests match exactly.
 
 It does not measure the Node executable, the Node backend, the workspace packages or `node_modules`, so `pp-server` needs no `--node` in this mode. The Node-backed start still runs the full `verify_bundle` and still requires `--node`.
@@ -194,7 +194,7 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> -
 PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --data <new folder>
 ```
 
-The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a format 2 full backup. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
+The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a full backup, format 2 or the format 1 that v3.3.0 and earlier wrote. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
 
 ## To be written
 

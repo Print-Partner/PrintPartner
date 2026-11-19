@@ -189,6 +189,65 @@ fn a_full_archive_imports_the_same_data() {
     );
 }
 
+/// A format 1 archive, as Print Partner v3.3.0 and earlier wrote it, imports
+/// the same tables as a format 2 one. It lacks the roots format 2 added, here
+/// `custom_filaments.json`. An archive that holds only the database, format 2
+/// `database-only` or format 1 without roots, writes nothing.
+#[test]
+fn a_format_1_archive_imports_and_a_database_only_one_is_refused() {
+    let source = node_folder();
+    let parent = tempfile::tempdir().unwrap();
+    let full = archive_of(source.path(), 2, "full");
+    let legacy = archive_of(source.path(), 1, "");
+    let from_full = import(full.path(), &parent.path().join("full")).unwrap();
+    let mut from_legacy = import(legacy.path(), &parent.path().join("legacy")).unwrap();
+    let filaments = std::fs::metadata(source.path().join("custom_filaments.json")).unwrap();
+    assert_eq!(
+        (from_legacy.files + 1, from_legacy.bytes + filaments.len()),
+        (from_full.files, from_full.bytes)
+    );
+    let file = "file custom_filaments.json";
+    let items = |report: &ImportReport| {
+        let shapes = report.rows.iter().flat_map(|row| &row.shapes);
+        shapes
+            .filter(|shape| shape.shape == file)
+            .map(|shape| shape.items)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!((items(&from_legacy), items(&from_full)), (vec![0], vec![2]));
+    let note = "custom_filaments.json is not a store";
+    let noted = |report: &ImportReport| report.settings.notes.iter().any(|item| item.name == note);
+    assert!(noted(&from_full) && !noted(&from_legacy));
+    // Nothing else differs from the format 2 import.
+    let shapes = from_legacy.rows.iter_mut().flat_map(|row| &mut row.shapes);
+    shapes
+        .filter(|shape| shape.shape == file)
+        .for_each(|shape| shape.items = 2);
+    let from_legacy = ImportReport {
+        files: from_full.files,
+        bytes: from_full.bytes,
+        settings: from_full.settings.clone(),
+        ..from_legacy
+    };
+    assert_eq!(from_legacy, from_full);
+    let mut expected = entries(&parent.path().join("full"));
+    expected.retain(|name| name != "custom_filaments.json");
+    assert_eq!(entries(&parent.path().join("legacy")), expected);
+
+    for (index, (archive, _)) in database_only_archives(source.path())
+        .into_iter()
+        .enumerate()
+    {
+        let refused = parent.path().join(format!("database-only-{index}"));
+        let error = import(archive.path(), &refused).unwrap_err();
+        assert!(
+            matches!(error, ImportError::DatabaseOnlyArchive(_)),
+            "{error:?}"
+        );
+        assert!(!refused.exists() || entries(&refused).is_empty());
+    }
+}
+
 /// A folder is copied whatever its size: the caps on total bytes, entry
 /// bytes and entry count apply to an archive only (owner decision,
 /// 2026-11-12). Lowered caps stand in for an installation above them.

@@ -140,6 +140,8 @@ async fn ticket_t_23_first_use_reads_status_and_reports_the_fingerprint() {
     assert_eq!(read.status.message.as_deref(), Some("Printing frame_x.3mf"));
     assert_eq!(read.status.ip_address.as_deref(), Some("127.0.0.1"));
     assert_eq!(settled(&broker, 6).await, exchange());
+    // An IP-literal host sends no server name.
+    assert_eq!(broker.server_names(), [""]);
 }
 
 #[tokio::test]
@@ -171,6 +173,8 @@ async fn ticket_t_23_checked_dns_reaches_the_pinned_tls_connection() {
     assert_eq!(read.status.state, State::Idle);
     assert_eq!(read.status.ip_address.as_deref(), Some("printer.test"));
     assert_eq!(settled(&broker, 6).await, exchange());
+    // GRE-455: the TLS server name is the configured host, not 127.0.0.1.
+    assert_eq!(broker.server_names(), ["printer.test"]);
 }
 
 #[tokio::test]

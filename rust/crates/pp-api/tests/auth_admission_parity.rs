@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use axum::extract::ConnectInfo;
 use hyper::body::Incoming;
-use hyper_util::rt::TokioIo;
 use pp_api::auth::{
     AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer, SmtpConfig, SmtpSecurity,
     auth_router,
@@ -24,7 +23,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::{JoinHandle, JoinSet},
@@ -37,6 +36,11 @@ use scratch::Scratch;
 
 #[path = "../../pp-storage/tests/common/process.rs"]
 mod child_process;
+
+// The gateway's connection serving, compiled from its source because pp-api
+// may not depend on pp-net (rust/scripts/check-boundaries.py).
+#[path = "../../pp-net/src/http1.rs"]
+mod http1;
 const FIXTURE: &str = include_str!("../../../../fixtures/parity/auth-admission/node.json");
 const EMAIL: &str = "admission@example.test";
 const REGISTER: &str = r#"{"email":"admission@example.test","password":"fixture-admission-password","display_name":"Admission"}"#;
@@ -970,29 +974,14 @@ async fn serve_http(
     while connections.join_next().await.is_some() {}
     Ok(())
 }
-/// Serves one connection, then reads and discards what the client still sends,
-/// for up to two seconds, before closing. A server that closes with unread
-/// request bytes resets the connection, and on Windows the client loses the
-/// early response to an over-limit body (RFC 9112, section 9.6). The shipping
-/// gateway's connection loop does not linger yet; GRE-1264 tracks that fix.
+/// Serves one connection with the shipping gateway's own code, including its
+/// bounded linger after the last response, so a Windows client receives the
+/// early 413 for an over-limit body instead of a reset (GRE-1264).
 async fn serve_lingering(stream: TcpStream, router: axum::Router) {
     let service = hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
         tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
     });
-    let Ok(parts) = hyper::server::conn::http1::Builder::new()
-        .serve_connection(TokioIo::new(stream), service)
-        .without_shutdown()
-        .await
-    else {
-        return;
-    };
-    let mut stream = parts.io.into_inner();
-    let _ = stream.shutdown().await;
-    let _ = timeout(Duration::from_secs(2), async {
-        let mut discarded = [0; 8192];
-        while matches!(stream.read(&mut discarded).await, Ok(read) if read > 0) {}
-    })
-    .await;
+    http1::serve(&hyper::server::conn::http1::Builder::new(), stream, service).await;
 }
 struct Evidence {
     observation: Observation,

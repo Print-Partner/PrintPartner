@@ -70,10 +70,10 @@ pub(crate) fn execute(
             "plan_id and source_name required"
         }));
     }
-    let needle =
-        crate::read_model::views::js_trim(params["source_name"].as_str().unwrap_or_default());
+    let raw = params["source_name"].as_str().unwrap_or_default();
+    let needle = crate::read_model::views::js_trim(raw);
     let sources = sources(tx, account)?;
-    let found = find(&sources, needle, *apply);
+    let found = lookup(&sources, raw, *apply);
     let Some(source) = found else {
         if *apply {
             return Ok(failure(&format!("Source not found: {needle}")));
@@ -119,11 +119,9 @@ impl BuildGraphClient {
                 let account = credential_tenant(&tx, &credential, self.policy)?;
                 let found = if build_exists(&tx, &account, request.build)? {
                     let rows = sources(&tx, &account)?;
-                    find(
+                    lookup(
                         &rows,
-                        crate::read_model::views::js_trim(
-                            request.params["source_name"].as_str().unwrap_or_default(),
-                        ),
+                        request.params["source_name"].as_str().unwrap_or_default(),
                         request.apply,
                     )
                     .cloned()
@@ -317,11 +315,20 @@ fn compact(s: &str) -> String {
         })
         .collect()
 }
-fn find<'a>(sources: &'a [Source], needle: &str, exact_only: bool) -> Option<&'a Source> {
-    let exact = sources.iter().find(|s| s.1 == needle);
-    if exact_only {
+/// Finds the Source an MCP call names. A proposal returns the stored name and
+/// confirmation sends it back, so `confirm` matches that name untrimmed and
+/// nothing else: a legacy Source saved with surrounding whitespace confirms, and
+/// a removed Source is never swapped for one with a similar name. A proposal
+/// prefers the untrimmed name, then falls back to the trimmed, fuzzy match.
+fn lookup<'a>(sources: &'a [Source], raw: &str, confirm: bool) -> Option<&'a Source> {
+    let exact = sources.iter().find(|s| s.1 == raw);
+    if confirm {
         return exact;
     }
+    exact.or_else(|| find(sources, crate::read_model::views::js_trim(raw)))
+}
+fn find<'a>(sources: &'a [Source], needle: &str) -> Option<&'a Source> {
+    let exact = sources.iter().find(|s| s.1 == needle);
     let norm = |s: &str| {
         s.to_lowercase()
             .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
@@ -424,10 +431,7 @@ fn proposed_addon(
 #[test]
 fn mcp_planning_fuzzy_source_ties_keep_first() {
     let rows = [(1, "Foo-A"), (2, "Foo-B")].map(|(id, s)| (id, s.into(), None, None));
-    assert_eq!(
-        find(&rows, "Foo", false).map(|row| &row.1),
-        Some(&rows[0].1)
-    );
+    assert_eq!(find(&rows, "Foo").map(|row| &row.1), Some(&rows[0].1));
 }
 #[cfg(test)]
 mod confirmation_tests {

@@ -80,6 +80,10 @@ _Avoid_: Connector, integration, client
 Handing a plate's file to a printer. Always an explicit user action; never automatic, never a consequence of a bed becoming free.
 _Avoid_: Dispatch, submit, push, start
 
+**Slicer profile**:
+A saved set of slicer settings that a slicer (OrcaSlicer, PrusaSlicer or Bambu Studio) applies when it turns a part into a print file: a printer, process or filament profile. Print Partner stores the profiles it imports (`pp-storage/src/profiles.rs`) so it can slice and estimate; a slicer profile belongs to the slicer and is not a Plan, which is a Build's requirements.
+_Avoid_: Profile alone (it reads as Plan), preset, build profile
+
 **Stock**:
 Filament inventory. Spoolman is the only stock source; Print Partner never keeps its own count.
 _Avoid_: Inventory, spool count, filament db

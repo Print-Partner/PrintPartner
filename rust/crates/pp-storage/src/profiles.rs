@@ -1,3 +1,7 @@
+//! Imported slicer profiles: the printer, process and filament settings a
+//! slicer applies, as defined by the **Slicer profile** entry in the glossary
+//! (`GLOSSARY.md`). A slicer profile is not a Plan; "profile" in this module
+//! never means a Build's requirements.
 use serde::Serialize;
 use serde_json::value::RawValue;
 

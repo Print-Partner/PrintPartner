@@ -10,7 +10,7 @@ publish = false
 anyhow.workspace = true
 axum.workspace = true
 tokio.workspace = true
-hyper.workspace = true
+hyper = { workspace = true, features = ["server"] }
 hyper-util.workspace = true
 http-body-util.workspace = true
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }

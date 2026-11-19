@@ -13,23 +13,16 @@ import sys
 WORKAROUND_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
                          ".rs", ".py", ".sh", ".yml", ".yaml", ".css", ".html")
 
-# `rust (windows tests)` (GRE-1811). The filter over-selects on purpose; it must never
-# under-select. Allow list: these directories and files.
-WINDOWS_TEST_DIRS = ("rust/", "web/", "fixtures/", ".cargo/")
-WINDOWS_TEST_FILES = {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
-                      "package.json", "package-lock.json", ".npmrc", ".gitattributes", ".gitignore",
-                      ".github/workflows/rust-cross-os.yml", ".github/zizmor.yml"}
-# Skip list, checked after the allow list. The job installs web/ without these two
-# workspaces, but npm ci still checks their package.json against the lockfile.
-WINDOWS_TEST_SKIPPED = ("web/apps/ui/", "web/packages/rust-client/")
+# `rust (windows tests)` (GRE-1811) runs for every change except one limited to docs/,
+# root Markdown, or .github files other than its own workflow and the zizmor config.
+# Over-selection is intended: a new input cannot be forgotten.
+WINDOWS_TEST_GITHUB_INPUTS = {".github/workflows/rust-cross-os.yml", ".github/zizmor.yml"}
 
 
 def windows_tests_relevant(path):
-    if not (path.startswith(WINDOWS_TEST_DIRS) or path in WINDOWS_TEST_FILES):
+    if path.startswith("docs/") or ("/" not in path and path.endswith(".md")):
         return False
-    if path.startswith(WINDOWS_TEST_SKIPPED):
-        return path in {f"{workspace}package.json" for workspace in WINDOWS_TEST_SKIPPED}
-    return True
+    return not path.startswith(".github/") or path in WINDOWS_TEST_GITHUB_INPUTS
 
 
 def relevant(path, kind):

@@ -203,10 +203,67 @@ fn process_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Windows has no signal-0 check here; the HTTP probe still runs once ready.
-#[cfg(not(unix))]
-fn process_alive(_pid: u32) -> bool {
-    true
+/// Opens the process for a limited query and reads its exit code. `kernel32`
+/// is declared here rather than through `windows-sys`, which pp-server takes
+/// only as a dev-dependency.
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> RawHandle;
+        fn GetExitCodeProcess(process: RawHandle, code: *mut u32) -> i32;
+    }
+    let failed = || {
+        WindowsQuery::Failed(
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or_default(),
+        )
+    };
+    // SAFETY: plain FFI call with no pointer arguments.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    let query = if raw.is_null() {
+        failed()
+    } else {
+        // SAFETY: OpenProcess returned a new handle that only this function
+        // holds; OwnedHandle closes it.
+        let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut code = 0;
+        // SAFETY: `process` is open and `code` outlives the call.
+        if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } != 0 {
+            WindowsQuery::ExitCode(code)
+        } else {
+            failed()
+        }
+    };
+    windows_alive(query)
+}
+
+/// What `OpenProcess` and `GetExitCodeProcess` reported for a pid on Windows.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug)]
+enum WindowsQuery {
+    /// The process opened and reported this exit code.
+    ExitCode(u32),
+    /// A call failed with this Win32 error code.
+    Failed(i32),
+}
+
+/// A process is alive while its exit code is `STILL_ACTIVE`. Access denied
+/// means the process exists but belongs to someone else, as `EPERM` does on
+/// Unix. Any other failure, such as `ERROR_INVALID_PARAMETER` for a pid no
+/// process has, means it is gone. A process that exited with code 259 reads
+/// as alive; Windows offers no way to tell it apart through this query.
+#[cfg(any(windows, test))]
+fn windows_alive(query: WindowsQuery) -> bool {
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    match query {
+        WindowsQuery::ExitCode(code) => code == STILL_ACTIVE,
+        WindowsQuery::Failed(error) => error == ERROR_ACCESS_DENIED,
+    }
 }
 
 /// One `GET /health` with no cookie to a local origin. Passes on any HTTP
@@ -294,9 +351,11 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    /// Above `pid_t::MAX`, so `process_alive` reports it dead.
-    #[cfg(unix)]
+    /// Above `pid_t::MAX` on Unix and held by no process on Windows, so
+    /// `process_alive` reports it dead.
     const DEAD_PID: u32 = 4_000_000_000;
+    /// Always alive and never this test: init on Unix, System on Windows.
+    const FOREIGN_PID: u32 = if cfg!(windows) { 4 } else { 1 };
 
     fn parse_args(args: &[&str]) -> Result<Command> {
         parse(args.iter().map(|arg| (*arg).to_owned()))
@@ -437,14 +496,13 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_live_servers_status_file_is_left_alone() {
         let root = scratch();
         let path = root.join("status.json");
-        // pid 1 is always alive and is never this test.
-        let foreign =
-            serde_json::json!({"pid": 1, "state": "ready", "origin": "http://127.0.0.1:1"});
+        let foreign = serde_json::json!(
+            {"pid": FOREIGN_PID, "state": "ready", "origin": "http://127.0.0.1:1"}
+        );
         record(&path, foreign.clone());
         let error = StatusFile::create(path.clone()).err().unwrap().to_string();
         assert_eq!(error, "Status file belongs to a running server");
@@ -458,13 +516,26 @@ mod tests {
         );
         // A dead process's file is replaced, and a planted temporary symlink
         // is removed rather than followed.
-        let target = root.join("target.txt");
-        std::fs::write(&target, "keep").unwrap();
-        let temporary = root.join(format!("status.json.{}.tmp", std::process::id()));
-        std::os::unix::fs::symlink(&target, &temporary).unwrap();
+        #[cfg(unix)]
+        let (target, temporary) = {
+            let target = root.join("target.txt");
+            std::fs::write(&target, "keep").unwrap();
+            let temporary = root.join(format!("status.json.{}.tmp", std::process::id()));
+            std::os::unix::fs::symlink(&target, &temporary).unwrap();
+            (target, temporary)
+        };
         let status = StatusFile::create(path.clone()).unwrap();
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
-        assert!(!temporary.exists());
+        let mine: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            mine,
+            serde_json::json!({"pid": std::process::id(), "state": "starting"})
+        );
+        #[cfg(unix)]
+        {
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+            assert!(!temporary.exists());
+        }
         // Another process's file is not removed on drop.
         record(&path, foreign);
         drop(status);
@@ -544,12 +615,8 @@ mod tests {
                 .to_string(),
             "Status file malformed"
         );
-        #[cfg(unix)]
-        {
-            record(
-                &path,
-                serde_json::json!({"pid": DEAD_PID, "state": "starting"}),
-            );
+        for state in ["starting", "stopping"] {
+            record(&path, serde_json::json!({"pid": DEAD_PID, "state": state}));
             assert_eq!(
                 check(Probe::Liveness, &path, timeout)
                     .unwrap_err()
@@ -558,5 +625,38 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A child that has exited. On Windows, `Child` still holds its handle, so
+    /// the pid still opens and only its exit code says it is gone. On Unix,
+    /// `wait` reaped it, so the pid no longer exists.
+    #[test]
+    fn an_exited_process_is_not_alive() {
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit 3"])
+                .spawn()
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", "exit 3"])
+                .spawn()
+        }
+        .unwrap();
+        assert!(process_alive(std::process::id()));
+        assert!(process_alive(FOREIGN_PID));
+        assert_eq!(child.wait().unwrap().code(), Some(3));
+        assert!(!process_alive(child.id()));
+        assert!(!process_alive(DEAD_PID));
+    }
+
+    #[test]
+    fn windows_verdict_follows_exit_code_and_error() {
+        assert!(windows_alive(WindowsQuery::ExitCode(259)), "STILL_ACTIVE");
+        assert!(!windows_alive(WindowsQuery::ExitCode(0)));
+        assert!(!windows_alive(WindowsQuery::ExitCode(3)));
+        assert!(!windows_alive(WindowsQuery::ExitCode(0xC000_0005)));
+        assert!(windows_alive(WindowsQuery::Failed(5)), "access denied");
+        assert!(!windows_alive(WindowsQuery::Failed(87)), "no such pid");
+        assert!(!windows_alive(WindowsQuery::Failed(6)), "invalid handle");
     }
 }

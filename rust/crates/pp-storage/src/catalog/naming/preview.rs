@@ -1,4 +1,5 @@
 use super::*;
+use std::convert::Infallible;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -253,13 +254,20 @@ pub(in crate::catalog) fn preview(
     let name = model_stem(&filename).unwrap_or(&filename);
     let mut slug = name.to_owned();
     if profile.slug.strip_markers {
-        for marker in profile
+        let markers: Vec<&str> = profile
             .roles
             .iter()
             .flat_map(|r| &r.markers)
+            .map(String::as_str)
             .filter(|m| !trim(m).is_empty())
-        {
+            .collect();
+        for marker in &markers {
             slug = strip_marker(&slug, marker);
+        }
+        if slug != name {
+            let Ok(stripped) =
+                strip_exposed_markers(slug, &markers, |_, _| Ok::<_, Infallible>(()));
+            slug = stripped;
         }
     }
     if profile.slug.strip_quantity

@@ -105,6 +105,14 @@ export function parsePartSlug(filename: string, profile?: NamingProfile | null):
     for (const strip of prof.markerStrips) {
       stem = stripMarker(stem, strip);
     }
+    // Removing `[c]` from `Panel_[a[c]]_Clip` exposes `[a]` after its turn, so the markers
+    // that strip anywhere repeat until a pass removes nothing. Each repeat shortens the name.
+    for (let before = name; stem !== before; ) {
+      before = stem;
+      for (const strip of prof.markerStrips) {
+        if (strip.anywhere) stem = stripMarker(stem, strip);
+      }
+    }
   }
   const quantityStrip = THREE_MF_RE.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
   if (prof.slugStripQuantity && quantityStrip) {

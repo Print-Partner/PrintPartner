@@ -14,7 +14,8 @@ export const SOURCE_SNAPSHOT_MAX_BYTES_ENV = "PP_SOURCE_SNAPSHOT_MAX_BYTES";
 
 /**
  * The stored-content cap for one Source snapshot: `PP_SOURCE_SNAPSHOT_MAX_BYTES` when set,
- * else 2 GiB. Read at each sync so a restart is the only step after changing it.
+ * else 2 GiB. Read only when a sync writes a new snapshot; reusing a stored revision skips
+ * it. A restart is the only step after changing it.
  */
 export function sourceSnapshotMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[SOURCE_SNAPSHOT_MAX_BYTES_ENV]?.trim();

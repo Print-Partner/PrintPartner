@@ -533,6 +533,8 @@ fn parse_strips_role_markers_anywhere_like_the_preview() {
         ("[a]_[a]_belt_clip.stl", &default, "belt_clip"),
         ("belt_clip_[a]_[a].stl", &default, "belt_clip"),
         ("belt_[a]_[o]_clip.stl", &default, "belt_clip"),
+        ("STLs/Panel_[a[c]]_Clip.stl", &default, "Panel_Clip"),
+        ("[o[a[c]]]_Panel.stl", &default, "Panel"),
         ("[a]_Bracket_x4.STL", &default, "Bracket"),
         ("[a].stl", &default, "[a]"),
         ("gear.stl", &letter, "gear"),

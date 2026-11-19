@@ -60,6 +60,13 @@ describe("parsers", () => {
     expect(parsePartSlug(filename)).toBe(parsePartSlug("belt_clip.stl"));
   });
 
+  it.each([
+    ["STLs/Panel_[a[c]]_Clip.stl", "Panel_Clip"],
+    ["[o[a[c]]]_Panel.stl", "Panel"],
+  ])("strips a marker that removing a nested marker exposes in %s", (path, slug) => {
+    expect(parsePartSlug(path)).toBe(slug);
+  });
+
   it("strips a letter or digit marker only as a prefix", () => {
     const profile = namingProfileFromDict(
       mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {

@@ -1725,6 +1725,8 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
         ("[a]_[a]_belt_clip.stl", "accent", 1, "belt_clip"),
         ("belt_clip_[a]_[a].stl", "accent", 1, "belt_clip"),
         ("belt_[a]_[o]_clip.stl", "accent", 1, "belt_clip"),
+        ("STLs/Panel_[a[c]]_Clip.stl", "clear", 1, "Panel_Clip"),
+        ("[o[a[c]]]_Panel.stl", "clear", 1, "Panel"),
         (
             "STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf",
             "accent",

@@ -629,6 +629,23 @@ pub(super) fn parse(
                 slug = naming::strip_marker(&slug, marker);
             }
         }
+        if slug != name {
+            let markers: Vec<&str> = profile
+                .roles
+                .iter()
+                .flat_map(|r| &r.markers)
+                .map(String::as_str)
+                .filter(|m| !trim_js(m).is_empty())
+                .collect();
+            slug = naming::strip_exposed_markers(slug, &markers, |slug, marker| {
+                b.visit(0)?;
+                b.comparison(
+                    slug.len()
+                        .saturating_add(marker.len().saturating_mul(2))
+                        .saturating_mul(slug.len() / marker.len().max(1) + 1),
+                )
+            })?;
+        }
     }
     if profile.slug.strip_quantity {
         b.comparison(

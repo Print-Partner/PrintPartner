@@ -801,6 +801,37 @@ pub(crate) fn quantity_capture(regex: &regress::Regex, filename: &str) -> Option
     captured.filter(|s| !s.is_empty())
 }
 
+/// Whether `marker` starts and ends with a symbol, so `strip_marker` removes
+/// it anywhere in the name rather than only as a prefix.
+#[cfg(feature = "desktop_rebuild")]
+fn strips_anywhere(marker: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    !word(marker.chars().next()) && !word(marker.chars().next_back())
+}
+
+/// Finishes marker removal after a first pass of `strip_marker` over every
+/// marker changed the slug, as Node's `parsePartSlug` does. Removing `[c]`
+/// from `Panel_[a[c]]_Clip` exposes `[a]` after its turn, so the markers that
+/// strip anywhere repeat until a pass removes nothing. Each repeated pass
+/// shortens the slug, so the loop ends. `charge` runs before each attempt.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn strip_exposed_markers<E>(
+    mut slug: String,
+    markers: &[&str],
+    mut charge: impl FnMut(&str, &str) -> Result<(), E>,
+) -> Result<String, E> {
+    loop {
+        let before = slug.len();
+        for marker in markers.iter().filter(|m| strips_anywhere(m)) {
+            charge(&slug, marker)?;
+            slug = strip_marker(&slug, marker);
+        }
+        if slug.len() == before {
+            return Ok(slug);
+        }
+    }
+}
+
 /// Removes a role marker from a part slug, as Node's `parsePartSlug` does.
 ///
 /// A marker that starts and ends with a symbol, like `[a]`, cannot be part of
@@ -811,8 +842,7 @@ pub(crate) fn quantity_capture(regex: &regress::Regex, filename: &str) -> Option
 /// when words remain on both sides: `Duct_[c]_Left` becomes `Duct_Left`.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn strip_marker(stem: &str, marker: &str) -> String {
-    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-    let anywhere = !word(marker.chars().next()) && !word(marker.chars().next_back());
+    let anywhere = strips_anywhere(marker);
     let mut escaped = String::new();
     for c in marker.chars() {
         if ".*+?^${}()|[]\\".contains(c) {

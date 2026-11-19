@@ -39,7 +39,9 @@ The gateway sets `Content-Security-Policy` on every document and asset it serves
   Startup verifies the exact `replacement_frontend` inventory and retains those
   bytes in memory. Replacement requests use only that inventory, without disk
   reads or gzip sibling lookup. A changed or missing inventory refuses startup,
-  as does a symlinked dist root, including a dangling link.
+  as does an `index.html` over 1 MiB, or a link at `apps/ui` or `apps/ui/dist`,
+  including a dangling link. `apps` and the web root are not checked: the legacy
+  build shares them, and verification canonicalizes through them.
 
   If the replacement build is absent, startup logs that fact once and verifies
   and serves the legacy build with its existing SPA paths and policy. The

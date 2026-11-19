@@ -86,7 +86,7 @@ impl FilamentProviderConfig {
             && let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse()
         {
             ensure!(
-                pp_net::outbound::permitted(ip),
+                pp_net::network::Policy::Lan.allows(ip),
                 "Prohibited filament provider address"
             );
         }
@@ -567,10 +567,10 @@ impl FilamentLookup for SnapshotFilamentLookup {
 }
 
 /// Filament provider DNS: every address must be one `pp_net` permits.
-fn filament_dns(resolver: Arc<dyn pp_net::outbound::Resolver>) -> crate::checked_dns::CheckedDns {
-    crate::checked_dns::CheckedDns::new(
+fn filament_dns(resolver: Arc<dyn pp_net::outbound::Resolver>) -> pp_net::network::CheckedDns {
+    pp_net::network::CheckedDns::new(
         resolver,
-        pp_net::outbound::permitted,
+        pp_net::network::Policy::Lan,
         "Prohibited filament DNS answer",
     )
 }
@@ -579,14 +579,11 @@ async fn load_filament(
     config: &FilamentProviderConfig,
     cancelled: &AtomicBool,
 ) -> Result<SnapshotFilamentLookup> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .dns_resolver(Arc::new(filament_dns(Arc::new(
-            pp_net::outbound::SystemResolver,
-        ))))
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(config.timeout)
-        .build()?;
+    let client =
+        pp_net::network::checked_client(filament_dns(Arc::new(pp_net::outbound::SystemResolver)))?
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(config.timeout)
+            .build()?;
     let filaments = fetch_json(&client, config, "filament", cancelled).await?;
     let spools = fetch_json(&client, config, "spool", cancelled).await?;
     Ok(SnapshotFilamentLookup {

@@ -111,6 +111,16 @@ pub(super) fn archive_refused(refusal: ArchiveRefusal) -> Response {
     }
 }
 
+/// The body of `POST /api/v2/plans/{id}/duplicate`: the experiment's name,
+/// trimmed and checked as a Build name.
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateBuildRequest {
+    #[cfg_attr(feature = "codegen", schemars(with = "String"))]
+    pub name: pp_storage::build_graph::BuildName,
+}
+
 /// Create a detached experiment; accepted choices become an editable draft.
 pub(super) async fn duplicate(
     State(app): State<App>,
@@ -120,12 +130,7 @@ pub(super) async fn duplicate(
     let Some(build) = number_build_id(&id) else {
         return missing_build(app, received.presented).await;
     };
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Duplicate {
-        name: pp_storage::build_graph::BuildName,
-    }
-    let Ok(body) = serde_json::from_slice::<Duplicate>(&received.bytes) else {
+    let Ok(body) = serde_json::from_slice::<DuplicateBuildRequest>(&received.bytes) else {
         return unreadable();
     };
     if received.contract == SummaryContract::LegacyV1 {

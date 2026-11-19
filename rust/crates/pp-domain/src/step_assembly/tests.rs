@@ -142,14 +142,11 @@ fn kept_records_take_each_form_of_their_parameters() {
 #[test]
 #[rustfmt::skip]
 fn decodes_string_directives() {
-    assert_eq!(decode("plain"), Ok("plain".into()));
-    assert_eq!(decode("D\\X2\\00FC\\X0\\se"), Ok("D\u{fc}se".into()));
-    assert_eq!(decode("\\X2\\D83DDE00\\X0\\"), Ok("\u{1f600}".into()));
-    assert_eq!(decode("\\X4\\0001F600\\X0\\"), Ok("\u{1f600}".into()));
-    assert_eq!(decode("caf\\X\\E9"), Ok("caf\u{e9}".into()));
-    assert_eq!(decode("\\S\\i"), Ok("\u{e9}".into()));
-    assert_eq!(decode("a\\\\b"), Ok("a\\b".into()));
-    assert_eq!(decode("\\PA\\x"), Ok("x".into()));
+    let good = [("plain", "plain"), ("D\\X2\\00FC\\X0\\se", "D\u{fc}se"), ("\\X2\\D83DDE00\\X0\\", "\u{1f600}"), ("\\X4\\0001F600\\X0\\", "\u{1f600}"),
+        ("caf\\X\\E9", "caf\u{e9}"), ("\\S\\i", "\u{e9}"), ("a\\\\b", "a\\b"), ("\\PA\\x", "x")];
+    for (raw, text) in good {
+        assert_eq!(decode(raw), Ok(text.into()), "{raw}");
+    }
     // Another code page would change what `\S\` means.
     assert_eq!(decode("\\PB\\x"), Err(true));
     let bad = ["\\X2\\00F\\X0\\", "\\X2\\00FC", "\\X2\\00fc\\X0\\", "\\X2\\D83D\\X0\\", "\\X2\\\\X0\\", "\\X4\\00110000\\X0\\", "\\X\\E", "\\S\\", "\\Q\\", "end\\"];
@@ -384,8 +381,11 @@ fn each_refusal_stops_near_its_cap() {
         ("CommentBytes", default, with_part(&format!("#1=X({comment});")), "#1=", 64 << 10),
         ("RecordBytes", default, with_part(&format!("#30={gaps}PRODUCT('p','Part',$,());")), "#30=", 64 << 10),
         ("Records", Limits { max_records: 3, ..default }, second.clone(), "#20=PRODUCT", 11),
-        ("KeptText", Limits { max_kept_text: 12, ..default }, second, "'q','", 5),
+        ("KeptText", Limits { max_kept_text: 12, ..default }, second.clone(), "'q','", 5),
         ("InstanceNumber", default, with_part(&zeros), "#1844", 21),
+        // Sol on 79336ff5: the record cap counts the instance number's own digits.
+        ("RecordBytes", default, with_part(&format!("#{}10=PRODUCT('p','Part',$,());", "0".repeat(8 << 20))), "#000", 64 << 10),
+        ("FileBytes", Limits { max_file_bytes: 200, ..default }, second.clone(), "ISO", 200),
     ];
     for (limit, limits, text, needle, allowed) in cases {
         let (result, read) = tripwire(&text, u64::MAX, limits);
@@ -393,6 +393,7 @@ fn each_refusal_stops_near_its_cap() {
         let most = (text.find(needle).unwrap() + allowed + READ_CHUNK) as u64;
         assert!(read <= most, "{limit} at {needle}: read {read} bytes, at most {most}");
     }
+    assert_eq!(tripwire(&second, u64::MAX, Limits { max_file_bytes: 200, ..default }).1, 201, "one byte past the file cap");
 }
 
 /// Fixed-seed mutations of the fixture: each returns a structure or a typed

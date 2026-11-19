@@ -53,13 +53,8 @@
 //! | `.._WITH_ASSOCIATED_DOCUMENTS` | 5 | as above |
 //! | `NEXT_ASSEMBLY_USAGE_OCCURRENCE` | 6 | id and name (string or `$`); fourth (parent) and fifth (child): `#N` of a definition |
 //!
-//! Everything outside the contract is refused with a typed [`StepError`]
-//! before anything is returned: [`StepError::NotStep`],
-//! [`StepError::Incomplete`] for a file that ends early,
-//! [`StepError::Malformed`] for anything not in the grammar,
-//! [`StepError::Unsupported`] for edition 3 forms this reader does not read,
-//! and [`StepError::TooLarge`] for any of the [`Limits`]. The reader never
-//! repairs a file, guesses, or returns part of one.
+//! Everything else is refused with a typed [`StepError`] before anything is
+//! returned. The reader never repairs a file, guesses, or returns part of one.
 //!
 //! Only kept records' instance numbers are checked for reuse: storing every
 //! number would cost memory per record, and a dropped record cannot change
@@ -75,9 +70,11 @@ const MAX_KEYWORD: usize = 128;
 /// How many bytes are read between checks of the cancel flag.
 const READ_CHUNK: usize = 64 * 1024;
 
-/// Bounds on one read, each checked as the bytes stream in: a read stops at
-/// the first byte, record or digit over a cap. Number and enumeration tokens
-/// are not buffered and have no cap but the file's.
+/// Bounds on one read, each checked per byte taken: no refusal comes more
+/// than one 64 KiB read past the first byte over its cap, at most one byte
+/// is read past the file cap, and nothing over a cap is retained. Numbers,
+/// enumerations, binaries and blanks are not buffered; outside a kept record
+/// only the file cap bounds them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Bytes in the file.
@@ -312,20 +309,16 @@ impl<R: Read> Parser<'_, R> {
         }
     }
 
-    fn keyword(&mut self, want: &[u8]) -> Result<(), StepError> {
-        self.eat(Token::Keyword(want.to_vec()))
-    }
-
     /// The whole exchange, from its first byte through the blanks after its
     /// end.
     fn exchange(&mut self) -> Result<(), StepError> {
         if !self.lexer.starts_with_magic()? {
             return Err(StepError::NotStep);
         }
-        self.keyword(b"HEADER")?;
+        self.eat(Token::Keyword(b"HEADER".to_vec()))?;
         self.eat(Token::Semicolon)?;
         for name in [&b"FILE_DESCRIPTION"[..], b"FILE_NAME", b"FILE_SCHEMA"] {
-            self.keyword(name)?;
+            self.eat(Token::Keyword(name.to_vec()))?;
             self.skip_list()?;
         }
         loop {
@@ -371,6 +364,9 @@ impl<R: Read> Parser<'_, R> {
     /// The entity instances of a DATA section, through its `ENDSEC;`.
     fn data(&mut self) -> Result<(), StepError> {
         loop {
+            // Every record is capped as kept from its `#` until its keyword
+            // shows the kind, so its instance number counts too.
+            self.lexer.cap_record_at_hash()?;
             let id = match self.token()? {
                 Token::Instance(id) => id,
                 Token::Keyword(word) if word == b"ENDSEC" => {
@@ -383,8 +379,6 @@ impl<R: Read> Parser<'_, R> {
             if self.instances > self.lexer.limits.max_entities {
                 return Err(StepError::TooLarge(Limit::Entities));
             }
-            // Until its keyword shows the kind, every record is capped as kept.
-            self.lexer.keep_record(begin)?;
             self.eat(Token::Equals)?;
             let token = self.token()?;
             let kind = match &token {
@@ -392,7 +386,7 @@ impl<R: Read> Parser<'_, R> {
                 _ => None,
             };
             if kind.is_none() {
-                self.lexer.drop_record();
+                self.lexer.record_end = None;
             } else if self.records == self.lexer.limits.max_records {
                 return Err(StepError::TooLarge(Limit::Records));
             }
@@ -401,7 +395,7 @@ impl<R: Read> Parser<'_, R> {
                     self.eat(Token::Open)?;
                     let params = self.list(kind.is_some())?;
                     self.eat(Token::Semicolon)?;
-                    self.lexer.drop_record();
+                    self.lexer.record_end = None;
                     if let Some((kind, arity)) = kind {
                         self.keep(id, begin, kind, arity, params)?;
                     }
@@ -628,8 +622,11 @@ impl<'a, R: Read> Lexer<'a, R> {
                 return Err(StepError::Cancelled);
             }
             self.base += self.end as u64;
+            // Read at most one byte past the file cap.
+            let room = self.limits.max_file_bytes.saturating_sub(self.base);
+            let size = room.saturating_add(1).min(READ_CHUNK as u64) as usize;
             self.end = loop {
-                match self.input.read(&mut self.buffer) {
+                match self.input.read(&mut self.buffer[..size]) {
                     Ok(read) => break read,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => return Err(error.into()),
@@ -667,19 +664,18 @@ impl<'a, R: Read> Lexer<'a, R> {
         Ok(byte)
     }
 
-    /// From here until [`Self::drop_record`], the record that starts at
-    /// `begin` is kept: its bytes are capped and its strings decoded.
-    fn keep_record(&mut self, begin: u64) -> Result<(), StepError> {
-        let end = begin.saturating_add(self.limits.max_record_bytes as u64);
-        self.record_end = Some(end);
-        if self.position() > end {
-            return Err(StepError::TooLarge(Limit::RecordBytes));
+    /// Skips blanks; when a `#` follows, the record it starts is kept from
+    /// that byte until `record_end` is cleared: its bytes are capped and its
+    /// strings decoded.
+    fn cap_record_at_hash(&mut self) -> Result<(), StepError> {
+        self.skip_blank()?;
+        if self.peek()? == Some(b'#') {
+            let end = self
+                .position()
+                .saturating_add(self.limits.max_record_bytes as u64);
+            self.record_end = Some(end);
         }
         Ok(())
-    }
-
-    fn drop_record(&mut self) {
-        self.record_end = None;
     }
 
     /// Skips whitespace and comments.

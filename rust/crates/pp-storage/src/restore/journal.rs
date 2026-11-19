@@ -139,7 +139,7 @@ impl Journal {
                 .any(|name| name == archive::DATABASE_FILE),
             "Staged restore has no database"
         );
-        journal.write(work)?;
+        journal.write(work, || work.forward_step())?;
         work.dir.create_dir(&journal.prior)?;
         work.dir.sync()?;
         Ok(journal)
@@ -188,7 +188,8 @@ impl Journal {
         Ok(Some(journal))
     }
 
-    fn write(&self, work: &Work) -> Result<()> {
+    /// Publishes the journal, running `step` before and after the rename.
+    fn write(&self, work: &Work, step: impl Fn() -> Result<()>) -> Result<()> {
         let temporary = format!("{JOURNAL}.tmp");
         match work.dir.remove_file(&temporary) {
             Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
@@ -198,15 +199,19 @@ impl Journal {
         file.write_all(&serde_json::to_vec(self)?)?;
         file.sync_all()?;
         drop(file);
-        super::activation::hooks::step(&work.data_dir)?;
+        step()?;
         work.dir.rename_replace(&temporary, JOURNAL)?;
         work.dir.sync()?;
-        super::activation::hooks::step(&work.data_dir)?;
+        step()?;
         Ok(())
     }
 
+    /// Moves every live name aside and every staged one in. Each rename
+    /// first checks that `.pp-restore` still names the directory holding
+    /// the journal; if not, nothing more moves and the caller rolls back
+    /// through the same handles.
     pub(super) fn swap(&self, work: &Work) -> Result<()> {
-        let step = || super::activation::hooks::step(&work.data_dir);
+        let step = || work.forward_step();
         let prior = work.dir.open_dir_nofollow(&self.prior)?;
         let staged = work.dir.open_dir_nofollow(&self.staged)?;
         for name in &self.live {
@@ -232,17 +237,18 @@ impl Journal {
 
     pub(super) fn commit(&mut self, work: &Work) -> Result<()> {
         self.state = JournalState::Committed;
-        self.write(work)
+        self.write(work, || work.forward_step())
     }
 
     /// Moves every prior entry back. An entry is new when it was not live
     /// before the swap or its prior copy is still aside; new entries are
-    /// removed first. Safe to repeat after a crash.
+    /// removed first. Safe to repeat after a crash. It works through the held
+    /// handles even when `.pp-restore` has moved, and checks nothing.
     pub(super) fn rollback(&mut self, work: &Work) -> Result<()> {
         super::activation::hooks::fail_rollback(&work.data_dir)?;
         if self.state == JournalState::Committed {
             self.state = JournalState::Swapping;
-            self.write(work)?;
+            self.write(work, || Ok(()))?;
         }
         // A crash between publishing the journal and creating `prior` leaves
         // nothing aside.

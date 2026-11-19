@@ -180,3 +180,122 @@ fn gre_1347_journal_replay_after_a_swap_for_a_link_touches_nothing_outside() {
 fn work_path(root: &Path) -> PathBuf {
     root.join(WORK_DIR)
 }
+
+/// A hook that moves `.pp-restore` to [`MOVED`], as another local process
+/// could.
+fn move_work_dir(root: &Path) -> Hook {
+    let (from, to) = (work_path(root), root.join(MOVED));
+    Box::new(move || std::fs::rename(from, to).unwrap())
+}
+
+/// The review case for GRE-1347: `.pp-restore` moves after the request
+/// admitted it, and the process dies. The journal must stay where the next
+/// open looks for as long as a live entry may have moved.
+///
+/// The directory moves before activation starts, and then at each activation
+/// step in turn, and the process crashes at the step after the move. The
+/// next open must find the old installation or the restored one, never a
+/// mix, and leave no `journal.json` behind in either place.
+#[test]
+fn gre_1347_a_work_directory_moved_during_activation_never_strands_a_journal() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let (backup, restored) = backup_then_change(&owner, &root, scratch.path());
+    owner.shutdown().unwrap();
+    let old = state(&root);
+    let moved = root.join(MOVED);
+    // `None` moves it after admission, before the journal is begun.
+    for at in std::iter::once(None).chain((0..).map(Some)) {
+        let owner = open(&root).unwrap();
+        let client = owner.installation().unwrap();
+        let staged = stage(&client, &backup).unwrap();
+        match at {
+            None => {
+                DURING
+                    .lock()
+                    .unwrap()
+                    .push((root.clone(), move_work_dir(&root)));
+                // On a path that does not check, the database has moved aside by then.
+                STEPS.lock().unwrap().push((root.clone(), 3, true));
+            }
+            Some(at) => {
+                AT_STEP
+                    .lock()
+                    .unwrap()
+                    .push((root.clone(), at, move_work_dir(&root)));
+                STEPS.lock().unwrap().push((root.clone(), at + 1, true));
+            }
+        }
+        let result = client.activate(&staged.restore_id, CONFIRMATION);
+        let moved_at_step = AT_STEP.lock().unwrap().iter().all(|(dir, ..)| dir != &root);
+        AT_STEP.lock().unwrap().retain(|(dir, ..)| dir != &root);
+        STEPS.lock().unwrap().retain(|(dir, ..)| dir != &root);
+        if !moved_at_step {
+            // Past the last step: nothing moved and the restore went through.
+            result.unwrap();
+            owner.shutdown().unwrap();
+            assert_eq!(state(&root), restored);
+            println!("moved the work directory at {at:?} and every earlier step");
+            return;
+        }
+        let outcome = match &result {
+            Ok(_) => "restored".to_owned(),
+            Err(error) => format!("{error:?}"),
+        };
+        owner.shutdown().unwrap();
+        open(&root).unwrap().shutdown().unwrap();
+        let after = state(&root);
+        assert!(
+            after == old || after == restored,
+            "moved at {at:?} ({outcome}): the next open found a mix of old and restored entries"
+        );
+        for directory in [work_path(&root), moved.clone()] {
+            assert!(
+                !directory.join("journal.json").exists(),
+                "moved at {at:?} ({outcome}): {} holds a journal the next open did not see",
+                directory.display()
+            );
+        }
+        assert!(!work_path(&root).exists());
+        println!(
+            "moved at {at:?}: {outcome}, then {}",
+            if after == old { "old" } else { "restored" }
+        );
+        std::fs::remove_dir_all(&moved).unwrap();
+        if after == restored {
+            std::fs::remove_file(root.join("repos/source-a/part.stl")).unwrap();
+            std::fs::write(root.join("exports/later.3mf"), b"later").unwrap();
+            assert_eq!(state(&root), old);
+        }
+    }
+}
+
+/// A regular file at `.pp-restore` is refused like a link: by staging, by
+/// activation and by open, and it is kept.
+#[test]
+fn gre_1347_a_regular_file_at_the_work_directory_is_refused_and_kept() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let (backup, _) = backup_then_change(&owner, &root, scratch.path());
+    let staged = stage(&client, &backup).unwrap();
+    std::fs::remove_dir_all(work_path(&root)).unwrap();
+    let live = state(&root);
+    std::fs::write(work_path(&root), b"keep").unwrap();
+
+    let error = client.begin_upload(4).err().unwrap();
+    assert!(error.to_string().contains("not a directory"), "{error:#}");
+    assert!(matches!(
+        client.activate(&staged.restore_id, CONFIRMATION),
+        Err(RestoreError::Refused(Refusal::UnknownRestore))
+    ));
+    owner.shutdown().unwrap();
+    let error = open(&root).err().unwrap();
+    assert!(error.to_string().contains("not a directory"), "{error:#}");
+    assert_eq!(std::fs::read(work_path(&root)).unwrap(), b"keep");
+    assert_eq!(state(&root), live);
+    std::fs::remove_file(work_path(&root)).unwrap();
+    open(&root).unwrap().shutdown().unwrap();
+}

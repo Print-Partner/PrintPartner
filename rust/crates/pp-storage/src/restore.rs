@@ -560,6 +560,22 @@ impl Work {
         );
         Ok(work)
     }
+
+    /// Refuses unless `<data>/.pp-restore` still names `dir`, so that the
+    /// next open finds the journal written there. Activation runs this before
+    /// it publishes the journal and before each live rename, after the test
+    /// hook for that step.
+    pub(super) fn forward_step(&self) -> Result<()> {
+        activation::hooks::step(&self.data_dir)?;
+        let held = self.dir.status()?.identity();
+        let named = self.data.status_nofollow(WORK_DIR).ok();
+        ensure!(
+            named.is_some_and(|named| named.is_dir() && named.identity() == held),
+            "Restore work directory {} no longer names the directory holding the journal",
+            self.path.display()
+        );
+        Ok(())
+    }
 }
 
 fn random_id() -> String {

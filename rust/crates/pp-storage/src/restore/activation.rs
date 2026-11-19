@@ -106,15 +106,17 @@ fn activate(
             .close()
             .map_err(|(_, error)| error)?;
         hooks::during_activation(data_dir);
+        // Until the commit, every step also checks that `.pp-restore` still
+        // names the directory holding the journal, or rolls back.
         let mut journal = Journal::begin(work, staged)?;
         journal.swap(work)?;
-        hooks::step(data_dir)?;
+        work.forward_step()?;
         let (mut restored, ready) = open_database(data_dir, seed)?;
-        hooks::step(data_dir)?;
+        work.forward_step()?;
         refresh(&mut restored)?;
-        hooks::step(data_dir)?;
+        work.forward_step()?;
         let prepared = prepare_readers(&database, reader_count)?;
-        hooks::step(data_dir)?;
+        work.forward_step()?;
         journal.commit(work)?;
         hooks::step(data_dir)?;
         journal.finish(work);

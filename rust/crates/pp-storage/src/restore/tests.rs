@@ -871,9 +871,27 @@ impl std::error::Error for Crash {}
 /// (data directory, steps to pass before failing, crash instead of fail)
 static STEPS: Mutex<Vec<(PathBuf, usize, bool)>> = Mutex::new(Vec::new());
 static DURING: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+/// (data directory, steps to pass before running the hook, hook)
+static AT_STEP: Mutex<Vec<(PathBuf, usize, Hook)>> = Mutex::new(Vec::new());
 
 /// Called before each rename, before the journal commits and after it.
+/// Runs a hook registered in [`AT_STEP`] for this step, then fails or
+/// crashes as [`STEPS`] says.
 pub(crate) fn step(data_dir: &Path) -> Result<()> {
+    let hook = {
+        let mut hooks = AT_STEP.lock().unwrap();
+        match hooks.iter().position(|(dir, ..)| dir == data_dir) {
+            Some(index) if hooks[index].1 == 0 => Some(hooks.remove(index).2),
+            Some(index) => {
+                hooks[index].1 -= 1;
+                None
+            }
+            None => None,
+        }
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
     let mut steps = STEPS.lock().unwrap();
     let Some(index) = steps.iter().position(|(dir, ..)| dir == data_dir) else {
         return Ok(());

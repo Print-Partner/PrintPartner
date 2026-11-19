@@ -15,6 +15,9 @@ tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 pp-core = { path = "../pp-core", default-features = false }
+# `mcp-stdio`: an MCP server on stdio forwarding to the core's HTTP MCP.
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "client", "transport-io", "transport-streamable-http-client-reqwest", "reqwest"] }
+reqwest = { version = "=0.13.5", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

@@ -305,7 +305,7 @@ impl<R: Read> Parser<'_, R> {
         StepError::Malformed { at: self.lexer.at }
     }
 
-    fn expect(&mut self, want: Token) -> Result<(), StepError> {
+    fn eat(&mut self, want: Token) -> Result<(), StepError> {
         if self.token()? == want {
             Ok(())
         } else {
@@ -314,7 +314,7 @@ impl<R: Read> Parser<'_, R> {
     }
 
     fn keyword(&mut self, want: &[u8]) -> Result<(), StepError> {
-        self.expect(Token::Keyword(want.to_vec()))
+        self.eat(Token::Keyword(want.to_vec()))
     }
 
     /// The whole exchange, from its first byte through the blanks after its
@@ -324,7 +324,7 @@ impl<R: Read> Parser<'_, R> {
             return Err(StepError::NotStep);
         }
         self.keyword(b"HEADER")?;
-        self.expect(Token::Semicolon)?;
+        self.eat(Token::Semicolon)?;
         for name in [&b"FILE_DESCRIPTION"[..], b"FILE_NAME", b"FILE_SCHEMA"] {
             self.keyword(name)?;
             self.skip_list()?;
@@ -336,7 +336,7 @@ impl<R: Read> Parser<'_, R> {
                 _ => return Err(self.malformed()),
             }
         }
-        self.expect(Token::Semicolon)?;
+        self.eat(Token::Semicolon)?;
         let mut sections = 0;
         loop {
             match self.token()? {
@@ -345,7 +345,7 @@ impl<R: Read> Parser<'_, R> {
                         Token::Semicolon => {}
                         Token::Open => {
                             self.list(false)?;
-                            self.expect(Token::Semicolon)?;
+                            self.eat(Token::Semicolon)?;
                         }
                         _ => return Err(self.malformed()),
                     }
@@ -359,7 +359,7 @@ impl<R: Read> Parser<'_, R> {
                 _ => return Err(self.malformed()),
             }
         }
-        self.expect(Token::Semicolon)?;
+        self.eat(Token::Semicolon)?;
         match self.lexer.token()? {
             None => Ok(()),
             Some(Token::Keyword(word)) if word == b"SIGNATURE" => {
@@ -375,7 +375,7 @@ impl<R: Read> Parser<'_, R> {
             let id = match self.token()? {
                 Token::Instance(id) => id,
                 Token::Keyword(word) if word == b"ENDSEC" => {
-                    return self.expect(Token::Semicolon);
+                    return self.eat(Token::Semicolon);
                 }
                 _ => return Err(self.malformed()),
             };
@@ -384,16 +384,16 @@ impl<R: Read> Parser<'_, R> {
             if self.instances > self.lexer.limits.max_entities {
                 return Err(StepError::TooLarge(Limit::Entities));
             }
-            self.expect(Token::Equals)?;
+            self.eat(Token::Equals)?;
             match self.token()? {
                 Token::Keyword(word) => {
                     let kind = Kind::of(&word);
                     if kind.is_some() {
                         self.lexer.keep_record(begin)?;
                     }
-                    self.expect(Token::Open)?;
+                    self.eat(Token::Open)?;
                     let params = self.list(kind.is_some())?;
-                    self.expect(Token::Semicolon)?;
+                    self.eat(Token::Semicolon)?;
                     self.lexer.drop_record();
                     if let Some((kind, arity)) = kind {
                         self.keep(id, begin, kind, arity, params)?;
@@ -407,7 +407,7 @@ impl<R: Read> Parser<'_, R> {
                                 return Err(StepError::Unsupported { at: self.lexer.at });
                             }
                             Token::Keyword(_) => {
-                                self.expect(Token::Open)?;
+                                self.eat(Token::Open)?;
                                 self.list(false)?;
                                 parts += 1;
                             }
@@ -415,7 +415,7 @@ impl<R: Read> Parser<'_, R> {
                             _ => return Err(self.malformed()),
                         }
                     }
-                    self.expect(Token::Semicolon)?;
+                    self.eat(Token::Semicolon)?;
                 }
                 _ => return Err(self.malformed()),
             }
@@ -424,9 +424,9 @@ impl<R: Read> Parser<'_, R> {
 
     /// Reads `(..);` and drops it.
     fn skip_list(&mut self) -> Result<(), StepError> {
-        self.expect(Token::Open)?;
+        self.eat(Token::Open)?;
         self.list(false)?;
-        self.expect(Token::Semicolon)
+        self.eat(Token::Semicolon)
     }
 
     /// Reads a parameter list whose `(` was just read, through its `)`.
@@ -460,7 +460,7 @@ impl<R: Read> Parser<'_, R> {
                     continue;
                 }
                 (_, Token::Keyword(_)) => {
-                    self.expect(Token::Open)?;
+                    self.eat(Token::Open)?;
                     self.nest(&mut open, true)?;
                     place = Place::Opened;
                     continue;

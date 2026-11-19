@@ -4,12 +4,50 @@
 //! watchers really observed.
 use super::*;
 use pp_gateway::{Gateway, RustStatus, ServedUi, SignOut};
-use pp_testkit::moonraker::RecordedPrinter;
+use pp_storage::Limits;
+use pp_testkit::moonraker::{RecordedPrinter, RoutedPrinter};
+use serde_json::json;
 
 const WAIT: &str = "wait for Idle or force dispatch";
 const MOONRAKER_PRINTING: &[u8] =
     br#"{"result":{"status":{"print_stats":{"state":"printing","filename":"a.gcode"}}}}"#;
 const MOONRAKER_IDLE: &[u8] = br#"{"result":{"status":{"print_stats":{"state":"standby"}}}}"#;
+
+/// Storage whose settings link one printer `p-{id}` to each host `id`.
+struct Farm {
+    root: tempfile::TempDir,
+    owner: WriterOwner,
+}
+
+impl Farm {
+    fn open(hosts: &[Value]) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let (owner, _) =
+            WriterOwner::open_with_job_feature_admission(root.path(), Limits::default()).unwrap();
+        let printers: Vec<Value> = hosts
+            .iter()
+            .map(|host| json!({"id": format!("p-{}", host["id"].as_str().unwrap()), "integration_id": host["id"]}))
+            .collect();
+        let database = rusqlite::Connection::open(root.path().join("print-partner.db")).unwrap();
+        for (key, value) in [
+            ("feature_toggles", json!({"farm": true})),
+            ("printer.fleet", json!(printers)),
+            ("integrations", json!(hosts)),
+        ] {
+            database
+                .execute(
+                    "INSERT INTO app_settings(tenant_id,key,value) VALUES('default',?1,?2)",
+                    rusqlite::params![key, value.to_string()],
+                )
+                .unwrap();
+        }
+        Self { root, owner }
+    }
+
+    fn exports(&self) -> PathBuf {
+        self.root.path().join("exports")
+    }
+}
 
 /// A gateway started over `farm`'s settings, and the queue checks built on
 /// the status port it handed out.
@@ -39,25 +77,6 @@ async fn watched(farm: &Farm) -> (Gateway, Arc<QueueTargets>) {
         wake: Arc::new(Notify::new()),
     };
     (gateway, Arc::new(targets))
-}
-
-/// Replaces the farm's printers and hosts: one printer `p-{id}` per host.
-fn link(farm: &Farm, hosts: &[Value]) {
-    let printers: Vec<Value> = hosts
-        .iter()
-        .map(|host| json!({"id": format!("p-{}", host["id"].as_str().unwrap()), "integration_id": host["id"]}))
-        .collect();
-    for (key, value) in [
-        ("printer.fleet", json!(printers)),
-        ("integrations", json!(hosts)),
-    ] {
-        farm.database()
-            .execute(
-                "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key=?2",
-                rusqlite::params![value.to_string(), key],
-            )
-            .unwrap();
-    }
 }
 
 fn host(id: &str, kind: &str, config: Value) -> Value {
@@ -120,7 +139,6 @@ async fn heard(targets: &QueueTargets, id: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn gre_1267_send_checks_refuse_every_host_that_is_not_read() {
     let printer = RecordedPrinter::start(vec![(200, MOONRAKER_IDLE)]).unwrap();
-    let farm = Farm::open(printer.url(), &[]);
     // Kinds that are not Moonraker or PrusaLink, including ones no build of
     // Print Partner knows: the refusal is "not Read", not an allow-list.
     let others = ["bambu", "octoprint", "resin-vat", ""];
@@ -136,7 +154,7 @@ async fn gre_1267_send_checks_refuse_every_host_that_is_not_read() {
             json!({"base_url": "http://127.0.0.1:9"}),
         )
     }));
-    link(&farm, &hosts);
+    let farm = Farm::open(&hosts);
     let (gateway, targets) = watched(&farm).await;
     for (n, kind) in others.iter().enumerate() {
         let item = staged_item(&farm, &format!("q{n}"), &format!("p-other-{n}"));
@@ -173,25 +191,21 @@ async fn gre_1267_send_ready_waits_for_the_watchers_to_see_idle() {
         prusa_status.into_bytes(),
     )])
     .unwrap();
-    let farm = Farm::open(idle.url(), &[]);
-    link(
-        &farm,
-        &[
-            host("busy", "moonraker", json!({"base_url": printing.url()})),
-            host("idle", "moonraker", json!({"base_url": idle.url()})),
-            host(
-                "mk4",
-                "prusalink",
-                json!({"base_url": prusa.url(), "username": "maker", "password": "not-a-real-secret"}),
-            ),
-            // The watchers hold an HTTPS host but never connect to it.
-            host(
-                "tls",
-                "moonraker",
-                json!({"base_url": "https://printer.invalid"}),
-            ),
-        ],
-    );
+    let farm = Farm::open(&[
+        host("busy", "moonraker", json!({"base_url": printing.url()})),
+        host("idle", "moonraker", json!({"base_url": idle.url()})),
+        host(
+            "mk4",
+            "prusalink",
+            json!({"base_url": prusa.url(), "username": "maker", "password": "not-a-real-secret"}),
+        ),
+        // The watchers hold an HTTPS host but never connect to it.
+        host(
+            "tls",
+            "moonraker",
+            json!({"base_url": "https://printer.invalid"}),
+        ),
+    ]);
     let (gateway, targets) = watched(&farm).await;
     for id in ["busy", "idle", "mk4"] {
         heard(&targets, id).await;
@@ -242,15 +256,11 @@ async fn gre_1267_send_ready_waits_for_the_watchers_to_see_idle() {
 #[tokio::test(flavor = "multi_thread")]
 async fn gre_1267_send_checks_take_only_a_sliced_file_staged_in_printer_uploads() {
     let printer = RecordedPrinter::start(vec![(200, MOONRAKER_IDLE)]).unwrap();
-    let farm = Farm::open(printer.url(), &[]);
-    link(
-        &farm,
-        &[host(
-            "moon",
-            "moonraker",
-            json!({"base_url": printer.url()}),
-        )],
-    );
+    let farm = Farm::open(&[host(
+        "moon",
+        "moonraker",
+        json!({"base_url": printer.url()}),
+    )]);
     let (gateway, targets) = watched(&farm).await;
     let invalid = refused(StatusCode::BAD_REQUEST, INVALID_ARTIFACT);
 

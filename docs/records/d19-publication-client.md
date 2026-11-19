@@ -1611,9 +1611,11 @@ replays before the stale-base check, refuses a changed payload under a reused
 key, and never publishes. [Plan autosave](../plan-autosave.md) has the contract.
 
 This is a separate operation from Node's `POST /plans/:id/save`, which
-publishes. That path stays on Node with its publishing semantics until UI
-slice 6 moves the browser to draft-then-Accept, and no Rust router mounts it,
-so Node and Rust never write the same operation. Node has no route at
+publishes. Only the old UI sends that path. It stays on Node with its
+publishing semantics, and no Rust router mounts it, so Node and Rust never
+write the same operation. The replacement UI's Plan tab (UI slice 6, GRE-1120)
+autosaves Part edits through `drafts/save` and header edits through
+`drafts/header`, and publishes only through Accept (GRE-1183). Node has no route at
 `/plans/{id}/drafts/save`, which is why the gateway manifests do not list it.
 
 ### Draft header fields (GRE-1197)

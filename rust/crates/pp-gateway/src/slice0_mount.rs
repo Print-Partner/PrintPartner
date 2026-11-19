@@ -573,3 +573,38 @@ async fn slice0_mount_drain_waits_for_mcp_posts_but_not_the_notification_stream(
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     gateway.stop().await.unwrap();
 }
+
+/// GRE-1264: an over-limit body sent to the real gateway gets the product's
+/// 413. Closing with the body unread would reset the connection; on Windows
+/// the client then gets os error 10053 instead of the answer. The body is
+/// larger than loopback socket buffers hold, so the client finishes writing
+/// it only if the gateway keeps reading after it answers.
+#[tokio::test]
+async fn slice0_mount_over_limit_body_gets_the_413_over_a_real_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const LIMIT: usize = 1024 * 1024;
+    const SENT: usize = 32 * 1024 * 1024;
+    let product = axum::Router::new().route(
+        "/api/v1/uploads",
+        axum::routing::post(|_: axum::body::Bytes| async { StatusCode::CREATED })
+            .layer(axum::extract::DefaultBodyLimit::max(LIMIT)),
+    );
+    let (gateway, cookie, _root) = started(Some(product)).await;
+    let host = gateway.state.host.clone();
+    let mut client = tokio::net::TcpStream::connect(&host).await.unwrap();
+    let head = format!(
+        "POST /api/v1/uploads HTTP/1.1\r\nhost: {host}\r\norigin: {}\r\ncookie: {cookie}\r\n\
+         content-type: application/octet-stream\r\ncontent-length: {SENT}\r\n\r\n",
+        gateway.state.origin
+    );
+    client.write_all(head.as_bytes()).await.unwrap();
+    client
+        .write_all(&vec![b'x'; SENT])
+        .await
+        .expect("the gateway drains the body instead of resetting");
+    client.shutdown().await.unwrap();
+    let mut reply = String::new();
+    client.read_to_string(&mut reply).await.unwrap();
+    assert!(reply.starts_with("HTTP/1.1 413 "), "{reply}");
+    gateway.stop().await.unwrap();
+}

@@ -5,6 +5,7 @@ mod http;
 mod manifest_options;
 mod variants;
 
+pub use header::DuplicateBuildRequest;
 pub use http::{BuildHttpConfig, build_router};
 #[cfg(test)]
 pub(crate) use {http::domain_error, manifest_options::present as present_manifest};

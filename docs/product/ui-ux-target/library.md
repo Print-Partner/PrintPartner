@@ -16,6 +16,7 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | Sync a GitHub Source | `POST /api/v1/jobs/sync` (`startSourceSync`) | In the generated client (GRE-1728). The body is `{ "project_ids": [<id>] }` and the `202` answer is `{ "job_id" }`. Library starts one sync after creating a GitHub Source, and each `github` row has Sync |
 | Source files | `GET /api/v1/sources/{id}/files` (`listSourceFiles`) | In the generated client (GRE-1731). `revision_id` is null and `files` is empty when the Source has no revision. Each file has `path`, `kind` (`stl`, `model`, `document`, `image`, `other`) and `size_bytes`, sorted by path. Selecting a Source opens `/library/{id}` and shows that list grouped by folder |
 | STL thumbnail | `GET /api/v1/sources/{id}/thumbnail?path=` | A 256 × 256 PNG of one STL in the current revision (GRE-1520). Not a generated-client route. Library, the Builds list and a Build's Sources tab request it as an image once the row is in the viewport. A failed response is a placeholder. The PNG is not tinted by filament colour |
+| STEP part tree | `GET /api/v1/sources/{id}/step-conversion?path=` (`readStepPartTree`) | Exists in Rust behind `desktop_rebuild` (GRE-1007). Queues the file for one background conversion and answers `queued`, `converting`, `done` with the parts depth first, or `failed` with a reason. The tree is cached by the file's SHA-256, so the same bytes are converted once. See [STEP part trees](../../gre-1007-step-part-trees.md) |
 
 ## Delivery slices
 
@@ -58,6 +59,8 @@ The job id is written to `localStorage` key `pp.library.jobs` as soon as the 202
 ## Source files
 
 The Source's name is a link to `/library/{id}` (`web/apps/ui/src/library/SourceFiles.tsx`). That page lists the current revision's files from `listSourceFiles`, grouped by folder, with each file's name and size. Files at the revision root are under **Top level**. An STL has a 64 px thumbnail from `GET /api/v1/sources/{id}/thumbnail?path=`; the image is requested when the row enters the viewport, and a failed response shows **No preview** instead of a broken image. A Source with no revision says **No files yet.** Clicking the selected name returns to `/library`.
+
+A STEP file (`.step` or `.stp`) has a **Part tree** button. It shows **Queued for conversion.**, **Converting…**, the nested part list, or **Conversion failed.** with the reason, asking again every second until the conversion is done or failed ([STEP part trees](../../gre-1007-step-part-trees.md)).
 
 A Build's Sources tab (`/builds/:id/sources`) lists each of that Build's Sources the same way, in layer order, one section per Source. A Source used on two layers is listed once.
 

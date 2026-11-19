@@ -1,4 +1,4 @@
-import type { Health, SourceActivity, SourceList } from "@print-partner/rust-client";
+import type { Health, SourceActivity, SourceList, StepPartTree } from "@print-partner/rust-client";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -73,8 +73,29 @@ const FILES = {
     { path: "README.md", kind: "document", size_bytes: 5 },
     { path: "stl/body.stl", kind: "stl", size_bytes: 1536 },
     { path: "far/part.stl", kind: "stl", size_bytes: 2048 },
+    { path: "cad/printer.step", kind: "model", size_bytes: 4096 },
   ],
 };
+
+const stepTree = (extra: Partial<StepPartTree>): StepPartTree => ({
+  source_id: 1,
+  path: "cad/printer.step",
+  state: "queued",
+  sha256: null,
+  failure: null,
+  parts: [],
+  ...extra,
+});
+
+const part = (name: string, depth: number, instance: string | null = null) => ({
+  name,
+  product_id: `${name}-id`,
+  instance,
+  depth,
+});
+
+/** What the step-conversion route answers, in order; the last one repeats. */
+let stepAnswers: StepPartTree[] = [];
 
 interface RecordedObserver {
   callback: IntersectionObserverCallback;
@@ -129,6 +150,10 @@ function renderAt(path: string) {
     if (request === "/api/v1/sources") return Promise.resolve(json(SOURCES));
     if (request.startsWith("/api/v1/sources/activity")) return Promise.resolve(json(ACTIVITY));
     if (request === "/api/v1/sources/1/files") return Promise.resolve(json(FILES));
+    if (request.startsWith("/api/v1/sources/1/step-conversion?")) {
+      const answer = stepAnswers.length > 1 ? stepAnswers.shift() : stepAnswers[0];
+      return Promise.resolve(json(answer));
+    }
     if (request === "/api/v1/sources/3/files") {
       return Promise.resolve(json({ source_id: 3, revision_id: null, files: [] }));
     }
@@ -145,6 +170,7 @@ function renderAt(path: string) {
 }
 
 afterEach(() => {
+  stepAnswers = [];
   cleanup();
   observers.length = 0;
   vi.restoreAllMocks();
@@ -233,5 +259,68 @@ describe("Library shows a Source's files and thumbnails", () => {
   it("says when the address names no Source", async () => {
     renderAt("/library/9");
     expect(await screen.findByText("That Source is not in the Library.")).toBeTruthy();
+  });
+});
+
+describe("Library shows a STEP file's part tree from the Rust cache (GRE-1007)", () => {
+  const stepCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([path]) => String(path).includes("/step-conversion")).length;
+
+  it("shows queued, then converting, then the nested tree, and stops asking", async () => {
+    stepAnswers = [
+      stepTree({ state: "queued" }),
+      stepTree({ state: "converting" }),
+      stepTree({
+        state: "done",
+        sha256: "ab".repeat(32),
+        parts: [
+          part("Printer", 0),
+          part("Frame", 1, "Frame:1"),
+          part("Carriage", 2, "Carriage:1"),
+          part("Hotend", 3, "Hotend:1"),
+          part("Bed", 1, "Bed:1"),
+        ],
+      }),
+    ];
+    const { fetchMock } = renderAt("/library/1");
+    const region = await screen.findByRole("region", { name: "Files for Frame kit" });
+    expect(stepCalls(fetchMock)).toBe(0);
+    const toggle = await within(region).findByRole("button", { name: "Part tree of printer.step" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(await within(region).findByText("Queued for conversion.")).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(
+        ([path]) => path === "/api/v1/sources/1/step-conversion?path=cad%2Fprinter.step",
+      ),
+    ).toBe(true);
+    expect(await within(region).findByText("Converting…", {}, { timeout: 3000 })).toBeTruthy();
+    expect(await within(region).findByText("5 parts", {}, { timeout: 3000 })).toBeTruthy();
+
+    const tree = within(region).getByRole("list", { name: "Parts of cad/printer.step" });
+    const item = (scope: HTMLElement, name: string) =>
+      within(scope).getAllByRole("listitem").find((li) => li.firstChild?.textContent === name)!;
+    const printer = item(tree, "Printer");
+    const frame = item(printer, "Frame");
+    const carriage = item(frame, "Carriage");
+    expect(item(carriage, "Hotend").textContent).toBe("Hotend (Hotend:1)");
+    expect(within(frame).queryByText("Bed")).toBeNull();
+    expect(item(printer, "Bed").parentElement?.parentElement).toBe(printer);
+
+    const asked = stepCalls(fetchMock);
+    expect(asked).toBe(3);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(stepCalls(fetchMock)).toBe(asked);
+  });
+
+  it("says why a STEP file could not be converted", async () => {
+    stepAnswers = [stepTree({ state: "failed", failure: "no_products" })];
+    renderAt("/library/1");
+    const region = await screen.findByRole("region", { name: "Files for Frame kit" });
+    fireEvent.click(await within(region).findByRole("button", { name: "Part tree of printer.step" }));
+    const alert = await within(region).findByRole("alert");
+    expect(alert.textContent).toContain("Conversion failed.");
+    expect(alert.textContent).toContain("This STEP file has no assembly structure.");
   });
 });

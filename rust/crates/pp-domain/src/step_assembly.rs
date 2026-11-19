@@ -93,7 +93,7 @@ pub fn part_tree(input: impl Read, cancelled: &AtomicBool) -> Result<PartTree, S
     let mut seen = 0u32;
     while let Some(record) = scanner.next_record()? {
         seen = seen.wrapping_add(1);
-        if seen % CANCEL_EVERY == 0 && cancelled.load(Ordering::Relaxed) {
+        if seen.is_multiple_of(CANCEL_EVERY) && cancelled.load(Ordering::Relaxed) {
             return Err(StepError::Cancelled);
         }
         if let Some((id, kind, body)) = record {

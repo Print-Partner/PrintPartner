@@ -79,7 +79,7 @@ fn the_same_bytes_are_converted_once_and_later_opens_load_from_the_cache() {
     assert_eq!(depth(&tree.roots[0]), 6);
     assert_eq!(fixture.client.step_files_converted(), 1);
     let name = format!("{hash}-v{PART_TREE_FORMAT}.json");
-    assert_eq!(fixture.step_cache(), [name.clone()]);
+    assert_eq!(fixture.step_cache(), std::slice::from_ref(&name));
 
     // The cached file is the nested tree.
     let cached: serde_json::Value = serde_json::from_slice(

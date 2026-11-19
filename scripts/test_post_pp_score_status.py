@@ -709,6 +709,38 @@ def record(head, seat="gpt-6.2-sol", vendor="openai", score=9, author="anthropic
     return pps.Record(head, seat, vendor, author, float(score), ())
 
 
+def body(rec, obstacles="none"):
+    return (f"pp-score head={rec.head} seat={rec.seat} vendor={rec.vendor} score={pps.format_score(rec.score)} "
+            f"author={rec.author} obstacles={obstacles}")
+
+
+CONFIG = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
+NO_CARRY_REASON = "no records on this head and no carry: "
+
+
+def carry_both(test, repo, head, records, strict=False, failing=None, main_ref="main"):
+    """The only way these tests evaluate a carry (test_every_carry_goes_through_carry_both checks
+    that). Returns plan_carry's result, and asserts that the coordinator's sensitive check agrees
+    with the strict status on these records and again with a second vendor at 9 added beside each
+    record: the guard carries only what the status carries, from the same source, and a carry both
+    refuse is refused for the same reason. One seat passing the status alone is the known case."""
+    def facts():
+        return RepoFacts(repo, failing, main_ref)
+
+    result = pps.plan_carry(head, records, strict, facts())
+    companions = [pps.Record(r.head, "glm-5.3-flash-free", "zhipu", r.author, 9.0, ()) for r in records]
+    for group in (records, records + companions):
+        status, status_why = pps.plan_carry(head, group, True, facts())
+        source, guard_why = merge_class.sensitive_scores([body(r) for r in group], head, CONFIG, facts(),
+                                                         merge_class.load_classes())
+        if source is not None and source != head:
+            test.assertIsNotNone(status, f"the guard carried what the status refused: {status_why}")
+            test.assertEqual(status_why, f"carried from {source[:7]}")
+        if status is None and guard_why.startswith(NO_CARRY_REASON):
+            test.assertEqual(guard_why[len(NO_CARRY_REASON):], status_why)
+    return result
+
+
 class CarryTests(unittest.TestCase):
     """Chad's rule of 2026-11-18 11:02 PM ET, tightened so every hop fact is fixed by its SHAs.
     One test per condition in hop() and plan_carry() failing, plus the clean cases."""
@@ -773,7 +805,7 @@ class CarryTests(unittest.TestCase):
         cls.on_main = r.merge_commit(cls.m1, cls.base, cls.m1)
 
     def plan(self, head, records, strict=False, failing=None, main_ref="main"):
-        return pps.plan_carry(head, records, strict, RepoFacts(self.r, failing, main_ref))
+        return carry_both(self, self.r, head, records, strict, failing, main_ref)
 
     def refused(self, head, records=None, main_ref="main", **kw):
         plan, why = self.plan(head, records or [record(self.h0)], main_ref=main_ref, **kw)
@@ -992,7 +1024,7 @@ class CrissCrossTests(unittest.TestCase):
         # One explicit base (what GitHub's compare API returns) would certify the hand resolution.
         self.assertEqual(r.git("merge-tree", "--write-tree", f"--merge-base={x1}", h0, m),
                          r.git("rev-parse", f"{h1}^{{tree}}"))
-        plan, why = pps.plan_carry(h1, [record(h0)], False, RepoFacts(r))
+        plan, why = carry_both(self, r, h1, [record(h0)])
         self.assertEqual((plan, why), (None, f"{h1[:7]}: 2 merge bases with main"))
 
 
@@ -1088,11 +1120,6 @@ class CommentModeCarryTests(unittest.TestCase):
             self.assertIn("comment-mode dry runs only", err.getvalue())
 
 
-def body(rec, obstacles="none"):
-    return (f"pp-score head={rec.head} seat={rec.seat} vendor={rec.vendor} score={pps.format_score(rec.score)} "
-            f"author={rec.author} obstacles={obstacles}")
-
-
 class GuardAgreementTests(unittest.TestCase):
     """The pp/score status (plan_carry, strict as for a sensitive PR) and the coordinator's
     sensitive merge check (merge_class.sensitive_scores, as agent-guard.py calls it) on the same
@@ -1109,14 +1136,19 @@ class GuardAgreementTests(unittest.TestCase):
         cls.classes = merge_class.load_classes()
 
     def both(self, head, records, main_ref="main", failing=None):
-        facts = RepoFacts(self.c.r, failing, main_ref)
-        status, status_why = pps.plan_carry(head, records, True, facts)
+        status, status_why = carry_both(self, self.c.r, head, records, True, failing, main_ref)
         source, guard_why = merge_class.sensitive_scores([body(r) for r in records], head, self.config,
                                                          RepoFacts(self.c.r, failing, main_ref), self.classes)
-        if source is not None:
-            self.assertIsNotNone(status, f"guard accepted what the status refused: {status_why}")
-            self.assertEqual(status_why, f"carried from {source[:7]}")
         return status is not None, source is not None, status_why, guard_why
+
+    def test_every_carry_goes_through_carry_both(self):
+        # A new carry fixture cannot skip the guard: plan_carry is called only inside carry_both.
+        import inspect
+
+        call = "pps." + "plan_carry("
+        text = inspect.getsource(inspect.getmodule(carry_both))
+        self.assertEqual(text.count(call), inspect.getsource(carry_both).count(call))
+        self.assertEqual(text.count(call), 2)
 
     def two(self, head):
         return [record(head), record(head, seat="glm-5.3-flash-free", vendor="zhipu")]
@@ -1186,9 +1218,9 @@ class CarryLimitTests(unittest.TestCase):
             main = r.commit(f"m{i}.txt", f"{i}\n", f"main {i}")
             r.git("checkout", "-q", "pr")
             heads.append(r.merge(main))
-        plan, why = pps.plan_carry(heads[4], [record(h0)], False, RepoFacts(r))
+        plan, why = carry_both(self, r, heads[4], [record(h0)])
         self.assertEqual((plan.state, why), ("success", f"carried from {h0[:7]}"))
-        self.assertEqual(pps.plan_carry(heads[5], [record(h0)], False, RepoFacts(r)),
+        self.assertEqual(carry_both(self, r, heads[5], [record(h0)]),
                          (None, "no scored head within 5 merges of main"))
 
     def test_a_failed_unshallow_fetch_refuses(self):
@@ -1216,15 +1248,15 @@ class CarryLimitTests(unittest.TestCase):
 
 
 class CommentModeOrderTests(unittest.TestCase):
-    """Runs for one PR can finish out of order. Each run re-reads after posting, so the status the
-    last run leaves reflects the facts after its last post, never a stale carried success."""
+    """Runs for one PR can finish out of order. Each run re-reads the comments, head and head
+    checks after posting, up to SETTLE_ROUNDS times, and fails closed if they are still changing."""
 
     @classmethod
     def setUpClass(cls):
         CarryTests.setUpClass()
         cls.c = CarryTests
 
-    def run_posting(self, comment_lists, head):
+    def run_posting(self, comment_lists, head, facts=None, on_post=None):
         import io
         from contextlib import redirect_stderr, redirect_stdout
         from unittest import mock
@@ -1237,14 +1269,45 @@ class CommentModeOrderTests(unittest.TestCase):
             return last[0]
 
         posted = []
+
+        def post(repo, plan):
+            posted.append(plan)
+            if on_post:
+                on_post(plan)
+
         with mock.patch.object(pps, "fetch_comments", side_effect=comments), \
                 mock.patch.object(pps, "fetch_head", side_effect=head), \
                 mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]), \
-                mock.patch.object(pps, "GitHubFacts", return_value=RepoFacts(self.c.r)), \
-                mock.patch.object(pps, "apply_plan", side_effect=lambda repo, plan: posted.append(plan)), \
+                mock.patch.object(pps, "GitHubFacts", return_value=facts or RepoFacts(self.c.r)), \
+                mock.patch.object(pps, "apply_plan", side_effect=post), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             code = pps.main(["--pr", "7", "--post"])
         return code, posted, err.getvalue()
+
+    def test_facts_still_changing_after_three_rounds_fail_closed(self):
+        import itertools
+
+        # Every read sees one more comment, so the run never confirms what it posted.
+        reads = ([self.comment(9, i) for i in range(n)] for n in itertools.count(1))
+        code, posted, err = self.run_posting(reads, lambda repo, pr: self.c.h2)
+        on_h2 = [(p.state, p.description) for p in posted if p.head == self.c.h2]
+        self.assertEqual(code, 1)
+        self.assertEqual(len(on_h2), pps.SETTLE_ROUNDS + 1)
+        self.assertEqual(on_h2[-1], ("failure", pps.UNSETTLED))
+        self.assertIn("failed closed", err)
+
+    def test_a_check_failing_after_the_decision_flips_the_carried_success(self):
+        h2 = self.c.h2
+        facts = RepoFacts(self.c.r)
+
+        def check_fails_once_posted(plan):
+            if plan.head == h2 and plan.state == "success":
+                facts.failing[h2] = "zizmor is failure"
+
+        code, posted, _ = self.run_posting([[self.comment(9, 1)]], lambda repo, pr: h2, facts,
+                                           check_fails_once_posted)
+        self.assertEqual((code, [p.state for p in posted if p.head == h2]), (0, ["success", "failure"]))
+        self.assertIn("zizmor is failure", posted[-1].description)
 
     def comment(self, score, id_):
         line = body(record(self.c.h0, score=score))

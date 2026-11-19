@@ -459,25 +459,34 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
 
 # Runs for one PR can overlap or finish out of order: a concurrency group does not keep dispatch
 # order, and GitHub replaces a pending run with a newer one. So after posting, a run reads the
-# comments and the head again. If either changed since it decided, it decides and posts again.
-# The run that posts last has therefore re-read, after that post, the facts it decided from.
-# Every new comment starts a run of its own, so a change after that re-read gets its own run.
+# facts again: the head SHA, the ids and edit times of the comments, and the head's required-check
+# result. If any changed since it decided, it decides and posts again, up to SETTLE_ROUNDS times.
+# If they are still changing after that, it posts failure on the head and exits 1 (fail closed).
 SETTLE_ROUNDS = 3
+UNSETTLED = "re-evaluation needed: the comments, head or checks kept changing"
 
 
-def snapshot(comments, head):
-    return head, tuple((c.get("id"), c.get("created_at"), c.get("updated_at")) for c in comments)
+def check_state(facts, head):
+    try:
+        return facts.checks_failing(head)
+    except Exception as err:  # noqa: BLE001 - the same unreadable state reads the same way twice
+        return f"unreadable: {type(err).__name__}"
+
+
+def snapshot(comments, head, checks):
+    return head, checks, tuple((c.get("id"), c.get("created_at"), c.get("updated_at")) for c in comments)
 
 
 def read_snapshot(repo: str, pr: int):
     try:
-        return snapshot(fetch_comments(repo, pr), fetch_head(repo, pr))
+        comments, head = fetch_comments(repo, pr), fetch_head(repo, pr)
+        return snapshot(comments, head, check_state(GitHubFacts(repo, gh_json), head))
     except Exception:  # noqa: BLE001 - an unreadable re-read never matches, so the run decides again
         return None
 
 
 def comment_pass(repo: str, pr: int, trust, carry_only: bool):
-    """(plans, snapshot, head_ok) from one read of the PR's comments and head."""
+    """(plans, snapshot, head_ok) from one read of the PR's comments, head and head checks."""
     comments = fetch_comments(repo, pr)
     records = trusted_records(comments, trust)
     plans = plan_statuses(records)
@@ -487,15 +496,18 @@ def comment_pass(repo: str, pr: int, trust, carry_only: bool):
         head = None
         print(f"# no carry: cannot read the head of #{pr} ({type(err).__name__})")
     head_ok = isinstance(head, str) and bool(FULL_SHA.fullmatch(head))
+    facts = GitHubFacts(repo, gh_json)
+    # Read before deciding, so a check that changes during the decision differs at the re-read.
+    checks = check_state(facts, head) if head_ok else None
     if carry_only:
         # Dry-run aid: decide the carry for the current head as if it had no records of its own.
         records = [r for r in records if r.head != head]
         plans = []
     if head_ok and not any(r.head == head for r in records):
-        carried, why = carry_for_pr(repo, pr, head, records, GitHubFacts(repo, gh_json))
+        carried, why = carry_for_pr(repo, pr, head, records, facts)
         print(f"# carry to {head}: {why}")
         plans.append(carried or no_carry_plan(head, why))
-    return plans, snapshot(comments, head), head_ok
+    return plans, snapshot(comments, head, checks), head_ok
 
 
 def pr_number(text: str) -> int:
@@ -553,7 +565,11 @@ def main(argv=None) -> int:
         render(args.repo, args.pr, plans, args.post)
         if not args.post or not head_ok or read_snapshot(args.repo, args.pr) == seen:
             break
-        print("# the comments or the head changed while this run posted; deciding again")
+        print("# the comments, head or checks changed while this run posted; deciding again")
+    else:
+        show(args.repo, StatusPlan(seen[0], "failure", UNSETTLED, ()), args.post)
+        print(f"#{args.pr}: {UNSETTLED} after {SETTLE_ROUNDS} rounds; failed closed", file=sys.stderr)
+        return 1
     if not head_ok:
         print(f"cannot read the head of #{args.pr}: its pp/score is unchanged; "
               "the merge_group run decides it again", file=sys.stderr)

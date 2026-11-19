@@ -25,8 +25,9 @@ permissions: {}
 
 # One group per PR (per SHA for a merge group) keeps runs for one PR from
 # overlapping in most cases. It does not keep dispatch order, and a newer
-# pending run replaces an older one, so the script does not rely on it: after
-# posting, a run re-reads the comments and head and decides again if they moved.
+# pending run replaces an older one. After posting, each run re-reads the
+# comments, head and head checks, deciding again up to 3 times; if they are
+# still changing it posts failure on the head and exits 1.
 concurrency:
   group: pp-score-${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.issue.number || inputs.pr }}
   cancel-in-progress: false

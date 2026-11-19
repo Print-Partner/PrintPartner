@@ -559,12 +559,10 @@ impl Gateway {
                     });
                     let mut http = hyper::server::conn::http1::Builder::new();
                     http.max_buf_size(32 * 1024);
-                    let connection = http
-                        .serve_connection(
-                            hyper_util::rt::TokioIo::new(stall::StallGuard::new(stream)),
-                            service,
-                        )
-                        .with_upgrades();
+                    // Lingers after the last response so an early 413 is not
+                    // lost to a reset; cancellation still closes at once.
+                    let connection =
+                        pp_net::http1::serve(&http, stall::StallGuard::new(stream), service);
                     tokio::select! {
                         biased;
                         _ = cancelled.cancelled() => {},

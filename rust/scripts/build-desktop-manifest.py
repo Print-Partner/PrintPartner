@@ -4,6 +4,7 @@ import json
 import pathlib
 import re
 import os
+import stat
 import subprocess
 import sys
 
@@ -40,6 +41,43 @@ def inventory(root):
         raise ValueError('Empty artifact root')
     return files
 
+def is_link(path):
+    """A symbolic link or a Windows junction.
+
+    npm creates workspace links as junctions on Windows. pathlib's is_symlink()
+    is false for a junction, but Rust's FileType::is_symlink() is true, so
+    pp-compat's release verifier counts it as a link. Both treat the two kinds
+    the same way: record the link, check its target, and follow the target.
+    """
+    return path.is_symlink() or is_junction(path)
+
+def is_junction(path):
+    # Path.is_junction() needs Python 3.12; the Rust image's python3 is older.
+    if os.name != 'nt':
+        return False
+    try:
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except FileNotFoundError:
+        return False
+
+def link_target(path, target):
+    """The recorded target: a relative path from the link's directory.
+
+    A symbolic link records its own text, which must be relative because staging
+    and packaging recreate the link from it. Windows stores a junction's target
+    as an absolute path, so a junction records its resolved target relative to
+    its directory. pp-compat resolves the recorded target from the link's
+    directory and requires the link to resolve to the same place.
+    """
+    if is_junction(path):
+        return pathlib.PurePath(os.path.relpath(target, path.parent)).as_posix()
+    link = os.readlink(path)
+    # A non-empty anchor also catches Windows forms that is_absolute() allows
+    # and pp-compat refuses: a leading backslash, or a drive with no root.
+    if pathlib.PurePath(link).anchor:
+        raise ValueError('Dependency link must be relative')
+    return link
+
 def dependencies():
     roots = []
     files = {}
@@ -62,6 +100,11 @@ def dependencies():
             search.add(directory / 'node_modules')
     for directory in sorted(search):
         roots.append(directory.relative_to(package_root).as_posix())
+        # The walk resolves a root, so a link here would get no link record.
+        # pp-compat refuses it too. Check the entry itself before exists(),
+        # which follows it, so a dangling root link is refused, not skipped.
+        if is_link(directory):
+            raise ValueError('Dependency root is a link')
         if not directory.exists():
             continue
         pending.append(directory)
@@ -74,14 +117,11 @@ def dependencies():
         visited.add(directory)
         for path in directory.iterdir():
             relative = path.relative_to(package_root).as_posix()
-            if path.is_symlink():
+            if is_link(path):
                 target = path.resolve(strict=True)
                 if not target.is_relative_to(package_root):
                     raise ValueError('Dependency link escapes package root')
-                link = os.readlink(path)
-                if pathlib.Path(link).is_absolute():
-                    raise ValueError('Dependency link must be relative')
-                links[relative] = link
+                links[relative] = link_target(path, target)
                 if target.parent in WORKSPACE_PARENTS and target not in SHIPPED_WORKSPACES:
                     # A workspace link the desktop does not ship, such as
                     # node_modules/@print-partner/ui in a source checkout. Record the link

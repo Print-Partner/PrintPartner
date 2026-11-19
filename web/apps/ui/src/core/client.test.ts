@@ -51,31 +51,71 @@ describe("fetchCore", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, null, {}, [null, {}, { name: 42 }, { name: "" }, { name: "Other kit" }]])(
-    "keeps only holding Build names from a refusal: %j",
-    async (builds) => {
-      vi.stubGlobal(
-        "fetch",
-        vi
-          .fn()
-          .mockResolvedValue(
-            new Response(JSON.stringify({ code: "duplicate_order", builds }), { status: 409 }),
-          ),
-      );
-      const error = await fetchCore("/api/v2/plans/2/drafts/9/accept-preview").catch(
-        (caught: unknown) => caught,
-      );
-      expect(error).toBeInstanceOf(CoreError);
-      expect((error as CoreError).conflictingBuilds).toEqual(
-        Array.isArray(builds) ? ["Other kit"] : [],
-      );
-    },
-  );
+  it.each([
+    undefined,
+    null,
+    {},
+    [null, {}, { name: 42 }, { name: "" }, { name: "Other kit", profile_id: 1.5 }],
+  ])("keeps only holding Build names from a refusal: %j", async (builds) => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code: "duplicate_order", builds }), { status: 409 }),
+        ),
+    );
+    const error = await fetchCore("/api/v2/plans/2/drafts/9/accept-preview").catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(CoreError);
+    expect((error as CoreError).conflictingBuilds).toEqual(
+      Array.isArray(builds) ? [{ name: "Other kit", profileId: null }] : [],
+    );
+  });
+
+  it("keeps each holding Build's ID from a duplicate-order refusal", async () => {
+    const builds = [
+      { profile_id: 5, name: "Other kit", order_number: "PO-7" },
+      { profile_id: 0, name: "Zero kit", order_number: "PO-7" },
+      { profile_id: "6", name: "Text kit", order_number: "PO-7" },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code: "duplicate_order", builds }), { status: 409 }),
+        ),
+    );
+    const error = await fetchCore("/api/v2/plans/2/drafts/9/accept-preview").catch(
+      (caught: unknown) => caught,
+    );
+    expect((error as CoreError).conflictingBuilds).toEqual([
+      { name: "Other kit", profileId: 5 },
+      { name: "Zero kit", profileId: null },
+      { name: "Text kit", profileId: null },
+    ]);
+  });
 
   it("keeps the fields a refusal names, in the core's order, and drops malformed entries", async () => {
-    const errors = [{ pointer: "/api_key", detail: "must be sent again" }, { pointer: 3 }, "x", { pointer: "/name", detail: "must not be empty" }];
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Request is invalid", errors }), { status: 400 })));
-    const error = await fetchCore("/api/v2/integrations/i-1", { method: "PATCH" }).catch((caught: unknown) => caught);
+    const errors = [
+      { pointer: "/api_key", detail: "must be sent again" },
+      { pointer: 3 },
+      "x",
+      { pointer: "/name", detail: "must not be empty" },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ detail: "Request is invalid", errors }), { status: 400 }),
+        ),
+    );
+    const error = await fetchCore("/api/v2/integrations/i-1", { method: "PATCH" }).catch(
+      (caught: unknown) => caught,
+    );
     expect((error as CoreError).errors).toEqual([errors[0], errors[3]]);
     expect((error as CoreError).detail).toBe("Request is invalid");
   });

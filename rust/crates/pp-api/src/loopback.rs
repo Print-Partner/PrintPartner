@@ -45,6 +45,12 @@ pub fn rebuild_flag_enabled(flag: Option<&str>) -> bool {
     matches!(flag, Some("1" | "true"))
 }
 
+/// Checks the configured API-key tenant that rebuild surfaces route keys to.
+/// The value is the installation's single Tenant, as defined by the **Tenant**
+/// entry in the
+/// [glossary](https://github.com/Print-Partner/PrintPartner/blob/main/GLOSSARY.md)
+/// (`GLOSSARY.md` at the repository root): a legacy name, not a product
+/// concept, so new code adds no tenant branches.
 pub fn require_api_key_tenant(api_key_tenant: &str) -> Result<()> {
     ensure!(
         !api_key_tenant.trim().is_empty() && api_key_tenant.len() <= 512,

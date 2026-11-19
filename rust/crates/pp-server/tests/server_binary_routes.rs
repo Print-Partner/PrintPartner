@@ -246,7 +246,11 @@ fn slice0_mount_server_binary_serves_rust_routes() {
         let planted = std::fs::create_dir(&old_name).is_ok();
         if planted {
             set_mode(&old_name, 0o755);
-            std::fs::write(old_name.join("keep"), b"x").unwrap();
+            let keep = old_name.join("keep");
+            std::fs::write(&keep, b"x").unwrap();
+            // `fs::write` is masked. umask 0400 leaves mode 0266, which the
+            // owner cannot read back. chmod is not masked.
+            set_mode(&keep, 0o644);
         }
         // Storage refuses a data directory other accounts can write to, so
         // the root is a new, empty 0o700 directory under any umask.

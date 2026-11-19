@@ -33,14 +33,16 @@ const UMASK_CHILD: &str = "PP_TESTKIT_UMASK_CHILD";
 /// cannot write into one its owner cannot. Both constructors give the data
 /// directory exactly 0700, and pp-testkit's lease leftovers 0700 directories
 /// and 0600 files, whatever the umask (GRE-1398). The umask is per process,
-/// so the test runs itself again under `/bin/sh` with each umask.
+/// so the test runs itself again under `/bin/sh` with each umask. `0400`
+/// drops owner-read on a file the mask creates, which the sentinel reread
+/// in `assert_private_temp_dir_is_new` has to survive.
 #[cfg(unix)]
 #[test]
 fn data_directory_is_private_whatever_the_umask() {
     if let Some(umask) = std::env::var_os(UMASK_CHILD) {
         return assert_private_installations(umask.to_str().unwrap());
     }
-    for umask in ["0002", "0022", "0077", "0277"] {
+    for umask in ["0002", "0022", "0077", "0277", "0400"] {
         let output = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(format!(
@@ -122,7 +124,11 @@ fn assert_private_temp_dir_is_new() {
     let existing = parent.path().join("existing");
     fs::create_dir(&existing).unwrap();
     fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(existing.join("keep"), b"x").unwrap();
+    let keep = existing.join("keep");
+    fs::write(&keep, b"x").unwrap();
+    // `fs::write` is masked. umask 0400 leaves mode 0266, which the owner
+    // cannot read back. chmod is not masked.
+    fs::set_permissions(&keep, fs::Permissions::from_mode(0o644)).unwrap();
     std::os::unix::fs::symlink(&existing, parent.path().join("link")).unwrap();
 
     let made: Vec<_> = (0..8)
@@ -137,7 +143,7 @@ fn assert_private_temp_dir_is_new() {
         assert_eq!(fs::read_dir(path).unwrap().count(), 0, "{}", path.display());
     }
     assert_eq!(mode(&existing), 0o755);
-    assert_eq!(fs::read(existing.join("keep")).unwrap(), b"x");
+    assert_eq!(fs::read(&keep).unwrap(), b"x");
 }
 
 #[test]

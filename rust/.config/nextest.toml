@@ -39,6 +39,14 @@ threads-required = "num-test-threads"
 filter = 'binary(=runtime_m0) & test(=crash_guard_stops_after_five_failures_and_recovers_explicitly)'
 slow-timeout = { period = "60s", terminate-after = 17 }
 
+# Builds the release pp-server (`cargo build --release -p pp-server`) before its 12
+# starts. A cold build takes minutes, and it runs alone so its compile load does not
+# slow the timing-sensitive process tests.
+[[profile.default.overrides]]
+filter = 'binary(=unsupported_schema)'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 30 }
+
 [profile.pp-local-linux]
 test-threads = 3
 

@@ -134,7 +134,7 @@ start preserves the database, SQLite sidecars and recovery copies.
 | Fresh and Node schemas 31–34 | `ticket_t_7_migrations` checks the named paths and historical migration inputs. |
 | Version range and actionable recovery text | `schema_versions` checks the typed writer refusal and the Node lease refusal without changing database bytes. |
 | Downgrade preserves recovery copies | `downgrade_recovery` checks repeated refusal, an uncheckpointed WAL version, saved archives and staged copies. |
-| No headless reopen loop or partial startup | `ticket_t_8_versions_headless_refusals_exit_without_restarts` launches the executable three times for each old/new schema in both runtime modes. Each launch must exit 78 within 30 seconds, print exactly one diagnostic and recovery message, leave database bytes unchanged, and publish neither an origin, health status nor launch credential. |
+| No headless reopen loop or partial startup | `pp-server/tests/unsupported_schema.rs` builds the release `pp-server` the way `Dockerfile.rust` does and starts it three times for each of schema 30 and 51 in each runtime mode, 12 starts in all. The Rust-only starts use the image's arguments and `PP_DESKTOP_REBUILD=1` on a Rust-owned directory; the Node-backed starts use an unmarked Node directory. Each start must exit 78 within 30 seconds, print the `incompatible_storage:` diagnostic line once and the recovery line once on stderr, print nothing on stdout, and leave no status file or test credential file after it exits. The first start may add only the empty `printpartner.lock` lease file; every other file in the data directory, the database and its SQLite sidecars included, stays byte for byte the same, and the second and third starts change nothing. |
 
 Schema admission changes no routes or workers. A refused startup never announces
 an origin or publishes launch credentials; it cannot activate a second mutation
@@ -148,11 +148,18 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 't
 ```
 
 It runs two tests: the storage writer refusal in `pp-storage` and the headless
-launches in `pp-server`. `pp-server` builds with `desktop_rebuild` by default
-(GRE-1646), so the headless test runs without naming the feature. It prints the
-runtime mode, attempt, exit code, version diagnostic and unchanged-byte result
-for every launch. These are disposable installations; no real library or
-printer is used.
+starts in `pp-server`. `pp-server` builds with `desktop_rebuild` by default
+(GRE-1646), so the headless test runs without naming the feature.
+
+The headless test does not start the workspace test build of `pp-server`. That
+build turns on pp-storage's `test-unmarked-writer` feature, which skips the
+ownership marker gate. The test instead runs `cargo build --locked --release
+-p pp-server` into `<target>/pp-server-release`, or starts the binary that
+`PP_SERVER_RELEASE_BINARY` names. Before the 12 starts it checks that the binary
+refuses an unmarked Node directory in Rust-only mode with exit 1, which a build
+without the gate would not do. It prints the runtime mode, attempt, exit code
+and version diagnostic for every start. These are disposable installations; no
+real library or printer is used.
 
 ## Ownership today
 

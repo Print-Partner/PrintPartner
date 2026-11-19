@@ -580,9 +580,11 @@ These failures are common:
 
 ## Test groups and flaky tests
 
-`rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
+`rust/.config/nextest.toml` sets the rules below in the `default` profile, which CI and `just ci` use.
 
 Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `gateway_mount` binary in `pp-core` and the `server_binary_routes` binary in `pp-server` (both formerly `slice0_mount`), `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+
+`pp-server`'s `unsupported_schema` binary runs alone (`threads-required = "num-test-threads"`) and may run for up to 30 minutes. It first builds the release `pp-server` with `cargo build --locked --release -p pp-server` into `<target>/pp-server-release`, the build `Dockerfile.rust` ships, then starts that binary 12 times. Set `PP_SERVER_RELEASE_BINARY` to a binary built that way to skip the build.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 

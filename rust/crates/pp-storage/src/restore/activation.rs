@@ -33,7 +33,10 @@ impl Context {
 }
 
 pub(crate) struct Command {
-    pub staged: PathBuf,
+    /// `.pp-restore` as the request opened and checked it.
+    pub work: Work,
+    /// The stage's name in `work`.
+    pub staged: String,
     pub reply: mpsc::Sender<Result<Activated, RestoreError>>,
 }
 
@@ -50,7 +53,7 @@ pub(crate) fn execute(
         &context.directory,
         &context.seed,
         connection,
-        &command.staged,
+        (&command.work, &command.staged),
         |connection| {
             state.catalog.after_restore();
             state.tokens = crate::plan_publication::random_tokens();
@@ -81,7 +84,7 @@ fn activate(
     data_dir: &Path,
     seed: &str,
     connection: &mut Connection,
-    staged: &Path,
+    (work, staged): (&Work, &str),
     mut refresh: impl FnMut(&mut Connection) -> Result<()>,
 ) -> Result<Activated, RestoreError> {
     pause_admission(shared)?;
@@ -103,8 +106,8 @@ fn activate(
             .close()
             .map_err(|(_, error)| error)?;
         hooks::during_activation(data_dir);
-        let mut journal = Journal::begin(data_dir, staged)?;
-        journal.swap(data_dir)?;
+        let mut journal = Journal::begin(work, staged)?;
+        journal.swap(work)?;
         hooks::step(data_dir)?;
         let (mut restored, ready) = open_database(data_dir, seed)?;
         hooks::step(data_dir)?;
@@ -112,9 +115,9 @@ fn activate(
         hooks::step(data_dir)?;
         let prepared = prepare_readers(&database, reader_count)?;
         hooks::step(data_dir)?;
-        journal.commit(data_dir)?;
+        journal.commit(work)?;
         hooks::step(data_dir)?;
-        journal.finish(data_dir);
+        journal.finish(work);
         Ok((restored, ready, prepared))
     })();
     let (activated, prepared) = match forward {
@@ -131,8 +134,8 @@ fn activate(
         Err(error) => {
             let rollback = (|| -> Result<()> {
                 ensure!(!hooks::crashed(&error), "simulated crash");
-                if let Some(mut journal) = Journal::read(data_dir)? {
-                    journal.rollback(data_dir)?;
+                if let Some(mut journal) = Journal::read(work)? {
+                    journal.rollback(work)?;
                 } else {
                     hooks::after_rollback(data_dir);
                 }

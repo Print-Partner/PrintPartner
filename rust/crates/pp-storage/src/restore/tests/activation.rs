@@ -267,7 +267,8 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
             }
             assert!(matches!(&error, RestoreError::RestartRequired));
             assert!(owner.client().shared.queue.lock().unwrap().closed);
-            let committed = Journal::read(&root)
+            let work = Work::open(&root).unwrap().unwrap();
+            let committed = Journal::read(&work)
                 .unwrap()
                 .is_some_and(|journal| journal.state == JournalState::Committed);
             owner.shutdown().unwrap();

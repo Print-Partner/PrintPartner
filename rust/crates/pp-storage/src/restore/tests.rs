@@ -29,6 +29,16 @@ pub(super) fn before_work_dir_create(data_dir: &Path) {
     }
 }
 
+static AFTER_WORK_CHECK: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+/// Called by `Work::open_in` right after it opened `.pp-restore` without
+/// following a link: the check every later entry operation relies on.
+pub(super) fn after_work_check(data_dir: &Path) {
+    if let Some(hook) = take_hook(&AFTER_WORK_CHECK, data_dir) {
+        hook();
+    }
+}
+
 /// Called by `begin_upload` between creating `.pp-restore` and its file.
 pub(super) fn after_work_dir(data_dir: &Path) {
     if let Some(hook) = take_hook(&AFTER_WORK_DIR, data_dir) {
@@ -386,7 +396,8 @@ fn ticket_t_8_restore_unmarked_installations_and_oversized_uploads_refuse_before
     upload.write(b"1234").unwrap();
     let error = upload.write(b"5").unwrap_err();
     assert_eq!(refusal(&error), Some(&Refusal::TooLarge(4)));
-    assert_eq!(std::fs::metadata(&upload.path).unwrap().len(), 4);
+    let written = std::fs::metadata(root.join(WORK_DIR).join(&upload.name)).unwrap();
+    assert_eq!(written.len(), 4);
     // A failed upload stays failed, even after a write that would fit.
     let error = upload.write(b"").unwrap_err();
     assert!(error.to_string().contains("already failed"), "{error:#}");
@@ -527,7 +538,8 @@ fn ticket_t_8_restore_an_upload_survives_a_refused_stage_racing_it() {
     });
     let mut upload = client.begin_upload(16).unwrap();
     upload.write(b"still here").unwrap();
-    assert_eq!(std::fs::read(&upload.path).unwrap(), b"still here");
+    let written = root.join(WORK_DIR).join(&upload.name);
+    assert_eq!(std::fs::read(written).unwrap(), b"still here");
     drop(upload);
     owner.shutdown().unwrap();
 }
@@ -643,7 +655,7 @@ fn ticket_t_8_restore_shutdown_keeps_the_lease_while_restore_work_runs_on() {
     assert!(open(&root).is_err());
     release.send(()).unwrap();
     let upload = upload.join().unwrap().unwrap();
-    assert!(upload.path.exists());
+    assert!(root.join(WORK_DIR).join(&upload.name).exists());
 }
 
 /// Shutdown closes writer, reader and restore admission before it waits,
@@ -844,6 +856,7 @@ fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_li
 }
 
 mod export;
+mod swap;
 
 /// A simulated process death: activation returns without rolling back.
 #[derive(Debug)]

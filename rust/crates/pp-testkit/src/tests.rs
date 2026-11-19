@@ -24,6 +24,128 @@ fn assert_only_lease_leftovers(installation: &Installation) {
     }
 }
 
+/// Set in the child that `data_directory_is_private_whatever_the_umask`
+/// starts under a given umask.
+#[cfg(unix)]
+const UMASK_CHILD: &str = "PP_TESTKIT_UMASK_CHILD";
+
+/// Storage refuses a data directory other accounts can write to, and a test
+/// cannot write into one its owner cannot. Both constructors give the data
+/// directory exactly 0700, and pp-testkit's lease leftovers 0700 directories
+/// and 0600 files, whatever the umask (GRE-1398). The umask is per process,
+/// so the test runs itself again under `/bin/sh` with each umask. `0400`
+/// drops owner-read on a file the mask creates, which the sentinel reread
+/// in `assert_private_temp_dir_is_new` has to survive.
+#[cfg(unix)]
+#[test]
+fn data_directory_is_private_whatever_the_umask() {
+    if let Some(umask) = std::env::var_os(UMASK_CHILD) {
+        return assert_private_installations(umask.to_str().unwrap());
+    }
+    for umask in ["0002", "0022", "0077", "0277", "0400"] {
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "umask {umask} && exec \"$0\" --exact \
+                 tests::data_directory_is_private_whatever_the_umask --nocapture"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .env(UMASK_CHILD, umask)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "umask {umask}:\n{stdout}\n{stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn assert_private_installations(umask: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    if let Ok(status) = fs::read_to_string("/proc/self/status") {
+        assert!(
+            status
+                .lines()
+                .any(|line| line == format!("Umask:\t{umask}")),
+            "child umask is not {umask}"
+        );
+    }
+    let assert_private = |installation: &Installation, label: &str| {
+        let mut pending = vec![installation.path().to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            assert_eq!(mode(&directory), 0o700, "{label}: {}", directory.display());
+            for entry in fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    assert_eq!(mode(&path), 0o600, "{label}: {}", path.display());
+                }
+            }
+        }
+        fs::write(installation.path().join("written-by-the-owner"), b"x")
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+    };
+    let bare = private_temp_dir(None).unwrap();
+    assert_eq!(mode(bare.path()), 0o700, "private_temp_dir");
+    assert_private_temp_dir_is_new();
+    for fixture in [Fixture::Empty, Fixture::EmptyWithLeaseLeftovers] {
+        let created = Installation::create(fixture).unwrap();
+        assert_private(&created, &format!("create {fixture:?}"));
+        let parent = tempfile::tempdir().unwrap();
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let created_in = Installation::create_in(parent.path(), fixture).unwrap();
+        assert_private(&created_in, &format!("create_in {fixture:?}"));
+    }
+}
+
+/// `private_temp_dir` makes a new directory each call and never reuses or
+/// re-modes an entry that is already there, including a symlink to a
+/// directory (GRE-1398 review of `server_binary_routes`). The umask matrix
+/// above runs it again under each umask.
+#[cfg(unix)]
+#[test]
+fn private_temp_dir_is_new_and_leaves_existing_entries_alone() {
+    assert_private_temp_dir_is_new();
+}
+
+#[cfg(unix)]
+fn assert_private_temp_dir_is_new() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    // tempfile's own 0o700 is filtered by the umask (0o500 under 0277), so
+    // set the parent's mode after creating it.
+    let parent = tempfile::tempdir().unwrap();
+    fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let existing = parent.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+    let keep = existing.join("keep");
+    fs::write(&keep, b"x").unwrap();
+    // `fs::write` is masked. umask 0400 leaves mode 0266, which the owner
+    // cannot read back. chmod is not masked.
+    fs::set_permissions(&keep, fs::Permissions::from_mode(0o644)).unwrap();
+    std::os::unix::fs::symlink(&existing, parent.path().join("link")).unwrap();
+
+    let made: Vec<_> = (0..8)
+        .map(|_| private_temp_dir(Some(parent.path())).unwrap())
+        .collect();
+    let paths: BTreeSet<_> = made.iter().map(|dir| dir.path().to_path_buf()).collect();
+    assert_eq!(paths.len(), made.len(), "a path was handed out twice");
+    for path in &paths {
+        assert_eq!(path.parent(), Some(parent.path()));
+        assert!(!fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+        assert_eq!(mode(path), 0o700, "{}", path.display());
+        assert_eq!(fs::read_dir(path).unwrap().count(), 0, "{}", path.display());
+    }
+    assert_eq!(mode(&existing), 0o755);
+    assert_eq!(fs::read(&keep).unwrap(), b"x");
+}
+
 #[test]
 fn empty_has_no_entries() {
     let installation = Installation::create(Fixture::Empty).unwrap();

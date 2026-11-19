@@ -75,10 +75,22 @@ fn execute(folder: &Installation, sql: &str) {
 }
 
 /// A backup archive of `folder` as Node writes it: the metadata, the
-/// database and, for a full backup, the two roots the synthetic folder holds.
+/// database and each root of the backup's scope that the folder holds.
+/// Format 1 declares no scope; its roots are the five legacy ones.
 fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFile {
-    let roots: Vec<&str> = match scope {
-        "full" => archive::FULL_ROOTS.iter().map(|(root, _)| *root).collect(),
+    archive_packing(folder, format, scope, &[])
+}
+
+/// [`archive_of`], also packing the `extra` roots its scope leaves out.
+fn archive_packing(
+    folder: &Path,
+    format: u64,
+    scope: &str,
+    extra: &[&str],
+) -> tempfile::NamedTempFile {
+    let roots: Vec<&str> = match (format, scope) {
+        (1, _) => archive::LEGACY_ROOTS.to_vec(),
+        (_, "full") => archive::FULL_ROOTS.iter().map(|(root, _)| *root).collect(),
         _ => Vec::new(),
     };
     let mut metadata = serde_json::json!({
@@ -103,17 +115,35 @@ fn archive_of(folder: &Path, format: u64, scope: &str) -> tempfile::NamedTempFil
     builder
         .append_path_with_name(folder.join(database), database)
         .unwrap();
-    if scope == "full" {
-        builder
-            .append_dir_all("repos", folder.join("repos"))
-            .unwrap();
-        let filaments = "custom_filaments.json";
-        builder
-            .append_path_with_name(folder.join(filaments), filaments)
-            .unwrap();
+    for &root in roots.iter().chain(extra) {
+        let path = folder.join(root);
+        if path.is_dir() {
+            builder.append_dir_all(root, path).unwrap();
+        } else if path.is_file() {
+            builder.append_path_with_name(path, root).unwrap();
+        }
     }
     builder.into_inner().unwrap().finish().unwrap();
     file
+}
+
+/// The two kinds of archive that hold only `folder`'s database, each with the
+/// end of its refusal: format 2 `database-only`, and format 1 without roots,
+/// as v3.3.0 wrote before each schema upgrade.
+fn database_only_archives(folder: &Path) -> [(tempfile::NamedTempFile, &'static str); 2] {
+    let bare = tempfile::tempdir().unwrap();
+    let database = archive::DATABASE_FILE;
+    std::fs::copy(folder.join(database), bare.path().join(database)).unwrap();
+    [
+        (
+            archive_of(folder, 2, "database-only"),
+            "this archive is database-only",
+        ),
+        (
+            archive_of(bare.path(), 1, ""),
+            "pre-update backups of v3.3.0 and earlier do",
+        ),
+    ]
 }
 
 /// The rows per tenant of `table` in `report`.
@@ -260,6 +290,75 @@ fn a_full_archive_gives_the_same_counts() {
             ..from_archive
         },
         from_folder
+    );
+}
+
+/// Print Partner v3.3.0 and earlier wrote format 1: no scope, and only the
+/// five legacy roots. Its dry run gives a folder's table counts. The roots
+/// format 2 added are not in it, so their shapes count zero.
+#[test]
+fn a_format_1_archive_gives_the_same_counts_without_the_format_2_roots() {
+    let folder = node_folder();
+    for root in ["sources", "exports", "thumbs", "covers"] {
+        std::fs::create_dir(folder.path().join(root)).unwrap();
+        std::fs::write(folder.path().join(root).join("synthetic.txt"), root).unwrap();
+    }
+    let from_folder = run(folder.path()).unwrap();
+    let full = run(archive_of(folder.path(), 2, "full").path()).unwrap();
+    let legacy = run(archive_of(folder.path(), 1, "").path()).unwrap();
+    assert_eq!(legacy.source, SourceKind::Archive);
+    assert_eq!(legacy.schema_version, from_folder.schema_version);
+    assert_eq!(legacy.tables, from_folder.tables);
+    let totals = |report: &DryRunReport| {
+        let DryRunReport {
+            builds,
+            sources,
+            printers,
+            unmatched_prints,
+            users,
+            ..
+        } = *report;
+        (builds, sources, printers, unmatched_prints, users)
+    };
+    assert_eq!(totals(&legacy), totals(&from_folder));
+    // The five legacy roots, and not `custom_filaments.json`.
+    let listed = |report: &DryRunReport| -> Vec<(&'static str, u64)> {
+        (report.roots.iter().map(|count| (count.root, count.entries))).collect()
+    };
+    let expected = [
+        ("repos", 7),
+        ("sources", 2),
+        ("exports", 2),
+        ("thumbs", 2),
+        ("covers", 2),
+    ];
+    assert_eq!(listed(&legacy), expected);
+    assert_eq!(listed(&full)[..5], expected);
+    let filaments = |report: &DryRunReport| {
+        let shape = Shape::File("custom_filaments.json");
+        let row = report.rows.iter().find(|(row, _)| row.shapes == [shape]);
+        row.unwrap().1.clone()
+    };
+    assert_eq!(
+        filaments(&full),
+        [(Shape::File("custom_filaments.json"), 2)]
+    );
+    assert_eq!(
+        filaments(&legacy),
+        [(Shape::File("custom_filaments.json"), 0)]
+    );
+    let note = "custom_filaments.json is not a store";
+    let noted = |report: &DryRunReport| report.settings.notes.iter().any(|item| item.name == note);
+    assert!(noted(&full) && !noted(&legacy));
+    // Nothing else differs from the format 2 archive's report.
+    assert_eq!(
+        DryRunReport {
+            roots: full.roots.clone(),
+            rows: full.rows.clone(),
+            settings: full.settings.clone(),
+            ..legacy
+        },
+        full
     );
 }
 
@@ -608,13 +707,24 @@ fn a_folder_that_cannot_be_imported_is_refused_unchanged() {
 }
 
 #[test]
-fn only_a_full_format_2_archive_is_read() {
+fn a_database_only_archive_and_a_file_that_is_no_archive_are_refused() {
     let folder = node_folder();
-    for (format, scope, reason) in [(2, "database-only", "database-only"), (1, "", "format 1")] {
-        let error = run(archive_of(folder.path(), format, scope).path()).unwrap_err();
-        assert!(matches!(error, ImportError::PartialArchive(_)), "{error:?}");
+    for (archive, reason) in database_only_archives(folder.path()) {
+        let error = run(archive.path()).unwrap_err();
+        assert!(
+            matches!(error, ImportError::DatabaseOnlyArchive(_)),
+            "{error:?}"
+        );
         assert!(error.to_string().ends_with(reason), "{error}");
     }
+    // Format 1 holds only the five legacy roots; a format 2 root in it fails
+    // validation.
+    let archive = archive_packing(folder.path(), 1, "", &["custom_filaments.json"]);
+    let error = run(archive.path()).unwrap_err();
+    assert!(
+        matches!(&error, ImportError::InvalidArchive(detail) if detail.contains("outside the declared scope: custom_filaments.json")),
+        "{error:?}"
+    );
     let not_an_archive = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(not_an_archive.path(), "synthetic text").unwrap();
     let error = run(not_an_archive.path()).unwrap_err();

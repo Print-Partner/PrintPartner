@@ -2586,9 +2586,6 @@ fn ticket_t_3_drain_rate_limit_debits_require_current_generation_signature() {
     }
 }
 
-// Unix only until GRE-1204: release verification rejects Windows npm junctions
-// with "Dependency link inventory mismatch".
-#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_2_respawn_blocked_during_verification_starts_no_child() {
     let scratch = Scratch::new("respawn-disarmed");

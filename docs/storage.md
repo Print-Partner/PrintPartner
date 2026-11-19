@@ -333,7 +333,7 @@ Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admiss
 
 ### Stage and restore routes
 
-With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running` with code `restore_busy`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
 
 `POST /api/v2/installation/restore/stage` takes the backup archive as the request body (`application/gzip`, not a form) and needs `Content-Length`, which becomes `begin_upload`'s limit. The route passes the body to the upload in 1 MiB writes, then calls `stage`, and answers `RestorePreview`: `restore_id`, the archive's `created_at` and `app_version`, its `schema_version`, and the `confirmation` text to repeat. The stage lasts until Print Partner restarts or the next stage replaces it; then the backup must be uploaded again.
 
@@ -351,13 +351,45 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two
 | `RestoreRequest` not readable | 400 `Request is invalid`, with field errors |
 | `Refusal::Confirmation` | 400 `Restore confirmation does not match` |
 | `Refusal::UnknownRestore` (also any id that is not 32 lowercase hex) | 404, code `restore_not_found`: upload the backup again |
-| `Refusal::Busy` | 503 `Storage work is still active; try again` |
+| `Refusal::Busy` | 503 `Storage work is still active; try again`, code `restore_busy`: nothing was changed |
 | `RestoreError::RolledBack` | 500, code `restore_rolled_back`: the previous installation is kept and serving |
 | `RestoreError::RestartRequired` | 503, code `restart_required`: storage refuses work until a restart replays the journal |
 
 The generated client names the routes `stageInstallationRestore` (no request DTO; post the archive bytes) and `restoreInstallation`.
 
 Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Installation::with_builds_drafts_and_history` (copied schema-34 database, valid marker, the same seed the storage restore tests use). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals. `pp-core/tests/installation_backup_http.rs` checks that the routes are absent with the flag off. `pp_api::restore`'s unit tests pin every refusal's body.
+
+### Backup and restore from Settings
+
+The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`) that calls these routes:
+
+1. **Create backup** posts `createInstallationBackup` once and shows the archive's file name, time, app version, size and SHA-256. **Download** first asks `HEAD /api/v2/installation/backup/archive?sha256=<shown digest>`. On 200 it starts a browser download of the same URL, so the file saved is the one whose size and SHA-256 the page shows. On 404 or 409 it removes the shown backup and says to create one again; nothing is saved. The `GET` carries the digest too, so a create between the two requests is refused instead of sent. The page keeps only the backup it made; after a reload, create one again. A refusal from the core shows its reason, such as `A backup is already running`.
+2. **Restore from a backup**: choose the file, then **Check backup** posts it as the body of the stage route and shows the backup's time, app version and schema version. Nothing is sent when the section opens or a file is chosen.
+3. **Restore this backup** opens a dialog that shows the core's confirmation text as sent. Focus starts on Cancel. Only **Replace this installation** calls the restore route, once, with the `restore_id` and that text. On success the dialog says `Restore complete` and offers Reload; the restored database brings its own sessions, so the page then asks for sign-in.
+
+One pure function, `restoreVerdict` in `web/apps/ui/src/settings/restoreAnswer.ts`, decides what a failed restore shows. It allows a retry only for an answer that proves the core refused before it queued the restore. Each entry needs the core's own problem body: read whole, `application/problem+json`, and a `status` member equal to the HTTP status. After the queue push, `activation::activate` on the writer answers only `restore_busy` (readers did not drain, before any file is swapped), `restore_rolled_back`, `restart_required`, or a `WriterFailure` from SQLite or a poisoned lock (a 503, code-less or `transaction_unavailable`, or a 500). None of its errors carries an `AuthFailure`, so it never answers 401 or 403.
+
+| Answer | Where the core decides it | Shown |
+| --- | --- | --- |
+| Request never sent (the request fails the generated schema) | In the page | Unchanged; may confirm again |
+| 400, no code | Unreadable or invalid body (`restore`), wrong confirmation (`activate`, first check) | Unchanged; may confirm again |
+| 401, no code | Gate: no credential, or the credential fails | Unchanged; may confirm again |
+| 403, no code | Gate: loopback, Host, Origin, owner mapping | Unchanged; may confirm again |
+| 409, no code | `activate`: installation has no Rust marker | Unchanged; may confirm again |
+| 422, no code | `activate`: the staged database fails the schema preflight | Unchanged; may confirm again |
+| 404 `restore_not_found` | `activate`: unknown stage id | Unchanged; choose the file again |
+| 503 `restore_busy` | Route semaphore, activity gate, or the writer before it swaps any file | Unchanged; may confirm again |
+| 500 `restore_rolled_back` | Writer: rollback finished and the stage is removed | Unchanged; choose the file again |
+
+Everything else is an unknown outcome: every 1xx, every 2xx whose body fails the contract, every 3xx, every other 4xx (404 without `restore_not_found`, 413, 429 and the rest), every other 5xx, any 503 other than `restore_busy`, an allowed status with any other code or a code on the wrong status, a body that is not the core's problem (other content type, cut off, unreadable, or a `status` that disagrees), and a network error or abort after the request left. `restart_required`, `outcome_unknown`, the gate's code-less admission 503 and a code-less `NoSpace` 503 are unknown too: `activate` answers a code-less 503 (`WriterFailure::Stopped`) both before it queues the restore and when the writer's reply is lost after queueing, so no code-less 503 proves anything. An unknown outcome shows `The answer was lost. Reload to see which installation is open.` with Reload as the only action, and the section never sends that restore again. The restore request sets `redirect: "error"`, so a 307 or 308 from a layer in front of the core is a network error and is never followed with a second POST. `restoreAnswer.test.ts` runs `restoreVerdict` over every status from 100 to 599, with and without each code and with and without the core's problem body, and asserts that only the rows above allow a retry.
+
+The other calls in the section are safe to repeat after an ambiguous answer:
+
+- **Create backup** replaces the one kept archive, and the core keeps a new archive only when it answers 200. The core's own problem (such as 503 `A backup is already running`) shows `The backup was not made` and keeps the shown backup. Any other failure (a redirect, a proxy page, a cut-off body, a lost answer) drops the shown backup and says to create one again. Creating again only makes another archive.
+- **Check backup** stages the file. A new stage replaces the earlier one and never touches the installation, so every failure says the installation is unchanged and Check backup may run again.
+- **Download** is a `HEAD` and a `GET`, both bound to the shown SHA-256. Neither changes anything, and the core refuses a digest that is no longer kept, so a retry never saves a different file.
+
+The restore's outcome lives for the page load (`web/apps/ui/src/settings/restoreOutcome.ts`), not in the Settings screen. Leaving Settings and coming back, or leaving while the restore runs, keeps a running, complete or lost restore with its Reload button, and keeps Create backup, Check backup and the file field off. Only a reload clears it.
 
 ## Source thumbnail cache
 
@@ -421,7 +453,7 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two r
 
 `POST /api/v2/installation/backup` calls `export_backup` with this build's version and answers the archive file name, `created_at`, app version, size in bytes, SHA-256 and warnings. The name is `print-partner-backup.tar.gz`. The router keeps that one archive. A later create drops the previous one, which removes its folder. Not enough free disk answers 503 `Not enough free disk space`, with `needed` and `available`. A restore in progress answers 503 `A restore is in progress`.
 
-`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
+`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The optional `sha256` query names the archive the client wants by the digest the create answered. When a later create, from any window or client, has replaced it, the route answers 409 `A newer backup replaced this one; create a backup again` and sends no bytes. `HEAD` answers the same status and headers with no body and does not hold the one-request slot, so a `GET` right after it is not refused as busy. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
 
 Tests: `pp-storage/src/restore/tests/export.rs` and `pp-core/tests/installation_backup_http.rs`.
 

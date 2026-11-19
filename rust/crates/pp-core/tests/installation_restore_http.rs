@@ -158,6 +158,7 @@ async fn one_restore_at_a_time(server: &Server, archive: &[u8]) {
     .expect("one stage was refused while the owner lock was held");
     assert_eq!(refused.0, 503, "{}", refused.1);
     assert_eq!(refused.1["detail"], "A restore is already running");
+    assert_eq!(refused.1["code"], "restore_busy");
     held.release();
     let staged = if first_refused {
         second.await

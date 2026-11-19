@@ -158,11 +158,16 @@ fn refusal_problem(refusal: &Refusal) -> Problem {
             )
             .with_problem_code(ProblemCode::RestoreNotFound);
         }
-        Refusal::Busy => (
-            ProblemType::Overloaded,
-            503,
-            "Storage work is still active; try again",
-        ),
+        Refusal::Busy => {
+            // Sent before activation changes anything, also by the writer
+            // when readers do not drain.
+            return Problem::new(
+                ProblemType::Overloaded,
+                503,
+                "Storage work is still active; try again",
+            )
+            .with_problem_code(ProblemCode::RestoreBusy);
+        }
     };
     Problem::new(kind, status, detail)
 }
@@ -190,6 +195,7 @@ impl ToProblem for RestoreFailure {
             }
             Self::Busy => {
                 Problem::new(ProblemType::Overloaded, 503, "A restore is already running")
+                    .with_problem_code(ProblemCode::RestoreBusy)
             }
             Self::Refused(refusal) => refusal_problem(refusal),
             Self::RolledBack => Problem::new(
@@ -418,7 +424,12 @@ mod tests {
             ),
             (
                 RestoreFailure::Busy,
-                (503, T::Overloaded, "A restore is already running", None),
+                (
+                    503,
+                    T::Overloaded,
+                    "A restore is already running",
+                    Some("restore_busy"),
+                ),
             ),
             (
                 Refusal::Unmarked.into(),
@@ -504,7 +515,7 @@ mod tests {
                     503,
                     T::Overloaded,
                     "Storage work is still active; try again",
-                    None,
+                    Some("restore_busy"),
                 ),
             ),
             (
@@ -533,5 +544,17 @@ mod tests {
         for (failure, expected) in cases {
             assert_problem(failure, expected).await;
         }
+    }
+
+    /// `activate` answers `WriterFailure::Stopped` both before it queues the
+    /// restore and when the writer's reply is lost after queueing. Only
+    /// `restore_busy` tells the UI the installation is unchanged, so this 503
+    /// must never carry it.
+    #[tokio::test]
+    async fn a_lost_writer_reply_is_not_marked_unchanged() {
+        let failure = RestoreFailure::from(RestoreError::Writer(WriterFailure::Stopped));
+        let (status, body) = answered(refused(&failure)).await;
+        assert_eq!(status, 503);
+        assert_eq!(body.get("code"), None, "{body}");
     }
 }

@@ -192,6 +192,38 @@ async fn assert_download(server: &Server, archive: &str, created: &Value, sha256
     assert_eq!(entry_bytes(&bytes, "repos/source-a/part.stl"), SOURCE);
 }
 
+/// A later create replaced the archive whose digest was `old`. Asking for `old`
+/// by `sha256` is refused with 409 on HEAD and GET; asking for the kept digest
+/// answers its size on HEAD, and the GET right after is not refused as busy.
+async fn assert_bound_to_digest(server: &Server, archive: &str, old: &str, kept: &Value) {
+    let stale = format!("{archive}?sha256={old}");
+    let (status, response) = server.exchange(Method::HEAD, &stale).await;
+    assert_eq!(status, 409);
+    assert!(response.headers().get("content-disposition").is_none());
+    let (status, refused) = server.json(Method::GET, &stale).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["type"], "urn:print-partner:problem:conflict");
+    assert_eq!(
+        refused["detail"],
+        "A newer backup replaced this one; create a backup again"
+    );
+    let current = format!("{archive}?sha256={}", kept["sha256"].as_str().unwrap());
+    let (status, response) = server.exchange(Method::HEAD, &current).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        response.headers()["content-length"],
+        kept["size_bytes"].as_u64().unwrap().to_string().as_str()
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
+    let (status, response) = server.exchange(Method::GET, &current).await;
+    assert_eq!(status, 200);
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(&bytes)),
+        kept["sha256"].as_str().unwrap()
+    );
+}
+
 #[tokio::test]
 async fn an_authenticated_client_creates_and_downloads_one_backup() {
     let server = start(Some("1")).await;
@@ -222,6 +254,7 @@ async fn an_authenticated_client_creates_and_downloads_one_backup() {
     assert_eq!(status, 200, "{again}");
     assert_ne!(again["sha256"], created["sha256"]);
     assert_eq!(export_dirs(&server.data).len(), 1);
+    assert_bound_to_digest(&server, archive, &sha256, &again).await;
     let (status, response) = server.exchange(Method::GET, archive).await;
     assert_eq!(status, 200);
     let bytes = response.bytes().await.unwrap();

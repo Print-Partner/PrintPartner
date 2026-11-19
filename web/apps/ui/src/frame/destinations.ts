@@ -43,7 +43,7 @@ export const DESTINATIONS: readonly Destination[] = [
     holds: "Library Sources, files, thumbnails, import, sync and revisions",
   },
   {
-    help: "Check Modules and their availability; unfinished settings say Not available yet",
+    help: "Check Modules and their availability, and make or restore a whole-installation backup",
     label: "Settings",
     path: "/settings",
     key: ",",

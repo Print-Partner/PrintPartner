@@ -13,6 +13,14 @@ import sys
 WORKAROUND_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
                          ".rs", ".py", ".sh", ".yml", ".yaml", ".css", ".html")
 
+# The crates that hold the Windows tests `rust (windows tests)` runs (GRE-1811), the
+# pp-os and pp-net layers under them, and their build inputs.
+WINDOWS_TEST_CRATES = tuple(f"rust/crates/{crate}/" for crate in
+                            ("pp-os", "pp-net", "pp-compat", "pp-gateway", "pp-server"))
+WINDOWS_TEST_FILES = {"rust/Cargo.toml", "rust/Cargo.lock", "rust/.config/nextest.toml",
+                      "rust-toolchain.toml", "rust/scripts/build-desktop-manifest.py",
+                      ".github/workflows/rust-cross-os.yml"}
+
 
 def relevant(path, kind):
     # A filter change must test its own consumers.
@@ -20,6 +28,9 @@ def relevant(path, kind):
                 "scripts/ci-affected-nextest-filter.py",
                 "scripts/test_ci_affected_nextest_filter.py"}:
         return True
+    if kind == "windows-tests":
+        return (path in WINDOWS_TEST_FILES
+                or (path.startswith(WINDOWS_TEST_CRATES) and not path.endswith(".md")))
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
@@ -88,14 +99,15 @@ def select(event, base, head, kind, labels=()):
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "actions", "windows", "macos", "ui", "web"}:
-        raise SystemExit("Expected rust, actions, windows, macos, ui or web")
+    if kind not in {"rust", "actions", "windows", "windows-tests", "macos", "ui", "web"}:
+        raise SystemExit("Expected rust, actions, windows, windows-tests, macos, ui or web")
     labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
                        os.environ.get("HEAD_SHA"), kind, labels)).lower()
     message = f"{kind} inputs changed: {value}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"{kind if kind in {'windows', 'macos'} else 'relevant'}={value}\n")
+        key = {"windows": "windows", "macos": "macos", "windows-tests": "windows_tests"}.get(kind, "relevant")
+        output.write(f"{key}={value}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)

@@ -106,6 +106,48 @@ class CiPathFilterTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(ci_filter.relevant(path, "rust"))
 
+    def test_windows_tests_inputs(self):
+        for path in ["rust/crates/pp-compat/src/ticket_t_2.rs", "rust/crates/pp-os/src/windows.rs",
+                     "rust/crates/pp-net/src/http1.rs", "rust/crates/pp-gateway/src/slice0_mount.rs",
+                     "rust/crates/pp-server/src/health.rs", "rust/Cargo.lock", "rust/Cargo.toml",
+                     "rust/.config/nextest.toml", "rust-toolchain.toml",
+                     "rust/scripts/build-desktop-manifest.py", ".github/workflows/rust-cross-os.yml",
+                     "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"]:
+            self.assertTrue(ci_filter.relevant(path, "windows-tests"), path)
+        for path in ["rust/crates/pp-compat/README.md", "rust/crates/pp-storage/src/lib.rs",
+                     "rust/crates/pp-core/src/lib.rs", "rust/crates/pp-osx/src/lib.rs",
+                     "web/apps/ui/src/App.tsx", "docs/development/ci.md",
+                     ".github/workflows/web-ci.yml"]:
+            self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
+        self.assertFalse(ci_filter.select("merge_group", "", "", "windows-tests"))
+        self.assertTrue(ci_filter.select("workflow_dispatch", "", "", "windows-tests"))
+
+    def test_windows_tests_writes_its_own_output_from_a_real_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
+
+            git("init", "-q")
+            git("config", "user.email", "proof@example.com")
+            git("config", "user.name", "Proof")
+            heads = []
+            for path in ("README.md", "rust/crates/pp-storage/src/lib.rs",
+                         "rust/crates/pp-server/src/health.rs"):
+                Path(directory, path).parent.mkdir(parents=True, exist_ok=True)
+                Path(directory, path).write_text("proof\n")
+                git("add", "--", path)
+                git("commit", "-qm", path)
+                heads.append(git("rev-parse", "HEAD"))
+            for base, head, expected in ((heads[0], heads[1], "false"), (heads[1], heads[2], "true")):
+                output = Path(directory, "output")
+                output.write_text("")
+                subprocess.run(["python3", str(SCRIPT), "windows-tests"], cwd=directory, check=True,
+                               capture_output=True,
+                               env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
+                                    "HEAD_SHA": head, "GITHUB_OUTPUT": str(output),
+                                    "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
+                self.assertEqual(output.read_text(), f"windows_tests={expected}\n")
+
     def test_linux_setup_selects_rust(self):
         self.assertTrue(ci_filter.relevant("scripts/setup-ci-linux.sh", "rust"))
 

@@ -10,7 +10,7 @@ takes a name from `vendors` (the `vendors` list in `scripts/merge-classes.json`)
 takes one of those names, or `cursor-auto` or `unknown`. `obstacles=` comes last:
 
 ```text
-pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|deepseek|openai|xai|zhipu> score=<integer> author=<anthropic|deepseek|openai|xai|zhipu|cursor-auto|unknown> obstacles=<none|refusal,guard,approval-stall>
+pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|cursor|deepseek|openai|xai|zhipu|google> score=<integer> author=<anthropic|cursor|deepseek|openai|xai|zhipu|google|cursor-auto|unknown> obstacles=<none|refusal,guard,approval-stall>
 ```
 
 `obstacles=` is the scorer's disclosure of what it hit while scoring (Chad, 2026-11-17): `refusal`
@@ -38,7 +38,8 @@ vendor. Since 2026-11-12 (owner decision) they are `claude-opus-5-5` (Anthropic)
 (xAI), `glm-5.3-flash-free` (Zhipu) and `deepseek-v4.1-flash-free` (DeepSeek). OpenCode runs the
 last two as `opencode/glm-5.3-flash-free` and `opencode/deepseek-v4.1-flash-free`, variant max.
 Since 2026-11-18 (owner decision) `gpt-6.2-sol` (OpenAI) and `composer-2.5` (Cursor) are also
-sensitive-merge seats. `gpt-6.1-sol` is not.
+sensitive-merge seats. Since 2026-11-19 (Chad) `gemini-4-neon-high` (Google; Gemini 4 Neon through the
+Antigravity CLI on Google AI Pro) is too. `gpt-6.1-sol` is not.
 A sensitive PR needs two allowed seats from two different vendors, neither of them the PR author's
 vendor (Anthropic for Claude lanes, OpenAI for Sol lanes), each scoring at least 9 on the exact
 head. Repeated seats count once. Other seats do not qualify.

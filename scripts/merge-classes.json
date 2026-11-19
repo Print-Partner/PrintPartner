@@ -68,14 +68,15 @@
   "scorer_authors": [
     "poitee"
   ],
-  "vendors": ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu"],
+  "vendors": ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu", "google"],
   "scorer_seats": {
     "claude-opus-5-5": "anthropic",
     "grok-4.7": "xai",
     "glm-5.3-flash-free": "zhipu",
     "deepseek-v4.1-flash-free": "deepseek",
     "gpt-6.2-sol": "openai",
-    "composer-2.5": "cursor"
+    "composer-2.5": "cursor",
+    "gemini-4-neon-high": "google"
   },
   "pp_score_seats": {
     "gpt-6.1-sol": "openai",

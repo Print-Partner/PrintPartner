@@ -106,92 +106,49 @@ class CiPathFilterTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(ci_filter.relevant(path, "rust"))
 
-    def test_windows_tests_inputs(self):
+    def test_windows_tests_allow_list_over_selects(self):
         for path in [
-                # The three paths the GRE-1811 review reproduced as skipped.
-                "rust/scripts/precompress-spa.py", "web/package-lock.json",
-                "web/apps/server/package.json",
-                # Tested crates, all files but Markdown.
-                "rust/crates/pp-compat/src/ticket_t_2.rs", "rust/crates/pp-gateway/src/slice0_mount.rs",
-                "rust/crates/pp-server/src/health.rs", "rust/crates/pp-gateway/tests/a.rs",
-                # Libraries below them, derived from Cargo.toml path dependencies.
-                "rust/crates/pp-os/src/windows.rs", "rust/crates/pp-net/src/http1.rs",
-                "rust/crates/pp-core/src/lib.rs", "rust/crates/pp-storage/src/lib.rs",
-                "rust/crates/pp-api-types/build.rs", "rust/crates/pp-api/Cargo.toml",
-                # Outside files the compiled sources include, derived by the source scan.
-                "fixtures/drivers/moonraker/moonraker-success.json",
-                "rust/crates/pp-core/tests/support/release.rs",
-                "rust/rules/no-writer-family-literal.yml",
-                "web/apps/server/src/data/legal/LICENSE-SUMMARY.md",
-                # Toolchain, workspace, runner, workflow and selector.
-                "rust/Cargo.lock", "rust/Cargo.toml", "rust/.config/nextest.toml", "rust-toolchain.toml",
-                ".github/workflows/rust-cross-os.yml", "scripts/ci-path-filter.py",
-                "scripts/test_ci_path_filter.py",
-                # Manifest script and its import.
-                "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
-                # npm ci and the bundle build.
-                "web/package.json", "web/tsconfig.base.json", "web/scripts/atomic-package-build.mjs",
-                "web/apps/ui/package.json", "web/packages/rust-client/package.json",
-                "web/apps/web/src/App.tsx", "web/apps/server/src/app.ts",
-                "web/packages/contracts/src/a.ts", "web/packages/domain/src/a.ts"]:
+                # Round 1: the three inputs the first selector missed.
+                "rust/scripts/precompress-spa.py", "web/package-lock.json", "web/apps/server/package.json",
+                # Round 2: Markdown and assets the bundle manifest hashes.
+                "web/apps/web/AGENTS.md", "web/apps/server/AGENTS.md", "web/apps/server/README.md",
+                "web/apps/server/Example-Probe/notes.md", "web/packages/contracts/README.md",
+                "web/packages/domain/README.md", "web/apps/web/public/new.md",
+                # Round 2: workspace, cargo, toolchain, npm and git files.
+                "rust/crates/pp-desktop/Cargo.toml", ".gitattributes", ".gitignore", "web/.gitignore",
+                "rust/.gitattributes", "web/.npmrc", ".npmrc", ".cargo/config.toml", "rust/.cargo/config.toml",
+                "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", "rust/rust-toolchain",
+                "package.json", "package-lock.json",
+                # Fixtures are covered whole, so a fixture no Windows test reads still selects.
+                "fixtures/parity/yaml-flow-properties/node.json",
+                # Rust, web and fixture Markdown counts.
+                "rust/crates/pp-compat/README.md", "fixtures/parity/README.md",
+                # Code the job builds and tests, and the job's own files.
+                "rust/crates/pp-server/src/health.rs", "rust/crates/pp-storage/tests/a.rs",
+                "web/apps/web/src/App.tsx", ".github/workflows/rust-cross-os.yml", ".github/zizmor.yml",
+                "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py",
+                # npm ci checks these two manifests against the lockfile.
+                "web/apps/ui/package.json", "web/packages/rust-client/package.json"]:
             self.assertTrue(ci_filter.relevant(path, "windows-tests"), path)
-        for path in ["docs/development/ci.md", "README.md", "docs/node-import.md",
-                     "rust/crates/pp-compat/README.md", "web/apps/web/README.md",
-                     "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
-                     "rust/crates/pp-desktop/src/main.rs", "rust/crates/pp-storage/tests/a.rs",
-                     "rust/crates/pp-osx/src/lib.rs", "fixtures/parity/auth-login/node.json",
-                     "rust/scripts/stage-desktop.py", ".github/workflows/web-ci.yml"]:
+        for path in ["docs/development/ci.md", "docs/adr/0008-replace-the-old-screens.md", "README.md",
+                     "AGENTS.md", "GLOSSARY.md", "web/apps/ui/src/App.tsx", "web/apps/ui/README.md",
+                     "web/packages/rust-client/src/client.ts", ".github/workflows/web-ci.yml",
+                     "scripts/local-ci.py", "slicer-sidecar/main.py", "Dockerfile"]:
             self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
-        self.assertFalse(ci_filter.select("merge_group", "", "", "windows-tests"))
+
+    def test_windows_tests_fails_towards_running(self):
         self.assertTrue(ci_filter.select("workflow_dispatch", "", "", "windows-tests"))
-
-    def test_windows_test_inputs_follow_what_nextest_compiles(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-
-            def write(path, text=""):
-                Path(root, path).parent.mkdir(parents=True, exist_ok=True)
-                Path(root, path).write_text(text)
-
-            write("rust/crates/top/Cargo.toml", '[dependencies]\nlib = { path = "../lib" }\n'
-                  '[dev-dependencies]\nhelper = { path = "../helper" }\n'
-                  "[target.'cfg(windows)'.dependencies]\nwin = { path = \"../win\" }\n")
-            write("rust/crates/top/tests/a.rs", '#[path = "../../lib/tests/support.rs"] mod s;\n')
-            write("rust/crates/lib/Cargo.toml", '[dev-dependencies]\nunused = { path = "../unused" }\n')
-            write("rust/crates/lib/src/lib.rs",
-                  'const A: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../fixtures/a.json"));\n')
-            write("rust/crates/lib/src/tests.rs", 'const B: &str = include_str!("../../../../fixtures/b.json");\n')
-            write("rust/crates/lib/src/x/tests/c.rs", 'const C: &str = include_str!("../../../../../fixtures/c.json");\n')
-            for crate in ("helper", "win", "unused"):
-                write(f"rust/crates/{crate}/Cargo.toml")
-            prefixes, files = ci_filter.windows_test_inputs(root, ("top",))
-            self.assertEqual(set(prefixes), {
-                "rust/crates/top/", "rust/crates/lib/src/", "rust/crates/lib/build.rs",
-                "rust/crates/lib/Cargo.toml", "rust/crates/helper/src/", "rust/crates/helper/build.rs",
-                "rust/crates/helper/Cargo.toml", "rust/crates/win/src/", "rust/crates/win/build.rs",
-                "rust/crates/win/Cargo.toml"})
-            # The library's test modules and its dev-dependencies are not compiled.
-            self.assertEqual(files, {"fixtures/a.json", "rust/crates/lib/tests/support.rs"})
+        self.assertTrue(ci_filter.select("pull_request", "", "", "windows-tests"))
+        self.assertTrue(ci_filter.select("pull_request", "not-a-sha", "1" * 40, "windows-tests"))
+        self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, "windows-tests"))
+        self.assertFalse(ci_filter.select("merge_group", "", "", "windows-tests"))
 
     def test_windows_tests_writes_its_own_output_from_a_real_diff(self):
         with tempfile.TemporaryDirectory() as directory:
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
 
-            git("init", "-q")
-            git("config", "user.email", "proof@example.com")
-            git("config", "user.name", "Proof")
-            heads = []
-            for path in ("README.md", "docs/development/ci.md", "web/apps/ui/src/App.tsx",
-                         "rust/scripts/precompress-spa.py", "web/package-lock.json",
-                         "web/apps/server/package.json", "rust/crates/pp-server/src/health.rs"):
-                Path(directory, path).parent.mkdir(parents=True, exist_ok=True)
-                Path(directory, path).write_text("proof\n")
-                git("add", "--", path)
-                git("commit", "-qm", path)
-                heads.append(git("rev-parse", "HEAD"))
-            expected = ["false", "false", "true", "true", "true", "true"]
-            for base, head, want in zip(heads, heads[1:], expected):
+            def select(base, head):
                 output = Path(directory, "output")
                 output.write_text("")
                 subprocess.run(["python3", str(SCRIPT), "windows-tests"], cwd=directory, check=True,
@@ -199,7 +156,33 @@ class CiPathFilterTests(unittest.TestCase):
                                env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
                                     "HEAD_SHA": head, "GITHUB_OUTPUT": str(output),
                                     "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
-                self.assertEqual(output.read_text(), f"windows_tests={want}\n", head)
+                return output.read_text()
+
+            git("init", "-q")
+            git("config", "user.email", "proof@example.com")
+            git("config", "user.name", "Proof")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            for paths, expected in (
+                    (["docs/development/ci.md"], "false"),
+                    (["README.md"], "false"),
+                    (["web/apps/ui/src/App.tsx"], "false"),
+                    (["web/packages/rust-client/src/client.ts"], "false"),
+                    (["rust/scripts/precompress-spa.py"], "true"),
+                    (["web/package-lock.json"], "true"),
+                    (["web/apps/server/package.json"], "true"),
+                    (["web/apps/web/AGENTS.md"], "true"),
+                    (["docs/development/ci.md", "web/apps/ui/src/App.tsx", "rust/Cargo.lock"], "true")):
+                with self.subTest(paths=paths):
+                    git("checkout", "-q", "--detach", base)
+                    for path in paths:
+                        Path(directory, path).parent.mkdir(parents=True, exist_ok=True)
+                        Path(directory, path).write_text("proof\n")
+                        git("add", "--", path)
+                    git("commit", "-qm", "change")
+                    self.assertEqual(select(base, git("rev-parse", "HEAD")), f"windows_tests={expected}\n")
+            # A diff with no paths, as from a head equal to its base, runs the job.
+            self.assertEqual(select(base, base), "windows_tests=true\n")
 
     def test_linux_setup_selects_rust(self):
         self.assertTrue(ci_filter.relevant("scripts/setup-ci-linux.sh", "rust"))

@@ -10,15 +10,20 @@
 //! upgraded connection belongs to its upgrade handler and closes as before.
 
 use hyper::{
+    Method, Request, Response, StatusCode,
     body::{Body, Incoming},
     server::conn::http1::Builder,
-    service::HttpService,
+    service::{Service, service_fn},
 };
 use hyper_util::rt::TokioIo;
 use std::{
     error::Error,
     io,
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -30,17 +35,35 @@ use tokio::{
 /// How long a closing connection keeps reading what the client still sends.
 pub const LINGER: Duration = Duration::from_secs(2);
 
-/// Serve `io` with upgrades until hyper is done with it, then linger unless an
-/// upgrade took the connection. Dropping the future closes the connection at
+/// Serve `io` with upgrades until hyper is done with it, then linger unless
+/// the connection was upgraded. Dropping the future closes the connection at
 /// once, as before.
-pub async fn serve<I, S>(builder: &Builder, io: I, service: S)
+pub async fn serve<I, S, B>(builder: &Builder, io: I, service: S)
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    S: HttpService<Incoming>,
+    S: Service<Request<Incoming>, Response = Response<B>>,
     S::Error: Into<Box<dyn Error + Send + Sync>>,
-    S::ResBody: 'static,
-    <S::ResBody as Body>::Error: Into<Box<dyn Error + Send + Sync>>,
+    B: Body + 'static,
+    B::Error: Into<Box<dyn Error + Send + Sync>>,
 {
+    // hyper upgrades a server connection on a 101, or on a 2xx to CONNECT. An
+    // upgrade handler that already dropped its socket hands the transport back
+    // too, so the response decides, not whether the transport came back.
+    let upgraded = Arc::new(AtomicBool::new(false));
+    let marks = upgraded.clone();
+    let service = service_fn(move |request: Request<Incoming>| {
+        let connect = request.method() == Method::CONNECT;
+        let response = service.call(request);
+        let marks = marks.clone();
+        async move {
+            let response = response.await?;
+            let status = response.status();
+            if status == StatusCode::SWITCHING_PROTOCOLS || (connect && status.is_success()) {
+                marks.store(true, Ordering::Relaxed);
+            }
+            Ok::<_, S::Error>(response)
+        }
+    });
     let (back, mut returned) = oneshot::channel();
     let io = Returning {
         io: Some(io),
@@ -52,7 +75,9 @@ where
         .await;
     // The connection future is gone, so the transport is back here unless an
     // upgrade handler still owns it.
-    if let Ok(mut io) = returned.try_recv() {
+    if let Ok(mut io) = returned.try_recv()
+        && !upgraded.load(Ordering::Relaxed)
+    {
         let _ = tokio::time::timeout(LINGER, async {
             let _ = io.shutdown().await;
             let mut discarded = [0; 8192];

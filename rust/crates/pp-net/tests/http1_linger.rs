@@ -96,20 +96,42 @@ async fn http1_linger_closes_a_client_that_keeps_sending() {
     served.await.unwrap();
 }
 
-#[tokio::test]
-async fn http1_upgrade_keeps_its_connection_and_skips_the_linger() {
+/// What the upgrade handler does with the connection after the 101.
+#[derive(Clone, Copy)]
+enum Handler {
+    /// Echoes four bytes, after `serve` has returned.
+    Echo,
+    /// Takes the upgraded socket and drops it at once.
+    Drop,
+    /// Never calls `hyper::upgrade::on`, so hyper drops the socket itself.
+    Abandon,
+}
+
+/// Accepts one connection and answers it with a 101. Resolves when `serve`
+/// returns.
+async fn upgrading_server(handler: Handler) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let served = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let service = service_fn(|mut request: Request<Incoming>| async move {
-            tokio::spawn(async move {
-                let upgraded = hyper::upgrade::on(&mut request).await.unwrap();
-                let mut upgraded = TokioIo::new(upgraded);
-                let mut word = [0; 4];
-                upgraded.read_exact(&mut word).await.unwrap();
-                upgraded.write_all(&word).await.unwrap();
-            });
+        let service = service_fn(move |mut request: Request<Incoming>| async move {
+            match handler {
+                Handler::Echo => {
+                    tokio::spawn(async move {
+                        let upgraded = hyper::upgrade::on(&mut request).await.unwrap();
+                        let mut upgraded = TokioIo::new(upgraded);
+                        let mut word = [0; 4];
+                        upgraded.read_exact(&mut word).await.unwrap();
+                        upgraded.write_all(&word).await.unwrap();
+                    });
+                }
+                Handler::Drop => {
+                    tokio::spawn(async move {
+                        drop(hyper::upgrade::on(&mut request).await.unwrap());
+                    });
+                }
+                Handler::Abandon => drop(request),
+            }
             let mut response = Response::new(Empty::<Bytes>::new());
             *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
             response
@@ -122,7 +144,13 @@ async fn http1_upgrade_keeps_its_connection_and_skips_the_linger() {
         });
         serve(&Builder::new(), stream, service).await;
     });
-    let mut client = TcpStream::connect(&address).await.unwrap();
+    (address, served)
+}
+
+/// Sends an upgrade request and reads the 101 head. The client's write side
+/// stays open, so a lingering server would wait out the full `LINGER`.
+async fn upgraded_client(address: &str) -> TcpStream {
+    let mut client = TcpStream::connect(address).await.unwrap();
     client
         .write_all(
             format!(
@@ -139,6 +167,13 @@ async fn http1_upgrade_keeps_its_connection_and_skips_the_linger() {
         head.push(byte[0]);
     }
     assert!(head.starts_with(b"HTTP/1.1 101 "));
+    client
+}
+
+#[tokio::test]
+async fn http1_upgrade_keeps_its_connection_and_skips_the_linger() {
+    let (address, served) = upgrading_server(Handler::Echo).await;
+    let mut client = upgraded_client(&address).await;
     timeout(LINGER / 4, served)
         .await
         .expect("serve returns without lingering after an upgrade")
@@ -147,4 +182,23 @@ async fn http1_upgrade_keeps_its_connection_and_skips_the_linger() {
     let mut echoed = [0; 4];
     client.read_exact(&mut echoed).await.unwrap();
     assert_eq!(&echoed, b"ping");
+}
+
+/// The handler's drop can hand the transport back before `serve` checks for
+/// it. The 101 still marks the connection upgraded, so it closes at once.
+#[tokio::test]
+async fn http1_upgrade_closed_by_its_handler_skips_the_linger() {
+    for handler in [Handler::Drop, Handler::Abandon] {
+        let (address, served) = upgrading_server(handler).await;
+        let mut client = upgraded_client(&address).await;
+        timeout(LINGER / 4, served)
+            .await
+            .expect("serve returns without lingering after an upgrade")
+            .unwrap();
+        let mut rest = Vec::new();
+        timeout(LINGER / 4, client.read_to_end(&mut rest))
+            .await
+            .expect("the upgraded socket closes at once")
+            .unwrap();
+    }
 }

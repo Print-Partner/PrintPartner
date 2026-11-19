@@ -169,7 +169,7 @@ pub(super) fn add(
             new.plan,
             new.matched,
             new.wait_for_idle,
-            new.start,
+            new.start && !super::super::upload_only(tx, tenant)?,
             new.units,
             Some(js_trim(host_name)).filter(|name| !name.is_empty()),
             now,

@@ -276,9 +276,15 @@ class CodexSeatTests(unittest.TestCase):
         import json
 
         data = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
+        # gpt-6.1-sol stays on the status map only. The 7:38 PM ET seats are on both maps.
+        added = {"gemini-3.8-flash": "google", "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
+                 "longcat-2.5-free": "meituan", "hy4-flash-free": "tencent"}
         self.assertNotIn("gpt-6.1-sol", data["scorer_seats"])
-        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
-                                                  "gpt-6.2-astra": "openai"})
+        for seat, vendor in added.items():
+            self.assertEqual(data["scorer_seats"][seat], vendor)
+            self.assertEqual(data["pp_score_seats"][seat], vendor)
+        self.assertEqual(data["pp_score_seats"], {
+            "gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai", **added, "gpt-6.2-astra": "openai"})
         # Owner decision 2026-11-18: gpt-6.2-sol and gpt-6.2-astra join the council scorer pool.
         for seat in ("gpt-6.2-sol", "gpt-6.2-astra"):
             self.assertEqual(data["scorer_seats"][seat], "openai")
@@ -290,6 +296,19 @@ class CodexSeatTests(unittest.TestCase):
         self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.2-astra"))
         self.assertEqual(pps.trusted_records([comment(line.replace("vendor=openai", "vendor=cursor"))],
                                              self.trust), [])
+
+    def test_gemini_flash_and_qwen_flash_count_on_an_xai_pr(self):
+        for seat, vendor in (("gemini-3.8-flash", "google"), ("qwen38-flash", "qwen")):
+            with self.subTest(seat=seat):
+                body = (f"pp-score head={SHA} seat={seat} vendor={vendor} "
+                        "score=9 author=xai obstacles=none")
+                (plan,) = pps.plan_statuses(pps.trusted_records([comment(body)], self.trust))
+                self.assertEqual((plan.state, plan.description), ("success", f"9/10 from {seat}"))
+                wrong = body.replace(f"vendor={vendor}", "vendor=cursor")
+                self.assertEqual(pps.trusted_records([comment(wrong)], self.trust), [])
+                own = body.replace("author=xai", f"author={vendor}")
+                (plan,) = pps.plan_statuses(pps.trusted_records([comment(own)], self.trust))
+                self.assertEqual(plan.state, "failure")
 
     def test_sol_6_2_seat_scores_a_claude_pr(self):
         comments = [comment(

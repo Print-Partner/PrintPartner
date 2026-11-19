@@ -140,18 +140,29 @@ class CoverageTests(unittest.TestCase):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors",
                                                    "pp_score_seats"})
-        self.assertEqual(data["vendors"], ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu"])
+        self.assertEqual(data["vendors"], ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu",
+                                          "google", "qwen", "meituan", "tencent"])
         self.assertEqual(data["scorer_authors"], ["poitee"])
         # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max.
         # Owner decision 2026-11-18: gpt-6.2-sol and composer-2.5 join the council scorer pool.
+        # Owner decision 2026-11-18 7:38 PM ET: Gemini Flash, Qwen, longcat and hy4 count too.
         # Owner decision 2026-11-18 (thin-relay plan): gpt-6.2-astra joins it too.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek",
                                                 "gpt-6.2-sol": "openai", "composer-2.5": "cursor",
+                                                "gemini-3.8-flash": "google",
+                                                "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
+                                                "longcat-2.5-free": "meituan",
+                                                "hy4-flash-free": "tencent",
                                                 "gpt-6.2-astra": "openai"})
         # gpt-6.1-sol counts for the pp/score status only, not for the sensitive merge guard.
+        # The 7:38 PM ET seats are in both maps.
         self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
+                                                  "gemini-3.8-flash": "google",
+                                                  "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
+                                                  "longcat-2.5-free": "meituan",
+                                                  "hy4-flash-free": "tencent",
                                                   "gpt-6.2-astra": "openai"})
 
 
@@ -208,6 +219,18 @@ class ScoreTests(unittest.TestCase):
         self.assertFalse(self.check([sol, wrong], author="anthropic"))
         self.assertFalse(self.check([sol, composer, wrong], author="anthropic"))
 
+    def test_gemini_and_qwen_pass_on_an_xai_pr(self):
+        # Chad, 2026-11-18 7:38 PM ET. Seats and vendors come from merge-classes.json.
+        gemini = self.line("gemini-3.8-flash", vendor="google", author="xai", score=9)
+        qwen = self.line("qwen38-flash", vendor="qwen", author="xai", score=9)
+        self.assertTrue(self.check([gemini, qwen], author="xai"))
+        # The seat is Google. A record that names Cursor does not count.
+        named_cursor = self.line("gemini-3.8-flash", vendor="cursor", author="xai")
+        self.assertFalse(self.check([named_cursor, qwen], author="xai"))
+        pair = [self.line("qwen38-gufo", vendor="qwen", author="xai", score=9),
+                self.line("longcat-2.5-free", vendor="meituan", author="xai", score=9)]
+        self.assertTrue(self.check(pair, author="xai"))
+
     def test_sol_seat_on_a_sol_pr_refused(self):
         self.assertFalse(self.check([self.line(), self.line("gpt-6.1-sol", vendor="openai")]))
         # Even when Sol is an allowed seat, its record on an OpenAI-authored PR refuses.
@@ -228,9 +251,10 @@ class ScoreTests(unittest.TestCase):
                                     self.grok(author="anthropic")], author="anthropic", allowed=allowed))
 
     def test_new_vendor_is_data_only(self):
-        allowed = {**self.allowed, "gemini-9-pro": "google"}
-        records = [self.line(), self.line("gemini-9-pro", vendor="google")]
-        self.assertTrue(self.check(records, allowed=allowed, vendors=self.vendors + ["google"]))
+        # google is a listed vendor as of 2026-11-18. This proof uses a name that is still absent.
+        allowed = {**self.allowed, "gemini-9-pro": "mistral"}
+        records = [self.line(), self.line("gemini-9-pro", vendor="mistral")]
+        self.assertTrue(self.check(records, allowed=allowed, vendors=self.vendors + ["mistral"]))
         # Without the vendor in the data, the record does not parse and refuses.
         self.assertFalse(self.check(records, allowed=allowed))
 

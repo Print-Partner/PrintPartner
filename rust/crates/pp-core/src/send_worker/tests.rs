@@ -952,3 +952,5 @@ async fn run_next_never_claims_a_source_import() {
         .unwrap();
     assert_eq!(state, "queued");
 }
+
+mod upload_only;

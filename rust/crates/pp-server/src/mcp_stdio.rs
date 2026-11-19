@@ -20,14 +20,17 @@ use rmcp::{
         streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
-use std::{net::IpAddr, time::Duration};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 pub(crate) const USAGE: &str = "Usage: pp-server mcp-stdio --url <url>
 
 Serves MCP on stdin and stdout and forwards each request to the Print Partner
 core already running at <url>, for example http://127.0.0.1:8080/api/v1/mcp.
 A URL without a path uses /api/v1/mcp. Plain http is allowed only to a
-loopback address; use https for any other host.
+loopback address. The name localhost is connected to 127.0.0.1 and ::1
+only, never to another address from the resolver. Use https for any
+other host.
 
 The API key comes from the PRINT_PARTNER_API_KEY environment variable, never
 from the command line. With no core answering, or a key the core refuses, it
@@ -105,20 +108,37 @@ pub(crate) fn api_key(value: Option<std::ffi::OsString>) -> Result<String> {
     Ok(key)
 }
 
+/// The HTTP client for one core URL.
+///
+/// Redirects are off: `core_url` checked only this URL, and a redirect would
+/// carry the body and session header to another origin. Plain http goes
+/// direct, because an inherited proxy would take the key off the machine in
+/// the clear. https may still use a proxy: it tunnels. The name `localhost`
+/// is pinned to loopback; the system resolver is not asked, and the request
+/// still sends this URL's Host.
+fn http_client(url: &Url) -> Result<reqwest::Client> {
+    let mut http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if url.scheme() == "http" {
+        http = http.no_proxy();
+        if url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
+        {
+            http = http.resolve_to_addrs(
+                "localhost",
+                &[
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                    SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+                ],
+            );
+        }
+    }
+    http.build().context("Build the HTTP client")
+}
+
 /// Connects to the core, then serves stdio until the client closes stdin.
 pub(crate) async fn run(url: Url, key: String) -> Result<()> {
-    // `core_url` checks only this URL, so a redirect, which would carry the
-    // request body and session header to any other origin, is never followed.
-    let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-    // `core_url` allows plain http only to loopback. An inherited HTTP proxy
-    // would carry that request, key included, off the machine in the clear,
-    // so loopback goes direct. https may still use a proxy: it tunnels.
-    let http = match url.scheme() {
-        "http" => http.no_proxy(),
-        _ => http,
-    }
-    .build()
-    .context("Build the HTTP client")?;
+    let http = http_client(&url)?;
     // One session per process: a session the core forgot (a restart) is an
     // error, not a silent new session without the pending proposals.
     let config = StreamableHttpClientTransportConfig::with_uri(url.as_str())

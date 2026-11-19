@@ -251,6 +251,121 @@ fn redirecting_listener(location: String) -> u16 {
     port
 }
 
+/// Binds `address` (host:port, port 0 allowed), reads one request from each
+/// connection, records it, and answers 400 so the bridge does not sit out
+/// the handshake deadline.
+fn answering_listener(address: &str) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    let listener = std::net::TcpListener::bind(address).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = received.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let sink = sink.clone();
+            std::thread::spawn(move || {
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match std::io::Read::read(&mut stream, &mut buffer) {
+                        Ok(read @ 1..) => request.extend_from_slice(&buffer[..read]),
+                        _ => break,
+                    }
+                    if request.len() > 65_536 {
+                        break;
+                    }
+                }
+                sink.lock().unwrap().extend_from_slice(&request);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            });
+        }
+    });
+    (port, received)
+}
+
+fn dns_interposer() -> String {
+    static COMPILED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    COMPILED
+        .get_or_init(|| {
+            let library =
+                std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("libmcp_stdio_dns.so");
+            let source =
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/mcp_stdio_dns.c");
+            let status = std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-o"])
+                .arg(&library)
+                .arg(&source)
+                .status()
+                .expect("cc compiles the DNS interposer");
+            assert!(status.success(), "cc failed to build {source:?}");
+            library.into_os_string().into_string().unwrap()
+        })
+        .clone()
+}
+
+/// `localhost` for plain http is pinned to loopback. A resolver that answers
+/// with a different address must receive nothing, and the request that does
+/// go out keeps the URL's Host. Fails on 4854265c9: that head dials 127.0.0.2.
+#[cfg(target_os = "linux")]
+#[test]
+fn mcp_stdio_pins_localhost_and_ignores_the_resolver() {
+    let library = dns_interposer();
+    let (port, pinned) = answering_listener("127.0.0.1:0");
+    let (_, diverted) = answering_listener(&format!("127.0.0.2:{port}"));
+    let url = format!("http://localhost:{port}/mcp");
+    assert_refused_with(
+        &url,
+        Some(UNKNOWN_KEY),
+        &[
+            ("LD_PRELOAD", library.as_str()),
+            ("PP_MCP_STDIO_DNS", "offbox"),
+        ],
+        "No Print Partner core accepted",
+    );
+    let diverted = diverted.lock().unwrap();
+    assert!(
+        diverted.is_empty(),
+        "the resolver's address got {}",
+        String::from_utf8_lossy(&diverted)
+    );
+    let pinned = String::from_utf8_lossy(&pinned.lock().unwrap()).to_ascii_lowercase();
+    assert!(
+        pinned.contains("host: localhost"),
+        "loopback missed the URL host: {pinned}"
+    );
+    assert!(
+        pinned.contains(&UNKNOWN_KEY.to_ascii_lowercase()),
+        "loopback missed the key: {pinned}"
+    );
+}
+
+/// Startup failure must print the refusal and exit while a name lookup is
+/// still running. The interposer holds `slow.test` for 20s. Fails on
+/// 4854265c9: dropping the runtime waits for that lookup, so the exit lands
+/// after the 10s handshake deadline.
+#[cfg(target_os = "linux")]
+#[test]
+fn mcp_stdio_exits_on_startup_failure_while_a_lookup_is_still_running() {
+    let library = dns_interposer();
+    let started = Instant::now();
+    assert_refused_with(
+        "https://slow.test/mcp",
+        Some(UNKNOWN_KEY),
+        &[
+            ("LD_PRELOAD", library.as_str()),
+            ("PP_MCP_STDIO_DNS", "slow"),
+        ],
+        "no answer within 10 seconds",
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "startup failure took {elapsed:?}; a name lookup held the exit past the deadline"
+    );
+}
+
 #[test]
 fn mcp_stdio_never_follows_a_redirect_away_from_the_url() {
     // `--url` is the only destination checked; a followed redirect could

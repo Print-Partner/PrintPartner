@@ -75,9 +75,9 @@ const MAX_KEYWORD: usize = 128;
 /// How many bytes are read between checks of the cancel flag.
 const READ_CHUNK: usize = 64 * 1024;
 
-/// Bounds on one read. Each is checked as the bytes stream in or as a record
-/// is kept, so a read stops at the first byte or record over a cap, before
-/// that thing is buffered.
+/// Bounds on one read, each checked as the bytes stream in: a read stops at
+/// the first byte, record or digit over a cap. Number and enumeration tokens
+/// are not buffered and have no cap but the file's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Bytes in the file.
@@ -90,11 +90,12 @@ pub struct Limits {
     pub max_string_bytes: usize,
     /// Bytes in one comment, `/*` through `*/`.
     pub max_comment_bytes: usize,
-    /// Bytes in one kept record, `#` through `;`, comments included.
+    /// Bytes in one kept record, `#` through `;`, comments included. Every
+    /// record is held to it until its keyword shows whether it is kept.
     pub max_record_bytes: usize,
-    /// Kept records.
+    /// Kept records, checked at the keyword of the one over the cap.
     pub max_records: usize,
-    /// Bytes of ids and names kept.
+    /// Bytes of the strings in kept records, as buffered.
     pub max_kept_text: usize,
 }
 
@@ -217,7 +218,6 @@ pub fn product_structure(
         ids: HashSet::new(),
         instances: 0,
         records: 0,
-        text: 0,
     };
     parser.exchange()?;
     parser.structure.check_references()?;
@@ -293,7 +293,6 @@ struct Parser<'a, R> {
     /// Entity instances read, and records and text bytes kept.
     instances: u64,
     records: usize,
-    text: usize,
 }
 
 impl<R: Read> Parser<'_, R> {
@@ -337,7 +336,7 @@ impl<R: Read> Parser<'_, R> {
             }
         }
         self.eat(Token::Semicolon)?;
-        let mut sections = 0;
+        let mut data = false;
         loop {
             match self.token()? {
                 Token::Keyword(word) if word == b"DATA" => {
@@ -350,12 +349,12 @@ impl<R: Read> Parser<'_, R> {
                         _ => return Err(self.malformed()),
                     }
                     self.data()?;
-                    sections += 1;
+                    data = true;
                 }
                 Token::Keyword(word) if word == b"ANCHOR" || word == b"REFERENCE" => {
                     return Err(StepError::Unsupported { at: self.lexer.at });
                 }
-                Token::End if sections > 0 => break,
+                Token::End if data => break,
                 _ => return Err(self.malformed()),
             }
         }
@@ -384,13 +383,21 @@ impl<R: Read> Parser<'_, R> {
             if self.instances > self.lexer.limits.max_entities {
                 return Err(StepError::TooLarge(Limit::Entities));
             }
+            // Until its keyword shows the kind, every record is capped as kept.
+            self.lexer.keep_record(begin)?;
             self.eat(Token::Equals)?;
-            match self.token()? {
-                Token::Keyword(word) => {
-                    let kind = Kind::of(&word);
-                    if kind.is_some() {
-                        self.lexer.keep_record(begin)?;
-                    }
+            let token = self.token()?;
+            let kind = match &token {
+                Token::Keyword(word) => Kind::of(word),
+                _ => None,
+            };
+            if kind.is_none() {
+                self.lexer.drop_record();
+            } else if self.records == self.lexer.limits.max_records {
+                return Err(StepError::TooLarge(Limit::Records));
+            }
+            match token {
+                Token::Keyword(_) => {
                     self.eat(Token::Open)?;
                     let params = self.list(kind.is_some())?;
                     self.eat(Token::Semicolon)?;
@@ -400,7 +407,7 @@ impl<R: Read> Parser<'_, R> {
                     }
                 }
                 Token::Open => {
-                    let mut parts = 0;
+                    let mut parts = false;
                     loop {
                         match self.token()? {
                             Token::Keyword(word) if Kind::of(&word).is_some() => {
@@ -409,9 +416,9 @@ impl<R: Read> Parser<'_, R> {
                             Token::Keyword(_) => {
                                 self.eat(Token::Open)?;
                                 self.list(false)?;
-                                parts += 1;
+                                parts = true;
                             }
-                            Token::Close if parts > 0 => break,
+                            Token::Close if parts => break,
                             _ => return Err(self.malformed()),
                         }
                     }
@@ -434,7 +441,8 @@ impl<R: Read> Parser<'_, R> {
     fn list(&mut self, keep: bool) -> Result<Vec<Param>, StepError> {
         // One entry per open list: true for a typed parameter's, which holds
         // exactly one value.
-        let mut open = vec![false];
+        let mut open = Vec::new();
+        self.nest(&mut open, false)?;
         let mut place = Place::Opened;
         let mut params = Vec::new();
         loop {
@@ -479,15 +487,14 @@ impl<R: Read> Parser<'_, R> {
     }
 
     fn nest(&self, open: &mut Vec<bool>, typed: bool) -> Result<(), StepError> {
-        if open.len() == self.lexer.limits.max_nesting {
+        if open.len() >= self.lexer.limits.max_nesting {
             return Err(StepError::TooLarge(Limit::Nesting));
         }
         open.push(typed);
         Ok(())
     }
 
-    /// Keeps one record, read at byte `at`, after checking its parameters and
-    /// counting it and its text against the limits.
+    /// Keeps one record, read at byte `at`, after checking its parameters.
     fn keep(
         &mut self,
         id: u64,
@@ -514,14 +521,12 @@ impl<R: Read> Parser<'_, R> {
             _ => None,
         };
         let structure = &mut self.structure;
-        let text = match kind {
+        match kind {
             Kind::Product => {
                 let (Param::Text(product_id), Some(name)) = (&params[0], label(&params[1])) else {
                     return Err(invalid);
                 };
-                let text = product_id.len() + name.len();
                 structure.products.insert(id, (product_id.clone(), name));
-                text
             }
             Kind::Formation | Kind::Definition => {
                 let target = reference(&params[2]).ok_or(invalid)?;
@@ -529,7 +534,6 @@ impl<R: Read> Parser<'_, R> {
                     Kind::Formation => structure.formations.insert(id, target),
                     _ => structure.definitions.insert(id, target),
                 };
-                0
             }
             Kind::Usage => {
                 let (Some(usage_id), Some(name), Some(parent), Some(child)) = (
@@ -541,25 +545,15 @@ impl<R: Read> Parser<'_, R> {
                     return Err(invalid);
                 };
                 let instance = [name, usage_id].into_iter().find(|value| !value.is_empty());
-                let text = instance.as_ref().map_or(0, String::len);
                 let usage = Usage {
                     instance,
                     parent,
                     child,
                 };
                 structure.usages.insert(id, usage);
-                text
             }
-        };
+        }
         self.records += 1;
-        self.text += text;
-        let limits = self.lexer.limits;
-        if self.records > limits.max_records {
-            return Err(StepError::TooLarge(Limit::Records));
-        }
-        if self.text > limits.max_kept_text {
-            return Err(StepError::TooLarge(Limit::KeptText));
-        }
         Ok(())
     }
 }
@@ -606,6 +600,8 @@ struct Lexer<'a, R> {
     /// While a kept record is read: the offset it may not pass. Strings are
     /// decoded only then.
     record_end: Option<u64>,
+    /// Bytes of strings kept so far.
+    kept_text: usize,
 }
 
 impl<'a, R: Read> Lexer<'a, R> {
@@ -620,6 +616,7 @@ impl<'a, R: Read> Lexer<'a, R> {
             end: 0,
             at: 0,
             record_end: None,
+            kept_text: 0,
         }
     }
 
@@ -673,7 +670,7 @@ impl<'a, R: Read> Lexer<'a, R> {
     /// From here until [`Self::drop_record`], the record that starts at
     /// `begin` is kept: its bytes are capped and its strings decoded.
     fn keep_record(&mut self, begin: u64) -> Result<(), StepError> {
-        let end = begin + self.limits.max_record_bytes as u64;
+        let end = begin.saturating_add(self.limits.max_record_bytes as u64);
         self.record_end = Some(end);
         if self.position() > end {
             return Err(StepError::TooLarge(Limit::RecordBytes));
@@ -778,7 +775,8 @@ impl<'a, R: Read> Lexer<'a, R> {
                         let value = u64::from(byte - b'0');
                         id = id.and_then(|id| id.checked_mul(10)?.checked_add(value));
                     }
-                    digit
+                    // Stop at the first digit that overflows, without taking it.
+                    digit && id.is_some()
                 })?;
                 match (digits, id) {
                     (0, _) => return Err(malformed),
@@ -909,6 +907,10 @@ impl<'a, R: Read> Lexer<'a, R> {
                 _ => {}
             }
             if keep {
+                if self.kept_text == self.limits.max_kept_text {
+                    return Err(StepError::TooLarge(Limit::KeptText));
+                }
+                self.kept_text += 1;
                 raw.push(byte);
             }
         }
@@ -932,12 +934,17 @@ impl<'a, R: Read> Lexer<'a, R> {
 /// for a backslash. Fails with `true` for another `\P` page and `false` for
 /// anything else after a backslash.
 fn decode(raw: &str) -> Result<String, bool> {
-    let hex = |digits: &str| {
-        digits
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
-            .then(|| u32::from_str_radix(digits, 16).ok())
-            .flatten()
+    // Uppercase ASCII hex, read as bytes so that no slice can split a
+    // multi-byte character.
+    let hex = |digits: &[u8]| {
+        digits.iter().try_fold(0u32, |value, &byte| {
+            let digit = match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'A'..=b'F' => byte - b'A' + 10,
+                _ => return None,
+            };
+            Some(value << 4 | u32::from(digit))
+        })
     };
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
@@ -952,7 +959,7 @@ fn decode(raw: &str) -> Result<String, bool> {
         } else if rest.starts_with("\\P") {
             return Err(true);
         } else if let Some(after) = rest.strip_prefix("\\X\\") {
-            let value = after.get(..2).and_then(hex).ok_or(false)?;
+            let value = after.as_bytes().get(..2).and_then(hex).ok_or(false)?;
             out.extend(char::from_u32(value));
             5
         } else if let Some(after) = rest.strip_prefix("\\S\\") {
@@ -968,13 +975,13 @@ fn decode(raw: &str) -> Result<String, bool> {
                 _ => return Err(false),
             };
             let end = after.find("\\X0\\").ok_or(false)?;
-            let run = &after[..end];
+            let run = &after.as_bytes()[..end];
             if run.is_empty() || run.len() % width != 0 {
                 return Err(false);
             }
-            let units = (0..run.len())
-                .step_by(width)
-                .map(|at| hex(&run[at..at + width]).ok_or(false))
+            let units = run
+                .chunks_exact(width)
+                .map(|unit| hex(unit).ok_or(false))
                 .collect::<Result<Vec<u32>, bool>>()?;
             if width == 4 {
                 let units = units.iter().map(|unit| *unit as u16);

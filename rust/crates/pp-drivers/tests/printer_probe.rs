@@ -191,6 +191,10 @@ async fn saved_connection_edge_cases_match_node_while_unsaved_probe_stays_strict
             oracle[&case.name]["requests"]
         );
         let unsaved = RoutedPrinter::start(routes()).unwrap();
+        let identity = match case.kind.as_str() {
+            "moonraker" => "GET /server/info",
+            _ => "GET /api/v1/info",
+        };
         let result = probe(
             guard(),
             PrinterProbeRequest {
@@ -203,10 +207,20 @@ async fn saved_connection_edge_cases_match_node_while_unsaved_probe_stays_strict
         assert!(result.kind.is_none());
         assert!(!result.credentials_needed);
         assert!(result.capabilities.is_empty());
+        let unsaved_requests: Vec<String> = unsaved
+            .request_lines()
+            .iter()
+            .map(|line| {
+                line.split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
         assert_eq!(
-            unsaved.request_lines().len(),
-            1,
-            "unsaved probe must not take the saved adapter's fallback path"
+            unsaved_requests,
+            [identity],
+            "unsaved probe must make one identity read and skip the saved adapter's fallback path"
         );
     }
 }

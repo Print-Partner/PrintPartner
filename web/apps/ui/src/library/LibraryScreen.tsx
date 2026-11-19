@@ -2,6 +2,7 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useId } from "react";
 import { useParams } from "react-router";
 import { dateText } from "../builds/format";
+import { sourcesQuery } from "../core/sources";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
@@ -13,7 +14,6 @@ import {
   eventText,
   latestEvents,
   sourceActivityQuery,
-  sourcesQuery,
   type Line,
   type Source,
   type SourceEvent,

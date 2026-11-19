@@ -1,7 +1,7 @@
 import type { ProfileLayers, ProfileSummary } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
-import { NavLink, Outlet, useOutletContext, useParams } from "react-router";
+import { Link, NavLink, Outlet, useOutletContext, useParams } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
@@ -169,7 +169,12 @@ function OverviewBody({ build, layers }: BuildData) {
       <FilamentSection id={build.id} />
       <h2 id={layersId}>Layers</h2>
       {layers.length === 0 ? (
-        <p>This Build has no layers.</p>
+        <p>
+          This Build has no layers.{" "}
+          <Link to={`/builds/${build.id}/sources`} className="pp-link">
+            Choose its base Source
+          </Link>
+        </p>
       ) : (
         <ol className="pp-layers" aria-labelledby={layersId}>
           {[...layers]

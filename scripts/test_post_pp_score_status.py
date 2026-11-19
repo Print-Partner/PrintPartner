@@ -651,9 +651,6 @@ class RepoFacts(pps.GitHubFacts):
         return subprocess.run(["git", "merge-base", "--is-ancestor", sha, "main"], cwd=self.repo_.path,
                               env=self.repo_.env).returncode == 0
 
-    def merge_base(self, a, b):
-        return self.repo_.git("merge-base", a, b)
-
     def checks_failing(self, sha):
         return self.failing.get(sha)
 
@@ -799,6 +796,91 @@ class CarryTests(unittest.TestCase):
                          ("failure", f"#1: no trusted score on its head {self.edited[:7]}"))
 
 
+class CrissCrossTests(unittest.TestCase):
+    """Two best merge bases: Git's own merge conflicts, so a hand-resolved merge must not carry."""
+
+    def test_criss_cross_conflict_does_not_carry(self):
+        r = CarryRepo()
+        r.commit("f.txt", "0\n", "base")
+        r.git("checkout", "-q", "-b", "pr")
+        x1 = r.commit("f.txt", "x\n", "pr x")
+        r.git("checkout", "-q", "main")
+        y1 = r.commit("f.txt", "y\n", "main y")
+        r.git("checkout", "-q", "pr")
+        r.git("merge", "-q", "--no-edit", y1, check=False)
+        r.write("f.txt", "x\n")
+        r.git("commit", "-q", "-a", "--no-edit")
+        h0 = r.git("rev-parse", "HEAD")
+        r.git("checkout", "-q", "main")
+        r.git("merge", "-q", "--no-edit", x1, check=False)
+        r.write("f.txt", "y\n")
+        r.git("commit", "-q", "-a", "--no-edit")
+        m = r.git("rev-parse", "HEAD")
+        self.assertEqual(len(r.git("merge-base", "--all", h0, m).split()), 2)
+        # Merging from either single base is clean and gives "y"; the hand resolution matches it.
+        r.git("checkout", "-q", "pr")
+        r.git("merge", "-q", "--no-edit", m, check=False)
+        r.write("f.txt", "y\n")
+        r.git("commit", "-q", "-a", "--no-edit")
+        h1 = r.git("rev-parse", "HEAD")
+        self.assertEqual(r.git("rev-list", "--parents", "-n1", h1).split()[1:], [h0, m])
+        # One explicit base (what GitHub's compare API returns) would certify the hand resolution.
+        self.assertEqual(r.git("merge-tree", "--write-tree", f"--merge-base={x1}", h0, m),
+                         r.git("rev-parse", f"{h1}^{{tree}}"))
+        plan, why = pps.plan_carry(h1, [record(h0)], False, RepoFacts(r))
+        self.assertIsNone(plan)
+        self.assertIn("conflicts", why)
+
+
+class CommentModeCarryTests(unittest.TestCase):
+    """main() in comment mode, with GitHub reads answered from a local repo."""
+
+    @classmethod
+    def setUpClass(cls):
+        CarryTests.setUpClass()
+        cls.c = CarryTests
+
+    def run_main(self, head, failing=None, argv=()):
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        body = f"pp-score head={self.c.h0} seat=gpt-6.2-sol vendor=openai score=9 author=anthropic obstacles=none"
+        facts = RepoFacts(self.c.r, failing)
+        buf = io.StringIO()
+        with mock.patch.object(pps, "fetch_comments", return_value=[comment(body)]), \
+                mock.patch.object(pps, "fetch_head", return_value=head), \
+                mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]), \
+                mock.patch.object(pps, "GitHubFacts", return_value=facts), \
+                redirect_stdout(buf):
+            code = pps.main(["--pr", "7", *argv])
+        return code, buf.getvalue()
+
+    def test_carry_then_a_failed_hop_replaces_the_carried_success(self):
+        h0, h1, h2 = self.c.h0, self.c.h1, self.c.h2
+        _, out = self.run_main(h2)
+        self.assertIn(f"statuses/{h2} -f state=success -f context=pp/score "
+                      f"-f 'description=carried from {h0[:7]}: 9/10 from gpt-6.2-sol'", out)
+        _, out = self.run_main(h2, failing={h1: "rust (linux) is failure"})
+        self.assertIn(f"statuses/{h2} -f state=failure -f context=pp/score "
+                      f"-f 'description=no score and no carry: {h1[:7]}: rust (linux) is failure'", out)
+        self.assertNotIn(f"statuses/{h2} -f state=success", out)
+
+    def test_carry_only_refuses_post_and_merge_group(self):
+        import io
+        from contextlib import redirect_stderr
+        from unittest import mock
+
+        for extra in (["--pr", "7", "--carry-only", "--post"],
+                      ["--merge-group", "--carry-only", "--head-sha", SHA, "--base-sha", OTHER]):
+            with mock.patch.object(pps, "run_merge_group", side_effect=AssertionError), \
+                    mock.patch.object(pps, "fetch_comments", side_effect=AssertionError), \
+                    mock.patch.object(pps, "apply_plan", side_effect=AssertionError), \
+                    redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(pps.main(extra), 2)
+            self.assertIn("comment-mode dry runs only", err.getvalue())
+
+
 class RequiredCheckTests(unittest.TestCase):
     RULES = [
         {"type": "deletion"},
@@ -835,9 +917,13 @@ class RequiredCheckTests(unittest.TestCase):
         facts = self.facts([])
         self.assertEqual([c["context"] for c in facts.required_checks()], ["actionlint", "rust (linux)"])
 
-    def test_success_and_skipped_pass(self):
-        facts = self.facts([self.run_("actionlint", "skipped"), self.run_("rust (linux)", "success")])
+    def test_only_success_passes(self):
+        facts = self.facts([self.run_("actionlint", "success"), self.run_("rust (linux)", "success")])
         self.assertIsNone(facts.checks_failing(SHA))
+        # Chad's rule says success: a path-filtered skip or a neutral result does not qualify a hop.
+        for conclusion in ("skipped", "neutral"):
+            facts = self.facts([self.run_("actionlint", conclusion), self.run_("rust (linux)", "success")])
+            self.assertEqual(facts.checks_failing(SHA), f"actionlint is {conclusion}")
 
     def test_running_failed_or_missing_checks_block(self):
         facts = self.facts([self.run_("actionlint", "success"), self.run_("rust (linux)", None, "in_progress")])

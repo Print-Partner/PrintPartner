@@ -46,9 +46,9 @@ SQUASH_TITLE = re.compile(r"\(#([0-9]+)\)$")
 MAIN = "main"
 # A carry walks back at most this many merge-of-main hops.
 CARRY_MAX_HOPS = 5
-# GitHub counts these check run conclusions as passing for a required check
-# (path-filtered jobs such as actionlint report skipped).
-PASSING = frozenset({"success", "skipped", "neutral"})
+# Chad's rule says success. A skipped or neutral required check (path-filtered actionlint or
+# zizmor) does not qualify a hop, although GitHub lets it satisfy the required check.
+PASSING = frozenset({"success"})
 # Grok records never carry.
 NO_CARRY_VENDORS = frozenset({"xai"})
 
@@ -227,7 +227,7 @@ def plan_statuses(records: list[Record]) -> list[StatusPlan]:
 
 
 class LocalGit:
-    """The checkout the script runs in. Fetches only missing commits, and only as deep as needed."""
+    """The checkout the script runs in. Merges need full history so Git finds every merge base."""
 
     def __init__(self, cwd=ROOT, remote="origin"):
         self.cwd = Path(cwd)
@@ -237,17 +237,22 @@ class LocalGit:
         return subprocess.run(["git", *args], cwd=self.cwd, text=True, capture_output=True, check=check)
 
     def ensure(self, *shas: str) -> None:
-        missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
-        if not missing:
+        if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+            # The workflow checkout is depth 1. Fetch the commits' full history without blobs
+            # (Git fetches the blobs a merge reads on demand), so merge-tree sees every merge base.
+            self._git("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
             return
-        # The workflow checkout is shallow; fetch just these snapshots. A full clone fetches normally.
-        shallow = self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
-        self._git("fetch", "--no-tags", "--quiet", *(["--depth=1"] if shallow else []), self.remote, *missing)
+        missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
+        if missing:
+            self._git("fetch", "--no-tags", "--quiet", self.remote, *missing)
 
-    def merge_tree(self, base: str, ours: str, theirs: str) -> str | None:
-        """Tree of the clean merge of ours and theirs from base, or None when it conflicts."""
-        self.ensure(base, ours, theirs)
-        done = self._git("merge-tree", "--write-tree", f"--merge-base={base}", ours, theirs, check=False)
+    def merge_tree(self, ours: str, theirs: str) -> str | None:
+        """Tree of the clean merge of ours and theirs, or None when it conflicts.
+
+        Plain `git merge-tree --write-tree`, so a criss-cross history merges from all its bases.
+        """
+        self.ensure(ours, theirs)
+        done = self._git("merge-tree", "--write-tree", ours, theirs, check=False)
         if done.returncode == 1:
             return None
         if done.returncode != 0:
@@ -271,14 +276,8 @@ class GitHubFacts:
         data = gh_json(f"repos/{self.repo}/compare/{sha}...{MAIN}")
         return data.get("status") in ("identical", "ahead")
 
-    def merge_base(self, a: str, b: str) -> str:
-        sha = ((gh_json(f"repos/{self.repo}/compare/{a}...{b}").get("merge_base_commit") or {}).get("sha"))
-        if not isinstance(sha, str) or not FULL_SHA.fullmatch(sha):
-            raise GateError(f"no merge base for {a[:7]} and {b[:7]}")
-        return sha
-
     def merged_tree(self, ours: str, theirs: str) -> str | None:
-        return self.git.merge_tree(self.merge_base(ours, theirs), ours, theirs)
+        return self.git.merge_tree(ours, theirs)
 
     def required_checks(self) -> list[dict]:
         """The required status checks of main's rulesets, except pp/score itself."""
@@ -385,6 +384,12 @@ def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[S
     prefix = f"carried from {source[:7]}: "
     return StatusPlan(head, "success", _fit(prefix + plan.description, prefix + "scored 8+"),
                       plan.records), f"carried from {source[:7]}"
+
+
+def no_carry_plan(head: str, why: str) -> StatusPlan:
+    """Failure on a head with no records and no carry. It replaces a carried success posted
+    before a hop stopped qualifying, so a stale carry cannot stand."""
+    return StatusPlan(head, "failure", _fit(f"no score and no carry: {why}", "no score and no carry"), ())
 
 
 def strict_class(paths: list[str]) -> bool:
@@ -597,6 +602,9 @@ def main(argv=None) -> int:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo):
         print("repo must be owner/name", file=sys.stderr)
         return 2
+    if args.carry_only and (args.post or args.merge_group):
+        print("--carry-only is for comment-mode dry runs only", file=sys.stderr)
+        return 2
     trust = load_trust(Path(args.classes))
     if args.merge_group:
         prs = None
@@ -607,9 +615,6 @@ def main(argv=None) -> int:
             prs = [int(p) for p in args.prs.split(",")]
         return run_merge_group(args.repo, args.head_sha, args.base_sha, args.head_ref,
                                trust, args.post, prs)
-    if args.carry_only and args.post:
-        print("--carry-only is for dry runs only", file=sys.stderr)
-        return 2
     if args.pr is None or args.pr <= 0:
         print("pr must be a positive integer", file=sys.stderr)
         return 2
@@ -627,8 +632,7 @@ def main(argv=None) -> int:
     if isinstance(head, str) and FULL_SHA.fullmatch(head) and not any(r.head == head for r in records):
         carried, why = carry_for_pr(args.repo, args.pr, head, records, GitHubFacts(args.repo))
         print(f"# carry to {head}: {why}")
-        if carried is not None:
-            plans.append(carried)
+        plans.append(carried or no_carry_plan(head, why))
     return render(args.repo, args.pr, plans, args.post)
 
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Select required CI jobs from a complete PR diff; merge groups select only queue validation kinds."""
 
+import functools
 import json
 import os
 from pathlib import Path
@@ -13,13 +14,87 @@ import sys
 WORKAROUND_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
                          ".rs", ".py", ".sh", ".yml", ".yaml", ".css", ".html")
 
-# The crates that hold the Windows tests `rust (windows tests)` runs (GRE-1811), the
-# pp-os and pp-net layers under them, and their build inputs.
-WINDOWS_TEST_CRATES = tuple(f"rust/crates/{crate}/" for crate in
-                            ("pp-os", "pp-net", "pp-compat", "pp-gateway", "pp-server"))
-WINDOWS_TEST_FILES = {"rust/Cargo.toml", "rust/Cargo.lock", "rust/.config/nextest.toml",
-                      "rust-toolchain.toml", "rust/scripts/build-desktop-manifest.py",
-                      ".github/workflows/rust-cross-os.yml"}
+ROOT = Path(__file__).resolve().parents[1]
+
+# `rust (windows tests)` (GRE-1811) runs these packages' tests. windows_test_inputs()
+# derives the Rust inputs from them; the rest is what the job's other steps read.
+WINDOWS_TEST_PACKAGES = ("pp-compat", "pp-gateway", "pp-server")
+WINDOWS_TEST_FILES = {
+    # Toolchain, workspace and test runner.
+    "rust/Cargo.toml", "rust/Cargo.lock", "rust/.config/nextest.toml", "rust-toolchain.toml",
+    ".github/workflows/rust-cross-os.yml",
+    # The manifest script, its import and the helper it runs.
+    "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
+    "rust/scripts/precompress-spa.py",
+    # npm ci reads the root manifest and lockfile; vite.config.ts reads web/package.json.
+    "web/package.json", "web/package-lock.json", "web/tsconfig.base.json",
+    "web/scripts/atomic-package-build.mjs",
+}
+# The workspaces `npm run build` builds into the bundle the respawn test verifies.
+WINDOWS_TEST_WEB = ("web/apps/server/", "web/apps/web/", "web/packages/contracts/",
+                    "web/packages/domain/")
+INCLUDE = re.compile(r'(?:include_str|include_bytes|include)!\(\s*(concat!\(\s*env!\("CARGO_MANIFEST_DIR"\)\s*,\s*)?'
+                     r'"([^"]+)"|#\[path\s*=\s*"([^"]+)"\]')
+
+
+@functools.cache
+def windows_test_inputs(root=ROOT, packages=WINDOWS_TEST_PACKAGES):
+    """Path prefixes and outside files that the Windows test build compiles.
+
+    nextest builds every target of the tested packages, with their dev-dependencies, and
+    only the library of each crate below them, without its test modules.
+    """
+    import tomllib
+    crates, todo = {}, [(root / "rust/crates" / name, True) for name in packages]
+    while todo:
+        crate, tested = todo.pop()
+        crate = crate.resolve()
+        if crates.get(crate):
+            continue
+        crates[crate] = crates.get(crate, False) or tested
+        manifest = tomllib.loads((crate / "Cargo.toml").read_text())
+        sections = ("dependencies", "build-dependencies") + (("dev-dependencies",) if tested else ())
+        for table in [manifest, *manifest.get("target", {}).values()]:
+            for section in sections:
+                for spec in table.get(section, {}).values():
+                    if isinstance(spec, dict) and "path" in spec:
+                        todo.append((crate / spec["path"], False))
+    files = set()
+    for crate, tested in crates.items():
+        sources = crate.rglob("*.rs") if tested else [*(crate / "src").rglob("*.rs"), crate / "build.rs"]
+        for source in sources:
+            if not source.is_file() or (not tested and (
+                    "tests" in source.relative_to(crate).parts or source.name == "tests.rs")):
+                continue
+            for match in INCLUDE.finditer(source.read_text(errors="replace")):
+                base = crate if match.group(1) else source.parent
+                target = Path(os.path.normpath(base / (match.group(2) or match.group(3)).lstrip("/")))
+                if target.is_relative_to(root) and not any(
+                        target.is_relative_to(other) for other, whole in crates.items() if whole):
+                    files.add(target.relative_to(root).as_posix())
+    prefixes = []
+    for crate, tested in crates.items():
+        name = crate.relative_to(root).as_posix()
+        prefixes += [f"{name}/"] if tested else [f"{name}/src/", f"{name}/build.rs", f"{name}/Cargo.toml"]
+    return tuple(prefixes), files
+
+
+def windows_tests_relevant(path):
+    if path in WINDOWS_TEST_FILES:
+        return True
+    # npm ci checks every workspace manifest against the lockfile.
+    if re.fullmatch(r"web/(apps|packages)/[^/]+/package\.json", path):
+        return True
+    try:
+        prefixes, files = windows_test_inputs()
+    except (OSError, ValueError, KeyError):
+        return True
+    if path in files:
+        return True
+    # Markdown is not an input, except the data files the server build copies.
+    if path.endswith(".md") and not path.startswith("web/apps/server/src/data/"):
+        return False
+    return path.startswith(prefixes + WINDOWS_TEST_WEB)
 
 
 def relevant(path, kind):
@@ -29,8 +104,7 @@ def relevant(path, kind):
                 "scripts/test_ci_affected_nextest_filter.py"}:
         return True
     if kind == "windows-tests":
-        return (path in WINDOWS_TEST_FILES
-                or (path.startswith(WINDOWS_TEST_CRATES) and not path.endswith(".md")))
+        return windows_tests_relevant(path)
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})

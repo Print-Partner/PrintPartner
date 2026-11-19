@@ -1,12 +1,43 @@
 //! GRE-1347: `.pp-restore` swapped for a link to a directory outside the
 //! data directory after `Work` opened it, the check every later step relies
 //! on. Each test swaps through the `after_work_check` hook and shows that
-//! nothing outside the data directory is written or removed.
+//! nothing outside the data directory is written or removed. The last two
+//! tests cover a `.pp-restore` moved during activation and a regular file at
+//! that name.
 
 use super::*;
 
 /// Where the swap moves the real `.pp-restore`, inside the data directory.
 const MOVED: &str = ".pp-restore-moved";
+
+/// An open installation with a full backup taken before a change to it.
+struct BackedUp {
+    _installation: Installation,
+    _scratch: tempfile::TempDir,
+    root: PathBuf,
+    owner: WriterOwner,
+    client: InstallationClient,
+    backup: PathBuf,
+    /// The installation as the backup holds it.
+    restored: BTreeMap<String, String>,
+}
+
+fn backed_up() -> BackedUp {
+    let (installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let (backup, restored) = backup_then_change(&owner, &root, scratch.path());
+    BackedUp {
+        _installation: installation,
+        _scratch: scratch,
+        root,
+        owner,
+        client,
+        backup,
+        restored,
+    }
+}
 
 /// The next `Work` open for `root` is followed by a swap: `.pp-restore` moves
 /// to [`MOVED`] and a link to `outside` takes its name, as a concurrent local
@@ -60,11 +91,15 @@ fn names(path: &Path) -> Vec<String> {
 /// pathname, is refused once the path no longer names that directory.
 #[test]
 fn gre_1347_staging_after_a_swap_for_a_link_writes_and_removes_only_inside_the_data_directory() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let client = owner.installation().unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let (backup, _) = backup_then_change(&owner, &root, scratch.path());
+    let BackedUp {
+        _installation,
+        _scratch,
+        root,
+        owner,
+        client,
+        backup,
+        ..
+    } = backed_up();
     let bytes = std::fs::read(&backup).unwrap();
     let (outside, before) = decoy(&random_id());
 
@@ -142,11 +177,15 @@ fn gre_1347_recover_after_a_swap_for_a_link_removes_nothing_outside_the_data_dir
 /// replay restores the installation.
 #[test]
 fn gre_1347_journal_replay_after_a_swap_for_a_link_touches_nothing_outside() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let client = owner.installation().unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let (backup, _) = backup_then_change(&owner, &root, scratch.path());
+    let BackedUp {
+        _installation,
+        _scratch,
+        root,
+        owner,
+        client,
+        backup,
+        ..
+    } = backed_up();
     let live = state(&root);
     let staged = stage(&client, &backup).unwrap();
     // Crash after the journal is published and the database moved aside.
@@ -198,10 +237,15 @@ fn move_work_dir(root: &Path) -> Hook {
 /// mix, and leave no `journal.json` behind in either place.
 #[test]
 fn gre_1347_a_work_directory_moved_during_activation_never_strands_a_journal() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let (backup, restored) = backup_then_change(&owner, &root, scratch.path());
+    let BackedUp {
+        _installation,
+        _scratch,
+        root,
+        owner,
+        backup,
+        restored,
+        ..
+    } = backed_up();
     owner.shutdown().unwrap();
     let old = state(&root);
     let moved = root.join(MOVED);
@@ -275,11 +319,15 @@ fn gre_1347_a_work_directory_moved_during_activation_never_strands_a_journal() {
 /// activation and by open, and it is kept.
 #[test]
 fn gre_1347_a_regular_file_at_the_work_directory_is_refused_and_kept() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let client = owner.installation().unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let (backup, _) = backup_then_change(&owner, &root, scratch.path());
+    let BackedUp {
+        _installation,
+        _scratch,
+        root,
+        owner,
+        client,
+        backup,
+        ..
+    } = backed_up();
     let staged = stage(&client, &backup).unwrap();
     std::fs::remove_dir_all(work_path(&root)).unwrap();
     let live = state(&root);

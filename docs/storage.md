@@ -153,11 +153,14 @@ starts in `pp-server`. `pp-server` builds with `desktop_rebuild` by default
 
 The headless test does not start the workspace test build of `pp-server`. That
 build turns on pp-storage's `test-unmarked-writer` feature, which skips the
-ownership marker gate. The test instead runs `cargo build --locked --release
--p pp-server` into `<target>/pp-server-release`, or starts the binary that
-`PP_SERVER_RELEASE_BINARY` names. Before the 12 starts it checks that the binary
-refuses an unmarked Node directory in Rust-only mode with exit 1, which a build
-without the gate would not do. It prints the runtime mode, attempt, exit code
+ownership marker gate. The test instead runs `cargo build --locked --offline
+--release -p pp-server` into `<target>/pp-server-release`, or starts the binary
+that `PP_SERVER_RELEASE_BINARY` names. That build gets no credentials from the
+test's environment or from any Cargo config file; the
+[CI guide](development/ci.md#test-groups-and-flaky-tests) lists what it gets.
+Before the 12 starts it checks that the binary refuses an unmarked Node
+directory in Rust-only mode with exit 1, which a build without the gate would
+not do. It prints the runtime mode, attempt, exit code
 and version diagnostic for every start. These are disposable installations; no
 real library or printer is used.
 

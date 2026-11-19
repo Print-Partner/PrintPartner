@@ -48,190 +48,339 @@ fn release_server_binary() -> PathBuf {
         .unwrap()
         .join("pp-server-release");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let parent_env: Vec<_> = std::env::vars_os().collect();
-    let output = release_build(&cargo, &workspace, &target, &parent_env)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "release build failed; last {TAIL_LINES} lines of stderr, with the value of every \
-         variable the build did not get redacted:\n{}",
-        failure_tail(&output.stderr, &parent_env)
-    );
+    let output = isolated_build(
+        &cargo,
+        &workspace.join("Cargo.toml"),
+        "pp-server",
+        &target,
+        &toolchain_pin(&workspace.join("..")),
+        &std::env::vars_os().collect::<Vec<_>>(),
+    )
+    .output()
+    .unwrap();
+    assert!(output.status.success(), "{}", build_failure(&output));
     target.join("release/pp-server")
 }
 
-/// `cargo build --locked --release -p pp-server` into `target`, with only the
-/// variables [`build_env`] admits from `parent_env` and no compiler wrapper.
-/// The empty `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` also override a
-/// wrapper named in a Cargo config file. sccache reads its storage
-/// credentials from the environment and can print that environment in an
-/// error, so this one build runs uncached. Hosted Linux runners have no
-/// sccache, so they lose nothing.
-fn release_build(
+/// The channel `rust-toolchain.toml` in `repo` pins.
+fn toolchain_pin(repo: &Path) -> String {
+    let pin = std::fs::read_to_string(repo.join("rust-toolchain.toml")).unwrap();
+    pin.lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "channel").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .expect("rust-toolchain.toml names a channel")
+}
+
+/// `cargo build --locked --offline --release -p <package>` into `target`,
+/// isolated from the test's environment and from every Cargo config file.
+///
+/// - The environment is cleared. The build gets `PATH`, `RUSTUP_HOME`,
+///   `PP_DESKTOP_RELEASE_MANIFEST` and a numeric `CARGO_BUILD_JOBS` from
+///   `parent_env`, the `toolchain` pin as `RUSTUP_TOOLCHAIN`, and empty
+///   `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER`, so no compiler wrapper
+///   such as sccache starts. No `HOME` is passed.
+/// - `CARGO_HOME` is `<target>/cargo-home`, which holds only links to the
+///   real Cargo home's `registry` and `git` caches. Cargo never sees the real
+///   home's `config.toml` or `credentials.toml`.
+/// - Cargo runs in `/`. It looks for `.cargo/config.toml` in its working
+///   directory and every parent, not beside the manifest, so a config file in
+///   the checkout or in a home directory above it is not read. No `[env]`
+///   entry, wrapper, registry token or credential provider reaches the build.
+/// - `--offline` keeps Cargo off the network, so it never asks for registry
+///   credentials. The test's own build has already fetched every crate that
+///   `Cargo.lock` names.
+fn isolated_build(
     cargo: &OsStr,
-    workspace: &Path,
+    manifest: &Path,
+    package: &str,
     target: &Path,
+    toolchain: &str,
     parent_env: &[(OsString, OsString)],
 ) -> Command {
+    let parent = |name: &str| {
+        parent_env
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| PathBuf::from(value))
+    };
+    let home = parent("HOME");
+    let in_home = |dir: &str| home.as_ref().map(|home| home.join(dir));
+    let cargo_home =
+        isolated_cargo_home(target, parent("CARGO_HOME").or_else(|| in_home(".cargo")));
     let mut command = child_process::command(cargo);
     command
-        .current_dir(workspace)
+        .current_dir("/")
         .env_clear()
-        .envs(
-            parent_env
-                .iter()
-                .filter(|(name, _)| build_env(&name.to_string_lossy()))
-                .map(|(name, value)| (name, value)),
-        )
+        .env("CARGO_HOME", cargo_home)
+        .env("RUSTUP_TOOLCHAIN", toolchain)
         .env("RUSTC_WRAPPER", "")
-        .env("RUSTC_WORKSPACE_WRAPPER", "")
-        .args(["build", "--locked", "--release", "--manifest-path"])
-        .arg(workspace.join("Cargo.toml"))
-        .args(["-p", "pp-server", "--target-dir"])
+        .env("RUSTC_WORKSPACE_WRAPPER", "");
+    let rustup_home = parent("RUSTUP_HOME").or_else(|| in_home(".rustup"));
+    for (name, value) in [
+        ("PATH", parent("PATH")),
+        ("RUSTUP_HOME", rustup_home),
+        (
+            "PP_DESKTOP_RELEASE_MANIFEST",
+            parent("PP_DESKTOP_RELEASE_MANIFEST"),
+        ),
+    ] {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    if let Some(jobs) =
+        parent("CARGO_BUILD_JOBS").and_then(|jobs| jobs.to_str()?.parse::<u16>().ok())
+    {
+        command.env("CARGO_BUILD_JOBS", jobs.to_string());
+    }
+    command
+        .args(["build", "--locked", "--offline", "--release"])
+        // The isolated home has its own last-use records; never let it clean
+        // the shared registry cache by them.
+        .args(["--config", "cache.auto-clean-frequency=\"never\""])
+        .arg("--manifest-path")
+        .arg(manifest)
+        .args(["-p", package, "--target-dir"])
         .arg(target);
     command
 }
 
-/// The variables the release build sees. The rest of the test environment,
-/// including nextest's library path, compiler-cache settings and any token a
-/// runner sets, stays out.
-fn build_env(name: &str) -> bool {
-    let admitted = matches!(
-        name,
-        "PATH"
-            | "HOME"
-            | "TMPDIR"
-            | "LANG"
-            | "CARGO_HOME"
-            | "RUSTUP_HOME"
-            | "RUSTUP_TOOLCHAIN"
-            | "RUSTFLAGS"
-            | "PP_DESKTOP_RELEASE_MANIFEST"
-    ) || ["CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_NET_"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-        || (name.starts_with("CARGO_TARGET_") && name != "CARGO_TARGET_TMPDIR");
-    admitted && !name.contains("WRAPPER")
-}
-
-/// Lines of a failed build's stderr that the test prints.
-const TAIL_LINES: usize = 40;
-
-/// Values shorter than this stay: they are flags such as `1`, and replacing
-/// them would garble every line.
-const SHORTEST_REDACTED: usize = 6;
-
-/// The last [`TAIL_LINES`] lines of `stderr`, with the value of every
-/// variable in `parent_env` that [`build_env`] keeps from the build replaced
-/// by `[redacted]`.
-fn failure_tail(stderr: &[u8], parent_env: &[(OsString, OsString)]) -> String {
-    let mut withheld: Vec<_> = parent_env
-        .iter()
-        .filter(|(name, _)| !build_env(&name.to_string_lossy()))
-        .map(|(_, value)| value.to_string_lossy().into_owned())
-        .filter(|value| value.len() >= SHORTEST_REDACTED)
-        .collect();
-    // Longest first, so a value that contains another is replaced whole.
-    withheld.sort_by_key(|value| std::cmp::Reverse(value.len()));
-    let stderr = withheld.iter().fold(
-        String::from_utf8_lossy(stderr).into_owned(),
-        |stderr, value| stderr.replace(value.as_str(), "[redacted]"),
-    );
-    let lines: Vec<_> = stderr.lines().collect();
-    lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
-}
-
-#[test]
-fn ticket_t_8_release_build_gets_no_credentials_or_compiler_wrapper() {
-    let parent_env: Vec<(OsString, OsString)> = [
-        ("PATH", "/usr/bin"),
-        ("CARGO_HOME", "/cargo"),
-        ("CARGO_BUILD_JOBS", "2"),
-        ("SCCACHE_REDIS_PASSWORD", "redis-secret"),
-        ("SCCACHE_AZURE_CONNECTION_STRING", "azure-secret"),
-        ("SCCACHE_BUCKET", "bucket-name"),
-        ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
-        ("GITHUB_TOKEN", "github-secret"),
-        ("CARGO_REGISTRY_TOKEN", "registry-secret"),
-        ("RUSTC_WRAPPER", "/opt/sccache"),
-        ("CARGO_BUILD_RUSTC_WRAPPER", "/opt/sccache"),
-    ]
-    .into_iter()
-    .map(|(name, value)| (name.into(), value.into()))
-    .collect();
-    let command = release_build(
-        OsStr::new("cargo"),
-        Path::new("/workspace"),
-        Path::new("/target"),
-        &parent_env,
-    );
-    let mut env: Vec<_> = command
-        .get_envs()
-        .map(|(name, value)| {
-            (
-                name.to_string_lossy().into_owned(),
-                value.map(|value| value.to_string_lossy().into_owned()),
-            )
-        })
-        .collect();
-    env.sort();
-    let set = |name: &str, value: &str| (name.to_owned(), Some(value.to_owned()));
-    assert_eq!(
-        env,
-        [
-            set("CARGO_BUILD_JOBS", "2"),
-            set("CARGO_HOME", "/cargo"),
-            set("PATH", "/usr/bin"),
-            set("RUSTC_WORKSPACE_WRAPPER", ""),
-            set("RUSTC_WRAPPER", ""),
-        ]
-    );
-}
-
-#[test]
-fn ticket_t_8_release_build_failure_redacts_withheld_values() {
-    let parent_env: Vec<(OsString, OsString)> = [
-        ("PATH", "/usr/local/bin"),
-        ("SCCACHE_REDIS_PASSWORD", "redis-secret"),
-        ("AWS_SECRET_ACCESS_KEY", "aws-secret-key"),
-        ("SHORT", "1"),
-    ]
-    .into_iter()
-    .map(|(name, value)| (name.into(), value.into()))
-    .collect();
-    let mut stderr = String::new();
-    for line in 0..50 {
-        stderr.push_str(&format!("   Compiling crate-{line}\n"));
+/// A Cargo home under `target` that links to `real`'s download caches and
+/// holds no config or credentials file.
+fn isolated_cargo_home(target: &Path, real: Option<PathBuf>) -> PathBuf {
+    let home = target.join("cargo-home");
+    std::fs::create_dir_all(&home).unwrap();
+    for cache in ["registry", "git"] {
+        let link = home.join(cache);
+        let Some(source) = real.as_ref().map(|real| real.join(cache)) else {
+            continue;
+        };
+        if source.is_dir() && std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(source, link).unwrap();
+        }
     }
-    stderr.push_str(
-        "sccache: error: SCCACHE_REDIS_PASSWORD=redis-secret \
-         AWS_SECRET_ACCESS_KEY=aws-secret-key PATH=/usr/local/bin SHORT=1\n",
+    home
+}
+
+/// What the test prints when the isolated build fails: the exit status, how
+/// many lines Cargo marked `error`, and the names of the crates that failed.
+/// The build's own output is not printed. A compiler or build script can echo
+/// any value it was given, and no filter can tell a credential from a path.
+fn build_failure(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let errors = stderr
+        .lines()
+        .filter(|line| line.starts_with("error"))
+        .count();
+    let crates: Vec<_> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("error: could not compile `"))
+        .filter_map(|rest| rest.split_once('`').map(|(name, _)| name))
+        .filter(|name| {
+            name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .take(10)
+        .collect();
+    format!(
+        "isolated release build failed: {}; {errors} error lines; crates that failed to \
+         compile: {crates:?}. Its output is not shown. To see it, run `cargo build --locked \
+         --release -p pp-server` in rust/.",
+        output.status
+    )
+}
+
+/// Fake, credential-shaped values. None is a real secret.
+const FAKE_SECRETS: [(&str, &str); 14] = [
+    ("AWS_SECRET_ACCESS_KEY", "pp-fake-aws-secret-0001"),
+    ("GITHUB_TOKEN", "pp-fake-github-token-0002"),
+    ("SCCACHE_REDIS_PASSWORD", "pp-fake-redis-password-0003"),
+    ("CARGO_REGISTRY_TOKEN", "pp-fake-registry-token-0004"),
+    (
+        "CARGO_REGISTRIES_FAKE_TOKEN",
+        "pp-fake-registries-token-0005",
+    ),
+    ("CARGO_BUILD_RUSTFLAGS", "--cfg=pp_fake_rustflags_0006"),
+    ("RUSTFLAGS", "--cfg=pp_fake_rustflags_0007"),
+    ("RUSTC_WRAPPER", "/nonexistent/pp-fake-wrapper-0008"),
+    (
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "/nonexistent/pp-fake-wrapper-0009",
+    ),
+    ("CARGO_ENCODED_RUSTFLAGS", "--cfg=pp_fake_rustflags_0010"),
+    // Planted in Cargo config files below, not in the environment.
+    (
+        "[env] in $HOME/.cargo/config.toml",
+        "pp-fake-home-config-0011",
+    ),
+    (
+        "[env] in $CARGO_HOME/config.toml",
+        "pp-fake-cargo-home-config-0012",
+    ),
+    (
+        "$CARGO_HOME/credentials.toml",
+        "pp-fake-credentials-token-0013",
+    ),
+    (
+        "[env] in the package's .cargo/config.toml",
+        "pp-fake-package-config-0014",
+    ),
+];
+
+/// A probe package's build script records the environment Cargo gives it,
+/// which includes every inherited variable and every `[env]` entry from a
+/// config file Cargo read. Fake credentials sit in the parent environment
+/// and in three config files; each file also names a missing compiler
+/// wrapper, so reading any of them fails the build. Then the probe is made
+/// to fail with a fake credential in its compiler error, and the test's
+/// failure message must not carry it.
+#[test]
+fn ticket_t_8_release_build_keeps_credentials_out_of_the_build_and_its_output() {
+    let root = scratch::Scratch::new("pp-isolated-build-");
+    let home = root.join("home");
+    let cargo_home = root.join("cargo-home");
+    let probe = home.join("probe");
+    let target = root.join("target");
+    let secret = |index: usize| FAKE_SECRETS[index].1;
+    let config = |value: &str| {
+        format!(
+            "[env]\nPP_FAKE_CONFIG = \"{value}\"\n[build]\nrustc-wrapper = \
+             \"/nonexistent/pp-fake-config-wrapper\"\n[registry]\ntoken = \"{value}\"\n\
+             global-credential-providers = [\"/nonexistent/pp-fake-provider\"]\n"
+        )
+    };
+    let write = |path: PathBuf, text: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(home.join(".cargo/config.toml"), &config(secret(10)));
+    write(cargo_home.join("config.toml"), &config(secret(11)));
+    write(
+        cargo_home.join("credentials.toml"),
+        &format!("[registry]\ntoken = \"{}\"\n", secret(12)),
     );
-    stderr.push_str("error: could not compile `pp-server`\n");
-    let tail = failure_tail(stderr.as_bytes(), &parent_env);
-    let lines: Vec<_> = tail.lines().collect();
-    assert_eq!(lines.len(), TAIL_LINES);
-    assert_eq!(lines[0], "   Compiling crate-12");
-    assert_eq!(
-        lines[TAIL_LINES - 2],
-        "sccache: error: SCCACHE_REDIS_PASSWORD=[redacted] \
-         AWS_SECRET_ACCESS_KEY=[redacted] PATH=/usr/local/bin SHORT=1"
+    write(probe.join(".cargo/config.toml"), &config(secret(13)));
+    write(
+        probe.join("Cargo.toml"),
+        "[package]\nname = \"pp-isolated-build-probe\"\nversion = \"0.0.0\"\n\
+         edition = \"2021\"\n\n[workspace]\n",
     );
-    assert_eq!(
-        lines[TAIL_LINES - 1],
-        "error: could not compile `pp-server`"
+    write(
+        probe.join("Cargo.lock"),
+        "# This file is automatically @generated by Cargo.\n# It is not intended for manual \
+         editing.\nversion = 4\n\n[[package]]\nname = \"pp-isolated-build-probe\"\n\
+         version = \"0.0.0\"\n",
+    );
+    write(
+        probe.join("build.rs"),
+        "fn main() {\n    let seen: String = std::env::vars_os()\n        .map(|(name, value)| \
+         format!(\"{}={}\\n\", name.to_string_lossy(), value.to_string_lossy()))\n        \
+         .collect();\n    std::fs::write(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/seen-env\"), \
+         seen).unwrap();\n}\n",
+    );
+    write(probe.join("src/lib.rs"), "");
+
+    let real = |name: &str| std::env::var_os(name);
+    let real_home = real("HOME").map(PathBuf::from);
+    let rustup_home = real("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| real_home.map(|home| home.join(".rustup")));
+    let mut parent_env: Vec<(OsString, OsString)> = FAKE_SECRETS[..10]
+        .iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+    parent_env.extend([
+        ("HOME".into(), home.clone().into_os_string()),
+        ("CARGO_HOME".into(), cargo_home.clone().into_os_string()),
+        ("CARGO_BUILD_JOBS".into(), "2".into()),
+        ("PATH".into(), real("PATH").unwrap()),
+    ]);
+    if let Some(rustup_home) = rustup_home {
+        parent_env.push(("RUSTUP_HOME".into(), rustup_home.into_os_string()));
+    }
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cargo = real("CARGO").unwrap_or_else(|| "cargo".into());
+    let build = || {
+        isolated_build(
+            &cargo,
+            &probe.join("Cargo.toml"),
+            "pp-isolated-build-probe",
+            &target,
+            &toolchain_pin(&workspace.join("..")),
+            &parent_env,
+        )
+    };
+
+    let mut names: Vec<_> = build()
+        .get_envs()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut expected = vec![
+        "CARGO_BUILD_JOBS",
+        "CARGO_HOME",
+        "PATH",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTC_WRAPPER",
+        "RUSTUP_TOOLCHAIN",
+    ];
+    if parent_env.iter().any(|(name, _)| name == "RUSTUP_HOME") {
+        expected.push("RUSTUP_HOME");
+        expected.sort();
+    }
+    assert_eq!(names, expected);
+
+    let output = build().output().unwrap();
+    assert!(output.status.success(), "{}", build_failure(&output));
+    let seen = std::fs::read_to_string(probe.join("seen-env")).unwrap();
+    for (planted_in, value) in FAKE_SECRETS {
+        assert!(
+            !seen.contains(value),
+            "the build received the fake value planted in {planted_in}"
+        );
+    }
+    assert!(
+        !seen.contains("PP_FAKE_CONFIG"),
+        "the build read a Cargo config file"
+    );
+    assert!(
+        seen.lines()
+            .any(|line| line == format!("CARGO_HOME={}", target.join("cargo-home").display())),
+        "the build did not use the isolated Cargo home"
+    );
+
+    let leaked = "pp-fake-compiler-output-0015";
+    write(
+        probe.join("src/lib.rs"),
+        &format!("compile_error!(\"token={leaked}\");\n"),
+    );
+    let output = build().output().unwrap();
+    assert!(!output.status.success(), "the failing probe built");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(leaked),
+        "the probe's compiler error should carry the fake value this check looks for"
+    );
+    let message = build_failure(&output);
+    assert!(
+        !message.contains(leaked),
+        "the failure message carries build output"
+    );
+    assert!(
+        message.contains("crates that failed to compile: [\"pp-isolated-build-probe\"]"),
+        "{message}"
     );
 }
 
 /// One start, bounded so a start that never exits fails the test with
-/// `hung` instead of hanging it.
+/// `hung` instead of hanging it. The server gets only `env`, so its output
+/// cannot carry a value from the test's environment.
 async fn launch(binary: &Path, env: &[(&str, &str)], args: &[OsString], hung: &str) -> Output {
     let mut command = child_process::command(binary);
-    command
-        .env_remove("PP_LISTEN_ADDR")
-        .envs(env.iter().copied())
-        .args(args);
+    command.env_clear().envs(env.iter().copied()).args(args);
     tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::from(command)
@@ -351,11 +500,20 @@ async fn ticket_t_8_versions_headless_refusals_exit_without_restarts() {
                     "pp-server did not exit; possible reopen loop",
                 )
                 .await;
-                let stderr = String::from_utf8(output.stderr).unwrap();
-                assert_eq!(output.status.code(), Some(78), "{stderr}");
+                let stderr = String::from_utf8_lossy(&output.stderr);
                 let count = |wanted: &str| stderr.lines().filter(|line| *line == wanted).count();
-                assert_eq!(count(&diagnostic), 1, "{stderr}");
-                assert_eq!(count(&recovery), 1, "{stderr}");
+                // The facts, not the server's output.
+                let facts = format!(
+                    "rust_only={rust_only} schema={found} attempt={attempt}: exit {:?}, \
+                     diagnostic line {} times, recovery line {} times, {} stderr lines",
+                    output.status.code(),
+                    count(&diagnostic),
+                    count(&recovery),
+                    stderr.lines().count()
+                );
+                assert_eq!(output.status.code(), Some(78), "{facts}");
+                assert_eq!(count(&diagnostic), 1, "{facts}");
+                assert_eq!(count(&recovery), 1, "{facts}");
                 assert!(
                     output.stdout.is_empty(),
                     "refused start announced an origin or shutdown receipt"
@@ -408,16 +566,19 @@ async fn production_gate_is_on(binary: &Path) {
         "pp-server opened an unmarked installation: the binary under test skips the ownership gate, as a test-unmarked-writer build does",
     )
     .await;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(
-        stderr.contains("Rust does not take over an existing installation"),
-        "{stderr}"
+    let refused = String::from_utf8_lossy(&output.stderr)
+        .contains("Rust does not take over an existing installation");
+    let facts = format!(
+        "exit {:?}, ownership refusal printed: {refused}, stdout {} bytes",
+        output.status.code(),
+        output.stdout.len()
     );
-    assert!(output.stdout.is_empty(), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{facts}");
+    assert!(refused, "{facts}");
+    assert!(output.stdout.is_empty(), "{facts}");
     only_the_lease_lock_was_added(&before, installation.path());
     println!(
-        "release pp-server enforces the ownership marker gate: {}",
-        stderr.trim()
+        "release pp-server enforces the ownership marker gate: exit 1, \
+         \"Rust does not take over an existing installation\""
     );
 }

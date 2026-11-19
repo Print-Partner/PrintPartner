@@ -20,6 +20,11 @@ export class CoreError extends Error {
   errors: readonly FieldProblem[] = [];
   /** The problem's `files` list: each Source file a download refused, in the core's order. */
   files: readonly UnavailableSourceFile[] = [];
+  /**
+   * True when the body was read whole as an `application/problem+json` object whose `status`
+   * equals this answer's status: the core's own problem, not a proxy page or a cut-off body.
+   */
+  problem = false;
 
   constructor(
     readonly status: number,
@@ -42,6 +47,7 @@ export interface HoldingBuild {
 
 /** The problem code, detail, holding Builds and refused fields, when present. */
 async function problem(response: Response): Promise<{
+  matches?: boolean;
   detail?: string;
   code?: string;
   conflictingBuilds?: HoldingBuild[];
@@ -50,6 +56,11 @@ async function problem(response: Response): Promise<{
 }> {
   const body: unknown = await response.json().catch(() => undefined);
   if (typeof body !== "object" || body === null) return {};
+  const type = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const matches =
+    type === "application/problem+json" &&
+    !Array.isArray(body) &&
+    (body as Record<string, unknown>).status === response.status;
   const text = (key: string) => {
     const value: unknown = (body as Record<string, unknown>)[key];
     return typeof value === "string" ? value : undefined;
@@ -88,7 +99,7 @@ async function problem(response: Response): Promise<{
           : [];
       })
     : [];
-  return { detail: text("detail"), code: text("code"), conflictingBuilds, errors, files };
+  return { matches, detail: text("detail"), code: text("code"), conflictingBuilds, errors, files };
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -125,10 +136,11 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
       const write = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
       for (const listener of unauthorized) listener({ write });
     }
-    const { detail, code, conflictingBuilds, errors, files } = await problem(response);
+    const { matches, detail, code, conflictingBuilds, errors, files } = await problem(response);
     const error = new CoreError(response.status, path, detail, code, conflictingBuilds);
     error.errors = errors ?? [];
     error.files = files ?? [];
+    error.problem = matches ?? false;
     throw error;
   }
   return response;

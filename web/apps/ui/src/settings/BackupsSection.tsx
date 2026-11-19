@@ -5,6 +5,7 @@ import { ContractError, RequestContractError, writeCore } from "../core/rust";
 import { reason } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
+import { restoreAnswer, restoreVerdict } from "./restoreAnswer";
 import { currentRestore, restoreSent, setRestore, useRestore, type Restore } from "./restoreOutcome";
 
 type Backup = RouteResponse<"createInstallationBackup">;
@@ -67,23 +68,38 @@ async function stageBackup(file: File): Promise<Preview> {
 }
 
 /**
- * Only an answer that proves nothing changed is a refusal: a request never sent, a 4xx (the
- * route and its gate decide every 4xx before the restore is queued), `restore_rolled_back`, and
- * `restore_busy`, the one 503 the core sends before activation changes anything. An unknown or
- * rolled-back stage needs the file again. Any other answer may follow a swap, so it is lost: a
- * lost answer, an unreadable 200, any other 503 (the core sends a code-less 503 when the
- * writer's reply is lost after the restore was queued), `restart_required`, `outcome_unknown`
- * or any 5xx.
+ * Sends one restore. A redirect is refused rather than followed, so a 307 or 308 from a layer
+ * in front of the core cannot send the restore a second time; the refused redirect is a
+ * network error, which `restoreVerdict` reads as an unknown outcome.
  */
+async function sendRestore(preview: Preview): Promise<void> {
+  const path = routePath("restoreInstallation", {});
+  const request = routes.restoreInstallation.request.safeParse({
+    restore_id: preview.restore_id,
+    confirmation: preview.confirmation,
+  });
+  if (!request.success) throw new RequestContractError(path);
+  const response = await fetchCore(path, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(request.data),
+    redirect: "error",
+  });
+  const parsed = routes.restoreInstallation.response.safeParse(await response.json().catch(() => undefined));
+  if (!parsed.success) throw new ContractError(path);
+}
+
+/** What the section shows for a failed restore; `restoreVerdict` alone decides which. */
 function restoreFailure(failure: unknown): Restore {
-  if (failure instanceof CoreError && failure.code === "restore_not_found") {
+  const verdict = restoreVerdict(restoreAnswer(failure));
+  if (verdict === "choose-again" && failure instanceof CoreError && failure.code === "restore_not_found") {
     return {
       kind: "refused",
       text: "The core no longer holds this check, so this installation is unchanged. Choose the file again and check it.",
       chooseAgain: true,
     };
   }
-  if (failure instanceof CoreError && failure.code === "restore_rolled_back") {
+  if (verdict === "choose-again") {
     // The core removes the stage when it rolls back, so the same id cannot be sent again.
     return {
       kind: "refused",
@@ -91,14 +107,10 @@ function restoreFailure(failure: unknown): Restore {
       chooseAgain: true,
     };
   }
-  const unchanged =
-    failure instanceof RequestContractError ||
-    (failure instanceof CoreError &&
-      (failure.status < 500 || (failure.status === 503 && failure.code === "restore_busy")));
-  if (unchanged) {
+  if (verdict === "unchanged") {
     return { kind: "refused", text: `The restore was refused: ${why(failure)}. This installation is unchanged.` };
   }
-  const said = failure instanceof CoreError && failure.detail ? `${failure.detail}. ` : "";
+  const said = failure instanceof CoreError && failure.problem && failure.detail ? `${failure.detail}. ` : "";
   return { kind: "lost", text: `${said}${LOST_RESTORE}` };
 }
 
@@ -118,11 +130,13 @@ function CreateBackup({ offline, locked }: { offline: boolean; locked: boolean }
     try {
       setBackup(await writeCore("createInstallationBackup", {}));
     } catch (failure) {
-      if (failure instanceof CoreError || failure instanceof RequestContractError) {
-        // A refused create leaves the core's kept backup as it was.
+      if ((failure instanceof CoreError && failure.problem) || failure instanceof RequestContractError) {
+        // The core keeps a new archive only when it answers 200, so its own refusal, or a
+        // request never sent, leaves the kept backup as it was.
         setNote(`The backup was not made: ${why(failure)}.`);
       } else {
-        // The core may have made a new backup and dropped the one shown here.
+        // A redirect, a proxy's page, a cut-off body or a lost answer: the core may have made a
+        // new backup and dropped the one shown here. Creating again is safe; it replaces it.
         setBackup(null);
         setNote("The core did not confirm the backup. Create backup again to download one.");
       }
@@ -382,10 +396,7 @@ function RestoreBackup({ offline, restore }: { offline: boolean; restore: Restor
     setRestore({ kind: "restoring" });
     let outcome: Restore;
     try {
-      await writeCore("restoreInstallation", {}, {
-        restore_id: preview.restore_id,
-        confirmation: preview.confirmation,
-      });
+      await sendRestore(preview);
       outcome = { kind: "done" };
     } catch (failure) {
       outcome = restoreFailure(failure);

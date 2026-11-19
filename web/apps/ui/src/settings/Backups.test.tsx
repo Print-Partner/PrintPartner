@@ -285,6 +285,26 @@ describe("Backups: create and download", () => {
     );
     expect(within(region).queryByRole("link", { name: "Download" })).toBeNull();
   });
+
+  it.each([
+    ["a 300", () => new Response(null, { status: 300 })],
+    ["a 502 proxy page", () => new Response("<html>Bad Gateway</html>", { status: 502, headers: { "content-type": "text/html" } })],
+  ])("%s after a backup was shown drops it and says the core did not confirm", async (_, answer) => {
+    let made = false;
+    const fake = core({ create: () => (made ? answer() : ((made = true), json(BACKUP))) });
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    fireEvent.click(within(region).getByRole("button", { name: "Create backup" }));
+    expect(await within(region).findByText(SHA)).toBeTruthy();
+    fireEvent.click(within(region).getByRole("button", { name: "Create backup" }));
+    expect((await within(region).findByRole("alert")).textContent).toBe(
+      "The core did not confirm the backup. Create backup again to download one.",
+    );
+    expect(within(region).queryByText(SHA)).toBeNull();
+    expect(within(region).queryByRole("link", { name: "Download" })).toBeNull();
+    expect(fake.calls(CREATE)).toHaveLength(2);
+  });
 });
 
 describe("Backups: check and restore", () => {
@@ -504,6 +524,59 @@ describe("Backups: check and restore", () => {
     expect((within(region).getByLabelText("Backup file") as HTMLInputElement).disabled).toBe(true);
     expect(within(region).getByRole("button", { name: "Create backup" }).getAttribute("aria-disabled")).toBe("true");
     expect(fake.calls(RESTORE)).toHaveLength(1);
+  });
+
+  // The core never answers the restore route with 3xx; one comes from a layer in front of it
+  // and proves nothing about what the core did.
+  it.each([
+    ["a 300", () => new Response(null, { status: 300 })],
+    ["a 302 without Location", () => new Response(null, { status: 302 })],
+    ["a 400 that is not the core's problem body", () => json({ detail: "Bad Request" }, 400)],
+    [
+      "a 409 problem whose status disagrees",
+      () =>
+        new Response(JSON.stringify({ type: "about:blank", title: "Refused", status: 503, detail: "Refused" }), {
+          status: 409,
+          headers: { "content-type": "application/problem+json" },
+        }),
+    ],
+  ])("%s is an unknown outcome: locked, Reload only, exactly one restore request", async (_, answer) => {
+    const fake = core({ stage: () => json(PREVIEW), restore: answer });
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    await chooseAndCheck(region);
+    fireEvent.click(await within(region).findByRole("button", { name: "Restore this backup" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(LOST_RESTORE);
+    expect(within(dialog).queryByText(/unchanged/)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Replace this installation" })).toBeNull();
+    expect(within(dialog).getAllByRole("button").map((button) => button.textContent)).toEqual(["Reload"]);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(region).queryByRole("button", { name: "Restore this backup" })).toBeNull();
+    expect(within(region).getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(within(region).getByRole("button", { name: "Check backup" }).getAttribute("aria-disabled")).toBe("true");
+    expect((within(region).getByLabelText("Backup file") as HTMLInputElement).disabled).toBe(true);
+    expect(within(region).getByRole("button", { name: "Create backup" }).getAttribute("aria-disabled")).toBe("true");
+    expect(fake.calls(RESTORE)).toHaveLength(1);
+  });
+
+  it("sends the restore with redirects refused, so a 307 or 308 cannot send it again", async () => {
+    const fake = core({ stage: () => json(PREVIEW), restore: () => json({ restored_schema_version: 52, schema_version: 52 }) });
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    await chooseAndCheck(region);
+    fireEvent.click(await within(region).findByRole("button", { name: "Restore this backup" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect(await within(dialog).findByText("Restore complete")).toBeTruthy();
+    const [, init] = fake.calls(RESTORE)[0] ?? [];
+    expect(init?.redirect).toBe("error");
+    expect(init?.method).toBe("POST");
   });
 
   it.each([

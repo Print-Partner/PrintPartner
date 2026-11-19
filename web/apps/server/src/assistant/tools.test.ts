@@ -2182,6 +2182,30 @@ option_groups:
     });
   });
 
+  it("propose_add_source refuses a separator-only name that folds to an existing one, at proposal and Apply", async () => {
+    // Proposed before "---" exists, applied after: Apply runs the same check.
+    const stale = await invokeAssistantTool(
+      "propose_add_source",
+      { name: "_ _", source_kind: "local" },
+      { repo },
+    );
+    expect(stale.proposedAction?.type).toBe("propose_add_source");
+    repo.createSource({ name: "---", source_kind: "local" });
+
+    const proposed = await invokeAssistantTool(
+      "propose_add_source",
+      { name: "___", source_kind: "local" },
+      { repo },
+    );
+    expect(proposed.proposedAction).toBeUndefined();
+    expect(JSON.parse(proposed.content).error).toBe("Source already exists: ---");
+
+    expect(
+      await applyAssistantAction(stale.proposedAction!, { repo, jobs: { start: async () => "x" } as never }),
+    ).toMatchObject({ ok: false, detail: "Source already exists: ---" });
+    expect(repo.listSources().filter((s) => /^[\s_-]+$/.test(s.name)).map((s) => s.name)).toEqual(["---"]);
+  });
+
   it("propose_add_source Apply chains a Sync follow-up card when a plan is active", async () => {
     const plan = repo.createProfile("Chain plan");
     const { proposedAction } = await invokeAssistantTool(

@@ -39,6 +39,7 @@ describe("assistant source tool model", () => {
       [
         { id: 44, name: "A4T", category: null, url: "https://github.com/Armchair-Heavy-Industries/A4T" },
         { id: 54, name: "Nevermore-StealthMax", category: null, url: "https://github.com/nevermore3d/StealthMax" },
+        { id: 60, name: "---", category: null, url: "" },
       ],
       [],
     );
@@ -62,8 +63,15 @@ describe("assistant source tool model", () => {
       ["Renamed A4T", "https://github.com/armchair-heavy-industries/a4t.git", 44],
       ["Renamed A4T", "git@github.com:Armchair-Heavy-Industries/A4T.git", 44],
       ["Renamed A4T", "https://github.com/Armchair-Heavy-Industries/A4T/tree/main/", 44],
+      ["---", null, 60],
+      ["___", null, 60],
+      [" - _ ", null, 60],
     ])("rejects %s from %s as Source %i", (name, url, id) => {
       expect(existingSourceFor(repo, name, url)?.id).toBe(id);
+    });
+
+    it("matches no Source by name when the name is blank", () => {
+      expect(existingSourceFor(repo, "   ", null)).toBeNull();
     });
   });
 

@@ -66,14 +66,15 @@ function repositoryKey(url: string): string | null {
  * The Source that adding `name` from `url` would duplicate: one whose name is equal after
  * case and separator folding, or one cloned from the same repository. Unlike
  * `sourceByName`, a name that only contains another ("A4Tv2" and "A4T") is a new Source.
+ * Names made only of separators fold to "" and so equal each other: `___` duplicates `---`.
  */
 export function existingSourceFor(repo: AppRepository, name: string, url?: string | null) {
-  const wantedName = compactSourceName(name);
+  const wantedName = name.trim() ? compactSourceName(name) : null;
   const wantedRepository = url ? repositoryKey(url) : null;
   return (
     repo.listSources().find(
       (source) =>
-        (wantedName !== "" && compactSourceName(source.name) === wantedName) ||
+        (wantedName != null && compactSourceName(source.name) === wantedName) ||
         (wantedRepository != null && repositoryKey(source.url) === wantedRepository),
     ) ?? null
   );

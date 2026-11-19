@@ -68,7 +68,7 @@
   "scorer_authors": [
     "poitee"
   ],
-  "vendors": ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu", "google"],
+  "vendors": ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu", "google", "qwen", "meituan", "tencent"],
   "scorer_seats": {
     "claude-opus-5-5": "anthropic",
     "grok-4.7": "xai",
@@ -76,10 +76,20 @@
     "deepseek-v4.1-flash-free": "deepseek",
     "gpt-6.2-sol": "openai",
     "composer-2.5": "cursor",
+    "gemini-3.8-flash": "google",
+    "qwen38-gufo": "qwen",
+    "qwen38-flash": "qwen",
+    "longcat-2.5-free": "meituan",
+    "hy4-flash-free": "tencent",
     "gemini-4-neon-high": "google"
   },
   "pp_score_seats": {
     "gpt-6.1-sol": "openai",
-    "gpt-6.2-sol": "openai"
+    "gpt-6.2-sol": "openai",
+    "gemini-3.8-flash": "google",
+    "qwen38-gufo": "qwen",
+    "qwen38-flash": "qwen",
+    "longcat-2.5-free": "meituan",
+    "hy4-flash-free": "tencent"
   }
 }

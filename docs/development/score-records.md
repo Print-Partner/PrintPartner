@@ -10,7 +10,7 @@ takes a name from `vendors` (the `vendors` list in `scripts/merge-classes.json`)
 takes one of those names, or `cursor-auto` or `unknown`. `obstacles=` comes last:
 
 ```text
-pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|cursor|deepseek|openai|xai|zhipu|google> score=<integer> author=<anthropic|cursor|deepseek|openai|xai|zhipu|google|cursor-auto|unknown> obstacles=<none|refusal,guard,approval-stall>
+pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|cursor|deepseek|openai|xai|zhipu|google|qwen|meituan|tencent> score=<integer> author=<anthropic|cursor|deepseek|openai|xai|zhipu|google|qwen|meituan|tencent|cursor-auto|unknown> obstacles=<none|refusal,guard,approval-stall>
 ```
 
 `obstacles=` is the scorer's disclosure of what it hit while scoring (Chad, 2026-11-17): `refusal`
@@ -38,8 +38,14 @@ vendor. Since 2026-11-12 (owner decision) they are `claude-opus-5-5` (Anthropic)
 (xAI), `glm-5.3-flash-free` (Zhipu) and `deepseek-v4.1-flash-free` (DeepSeek). OpenCode runs the
 last two as `opencode/glm-5.3-flash-free` and `opencode/deepseek-v4.1-flash-free`, variant max.
 Since 2026-11-18 (owner decision) `gpt-6.2-sol` (OpenAI) and `composer-2.5` (Cursor) are also
-sensitive-merge seats. Since 2026-11-19 (Chad) `gemini-4-neon-high` (Google; Gemini 4 Neon through the
-Antigravity CLI on Google AI Pro) is too. `gpt-6.1-sol` is not.
+sensitive-merge seats. `gpt-6.1-sol` is not.
+Since 2026-11-18 (owner decision, Chad's card answer at 7:38 PM ET) these seats count as well:
+`gemini-3.8-flash` (Google / Cursor; T3 lists it as `cursor/gemini-3.8-flash`, the record uses the
+unprefixed id and `vendor=google`), `qwen38-gufo` and `qwen38-flash` (Qwen), `longcat-2.5-free`
+(Meituan) and `hy4-flash-free` (Tencent). A `gemini-3.8-flash` record with `vendor=cursor` does not
+count.
+Since 2026-11-19 (Chad) `gemini-4-neon-high` (Google; Gemini 4 Neon through the Antigravity CLI on
+Google AI Pro) is a sensitive-merge seat too.
 A sensitive PR needs two allowed seats from two different vendors, neither of them the PR author's
 vendor (Anthropic for Claude lanes, OpenAI for Sol lanes), each scoring at least 9 on the exact
 head. Repeated seats count once. Other seats do not qualify.
@@ -59,7 +65,7 @@ When a trusted `scorer_authors` account posts a well-formed record, the `post-pp
 - A record may be wrapped in inline-code backticks (`` `pp-score ...` ``) or sit inside a code fence; surrounding whitespace and backticks are dropped before the line is matched. A record embedded in prose is still ignored.
 - A record whose `vendor=` equals its `author=` is a same-family score and fails the head, as does a head whose records disagree on `author=`. The old `Score: N/10 from <seat> on head <sha>` form names no author family and no longer counts.
 - If `author=` is `cursor-auto` or `unknown`, the head also needs a trusted Anthropic record and a trusted OpenAI record (`gpt-6.1-sol` or another OpenAI seat) on that exact SHA. The status uses the lower of those scores and succeeds only at 8 or more. A missing family, a score below 8, or a complete pair on a stale SHA fails closed, including on `merge_group`. Known families are unchanged: one trusted cross-family score of 8 or more is enough, and same-family scores still fail.
-- `pp_score_seats` in `scripts/merge-classes.json` adds seats the status accepts on top of `scorer_seats`. It holds the Codex seats `gpt-6.1-sol` and `gpt-6.2-sol` (both OpenAI; 6.2 added 2026-11-17; 6.2 is also in `scorer_seats` since 2026-11-18). The sensitive merge guard still reads `scorer_seats` only.
+- `pp_score_seats` in `scripts/merge-classes.json` adds seats the status accepts on top of `scorer_seats`. It holds the Codex seats `gpt-6.1-sol` and `gpt-6.2-sol` (both OpenAI; 6.2 added 2026-11-17; 6.2 is also in `scorer_seats` since 2026-11-18). Since the 2026-11-18 7:38 PM ET owner decision it also holds `gemini-3.8-flash`, `qwen38-gufo`, `qwen38-flash`, `longcat-2.5-free` and `hy4-flash-free`, the same five seats as `scorer_seats`. The sensitive merge guard still reads `scorer_seats` only.
 - The `post-pp-score-status` workflow runs the parser from the base branch, never from the PR head. A change to the record format takes effect for every PR once it merges, including the PR that makes it.
 - On `merge_group`, the workflow checks out the queue entry's base SHA, reads the PRs in the group from its squash commits (`... (#N)`), and posts `pp/score` on the merge group SHA. It posts success only when every PR has a trusted score of 8 or more on its current head; otherwise, or when anything cannot be read, it posts failure naming the PR or the reason, so the entry leaves the queue instead of waiting for the timeout.
 

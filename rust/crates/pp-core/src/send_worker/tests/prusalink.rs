@@ -4,7 +4,7 @@
 //! request. A refusal fails the send and frees the printer; an unknown outcome
 //! waits for reconciliation and is never resent, across a restart too.
 use super::*;
-use pp_testkit::prusalink::{PROBE, UploadPrinter};
+use pp_testkit::prusalink::{PROBE, Request, UploadPrinter};
 
 const PUT: &str = "/api/v1/files/usb/a.gcode";
 
@@ -19,8 +19,8 @@ fn prusalink(status: u16, body: &[u8]) -> UploadPrinter {
     UploadPrinter::start(PUT, status, body).unwrap()
 }
 
-/// The printer received exactly one send: a `PUT` of the staged bytes.
-fn one_put_of_the_staged_file(printer: &UploadPrinter) -> String {
+/// The printer received exactly one send: a whole `PUT` of the staged bytes.
+fn one_put_of_the_staged_file(printer: &UploadPrinter) -> Request {
     let sends = printer.sends();
     let lines: Vec<_> = sends.iter().map(|send| send.line()).collect();
     assert_eq!(sends.len(), 1, "one PUT, no resend or start: {lines:?}");
@@ -28,8 +28,10 @@ fn one_put_of_the_staged_file(printer: &UploadPrinter) -> String {
         sends[0].line().starts_with(&format!("PUT {PUT} ")),
         "{lines:?}"
     );
+    assert!(sends[0].complete, "the PUT body arrived whole");
     assert_eq!(sends[0].body, staged(), "the printer got the staged bytes");
-    sends[0].head.to_lowercase()
+    assert_eq!(sends[0].header("overwrite"), Some("?1"));
+    sends[0].clone()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -44,13 +46,9 @@ async fn gre_1240_prusalink_send_puts_once_and_starts_only_through_its_header() 
         assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
         assert_eq!(worker.run_next().await.unwrap(), Some(Sent::Done));
 
-        let head = one_put_of_the_staged_file(&printer);
+        let put = one_put_of_the_staged_file(&printer);
         let flag = if start { "?1" } else { "?0" };
-        assert!(
-            head.contains(&format!("print-after-upload: {flag}")),
-            "{head}"
-        );
-        assert!(head.contains("overwrite: ?1"), "{head}");
+        assert_eq!(put.header("print-after-upload"), Some(flag), "{}", put.head);
         assert!(printer.request_lines()[0].starts_with(&format!("GET {PROBE} ")));
 
         let (state, error, job, result) = farm.outcome("q1");

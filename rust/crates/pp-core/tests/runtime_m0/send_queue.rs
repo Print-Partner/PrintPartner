@@ -428,12 +428,31 @@ impl PrusaPrinters {
     }
 
     /// The send requests each simulator received, in the order above. Each
-    /// must be one `PUT` of the file Add staged.
+    /// must be a whole `PUT` of the file Add staged, with exact header values:
+    /// only `accepting` gets a send with Start.
     fn sends(&self) -> [Vec<Request>; 3] {
-        [&self.accepting, &self.lost, &self.refusing].map(|printer| {
+        [
+            (&self.accepting, "?1"),
+            (&self.lost, "?0"),
+            (&self.refusing, "?0"),
+        ]
+        .map(|(printer, start)| {
             let sends = printer.sends();
             for send in &sends {
-                assert_eq!(send.body, GCODE.as_bytes(), "{}", send.line());
+                assert!(
+                    send.line().starts_with(&format!("PUT {PRUSA_PUT} ")),
+                    "{}",
+                    send.head
+                );
+                assert!(send.complete, "{}", send.head);
+                assert_eq!(send.body, GCODE.as_bytes(), "{}", send.head);
+                assert_eq!(
+                    send.header("print-after-upload"),
+                    Some(start),
+                    "{}",
+                    send.head
+                );
+                assert_eq!(send.header("overwrite"), Some("?1"), "{}", send.head);
             }
             sends
         })
@@ -466,12 +485,8 @@ async fn send_queue_rust_only_runtime_prusalink_in_child() {
     let job = json!(send_now(&origin, &cookie, id).await);
     let done = settled(&origin, &cookie, id).await;
     assert_eq!(outcome(&done), [&json!("done"), &none, &job, &json!(false)]);
-    let [accepted, _, _] = printers.sends();
-    assert_eq!(accepted.len(), 1, "{accepted:?}");
-    let head = accepted[0].head.to_lowercase();
-    assert!(head.starts_with(&format!("put {PRUSA_PUT} ")), "{head}");
-    assert!(head.contains("print-after-upload: ?1"), "{head}");
-    assert!(!head.contains("/print/start"), "{head}");
+    // `sends` checks the PUT's bytes and its exact `print-after-upload: ?1`.
+    assert_eq!(printers.counts(), [1, 0, 0], "one PUT, no start request");
 
     // A malformed answer to the PUT leaves the outcome unknown.
     let lost = add(&origin, &cookie, "p-lost", build, false).await;

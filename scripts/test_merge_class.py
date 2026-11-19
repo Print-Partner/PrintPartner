@@ -144,12 +144,15 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(data["scorer_authors"], ["poitee"])
         # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max.
         # Owner decision 2026-11-18: gpt-6.2-sol and composer-2.5 join the council scorer pool.
+        # Owner decision 2026-11-18 (thin-relay plan): gpt-6.2-astra joins it too.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek",
-                                                "gpt-6.2-sol": "openai", "composer-2.5": "cursor"})
+                                                "gpt-6.2-sol": "openai", "composer-2.5": "cursor",
+                                                "gpt-6.2-astra": "openai"})
         # gpt-6.1-sol counts for the pp/score status only, not for the sensitive merge guard.
-        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
+        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
+                                                  "gpt-6.2-astra": "openai"})
 
 
 class ScoreTests(unittest.TestCase):

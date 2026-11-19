@@ -75,10 +75,12 @@
     "glm-5.3-flash-free": "zhipu",
     "deepseek-v4.1-flash-free": "deepseek",
     "gpt-6.2-sol": "openai",
-    "composer-2.5": "cursor"
+    "composer-2.5": "cursor",
+    "gpt-6.2-astra": "openai"
   },
   "pp_score_seats": {
     "gpt-6.1-sol": "openai",
-    "gpt-6.2-sol": "openai"
+    "gpt-6.2-sol": "openai",
+    "gpt-6.2-astra": "openai"
   }
 }

@@ -8,6 +8,8 @@ of any refusal, guard refusal or approval stall it hit; a line without it does n
 author=cursor-auto or author=unknown requires trusted
 anthropic and openai records on that exact head; the lower score is the bar. In --merge-group mode it checks every PR in a merge
 queue entry and posts one pp/score status on the merge group SHA, failing closed.
+A PR head with no records of its own can carry the records of an earlier head across clean
+merges of main (Chad, 2026-11-18 11:02 PM ET); see find_carry.
 Default is a dry run that prints the gh api POST that would be sent. Pass --post to apply.
 """
 
@@ -18,11 +20,12 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
 # obstacles= is required here: a record without it does not count. merge_class.py holds the vocabulary.
-from merge_class import parse_obstacles
+from merge_class import classify, load_classes, parse_obstacles
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
@@ -40,6 +43,14 @@ DUAL_REQUIRED_VENDORS = ("anthropic", "openai")
 QUEUE_REF = re.compile(r"^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-([0-9a-f]{40})$")
 # The queue squashes each PR into one commit whose title GitHub ends with "(#<number>)".
 SQUASH_TITLE = re.compile(r"\(#([0-9]+)\)$")
+MAIN = "main"
+# A carry walks back at most this many merge-of-main hops.
+CARRY_MAX_HOPS = 5
+# GitHub counts these check run conclusions as passing for a required check
+# (path-filtered jobs such as actionlint report skipped).
+PASSING = frozenset({"success", "skipped", "neutral"})
+# Grok records never carry.
+NO_CARRY_VENDORS = frozenset({"xai"})
 
 
 @dataclass(frozen=True)
@@ -215,6 +226,181 @@ def plan_statuses(records: list[Record]) -> list[StatusPlan]:
     return [plan_head(head, group) for head, group in sorted(by_head.items())]
 
 
+class LocalGit:
+    """The checkout the script runs in. Fetches only missing commits, and only as deep as needed."""
+
+    def __init__(self, cwd=ROOT, remote="origin"):
+        self.cwd = Path(cwd)
+        self.remote = remote
+
+    def _git(self, *args, check=True):
+        return subprocess.run(["git", *args], cwd=self.cwd, text=True, capture_output=True, check=check)
+
+    def ensure(self, *shas: str) -> None:
+        missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
+        if not missing:
+            return
+        # The workflow checkout is shallow; fetch just these snapshots. A full clone fetches normally.
+        shallow = self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        self._git("fetch", "--no-tags", "--quiet", *(["--depth=1"] if shallow else []), self.remote, *missing)
+
+    def merge_tree(self, base: str, ours: str, theirs: str) -> str | None:
+        """Tree of the clean merge of ours and theirs from base, or None when it conflicts."""
+        self.ensure(base, ours, theirs)
+        done = self._git("merge-tree", "--write-tree", f"--merge-base={base}", ours, theirs, check=False)
+        if done.returncode == 1:
+            return None
+        if done.returncode != 0:
+            raise RuntimeError(f"git merge-tree failed: {done.stderr.strip()}")
+        return done.stdout.splitlines()[0].strip()
+
+
+class GitHubFacts:
+    """What a carry needs to know about commits. Reads GitHub; merges with local git."""
+
+    def __init__(self, repo: str, git: LocalGit | None = None):
+        self.repo = repo
+        self.git = git or LocalGit()
+        self._required = None
+
+    def commit(self, sha: str) -> tuple[list[str], str]:
+        data = gh_json(f"repos/{self.repo}/git/commits/{sha}")
+        return [p["sha"] for p in data["parents"]], data["tree"]["sha"]
+
+    def on_main(self, sha: str) -> bool:
+        data = gh_json(f"repos/{self.repo}/compare/{sha}...{MAIN}")
+        return data.get("status") in ("identical", "ahead")
+
+    def merge_base(self, a: str, b: str) -> str:
+        sha = ((gh_json(f"repos/{self.repo}/compare/{a}...{b}").get("merge_base_commit") or {}).get("sha"))
+        if not isinstance(sha, str) or not FULL_SHA.fullmatch(sha):
+            raise GateError(f"no merge base for {a[:7]} and {b[:7]}")
+        return sha
+
+    def merged_tree(self, ours: str, theirs: str) -> str | None:
+        return self.git.merge_tree(self.merge_base(ours, theirs), ours, theirs)
+
+    def required_checks(self) -> list[dict]:
+        """The required status checks of main's rulesets, except pp/score itself."""
+        if self._required is None:
+            rules = gh_json(f"repos/{self.repo}/rules/branches/{MAIN}")
+            found = {}
+            for rule in rules if isinstance(rules, list) else []:
+                if rule.get("type") != "required_status_checks":
+                    continue
+                for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
+                    if check.get("context") and check["context"] != CONTEXT:
+                        found[(check["context"], check.get("integration_id"))] = check
+            if not found:
+                raise GateError("could not read main's required checks")
+            self._required = list(found.values())
+        return self._required
+
+    def checks_failing(self, sha: str) -> str | None:
+        """None when every required check passed on sha; otherwise the first one that did not."""
+        statuses = None
+        for check in self.required_checks():
+            name, app = check["context"], check.get("integration_id")
+            query = f"check_name={urllib.parse.quote(name)}&filter=latest&per_page=100"
+            if app:
+                query += f"&app_id={app}"
+            runs = gh_json(f"repos/{self.repo}/commits/{sha}/check-runs?{query}").get("check_runs") or []
+            runs = [r for r in runs if r.get("name") == name]
+            if runs:
+                bad = [r for r in runs if r.get("status") != "completed" or r.get("conclusion") not in PASSING]
+                if bad:
+                    return f"{name} is {bad[0].get('conclusion') or bad[0].get('status')}"
+                continue
+            if app:
+                return f"{name} has not run"
+            if statuses is None:
+                statuses = gh_json(f"repos/{self.repo}/commits/{sha}/status").get("statuses") or []
+            state = next((st.get("state") for st in statuses if st.get("context") == name), None)
+            if state != "success":
+                return f"{name} is {state or 'missing'}"
+        return None
+
+
+@dataclass(frozen=True)
+class Carry:
+    source: str | None  # the earlier head whose records count, or None
+    reason: str
+
+
+def hop(facts, head: str) -> tuple[str | None, str]:
+    """The previous head when head is a clean merge of main into it with CI passing; else (None, why)."""
+    parents, tree = facts.commit(head)
+    if len(parents) != 2:
+        return None, "not a merge commit"
+    previous, main = parents
+    if not facts.on_main(main):
+        return None, f"second parent {main[:7]} is not on {MAIN}"
+    merged = facts.merged_tree(previous, main)
+    if merged is None:
+        return None, "the merge of main had conflicts"
+    if merged != tree:
+        return None, "the merge commit differs from a clean merge"
+    failing = facts.checks_failing(head)
+    if failing:
+        return None, failing
+    return previous, "clean merge of main"
+
+
+def find_carry(head: str, scored: set[str], facts, max_hops: int = CARRY_MAX_HOPS) -> Carry:
+    """Walk back from head through clean merges of main to the nearest head with records.
+
+    Each hop H1 -> H0 needs: H1's parents are exactly [H0, M] with M on main, a clean
+    `git merge-tree` of H0 and M equal to H1's tree, and every other required check passing on H1.
+    The first head with records stops the walk, so newer fresh records always win.
+    """
+    current = head
+    for _ in range(max_hops):
+        previous, why = hop(facts, current)
+        if previous is None:
+            return Carry(None, f"{current[:7]}: {why}")
+        if previous in scored:
+            return Carry(previous, why)
+        current = previous
+    return Carry(None, f"no scored head within {max_hops} merges of main")
+
+
+def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[StatusPlan | None, str]:
+    """pp/score for a head with no records of its own, carried from an earlier head, or (None, why)."""
+    scored = {r.head for r in records}
+    if head in scored:
+        return None, f"{head[:7]} has its own records"
+    carry = find_carry(head, scored, facts)
+    if carry.source is None:
+        return None, carry.reason
+    source = carry.source
+    group = [r for r in records if r.head == source and r.vendor not in NO_CARRY_VENDORS]
+    if not group:
+        return None, f"{source[:7]} has no record that can carry"
+    plan = plan_head(source, group)
+    if plan.state != "success":
+        return None, f"{source[:7]} did not pass: {plan.description}"
+    low = [r for r in plan.records if r.score <= PASS_AT]
+    if strict and low:
+        return None, f"sensitive: {low[0].seat} scored {format_score(low[0].score)} on {source[:7]}"
+    prefix = f"carried from {source[:7]}: "
+    return StatusPlan(head, "success", _fit(prefix + plan.description, prefix + "scored 8+"),
+                      plan.records), f"carried from {source[:7]}"
+
+
+def strict_class(paths: list[str]) -> bool:
+    """Sensitive or owner paths need every carried seat above 8."""
+    return classify(paths, load_classes()) != "lane"
+
+
+def carry_for_pr(repo: str, pr: int, head: str, records: list[Record], facts) -> tuple[StatusPlan | None, str]:
+    """plan_carry for a live PR; any read failure means no carry."""
+    try:
+        files = fetch_files(repo, pr)
+        return plan_carry(head, records, strict_class(files), facts)
+    except Exception as err:  # noqa: BLE001 - an unreadable fact never carries a score
+        return None, f"cannot verify carry: {type(err).__name__}: {err}"
+
+
 def queue_prs(head_ref: str, base_sha: str, compare: dict) -> list[int]:
     """PR numbers in a merge group, oldest first, from its branch name and its commits.
 
@@ -245,18 +431,22 @@ def queue_prs(head_ref: str, base_sha: str, compare: dict) -> list[int]:
     return prs
 
 
-def plan_merge_group(head_sha: str, prs: list[int], pr_heads: dict, pr_records: dict) -> StatusPlan:
-    """One pp/score for the merge group SHA: success only if every PR passes on its current head."""
+def plan_merge_group(head_sha: str, prs: list[int], pr_heads: dict, pr_records: dict,
+                     carried: dict | None = None) -> StatusPlan:
+    """One pp/score for the merge group SHA: success only if every PR passes on its current head.
+
+    carried maps a PR to the plan_carry result for a head with no records of its own.
+    """
     passed = []
     for pr in prs:
         head = pr_heads.get(pr)
         if not isinstance(head, str) or not FULL_SHA.fullmatch(head):
             return StatusPlan(head_sha, "failure", f"#{pr}: could not read its head SHA", ())
         group = [r for r in pr_records.get(pr, []) if r.head == head]
-        if not group:
+        plan = plan_head(head, group) if group else (carried or {}).get(pr, (None, ""))[0]
+        if plan is None:
             return StatusPlan(head_sha, "failure",
                               f"#{pr}: no trusted score on its head {head[:7]}", ())
-        plan = plan_head(head, group)
         if plan.state != "success":
             return StatusPlan(head_sha, "failure",
                               _fit(f"#{pr} {head[:7]}: {plan.description}", f"#{pr}: below 8 or rejected"),
@@ -312,6 +502,15 @@ def fetch_comments(repo: str, pr: int) -> list[dict]:
     return data
 
 
+def fetch_files(repo: str, pr: int) -> list[str]:
+    out = subprocess.check_output(["gh", "api", "--paginate", f"repos/{repo}/pulls/{pr}/files",
+                                   "--jq", ".[].filename"], text=True)
+    files = [line for line in out.splitlines() if line]
+    if not files:
+        raise RuntimeError(f"no changed files for {repo}#{pr}")
+    return files
+
+
 def fetch_head(repo: str, pr: int) -> str:
     data = gh_json(f"repos/{repo}/pulls/{pr}")
     return ((data or {}).get("head") or {}).get("sha")
@@ -355,7 +554,13 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
         print(f"# merge group {head_sha} holds PRs {', '.join(f'#{p}' for p in prs)}")
         heads = {pr: fetch_head(repo, pr) for pr in prs}
         records = {pr: trusted_records(fetch_comments(repo, pr), trust) for pr in prs}
-        plan = plan_merge_group(head_sha, prs, heads, records)
+        facts = GitHubFacts(repo)
+        carried = {pr: carry_for_pr(repo, pr, heads[pr], records[pr], facts) for pr in prs
+                   if isinstance(heads[pr], str) and FULL_SHA.fullmatch(heads[pr])
+                   and not any(r.head == heads[pr] for r in records[pr])}
+        for pr, (_, why) in carried.items():
+            print(f"# #{pr} {heads[pr][:7]}: {why}")
+        plan = plan_merge_group(head_sha, prs, heads, records, carried)
     except GateError as err:
         plan = StatusPlan(head_sha, "failure", _fit(f"cannot verify merge group: {err}",
                                                     "cannot verify merge group"), ())
@@ -376,6 +581,8 @@ def main(argv=None) -> int:
     parser.add_argument("--base-sha", help="merge group base SHA (merge-group mode)")
     parser.add_argument("--head-ref", help="merge group head ref (merge-group mode)")
     parser.add_argument("--prs", help="dry-run aid: comma-separated PRs instead of reading the queue")
+    parser.add_argument("--carry-only", action="store_true",
+                        help="dry-run aid: ignore the current head's own records and decide its carry")
     parser.add_argument(
         "--post",
         action="store_true",
@@ -400,11 +607,28 @@ def main(argv=None) -> int:
             prs = [int(p) for p in args.prs.split(",")]
         return run_merge_group(args.repo, args.head_sha, args.base_sha, args.head_ref,
                                trust, args.post, prs)
+    if args.carry_only and args.post:
+        print("--carry-only is for dry runs only", file=sys.stderr)
+        return 2
     if args.pr is None or args.pr <= 0:
         print("pr must be a positive integer", file=sys.stderr)
         return 2
-    comments = fetch_comments(args.repo, args.pr)
-    plans = plan_statuses(trusted_records(comments, trust))
+    records = trusted_records(fetch_comments(args.repo, args.pr), trust)
+    plans = plan_statuses(records)
+    try:
+        head = fetch_head(args.repo, args.pr)
+    except Exception as err:  # noqa: BLE001 - the recorded heads still post; only the carry is skipped
+        head = None
+        print(f"# no carry: cannot read the head of #{args.pr} ({type(err).__name__})")
+    if args.carry_only:
+        # Dry-run aid: decide the carry for the current head as if it had no records of its own.
+        records = [r for r in records if r.head != head]
+        plans = []
+    if isinstance(head, str) and FULL_SHA.fullmatch(head) and not any(r.head == head for r in records):
+        carried, why = carry_for_pr(args.repo, args.pr, head, records, GitHubFacts(args.repo))
+        print(f"# carry to {head}: {why}")
+        if carried is not None:
+            plans.append(carried)
     return render(args.repo, args.pr, plans, args.post)
 
 

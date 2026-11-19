@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import unittest
+import urllib.parse
 
 import post_pp_score_status as pps
 
@@ -276,10 +277,19 @@ class CodexSeatTests(unittest.TestCase):
 
         data = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
         self.assertNotIn("gpt-6.1-sol", data["scorer_seats"])
-        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai"})
-        # Owner decision 2026-11-18: gpt-6.2-sol joins the council scorer pool.
-        self.assertEqual(data["scorer_seats"]["gpt-6.2-sol"], "openai")
-        self.assertEqual(pps.load_trust()["seats"]["gpt-6.2-sol"], "openai")
+        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
+                                                  "gpt-6.2-astra": "openai"})
+        # Owner decision 2026-11-18: gpt-6.2-sol and gpt-6.2-astra join the council scorer pool.
+        for seat in ("gpt-6.2-sol", "gpt-6.2-astra"):
+            self.assertEqual(data["scorer_seats"][seat], "openai")
+            self.assertEqual(pps.load_trust()["seats"][seat], "openai")
+
+    def test_astra_seat_scores_a_claude_pr(self):
+        line = f"pp-score head={SHA} seat=gpt-6.2-astra vendor=openai score=9 author=anthropic obstacles=none"
+        (plan,) = pps.plan_statuses(pps.trusted_records([comment(line)], self.trust))
+        self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.2-astra"))
+        self.assertEqual(pps.trusted_records([comment(line.replace("vendor=openai", "vendor=cursor"))],
+                                             self.trust), [])
 
     def test_sol_6_2_seat_scores_a_claude_pr(self):
         comments = [comment(
@@ -582,3 +592,263 @@ class CursorAutoMergeGroupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CarryRepo:
+    """A throwaway git repo holding a PR branch and main, so the carry rules run real merges."""
+
+    def __init__(self):
+        import os
+        import tempfile
+
+        # Left in place for inspection; the caller's TMPDIR owns cleanup.
+        self.path = tempfile.mkdtemp(prefix="pp-score-carry-")
+        self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+                        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        self.git("init", "-q", "-b", "main")
+
+    def git(self, *args, check=True):
+        import subprocess
+
+        done = subprocess.run(["git", *args], cwd=self.path, env=self.env, text=True, capture_output=True)
+        if check and done.returncode:
+            raise RuntimeError(done.stderr)
+        return done.stdout.strip()
+
+    def write(self, name, text):
+        from pathlib import Path
+
+        Path(self.path, name).write_text(text, encoding="utf-8")
+
+    def commit(self, name, text, message):
+        self.write(name, text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def merge_main(self, main):
+        """Merge main into the checked-out branch like GitHub's update-branch; parents [head, main]."""
+        self.git("merge", "-q", "--no-ff", "--no-edit", main, check=False)
+        return self.git("rev-parse", "HEAD")
+
+
+class RepoFacts(pps.GitHubFacts):
+    """GitHubFacts with the GitHub reads answered from the local repo; merges still run LocalGit."""
+
+    def __init__(self, repo, failing=None):
+        super().__init__("o/r", pps.LocalGit(repo.path))
+        self.repo_ = repo
+        self.failing = failing or {}
+
+    def commit(self, sha):
+        parents = self.repo_.git("rev-list", "--parents", "-n1", sha).split()[1:]
+        return parents, self.repo_.git("rev-parse", f"{sha}^{{tree}}")
+
+    def on_main(self, sha):
+        import subprocess
+
+        return subprocess.run(["git", "merge-base", "--is-ancestor", sha, "main"], cwd=self.repo_.path,
+                              env=self.repo_.env).returncode == 0
+
+    def merge_base(self, a, b):
+        return self.repo_.git("merge-base", a, b)
+
+    def checks_failing(self, sha):
+        return self.failing.get(sha)
+
+
+def record(head, seat="gpt-6.2-sol", vendor="openai", score=9, author="anthropic"):
+    return pps.Record(head, seat, vendor, author, float(score), ())
+
+
+class CarryTests(unittest.TestCase):
+    """Chad's rule of 2026-11-18 11:02 PM ET: records carry only across clean merges of main."""
+
+    @classmethod
+    def setUpClass(cls):
+        r = cls.r = CarryRepo()
+        cls.base = r.commit("a.txt", "a1\n", "base")
+        r.write("b.txt", "b1\n")
+        cls.base = r.commit("b.txt", "b1\n", "base b")
+        r.git("checkout", "-q", "-b", "pr")
+        cls.h0 = r.commit("a.txt", "a2 from the PR\n", "pr change")
+        r.git("checkout", "-q", "main")
+        cls.m1 = r.commit("b.txt", "b2 from main\n", "main change")
+        r.git("checkout", "-q", "pr")
+        cls.h1 = r.merge_main("main")
+        # A second clean update on top of the first.
+        r.git("checkout", "-q", "main")
+        cls.m2 = r.commit("c.txt", "c1\n", "main adds c")
+        r.git("checkout", "-q", "pr")
+        cls.h2 = r.merge_main("main")
+        # The same merge with a hand edit folded in.
+        r.git("checkout", "-q", "-b", "edited", cls.h0)
+        r.merge_main(cls.m1)
+        r.write("a.txt", "a2 from the PR, edited during the merge\n")
+        r.git("commit", "-q", "-a", "--amend", "--no-edit")
+        cls.edited = r.git("rev-parse", "HEAD")
+        # main changes the PR's file: the merge conflicts and is resolved by hand.
+        r.git("checkout", "-q", "main")
+        cls.m_conflict = r.commit("a.txt", "a3 from main\n", "main touches a")
+        r.git("checkout", "-q", "-b", "conflicted", cls.h0)
+        r.merge_main(cls.m_conflict)
+        r.write("a.txt", "resolved\n")
+        r.git("add", "a.txt")
+        r.git("commit", "-q", "--no-edit")
+        cls.conflicted = r.git("rev-parse", "HEAD")
+        # The PR rebased onto main: one parent, a new SHA.
+        r.git("checkout", "-q", "-b", "rebased", cls.m1)
+        r.git("cherry-pick", cls.h0)
+        cls.rebased = r.git("rev-parse", "HEAD")
+        # Parents in the wrong order: main merged with the PR, not the PR updated from main.
+        r.git("checkout", "-q", "-b", "reversed", cls.m1)
+        r.merge_main(cls.h0)
+        cls.reversed = r.git("rev-parse", "HEAD")
+
+    def plan(self, head, records, strict=False, failing=None):
+        return pps.plan_carry(head, records, strict, RepoFacts(self.r, failing))
+
+    def test_clean_update_carries(self):
+        plan, why = self.plan(self.h1, [record(self.h0)])
+        self.assertEqual((plan.head, plan.state), (self.h1, "success"))
+        self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
+        self.assertEqual(why, f"carried from {self.h0[:7]}")
+
+    def test_conflicted_merge_does_not_carry(self):
+        plan, why = self.plan(self.conflicted, [record(self.h0)])
+        self.assertIsNone(plan)
+        self.assertIn("conflicts", why)
+
+    def test_merge_with_an_extra_edit_does_not_carry(self):
+        plan, why = self.plan(self.edited, [record(self.h0)])
+        self.assertIsNone(plan)
+        self.assertIn("differs from a clean merge", why)
+
+    def test_rebased_head_does_not_carry(self):
+        plan, why = self.plan(self.rebased, [record(self.h0)])
+        self.assertIsNone(plan)
+        self.assertIn("not a merge commit", why)
+
+    def test_reversed_parents_do_not_carry(self):
+        plan, why = self.plan(self.reversed, [record(self.h0)])
+        self.assertIsNone(plan)
+
+    def test_ci_not_green_on_the_new_head_does_not_carry(self):
+        plan, why = self.plan(self.h1, [record(self.h0)], failing={self.h1: "rust (linux) is in_progress"})
+        self.assertIsNone(plan)
+        self.assertEqual(why, f"{self.h1[:7]}: rust (linux) is in_progress")
+
+    def test_chain_of_two_clean_updates_carries(self):
+        plan, _ = self.plan(self.h2, [record(self.h0)])
+        self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
+
+    def test_chain_needs_every_hop_green(self):
+        plan, why = self.plan(self.h2, [record(self.h0)], failing={self.h1: "zizmor is failure"})
+        self.assertIsNone(plan)
+        self.assertEqual(why, f"{self.h1[:7]}: zizmor is failure")
+
+    def test_newer_records_stop_the_walk(self):
+        # h1 was scored 7: its records win over h0's 9, so h2 does not carry.
+        plan, why = self.plan(self.h2, [record(self.h0), record(self.h1, score=7)])
+        self.assertIsNone(plan)
+        self.assertIn(f"{self.h1[:7]} did not pass", why)
+
+    def test_head_with_its_own_records_does_not_carry(self):
+        plan, _ = self.plan(self.h1, [record(self.h0), record(self.h1, score=7)])
+        self.assertIsNone(plan)
+
+    def test_sensitive_class_needs_every_carried_seat_above_eight(self):
+        records = [record(self.h0, score=9), record(self.h0, seat="composer-2.5", vendor="cursor", score=8)]
+        plan, why = self.plan(self.h1, records, strict=True)
+        self.assertIsNone(plan)
+        self.assertEqual(why, f"sensitive: composer-2.5 scored 8 on {self.h0[:7]}")
+        plan, _ = self.plan(self.h1, records, strict=False)
+        self.assertEqual(plan.state, "success")
+        plan, _ = self.plan(self.h1, [record(self.h0, score=9)], strict=True)
+        self.assertEqual(plan.state, "success")
+
+    def test_grok_and_author_family_records_never_carry(self):
+        grok = record(self.h0, seat="grok-4.7", vendor="xai")
+        plan, why = self.plan(self.h1, [grok])
+        self.assertIsNone(plan)
+        self.assertIn("no record that can carry", why)
+        plan, _ = self.plan(self.h1, [grok, record(self.h0)])
+        self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
+        plan, why = self.plan(self.h1, [record(self.h0, seat="claude-opus-5-5", vendor="anthropic")])
+        self.assertIsNone(plan)
+        self.assertIn("author's own family", why)
+
+    def test_failing_source_does_not_carry(self):
+        plan, why = self.plan(self.h1, [record(self.h0, score=7)])
+        self.assertIsNone(plan)
+
+    def test_sensitive_and_owner_paths_are_strict(self):
+        self.assertTrue(pps.strict_class(["rust/crates/pp-storage/src/import.rs"]))
+        self.assertTrue(pps.strict_class(["scripts/merge-classes.json", "docs/x.md"]))
+        self.assertFalse(pps.strict_class(["docs/product/daily-loop.md"]))
+
+    def test_merge_group_accepts_a_carried_head(self):
+        carried = self.plan(self.h1, [record(self.h0)])
+        plan = pps.plan_merge_group(SHA, [1], {1: self.h1}, {1: [record(self.h0)]}, {1: carried})
+        self.assertEqual((plan.state, plan.description),
+                         ("success", f"#1: carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol"))
+        refused = self.plan(self.edited, [record(self.h0)])
+        plan = pps.plan_merge_group(SHA, [1], {1: self.edited}, {1: [record(self.h0)]}, {1: refused})
+        self.assertEqual((plan.state, plan.description),
+                         ("failure", f"#1: no trusted score on its head {self.edited[:7]}"))
+
+
+class RequiredCheckTests(unittest.TestCase):
+    RULES = [
+        {"type": "deletion"},
+        {"type": "required_status_checks", "parameters": {"required_status_checks": [
+            {"context": "actionlint", "integration_id": 15368},
+            {"context": "rust (linux)", "integration_id": 15368},
+            {"context": "pp/score"},
+        ]}},
+    ]
+
+    def facts(self, runs, statuses=()):
+        from unittest import mock
+
+        def fake(path, paginate=False):
+            if "/rules/branches/" in path:
+                return self.RULES
+            if "/check-runs?" in path:
+                name = urllib.parse.unquote(path.split("check_name=")[1].split("&")[0])
+                return {"check_runs": [r for r in runs if r["name"] == name]}
+            if path.endswith("/status"):
+                return {"statuses": list(statuses)}
+            raise AssertionError(path)
+
+        patcher = mock.patch.object(pps, "gh_json", side_effect=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return pps.GitHubFacts("o/r")
+
+    @staticmethod
+    def run_(name, conclusion, status="completed"):
+        return {"name": name, "status": status, "conclusion": conclusion}
+
+    def test_reads_required_checks_from_main_rules_without_pp_score(self):
+        facts = self.facts([])
+        self.assertEqual([c["context"] for c in facts.required_checks()], ["actionlint", "rust (linux)"])
+
+    def test_success_and_skipped_pass(self):
+        facts = self.facts([self.run_("actionlint", "skipped"), self.run_("rust (linux)", "success")])
+        self.assertIsNone(facts.checks_failing(SHA))
+
+    def test_running_failed_or_missing_checks_block(self):
+        facts = self.facts([self.run_("actionlint", "success"), self.run_("rust (linux)", None, "in_progress")])
+        self.assertEqual(facts.checks_failing(SHA), "rust (linux) is in_progress")
+        facts = self.facts([self.run_("actionlint", "failure"), self.run_("rust (linux)", "success")])
+        self.assertEqual(facts.checks_failing(SHA), "actionlint is failure")
+        facts = self.facts([self.run_("actionlint", "success")])
+        self.assertEqual(facts.checks_failing(SHA), "rust (linux) has not run")
+
+    def test_no_required_checks_fails_closed(self):
+        self.RULES = [{"type": "deletion"}]
+        facts = self.facts([])
+        with self.assertRaises(pps.GateError):
+            facts.checks_failing(SHA)

@@ -51,6 +51,11 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
         || json!({"name": "Client contract", "source_kind": "archive"}),
     ),
     ("dismissUnattributedPrint", || json!({})),
+    // Duplicating the contract Build answers 201 with the new experiment.
+    (
+        "duplicateBuild",
+        || json!({"name": "Client contract experiment"}),
+    ),
     ("editDraftParts", || {
         json!({"expected_snapshot_digest": "0".repeat(64),
             "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}})

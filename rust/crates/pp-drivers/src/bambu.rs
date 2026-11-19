@@ -7,7 +7,8 @@
 //!
 //! Unlike Node, which skips TLS verification for private addresses, every
 //! connection is pinned. The host goes through `HttpGuard::connect` (checked
-//! DNS, permitted addresses only, no proxy). The TLS verifier then accepts
+//! DNS, permitted addresses only, no proxy), and the TLS server name is that
+//! configured host, not the resolved address. The TLS verifier then accepts
 //! exactly one end-entity certificate: the one whose SHA-256 is the stored pin,
 //! with handshake signatures still verified against its public key (v1
 //! certificates included). [`Trust::FirstUse`] is for an
@@ -510,7 +511,11 @@ impl Driver {
                     message if message == "Host unavailable" => Failure::Offline(message),
                     message => Failure::Refused(message),
                 })?;
+            // The server name is the configured host, as Node's mqtt.js sends
+            // it; the pin, not the name, identifies the printer.
             let peer = tcp.peer_addr()?.ip();
+            let name = ServerName::try_from(host.to_owned())
+                .unwrap_or_else(|_| ServerName::IpAddress(peer.into()));
             let tls = rustls::ClientConfig::builder_with_provider(verifier.provider.clone())
                 .with_safe_default_protocol_versions()
                 .map_err(|_| Failure::Offline(TLS_FAILED.into()))?
@@ -518,7 +523,7 @@ impl Driver {
                 .with_custom_certificate_verifier(verifier.clone())
                 .with_no_client_auth();
             let tls = tokio_rustls::TlsConnector::from(Arc::new(tls))
-                .connect(ServerName::IpAddress(peer.into()), tcp)
+                .connect(name, tcp)
                 .await
                 .map_err(|error| {
                     let changed = matches!(verifier.trust, Trust::Pinned(pin) if verifier.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some_and(|seen| seen != pin));

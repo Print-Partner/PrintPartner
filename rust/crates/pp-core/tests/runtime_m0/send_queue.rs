@@ -7,7 +7,10 @@ use super::watcher_proof::{
     proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
 use axum::http::StatusCode;
-use pp_testkit::moonraker::RoutedPrinter;
+use pp_testkit::{
+    moonraker::RoutedPrinter,
+    prusalink::{Request, UploadPrinter},
+};
 use serde_json::{Value, json};
 use std::{
     io::Read,
@@ -22,6 +25,8 @@ use std::{
 const QUEUE: &str = "/api/v2/printer-send-queue";
 const UPLOAD: &str = "/server/files/upload";
 const API_KEY: &str = "simulator-api-key-0d5f";
+/// The file Add to queue stages.
+const GCODE: &str = "G28\nG1 X10\n";
 
 #[tokio::test]
 async fn send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome() {
@@ -114,7 +119,7 @@ async fn add(origin: &str, cookie: &str, printer: &str, build: i64, start: bool)
         ));
     }
     body.push_str(&format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"plate.gcode\"\r\nContent-Type: application/octet-stream\r\n\r\nG28\nG1 X10\n\r\n--{boundary}--\r\n"
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"plate.gcode\"\r\nContent-Type: application/octet-stream\r\n\r\n{GCODE}\r\n--{boundary}--\r\n"
     ));
     let response = reqwest::Client::builder()
         .no_proxy()
@@ -353,7 +358,6 @@ async fn send_queue_rust_only_runtime_in_child() {
     );
 }
 
-const PRUSA_PROBE: &str = "/api/v1/status";
 const PRUSA_PUT: &str = "/api/v1/files/usb/plate.gcode";
 const PRUSA_PASSWORD: &str = "simulator-digest-password-7c1e";
 
@@ -380,20 +384,15 @@ async fn send_queue_rust_only_runtime_owns_prusalink_uploads_end_to_end() {
 /// upload, one answers it with a malformed status line (outcome unknown) and
 /// one refuses it.
 struct PrusaPrinters {
-    accepting: RoutedPrinter,
-    lost: RoutedPrinter,
-    refusing: RoutedPrinter,
+    accepting: UploadPrinter,
+    lost: UploadPrinter,
+    refusing: UploadPrinter,
 }
 
 impl PrusaPrinters {
     fn start() -> Self {
-        let printer = |status: u16, body: &[u8]| {
-            RoutedPrinter::start(vec![
-                (PRUSA_PROBE.into(), 200, b"{}".to_vec()),
-                (PRUSA_PUT.into(), status, body.to_vec()),
-            ])
-            .unwrap()
-        };
+        let printer =
+            |status: u16, body: &[u8]| UploadPrinter::start(PRUSA_PUT, status, body).unwrap();
         Self {
             accepting: printer(201, b"{}"),
             lost: printer(0, b"{}"),
@@ -428,24 +427,20 @@ impl PrusaPrinters {
         );
     }
 
-    /// The send request heads each simulator received, in the order above.
-    fn sends(&self) -> [Vec<String>; 3] {
-        let sent = |printer: &RoutedPrinter| -> Vec<String> {
-            printer
-                .request_heads()
-                .into_iter()
-                .filter(|head| !head.starts_with("GET "))
-                .collect()
-        };
-        [
-            sent(&self.accepting),
-            sent(&self.lost),
-            sent(&self.refusing),
-        ]
+    /// The send requests each simulator received, in the order above. Each
+    /// must be one `PUT` of the file Add staged.
+    fn sends(&self) -> [Vec<Request>; 3] {
+        [&self.accepting, &self.lost, &self.refusing].map(|printer| {
+            let sends = printer.sends();
+            for send in &sends {
+                assert_eq!(send.body, GCODE.as_bytes(), "{}", send.line());
+            }
+            sends
+        })
     }
 
     fn counts(&self) -> [usize; 3] {
-        self.sends().map(|heads| heads.len())
+        self.sends().map(|sends| sends.len())
     }
 }
 
@@ -473,7 +468,7 @@ async fn send_queue_rust_only_runtime_prusalink_in_child() {
     assert_eq!(outcome(&done), [&json!("done"), &none, &job, &json!(false)]);
     let [accepted, _, _] = printers.sends();
     assert_eq!(accepted.len(), 1, "{accepted:?}");
-    let head = accepted[0].to_lowercase();
+    let head = accepted[0].head.to_lowercase();
     assert!(head.starts_with(&format!("put {PRUSA_PUT} ")), "{head}");
     assert!(head.contains("print-after-upload: ?1"), "{head}");
     assert!(!head.contains("/print/start"), "{head}");
@@ -531,7 +526,8 @@ async fn send_queue_rust_only_runtime_prusalink_in_child() {
     );
     println!(
         "GRE_1240_RUNTIME_RECEIPT {}",
-        json!({"sends": printers.sends(), "done": done["state"],
+        json!({"sends": printers.sends().map(|sends| sends.iter().map(|send| json!({
+            "head": send.head, "bytes": send.body.len()})).collect::<Vec<_>>()), "done": done["state"],
         "unknown_after_restart": after["outcome_unknown"], "refused": reason})
     );
 }

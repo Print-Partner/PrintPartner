@@ -397,7 +397,9 @@ with GETs, so the test counts every other request as a send.
 
 `send_queue_rust_only_runtime_owns_prusalink_uploads_end_to_end` (GRE-1240)
 does the same against three loopback PrusaLink simulators with a username and
-password. They answer the probe without a Digest challenge; the driver tests
+password (`pp_testkit::prusalink::UploadPrinter`, which keeps each request's
+body, so the test checks that every `PUT` carried exactly the staged file).
+They answer the probe without a Digest challenge; the driver tests
 (`ticket_t_22_upload_puts_the_body_once` and the two `upload_is_not_replayed`
 tests) cover the challenge and a 401. A send with Start is one `PUT /api/v1/files/usb/plate.gcode` with
 `print-after-upload: ?1` and no other send request; a malformed answer to the

@@ -4,31 +4,32 @@
 //! request. A refusal fails the send and frees the printer; an unknown outcome
 //! waits for reconciliation and is never resent, across a restart too.
 use super::*;
+use pp_testkit::prusalink::{PROBE, UploadPrinter};
 
 const PUT: &str = "/api/v1/files/usb/a.gcode";
-const PROBE: &str = "/api/v1/status";
 
-/// A loopback PrusaLink whose probe answers 200 and whose upload answers
-/// `upload` (0 is a malformed status line, an unknown outcome).
-fn prusalink(upload: u16, body: &[u8]) -> RoutedPrinter {
-    RoutedPrinter::start(vec![
-        (PROBE.into(), 200, b"{}".to_vec()),
-        (PUT.into(), upload, body.to_vec()),
-    ])
-    .unwrap()
+/// The bytes `Farm::open` stages for each item.
+fn staged() -> &'static [u8] {
+    b"G28\nG1 X10\n; filament used [mm] = 5000\n; filament used [g] = 12.5\n"
 }
 
-/// The request heads that would send something: every request but the probe.
-fn sends(printer: &RoutedPrinter) -> Vec<String> {
-    printer
-        .request_heads()
-        .into_iter()
-        .filter(|head| !head.starts_with(&format!("GET {PROBE} ")))
-        .collect()
+/// A loopback PrusaLink whose upload answers `status` with `body` (0 is a
+/// malformed status line, an unknown outcome).
+fn prusalink(status: u16, body: &[u8]) -> UploadPrinter {
+    UploadPrinter::start(PUT, status, body).unwrap()
 }
 
-fn put_head(head: &str) -> bool {
-    head.starts_with(&format!("PUT {PUT} "))
+/// The printer received exactly one send: a `PUT` of the staged bytes.
+fn one_put_of_the_staged_file(printer: &UploadPrinter) -> String {
+    let sends = printer.sends();
+    let lines: Vec<_> = sends.iter().map(|send| send.line()).collect();
+    assert_eq!(sends.len(), 1, "one PUT, no resend or start: {lines:?}");
+    assert!(
+        sends[0].line().starts_with(&format!("PUT {PUT} ")),
+        "{lines:?}"
+    );
+    assert_eq!(sends[0].body, staged(), "the printer got the staged bytes");
+    sends[0].head.to_lowercase()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -43,10 +44,7 @@ async fn gre_1240_prusalink_send_puts_once_and_starts_only_through_its_header() 
         assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
         assert_eq!(worker.run_next().await.unwrap(), Some(Sent::Done));
 
-        let heads = sends(&printer);
-        assert_eq!(heads.len(), 1, "one PUT, no start request: {heads:?}");
-        assert!(put_head(&heads[0]), "{heads:?}");
-        let head = heads[0].to_lowercase();
+        let head = one_put_of_the_staged_file(&printer);
         let flag = if start { "?1" } else { "?0" };
         assert!(
             head.contains(&format!("print-after-upload: {flag}")),
@@ -71,12 +69,12 @@ async fn gre_1240_prusalink_send_puts_once_and_starts_only_through_its_header() 
         assert!(!farm.exports().join("printer-uploads").join("q1").exists());
 
         assert_eq!(worker.run_next().await.unwrap(), None);
-        assert_eq!(sends(&printer).len(), 1, "nothing is sent again");
+        one_put_of_the_staged_file(&printer);
         println!(
             "GRE_1240_RECEIPT {}",
             json!({"case": "confirmed", "start": start,
             "request_lines": printer.request_lines(), "job_state": job,
-            "remote_path": result["remote_path"]})
+            "remote_path": result["remote_path"], "put_bytes": printer.sends()[0].body.len()})
         );
     }
 }
@@ -108,15 +106,9 @@ async fn gre_1240_a_refused_prusalink_upload_fails_the_send_and_frees_the_printe
             ("error", Some(failed.as_str()), "failed"),
             "HTTP {status}"
         );
-        let heads = sends(&printer);
-        assert_eq!(
-            heads.len(),
-            1,
-            "HTTP {status}: one PUT, no resend: {heads:?}"
-        );
-        assert!(put_head(&heads[0]));
+        one_put_of_the_staged_file(&printer);
         assert_eq!(worker.run_next().await.unwrap(), None);
-        assert_eq!(sends(&printer).len(), 1);
+        one_put_of_the_staged_file(&printer);
         // Nothing printed, so the printer is free for the next explicit send.
         assert!(matches!(farm.send("next"), Reply::Dispatched { .. }));
         println!(
@@ -169,13 +161,7 @@ async fn gre_1240_an_unknown_prusalink_upload_outcome_is_never_resent_even_after
         }
     ));
     assert_eq!(farm.outcome("q1").2, "reconciliation_required");
-    let heads = sends(&printer);
-    assert_eq!(
-        heads.len(),
-        1,
-        "an unknown upload is never resent: {heads:?}"
-    );
-    assert!(put_head(&heads[0]));
+    one_put_of_the_staged_file(&printer);
     println!(
         "GRE_1240_RECEIPT {}",
         json!({"case": "unknown", "restarted": true,

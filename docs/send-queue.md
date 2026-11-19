@@ -281,10 +281,12 @@ JSON boolean in `app_settings` under `printer.upload_only`. A missing setting
 means disabled. It has no schema migration, timer or dispatcher of its own.
 
 - `GET /api/v2/printer-send-queue/settings/upload-only` returns
-  `{"item":{"enabled":false}}` when the preference is absent.
+  `{"enabled":false}` when the preference is absent.
 - `PUT` on that same route requires `{"enabled":true}` or
-  `{"enabled":false}`. Strings and numbers are refused. Both routes use the
-  existing session/API-key admission and default-off rebuild gates.
+  `{"enabled":false}` and answers the stored value in the same shape. Strings
+  and numbers are refused with 400. Both routes use the existing
+  session/API-key admission and default-off rebuild gates. They are not in the
+  generated `rust-client` yet.
 - With the preference enabled, Add stores `start=false` regardless of the form,
   and Send now / Send ready force the queue row and its immutable job payload to
   `start=false`, including rows queued before enabling it. The worker can admit

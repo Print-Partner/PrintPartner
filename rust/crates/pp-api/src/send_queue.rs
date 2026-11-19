@@ -6,7 +6,8 @@
 //!   is staged under `exports/printer-uploads/` and the item is `queued`;
 //!   nothing is sent until Send now or Send ready.
 //! - `GET`/`PUT /api/v2/printer-send-queue/settings/upload-only`: the persisted,
-//!   default-off preference, `{"enabled":true|false}`. Changes never dispatch.
+//!   default-off preference, `{"enabled":true|false}` in both directions.
+//!   Changes never dispatch.
 //! - `POST /api/v2/printer-send-queue/{id}/dispatch` (Send now): sends one
 //!   `queued` or `error` item. With `wait_for_idle` the printer must be
 //!   idle unless the body says `{"force": true}`.
@@ -61,6 +62,12 @@ use std::{
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct QueuedSendReceipt {
     pub item: QueuedSend,
+}
+
+/// The upload-only preference, read or just stored.
+#[derive(Debug, Serialize)]
+pub struct UploadOnlyMode {
+    pub enabled: bool,
 }
 
 /// Send now: the claimed `sending` item and the upload job that settles it.
@@ -284,7 +291,7 @@ fn present(reply: Option<anyhow::Result<Reply>>) -> Response {
             detail,
             code,
         })) => refused(status, detail, code),
-        Some(Ok(Reply::Items(_))) | None => internal(),
+        Some(Ok(Reply::Items(_) | Reply::UploadOnly(_))) | None => internal(),
         Some(Err(error)) => match error.downcast_ref::<Refusal>() {
             Some(Refusal(status, detail)) => failure(*status, detail),
             None => read_error(&error),
@@ -349,11 +356,18 @@ async fn add(
     present(added)
 }
 
+fn present_mode(reply: Option<anyhow::Result<Reply>>) -> Response {
+    match reply {
+        Some(Ok(Reply::UploadOnly(enabled))) => ok_json(&UploadOnlyMode { enabled }),
+        other => present(other),
+    }
+}
+
 async fn upload_only(
     State(app): State<App>,
     Extension(presented): Extension<PresentedCredential>,
 ) -> Response {
-    present(
+    present_mode(
         writes(&app, presented, |writes, _| {
             writes.apply(Request::UploadOnly)
         })
@@ -372,7 +386,7 @@ async fn set_upload_only(
     let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
         return failure(StatusCode::BAD_REQUEST, "enabled must be true or false");
     };
-    present(
+    present_mode(
         writes(&app, presented, move |writes, _| {
             writes.apply(Request::SetUploadOnly { enabled })
         })
@@ -500,7 +514,8 @@ async fn drain(
                 Reply::Refused { status, detail, .. } if status != 409 => {
                     results.push(json!({ "item_id": id, "error": detail }));
                 }
-                Reply::Refused { .. } | Reply::Item(_) | Reply::Items(_) => {}
+                Reply::Refused { .. } | Reply::Item(_) | Reply::Items(_) | Reply::UploadOnly(_) => {
+                }
             }
         }
         Ok(Ok(results))

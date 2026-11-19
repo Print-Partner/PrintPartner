@@ -122,6 +122,8 @@ pub enum Request {
 #[derive(Debug, PartialEq)]
 pub enum Reply {
     Item(Value),
+    /// The tenant's upload-only preference.
+    UploadOnly(bool),
     Items(Vec<Value>),
     Dispatched {
         item: Value,
@@ -253,15 +255,13 @@ fn transact(
     } else {
         match command.request {
             Request::Admit => Reply::Items(Vec::new()),
-            Request::UploadOnly => Reply::Item(serde_json::json!({
-                "enabled": super::upload_only(&tx, &tenant)?
-            })),
+            Request::UploadOnly => Reply::UploadOnly(super::upload_only(&tx, &tenant)?),
             Request::SetUploadOnly { enabled } => {
                 tx.execute(
                     "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
                     params![tenant, super::UPLOAD_ONLY_KEY, enabled.to_string()],
                 )?;
-                Reply::Item(serde_json::json!({ "enabled": enabled }))
+                Reply::UploadOnly(enabled)
             }
             Request::Add {
                 item,

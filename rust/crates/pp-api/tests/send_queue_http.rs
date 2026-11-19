@@ -748,10 +748,7 @@ async fn ticket_t_27_upload_only_routes_are_guarded_and_require_a_boolean() {
             StatusCode::UNAUTHORIZED
         );
     }
-    assert_eq!(
-        queue.send("GET", path, "").await.1["item"]["enabled"],
-        false
-    );
+    assert_eq!(queue.send("GET", path, "").await.1["enabled"], false);
     for body in [r#"{}"#, r#"{"enabled":"true"}"#, r#"{"enabled":1}"#, "[]"] {
         assert_eq!(
             queue.send("PUT", path, body).await.0,
@@ -759,10 +756,10 @@ async fn ticket_t_27_upload_only_routes_are_guarded_and_require_a_boolean() {
         );
     }
     assert_eq!(
-        queue.send("PUT", path, r#"{"enabled":true}"#).await.1["item"]["enabled"],
+        queue.send("PUT", path, r#"{"enabled":true}"#).await.1["enabled"],
         true
     );
-    assert_eq!(queue.send("GET", path, "").await.1["item"]["enabled"], true);
+    assert_eq!(queue.send("GET", path, "").await.1["enabled"], true);
     let before = queue.counts();
     let (status, added) = queue
         .add(&[PRINTER, PLAN, FILE, ("start", None, b"true")])

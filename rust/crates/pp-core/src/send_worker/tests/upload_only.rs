@@ -12,7 +12,7 @@ fn mode(farm: &Farm, enabled: bool) {
                 Duration::from_secs(5),
             )
             .unwrap(),
-        Reply::Item(json!({"enabled": enabled}))
+        Reply::UploadOnly(enabled)
     );
 }
 
@@ -159,6 +159,6 @@ async fn ticket_t_27_idle_worker_timers_do_not_dispatch_queued_items() {
     assert!(printer.request_lines().is_empty());
     println!(
         "UPLOAD_ONLY_RECEIPT {}",
-        json!({"idle_seconds": 90, "uploads": 0, "queue_state": state})
+        json!({"idle_seconds": (IDLE_RECHECK * 3).as_secs(), "uploads": 0, "queue_state": state})
     );
 }

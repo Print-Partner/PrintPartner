@@ -23,11 +23,14 @@ with exactly one GET to `/server/info`.
 
 The API test compares database and WAL bytes after authenticated probes and
 checks admission and request limits. Its deadline test pauses the Tokio clock
-after authentication, checks that the request is still pending at seven
-seconds and times out at eight. A timer created before the pause can round up
-by one millisecond, so the test expects 8.001 seconds. The driver deadline test
-gives the network guard a 30-second transport deadline, so the probe's own
-eight-second deadline is the one that fires. The driver suite also replays a
+after authentication, checks that the request is still pending at 7.9 seconds
+and has timed out at 8.001 seconds. The deadline is set just before the pause,
+so it falls slightly under eight seconds from the pause, rounded up to a
+one-millisecond tick. The driver deadline test starts paused, gives the network
+guard a 30-second transport deadline, and checks pending at 7.999 seconds and
+timed out at eight, so the probe's own deadline is the one that fires. Both
+tests yield after each clock jump: `advance` can return before the woken task
+runs. The driver suite also replays a
 302 and checks that the redirect is not followed: one GET, an unidentified
 result.
 

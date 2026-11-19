@@ -469,16 +469,15 @@ fn verify_dependencies(
     let mut visited = std::collections::BTreeSet::new();
     for directory in &inventory.roots {
         let directory = root.join(relative(directory)?);
-        if !directory.try_exists()? {
-            continue;
-        }
         // The walk canonicalizes a root, so a link here would get no link
         // record. build-desktop-manifest.py refuses it too. std reports a
-        // Windows junction as a symbolic link, so this covers both.
-        ensure!(
-            !std::fs::symlink_metadata(&directory)?.is_symlink(),
-            "Dependency root is a link"
-        );
+        // Windows junction as a symbolic link, so this covers both. Read the
+        // entry itself first, so a dangling root link is refused, not skipped.
+        match std::fs::symlink_metadata(&directory) {
+            Ok(entry) => ensure!(!entry.is_symlink(), "Dependency root is a link"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
         ensure!(
             directory.canonicalize()?.starts_with(&root),
             "Dependency root escaped package"
@@ -920,6 +919,15 @@ mod tests {
         symlink_dir(Path::new("../../apps/other"), &ui);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency link changed");
+
+        // An unshipped link is not followed by the walk, but a dangling one
+        // still fails the recorded-target check.
+        std::fs::remove_dir(&ui)
+            .or_else(|_| std::fs::remove_file(&ui))
+            .unwrap();
+        symlink_dir(Path::new("../../apps/missing"), &ui);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link changed");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -946,7 +954,16 @@ mod tests {
             links: Default::default(),
             unshipped_links: Default::default(),
         };
-        symlink_dir(Path::new("vendor"), &web.join("node_modules"));
+        let modules = web.join("node_modules");
+        symlink_dir(Path::new("vendor"), &modules);
+        let error = verify_dependencies(&web, &inventory, &CancellationToken::new()).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency root is a link");
+
+        // A dangling root link is refused too, not skipped as a missing root.
+        std::fs::remove_dir(&modules)
+            .or_else(|_| std::fs::remove_file(&modules))
+            .unwrap();
+        symlink_dir(Path::new("missing-vendor"), &modules);
         let error = verify_dependencies(&web, &inventory, &CancellationToken::new()).unwrap_err();
         assert_eq!(error.to_string(), "Dependency root is a link");
         std::fs::remove_dir_all(root).unwrap();
@@ -990,6 +1007,14 @@ mod tests {
         symlink_dir(Path::new("v0"), &current);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency link changed");
+
+        // A dangling link inside the walk fails verification; it is never
+        // skipped. The generator fails on it too (resolve(strict=True)).
+        std::fs::remove_dir(&current)
+            .or_else(|_| std::fs::remove_file(&current))
+            .unwrap();
+        symlink_dir(Path::new("v2"), &current);
+        assert!(verify_dependencies(&web, &inventory, &stop).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -53,8 +53,12 @@ def is_link(path):
 
 def is_junction(path):
     # Path.is_junction() needs Python 3.12; the Rust image's python3 is older.
-    return (os.name == 'nt'
-            and os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
+    if os.name != 'nt':
+        return False
+    try:
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except FileNotFoundError:
+        return False
 
 def link_target(path, target):
     """The recorded target: a relative path from the link's directory.
@@ -96,12 +100,13 @@ def dependencies():
             search.add(directory / 'node_modules')
     for directory in sorted(search):
         roots.append(directory.relative_to(package_root).as_posix())
-        if not directory.exists():
-            continue
         # The walk resolves a root, so a link here would get no link record.
-        # pp-compat refuses it too.
+        # pp-compat refuses it too. Check the entry itself before exists(),
+        # which follows it, so a dangling root link is refused, not skipped.
         if is_link(directory):
             raise ValueError('Dependency root is a link')
+        if not directory.exists():
+            continue
         pending.append(directory)
     while pending:
         directory = pending.pop().resolve(strict=True)

@@ -1,6 +1,6 @@
 # STEP part trees (GRE-1007)
 
-Library shows the assembly tree of a STEP file (`.step` or `.stp`) in a Source's current revision. Rust reads each file once in the background and caches the tree. The UI only reads the cached answer.
+Rust reads the assembly tree of a STEP file (`.step` or `.stp`) in a Source's current revision once, in the background, and caches it by the file's hash. Every later open answers from that cache.
 
 ## Why not occt-import-js in the webview
 
@@ -33,25 +33,11 @@ The same bytes at another path, in another Source, or after a restart reuse the 
 
 The cache sits inside `thumbs/sources`, which a full backup leaves out (`archive::SOURCE_THUMBNAIL_CACHE`). The thumbnail prune removes only folders named by a revision id, so it never removes `step`. The cache is regenerable and is not pruned.
 
-## HTTP
+## No webview file access
 
-`GET /api/v1/sources/{id}/step-conversion?path=` (and `/sources/{id}/...`), `readStepPartTree` in the generated client, behind the same read gate as the file list. It never waits for a conversion.
-
-| Field | Meaning |
-| --- | --- |
-| `state` | `queued`, `converting`, `done` or `failed` |
-| `sha256` | The file's hash, set when `done` |
-| `failure` | `not_step`, `no_products`, `too_large`, `cycle`, `unreadable` or `cache_unwritable`, set when `failed` |
-| `parts` | When `done`, every node depth first: `name`, `product_id`, `instance` (null at a root) and `depth` (0 at a root). The generated client cannot express a recursive schema, so the nesting is carried by `depth`; the cached file is the nested tree |
-
-A missing `path` is 400 `source_file_path_required`. A path that is not a STEP file of the current revision is 404 `source_file_not_found`.
-
-## UI
-
-Library's file list (`web/apps/ui/src/library/SourceFiles.tsx`) gives each STEP file a **Part tree** button. It opens `StepPartTree`, which shows **Queued for conversion.**, **Converting…**, the nested part list with a count, or **Conversion failed.** with the reason. It asks again every second while the file is queued or converting, and stops once it is done or failed.
-
-The files come from the Source's revision on disk, so the webview gets no file-system access. GRE-1007 adds no Tauri capability or plugin permission.
+The worker reads files from the Source's revision on disk, so the webview gets no file-system access. GRE-1007 adds no Tauri capability or plugin permission.
 
 ## Not in this change
 
-The cache holds the part tree only. Tessellating the STEP geometry into a cached GLB mesh for a 3D view needs a native B-rep tessellator (OCCT) and is GRE-1784.
+- GRE-1785: the gateway route `GET /api/v1/sources/{id}/step-conversion?path=`, `readStepPartTree` in the generated client, and Library's **Part tree** view with its queued, converting, done and failed states. The UI will only read the cached answer.
+- GRE-1784: the cache holds the part tree only. Tessellating the STEP geometry into a cached GLB mesh for a 3D view needs a native B-rep tessellator (OCCT).

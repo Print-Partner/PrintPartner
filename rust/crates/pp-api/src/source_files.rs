@@ -3,10 +3,7 @@
 //! /sources/{id}/thumbnail?path=` at the same prefixes: a 256 x 256 PNG of
 //! one of those STL files, cached by storage (GRE-430 part 2a). Rust-only
 //! runtime: the routes mount only when `PP_DESKTOP_REBUILD` is on, behind the
-//! read gate the Accepted Plan routes use. `GET
-//! /sources/{id}/step-conversion?path=` at the same prefixes: the part tree of
-//! one STEP file, converted once in the background and answered from storage's
-//! cache, or its queued, converting or failed state (GRE-1007).
+//! read gate the Accepted Plan routes use.
 //!
 //! Storage answers [`SourceFiles`] or [`SourceFilesError`]; this module turns
 //! them into the response, once.
@@ -22,8 +19,8 @@ use axum::{
     routing::get,
 };
 use pp_storage::source_files::{
-    FileKind, MAX_FILES, PartNode, SourceFile, SourceFiles, SourceFilesClient, SourceFilesError,
-    SourceThumbnail, StepConversion, StepFailure, THUMBNAIL_CONCURRENCY,
+    FileKind, MAX_FILES, SourceFile, SourceFiles, SourceFilesClient, SourceFilesError,
+    SourceThumbnail, THUMBNAIL_CONCURRENCY,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -110,120 +107,6 @@ impl From<SourceFile> for SourceFileEntry {
     }
 }
 
-/// One STEP file's part tree, or where its conversion stands. The generated
-/// client's `readStepPartTree`. The UI asks again while the state is
-/// `queued` or `converting`.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
-pub struct StepPartTree {
-    pub source_id: i64,
-    pub path: String,
-    pub state: StepConversionState,
-    /// The SHA-256 of the file's bytes, which keys the cache; set when done.
-    #[cfg_attr(
-        feature = "codegen",
-        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
-    )]
-    pub sha256: Option<String>,
-    /// Why the file could not be converted; set when failed.
-    #[cfg_attr(
-        feature = "codegen",
-        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<StepConversionFailure>")
-    )]
-    pub failure: Option<StepConversionFailure>,
-    /// Every node of the tree, depth first: a node's children follow it, one
-    /// level deeper. Empty unless done.
-    pub parts: Vec<StepPart>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
-pub enum StepConversionState {
-    Queued,
-    Converting,
-    Done,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
-pub enum StepConversionFailure {
-    NotStep,
-    NoProducts,
-    TooLarge,
-    Cycle,
-    Unreadable,
-    CacheUnwritable,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
-pub struct StepPart {
-    /// The product's name, or its id when unnamed.
-    pub name: String,
-    pub product_id: String,
-    /// The name of this use of the part in its parent; null for a root.
-    #[cfg_attr(
-        feature = "codegen",
-        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
-    )]
-    pub instance: Option<String>,
-    /// 0 for a root.
-    pub depth: u32,
-}
-
-impl StepPartTree {
-    pub fn new(source_id: i64, path: String, conversion: StepConversion) -> Self {
-        let mut tree = Self {
-            source_id,
-            path,
-            state: StepConversionState::Queued,
-            sha256: None,
-            failure: None,
-            parts: Vec::new(),
-        };
-        match conversion {
-            StepConversion::Queued => {}
-            StepConversion::Converting => tree.state = StepConversionState::Converting,
-            StepConversion::Done {
-                sha256,
-                tree: parts,
-            } => {
-                tree.state = StepConversionState::Done;
-                tree.sha256 = Some(sha256);
-                flatten(parts.roots, 0, &mut tree.parts);
-            }
-            StepConversion::Failed(failure) => {
-                tree.state = StepConversionState::Failed;
-                tree.failure = Some(match failure {
-                    StepFailure::NotStep => StepConversionFailure::NotStep,
-                    StepFailure::NoProducts => StepConversionFailure::NoProducts,
-                    StepFailure::TooLarge => StepConversionFailure::TooLarge,
-                    StepFailure::Cycle => StepConversionFailure::Cycle,
-                    StepFailure::Unreadable => StepConversionFailure::Unreadable,
-                    StepFailure::CacheUnwritable => StepConversionFailure::CacheUnwritable,
-                });
-            }
-        }
-        tree
-    }
-}
-
-/// Depth first. The reader caps the depth, so the recursion is bounded.
-fn flatten(nodes: Vec<PartNode>, depth: u32, parts: &mut Vec<StepPart>) {
-    for node in nodes {
-        parts.push(StepPart {
-            name: node.name,
-            product_id: node.product_id,
-            instance: node.instance,
-            depth,
-        });
-        flatten(node.children, depth + 1, parts);
-    }
-}
-
 #[derive(Clone)]
 struct App {
     gate: Gate,
@@ -232,9 +115,9 @@ struct App {
     renders: Arc<tokio::sync::Semaphore>,
 }
 
-/// `?path=`: the file's path in the revision, as the file list gives it.
+/// `?path=`: the STL's path in the revision, as the file list gives it.
 #[derive(Deserialize)]
-struct PathQuery {
+struct ThumbnailQuery {
     path: Option<String>,
 }
 
@@ -247,9 +130,7 @@ pub fn source_files_router(config: AcceptedHttpConfig, client: SourceFilesClient
         .route("/sources/{id}/files", get(list))
         .route("/api/v1/sources/{id}/files", get(list))
         .route("/sources/{id}/thumbnail", get(thumbnail))
-        .route("/api/v1/sources/{id}/thumbnail", get(thumbnail))
-        .route("/sources/{id}/step-conversion", get(step_conversion))
-        .route("/api/v1/sources/{id}/step-conversion", get(step_conversion));
+        .route("/api/v1/sources/{id}/thumbnail", get(thumbnail));
     let renders = Arc::new(tokio::sync::Semaphore::new(THUMBNAIL_CONCURRENCY));
     gate.guard(routes).with_state(App {
         gate,
@@ -309,11 +190,15 @@ async fn thumbnail(
     State(app): State<App>,
     Extension(presented): Extension<PresentedCredential>,
     Path(id): Path<String>,
-    Query(query): Query<PathQuery>,
+    Query(query): Query<ThumbnailQuery>,
     headers: HeaderMap,
 ) -> Response {
     let Some(path) = query.path.filter(|path| !path.is_empty()) else {
-        return path_required();
+        return problem::build(
+            Problem::new(ProblemType::Validation, 400, "path is required")
+                .with_problem_code(ProblemCode::SourceFilePathRequired),
+            Default::default(),
+        );
     };
     // The blocking task owns the permit, so a render keeps it until it ends,
     // even when the client has gone.
@@ -329,38 +214,6 @@ async fn thumbnail(
         Ok(thumbnail) => png_response(thumbnail, &headers),
         Err(refusal) => *refusal,
     }
-}
-
-/// Queues the STEP file on first open; answers its state, or its part tree
-/// once the conversion is cached. Never waits for the conversion.
-async fn step_conversion(
-    State(app): State<App>,
-    Extension(presented): Extension<PresentedCredential>,
-    Path(id): Path<String>,
-    Query(query): Query<PathQuery>,
-) -> Response {
-    let Some(path) = query.path.filter(|path| !path.is_empty()) else {
-        return path_required();
-    };
-    let requested = path.clone();
-    let opened = read(&app, &id, move |client, id, cancelled, wait| {
-        let conversion =
-            client.step_conversion(presented.into_credential(), id, &requested, cancelled, wait)?;
-        Ok((id, conversion))
-    })
-    .await;
-    match opened {
-        Ok((id, conversion)) => axum::Json(StepPartTree::new(id, path, conversion)).into_response(),
-        Err(refusal) => *refusal,
-    }
-}
-
-fn path_required() -> Response {
-    problem::build(
-        Problem::new(ProblemType::Validation, 400, "path is required")
-            .with_problem_code(ProblemCode::SourceFilePathRequired),
-        Default::default(),
-    )
 }
 
 /// 200 with the PNG, or 304 when `If-None-Match` names its tag. The client
@@ -413,7 +266,7 @@ impl ToProblem for SourceFilesError {
             Self::FileNotFound => Problem::new(
                 ProblemType::NotFound,
                 404,
-                "The current revision has no such file at that path",
+                "The current revision has no STL file at that path",
             )
             .with_problem_code(ProblemCode::SourceFileNotFound),
             Self::Unrenderable => Problem::new(

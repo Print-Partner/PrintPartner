@@ -2,7 +2,6 @@ import type { SourceFileList } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StlThumb, type ThumbStatus } from "../screen/StlThumb";
-import { isStepPath, StepPartTree } from "./StepPartTree";
 import { fileName, fileSize, groupByFolder, sourceFilesQuery, type SourceFile } from "./sourceFiles";
 
 /**
@@ -93,52 +92,18 @@ function GroupedFiles({
         <section key={group.folder || "."} className="pp-file-group">
           <h3>{group.folder || "Top level"}</h3>
           <ul className="pp-file-list">
-            {group.files.map((file) =>
-              isStepPath(file.path) ? (
-                <StepFileRow key={file.path} file={file} sourceId={sourceId} />
-              ) : (
-                <li key={file.path} className="pp-file-row">
-                  {file.kind === "stl" && (
-                    <StlThumb sourceId={sourceId} path={file.path} report={report} />
-                  )}
-                  <span className="pp-file-name">{fileName(file.path)}</span>
-                  <span className="pp-file-size">{fileSize(file.size_bytes)}</span>
-                </li>
-              ),
-            )}
+            {group.files.map((file) => (
+              <li key={file.path} className="pp-file-row">
+                {file.kind === "stl" && (
+                  <StlThumb sourceId={sourceId} path={file.path} report={report} />
+                )}
+                <span className="pp-file-name">{fileName(file.path)}</span>
+                <span className="pp-file-size">{fileSize(file.size_bytes)}</span>
+              </li>
+            ))}
           </ul>
         </section>
       ))}
     </>
-  );
-}
-
-/** A STEP file, whose part tree opens below it on request. */
-function StepFileRow({ file, sourceId }: { file: SourceFile; sourceId: number }) {
-  const [open, setOpen] = useState(false);
-  const treeId = useId();
-  const name = fileName(file.path);
-  return (
-    <li>
-      <div className="pp-file-row">
-        <span className="pp-file-name">{name}</span>
-        <button
-          type="button"
-          className="pp-button"
-          aria-expanded={open}
-          aria-controls={open ? treeId : undefined}
-          aria-label={`Part tree of ${name}`}
-          onClick={() => setOpen((current) => !current)}
-        >
-          Part tree
-        </button>
-        <span className="pp-file-size">{fileSize(file.size_bytes)}</span>
-      </div>
-      {open && (
-        <div id={treeId}>
-          <StepPartTree sourceId={sourceId} path={file.path} />
-        </div>
-      )}
-    </li>
   );
 }

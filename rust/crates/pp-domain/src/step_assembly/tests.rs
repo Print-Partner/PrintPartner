@@ -96,17 +96,6 @@ fn rebuilds_the_whole_nested_tree_of_a_six_level_assembly() {
 }
 
 #[test]
-fn the_tree_serializes_as_nested_json() {
-    let tree = part_tree(NESTED, &IDLE).unwrap();
-    let json = serde_json::to_value(&tree).unwrap();
-    let nozzle = &json["roots"][0]["children"][0]["children"][0]["children"][0]["children"][0]["children"]
-        [0];
-    assert_eq!(nozzle["name"], "D\u{fc}se 0.4");
-    assert_eq!(nozzle["instance"], "Nozzle:1");
-    assert_eq!(serde_json::from_value::<PartTree>(json).unwrap(), tree);
-}
-
-#[test]
 fn a_single_part_file_is_one_root() {
     let tree = read(&file(&part(10, "P", "Bracket"))).unwrap();
     assert_eq!(tree.roots, vec![node("Bracket", "P", None, vec![])]);

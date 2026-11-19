@@ -428,11 +428,11 @@ pub(crate) fn package_root(bundle: &Bundle) -> Result<std::path::PathBuf> {
 }
 
 /// A dependency link's recorded target: a relative path from the link's own
-/// directory, `/`-separated. build-desktop-manifest.py records a symbolic
-/// link's own (relative) text and a junction's target made relative, since
-/// Windows stores junction targets as absolute paths. Verification resolves
-/// the recorded target from the link's directory and requires the link to
-/// resolve to the same place, for both kinds.
+/// directory. build-desktop-manifest.py records a symbolic link's own text,
+/// which must be relative, and a junction's target made relative and
+/// `/`-separated, since Windows stores junction targets as absolute paths.
+/// Verification requires every link to resolve where its recorded target
+/// resolves, inside the package, and a symbolic link's text to equal it.
 fn link_target(target: &str) -> Result<&Path> {
     let path = Path::new(target);
     ensure!(
@@ -494,7 +494,8 @@ fn verify_dependencies(
                 let kind = entry.file_type()?;
                 // std reports a Windows junction, which npm creates for
                 // workspace links, as a symbolic link. Both are dependency
-                // links, as in build-desktop-manifest.py.
+                // links, as in build-desktop-manifest.py; the recorded-target
+                // check below is the only place they differ.
                 if kind.is_symlink() {
                     actual_links.insert(key.clone());
                     if inventory.unshipped_links.contains(&key) {
@@ -532,12 +533,22 @@ fn verify_dependencies(
             .parent()
             .context("Dependency link has no directory")?
             .join(link_target(target)?);
+        let actual = link.canonicalize().ok();
+        // As in build-desktop-manifest.py: a symbolic link records its own
+        // text, and a junction, whose stored target is absolute, records its
+        // target relative to the link's directory.
         ensure!(
-            matches!(
-                (link.canonicalize(), recorded.canonicalize()),
-                (Ok(actual), Ok(recorded)) if actual == recorded
-            ),
+            actual.is_some()
+                && actual == recorded.canonicalize().ok()
+                && (crate::platform::is_junction(&link)?
+                    || std::fs::read_link(&link)? == Path::new(target)),
             "Dependency link changed"
+        );
+        // An unshipped link is not followed by the walk, so check here that
+        // its target, like every link's, is still inside the package.
+        ensure!(
+            actual.is_some_and(|actual| actual.starts_with(&root)),
+            "Dependency link escaped package"
         );
     }
     verify_files(&root, &inventory.files, false, stop)
@@ -818,6 +829,12 @@ mod tests {
         std::fs::write(nearer.join("shadow.js"), b"new search root").unwrap();
         assert!(verify_dependencies(&web, &inventory, &CancellationToken::new()).is_err());
         std::fs::remove_dir_all(&nearer).unwrap();
+        // The generator refuses an absolute symbolic link, so verification
+        // does too, even when it resolves to the recorded target.
+        std::fs::remove_file(&alias).unwrap();
+        symlink_file(&framework, &alias);
+        let error = verify_dependencies(&web, &inventory, &CancellationToken::new()).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link changed");
         std::fs::remove_file(&alias).unwrap();
         symlink_file(Path::new("/usr/bin/node"), &alias);
         assert!(verify_dependencies(&web, &inventory, &CancellationToken::new()).is_err());
@@ -872,11 +889,21 @@ mod tests {
             .insert(link.clone(), web.join("apps/ui").to_string_lossy().into());
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Invalid dependency link target");
-        inventory
-            .links
-            .insert(link.clone(), "../../apps/./ui".into());
-        verify_dependencies(&web, &inventory, &stop).unwrap();
         inventory.links.insert(link.clone(), "../../apps/ui".into());
+
+        // The link is unchanged, but its target now resolves outside the
+        // package, which the generator refuses.
+        let outside = root.with_extension("outside");
+        std::fs::rename(web.join("apps/ui"), &outside).unwrap();
+        symlink_dir(&outside, &web.join("apps/ui"));
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link escaped package");
+        let moved = web.join("apps/ui");
+        std::fs::remove_dir(&moved)
+            .or_else(|_| std::fs::remove_file(&moved))
+            .unwrap();
+        std::fs::rename(&outside, web.join("apps/ui")).unwrap();
+        verify_dependencies(&web, &inventory, &stop).unwrap();
 
         std::fs::create_dir_all(web.join("apps/other")).unwrap();
         let ui = scope.join("ui");

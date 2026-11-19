@@ -3,6 +3,11 @@ name: Desktop runtime
 # Desktop runtime stays off pull requests and main until desktop CI returns (GRE-1649).
 on:
   workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number for the e2e receipt (dispatch from the PR branch); empty for none
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -108,15 +113,55 @@ jobs:
         run: |
           python3 rust/tests/gateway_product.py --streams 2>&1 | tee "$PP_EVIDENCE/gateway-streams.log"
       - name: Run Playwright specs against pp-server
+        id: playwright
         working-directory: web
         env:
           PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+          PP_E2E_SCREENSHOTS: 'on'
         run: |
           set -o pipefail
           npm run test:e2e 2>&1 | tee "$PP_EVIDENCE/playwright.log"
           # verify.py checks pp-server's shutdown; Playwright does not fail on it, so check here.
           grep -q 'STOP: exit=0; compatibility reservation removed' "$PP_EVIDENCE/playwright.log"
           if pgrep -x pp-server; then echo '::error::pp-server survived the Playwright run'; exit 1; fi
+      # The receipt ties the Playwright counts and screenshots to the exact head this run tested.
+      - name: Collect the e2e screenshots
+        if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
+        run: python3 scripts/e2e_receipt.py collect --report "$PP_EVIDENCE/playwright/report.json" --out "$RUNNER_TEMP/e2e-receipt"
+      - name: Upload the e2e screenshots
+        id: e2e_screenshots
+        if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-receipt/screenshots/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Write the e2e receipt
+        if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+          ARTIFACT_URL: ${{ steps.e2e_screenshots.outputs.artifact-url }}
+        run: |
+          python3 scripts/e2e_receipt.py write --report "$PP_EVIDENCE/playwright/report.json" \
+            --out "$RUNNER_TEMP/e2e-receipt" --repo "$REPO" --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+            --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --server-url "$SERVER_URL" \
+            --suite web-playwright --artifact-url "$ARTIFACT_URL" \
+            --runner-host "$RUNNER_NAME" --runner-environment "$RUNNER_ENVIRONMENT" \
+            | tee "$PP_EVIDENCE/e2e-receipt.json"
+      - name: Upload the e2e receipt
+        if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-receipt/
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve final inventory and lockfile state
         if: always()
         run: |

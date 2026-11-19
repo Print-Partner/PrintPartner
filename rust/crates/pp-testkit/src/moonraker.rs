@@ -11,11 +11,11 @@ use std::{
     thread::JoinHandle,
 };
 
-/// The request line of one HTTP request head, read up to its blank line.
+/// One HTTP request head, read up to its blank line (never the body).
 /// `None` when the client closed or failed before the head was complete: a
 /// client cancelled after it connected but before it wrote has sent no
 /// request, so the printers neither record nor answer it.
-fn request_line(socket: &mut TcpStream) -> Option<String> {
+fn request_head(socket: &mut TcpStream) -> Option<String> {
     let mut head = Vec::new();
     let mut bytes = [0; 4096];
     while !head.windows(4).any(|end| end == b"\r\n\r\n") {
@@ -24,10 +24,12 @@ fn request_line(socket: &mut TcpStream) -> Option<String> {
             Ok(len) => head.extend_from_slice(&bytes[..len]),
         }
     }
-    String::from_utf8_lossy(&head)
-        .lines()
-        .next()
-        .map(str::to_owned)
+    let end = head.windows(4).position(|part| part == b"\r\n\r\n")? + 4;
+    Some(String::from_utf8_lossy(&head[..end]).into_owned())
+}
+
+fn request_line(socket: &mut TcpStream) -> Option<String> {
+    request_head(socket)?.lines().next().map(str::to_owned)
 }
 
 /// Replays `replies` in request order and repeats the last one. A 3xx reply
@@ -111,6 +113,7 @@ impl Drop for RecordedPrinter {
 pub struct RoutedPrinter {
     url: String,
     lines: Arc<Mutex<Vec<String>>>,
+    heads: Arc<Mutex<Vec<String>>>,
     stopped: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -128,6 +131,8 @@ impl RoutedPrinter {
             })
             .collect();
         let lines = Arc::new(Mutex::new(Vec::new()));
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&heads);
         let stopped = Arc::new(AtomicBool::new(false));
         let (logged, stop) = (lines.clone(), stopped.clone());
         let thread = std::thread::spawn(move || {
@@ -136,9 +141,14 @@ impl RoutedPrinter {
                     break;
                 }
                 let Ok(mut socket) = socket else { continue };
-                let Some(line) = request_line(&mut socket) else {
+                let Some(head) = request_head(&mut socket) else {
                     continue;
                 };
+                let line = head.lines().next().unwrap_or_default().to_owned();
+                captured
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(head);
                 let target = line.split(' ').nth(1).unwrap_or_default();
                 let (status, body) = routes
                     .iter()
@@ -156,6 +166,7 @@ impl RoutedPrinter {
         Ok(Self {
             url,
             lines,
+            heads,
             stopped,
             thread: Some(thread),
         })
@@ -163,6 +174,11 @@ impl RoutedPrinter {
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// Request headers only; upload bodies are never retained.
+    pub fn request_heads(&self) -> Vec<String> {
+        self.heads.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The request line of every request so far, in order.

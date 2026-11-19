@@ -706,7 +706,8 @@ pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsStrin
 
 /// Whether `path` is itself a junction (a mount-point reparse point), which
 /// std reports as a symbolic link. npm and the package build create junctions
-/// on Windows, and the manifest builder walks them as directories.
+/// on Windows. Windows stores a junction's target as an absolute path, so
+/// release verification compares where it resolves, not its text.
 pub(crate) fn is_junction(path: &Path) -> std::io::Result<bool> {
     let file = OpenOptions::new()
         .access_mode(0)

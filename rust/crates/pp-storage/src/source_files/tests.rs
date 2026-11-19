@@ -555,5 +555,3 @@ fn pruning_never_follows_a_link() {
     assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"keep");
     assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
 }
-
-mod step;

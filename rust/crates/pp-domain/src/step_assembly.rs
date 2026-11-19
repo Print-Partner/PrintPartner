@@ -10,8 +10,13 @@
 //!
 //! The file is read once, front to back. Only those four entity kinds are
 //! buffered; every other record (the geometry, nearly all of a real file) is
-//! skipped as it streams past, so memory follows the number of parts, not the
-//! file size.
+//! skipped as it streams past. [`Limits`] bounds what is kept while reading
+//! and what the finished tree holds, so memory follows the caps, not the file.
+//!
+//! A tree is returned only for a whole exchange: every statement ends with
+//! `;`, a `DATA` section is closed by `ENDSEC;`, and `END-ISO-10303-21;`
+//! follows it. A file cut anywhere before that fails as
+//! [`StepError::Incomplete`], so a partial tree is never returned.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -26,9 +31,40 @@ pub const MAX_PARTS: usize = 100_000;
 /// levels stay under serde_json's 128-value nesting limit and every accepted
 /// tree reads back from the cache.
 pub const MAX_LEVELS: usize = 60;
-/// The longest product-structure record buffered. Geometry records are never
-/// buffered, so this bounds only names and ids.
-const MAX_RECORD_BYTES: usize = 64 * 1024;
+/// How many bytes are read between checks of the cancel flag.
+const READ_CHUNK: usize = 64 * 1024;
+
+/// Bounds on one read. Every cap that is passed fails the read as
+/// [`StepError::TooLarge`] at the record or node that passes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Nodes in the tree, counting every use of a shared part.
+    pub max_parts: usize,
+    /// Levels in the tree; a lone root is 1.
+    pub max_levels: usize,
+    /// Product-structure records kept while reading.
+    pub max_records: usize,
+    /// Bytes in one product-structure record. Geometry records are skipped
+    /// unbuffered whatever their size.
+    pub max_record_bytes: usize,
+    /// Bytes of ids and names kept while reading.
+    pub max_kept_text: usize,
+    /// Bytes of ids and names in the finished tree, counting every use.
+    pub max_tree_text: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_parts: MAX_PARTS,
+            max_levels: MAX_LEVELS,
+            max_records: 4 * MAX_PARTS,
+            max_record_bytes: 64 * 1024,
+            max_kept_text: 16 * 1024 * 1024,
+            max_tree_text: 32 * 1024 * 1024,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartTree {
@@ -53,9 +89,12 @@ pub enum StepError {
     Io(io::Error),
     /// The file does not start with `ISO-10303-21;`.
     NotStep,
+    /// The file ends before a closed `DATA` section and `END-ISO-10303-21;`,
+    /// or inside a statement.
+    Incomplete,
     /// No product definition resolves to a product.
     NoProducts,
-    /// Over [`MAX_PARTS`] nodes or [`MAX_LEVELS`] levels.
+    /// Over one of the [`Limits`].
     TooLarge,
     /// An assembly contains itself.
     Cycle,
@@ -67,6 +106,7 @@ impl fmt::Display for StepError {
         match self {
             Self::Io(error) => write!(f, "{error}"),
             Self::NotStep => f.write_str("not a STEP file"),
+            Self::Incomplete => f.write_str("the STEP file is incomplete"),
             Self::NoProducts => f.write_str("no product structure"),
             Self::TooLarge => f.write_str("part tree over the size limit"),
             Self::Cycle => f.write_str("an assembly contains itself"),
@@ -83,23 +123,53 @@ impl From<io::Error> for StepError {
     }
 }
 
-/// Reads the part tree of the STEP file `input`. `cancelled` is checked
-/// before each record; setting it ends the read with [`StepError::Cancelled`].
+/// [`part_tree_within`] the default [`Limits`].
 pub fn part_tree(input: impl Read, cancelled: &AtomicBool) -> Result<PartTree, StepError> {
-    let mut scanner = Scanner::new(input);
+    part_tree_within(input, Limits::default(), cancelled)
+}
+
+/// Reads the part tree of the STEP file `input`. `cancelled` is checked
+/// before every 64 KiB read and for every node built; setting it ends the
+/// read with [`StepError::Cancelled`].
+pub fn part_tree_within(
+    input: impl Read,
+    limits: Limits,
+    cancelled: &AtomicBool,
+) -> Result<PartTree, StepError> {
+    let mut scanner = Scanner::new(input, cancelled, limits.max_record_bytes);
     if !scanner.starts_with_magic()? {
         return Err(StepError::NotStep);
     }
-    let mut entities = Entities::default();
-    while let Some(record) = scanner.next_record()? {
-        if cancelled.load(Ordering::Relaxed) {
-            return Err(StepError::Cancelled);
-        }
-        if let Some((id, kind, body)) = record {
-            entities.add(id, kind, &params(&body));
+    let mut entities = Entities::new(limits);
+    let mut section = Section::Outside;
+    let mut data_closed = false;
+    loop {
+        match scanner.next_statement()?.ok_or(StepError::Incomplete)? {
+            Statement::Keyword(word) => match word.as_slice() {
+                b"HEADER" => section = Section::Header,
+                b"DATA" => section = Section::Data,
+                b"ENDSEC" => {
+                    data_closed |= section == Section::Data;
+                    section = Section::Outside;
+                }
+                b"END-ISO-10303-21" if section == Section::Outside && data_closed => break,
+                b"END-ISO-10303-21" => return Err(StepError::Incomplete),
+                _ => {}
+            },
+            Statement::Entity(id, kind, body) if section == Section::Data => {
+                entities.add(id, kind, &params(&body))?;
+            }
+            Statement::Entity(..) | Statement::Other => {}
         }
     }
-    entities.tree()
+    entities.tree(cancelled)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Outside,
+    Header,
+    Data,
 }
 
 /// The four kinds of record the tree is built from.
@@ -126,8 +196,15 @@ impl Kind {
     }
 }
 
-/// A product-structure record: its entity id, kind, and parameter text.
-type Entity = (u64, Kind, Vec<u8>);
+/// One statement of the exchange.
+enum Statement {
+    /// A section keyword such as `DATA` or `ENDSEC`, or a header entity.
+    Keyword(Vec<u8>),
+    /// A product-structure record: its entity id, kind and parameter text.
+    Entity(u64, Kind, Vec<u8>),
+    /// Any other entity record, skipped unbuffered.
+    Other,
+}
 
 /// One top-level parameter of a record.
 #[derive(Debug, PartialEq)]
@@ -143,8 +220,11 @@ struct Usage {
     child: u64,
 }
 
-#[derive(Default)]
 struct Entities {
+    limits: Limits,
+    /// Records and text bytes kept so far.
+    records: usize,
+    text: usize,
     /// Entity id to (product id, name).
     products: HashMap<u64, (String, String)>,
     /// Formation to its product.
@@ -156,7 +236,20 @@ struct Entities {
 }
 
 impl Entities {
-    fn add(&mut self, id: u64, kind: Kind, params: &[Param]) {
+    fn new(limits: Limits) -> Self {
+        Self {
+            limits,
+            records: 0,
+            text: 0,
+            products: HashMap::new(),
+            formations: HashMap::new(),
+            definitions: BTreeMap::new(),
+            usages: BTreeMap::new(),
+        }
+    }
+
+    /// Keeps one record, counting it and its text against the limits first.
+    fn add(&mut self, id: u64, kind: Kind, params: &[Param]) -> Result<(), StepError> {
         let text = |index: usize| match params.get(index) {
             Some(Param::Text(value)) => Some(value.clone()),
             _ => None,
@@ -165,19 +258,30 @@ impl Entities {
             Some(Param::Ref(value)) => Some(*value),
             _ => None,
         };
+        let mut keep = |bytes: usize| {
+            self.records += 1;
+            self.text += bytes;
+            if self.records > self.limits.max_records || self.text > self.limits.max_kept_text {
+                return Err(StepError::TooLarge);
+            }
+            Ok(())
+        };
         match kind {
             Kind::Product => {
                 if let (Some(product_id), Some(name)) = (text(0), text(1)) {
+                    keep(product_id.len() + name.len())?;
                     self.products.insert(id, (product_id, name));
                 }
             }
             Kind::Formation => {
                 if let Some(product) = reference(2) {
+                    keep(0)?;
                     self.formations.insert(id, product);
                 }
             }
             Kind::Definition => {
                 if let Some(formation) = reference(2) {
+                    keep(0)?;
                     self.definitions.insert(id, formation);
                 }
             }
@@ -187,17 +291,17 @@ impl Entities {
                         .into_iter()
                         .flatten()
                         .find(|value| !value.is_empty());
-                    self.usages.insert(
-                        id,
-                        Usage {
-                            instance,
-                            parent,
-                            child,
-                        },
-                    );
+                    keep(instance.as_ref().map_or(0, String::len))?;
+                    let usage = Usage {
+                        instance,
+                        parent,
+                        child,
+                    };
+                    self.usages.insert(id, usage);
                 }
             }
         }
+        Ok(())
     }
 
     /// The product a definition names, through its formation.
@@ -206,7 +310,7 @@ impl Entities {
         self.products.get(self.formations.get(formation)?)
     }
 
-    fn tree(&self) -> Result<PartTree, StepError> {
+    fn tree(&self, cancelled: &AtomicBool) -> Result<PartTree, StepError> {
         let mut children: HashMap<u64, Vec<&Usage>> = HashMap::new();
         let mut placed = BTreeSet::new();
         for usage in self.usages.values() {
@@ -218,8 +322,10 @@ impl Entities {
         let mut build = Build {
             entities: self,
             children: &children,
+            cancelled,
             path: Vec::new(),
             count: 0,
+            text: 0,
         };
         let mut roots = Vec::new();
         for &definition in self.definitions.keys() {
@@ -242,25 +348,37 @@ impl Entities {
 struct Build<'a> {
     entities: &'a Entities,
     children: &'a HashMap<u64, Vec<&'a Usage>>,
+    cancelled: &'a AtomicBool,
     /// The definitions from the root down to the node being built.
     path: Vec<u64>,
+    /// Nodes and text bytes built so far.
     count: usize,
+    text: usize,
 }
 
 impl Build<'_> {
     fn node(&mut self, definition: u64, instance: Option<String>) -> Result<PartNode, StepError> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Err(StepError::Cancelled);
+        }
         if self.path.contains(&definition) {
             return Err(StepError::Cycle);
-        }
-        self.count += 1;
-        // `path` holds the node's ancestors, so the node is on level len + 1.
-        if self.count > MAX_PARTS || self.path.len() >= MAX_LEVELS {
-            return Err(StepError::TooLarge);
         }
         let (product_id, name) = self
             .entities
             .product(definition)
             .ok_or(StepError::NoProducts)?;
+        let name = if name.is_empty() { product_id } else { name };
+        let limits = self.entities.limits;
+        self.count += 1;
+        self.text += name.len() + product_id.len() + instance.as_ref().map_or(0, String::len);
+        // `path` holds the node's ancestors, so the node is on level len + 1.
+        if self.count > limits.max_parts
+            || self.path.len() >= limits.max_levels
+            || self.text > limits.max_tree_text
+        {
+            return Err(StepError::TooLarge);
+        }
         self.path.push(definition);
         let mut children = Vec::new();
         for usage in self.children.get(&definition).into_iter().flatten() {
@@ -268,11 +386,7 @@ impl Build<'_> {
         }
         self.path.pop();
         Ok(PartNode {
-            name: if name.is_empty() {
-                product_id.clone()
-            } else {
-                name.clone()
-            },
+            name: name.clone(),
             product_id: product_id.clone(),
             instance,
             children,
@@ -280,33 +394,42 @@ impl Build<'_> {
     }
 }
 
-/// Reads ISO 10303-21 records one at a time. Strings (`'...'`, with `''` for
-/// a quote) and comments (`/* ... */`) may hold `;`, so both are tracked
-/// while looking for a record's end.
-struct Scanner<R> {
+/// Reads ISO 10303-21 statements one at a time. Strings (`'...'`, with `''`
+/// for a quote) and comments (`/* ... */`) may hold `;`, so both are tracked
+/// while looking for a statement's end.
+struct Scanner<'a, R> {
     input: R,
+    cancelled: &'a AtomicBool,
+    max_record_bytes: usize,
     buffer: Box<[u8]>,
     start: usize,
     end: usize,
 }
 
-impl<R: Read> Scanner<R> {
-    fn new(input: R) -> Self {
+impl<'a, R: Read> Scanner<'a, R> {
+    fn new(input: R, cancelled: &'a AtomicBool, max_record_bytes: usize) -> Self {
         Self {
             input,
-            buffer: vec![0; 64 * 1024].into_boxed_slice(),
+            cancelled,
+            max_record_bytes,
+            buffer: vec![0; READ_CHUNK].into_boxed_slice(),
             start: 0,
             end: 0,
         }
     }
 
-    fn peek(&mut self) -> io::Result<Option<u8>> {
+    /// The next byte without taking it. Each refill checks the cancel flag
+    /// first, so a long record or comment cannot delay cancellation.
+    fn peek(&mut self) -> Result<Option<u8>, StepError> {
         if self.start == self.end {
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(StepError::Cancelled);
+            }
             self.end = loop {
                 match self.input.read(&mut self.buffer) {
                     Ok(read) => break read,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 }
             };
             self.start = 0;
@@ -317,7 +440,7 @@ impl<R: Read> Scanner<R> {
         Ok(Some(self.buffer[self.start]))
     }
 
-    fn next(&mut self) -> io::Result<Option<u8>> {
+    fn next(&mut self) -> Result<Option<u8>, StepError> {
         let byte = self.peek()?;
         if byte.is_some() {
             self.start += 1;
@@ -326,7 +449,7 @@ impl<R: Read> Scanner<R> {
     }
 
     /// Skips whitespace and comments; answers the next byte without taking it.
-    fn skip_blank(&mut self) -> io::Result<Option<u8>> {
+    fn skip_blank(&mut self) -> Result<Option<u8>, StepError> {
         loop {
             match self.peek()? {
                 Some(byte) if byte.is_ascii_whitespace() => {
@@ -345,7 +468,8 @@ impl<R: Read> Scanner<R> {
         }
     }
 
-    fn skip_comment(&mut self) -> io::Result<()> {
+    /// Consumes a comment up to its `*/`. An unclosed comment is incomplete.
+    fn skip_comment(&mut self) -> Result<(), StepError> {
         let mut star = false;
         while let Some(byte) = self.next()? {
             if star && byte == b'/' {
@@ -353,10 +477,10 @@ impl<R: Read> Scanner<R> {
             }
             star = byte == b'*';
         }
-        Ok(())
+        Err(StepError::Incomplete)
     }
 
-    fn starts_with_magic(&mut self) -> io::Result<bool> {
+    fn starts_with_magic(&mut self) -> Result<bool, StepError> {
         self.skip_blank()?;
         for expected in b"ISO-10303-21" {
             if self.next()? != Some(*expected) {
@@ -366,16 +490,28 @@ impl<R: Read> Scanner<R> {
         Ok(self.skip_blank()? == Some(b';'))
     }
 
-    /// The next record: `Some(Some(..))` for a product-structure entity with
-    /// its parameter text, `Some(None)` for any other record, `None` at the
-    /// end of the file.
-    fn next_record(&mut self) -> io::Result<Option<Option<Entity>>> {
+    /// Reads the bytes of a name, `[A-Za-z0-9_-]`, uppercased; at most 64.
+    fn word(&mut self) -> Result<Vec<u8>, StepError> {
+        let mut word = Vec::new();
+        while let Some(byte) = self.peek()? {
+            if !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-') || word.len() > 64 {
+                break;
+            }
+            word.push(byte.to_ascii_uppercase());
+            self.start += 1;
+        }
+        Ok(word)
+    }
+
+    /// The next statement, or `None` at the end of the file.
+    fn next_statement(&mut self) -> Result<Option<Statement>, StepError> {
         let Some(first) = self.skip_blank()? else {
             return Ok(None);
         };
         if first != b'#' {
+            let word = self.word()?;
             self.rest(None)?;
-            return Ok(Some(None));
+            return Ok(Some(Statement::Keyword(word)));
         }
         self.start += 1;
         let mut id = 0u64;
@@ -387,36 +523,29 @@ impl<R: Read> Scanner<R> {
         }
         if digits == 0 || self.skip_blank()? != Some(b'=') {
             self.rest(None)?;
-            return Ok(Some(None));
+            return Ok(Some(Statement::Other));
         }
         self.start += 1;
         self.skip_blank()?;
-        let mut keyword = Vec::new();
-        while let Some(byte) = self.peek()? {
-            if !(byte.is_ascii_alphanumeric() || byte == b'_') || keyword.len() > 64 {
-                break;
-            }
-            keyword.push(byte.to_ascii_uppercase());
-            self.start += 1;
-        }
+        let keyword = self.word()?;
         let Some(kind) = Kind::of(&keyword) else {
             self.rest(None)?;
-            return Ok(Some(None));
+            return Ok(Some(Statement::Other));
         };
         let mut body = Vec::new();
-        let whole = self.rest(Some(&mut body))?;
-        Ok(Some(whole.then_some((id, kind, body))))
+        self.rest(Some(&mut body))?;
+        Ok(Some(Statement::Entity(id, kind, body)))
     }
 
-    /// Consumes up to and including the record's `;`, copying the bytes into
-    /// `keep` when given. Answers false when `keep` would pass
-    /// [`MAX_RECORD_BYTES`]; the rest of that record is then skipped.
-    fn rest(&mut self, mut keep: Option<&mut Vec<u8>>) -> io::Result<bool> {
+    /// Consumes up to and including the statement's `;`, copying the bytes
+    /// into `keep` when given. The file ending first is
+    /// [`StepError::Incomplete`]; a kept statement over the record cap is
+    /// [`StepError::TooLarge`].
+    fn rest(&mut self, mut keep: Option<&mut Vec<u8>>) -> Result<(), StepError> {
         let mut quoted = false;
-        let mut whole = true;
         while let Some(byte) = self.next()? {
             if !quoted && byte == b';' {
-                return Ok(whole);
+                return Ok(());
             }
             if !quoted && byte == b'/' && self.peek()? == Some(b'*') {
                 self.start += 1;
@@ -427,15 +556,13 @@ impl<R: Read> Scanner<R> {
                 quoted = !quoted;
             }
             if let Some(kept) = keep.as_deref_mut() {
-                if kept.len() == MAX_RECORD_BYTES {
-                    whole = false;
-                    keep = None;
-                } else {
-                    kept.push(byte);
+                if kept.len() == self.max_record_bytes {
+                    return Err(StepError::TooLarge);
                 }
+                kept.push(byte);
             }
         }
-        Ok(false)
+        Err(StepError::Incomplete)
     }
 }
 

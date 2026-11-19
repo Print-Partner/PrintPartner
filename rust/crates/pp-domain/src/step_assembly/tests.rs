@@ -226,3 +226,178 @@ fn decodes_string_directives() {
     assert_eq!(decode("\\X2\\00FC"), "\\X2\\00FC");
     assert_eq!(decode("end\\"), "end\\");
 }
+
+fn within(text: &[u8], limits: Limits) -> Result<PartTree, StepError> {
+    part_tree_within(text, limits, &IDLE)
+}
+
+/// Scorer finding on 4c2445ee: the first 42 lines of the fixture returned a
+/// two-level tree as a success. Every proper prefix is now refused.
+#[test]
+fn every_truncation_of_the_fixture_is_refused() {
+    let whole = NESTED.trim_ascii_end();
+    assert!(part_tree(whole, &IDLE).is_ok());
+    for length in 0..whole.len() {
+        match part_tree(&whole[..length], &IDLE) {
+            Err(StepError::Incomplete | StepError::NotStep) => {}
+            other => panic!("prefix of {length} bytes: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_cut_at_each_kind_of_point_is_incomplete() {
+    let text = std::str::from_utf8(NESTED).unwrap();
+    let at = |needle: &str| text.find(needle).unwrap();
+    let cuts = [
+        ("mid-record", at("#104=") + 20),
+        ("mid-string", at("'Bed; ''heated''") + 6),
+        ("between records", at("#105=")),
+        ("before ENDSEC", text.rfind("ENDSEC;").unwrap()),
+        ("without the END line", at("END-ISO-10303-21;")),
+        ("mid END line", at("END-ISO-10303-21;") + 8),
+    ];
+    for (name, cut) in cuts {
+        let result = part_tree(&NESTED[..cut], &IDLE);
+        assert!(
+            matches!(result, Err(StepError::Incomplete)),
+            "{name}: {result:?}"
+        );
+    }
+    let unclosed = text.replace("ENDSEC;\nEND-ISO", "END-ISO");
+    let result = part_tree(unclosed.as_bytes(), &IDLE);
+    assert!(
+        matches!(result, Err(StepError::Incomplete)),
+        "END inside DATA: {result:?}"
+    );
+    let comment = format!("{}/* never closed", &text[..at("END-ISO-10303-21;")]);
+    let result = part_tree(comment.as_bytes(), &IDLE);
+    assert!(
+        matches!(result, Err(StepError::Incomplete)),
+        "open comment: {result:?}"
+    );
+}
+
+#[test]
+fn a_product_record_over_the_record_cap_is_refused_and_geometry_is_not() {
+    let limits = Limits {
+        max_record_bytes: 200,
+        ..Limits::default()
+    };
+    let long_name = "N".repeat(300);
+    let refused = within(file(&part(10, "P", &long_name)).as_bytes(), limits);
+    assert!(matches!(refused, Err(StepError::TooLarge)), "{refused:?}");
+    let geometry = format!(
+        "#1=POLYLINE('{}',(#2));\n{}",
+        "x".repeat(300),
+        part(10, "P", "Part")
+    );
+    assert!(within(file(&geometry).as_bytes(), limits).is_ok());
+}
+
+#[test]
+fn records_and_kept_text_are_capped_as_they_are_read() {
+    let two_parts = file(&[part(10, "A", "First"), part(20, "B", "Second")].concat());
+    let records = Limits {
+        max_records: 5,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        within(two_parts.as_bytes(), records),
+        Err(StepError::TooLarge)
+    ));
+    let one_part = file(&part(10, "A", "First"));
+    assert!(within(one_part.as_bytes(), records).is_ok());
+
+    let text = Limits {
+        max_kept_text: 10,
+        ..Limits::default()
+    };
+    let long = file(&part(10, "A", "Eleven char"));
+    assert!(matches!(
+        within(long.as_bytes(), text),
+        Err(StepError::TooLarge)
+    ));
+}
+
+#[test]
+fn tree_text_is_capped_across_every_use_of_a_shared_part() {
+    // A 40-byte part used 10 times: 10 parts read, 11 nodes built.
+    let name = "S".repeat(40);
+    let mut body = [part(10, "R", "Root"), part(20, "S", &name)].concat();
+    for copy in 0..10 {
+        body.push_str(&usage(100 + copy, "", 12, 22));
+    }
+    let limits = Limits {
+        max_tree_text: 300,
+        ..Limits::default()
+    };
+    let refused = within(file(&body).as_bytes(), limits);
+    assert!(matches!(refused, Err(StepError::TooLarge)), "{refused:?}");
+    assert_eq!(
+        within(file(&body).as_bytes(), Limits::default())
+            .unwrap()
+            .roots[0]
+            .children
+            .len(),
+        10
+    );
+}
+
+/// A reader that sets `flag` once `after` bytes have been read, and counts
+/// what it hands out.
+struct Tripwire<'a> {
+    bytes: &'a [u8],
+    at: usize,
+    after: usize,
+    flag: &'a AtomicBool,
+}
+
+impl Read for Tripwire<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let count = out.len().min(self.bytes.len() - self.at).min(4096);
+        out[..count].copy_from_slice(&self.bytes[self.at..self.at + count]);
+        self.at += count;
+        if self.at >= self.after {
+            self.flag.store(true, Ordering::Relaxed);
+        }
+        Ok(count)
+    }
+}
+
+#[test]
+fn cancellation_stops_a_long_record_within_one_chunk() {
+    let long = format!(
+        "#1=POLYLINE('{}',(#2));\n{}",
+        "x".repeat(8 << 20),
+        part(10, "P", "Part")
+    );
+    let text = file(&long);
+    let flag = AtomicBool::new(false);
+    let mut reader = Tripwire {
+        bytes: text.as_bytes(),
+        at: 0,
+        after: 1 << 20,
+        flag: &flag,
+    };
+    let result = part_tree(&mut reader, &flag);
+    assert!(matches!(result, Err(StepError::Cancelled)), "{result:?}");
+    assert!(
+        reader.at <= (1 << 20) + READ_CHUNK,
+        "read {} bytes",
+        reader.at
+    );
+}
+
+#[test]
+fn cancellation_stops_the_tree_build() {
+    let flag = AtomicBool::new(false);
+    let mut reader = Tripwire {
+        bytes: NESTED,
+        at: 0,
+        after: NESTED.len(),
+        flag: &flag,
+    };
+    let result = part_tree(&mut reader, &flag);
+    assert!(matches!(result, Err(StepError::Cancelled)), "{result:?}");
+}

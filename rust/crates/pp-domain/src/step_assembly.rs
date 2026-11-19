@@ -127,6 +127,9 @@ impl Kind {
     }
 }
 
+/// A product-structure record: its entity id, kind, and parameter text.
+type Entity = (u64, Kind, Vec<u8>);
+
 /// One top-level parameter of a record.
 #[derive(Debug, PartialEq)]
 enum Param {
@@ -366,8 +369,7 @@ impl<R: Read> Scanner<R> {
     /// The next record: `Some(Some(..))` for a product-structure entity with
     /// its parameter text, `Some(None)` for any other record, `None` at the
     /// end of the file.
-    #[allow(clippy::type_complexity)]
-    fn next_record(&mut self) -> io::Result<Option<Option<(u64, Kind, Vec<u8>)>>> {
+    fn next_record(&mut self) -> io::Result<Option<Option<Entity>>> {
         let Some(first) = self.skip_blank()? else {
             return Ok(None);
         };

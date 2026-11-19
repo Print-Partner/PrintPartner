@@ -259,7 +259,7 @@ Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admiss
 
 ### Stage and restore routes
 
-With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running` with code `restore_busy`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
 
 `POST /api/v2/installation/restore/stage` takes the backup archive as the request body (`application/gzip`, not a form) and needs `Content-Length`, which becomes `begin_upload`'s limit. The route passes the body to the upload in 1 MiB writes, then calls `stage`, and answers `RestorePreview`: `restore_id`, the archive's `created_at` and `app_version`, its `schema_version`, and the `confirmation` text to repeat. The stage lasts until Print Partner restarts or the next stage replaces it; then the backup must be uploaded again.
 
@@ -277,7 +277,7 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two
 | `RestoreRequest` not readable | 400 `Request is invalid`, with field errors |
 | `Refusal::Confirmation` | 400 `Restore confirmation does not match` |
 | `Refusal::UnknownRestore` (also any id that is not 32 lowercase hex) | 404, code `restore_not_found`: upload the backup again |
-| `Refusal::Busy` | 503 `Storage work is still active; try again` |
+| `Refusal::Busy` | 503 `Storage work is still active; try again`, code `restore_busy`: nothing was changed |
 | `RestoreError::RolledBack` | 500, code `restore_rolled_back`: the previous installation is kept and serving |
 | `RestoreError::RestartRequired` | 503, code `restart_required`: storage refuses work until a restart replays the journal |
 
@@ -293,7 +293,7 @@ The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/sr
 2. **Restore from a backup**: choose the file, then **Check backup** posts it as the body of the stage route and shows the backup's time, app version and schema version. Nothing is sent when the section opens or a file is chosen.
 3. **Restore this backup** opens a dialog that shows the core's confirmation text as sent. Focus starts on Cancel. Only **Replace this installation** calls the restore route, once, with the `restore_id` and that text. On success the dialog says `Restore complete` and offers Reload; the restored database brings its own sessions, so the page then asks for sign-in.
 
-A 4xx, `restore_rolled_back`, or a 503 whose problem body was read and has no code is shown as a refusal that left the installation unchanged; `restore_not_found` and `restore_rolled_back` also ask for the file again. A lost answer, an unreadable 200, a 503 whose body could not be read, `restart_required`, `outcome_unknown` or a bare 500 shows `The answer was lost. Reload to see which installation is open.` and the section never sends that restore again.
+Only an answer that proves nothing changed is shown as a refusal that left the installation unchanged: a 4xx, `restore_rolled_back`, or a 503 with code `restore_busy`. `restore_not_found` and `restore_rolled_back` also ask for the file again; `restore_busy` lets the user confirm again. Every other answer after the request was sent is an unknown outcome: a lost answer, an unreadable 200, any other 503 (with or without a readable body), `restart_required`, `outcome_unknown` or any other 5xx. A code-less 503 is in that list because `activate` answers `WriterFailure::Stopped` both before it queues the restore and when the writer's reply is lost after queueing. An unknown outcome shows `The answer was lost. Reload to see which installation is open.` and the section never sends that restore again.
 
 The restore's outcome lives for the page load (`web/apps/ui/src/settings/restoreOutcome.ts`), not in the Settings screen. Leaving Settings and coming back, or leaving while the restore runs, keeps a running, complete or lost restore with its Reload button, and keeps Create backup, Check backup and the file field off. Only a reload clears it.
 

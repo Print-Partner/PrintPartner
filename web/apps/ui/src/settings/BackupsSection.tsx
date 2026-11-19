@@ -67,11 +67,13 @@ async function stageBackup(file: File): Promise<Preview> {
 }
 
 /**
- * A 4xx, a rolled-back restore, and a 503 whose problem body was read and has no code (other
- * work running, no disk space) leave this installation as it was. An unknown or rolled-back
- * stage needs the file again. Anything else may have swapped it: a lost answer, an unreadable
- * 200, a 503 whose body was lost (it may have been `restart_required`), `restart_required`,
- * `outcome_unknown` or a bare 500.
+ * Only an answer that proves nothing changed is a refusal: a request never sent, a 4xx (the
+ * route and its gate decide every 4xx before the restore is queued), `restore_rolled_back`, and
+ * `restore_busy`, the one 503 the core sends before activation changes anything. An unknown or
+ * rolled-back stage needs the file again. Any other answer may follow a swap, so it is lost: a
+ * lost answer, an unreadable 200, any other 503 (the core sends a code-less 503 when the
+ * writer's reply is lost after the restore was queued), `restart_required`, `outcome_unknown`
+ * or any 5xx.
  */
 function restoreFailure(failure: unknown): Restore {
   if (failure instanceof CoreError && failure.code === "restore_not_found") {
@@ -92,10 +94,7 @@ function restoreFailure(failure: unknown): Restore {
   const unchanged =
     failure instanceof RequestContractError ||
     (failure instanceof CoreError &&
-      (failure.status < 500 ||
-        // Every refusal the core sends as 503 has a detail. No detail means the body was not
-        // read, and the 503 may have been `restart_required`.
-        (failure.status === 503 && failure.code === undefined && failure.detail !== undefined)));
+      (failure.status < 500 || (failure.status === 503 && failure.code === "restore_busy")));
   if (unchanged) {
     return { kind: "refused", text: `The restore was refused: ${why(failure)}. This installation is unchanged.` };
   }

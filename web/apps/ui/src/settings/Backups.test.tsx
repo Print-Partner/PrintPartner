@@ -476,11 +476,44 @@ describe("Backups: check and restore", () => {
     expect(fake.calls(RESTORE)).toHaveLength(1);
   });
 
-  it("a busy core refuses the restore, says the installation is unchanged, and allows a deliberate retry", async () => {
+  // The core sends this code-less 503 when the writer's reply is lost after the restore was
+  // queued (`WriterFailure::Stopped`), so its body being readable proves nothing.
+  it.each([
+    ["a readable code-less 503", () => problem(503, "Service temporarily unavailable")],
+    ["a 503 with another code", () => problem(503, "Service temporarily unavailable", "transaction_unavailable")],
+    ["a 504 from a proxy", () => problem(504, "Gateway Timeout")],
+  ])("%s after the restore is sent is an unknown outcome: no 'unchanged', no second restore", async (_, answer) => {
+    const fake = core({ stage: () => json(PREVIEW), restore: answer });
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    await chooseAndCheck(region);
+    fireEvent.click(await within(region).findByRole("button", { name: "Restore this backup" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toMatch(new RegExp(`${LOST_RESTORE}$`));
+    expect(within(dialog).queryByText(/unchanged/)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Replace this installation" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Reload" })).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(region).queryByRole("button", { name: "Restore this backup" })).toBeNull();
+    expect(within(region).getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(within(region).getByRole("button", { name: "Check backup" }).getAttribute("aria-disabled")).toBe("true");
+    expect((within(region).getByLabelText("Backup file") as HTMLInputElement).disabled).toBe(true);
+    expect(within(region).getByRole("button", { name: "Create backup" }).getAttribute("aria-disabled")).toBe("true");
+    expect(fake.calls(RESTORE)).toHaveLength(1);
+  });
+
+  it.each([
+    ["Storage work is still active; try again"],
+    ["A restore is already running"],
+  ])("restore_busy (%s) says the installation is unchanged and allows a deliberate retry", async (detail) => {
     let busy = true;
     const fake = core({
       stage: () => json(PREVIEW),
-      restore: () => (busy ? problem(503, "Storage work is still active; try again") : json({ restored_schema_version: 52, schema_version: 52 })),
+      restore: () => (busy ? problem(503, detail, "restore_busy") : json({ restored_schema_version: 52, schema_version: 52 })),
     });
     renderSettings(fake.fetchMock);
     const region = await backups();
@@ -490,7 +523,7 @@ describe("Backups: check and restore", () => {
     let dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
     expect((await within(dialog).findByRole("alert")).textContent).toBe(
-      "The restore was refused: Storage work is still active; try again. This installation is unchanged.",
+      `The restore was refused: ${detail}. This installation is unchanged.`,
     );
     fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(within(region).getByRole("alert").textContent).toMatch(/This installation is unchanged/);

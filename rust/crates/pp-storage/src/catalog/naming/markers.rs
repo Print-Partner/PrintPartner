@@ -10,11 +10,6 @@ use std::collections::HashMap;
 /// has the same value.
 const MAX_ROUNDS: usize = 32;
 
-fn strips_anywhere(marker: &str) -> bool {
-    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-    !word(marker.chars().next()) && !word(marker.chars().next_back())
-}
-
 fn separator(c: char) -> bool {
     matches!(c, ' ' | '_' | '-')
 }
@@ -30,6 +25,14 @@ fn escape(c: char) -> String {
 /// A character and the marker character it equals ignoring case, if any.
 type Unit = (char, Option<usize>);
 
+/// A marker as character classes, with its KMP prefix table.
+struct Marker {
+    anywhere: bool,
+    classes: Vec<usize>,
+    /// `fail[i]`: the longest proper prefix of `classes[..=i]` that is also its suffix.
+    fail: Vec<usize>,
+}
+
 /// A profile's markers, ready to strip from many names.
 #[derive(Default)]
 pub(crate) struct Markers {
@@ -37,8 +40,7 @@ pub(crate) struct Markers {
     characters: Vec<regress::Regex>,
     /// Each character seen so far and the first of `characters` it matches.
     classes: HashMap<char, Option<usize>>,
-    /// Each marker as indexes into `characters`, and whether it strips anywhere.
-    markers: Vec<(bool, Vec<usize>)>,
+    markers: Vec<Marker>,
 }
 
 impl Markers {
@@ -52,7 +54,21 @@ impl Markers {
             }
             let classes: Option<Vec<usize>> = marker.chars().map(|c| prepared.intern(c)).collect();
             if let Some(classes) = classes {
-                prepared.markers.push((strips_anywhere(marker), classes));
+                let mut fail = vec![0; classes.len()];
+                let mut q = 0;
+                for i in 1..classes.len() {
+                    while q > 0 && classes[i] != classes[q] {
+                        q = fail[q - 1];
+                    }
+                    q += usize::from(classes[i] == classes[q]);
+                    fail[i] = q;
+                }
+                let anywhere = super::symbol_bounded(marker);
+                prepared.markers.push(Marker {
+                    anywhere,
+                    classes,
+                    fail,
+                });
             }
         }
         prepared
@@ -80,19 +96,14 @@ impl Markers {
     pub(crate) fn strip(&mut self, stem: &str) -> String {
         let name: Vec<Unit> = stem.chars().map(|c| (c, self.class(c))).collect();
         let mut slug = name.clone();
-        for (anywhere, marker) in &self.markers {
-            slug = if *anywhere {
+        for marker in &self.markers {
+            slug = if marker.anywhere {
                 strip_everywhere(&slug, &[marker])
             } else {
-                strip_prefix(slug, marker)
+                strip_prefix(slug, &marker.classes)
             };
         }
-        let anywhere: Vec<&[usize]> = self
-            .markers
-            .iter()
-            .filter(|(anywhere, _)| *anywhere)
-            .map(|(_, marker)| marker.as_slice())
-            .collect();
+        let anywhere: Vec<&Marker> = self.markers.iter().filter(|m| m.anywhere).collect();
         // Every removal shortens the name, so an unchanged length means no change.
         let mut before = name.len();
         for round in 0..=MAX_ROUNDS {
@@ -117,41 +128,67 @@ pub(crate) fn strip_markers(stem: &str, markers: &[&str]) -> String {
     Markers::new(markers).strip(stem)
 }
 
-fn matches(units: &[Unit], marker: &[usize]) -> bool {
-    units.len() == marker.len()
-        && units
-            .iter()
-            .zip(marker)
-            .all(|((_, class), m)| *class == Some(*m))
+/// Pushes `unit` and each marker's KMP state after it onto `states`; returns
+/// the length of the first marker in role order that the stack now ends with.
+fn push(
+    out: &mut Vec<Unit>,
+    states: &mut Vec<usize>,
+    markers: &[&Marker],
+    unit: Unit,
+) -> Option<usize> {
+    let top = states.len();
+    for (j, marker) in markers.iter().enumerate() {
+        let mut q = if out.is_empty() {
+            0
+        } else {
+            states[top - markers.len() + j]
+        };
+        if q == marker.classes.len() {
+            q = marker.fail[q - 1];
+        }
+        while q > 0 && Some(marker.classes[q]) != unit.1 {
+            q = marker.fail[q - 1];
+        }
+        q += usize::from(Some(marker.classes[q]) == unit.1);
+        states.push(q);
+    }
+    out.push(unit);
+    markers
+        .iter()
+        .zip(&states[top..])
+        .find(|(marker, q)| **q == marker.classes.len())
+        .map(|(marker, _)| marker.classes.len())
 }
 
 /// Removes every occurrence of `markers`, leftmost first; with several, the
-/// first in role order that the stack ends with. Each step shortens the stack
-/// or consumes input.
-fn strip_everywhere(input: &[Unit], markers: &[&[usize]]) -> Vec<Unit> {
+/// first in role order that the stack ends with. Each marker's KMP state is
+/// kept per stacked character, so a step costs O(1) amortized per marker and
+/// a scan is linear in the name's length.
+fn strip_everywhere(input: &[Unit], markers: &[&Marker]) -> Vec<Unit> {
+    let k = markers.len();
     let mut out: Vec<Unit> = Vec::with_capacity(input.len());
+    let mut states: Vec<usize> = Vec::with_capacity(input.len() * k);
     let mut next = 0;
     while let Some(&unit) = input.get(next) {
         next += 1;
-        out.push(unit);
-        while let Some(marker) = markers
-            .iter()
-            .find(|m| out.len() >= m.len() && matches(&out[out.len() - m.len()..], m))
-        {
-            out.truncate(out.len() - marker.len());
+        let mut matched = push(&mut out, &mut states, markers, unit);
+        while let Some(len) = matched {
+            out.truncate(out.len() - len);
             let before = out.last().copied().filter(|(c, _)| separator(*c));
             if before.is_some() {
                 out.pop();
             }
+            states.truncate(out.len() * k);
             let after = input.get(next).copied().filter(|(c, _)| separator(*c));
             if after.is_some() {
                 next += 1;
             }
+            matched = None;
             if let Some(keep) = before.or(after)
                 && !out.is_empty()
                 && next < input.len()
             {
-                out.push(keep);
+                matched = push(&mut out, &mut states, markers, keep);
             }
         }
     }
@@ -160,7 +197,12 @@ fn strip_everywhere(input: &[Unit], markers: &[&[usize]]) -> Vec<Unit> {
 
 /// One marker once, only at the start, with the separator after it.
 fn strip_prefix(mut units: Vec<Unit>, marker: &[usize]) -> Vec<Unit> {
-    if units.len() >= marker.len() && matches(&units[..marker.len()], marker) {
+    let starts = units.len() >= marker.len()
+        && units
+            .iter()
+            .zip(marker)
+            .all(|((_, class), m)| *class == Some(*m));
+    if starts {
         let sep = units.get(marker.len()).is_some_and(|(c, _)| separator(*c));
         units.drain(..marker.len() + usize::from(sep));
     }
@@ -179,7 +221,7 @@ mod tests {
                 Default::default();
         }
         let strip_marker = |stem: &str, marker: &str| {
-            let anywhere = strips_anywhere(marker);
+            let anywhere = super::super::symbol_bounded(marker);
             let escaped: String = marker.chars().map(escape).collect();
             let pattern = if anywhere {
                 format!("([ _-]?){escaped}([ _-]?)")
@@ -219,7 +261,7 @@ mod tests {
         if slug != name {
             loop {
                 let before = slug.len();
-                for marker in markers.iter().filter(|m| strips_anywhere(m)) {
+                for marker in markers.iter().filter(|m| super::super::symbol_bounded(m)) {
                     slug = strip_marker(&slug, marker);
                 }
                 if slug.len() == before {
@@ -315,18 +357,77 @@ mod tests {
         assert_eq!(strip_markers(&capped(33), markers), "Panel-");
     }
 
-    /// The longest marker and most markers a profile may hold, and the
-    /// slowest scan they allow: 63 units that keep matching, then a miss.
+    /// The same markers and answers as `parsers.test.ts`.
     #[test]
-    fn accepts_64_markers_of_64_units_and_scans_30000_near_misses_within_2_seconds() {
-        let long = format!("{}]", "[".repeat(63));
+    fn classifies_symbol_bounded_markers_like_node() {
+        for (marker, bounded) in [
+            ("[a]", true),
+            ("_x_", true),
+            ("-", true),
+            ("[a]-[c]", true),
+            ("[中]", true),
+            ("A", false),
+            ("é]", false),
+            ("[é", false),
+            ("Σ]", false),
+            ("中", false),
+            ("x_", false),
+            ("²]", false),
+            ("_7", false),
+        ] {
+            assert_eq!(super::super::symbol_bounded(marker), bounded, "{marker}");
+        }
+    }
+
+    #[test]
+    fn limits_symbol_bounded_markers_but_not_letter_bounded_ones() {
+        let profile = |markers: Vec<String>| {
+            let mut profile = super::super::NamingProfile::default();
+            profile.roles.truncate(1);
+            profile.roles[0].markers = markers;
+            profile.validate().map(|_| ()).map_err(|e| e.to_string())
+        };
+        let letters = (0..513).map(|i| format!("missing-marker-{i}")).collect();
+        assert_eq!(profile(letters), Ok(()));
+        assert_eq!(profile(vec!["[a]".into(); 64]), Ok(()));
+        assert_eq!(
+            profile(vec!["[a]".into(); 65]),
+            Err("Too many naming markers".into())
+        );
+        assert_eq!(profile(vec!["[".repeat(64)]), Ok(()));
+        assert_eq!(
+            profile(vec!["[".repeat(65)]),
+            Err("Naming marker too long".into())
+        );
+    }
+
+    /// The most work the limits allow: 62 64-unit markers that match 63 units
+    /// then miss, plus `[a]` and `[c]` nesting deep enough for all 33 rounds,
+    /// in 30,000 characters. `parsers.test.ts` runs the same name.
+    pub(super) fn worst_case() -> (Vec<String>, String) {
+        let mut markers: Vec<String> = (0..62)
+            .map(|i| format!("{}{}", "[".repeat(63), char::from_u32(0x2190 + i).unwrap()))
+            .collect();
+        markers.extend(["[a]".into(), "[c]".into()]);
+        let nest = format!("{}{}", "[a[c".repeat(40), "]]".repeat(40));
+        (
+            markers,
+            format!("P_{}{nest}_C", "[".repeat(30_000 - 4 - nest.len())),
+        )
+    }
+
+    #[test]
+    fn strips_the_worst_case_the_limits_allow_within_2_seconds() {
+        let (markers, name) = worst_case();
         let mut profile = super::super::NamingProfile::default();
-        profile.roles[0].markers = vec![long.clone(); 61];
+        profile.roles.truncate(1);
+        profile.roles[0].markers = markers.clone();
         assert!(profile.validate().is_ok());
+        let markers: Vec<&str> = markers.iter().map(String::as_str).collect();
         let started = std::time::Instant::now();
-        let stem = "[".repeat(30_000);
-        assert_eq!(strip_markers(&stem, &[&long]), stem);
+        let slug = strip_markers(&name, &markers);
         let elapsed = started.elapsed();
+        assert_eq!(slug, format!("P_{}_C", "[".repeat(30_000 - 4 - 240)));
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 

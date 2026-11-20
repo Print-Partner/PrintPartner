@@ -99,6 +99,14 @@ impl Default for NamingProfile {
         }
     }
 }
+/// A marker is symbol-bounded when neither its first nor its last character
+/// is a letter or digit (Unicode `Alphabetic` or `Numeric`): `[a]`, `_x_` or
+/// `-`. Only these are removed anywhere in a name, so only these scan the
+/// whole name. Node's `isSymbolBoundedMarker` is the same test.
+pub(crate) fn symbol_bounded(marker: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    !word(marker.chars().next()) && !word(marker.chars().next_back())
+}
 impl NamingProfile {
     pub(super) fn validate_input(self) -> Result<Self> {
         let validated = self.validate();
@@ -114,10 +122,11 @@ impl NamingProfile {
             !self.roles.is_empty() && self.roles.iter().any(|r| r.id == RoleId::Primary),
             "Naming requires primary role"
         );
-        // Bounds marker-stripping work per name (UTF-16 units, as Node's
-        // `MAX_STL_NAMING_MARKER_LENGTH` and `MAX_STL_NAMING_MARKERS`).
+        // Bounds marker-stripping work per name, as Node's
+        // `MAX_STL_NAMING_MARKER_LENGTH` (UTF-16 units) and `MAX_STL_NAMING_MARKERS`.
         let markers = || self.roles.iter().flat_map(|r| &r.markers);
-        ensure!(markers().count() <= 64, "Too many naming markers");
+        let scanning = markers().filter(|m| !trim(m).is_empty() && symbol_bounded(m));
+        ensure!(scanning.count() <= 64, "Too many naming markers");
         ensure!(
             markers().all(|m| m.encode_utf16().count() <= 64),
             "Naming marker too long"

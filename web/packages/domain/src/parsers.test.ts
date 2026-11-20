@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MARKER_ROUNDS, parsePartSlug, parseQuantity, parseRole, parseStlPath } from "./parsers.js";
 import {
   DEFAULT_NAMING_PROFILE,
@@ -288,6 +288,40 @@ describe("marker removal matches 342b2c09", () => {
     const started = performance.now();
     expect(parsePartSlug(`P_${fill}${nest}_C.stl`, prof)).toBe(`P_${fill}_C`);
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  // Sol's GRE-1870 cases, as in Rust's markers.rs: 4,000 prefix removals, and 1,024 prefix
+  // markers against 1,024 other characters. Copied slug units and regex tests stay linear.
+  const cjk = (first: number) => Array.from({ length: 1024 }, (_, i) => String.fromCharCode(first + i));
+  it.each([
+    ["4,000 prefix removals", Array<string>(4000).fill("A"), `${"A".repeat(4000)}Panel`, "Panel"],
+    ["1,024 prefix markers", cjk(0x4e00), cjk(0x6000).join(""), cjk(0x6000).join("")],
+  ])("costs linear work for %s", (_, markers, name, slug) => {
+    const dict = mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {
+      roles: [{ id: "accent", markers }],
+    });
+    const { slice } = Array.prototype;
+    const { test } = RegExp.prototype;
+    let work = 0;
+    const spies = [
+      vi.spyOn(Array.prototype, "slice").mockImplementation(function (this: unknown[], ...args) {
+        const copy = slice.apply(this, args);
+        work += copy.length;
+        return copy;
+      }),
+      vi.spyOn(RegExp.prototype, "test").mockImplementation(function (this: RegExp, text) {
+        work += 1;
+        return test.call(this, text);
+      }),
+    ];
+    let result: string;
+    try {
+      result = parsePartSlug(`${name}.stl`, namingProfileFromDict(dict));
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(result).toBe(slug);
+    expect(work).toBeLessThan(8 * name.length);
   });
 
   // The same markers and answers as Rust's markers.rs.

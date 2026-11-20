@@ -27,12 +27,15 @@ export const DEFAULT_NAMING_PROFILE = DEFAULT_STL_NAMING_PROFILE;
 
 /**
  * How a role marker leaves a part slug. A marker that starts and ends with a symbol, like
- * `[a]`, cannot be part of a word, so it is removed anywhere in the name (`anywhere`). A
- * marker that starts or ends with a letter or digit, like a custom `A`, is removed only as
- * a prefix, so `gear` keeps its `a`. `units` holds each UTF-16 code unit of the marker as
- * the index of the first `NamingProfile.markerUnitRes` regex it matches.
+ * `[a]`, cannot be part of a word, so it is removed anywhere in the name (`anywhere`); `units`
+ * holds each UTF-16 code unit of it as the index of the first `NamingProfile.markerUnitRes`
+ * regex it matches. A marker that starts or ends with a letter or digit, like a custom `A`, is
+ * removed only as a prefix, so `gear` keeps its `a`; `unitRes` holds one case-insensitive regex
+ * per code unit of it, compared at the current offset.
  */
-export type MarkerStrip = { units: readonly number[]; fail: readonly number[]; anywhere: boolean };
+export type MarkerStrip =
+  | { anywhere: true; units: readonly number[]; fail: readonly number[] }
+  | { anywhere: false; unitRes: readonly RegExp[] };
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -40,17 +43,24 @@ function escapeRegExp(text: string): string {
 
 /**
  * Builds `markerStrip` entries. Each distinct marker code unit gets one case-insensitive
- * regex, so code units compare exactly as the per-marker `i` regexes did.
+ * regex, so code units compare exactly as the per-marker `i` regexes did. Only symbol-bounded
+ * markers add to `unitRes`, which classifies every unit of a name.
  */
 function markerStripper() {
   const unitRes: RegExp[] = [];
+  const prefixRes = new Map<string, RegExp>();
+  const unitRe = (unit: string) => new RegExp(`^(?:${escapeRegExp(unit)})$`, "i");
   const unitClass = (unit: string) => {
     const found = unitRes.findIndex((re) => re.test(unit));
     if (found >= 0) return found;
-    unitRes.push(new RegExp(`^(?:${escapeRegExp(unit)})$`, "i"));
+    unitRes.push(unitRe(unit));
     return unitRes.length - 1;
   };
   const strip = (marker: string): MarkerStrip => {
+    if (!isSymbolBoundedMarker(marker)) {
+      const prefixRe = (unit: string) => prefixRes.get(unit) ?? prefixRes.set(unit, unitRe(unit)).get(unit)!;
+      return { anywhere: false, unitRes: Array.from({ length: marker.length }, (_, i) => prefixRe(marker[i]!)) };
+    }
     const units = Array.from({ length: marker.length }, (_, i) => unitClass(marker[i]!));
     // KMP prefix table: `fail[i]` is the longest proper prefix of `units[..=i]` that is also its suffix.
     const fail = [0];
@@ -59,7 +69,7 @@ function markerStripper() {
       if (units[i] === units[q]) q++;
       fail.push(q);
     }
-    return { units, fail, anywhere: isSymbolBoundedMarker(marker) };
+    return { units, fail, anywhere: true };
   };
   return { unitRes, strip };
 }

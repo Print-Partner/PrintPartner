@@ -25,22 +25,35 @@ fn escape(c: char) -> String {
 /// A character and the marker character it equals ignoring case, if any.
 type Unit = (char, Option<usize>);
 
-/// A marker as character classes, with its KMP prefix table.
+/// A symbol-bounded marker as character classes, with its KMP prefix table.
 struct Marker {
-    anywhere: bool,
     classes: Vec<usize>,
     /// `fail[i]`: the longest proper prefix of `classes[..=i]` that is also its suffix.
     fail: Vec<usize>,
 }
 
+/// One marker's removal, in role order.
+enum Strip {
+    Anywhere(Marker),
+    /// A letter-bounded marker, removed once at the start; compared at the
+    /// current offset through `Markers::prefix_characters`.
+    Prefix(Vec<char>),
+}
+
 /// A profile's markers, ready to strip from many names.
 #[derive(Default)]
 pub(crate) struct Markers {
-    /// One case-insensitive regex per distinct marker character.
+    /// One case-insensitive regex per distinct symbol-bounded marker character.
     characters: Vec<regress::Regex>,
     /// Each character seen so far and the first of `characters` it matches.
     classes: HashMap<char, Option<usize>>,
-    markers: Vec<Marker>,
+    /// One case-insensitive regex per distinct prefix-marker character.
+    prefix_characters: HashMap<char, Option<regress::Regex>>,
+    markers: Vec<Strip>,
+}
+
+fn character_regex(c: char) -> Option<regress::Regex> {
+    regress::Regex::with_flags(&format!("^(?:{})$", escape(c)), "i").ok()
 }
 
 impl Markers {
@@ -50,6 +63,16 @@ impl Markers {
             // The old code skipped a marker whose regex did not compile.
             let whole: String = marker.chars().map(escape).collect();
             if marker.is_empty() || regress::Regex::with_flags(&whole, "i").is_err() {
+                continue;
+            }
+            if !super::symbol_bounded(marker) {
+                for c in marker.chars() {
+                    let regexes = &mut prepared.prefix_characters;
+                    regexes.entry(c).or_insert_with(|| character_regex(c));
+                }
+                prepared
+                    .markers
+                    .push(Strip::Prefix(marker.chars().collect()));
                 continue;
             }
             let classes: Option<Vec<usize>> = marker.chars().map(|c| prepared.intern(c)).collect();
@@ -63,12 +86,9 @@ impl Markers {
                     q += usize::from(classes[i] == classes[q]);
                     fail[i] = q;
                 }
-                let anywhere = super::symbol_bounded(marker);
-                prepared.markers.push(Marker {
-                    anywhere,
-                    classes,
-                    fail,
-                });
+                prepared
+                    .markers
+                    .push(Strip::Anywhere(Marker { classes, fail }));
             }
         }
         prepared
@@ -79,8 +99,7 @@ impl Markers {
         if let Some(class) = self.class(c) {
             return Some(class);
         }
-        let regex = regress::Regex::with_flags(&format!("^(?:{})$", escape(c)), "i").ok()?;
-        self.characters.push(regex);
+        self.characters.push(character_regex(c)?);
         self.classes.insert(c, Some(self.characters.len() - 1));
         Some(self.characters.len() - 1)
     }
@@ -88,24 +107,50 @@ impl Markers {
     fn class(&mut self, c: char) -> Option<usize> {
         let characters = &self.characters;
         *self.classes.entry(c).or_insert_with(|| {
+            work(characters.len());
             let text = c.to_string();
             characters.iter().position(|re| re.find(&text).is_some())
         })
     }
 
-    pub(crate) fn strip(&mut self, stem: &str) -> String {
-        let name: Vec<Unit> = stem.chars().map(|c| (c, self.class(c))).collect();
-        let mut slug = name.clone();
-        for marker in &self.markers {
-            slug = if marker.anywhere {
-                strip_everywhere(&slug, &[marker])
-            } else {
-                strip_prefix(slug, &marker.classes)
-            };
+    /// How many units a prefix marker and the separator after it take from
+    /// the start of `units`; 0 when `units` does not start with it.
+    fn prefix(&self, units: &[Unit], marker: &[char]) -> usize {
+        let starts = units.len() >= marker.len()
+            && units.iter().zip(marker).all(|(&(c, _), m)| {
+                work(1);
+                let re = self.prefix_characters[m].as_ref();
+                re.is_some_and(|re| re.find(c.encode_utf8(&mut [0; 4])).is_some())
+            });
+        if !starts {
+            return 0;
         }
-        let anywhere: Vec<&Marker> = self.markers.iter().filter(|m| m.anywhere).collect();
+        marker.len() + usize::from(units.get(marker.len()).is_some_and(|(c, _)| separator(*c)))
+    }
+
+    pub(crate) fn strip(&mut self, stem: &str) -> String {
+        let mut slug: Vec<Unit> = stem.chars().map(|c| (c, self.class(c))).collect();
+        let mut before = slug.len();
+        // Prefix removals advance `start`; the slug is copied only by a scan.
+        let mut start = 0;
+        for marker in &self.markers {
+            match marker {
+                Strip::Anywhere(marker) => {
+                    slug = strip_everywhere(&slug[start..], &[marker]);
+                    start = 0;
+                }
+                Strip::Prefix(marker) => start += self.prefix(&slug[start..], marker),
+            }
+        }
+        work(slug.len() - start);
+        slug.drain(..start);
+        let anywhere: Vec<&Marker> = (self.markers.iter())
+            .filter_map(|m| match m {
+                Strip::Anywhere(marker) => Some(marker),
+                Strip::Prefix(_) => None,
+            })
+            .collect();
         // Every removal shortens the name, so an unchanged length means no change.
-        let mut before = name.len();
         for round in 0..=MAX_ROUNDS {
             if slug.len() == before {
                 break;
@@ -169,6 +214,7 @@ fn push(
 /// a scan is linear in the name's length.
 fn strip_everywhere(input: &[Unit], markers: &[&Marker]) -> Vec<Unit> {
     let k = markers.len();
+    work(input.len());
     let mut out: Vec<Unit> = Vec::with_capacity(input.len());
     let mut states: Vec<usize> = Vec::with_capacity(input.len() * k);
     let mut next = 0;
@@ -198,18 +244,13 @@ fn strip_everywhere(input: &[Unit], markers: &[&Marker]) -> Vec<Unit> {
     out
 }
 
-/// One marker once, only at the start, with the separator after it.
-fn strip_prefix(mut units: Vec<Unit>, marker: &[usize]) -> Vec<Unit> {
-    let starts = units.len() >= marker.len()
-        && units
-            .iter()
-            .zip(marker)
-            .all(|((_, class), m)| *class == Some(*m));
-    if starts {
-        let sep = units.get(marker.len()).is_some_and(|(c, _)| separator(*c));
-        units.drain(..marker.len() + usize::from(sep));
-    }
-    units
+#[cfg(test)]
+thread_local!(static WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+/// Counts regex comparisons and copied units, for the cost tests.
+fn work(_units: usize) {
+    #[cfg(test)]
+    WORK.with(|work| work.set(work.get() + _units));
 }
 
 #[cfg(test)]
@@ -413,6 +454,27 @@ mod tests {
         let elapsed = started.elapsed();
         assert_eq!(slug, format!("P_{}_C", "[".repeat(30_000 - 4 - nest.len())));
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+    }
+
+    /// Sol's GRE-1870 cases cost work linear in the name: 4,000 prefix
+    /// removals, and 1,024 prefix markers against 1,024 other characters.
+    /// `parsers.test.ts` counts the same cases.
+    #[test]
+    fn strips_4000_prefixes_and_checks_1024_prefix_markers_in_linear_work() {
+        let counted = |name: &str, markers: &[&str]| {
+            WORK.with(|work| work.set(0));
+            let mut prepared = Markers::new(markers);
+            assert!(prepared.characters.is_empty());
+            (prepared.strip(name), WORK.with(std::cell::Cell::get))
+        };
+        let name = format!("{}Panel", "A".repeat(4000));
+        let (slug, work) = counted(&name, &["A"; 4000]);
+        assert_eq!((slug.as_str(), work), ("Panel", 4005));
+        let char = |i: u32| char::from_u32(i).unwrap();
+        let markers: Vec<String> = (0..1024).map(|i| char(0x4e00 + i).to_string()).collect();
+        let markers: Vec<&str> = markers.iter().map(String::as_str).collect();
+        let name: String = (0..1024).map(|i| char(0x6000 + i)).collect();
+        assert_eq!(counted(&name, &markers), (name.clone(), 2048));
     }
 
     #[test]

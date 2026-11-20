@@ -3,6 +3,8 @@
 import type { MarkerStrip, NamingProfile } from "./stl-naming.js";
 import { getDefaultNamingProfile } from "./stl-naming.js";
 
+type AnywhereStrip = Extract<MarkerStrip, { anywhere: true }>;
+
 export type PartRole = "primary" | "accent" | "clear" | "opaque";
 
 export type ParsedPart = {
@@ -79,8 +81,12 @@ type Unit = readonly [string, number];
  */
 export const MARKER_ROUNDS = 8;
 
-const unitMatches = (units: readonly Unit[], from: number, marker: readonly number[]) =>
-  from >= 0 && marker.every((unit, index) => units[from + index]?.[1] === unit);
+/** How many units a prefix marker and the separator after it take from `units` at `from`. */
+function prefixLength(units: readonly Unit[], from: number, unitRes: readonly RegExp[]): number {
+  if (units.length - from < unitRes.length) return 0;
+  if (!unitRes.every((re, index) => re.test(units[from + index]![0]))) return 0;
+  return unitRes.length + (SEPARATORS.has(units[from + unitRes.length]?.[0] ?? "") ? 1 : 0);
+}
 
 /**
  * Removes every occurrence of `markers`, leftmost first; with several, the first in role
@@ -88,7 +94,7 @@ const unitMatches = (units: readonly Unit[], from: number, marker: readonly numb
  * removed, so this finds what repeated regex searches found. Each marker's KMP state is kept
  * per stacked unit, so a step costs O(1) amortized per marker and a scan is linear.
  */
-function stripEverywhere(input: readonly Unit[], markers: readonly MarkerStrip[]): Unit[] {
+function stripEverywhere(input: readonly Unit[], markers: readonly AnywhereStrip[]): Unit[] {
   const out: Unit[] = [];
   const states: number[] = [];
   const k = markers.length;
@@ -140,14 +146,17 @@ function stripMarkers(stem: string, prof: NamingProfile): string {
   };
   const name: Unit[] = Array.from({ length: stem.length }, (_, i) => [stem[i]!, classOf(stem[i]!)]);
   let slug = name;
+  // Prefix removals advance `start`; the slug is copied only by a scan.
+  let start = 0;
   for (const strip of prof.markerStrips) {
-    const { anywhere, units } = strip;
-    if (anywhere) slug = stripEverywhere(slug, [strip]);
-    else if (unitMatches(slug, 0, units)) {
-      slug = slug.slice(units.length + (SEPARATORS.has(slug[units.length]?.[0] ?? "") ? 1 : 0));
+    if (!strip.anywhere) start += prefixLength(slug, start, strip.unitRes);
+    else {
+      slug = stripEverywhere(start ? slug.slice(start) : slug, [strip]);
+      start = 0;
     }
   }
-  const anywhere = prof.markerStrips.filter((strip) => strip.anywhere);
+  if (start) slug = slug.slice(start);
+  const anywhere = prof.markerStrips.filter((strip): strip is AnywhereStrip => strip.anywhere);
   // Every removal shortens the name, so an unchanged length means nothing was removed.
   for (let round = 0, before = name.length; slug.length !== before; round++) {
     before = slug.length;

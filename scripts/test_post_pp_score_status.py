@@ -935,6 +935,24 @@ class CarryTests(unittest.TestCase):
     def test_reversed_parents_do_not_carry(self):
         self.assertIn("was never main's tip", self.refused(self.reversed))
 
+    def test_replace_refs_and_grafts_do_not_change_the_parents(self):
+        # A lane shares refs/replace and info/grafts with the coordinator's worktree. Both would make
+        # the rebased head look like a clean two-parent merge of main; the carry reads the real parents.
+        from pathlib import Path
+
+        git_dir = Path(self.r.path, ".git")
+        real = self.r.git("rev-parse", f"{self.rebased}^")
+        try:
+            self.r.git("replace", "--graft", self.rebased, self.h0, self.m1)
+            (git_dir / "info" / "grafts").write_text(f"{self.rebased} {self.h0} {self.m1}\n", encoding="utf-8")
+            self.assertEqual(len(self.r.git("rev-list", "--parents", "-n1", self.rebased).split()), 3)
+            self.assertEqual(pps.LocalGit(self.r.path).parents(self.rebased), [real])
+            self.assertEqual(self.refused(self.rebased),
+                             f"{self.rebased[:7]}: 1 parents, not a two-parent merge of main")
+        finally:
+            self.r.git("replace", "-d", self.rebased, check=False)
+            (git_dir / "info" / "grafts").write_text("", encoding="utf-8")
+
     # hop condition 2: M is on main.
 
     def test_merging_a_branch_that_is_not_main_does_not_carry(self):

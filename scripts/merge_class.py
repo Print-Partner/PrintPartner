@@ -14,6 +14,7 @@ carry: decide_carry and carry_source, the one score carry-forward decision both 
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -344,8 +345,10 @@ class LocalGit:
         timeout = None if self.deadline is None else self.deadline - time.monotonic()
         if timeout is not None and timeout <= 0:
             raise subprocess.TimeoutExpired(["git", *args], 0)
-        return subprocess.run(["git", *args], cwd=self.cwd, text=text, capture_output=True, check=check,
-                              timeout=timeout)
+        # Every worktree of a clone shares refs/replace and info/grafts, and either can give a
+        # commit false parents. Git ignores both only with --no-replace-objects and an empty graft file.
+        return subprocess.run(["git", "--no-replace-objects", *args], cwd=self.cwd, text=text, capture_output=True,
+                              check=check, timeout=timeout, env={**os.environ, "GIT_GRAFT_FILE": os.devnull})
 
     def ensure(self, *shas):
         if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":

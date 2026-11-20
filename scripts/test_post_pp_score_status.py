@@ -1535,25 +1535,84 @@ class ConfigIsolationTests(unittest.TestCase):
             self.assertEqual(self.outputs(r, h0, h, side), clean)
 
 
-class PartialCloneTests(unittest.TestCase):
-    def test_a_blob_none_clone_fetches_blobs_into_the_scratch_directory(self):
-        # The workflow's clone has no blobs. The scratch directory fetches the ones a carry reads
-        # from the clone's remote, and the carry decides as on a full clone.
-        import subprocess
+class ObjectStoreTests(unittest.TestCase):
+    """gemini-4-neon, round 4: a process acting on purpose in the clone's environment or object store."""
 
-        CarryTests.setUpClass()
-        c = CarryTests
-        c.r.git("config", "uploadpack.allowFilter", "true")
-        clone = c.r.path + "-partial"
-        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{c.r.path}", clone],
-                       check=True, env=c.r.env, capture_output=True)
-        git = pps.LocalGit(clone)
-        missing = subprocess.run(["git", "-C", clone, "rev-list", "--objects", "--missing=print", "--all"],
-                                 env=c.r.env, capture_output=True, text=True, check=True).stdout
-        self.assertIn("?", missing)
-        self.assertEqual(merge_class.hop(RepoFacts(c.r, git=git), c.h1, merge_class.load_classes()),
-                         (c.h0, "clean merge of main"))
-        self.assertEqual(git.diff(c.m1, c.h1), pps.LocalGit(c.r.path).diff(c.m1, c.h1))
+    def test_a_read_never_fetches_or_runs_a_transport_program(self):
+        # In a blob:none clone whose remote is ssh://fakehost, a GIT_SSH_COMMAND that appended
+        # merge.renameLimit=1 to $GIT_DIR/config ran during an on-demand fetch of hop h2 -> h, so
+        # hop h -> h0 merged without rename detection and the carry passed. Reads now fetch nothing.
+        import os
+        import subprocess
+        import tempfile
+
+        r, h0, h = rename_repo()
+        r.git("checkout", "-q", "main")
+        r.commit("c.txt", "c\n", "main adds c")
+        r.git("checkout", "-q", "pr")
+        h2 = r.merge("main")
+        r.git("config", "uploadpack.allowFilter", "true")
+        r.git("config", "uploadpack.allowAnySHA1InWant", "true")
+        clone = tempfile.mkdtemp(prefix="pp-partial-")
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{r.path}", clone],
+                       check=True, env=r.env, capture_output=True)
+        r.git("-C", clone, "remote", "set-url", "origin", f"ssh://fakehost{r.path}")
+        marker, script = os.path.join(clone, "ssh-ran"), os.path.join(clone, "fake-ssh")
+        with open(script, "w", encoding="utf-8") as out:
+            out.write(f'#!/bin/sh\ntouch {marker}\nprintf "[merge]\\n\\trenameLimit = 1\\n" >> "$GIT_DIR/config"\n'
+                      'shift\nexec sh -c "$*"\n')
+        os.chmod(script, 0o755)
+        with mock.patch.dict(os.environ, {"GIT_SSH_COMMAND": script}):
+            plan, why = carry_both(self, r, h2, [record(h0)], git=pps.LocalGit(clone))
+        self.assertIsNone(plan)
+        self.assertTrue(why.startswith("cannot verify carry: CalledProcessError"), why)
+        self.assertFalse(os.path.exists(marker))
+        self.assertEqual(carry_both(self, r, h2, [record(h0)]), (None, f"{h[:7]}: the merge of main had conflicts"))
+
+    def forged_tip(self):
+        """h merges a side branch, not main, into h0. Returns (repo, h, tip, forged): forged is a
+        loose object stored under main's tip whose first parent is the side branch."""
+        import zlib
+
+        r = CarryRepo()
+        base = r.commit("a.txt", TEN, "base")
+        r.branch("pr", base)
+        h0 = r.commit("p.txt", "pr\n", "pr")
+        r.git("checkout", "-q", "main")
+        m1 = r.commit("b.txt", "b\n", "main 1")
+        side = r.line("side", m1, ("o.txt", "o\n"))
+        r.git("checkout", "-q", "main")
+        tip = r.commit("c.txt", "c\n", "main 2")
+        r.git("checkout", "-q", "pr")
+        h = r.merge(side)
+        self.assertEqual(merge_class.hop(RepoFacts(r), h, merge_class.load_classes()),
+                         (None, f"second parent {side[:7]} was never main's tip"))
+        body = r.git("cat-file", "commit", tip).encode() + b"\n"
+        body = body.replace(f"parent {m1}".encode(), f"parent {side}".encode())
+        return r, h, tip, zlib.compress(b"commit %d\0" % len(body) + body)
+
+    def test_a_forged_commit_fails_verification(self):
+        import os
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        r, h, tip, forged = self.forged_tip()
+        # (d) An alternate listed before the real store holds the forged tip.
+        clone, other = tempfile.mkdtemp(prefix="pp-shared-"), Path(tempfile.mkdtemp(prefix="pp-forged-"))
+        subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", r.path, clone], check=True, env=r.env)
+        (other / tip[:2]).mkdir()
+        (other / tip[:2] / tip[2:]).write_bytes(forged)
+        alternates = Path(clone, ".git", "objects", "info", "alternates")
+        alternates.write_text(f"{other}\n" + alternates.read_text(encoding="utf-8"), encoding="utf-8")
+        # (a) The tip's own loose object in the clone holding main is replaced.
+        loose = Path(r.path, ".git", "objects", tip[:2], tip[2:])
+        os.chmod(loose, 0o644)
+        for where in (clone, r.path):
+            if where == r.path:
+                loose.write_bytes(forged)
+            with self.subTest(where=where), self.assertRaisesRegex(merge_class.CarryError, "failed verification"):
+                merge_class.hop(RepoFacts(r, git=pps.LocalGit(where)), h, merge_class.load_classes())
 
 
 class CommentModeOrderTests(unittest.TestCase):

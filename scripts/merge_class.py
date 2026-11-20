@@ -13,6 +13,7 @@ carry: decide_carry and carry_source, the one score carry-forward decision both 
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -344,18 +345,21 @@ class LocalGit:
     """A checkout of the repository. deadline (a time.monotonic value) bounds every git call, so the
     coordinator hook refuses on its own before its timeout would let the merge run.
 
-    Every lane worktree shares the coordinator clone's .git/config, info/attributes, refs and
-    object store, and a lane can set HOME, XDG_CONFIG_HOME or GIT_* variables. So the commands a
-    carry decides from (rev-list, rev-parse, merge-base, merge-tree, diff, log) run in a scratch
-    git directory that this class creates: its only configuration is the file written below, it has
-    no refs, attributes or grafts, and it reads the clone's objects through objects/info/alternates.
-    System, global and XDG configuration are switched off, so no setting the clone or its user
-    holds can change their output. Only the fetch of a missing commit runs in the clone itself.
-    The scratch directory is left in place under TMPDIR."""
+    Every lane worktree shares the coordinator clone's .git directory, and a lane can set HOME,
+    XDG_CONFIG_HOME or GIT_* variables. So the commands a carry decides from run in a scratch git
+    directory that this class creates under TMPDIR and leaves in place. Before every command it
+    rewrites the scratch directory's config, HEAD and alternates file, so no earlier command can
+    have changed them. The command gets no GIT_* variable but the ones set here, no system, global
+    or XDG configuration, no refs, attributes, grafts, commit-graph or multi-pack-index, and no
+    remote, so it fetches nothing and runs no program named by the environment or a config. It reads
+    the clone's objects through objects/info/alternates, and commits() checks every commit it
+    trusts against its name. Only ensure() runs in the clone, to fetch whole commits by SHA."""
 
-    # Kept so a fetch can still authenticate and reach the remote; none of them changes output.
+    # Kept for the fetch in the clone only, so it can authenticate and reach the remote.
     TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
                      "GIT_SSL_", "GIT_HTTP_", "GIT_PROXY_", "GIT_CURL_")
+    CONFIG = ("[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tcommitGraph = false\n"
+              f"\tmultiPackIndex = false\n\tattributesFile = {os.devnull}\n")
 
     def __init__(self, cwd=ROOT, remote="origin", deadline=None):
         self.cwd = Path(cwd)
@@ -363,68 +367,84 @@ class LocalGit:
         self.deadline = deadline
         self._scratch = None
 
-    def _run(self, args, cwd, env, check=True, text=True):
+    def _run(self, args, cwd, env, keep=(), check=True, text=True, stdin=None):
         timeout = None if self.deadline is None else self.deadline - time.monotonic()
         if timeout is not None and timeout <= 0:
             raise subprocess.TimeoutExpired(["git", *args], 0)
-        keep = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith(self.TRANSPORT_ENV)}
+        base = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith(keep)}
         return subprocess.run(["git", "--no-pager", *args], cwd=cwd, text=text, capture_output=True, check=check,
-                              timeout=timeout, env={**keep, **env})
+                              timeout=timeout, env={**base, **env}, input=stdin)
 
     def _in_clone(self, *args, check=True):
-        """The fetch side. It reads the clone's configuration, which can only change where objects
-        come from; Git checks every fetched object against its hash."""
-        return self._run(args, self.cwd, {}, check=check)
+        """The fetch side. It reads the clone's configuration and runs its transport, which can only
+        change where whole commits come from; Git checks every fetched object against its hash."""
+        return self._run(args, self.cwd, {}, keep=self.TRANSPORT_ENV, check=check)
 
-    def _scratch_dir(self):
-        if self._scratch is None:
-            objects = self._in_clone("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
-            url = self._in_clone("config", "--get", f"remote.{self.remote}.url", check=False).stdout.strip()
-            scratch = Path(tempfile.mkdtemp(prefix="pp-carry-git-"))
-            (scratch / "objects" / "info").mkdir(parents=True)
-            (scratch / "refs").mkdir()
-            (scratch / "HEAD").write_text("ref: refs/heads/none\n", encoding="utf-8")
-            (scratch / "objects" / "info" / "alternates").write_text(f"{objects}/objects\n", encoding="utf-8")
-            # A blob:none clone fetches blobs on demand; the scratch directory fetches them from the
-            # same remote, into itself. A commit-graph file in the shared store is not trusted.
-            promisor = (f'[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl = {url}\n'
-                        "\tpromisor = true\n\tpartialclonefilter = blob:none\n") if url and "\n" not in url else ""
-            (scratch / "config").write_text(
-                "[core]\n\trepositoryformatversion = 1\n\tbare = true\n\tcommitGraph = false\n"
-                f"\tattributesFile = {os.devnull}\n" + promisor, encoding="utf-8")
-            self._scratch = scratch
-        return self._scratch
-
-    def _git(self, *args, check=True, text=True):
+    def _git(self, *args, check=True, text=True, stdin=None):
         """A read-only command in the scratch directory, with no configuration but its own."""
-        scratch = self._scratch_dir()
+        if self._scratch is None:
+            common = self._in_clone("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+            self._scratch = (Path(tempfile.mkdtemp(prefix="pp-carry-git-")), f"{common}/objects\n")
+            (self._scratch[0] / "objects" / "info").mkdir(parents=True)
+            (self._scratch[0] / "refs").mkdir()
+        scratch, alternates = self._scratch
+        for name, content in (("config", self.CONFIG), ("HEAD", "ref: refs/heads/none\n"),
+                              ("objects/info/alternates", alternates)):
+            (scratch / name).write_text(content, encoding="utf-8")
         return self._run(["--no-replace-objects", *args], scratch, {
             "GIT_DIR": str(scratch), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_ATTR_NOSYSTEM": "1", "GIT_GRAFT_FILE": os.devnull, "HOME": str(scratch),
-            "XDG_CONFIG_HOME": str(scratch)}, check=check, text=text)
+            "GIT_ATTR_NOSYSTEM": "1", "GIT_GRAFT_FILE": os.devnull, "GIT_NO_LAZY_FETCH": "1",
+            "HOME": str(scratch), "XDG_CONFIG_HOME": str(scratch)}, check=check, text=text, stdin=stdin)
 
     def ensure(self, *shas):
         if self._in_clone("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-            # The workflow checkout is depth 1. Fetch the commits' full history without blobs
-            # (Git fetches the blobs a merge or diff reads on demand), so every merge base is there.
-            self._in_clone("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
+            # The workflow checkout is depth 1. Fetch the full history, blobs included, in the clone,
+            # because the scratch directory never fetches.
+            self._in_clone("fetch", "--no-tags", "--quiet", "--unshallow", self.remote, *shas)
             return
         missing = [s for s in shas if self._in_clone("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
         if missing:
             self._in_clone("fetch", "--no-tags", "--quiet", self.remote, *missing)
 
+    def commits(self, shas):
+        """{sha: (tree, parents)} read with one cat-file --batch. Each commit's bytes must hash to its
+        name, so a forged loose object, pack index or alternate cannot change it (trees and blobs
+        are not checked: that would be a full fsck)."""
+        out = self._git("cat-file", "--batch", text=False, stdin="".join(f"{s}\n" for s in shas).encode()).stdout
+        found, at = {}, 0
+        for sha in shas:
+            end = out.index(b"\n", at)
+            header = out[at:end].split()
+            size = int(header[2]) if len(header) == 3 and header[1] == b"commit" else -1
+            body, at = out[end + 1:end + 1 + size], end + 2 + size
+            if size < 0 or hashlib.sha1(b"commit %d\0" % size + body).hexdigest() != sha:
+                raise CarryError("object store failed verification")
+            fields = [line.split(b" ", 1) for line in body.split(b"\n\n", 1)[0].split(b"\n")]
+            found[sha] = (next(v.decode() for k, v in fields if k == b"tree"),
+                          [v.decode() for k, v in fields if k == b"parent"])
+        return found
+
     def parents(self, sha):
-        return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]
+        return self.commits([sha])[sha][1]
 
     def first_parents(self, tip, limit):
-        return self._git("rev-list", "--first-parent", f"--max-count={limit}", tip).stdout.split()
+        """main's first-parent chain from tip, each link checked against the verified commits."""
+        chain = self._git("rev-list", "--first-parent", f"--max-count={limit}", tip).stdout.split()
+        found = self.commits(chain)
+        links = [found[sha][1][:1] for sha in chain]
+        if not chain or chain[0] != tip or any(links[n] != [chain[n + 1]] for n in range(len(chain) - 1)) \
+                or (len(chain) < limit and links[-1]):
+            raise CarryError("object store failed verification")
+        return chain
 
     def tree(self, sha):
-        return self._git("rev-parse", f"{sha}^{{tree}}").stdout.strip()
+        return self.commits([sha])[sha][0]
 
     def merge_bases(self, a, b):
         done = self._git("merge-base", "--all", a, b, check=False)
-        return done.stdout.split() if done.returncode == 0 else []
+        bases = done.stdout.split() if done.returncode == 0 else []
+        self.commits(bases)
+        return bases
 
     def merge_tree(self, ours, theirs):
         """Tree of the clean merge of ours and theirs, or None when it conflicts.

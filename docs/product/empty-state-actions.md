@@ -14,7 +14,11 @@ never accepts a Plan, confirms printed units or sends a printer command.
 | A Build has no layers (Overview) | Choose its base Source | Opens the Build's Sources tab. |
 | Build History has no entries | Open Plan | Opens that Build's Plan tab. Shared `HISTORY_EMPTY` copy still explains snapshots and restore. |
 | Farm Log has no entries | View Farm | Opens `/farm` to inspect the fleet. |
-| Library has no Sources | Add Source | Opens the Add Source dialog (GRE-1513). Create adds a Source record. A non-GitHub row can upload a ZIP (GRE-1725). A GitHub Source starts one sync (GRE-1728). |
+| Library has no Sources | Add Source | The message names Add Source, which is under the heading in every state and opens the Add Source dialog (GRE-1513). Create adds a Source record. A non-GitHub row can upload a ZIP (GRE-1725). A GitHub Source starts one sync (GRE-1728). |
+| Library has no Source activity, and has a GitHub Source | Sync on its row | Names the row's Sync button. The message does not promise that a sync records activity: the Rust core lists only events imported from Node. |
+| Library has no Source activity, and only ZIP Sources | Upload ZIP on its row | Names the row's Upload ZIP control. A ZIP upload records no activity either. |
+| A Source in Library has no files (no revision, or a revision with no files) | Upload ZIP, or Sync for a GitHub Source | The button presses that Source's own Upload ZIP or Sync control on its row, so the row's existing flow runs and the files view sends nothing itself. While the row follows an import or sync remembered in this browser, the view says it is running and shows no button (GRE-1867). |
+| A Build's base or add-on Source has no files (Sources tab) | Upload ZIP in Library, or Sync in Library | Opens `/library/<id>`, where the Source's files view and row offer the action. When the Library's Sources are not loaded, the link is Open in Library (GRE-1867). |
 
 Today renders its ranked-task empty message inside a successful checkoff read.
 An empty task list does not imply that every Build is finished or ready to print.
@@ -30,8 +34,7 @@ so its empty state cannot yet lead to creating the first Build. The walkthrough
 waits for that flow and for Source files; it must use disposable data when they
 land.
 
-The remaining audit includes Source activity, empty Source files,
-deferred Build tabs, Farm and Settings-dependent states, and command-palette
+The remaining audit includes deferred Build tabs, Farm and Settings-dependent states, and command-palette
 no-match guidance. Coordinate Settings with GRE-1122 and discovery/probe with
 GRE-1127. Keep the existing Help destinations and `planCopy.ts` wording.
 

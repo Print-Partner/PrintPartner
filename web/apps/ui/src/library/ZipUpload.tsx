@@ -26,6 +26,11 @@ export const IMPORT_POLL_MS = 2000;
 
 type JobMap = Record<string, string>;
 
+/** The DOM id of a Library row's Upload ZIP input or Sync button. One Library renders at a time. */
+export function rowControlId(sourceId: number, control: "upload" | "sync"): string {
+  return `pp-source-${sourceId}-${control}`;
+}
+
 export function readJobs(): JobMap {
   try {
     const raw = localStorage.getItem(JOBS_KEY);
@@ -303,6 +308,7 @@ export function SourceRows({
             {github && (
               <button
                 type="button"
+                id={rowControlId(source.id, "sync")}
                 className="pp-button"
                 aria-label={`Sync ${source.name}`}
                 disabled={busy}
@@ -319,6 +325,7 @@ export function SourceRows({
             <label className="pp-button pp-file-button">
               Upload ZIP
               <input
+                id={rowControlId(source.id, "upload")}
                 className="pp-visually-hidden"
                 type="file"
                 accept=".zip,application/zip"

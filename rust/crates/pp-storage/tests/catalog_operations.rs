@@ -1588,6 +1588,7 @@ fn gre601_preview_default_behavior_is_read_only() {
 
 #[cfg(feature = "desktop_rebuild")]
 #[test]
+#[rustfmt::skip]
 fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
     let fixture = Fixture::new();
     let owner = fixture.open();
@@ -1642,10 +1643,12 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
             "accent",
             "😀gear",
         ),
+        ("gear.stl", json!({"roles":[{"id":"accent","markers":["A"]}]}), "accent", "gear"),
+        ("Bracket_A.stl", json!({"roles":[{"id":"accent","markers":["A"]}]}), "accent", "Bracket_A"),
         ("[o]/[a]gear.stl", json!({}), "opaque", "gear"),
-        ("[a][a]gear.stl", json!({}), "accent", "[a]gear"),
+        ("[a][a]gear.stl", json!({}), "accent", "gear"),
         ("[a][c]gear.stl", json!({}), "accent", "gear"),
-        ("[c][a]gear.stl", json!({}), "accent", "[a]gear"),
+        ("[c][a]gear.stl", json!({}), "accent", "gear"),
         (
             "[A]gear.stl",
             json!({"roles":[{"id":"accent","label":" Renamed "}]}),
@@ -1688,6 +1691,92 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
         );
     }
     assert_eq!(rows(&fixture.0), before);
+    owner.shutdown().unwrap();
+}
+
+// GRE-1396: markers go anywhere with one adjacent separator, and `.3mf` parses
+// like `.stl`. Node's parsers.test.ts covers the same file names.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+#[rustfmt::skip]
+fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let client = owner.local_source_catalog();
+    for (path, role, quantity, slug) in [
+        ("STLs/[a]_belt_clip.stl", "accent", 1, "belt_clip"),
+        ("FlowChamber_BPM[a].stl", "accent", 1, "FlowChamber_BPM"),
+        ("FlowChamber_BPM_[a].stl", "accent", 1, "FlowChamber_BPM"),
+        ("Duct_[c]_Left.stl", "clear", 1, "Duct_Left"),
+        ("Duct-[o]-Left.stl", "opaque", 1, "Duct-Left"),
+        ("Duct[A]Left.stl", "accent", 1, "DuctLeft"),
+        ("[o] Cover x2.stl", "opaque", 2, "Cover"),
+        ("[a]_Bracket_x4.STL", "accent", 4, "Bracket"),
+        ("[a].stl", "accent", 1, "[a]"),
+        ("[a]_[a]_belt_clip.stl", "accent", 1, "belt_clip"),
+        ("belt_clip_[a]_[a].stl", "accent", 1, "belt_clip"),
+        ("belt_[a]_[o]_clip.stl", "accent", 1, "belt_clip"),
+        ("STLs/Panel_[a[c]]_Clip.stl", "clear", 1, "Panel_Clip"),
+        ("[o[a[c]]]_Panel.stl", "clear", 1, "Panel"),
+        // The same matrix is asserted against Node in parsers.test.ts.
+        ("[o]-Panel Clip.STL", "opaque", 1, "Panel Clip"),
+        ("Panel-[c]-Clip.stl", "clear", 1, "Panel-Clip"),
+        ("Panel Clip_[a].stl", "accent", 1, "Panel Clip"),
+        ("[[a]].stl", "accent", 1, "[]"),
+        ("Panel_[a][c]_Clip.stl", "accent", 1, "Panel_Clip"),
+        ("[a][c].stl", "accent", 1, "[a][c]"),
+        ("STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf", "accent", 2, "Skirt_Duct"),
+        ("Panel_Clip.3MF", "primary", 1, "Panel_Clip"),
+        ("STLs/Dual_4010/[a]_4010_Front_Mount_High.stl", "accent", 1, "4010_Front_Mount_High"),
+        ("STLs/Common_Parts/Hotend_Mounts/Dragon_Ace_Mount_MZE.stl", "primary", 1, "Dragon_Ace_Mount_MZE"),
+        ("STLs/probe_mounts/[a]_probe_mount_klicky.stl", "accent", 1, "probe_mount_klicky"),
+    ] {
+        let filename = path.rsplit('/').next().unwrap();
+        assert_eq!(
+            preview(&client, path, Value::Null),
+            json!({"role":role,"quantity":quantity,"part_slug":slug,"filename":filename}),
+            "{path}"
+        );
+    }
+    owner.shutdown().unwrap();
+}
+
+// The preview runs on the storage writer and accepts any pasted name. Marker
+// removal is linear for repeated nesting like this; see `naming::markers`.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn gre1396_preview_strips_markers_from_a_30000_character_name_within_2_seconds() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let client = owner.local_source_catalog();
+    let filename = format!("Panel_{}Clip.stl", "[a[c]]_".repeat(4285));
+    let started = std::time::Instant::now();
+    let preview = preview(&client, &filename, Value::Null);
+    let elapsed = started.elapsed();
+    assert_eq!(preview["part_slug"], "Panel_Clip");
+    assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+    owner.shutdown().unwrap();
+}
+
+// A saved quantity regex written for the `.3mf` name keeps its meaning.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn gre1396_preview_reads_quantity_from_the_3mf_name_before_the_stl_name() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let client = owner.local_source_catalog();
+    for (path, regex, quantity, slug) in [
+        ("Duct_x2.3mf", r"_x([0-9]+)\.3mf$", 2, "Duct"),
+        ("Duct_x2.stl", r"_x([0-9]+)\.3mf$", 1, "Duct_x2"),
+        ("Duct_qty3.3mf", r"_qty([0-9]+)", 3, "Duct"),
+        ("Duct_x4.3mf", r"_x([0-9]+)\.stl$", 4, "Duct"),
+    ] {
+        assert_eq!(
+            preview(&client, path, json!({"quantity":{"regex":regex}})),
+            json!({"role":"primary","quantity":quantity,"part_slug":slug,"filename":path}),
+            "{path} with {regex}"
+        );
+    }
     owner.shutdown().unwrap();
 }
 
@@ -2164,6 +2253,7 @@ fn gre601_preview_adds_missing_roles_and_falls_back_from_invalid_stored_defaults
 }
 
 #[test]
+#[rustfmt::skip]
 fn gre601_naming_save_validation_is_classified_and_atomic() {
     let fixture = Fixture::new();
     let owner = fixture.open();
@@ -2242,6 +2332,8 @@ fn gre601_naming_save_validation_is_classified_and_atomic() {
             json!([{"path_contains":" \n","role_id":"accent"}]),
             "Blank folder rule",
         ),
+        ("roles", json!([{"id":"primary","label":"P","markers":["[".repeat(65)]}]), "Naming marker too long"),
+        ("roles", json!([{"id":"primary","label":"P","markers":vec!["[a]"; 17]}]), "Too many naming markers"),
     ];
     for (field, invalid, message) in cases {
         let mut profile = defaults.clone();

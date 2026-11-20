@@ -2,7 +2,7 @@
   "version": 2,
   "crates": {
     "pp-server": {
-      "module": 3,
+      "module": 6,
       "item": 6,
       "statement": 0
     }

@@ -124,7 +124,7 @@ Only `ensure` runs commands in the clone with its configuration and transport va
 In scope is state that ordinary Git commands or environment variables can set, by accident or on purpose:
 
 - Settings in the shared `.git/config`, its includes, global, XDG and system config. Tests: `test_no_git_configuration_reaches_the_carry` (local, included, `HOME`/XDG and `GIT_CONFIG_SYSTEM`) and `test_no_setting_anywhere_changes_what_local_git_reads` (28 settings).
-- The merge command's environment and working directory. Tests: `test_git_config_env_and_cwd_cannot_change_what_the_carry_sees`, `test_both_decide_the_same_from_a_subdirectory_with_diff_relative`, and `test_a_read_never_fetches_or_runs_a_transport_program`.
+- The merge command's environment and working directory. Tests: `test_git_config_env_and_cwd_cannot_change_what_the_carry_sees`, `test_both_decide_the_same_from_a_subdirectory_with_diff_relative`, `test_a_read_never_fetches_or_runs_a_transport_program` and `test_no_caller_git_variable_reaches_a_read`.
 - Replace refs and grafts. Test: `test_replace_refs_and_grafts_do_not_change_the_parents`.
 - `info/attributes`. Covered by the 28-setting test.
 - Other refs, the commit-graph and the multi-pack-index: by design (the scratch directory has no refs, and both indexes are off), not tested.

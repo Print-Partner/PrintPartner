@@ -689,22 +689,20 @@ class CarryRepo:
 
 
 class RepoFacts(pps.GitHubFacts):
-    """GitHubFacts with GitHub's two answers taken from the local repo: a commit is on main when
-    it is an ancestor of main_ref, and failing maps a SHA to its first failing required check."""
+    """GitHubFacts on a local repo: GitHub's main tip is main_ref, and failing maps a SHA to its
+    first failing required check."""
 
     def __init__(self, repo, failing=None, main_ref="main", git=None):
-        super().__init__("o/r", self.no_api, git or pps.LocalGit(repo.path))
+        super().__init__("o/r", self.branch_api, git or pps.LocalGit(repo.path))
         self.repo_, self.failing, self.main_ref = repo, failing or {}, main_ref
-
-    def on_main(self, sha):
-        return self.repo_.is_ancestor(sha, self.main_ref)
 
     def checks_failing(self, sha):
         return self.failing.get(sha)
 
-    @staticmethod
-    def no_api(path):
-        raise AssertionError(f"unexpected GitHub read {path}")
+    def branch_api(self, path):
+        if path != "repos/o/r/branches/main":
+            raise AssertionError(f"unexpected GitHub read {path}")
+        return {"commit": {"sha": self.repo_.git("rev-parse", self.main_ref)}}
 
 
 def record(head, seat="gpt-6.2-sol", vendor="openai", score=9, author="anthropic"):
@@ -723,62 +721,43 @@ NO_CARRY_REASON = "no records on this head and no carry: "
 LANE_FILES, STRICT_FILES = ["docs/x.md"], ["scripts/merge-classes.json"]
 
 
-def carry_both(test, repo, head, records, strict=False, failing=None, main_ref="main", git=None, files=None,
-               guard=False):
+def carry_status(test, repo, head, records, strict=False, failing=None, main_ref="main", git=None, files=None):
     """The only route to a carry decision in this module besides main() (setUpModule makes a direct
-    call to any carry entry point raise). Returns carry_for_pr's result for files (default: a strict
-    or a lane PR's), with guard=True also the guard's (source, why) on these records. Asserts that
-    the coordinator's sensitive check agrees with the strict status on these records and again with
-    a second vendor at 9 added beside each record: the guard carries only what the status carries,
-    from the same source, a carry both refuse is refused for the same reason, and a guard that
-    raises (refuses) has a status that refused. One seat passing the status alone is the known case."""
-    def status(group, paths):
-        facts = RepoFacts(repo, failing, main_ref, git)
-        with mock.patch.object(pps, "fetch_files", return_value=paths):
-            return pps.carry_for_pr("o/r", 7, head, group, facts, pps.check_state(facts, head))
-
-    result = status(records, files or (STRICT_FILES if strict else LANE_FILES))
-    companions = [pps.Record(r.head, "glm-5.3-flash-free", "zhipu", r.author, 9.0, ()) for r in records]
-    guards = []
-    for group in (records, records + companions):
-        plan, status_why = status(group, STRICT_FILES)
-        try:
-            source, guard_why = merge_class.sensitive_scores([body(r) for r in group], head, CONFIG,
-                                                             RepoFacts(repo, failing, main_ref, git),
-                                                             merge_class.load_classes())
-        except Exception as err:  # noqa: BLE001 - the guard refuses a fact it cannot read
-            source, guard_why = None, f"raised {type(err).__name__}"
-            test.assertIsNone(plan, f"the status carried what the guard could not verify: {err!r}")
-        guards.append((source, guard_why))
-        if source is not None and source != head:
-            test.assertIsNotNone(plan, f"the guard carried what the status refused: {status_why}")
-            test.assertEqual(status_why, f"carried from {source[:7]}")
-        if plan is None and guard_why.startswith(NO_CARRY_REASON):
-            test.assertEqual(guard_why[len(NO_CARRY_REASON):], status_why)
-    return (result, guards[0]) if guard else result
+    call to any carry entry point raise). Returns carry_for_pr's result as the workflow gets it: the
+    checks from one check_state read, and files (default: a strict or a lane PR's) as the PR's file
+    list. Every carried success also pins the GRE-1859 interim: the sensitive guard's exact-head
+    check (has_two_scores) still refuses the head, even with a second vendor at 9 beside each record."""
+    facts = RepoFacts(repo, failing, main_ref, git)
+    with mock.patch.object(pps, "fetch_files", return_value=files or (STRICT_FILES if strict else LANE_FILES)):
+        plan, why = pps.carry_for_pr("o/r", 7, head, records, facts, pps.check_state(facts, head))
+    if plan is not None:
+        companions = [pps.Record(r.head, "glm-5.3-flash-free", "zhipu", r.author, 9.0, ()) for r in records]
+        test.assertFalse(merge_class.has_two_scores([body(r) for r in records + companions], head,
+                                                    records[0].author, CONFIG["scorer_seats"], CONFIG["vendors"]))
+    return plan, why
 
 
-# Every carry decision a test reaches goes through carry_both, which runs and compares both
-# evaluators, or through main() or run_merge_group() as the workflow runs them.
+# Every carry decision a test reaches goes through carry_status, or through main() or
+# run_merge_group() as the workflow runs them.
 CARRY_ENTRY_POINTS = [(pps, "plan_carry"), (pps, "carry_for_pr"), (pps, "decide_carry"),
-                      (merge_class, "decide_carry"), (merge_class, "sensitive_scores")]
-DECIDING = {carry_both.__code__, pps.main.__code__, pps.run_merge_group.__code__}
+                      (merge_class, "decide_carry")]
+DECIDING = {carry_status.__code__, pps.main.__code__, pps.run_merge_group.__code__}
 
 
-def only_through_carry_both(real):
+def only_through_carry_status(real):
     def guarded(*args, **kwargs):
         frame = sys._getframe(1)
         while frame is not None and frame.f_code not in DECIDING:
             frame = frame.f_back
         if frame is None:
-            raise AssertionError(f"{real.__name__} called outside carry_both or main()")
+            raise AssertionError(f"{real.__name__} called outside carry_status or main()")
         return real(*args, **kwargs)
     return guarded
 
 
 def setUpModule():
     for module, name in CARRY_ENTRY_POINTS:
-        patcher = mock.patch.object(module, name, only_through_carry_both(getattr(module, name)))
+        patcher = mock.patch.object(module, name, only_through_carry_status(getattr(module, name)))
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
 
@@ -847,7 +826,13 @@ class CarryTests(unittest.TestCase):
         cls.on_main = r.merge_commit(cls.m1, cls.base, cls.m1)
 
     def plan(self, head, records, strict=False, failing=None, main_ref="main"):
-        return carry_both(self, self.r, head, records, strict, failing, main_ref)
+        return carry_status(self, self.r, head, records, strict, failing, main_ref)
+
+    def test_a_carry_entry_point_called_outside_carry_status_fails(self):
+        # A new carry fixture cannot decide a carry another way: every entry point raises.
+        for module, name in CARRY_ENTRY_POINTS:
+            with self.subTest(name), self.assertRaisesRegex(AssertionError, "outside carry_status"):
+                getattr(module, name)(self.h1, [record(self.h0)])
 
     def refused(self, head, records=None, main_ref="main", **kw):
         plan, why = self.plan(head, records or [record(self.h0)], main_ref=main_ref, **kw)
@@ -885,14 +870,34 @@ class CarryTests(unittest.TestCase):
                          f"{rewritten[:7]}: 1 parents, not a two-parent merge of main")
 
     def test_reversed_parents_do_not_carry(self):
-        self.assertIn("is not on main", self.refused(self.reversed))
+        self.assertIn("was never main's tip", self.refused(self.reversed))
 
     # hop condition 2: M is on main.
 
     def test_merging_a_branch_that_is_not_main_does_not_carry(self):
         side = self.r.git("rev-parse", "side-o")
         self.assertEqual(self.refused(self.feature),
-                         f"{self.feature[:7]}: second parent {side[:7]} is not on main")
+                         f"{self.feature[:7]}: second parent {side[:7]} was never main's tip")
+
+    def test_a_merged_commit_that_main_reaches_but_never_pointed_at_does_not_carry(self):
+        # Both commits are ancestors of their main, but neither was ever its tip: an -s ours merge
+        # left side's unseen.py out of main's tree, and inner is a side branch's first commit.
+        r = self.r
+        side = r.line("side-unseen", self.m1, ("unseen.py", "x\n"), ("unseen2.py", "y\n"))
+        inner = r.git("rev-parse", f"{side}~1")
+        r.branch("main-ours", self.m1)
+        r.git("merge", "-q", "-s", "ours", "--no-edit", side)
+        r.branch("main-side", self.m1)
+        r.merge(side)
+        for main_ref, merged in (("main-ours", side), ("main-side", inner)):
+            r.branch(f"pr-{main_ref}", self.h0)
+            head = r.merge(merged)
+            with self.subTest(main_ref):
+                self.assertTrue(r.is_ancestor(merged, main_ref))
+                self.assertEqual(self.refused(head, main_ref=main_ref),
+                                 f"{head[:7]}: second parent {merged[:7]} was never main's tip")
+        # m1 was main's tip before m2: a true earlier tip still carries.
+        self.assertEqual(self.plan(self.h1, [record(self.h0)], main_ref="main-side")[0].state, "success")
 
     # hop condition 3: one merge base, neither side.
 
@@ -985,14 +990,21 @@ class CarryTests(unittest.TestCase):
         plan, _ = self.plan(self.h1, [record(self.h0, score=9)], strict=True)
         self.assertEqual(plan.state, "success")
 
-    def test_sensitive_pr_class_comes_from_its_live_file_list(self):
-        from unittest import mock
+    def test_a_carried_success_still_fails_the_sensitive_guard_on_its_head(self):
+        # GRE-1859 interim: the guard needs two scores on the exact head, as on main, so it is
+        # stricter than the status and refuses a head whose pp/score passed by carry.
+        records = [record(self.h0), record(self.h0, seat="glm-5.3-flash-free", vendor="zhipu")]
+        self.assertEqual(self.plan(self.h1, records, strict=True)[0].state, "success")
+        bodies, seats, vendors = [body(r) for r in records], CONFIG["scorer_seats"], CONFIG["vendors"]
+        self.assertTrue(merge_class.has_two_scores(bodies, self.h0, "anthropic", seats, vendors))
+        self.assertFalse(merge_class.has_two_scores(bodies, self.h1, "anthropic", seats, vendors))
 
+    def test_sensitive_pr_class_comes_from_its_live_file_list(self):
         records = [record(self.h0, score=8)]
         for paths, state in ((["rust/crates/pp-storage/src/import.rs"], None),
                              (["scripts/merge-classes.json"], None), (["docs/x.md"], "success")):
             with self.subTest(paths=paths):
-                plan, why = carry_both(self, self.r, self.h1, records, files=paths)
+                plan, why = carry_status(self, self.r, self.h1, records, files=paths)
                 self.assertEqual(plan and plan.state, state, why)
 
     def test_grok_records_never_carry(self):
@@ -1066,7 +1078,7 @@ class CrissCrossTests(unittest.TestCase):
         # One explicit base (what GitHub's compare API returns) would certify the hand resolution.
         self.assertEqual(r.git("merge-tree", "--write-tree", f"--merge-base={x1}", h0, m),
                          r.git("rev-parse", f"{h1}^{{tree}}"))
-        plan, why = carry_both(self, r, h1, [record(h0)])
+        plan, why = carry_status(self, r, h1, [record(h0)])
         self.assertEqual((plan, why), (None, f"{h1[:7]}: 2 merge bases with main"))
 
 
@@ -1113,6 +1125,16 @@ class CommentModeCarryTests(unittest.TestCase):
         _, out = self.run_main(self.c.h2, bodies=[self.body(9), self.body(7)])
         self.assertIn(f"statuses/{self.c.h2} -f state=failure", out)
         self.assertNotIn(f"statuses/{self.c.h2} -f state=success", out)
+
+    def test_a_low_valid_record_on_a_later_head_blocks_the_carry(self):
+        # h1's 5 stops the walk at h1, bare or in the backtick form the docs call valid.
+        low = (f"pp-score head={self.c.h1} seat=gpt-6.2-sol vendor=openai score=5 author=anthropic "
+               "obstacles=none")
+        for line in (low, f"`{low}`"):
+            with self.subTest(line=line):
+                _, out = self.run_main(self.c.h2, bodies=[self.body(), line])
+                self.assertIn(f"-f 'description=no score and no carry: {self.c.h1[:7]} did not pass", out)
+                self.assertNotIn(f"statuses/{self.c.h2} -f state=success", out)
 
     def test_merge_group_decides_the_carry_again(self):
         """The merge_group run decides the carry from live facts: a failing check on the carried
@@ -1162,85 +1184,6 @@ class CommentModeCarryTests(unittest.TestCase):
             self.assertIn("comment-mode dry runs only", err.getvalue())
 
 
-class GuardAgreementTests(unittest.TestCase):
-    """The pp/score status (plan_carry, strict as for a sensitive PR) and the coordinator's
-    sensitive merge check (merge_class.sensitive_scores, as agent-guard.py calls it) on the same
-    carry fixtures. Both use merge_class.decide_carry. The guard never accepts what the status
-    refuses, and when it accepts, it accepts the same source head. The guard additionally needs
-    two different non-Grok vendors from scorer_seats, so one seat, one vendor or a Grok second
-    seat passes the status but not the guard: those cases are listed explicitly below."""
-
-    @classmethod
-    def setUpClass(cls):
-        CarryTests.setUpClass()
-        cls.c = CarryTests
-
-    def both(self, head, records, main_ref="main", failing=None):
-        (status, status_why), (source, guard_why) = carry_both(self, self.c.r, head, records, True, failing,
-                                                               main_ref, guard=True)
-        return status is not None, source is not None, status_why, guard_why
-
-    def test_a_carry_entry_point_called_outside_carry_both_fails(self):
-        # A new carry fixture cannot skip the guard: every entry point raises outside carry_both.
-        for module, name in CARRY_ENTRY_POINTS:
-            with self.subTest(name), self.assertRaisesRegex(AssertionError, "outside carry_both"):
-                getattr(module, name)(self.c.h1, [record(self.c.h0)])
-
-    def two(self, head):
-        return [record(head), record(head, seat="glm-5.3-flash-free", vendor="zhipu")]
-
-    def test_both_carry_a_clean_hop_and_a_second_clean_hop(self):
-        c = self.c
-        for head in (c.h1, c.h2):
-            with self.subTest(head=head):
-                self.assertEqual(self.both(head, self.two(c.h0))[:2], (True, True))
-
-    def test_both_refuse_every_failing_hop(self):
-        c = self.c
-        cases = [(c.edited, "main"), (c.hidden, "main"), (c.conflicted, "main-conflict"), (c.rebased, "main"),
-                 (c.reversed, "main"), (c.octopus, "main"), (c.feature, "main"), (c.hunk, "main-hunk"),
-                 (c.revert, "main-revert"), (c.gate, "main-gate"), (c.rewritten, "main"),
-                 (c.second, "main-hunk")]
-        for head, main_ref in cases:
-            with self.subTest(head=head, main_ref=main_ref):
-                ok_status, ok_guard, status_why, guard_why = self.both(head, self.two(c.h0), main_ref)
-                self.assertEqual((ok_status, ok_guard), (False, False))
-                self.assertIn(status_why, guard_why)
-
-    def test_both_refuse_failing_records_and_checks(self):
-        c = self.c
-        h0, h1 = c.h0, c.h1
-        glm = dict(seat="glm-5.3-flash-free", vendor="zhipu")
-        cases = {
-            "a seat at 8": [record(h0), record(h0, score=8, **glm)],
-            "a failing Grok record": self.two(h0) + [record(h0, seat="grok-4.7", vendor="xai", score=7)],
-            "the author's own family": self.two(h0) + [record(h0, seat="claude-opus-5-5", vendor="anthropic")],
-            "two author families": [record(h0), record(h0, author="cursor", **glm)],
-            "newer failing records": self.two(h0) + [record(h1, score=7)],
-        }
-        for name, records in cases.items():
-            head = c.h2 if name == "newer failing records" else h1
-            with self.subTest(name):
-                self.assertEqual(self.both(head, records)[:2], (False, False))
-        with self.subTest("a failing check on the carried head"):
-            self.assertEqual(self.both(h1, self.two(h0), failing={h1: "zizmor is failure"})[:2], (False, False))
-
-    def test_the_status_accepts_one_seat_but_the_guard_needs_two_vendors(self):
-        h0, h1 = self.c.h0, self.c.h1
-        for name, records in {
-            "one seat": [record(h0)],
-            "two seats, one vendor": [record(h0), record(h0, seat="gpt-6.2-astra")],
-            "Grok as the second seat": [record(h0), record(h0, seat="grok-4.7", vendor="xai")],
-        }.items():
-            with self.subTest(name):
-                self.assertEqual(self.both(h1, records)[:2], (True, False))
-
-    def test_the_guard_reads_the_exact_head_first(self):
-        h1 = self.c.h1
-        _, (source, _) = carry_both(self, self.c.r, h1, self.two(h1), True, guard=True)
-        self.assertEqual(source, h1)
-
-
 class CarryLimitTests(unittest.TestCase):
     def test_five_hops_carry_and_six_do_not(self):
         r = CarryRepo()
@@ -1253,9 +1196,9 @@ class CarryLimitTests(unittest.TestCase):
             main = r.commit(f"m{i}.txt", f"{i}\n", f"main {i}")
             r.git("checkout", "-q", "pr")
             heads.append(r.merge(main))
-        plan, why = carry_both(self, r, heads[4], [record(h0)])
+        plan, why = carry_status(self, r, heads[4], [record(h0)])
         self.assertEqual((plan.state, why), ("success", f"carried from {h0[:7]}"))
-        self.assertEqual(carry_both(self, r, heads[5], [record(h0)]),
+        self.assertEqual(carry_status(self, r, heads[5], [record(h0)]),
                          (None, "no scored head within 5 merges of main"))
 
     def test_a_failed_unshallow_fetch_refuses(self):
@@ -1270,10 +1213,9 @@ class CarryLimitTests(unittest.TestCase):
                        check=True, env=c.r.env, capture_output=True)
         git = pps.LocalGit(clone)
         self.assertEqual(git._git("rev-parse", "--is-shallow-repository").stdout.strip(), "true")
-        (plan, why), guard = carry_both(self, c.r, c.h2, [record(c.h0)], git=git, guard=True)
+        plan, why = carry_status(self, c.r, c.h2, [record(c.h0)], git=git)
         self.assertIsNone(plan)
         self.assertTrue(why.startswith("cannot verify carry: CalledProcessError"), why)
-        self.assertEqual(guard, (None, "raised CalledProcessError"))
 
 
 class CommentModeOrderTests(unittest.TestCase):

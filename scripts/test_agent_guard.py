@@ -941,8 +941,7 @@ class CoordinatorMergeTests(unittest.TestCase):
 
 
 class CoordinatorMergeClassTests(unittest.TestCase):
-    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA,
-              git=None):
+    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA):
         guard = load(CLI, "agent_guard_classes")
         config_path = ROOT / "scripts/merge-classes.json"
         config = json.loads(config_path.read_text())
@@ -953,8 +952,6 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             return json.dumps(config) if path == config_path else original_read(path, *args, **kwargs)
 
         def gh(command, **kwargs):
-            if git and command[0] == "git":
-                return git(command, **kwargs)
             self.assertEqual(kwargs["cwd"], "/coordinator")
             self.assertTrue(kwargs["check"])
             if error:
@@ -1102,24 +1099,10 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                 self.assertIn("merge refused", self.check(["docs/example.md"], error=error))
 
     def test_untrusted_stale_low_or_duplicate_scores_refused(self):
-        for comments in (self.scores(author="outsider"),
+        for comments in (self.scores(author="outsider"), self.scores(head="a" * 40),
                          self.scores(score=8), self.scores(seats=(("grok-4.7", "xai"), ("grok-4.7", "xai"))), [[]]):
             with self.subTest(comments=comments):
                 self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
-
-    def test_stale_scores_go_through_the_carry_and_refuse_when_it_cannot_be_read(self):
-        # Records only on an older head: the guard asks the shared carry decision
-        # (merge_class.sensitive_scores). Here every git call fails, so the merge is refused.
-        # test_post_pp_score_status.GuardAgreementTests runs the carry itself on real repos.
-        git_calls = []
-
-        def run(command, **kwargs):
-            git_calls.append(command)
-            raise subprocess.CalledProcessError(128, command)
-
-        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(head="a" * 40),
-                                                  git=run))
-        self.assertTrue(git_calls)
 
     def test_missing_data_refused(self):
         for override in ({"files": None}, {"files": []}, {"files": [{}]}, {"changedFiles": 2},

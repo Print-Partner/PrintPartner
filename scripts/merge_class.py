@@ -6,8 +6,8 @@ beats lane. coverage: every CODEOWNERS entry must match an owner or sensitive
 pattern, so a new owned path cannot slip past the classification unnoticed.
 scores: whether two allowed seats from two different vendors, neither the PR author's vendor,
 posted a score of 9 or more on the exact head.
-carry: decide_carry, the one score carry-forward decision that the pp/score status and the
-coordinator's sensitive merge check (sensitive_scores) share.
+carry: decide_carry, the score carry-forward decision behind the pp/score status. The
+coordinator's sensitive merge check still needs two scores on the exact head (GRE-1859).
 """
 
 import argparse
@@ -15,7 +15,6 @@ import json
 import re
 import subprocess
 import sys
-import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,11 +116,8 @@ def uncovered(entries, classes):
     return [e for e in entries if not any(rx.match(e) for rx in covered)]
 
 
-def has_two_scores(comments, head, author_vendor, allowed_seats, vendors, exclude_vendors=()):
+def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
     """Require two allowed seats at 9+ from two different vendors, neither the author's vendor.
-
-    exclude_vendors: records from these vendors are still checked (a low or malformed one
-    refuses) but do not count toward the two vendors. A carried score passes NO_CARRY_VENDORS.
 
     allowed_seats maps each seat to its vendor and vendors lists every vendor a record may name
     (scorer_seats and vendors in merge-classes.json), so a seat or vendor change is data only. Malformed records, unknown seats and same-vendor-as-author records refuse.
@@ -169,17 +165,17 @@ def has_two_scores(comments, head, author_vendor, allowed_seats, vendors, exclud
                     return False
             except ValueError:
                 return False
-            if vendor not in exclude_vendors:
-                seat_vendors[seat] = vendor
+            seat_vendors[seat] = vendor
     return len(set(seat_vendors.values())) >= 2
 
 
-# Score carry-forward (Chad, 2026-11-18 11:02 PM ET). One decision, used by the pp/score status
-# (post_pp_score_status.plan_carry) and by the coordinator's sensitive merge check
-# (sensitive_scores, called from agent-guard.py). docs/development/score-records.md lists the rule.
+# Score carry-forward (Chad, 2026-11-18 11:02 PM ET), used by the pp/score status
+# (post_pp_score_status.plan_carry). docs/development/score-records.md lists the rule.
 MAIN = "main"
 STATUS_CONTEXT = "pp/score"
 CARRY_MAX_HOPS = 5
+# How far back main's first-parent history is searched for a merged-in commit.
+MAIN_TIP_WALK = 5000
 # Only success. A skipped or neutral required check does not qualify the carried head, although
 # GitHub lets it satisfy the required check: the gate cannot prove why a check was skipped.
 PASSING = frozenset({"success"})
@@ -199,22 +195,14 @@ class CarryError(ValueError):
 
 
 class LocalGit:
-    """A checkout of the repository. deadline (time.monotonic) bounds every git call, so the
-    coordinator hook refuses on its own before the hook timeout would let the command run."""
+    """A checkout of the repository."""
 
-    def __init__(self, cwd=ROOT, remote="origin", deadline=None):
+    def __init__(self, cwd=ROOT, remote="origin"):
         self.cwd = Path(cwd)
         self.remote = remote
-        self.deadline = deadline
 
     def _git(self, *args, check=True, text=True):
-        timeout = None
-        if self.deadline is not None:
-            timeout = self.deadline - time.monotonic()
-            if timeout <= 0:
-                raise subprocess.TimeoutExpired(["git", *args], 0)
-        return subprocess.run(["git", *args], cwd=self.cwd, text=text, capture_output=True,
-                              check=check, timeout=timeout)
+        return subprocess.run(["git", *args], cwd=self.cwd, text=text, capture_output=True, check=check)
 
     def ensure(self, *shas):
         if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
@@ -228,6 +216,9 @@ class LocalGit:
 
     def parents(self, sha):
         return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]
+
+    def first_parents(self, tip, limit):
+        return self._git("rev-list", "--first-parent", f"--max-count={limit}", tip).stdout.split()
 
     def tree(self, sha):
         return self._git("rev-parse", f"{sha}^{{tree}}").stdout.strip()
@@ -275,8 +266,8 @@ class LocalGit:
 
 class GitHubFacts:
     """What a carry needs to know. Commits, merges and diffs come from local git. GitHub, through
-    api(path) -> parsed JSON, answers whether a commit is on main (main's ruleset forbids
-    force-pushes, so that never reverts) and which required checks passed on the carried head."""
+    api(path) -> parsed JSON, answers where main's tip is and which required checks passed on the
+    carried head."""
 
     def __init__(self, repo, api, git=None):
         self.repo = repo
@@ -285,8 +276,15 @@ class GitHubFacts:
         self._required = None
 
     def on_main(self, sha):
-        data = self.api(f"repos/{self.repo}/compare/{sha}...{MAIN}")
-        return data.get("status") in ("identical", "ahead")
+        """Whether main's tip was sha at some time: sha is on the first-parent history of main's
+        current tip, within MAIN_TIP_WALK commits. Reachable from main is not enough: a side
+        branch's inner commit, or one merged with `-s ours`, is reachable but its content need not
+        be in main. Main's ruleset forbids force-pushes, so a yes turns to no only past the bound."""
+        tip = ((self.api(f"repos/{self.repo}/branches/{MAIN}") or {}).get("commit") or {}).get("sha")
+        if not isinstance(tip, str) or not FULL_SHA.fullmatch(tip):
+            raise CarryError("could not read main's tip")
+        self.git.ensure(tip)
+        return sha in self.git.first_parents(tip, MAIN_TIP_WALK)
 
     def required_checks(self):
         """The required status checks of main's rulesets, except pp/score itself."""
@@ -345,7 +343,7 @@ def hop(facts, head, classes):
     a hop can never change after a status is posted. All must hold:
 
     1. head has exactly two parents [P, M]: not a rebase, squash, force-push or octopus merge.
-    2. M is on main.
+    2. M was main's tip at some time (on main's first-parent history), not merely reachable.
     3. P and M have exactly one merge base B, and B is neither P nor M.
     4. `git merge-tree --write-tree P M` is clean and its tree is head's tree: no hand edits.
     5. The PR's diff B..P is byte-identical to its diff M..head (full blob IDs and modes).
@@ -359,7 +357,7 @@ def hop(facts, head, classes):
         return None, f"{len(parents)} parents, not a two-parent merge of {MAIN}"
     previous, main = parents
     if not facts.on_main(main):
-        return None, f"second parent {main[:7]} is not on {MAIN}"
+        return None, f"second parent {main[:7]} was never {MAIN}'s tip"
     bases = git.merge_bases(previous, main)
     if len(bases) != 1:
         return None, f"{len(bases)} merge bases with {MAIN}"
@@ -403,7 +401,7 @@ def decide_carry(head, scored_heads, author_families, facts, classes, head_check
     check_state read of them; decide_carry never reads them again, so the status run records
     exactly the value it decided from. Superseded hops' checks are not read: those heads never
     merge, and their checks can change with nothing to re-run this.
-    Whether source's records pass is each caller's record rule; see sensitive_scores.
+    Whether source's records pass is the caller's record rule (post_pp_score_status.plan_carry).
     """
     scored = set(scored_heads)
     if not scored:
@@ -424,34 +422,6 @@ def decide_carry(head, scored_heads, author_families, facts, classes, head_check
             return Carry(previous, why)
         current = previous
     return Carry(None, f"no scored head within {max_hops} merges of {MAIN}")
-
-
-def sensitive_scores(bodies, head, config, facts, classes):
-    """The coordinator's sensitive merge check: (records_head, why).
-
-    records_head is head when head itself passes has_two_scores, or the source a carry reaches
-    (decide_carry) when head has no records and that source passes has_two_scores with Grok
-    not counted. The status evaluator carries the same source; it also accepts one seat, which
-    this check never does. None refuses, as does an unreadable check. Raises on other unreadable
-    facts, which the guard refuses.
-    """
-    pattern = score_pattern(config["vendors"])
-    parsed = [m.groups() for body in bodies for line in body.splitlines()
-              if line.startswith("pp-score ") and (m := pattern.fullmatch(line))]
-    seats, vendors = config["scorer_seats"], config["vendors"]
-    if any(line.startswith(f"pp-score head={head} ") for body in bodies for line in body.splitlines()):
-        authors = {g[4] for g in parsed if g[0] == head}
-        author = next(iter(authors)) if len(authors) == 1 else None
-        if has_two_scores(bodies, head, author, seats, vendors):
-            return head, "two qualifying seats on this head"
-        return None, "need two qualifying scorer seats from allowed authors on this head"
-    authors = {g[4] for g in parsed}
-    carry = decide_carry(head, {g[0] for g in parsed}, authors, facts, classes, check_state(facts, head))
-    if carry.source is None:
-        return None, f"no records on this head and no carry: {carry.reason}"
-    if has_two_scores(bodies, carry.source, next(iter(authors)), seats, vendors, NO_CARRY_VENDORS):
-        return carry.source, f"carried from {carry.source[:7]}"
-    return None, f"carried from {carry.source[:7]}, which lacks two qualifying non-Grok seats"
 
 
 def main(argv=None):

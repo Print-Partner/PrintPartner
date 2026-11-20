@@ -25,7 +25,7 @@ from pathlib import Path
 
 # obstacles= is required here: a record without it does not count. merge_class.py holds the vocabulary.
 from merge_class import classify, load_classes, parse_obstacles
-# The carry decision is shared with the coordinator's sensitive merge check (agent-guard.py).
+# The carry decision. The coordinator's sensitive merge check does not carry yet (GRE-1859).
 from merge_class import (CARRY_MAX_HOPS, NO_CARRY_VENDORS, Carry, GitHubFacts, LocalGit,  # noqa: F401
                          check_state, decide_carry, gate_file, hop)
 
@@ -224,9 +224,9 @@ def plan_carry(head: str, records: list[Record], strict: bool, facts,
                checks: str | None) -> tuple[StatusPlan | None, str]:
     """pp/score for a head with no records of its own, carried from an earlier head, or (None, why).
 
-    merge_class.decide_carry finds the source head (the same decision the coordinator's sensitive
-    merge check uses) from checks, the caller's one check_state read. Then the source's records must pass plan_head as they would on the source
-    itself, Grok included; Grok records are then dropped and at least one must remain; and a
+    merge_class.decide_carry finds the source head from checks, the caller's one check_state
+    read. Then the source's records must pass plan_head as they would on the source itself, Grok
+    included; Grok records are then dropped and at least one must remain; and a
     strict (owner or sensitive) PR needs every record on the source above 8.
     """
     carry = decide_carry(head, {r.head for r in records}, {r.author for r in records}, facts, load_classes(),

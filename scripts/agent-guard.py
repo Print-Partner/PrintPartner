@@ -1439,17 +1439,18 @@ def coordinator_merge_reason(args, cwd):
         bodies, edited = trusted_comment_bodies(pages, authors, sha)
         if edited:
             return "Sensitive PR refused: a pp-score comment was edited after it was posted; edited records never count."
-        # author= records the head branch's author vendor, supplied by the coordinator. Never
-        # infer a model vendor from the GitHub login. A head with no records of its own may use
-        # an earlier head's records through the same carry decision as the pp/score status.
-        facts = merge_class.GitHubFacts("{owner}/{repo}", lambda path: gh_json("api", path),
-                                        merge_class.LocalGit(cwd, deadline=deadline))
-        source, why = merge_class.sensitive_scores(bodies, sha, config, facts, classes)
-        if source is None:
-            detail = "" if why.startswith("need two") else f" ({why})"
-            return f"Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head{detail}."
-        if source != sha and trusted_comment_bodies(pages, authors, source)[1]:
-            return "Sensitive PR refused: a carried pp-score comment was edited after it was posted."
+        record_pattern = merge_class.score_pattern(config["vendors"])
+        # author= records the head branch's author vendor, supplied by the
+        # coordinator. Never infer a model vendor from the GitHub login.
+        author_vendors = set()
+        for body in bodies:
+            for line in body.splitlines():
+                match = record_pattern.fullmatch(line)
+                if match and match.group(1) == sha:
+                    author_vendors.add(match.group(5))
+        author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None
+        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"], config["vendors"]):
+            return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
         return head_moved(gh_json, number, sha)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
         return "Cannot verify merge class or scores; merge refused (missing or unreadable data)."

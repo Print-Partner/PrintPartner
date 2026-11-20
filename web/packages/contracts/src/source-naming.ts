@@ -34,17 +34,22 @@ const QuantityRegexSchema = z
 export const StlNamingRoleIdSchema = z.enum(["primary", "accent", "clear", "opaque"]);
 export type StlNamingRoleId = z.infer<typeof StlNamingRoleIdSchema>;
 
+/** Bounds marker-stripping work per name (UTF-16 units); Rust's `catalog::naming` matches. */
+export const MAX_STL_NAMING_MARKER_LENGTH = 64;
+export const MAX_STL_NAMING_MARKERS = 64;
+const MarkerSchema = z.string().max(MAX_STL_NAMING_MARKER_LENGTH, "must be at most 64 characters");
+
 export const StlNamingRoleSchema = z.strictObject({
   id: StlNamingRoleIdSchema,
   label: z.string().trim().min(1, "must not be blank"),
-  markers: z.array(z.string()),
+  markers: z.array(MarkerSchema),
 });
 export type StlNamingRole = z.infer<typeof StlNamingRoleSchema>;
 
 const StlNamingRoleOverrideSchema = z.strictObject({
   id: StlNamingRoleIdSchema,
   label: z.string().trim().min(1, "must not be blank").optional(),
-  markers: z.array(z.string()).optional(),
+  markers: z.array(MarkerSchema).optional(),
 });
 
 const StlNamingRoleOverridesSchema = z
@@ -67,6 +72,9 @@ const StlNamingRolesSchema = z
     }
     if (!ids.includes("primary")) {
       context.addIssue({ code: "custom", message: "must include the primary role" });
+    }
+    if (roles.flatMap((role) => role.markers).length > MAX_STL_NAMING_MARKERS) {
+      context.addIssue({ code: "custom", message: "must contain at most 64 markers" });
     }
   });
 

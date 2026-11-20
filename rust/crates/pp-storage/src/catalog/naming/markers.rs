@@ -315,6 +315,21 @@ mod tests {
         assert_eq!(strip_markers(&capped(33), markers), "Panel-");
     }
 
+    /// The longest marker and most markers a profile may hold, and the
+    /// slowest scan they allow: 63 units that keep matching, then a miss.
+    #[test]
+    fn accepts_64_markers_of_64_units_and_scans_30000_near_misses_within_2_seconds() {
+        let long = format!("{}]", "[".repeat(63));
+        let mut profile = super::super::NamingProfile::default();
+        profile.roles[0].markers = vec![long.clone(); 61];
+        assert!(profile.validate().is_ok());
+        let started = std::time::Instant::now();
+        let stem = "[".repeat(30_000);
+        assert_eq!(strip_markers(&stem, &[&long]), stem);
+        let elapsed = started.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+    }
+
     #[test]
     fn strips_30000_characters_of_alternating_nesting_within_5_seconds() {
         let name = format!("P_{}{}_C", "[a[c".repeat(5000), "]]".repeat(5000));

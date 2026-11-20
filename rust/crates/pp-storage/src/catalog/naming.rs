@@ -114,6 +114,14 @@ impl NamingProfile {
             !self.roles.is_empty() && self.roles.iter().any(|r| r.id == RoleId::Primary),
             "Naming requires primary role"
         );
+        // Bounds marker-stripping work per name (UTF-16 units, as Node's
+        // `MAX_STL_NAMING_MARKER_LENGTH` and `MAX_STL_NAMING_MARKERS`).
+        let markers = || self.roles.iter().flat_map(|r| &r.markers);
+        ensure!(markers().count() <= 64, "Too many naming markers");
+        ensure!(
+            markers().all(|m| m.encode_utf16().count() <= 64),
+            "Naming marker too long"
+        );
         let mut seen = Vec::new();
         for r in &mut self.roles {
             ensure!(!seen.contains(&r.id), "Duplicate naming role");

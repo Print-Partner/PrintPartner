@@ -41,7 +41,9 @@ look a Source up by name still use the looser `sourceByName` match.
   is `Duct_Left`. Removal repeats until none is left, so `[a]_[a]_belt_clip`
   and the nested `Panel_[a[c]]_Clip` lose every marker. Past 32 alternating
   nesting levels, one combined scan removes the rest, and the kept separator
-  may differ.
+  may differ. A name that stripping would empty keeps its original stem, so
+  `[a][c].stl` is `[a][c]`. A profile may hold at most 64 markers of at most 64
+  UTF-16 units each.
 - This applies to any marker that starts and ends with a symbol. A custom
   marker that starts or ends with a letter or digit, such as `A`, is removed
   only as a prefix, so `gear` stays `gear` and `A_gear` becomes `gear`.

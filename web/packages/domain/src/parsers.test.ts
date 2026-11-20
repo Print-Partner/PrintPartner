@@ -277,6 +277,14 @@ describe("marker removal matches 342b2c09", () => {
     expect(both(33)).toEqual(["Panel-", "Panel"]);
   });
 
+  // The slowest scan the 64-unit marker limit allows: 63 units that keep matching, then a miss.
+  it("scans 30,000 near misses of a 64-unit marker within 2 seconds", () => {
+    const stem = "[".repeat(30_000);
+    const started = performance.now();
+    expect(parsePartSlug(`${stem}.stl`, profile({ primary: [`${"[".repeat(63)}]`] }))).toBe(stem);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
   it("strips 30,000 characters of alternating nesting within 5 seconds", () => {
     const started = performance.now();
     expect(parsePartSlug(`P_${"[a[c".repeat(5000)}${"]]".repeat(5000)}_C.stl`)).toBe("P_C");

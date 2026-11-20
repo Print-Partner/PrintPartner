@@ -1588,6 +1588,7 @@ fn gre601_preview_default_behavior_is_read_only() {
 
 #[cfg(feature = "desktop_rebuild")]
 #[test]
+#[rustfmt::skip]
 fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
     let fixture = Fixture::new();
     let owner = fixture.open();
@@ -1642,18 +1643,8 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
             "accent",
             "😀gear",
         ),
-        (
-            "gear.stl",
-            json!({"roles":[{"id":"accent","markers":["A"]}]}),
-            "accent",
-            "gear",
-        ),
-        (
-            "Bracket_A.stl",
-            json!({"roles":[{"id":"accent","markers":["A"]}]}),
-            "accent",
-            "Bracket_A",
-        ),
+        ("gear.stl", json!({"roles":[{"id":"accent","markers":["A"]}]}), "accent", "gear"),
+        ("Bracket_A.stl", json!({"roles":[{"id":"accent","markers":["A"]}]}), "accent", "Bracket_A"),
         ("[o]/[a]gear.stl", json!({}), "opaque", "gear"),
         ("[a][a]gear.stl", json!({}), "accent", "gear"),
         ("[a][c]gear.stl", json!({}), "accent", "gear"),
@@ -1703,11 +1694,11 @@ fn gre601_preview_merges_roles_and_preserves_reference_ordering() {
     owner.shutdown().unwrap();
 }
 
-// GRE-1396: role markers are stripped anywhere in the name with one adjacent
-// separator, and `.3mf` names parse like `.stl` names. The Node parser tests in
-// web/packages/domain/src/parsers.test.ts cover the same file names.
+// GRE-1396: markers go anywhere with one adjacent separator, and `.3mf` parses
+// like `.stl`. Node's parsers.test.ts covers the same file names.
 #[cfg(feature = "desktop_rebuild")]
 #[test]
+#[rustfmt::skip]
 fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
     let fixture = Fixture::new();
     let owner = fixture.open();
@@ -1734,31 +1725,11 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
         ("[[a]].stl", "accent", 1, "[]"),
         ("Panel_[a][c]_Clip.stl", "accent", 1, "Panel_Clip"),
         ("[a][c].stl", "accent", 1, "[a][c]"),
-        (
-            "STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf",
-            "accent",
-            2,
-            "Skirt_Duct",
-        ),
+        ("STLs/Preset_Print_PlatesR1/[a]_Skirt_Duct_x2.3mf", "accent", 2, "Skirt_Duct"),
         ("Panel_Clip.3MF", "primary", 1, "Panel_Clip"),
-        (
-            "STLs/Dual_4010/[a]_4010_Front_Mount_High.stl",
-            "accent",
-            1,
-            "4010_Front_Mount_High",
-        ),
-        (
-            "STLs/Common_Parts/Hotend_Mounts/Dragon_Ace_Mount_MZE.stl",
-            "primary",
-            1,
-            "Dragon_Ace_Mount_MZE",
-        ),
-        (
-            "STLs/probe_mounts/[a]_probe_mount_klicky.stl",
-            "accent",
-            1,
-            "probe_mount_klicky",
-        ),
+        ("STLs/Dual_4010/[a]_4010_Front_Mount_High.stl", "accent", 1, "4010_Front_Mount_High"),
+        ("STLs/Common_Parts/Hotend_Mounts/Dragon_Ace_Mount_MZE.stl", "primary", 1, "Dragon_Ace_Mount_MZE"),
+        ("STLs/probe_mounts/[a]_probe_mount_klicky.stl", "accent", 1, "probe_mount_klicky"),
     ] {
         let filename = path.rsplit('/').next().unwrap();
         assert_eq!(
@@ -2282,6 +2253,7 @@ fn gre601_preview_adds_missing_roles_and_falls_back_from_invalid_stored_defaults
 }
 
 #[test]
+#[rustfmt::skip]
 fn gre601_naming_save_validation_is_classified_and_atomic() {
     let fixture = Fixture::new();
     let owner = fixture.open();
@@ -2360,6 +2332,8 @@ fn gre601_naming_save_validation_is_classified_and_atomic() {
             json!([{"path_contains":" \n","role_id":"accent"}]),
             "Blank folder rule",
         ),
+        ("roles", json!([{"id":"primary","label":"P","markers":["[".repeat(65)]}]), "Naming marker too long"),
+        ("roles", json!([{"id":"primary","label":"P","markers":vec!["[a]"; 65]}]), "Too many naming markers"),
     ];
     for (field, invalid, message) in cases {
         let mut profile = defaults.clone();

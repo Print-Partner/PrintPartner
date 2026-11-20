@@ -42,7 +42,8 @@ export default defineConfig({
     storageState: join(state, "storage.json"),
     viewport: { width: 1280, height: 900 },
     trace: "on-first-retry",
-    screenshot: "only-on-failure",
+    // CI sets PP_E2E_SCREENSHOTS=on so the e2e receipt carries a screenshot of every test.
+    screenshot: process.env.PP_E2E_SCREENSHOTS === "on" ? "on" : "only-on-failure",
     launchOptions: { executablePath: browserExecutable() },
   },
   webServer: {

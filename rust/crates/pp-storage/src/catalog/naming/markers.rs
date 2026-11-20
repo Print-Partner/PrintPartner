@@ -8,7 +8,7 @@ use std::collections::HashMap;
 /// repeat-until-stable regexes for names nested up to this many alternating
 /// levels; past it, the kept separator may differ. Node's `MARKER_ROUNDS`
 /// has the same value.
-const MAX_ROUNDS: usize = 32;
+const MAX_ROUNDS: usize = 8;
 
 fn separator(c: char) -> bool {
     matches!(c, ' ' | '_' | '-')
@@ -136,28 +136,31 @@ fn push(
     markers: &[&Marker],
     unit: Unit,
 ) -> Option<usize> {
-    let top = states.len();
-    for (j, marker) in markers.iter().enumerate() {
+    let previous = states.len().saturating_sub(markers.len());
+    let mut found = None;
+    for j in 0..markers.len() {
+        let (classes, fail) = (&markers[j].classes, &markers[j].fail);
         let mut q = if out.is_empty() {
             0
         } else {
-            states[top - markers.len() + j]
+            states[previous + j]
         };
-        if q == marker.classes.len() {
-            q = marker.fail[q - 1];
+        if q == classes.len() {
+            q = fail[q - 1];
         }
-        while q > 0 && Some(marker.classes[q]) != unit.1 {
-            q = marker.fail[q - 1];
+        while q > 0 && Some(classes[q]) != unit.1 {
+            q = fail[q - 1];
         }
-        q += usize::from(Some(marker.classes[q]) == unit.1);
+        if Some(classes[q]) == unit.1 {
+            q += 1;
+        }
+        if q == classes.len() && found.is_none() {
+            found = Some(q);
+        }
         states.push(q);
     }
     out.push(unit);
-    markers
-        .iter()
-        .zip(&states[top..])
-        .find(|(marker, q)| **q == marker.classes.len())
-        .map(|(marker, _)| marker.classes.len())
+    found
 }
 
 /// Removes every occurrence of `markers`, leftmost first; with several, the
@@ -310,8 +313,8 @@ mod tests {
             .collect()
     }
 
-    /// Names of at most 47 characters nest fewer than `MAX_ROUNDS` levels,
-    /// so every result must equal the reference.
+    /// No generated name needs more than `MAX_ROUNDS` rounds, so every
+    /// result must equal the reference.
     #[test]
     fn strips_like_the_342b2c09_regexes_for_20000_generated_names() {
         let names = names();
@@ -348,86 +351,62 @@ mod tests {
     }
 
     #[test]
-    fn matches_the_old_regexes_at_32_alternating_levels_and_scans_once_at_33() {
+    fn matches_the_old_regexes_at_8_alternating_levels_and_scans_once_at_9() {
         let markers = PROFILES[0];
-        assert_eq!(reference(&capped(32), markers), "Panel");
-        assert_eq!(strip_markers(&capped(32), markers), "Panel");
+        assert_eq!(reference(&capped(8), markers), "Panel");
+        assert_eq!(strip_markers(&capped(8), markers), "Panel");
         // Past the cap the combined scan keeps the `-` the rounds would drop.
-        assert_eq!(reference(&capped(33), markers), "Panel");
-        assert_eq!(strip_markers(&capped(33), markers), "Panel-");
+        assert_eq!(reference(&capped(9), markers), "Panel");
+        assert_eq!(strip_markers(&capped(9), markers), "Panel-");
     }
 
     /// The same markers and answers as `parsers.test.ts`.
     #[test]
+    #[rustfmt::skip]
     fn classifies_symbol_bounded_markers_like_node() {
         for (marker, bounded) in [
-            ("[a]", true),
-            ("_x_", true),
-            ("-", true),
-            ("[a]-[c]", true),
-            ("[中]", true),
-            ("A", false),
-            ("é]", false),
-            ("[é", false),
-            ("Σ]", false),
-            ("中", false),
-            ("x_", false),
-            ("²]", false),
-            ("_7", false),
+            ("[a]", true), ("_x_", true), ("-", true), ("[a]-[c]", true), ("[中]", true),
+            ("A", false), ("é]", false), ("[é", false), ("Σ]", false), ("中", false),
+            ("x_", false), ("²]", false), ("_7", false),
         ] {
             assert_eq!(super::super::symbol_bounded(marker), bounded, "{marker}");
         }
     }
 
-    #[test]
-    fn limits_symbol_bounded_markers_but_not_letter_bounded_ones() {
-        let profile = |markers: Vec<String>| {
-            let mut profile = super::super::NamingProfile::default();
-            profile.roles.truncate(1);
-            profile.roles[0].markers = markers;
-            profile.validate().map(|_| ()).map_err(|e| e.to_string())
-        };
-        let letters = (0..513).map(|i| format!("missing-marker-{i}")).collect();
-        assert_eq!(profile(letters), Ok(()));
-        assert_eq!(profile(vec!["[a]".into(); 64]), Ok(()));
-        assert_eq!(
-            profile(vec!["[a]".into(); 65]),
-            Err("Too many naming markers".into())
-        );
-        assert_eq!(profile(vec!["[".repeat(64)]), Ok(()));
-        assert_eq!(
-            profile(vec!["[".repeat(65)]),
-            Err("Naming marker too long".into())
-        );
+    fn validate(markers: Vec<String>) -> Result<(), String> {
+        let mut profile = super::super::NamingProfile::default();
+        profile.roles.truncate(1);
+        profile.roles[0].markers = markers;
+        profile.validate().map(|_| ()).map_err(|e| e.to_string())
     }
 
-    /// The most work the limits allow: 62 64-unit markers that match 63 units
-    /// then miss, plus `[a]` and `[c]` nesting deep enough for all 33 rounds,
-    /// in 30,000 characters. `parsers.test.ts` runs the same name.
-    pub(super) fn worst_case() -> (Vec<String>, String) {
-        let mut markers: Vec<String> = (0..62)
+    #[test]
+    #[rustfmt::skip]
+    fn limits_symbol_bounded_markers_but_not_letter_bounded_ones() {
+        assert_eq!(validate((0..513).map(|i| format!("missing-marker-{i}")).collect()), Ok(()));
+        assert_eq!(validate(vec!["[a]".into(); 16]), Ok(()));
+        assert_eq!(validate(vec!["[a]".into(); 17]), Err("Too many naming markers".into()));
+        assert_eq!(validate(vec!["[".repeat(64)]), Ok(()));
+        assert_eq!(validate(vec!["[".repeat(65)]), Err("Naming marker too long".into()));
+    }
+
+    /// The most work the limits allow: 14 64-unit markers that match 63 units
+    /// then miss, plus `[a]` and `[c]` nested 12 levels so every round runs,
+    /// in 30,000 characters. `parsers.test.ts` runs the same case.
+    #[test]
+    fn strips_the_worst_case_the_limits_allow_within_2_seconds() {
+        let mut markers: Vec<String> = (0..14)
             .map(|i| format!("{}{}", "[".repeat(63), char::from_u32(0x2190 + i).unwrap()))
             .collect();
         markers.extend(["[a]".into(), "[c]".into()]);
-        let nest = format!("{}{}", "[a[c".repeat(40), "]]".repeat(40));
-        (
-            markers,
-            format!("P_{}{nest}_C", "[".repeat(30_000 - 4 - nest.len())),
-        )
-    }
-
-    #[test]
-    fn strips_the_worst_case_the_limits_allow_within_2_seconds() {
-        let (markers, name) = worst_case();
-        let mut profile = super::super::NamingProfile::default();
-        profile.roles.truncate(1);
-        profile.roles[0].markers = markers.clone();
-        assert!(profile.validate().is_ok());
+        assert_eq!(validate(markers.clone()), Ok(()));
+        let nest = format!("{}{}", "[a[c".repeat(12), "]]".repeat(12));
+        let name = format!("P_{}{nest}_C", "[".repeat(30_000 - 4 - nest.len()));
         let markers: Vec<&str> = markers.iter().map(String::as_str).collect();
         let started = std::time::Instant::now();
         let slug = strip_markers(&name, &markers);
         let elapsed = started.elapsed();
-        assert_eq!(slug, format!("P_{}_C", "[".repeat(30_000 - 4 - 240)));
+        assert_eq!(slug, format!("P_{}_C", "[".repeat(30_000 - 4 - nest.len())));
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 

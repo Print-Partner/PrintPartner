@@ -39,14 +39,15 @@ look a Source up by name still use the looser `sourceByName` match.
   on both sides, one separator stays between them: `[a]_belt_clip` is
   `belt_clip`, `FlowChamber_BPM[a]` is `FlowChamber_BPM`, and `Duct_[c]_Left`
   is `Duct_Left`. Removal repeats until none is left, so `[a]_[a]_belt_clip`
-  and the nested `Panel_[a[c]]_Clip` lose every marker. Past 32 alternating
+  and the nested `Panel_[a[c]]_Clip` lose every marker. Past 8 alternating
   nesting levels, one combined scan removes the rest, and the kept separator
   may differ. A name that stripping would empty keeps its original stem, so
-  `[a][c].stl` is `[a][c]`. A profile may hold at most 64 markers of at most 64
-  UTF-16 units each.
-- This applies to any marker that starts and ends with a symbol. A custom
-  marker that starts or ends with a letter or digit, such as `A`, is removed
-  only as a prefix, so `gear` stays `gear` and `A_gear` becomes `gear`.
+  `[a][c].stl` is `[a][c]`. A marker holds at most 64 UTF-16 units, and a
+  profile at most 16 symbol-bounded markers.
+- This applies to symbol-bounded markers: neither the first nor the last
+  character is a letter or digit. A custom marker that starts or ends with a
+  letter or digit, such as `A`, is removed only as a prefix, so `gear` stays
+  `gear` and `A_gear` becomes `gear`.
 - `.3mf` names parse like `.stl` names, and the extension is dropped from the
   slug.
 - The quantity regex reads the file name as written, so a saved regex keeps

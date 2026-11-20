@@ -123,10 +123,11 @@ impl NamingProfile {
             "Naming requires primary role"
         );
         // Bounds marker-stripping work per name, as Node's
-        // `MAX_STL_NAMING_MARKER_LENGTH` (UTF-16 units) and `MAX_STL_NAMING_MARKERS`.
+        // `MAX_STL_NAMING_MARKER_LENGTH` (UTF-16 units) and
+        // `MAX_STL_NAMING_SYMBOL_MARKERS`.
         let markers = || self.roles.iter().flat_map(|r| &r.markers);
         let scanning = markers().filter(|m| !trim(m).is_empty() && symbol_bounded(m));
-        ensure!(scanning.count() <= 64, "Too many naming markers");
+        ensure!(scanning.count() <= 16, "Too many naming markers");
         ensure!(
             markers().all(|m| m.encode_utf16().count() <= 64),
             "Naming marker too long"

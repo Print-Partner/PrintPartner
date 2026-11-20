@@ -23,14 +23,16 @@ describe("Source naming contracts", () => {
     ).toMatchObject({ use_defaults: false, override: DEFAULT_STL_NAMING_PROFILE });
   });
 
-  it("accepts 64 markers of 64 characters and refuses one more of either", () => {
+  it("limits markers to 64 units and symbol-bounded markers to 16", () => {
     const profile = (markers: string[]) => ({
       ...DEFAULT_STL_NAMING_PROFILE,
       roles: [{ id: "primary", label: "Primary", markers }],
     });
-    expect(() => parseStlNamingProfile(profile(Array(64).fill("[".repeat(64))))).not.toThrow();
+    const letters = Array.from({ length: 513 }, (_, i) => `missing-marker-${i}`);
+    expect(() => parseStlNamingProfile(profile(letters))).not.toThrow();
+    expect(() => parseStlNamingProfile(profile(Array(16).fill("[".repeat(64))))).not.toThrow();
+    expect(() => parseStlNamingProfile(profile(Array(17).fill("[a]")))).toThrow("at most 16 symbol");
     expect(() => parseStlNamingProfile(profile(["[".repeat(65)]))).toThrow("at most 64 characters");
-    expect(() => parseStlNamingProfile(profile(Array(65).fill("[a]")))).toThrow("at most 64 markers");
   });
 
   it("preserves sparse nested overrides", () => {

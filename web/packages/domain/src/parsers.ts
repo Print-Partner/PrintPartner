@@ -1,6 +1,6 @@
 /** STL filename conventions (ported from Python parsers.py). */
 
-import type { NamingProfile } from "./stl-naming.js";
+import type { MarkerStrip, NamingProfile } from "./stl-naming.js";
 import { getDefaultNamingProfile } from "./stl-naming.js";
 
 export type PartRole = "primary" | "accent" | "clear" | "opaque";
@@ -77,7 +77,7 @@ type Unit = readonly [string, number];
  * regexes for names nested up to this many alternating levels; past it, the kept separator
  * may differ. Rust's `catalog::naming::markers::MAX_ROUNDS` has the same value.
  */
-export const MARKER_ROUNDS = 32;
+export const MARKER_ROUNDS = 8;
 
 const unitMatches = (units: readonly Unit[], from: number, marker: readonly number[]) =>
   from >= 0 && marker.every((unit, index) => units[from + index]?.[1] === unit);
@@ -85,21 +85,37 @@ const unitMatches = (units: readonly Unit[], from: number, marker: readonly numb
 /**
  * Removes every occurrence of `markers`, leftmost first; with several, the first in role
  * order that the stack ends with. The stack holds the scanned text with earlier matches
- * removed, so this finds what repeated regex searches found. Each step shortens the stack or
- * consumes input, so the pass is linear in the name's length.
+ * removed, so this finds what repeated regex searches found. Each marker's KMP state is kept
+ * per stacked unit, so a step costs O(1) amortized per marker and a scan is linear.
  */
-function stripEverywhere(input: readonly Unit[], markers: readonly (readonly number[])[]): Unit[] {
+function stripEverywhere(input: readonly Unit[], markers: readonly MarkerStrip[]): Unit[] {
   const out: Unit[] = [];
-  const ending = () => markers.find((marker) => unitMatches(out, out.length - marker.length, marker));
+  const states: number[] = [];
+  const k = markers.length;
+  const push = (unit: Unit) => {
+    let found = 0;
+    const previous = states.length - k;
+    for (let j = 0; j < k; j++) {
+      const { units, fail } = markers[j]!;
+      let q = out.length > 0 ? states[previous + j]! : 0;
+      if (q === units.length) q = fail[q - 1]!;
+      while (q > 0 && units[q] !== unit[1]) q = fail[q - 1]!;
+      if (units[q] === unit[1]) q++;
+      if (q === units.length && !found) found = q;
+      states.push(q);
+    }
+    out.push(unit);
+    return found;
+  };
   let next = 0;
   while (next < input.length) {
-    out.push(input[next++]!);
-    for (let marker = ending(); marker; marker = ending()) {
-      out.length -= marker.length;
+    for (let length = push(input[next++]!); length; ) {
+      out.length -= length;
       const before = SEPARATORS.has(out.at(-1)?.[0] ?? "") ? out.pop() : undefined;
+      states.length = out.length * k;
       const after = SEPARATORS.has(input[next]?.[0] ?? "") ? input[next++] : undefined;
       const keep = before ?? after;
-      if (keep && out.length > 0 && next < input.length) out.push(keep);
+      length = keep && out.length > 0 && next < input.length ? push(keep) : 0;
     }
   }
   return out;
@@ -124,13 +140,14 @@ function stripMarkers(stem: string, prof: NamingProfile): string {
   };
   const name: Unit[] = Array.from({ length: stem.length }, (_, i) => [stem[i]!, classOf(stem[i]!)]);
   let slug = name;
-  for (const { anywhere, units } of prof.markerStrips) {
-    if (anywhere) slug = stripEverywhere(slug, [units]);
+  for (const strip of prof.markerStrips) {
+    const { anywhere, units } = strip;
+    if (anywhere) slug = stripEverywhere(slug, [strip]);
     else if (unitMatches(slug, 0, units)) {
       slug = slug.slice(units.length + (SEPARATORS.has(slug[units.length]?.[0] ?? "") ? 1 : 0));
     }
   }
-  const anywhere = prof.markerStrips.filter((strip) => strip.anywhere).map((strip) => strip.units);
+  const anywhere = prof.markerStrips.filter((strip) => strip.anywhere);
   // Every removal shortens the name, so an unchanged length means nothing was removed.
   for (let round = 0, before = name.length; slug.length !== before; round++) {
     before = slug.length;
@@ -138,7 +155,7 @@ function stripMarkers(stem: string, prof: NamingProfile): string {
       slug = stripEverywhere(slug, anywhere);
       break;
     }
-    for (const units of anywhere) slug = stripEverywhere(slug, [units]);
+    for (const strip of anywhere) slug = stripEverywhere(slug, [strip]);
   }
   return slug.map(([unit]) => unit).join("");
 }

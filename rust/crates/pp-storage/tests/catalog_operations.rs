@@ -2333,7 +2333,7 @@ fn gre601_naming_save_validation_is_classified_and_atomic() {
             "Blank folder rule",
         ),
         ("roles", json!([{"id":"primary","label":"P","markers":["[".repeat(65)]}]), "Naming marker too long"),
-        ("roles", json!([{"id":"primary","label":"P","markers":vec!["[a]"; 65]}]), "Too many naming markers"),
+        ("roles", json!([{"id":"primary","label":"P","markers":vec!["[a]"; 17]}]), "Too many naming markers"),
     ];
     for (field, invalid, message) in cases {
         let mut profile = defaults.clone();

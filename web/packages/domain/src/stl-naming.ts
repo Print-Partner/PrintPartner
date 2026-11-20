@@ -2,6 +2,7 @@
 
 import {
   DEFAULT_STL_NAMING_PROFILE,
+  isSymbolBoundedMarker,
   parseStlNamingProfile,
   parseStlNamingProfileOverride,
   type StlNamingFolderRule,
@@ -31,9 +32,7 @@ export const DEFAULT_NAMING_PROFILE = DEFAULT_STL_NAMING_PROFILE;
  * a prefix, so `gear` keeps its `a`. `units` holds each UTF-16 code unit of the marker as
  * the index of the first `NamingProfile.markerUnitRes` regex it matches.
  */
-export type MarkerStrip = { units: readonly number[]; anywhere: boolean };
-
-const WORD_CHARACTER = /^[\p{Alphabetic}\p{N}]$/u;
+export type MarkerStrip = { units: readonly number[]; fail: readonly number[]; anywhere: boolean };
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -52,10 +51,15 @@ function markerStripper() {
     return unitRes.length - 1;
   };
   const strip = (marker: string): MarkerStrip => {
-    const characters = [...marker];
-    const anywhere =
-      !WORD_CHARACTER.test(characters[0]!) && !WORD_CHARACTER.test(characters.at(-1)!);
-    return { units: Array.from({ length: marker.length }, (_, i) => unitClass(marker[i]!)), anywhere };
+    const units = Array.from({ length: marker.length }, (_, i) => unitClass(marker[i]!));
+    // KMP prefix table: `fail[i]` is the longest proper prefix of `units[..=i]` that is also its suffix.
+    const fail = [0];
+    for (let i = 1, q = 0; i < units.length; i++) {
+      while (q > 0 && units[i] !== units[q]) q = fail[q - 1]!;
+      if (units[i] === units[q]) q++;
+      fail.push(q);
+    }
+    return { units, fail, anywhere: isSymbolBoundedMarker(marker) };
   };
   return { unitRes, strip };
 }

@@ -6,6 +6,7 @@ import {
   namingProfileFromDict,
   validateNamingProfile,
 } from "./stl-naming.js";
+import { isSymbolBoundedMarker } from "@print-partner/contracts";
 
 describe("parsers", () => {
   it("parses accent quantity", () => {
@@ -196,7 +197,7 @@ function reference342b2c09(file: string, prof: ReturnType<typeof namingProfileFr
 }
 
 describe("marker removal matches 342b2c09", () => {
-  const profile = (markers: Partial<Record<"primary" | "accent", string[]>>) =>
+  const profile = (markers: Partial<Record<"primary" | "accent" | "opaque", string[]>>) =>
     namingProfileFromDict(
       mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {
         roles: Object.entries(markers).map(([id, list]) => ({ id: id as "primary", markers: list })),
@@ -266,23 +267,35 @@ describe("marker removal matches 342b2c09", () => {
     const nest = "[a[c".repeat(levels) + "]]".repeat(levels);
     return `Panel[c${nest}]-_[a${nest}].stl`;
   };
-  it("matches the old regexes at 32 alternating levels and scans once at 33", () => {
-    expect(MARKER_ROUNDS).toBe(32);
+  it("matches the old regexes at 8 alternating levels and scans once at 9", () => {
+    expect(MARKER_ROUNDS).toBe(8);
     const both = (levels: number) => [
       parsePartSlug(capped(levels)),
       reference342b2c09(capped(levels), profiles.default),
     ];
-    expect(both(32)).toEqual(["Panel", "Panel"]);
+    expect(both(8)).toEqual(["Panel", "Panel"]);
     // Past the cap the combined scan keeps the `-` the rounds would drop.
-    expect(both(33)).toEqual(["Panel-", "Panel"]);
+    expect(both(9)).toEqual(["Panel-", "Panel"]);
   });
 
-  // The slowest scan the 64-unit marker limit allows: 63 units that keep matching, then a miss.
-  it("scans 30,000 near misses of a 64-unit marker within 2 seconds", () => {
-    const stem = "[".repeat(30_000);
+  // The most work the limits allow, as in Rust's markers.rs: 14 64-unit markers that match
+  // 63 units then miss, plus [a] and [c] nested 12 levels so every round runs.
+  it("strips the worst case the limits allow within 2 seconds", () => {
+    const nearMisses = Array.from({ length: 14 }, (_, i) => "[".repeat(63) + String.fromCharCode(0x2190 + i));
+    const prof = profile({ primary: nearMisses, opaque: [] });
+    const nest = "[a[c".repeat(12) + "]]".repeat(12);
+    const fill = "[".repeat(30_000 - 4 - nest.length);
     const started = performance.now();
-    expect(parsePartSlug(`${stem}.stl`, profile({ primary: [`${"[".repeat(63)}]`] }))).toBe(stem);
+    expect(parsePartSlug(`P_${fill}${nest}_C.stl`, prof)).toBe(`P_${fill}_C`);
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  // The same markers and answers as Rust's markers.rs.
+  it("classifies symbol-bounded markers like Rust", () => {
+    const bounded = ["[a]", "_x_", "-", "[a]-[c]", "[中]"];
+    const notBounded = ["A", "é]", "[é", "Σ]", "中", "x_", "²]", "_7"];
+    expect(bounded.map(isSymbolBoundedMarker)).toEqual(bounded.map(() => true));
+    expect(notBounded.map(isSymbolBoundedMarker)).toEqual(notBounded.map(() => false));
   });
 
   it("strips 30,000 characters of alternating nesting within 5 seconds", () => {

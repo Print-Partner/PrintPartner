@@ -49,7 +49,8 @@ export function isSymbolBoundedMarker(marker: string): boolean {
 /** Bounds marker-stripping work per name (UTF-16 units); Rust's `catalog::naming` matches. */
 export const MAX_STL_NAMING_MARKER_LENGTH = 64;
 export const MAX_STL_NAMING_SYMBOL_MARKERS = 16;
-const MarkerSchema = z.string().max(MAX_STL_NAMING_MARKER_LENGTH, "must be at most 64 characters");
+// `.length` counts UTF-16 units, as Rust does; Zod's `.max` counts code points.
+const MarkerSchema = z.string().refine((m) => m.length <= MAX_STL_NAMING_MARKER_LENGTH, "must be at most 64 characters");
 
 export const StlNamingRoleSchema = z.strictObject({
   id: StlNamingRoleIdSchema,

@@ -388,6 +388,11 @@ mod tests {
         assert_eq!(validate(vec!["[a]".into(); 17]), Err("Too many naming markers".into()));
         assert_eq!(validate(vec!["[".repeat(64)]), Ok(()));
         assert_eq!(validate(vec!["[".repeat(65)]), Err("Naming marker too long".into()));
+        // Lengths count UTF-16 units, as Node does: each 😀 is two.
+        for (marker, ok) in [("😀".repeat(32), true), ("😀".repeat(32) + "!", false),
+            (format!("A{}B", "😀".repeat(31)), true), (format!("A{}BB", "😀".repeat(31)), false)] {
+            assert_eq!(validate(vec![marker.clone()]).is_ok(), ok, "{marker}");
+        }
     }
 
     /// The most work the limits allow: 14 64-unit markers that match 63 units

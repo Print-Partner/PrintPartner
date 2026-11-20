@@ -32,7 +32,11 @@ describe("Source naming contracts", () => {
     expect(() => parseStlNamingProfile(profile(letters))).not.toThrow();
     expect(() => parseStlNamingProfile(profile(Array(16).fill("[".repeat(64))))).not.toThrow();
     expect(() => parseStlNamingProfile(profile(Array(17).fill("[a]")))).toThrow("at most 16 symbol");
-    expect(() => parseStlNamingProfile(profile(["[".repeat(65)]))).toThrow("at most 64 characters");
+    for (const [marker, ok] of [["[".repeat(64), true], ["[".repeat(65), false], ["😀".repeat(32), true],
+      ["😀".repeat(32) + "!", false], ["A" + "😀".repeat(31) + "B", true], ["A" + "😀".repeat(31) + "BB", false]] as const) {
+      const parse = () => parseStlNamingProfile(profile([marker]));
+      if (ok) expect(parse).not.toThrow(); else expect(parse).toThrow("at most 64 characters");
+    }
   });
 
   it("preserves sparse nested overrides", () => {

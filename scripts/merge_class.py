@@ -198,16 +198,18 @@ def unwrap(line):
     return text
 
 
+def comment_pages(pages):
+    """A PR's comments from `gh api --paginate --slurp <issue comments>`, the one fetch both evaluators
+    use: a non-empty list of pages, each a list. Anything else raises, and both refuse."""
+    if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+        raise ValueError("unreadable PR comment pages")
+    return [comment for page in pages for comment in page]
+
+
 def read_comments(comments, trust):
     """The one reader of score records, for both evaluators: raw GitHub issue comments to a Reading.
-
-    Only comments by trust["authors"] count. A record line is one that starts with "pp-score " once
-    surrounding whitespace and backticks are dropped; prose that mentions the token is ignored. A
-    record line at column 0 must be the record alone, and every record line must match the pattern,
-    with a whole-number score and valid obstacles=, or it refuses every head. A parsed record
-    refuses its own head when its comment was edited or has no readable edit times, when it has no
-    obstacles=, or when its seat is not in trust["seats"] with that vendor. A comment without a
-    readable author or body refuses every head."""
+    Only comments by trust["authors"] count. docs/development/score-records.md ("How records are
+    read") lists which lines are records, which refuse every head, and which refuse their own head."""
     if not isinstance(comments, (list, tuple)):
         return Reading(faults=((None, "the PR comments are unreadable"),))
     records, faults, authors = [], [], set()
@@ -342,16 +344,11 @@ class CarryError(ValueError):
 
 
 class LocalGit:
-    """A checkout of the repository. deadline (a time.monotonic value) bounds every git call, so the
-    coordinator hook refuses on its own before its timeout would let the merge run.
-
-    Lanes share the clone's .git directory and can set HOME, XDG_CONFIG_HOME or GIT_* variables, so
-    every read runs in a scratch git directory made under TMPDIR and left in place. Its config, HEAD
-    and alternates are rewritten before each read; it has no refs, attributes, grafts, remote,
-    commit-graph or multi-pack-index; system, global and XDG config are off; and no GIT_* variable
-    but its own reaches the command. So a read fetches nothing and runs no program named by the
-    environment or a config. Only ensure() fetches (in the clone, whole commits by SHA), then drops
-    the scratch directory. docs/development/score-records.md has the threat model."""
+    """A checkout of the repository; deadline (a time.monotonic value) bounds every git call. Each read runs
+    in a scratch git directory made under TMPDIR, left in place and rewritten before each read: no refs,
+    attributes, grafts, remote, commit-graph, multi-pack-index, outside config or caller GIT_* variable, so
+    it fetches nothing and runs no outside program. Only ensure() fetches (in the clone, whole commits by
+    SHA), then drops the scratch directory. docs/development/score-records.md has the threat model."""
 
     # Kept for the fetch in the clone only, so it can authenticate and reach the remote.
     TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
@@ -637,12 +634,8 @@ def carry_source(reading, head, facts, classes, head_checks):
 
 def sensitive_scores(reading, head, seats, vendors, facts, classes):
     """The coordinator's sensitive merge check: (records_head, why), records_head None to refuse.
-
-    When head has records or faults of its own, sensitive_fault on head, as before carries. Otherwise
-    the source carry_source reaches, deciding from one check_state read of head, must pass
-    sensitive_fault with Grok records checked but not counted toward the two vendors. seats is
-    scorer_seats. The pp/score status carries from the same source; it also passes one seat, which
-    this check never does. Raises when a fact cannot be read; the guard then refuses."""
+    head's own records when it has any; otherwise the source carry_source reaches, with Grok checked
+    but not counted toward the two vendors. seats is scorer_seats. Raises on an unreadable fact."""
     if head in reading.heads():
         fault = sensitive_fault(reading, head, seats, vendors)
         return (None, fault) if fault else (head, "two qualifying seats on this head")

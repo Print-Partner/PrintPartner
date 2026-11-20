@@ -1410,13 +1410,11 @@ def coordinator_merge_reason(args, cwd):
         authors = config["scorer_authors"]
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
+        # The pp/score status fetches and reads the same comments the same way, with the same rules and
+        # carry decision. author= records the head branch's author vendor, supplied by the coordinator.
+        # Never infer a model vendor from the GitHub login.
         pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
-        if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
-            raise ValueError("missing PR comment pages")
-        # The pp/score status reads the same comments with the same reader, rules and carry decision.
-        # author= records the head branch's author vendor, supplied by the coordinator. Never infer
-        # a model vendor from the GitHub login.
-        reading = merge_class.read_comments([c for page in pages for c in page], merge_class.load_trust())
+        reading = merge_class.read_comments(merge_class.comment_pages(pages), merge_class.load_trust())
         facts = merge_class.GitHubFacts("{owner}/{repo}", lambda path: gh_json("api", path),
                                         merge_class.LocalGit(cwd, deadline=deadline))
         source, why = merge_class.sensitive_scores(reading, sha, config["scorer_seats"], config["vendors"], facts,

@@ -118,6 +118,30 @@ class PostPpScoreStatusTests(unittest.TestCase):
         self.assertEqual(plans[0].state, "failure")
         self.assertEqual(plans[0].description, "rejected: glm-5.3-flash-free scored 5")
 
+    def test_comments_come_from_every_slurped_page(self):
+        # The guard's fetch: `gh api --paginate --slurp` prints one JSON array of pages. Page 2 decides.
+        good = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
+        low = good.replace("seat=grok-4.7 vendor=xai score=9", "seat=glm-5.3-flash-free vendor=zhipu score=5")
+        for pages, state in (([[comment("intro")], [comment(good)]], "success"),
+                             ([[comment(good)], [comment(low)]], "failure"), ([[comment(good)], {"page": 2}], None)):
+            with self.subTest(state=state), mock.patch.object(pps.subprocess, "check_output",
+                                                             return_value=json.dumps(pages)) as gh:
+                if state is None:
+                    self.assertRaises(ValueError, pps.fetch_comments, "o/r", 7)
+                    continue
+                (plan,) = pps.plan_statuses(pps.read_comments(pps.fetch_comments("o/r", 7), self.trust))
+                self.assertEqual((plan.state, gh.call_args[0][0][:4]), (state, ["gh", "api", "--paginate", "--slurp"]))
+
+    def test_a_null_comment_still_posts_the_failure(self):
+        good = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
+        posted = []
+        with mock.patch.object(pps, "fetch_comments", return_value=[None, comment(good)]), \
+                mock.patch.object(pps, "fetch_head", return_value=SHA), mock.patch.object(pps, "check_state"), \
+                mock.patch.object(pps, "apply_plan", side_effect=lambda repo, plan: posted.append(plan)), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(pps.main(["--pr", "7", "--post"]), 0)
+        self.assertEqual([(p.head, p.state) for p in posted], [(SHA, "failure")])
+
     def test_dry_run_render_leaves_unscored_prs_quiet(self):
         import io
         from contextlib import redirect_stdout
@@ -532,7 +556,7 @@ class MergeGroupTests(unittest.TestCase):
             f"repos/o/r/compare/{QUEUE_BASE}...{QUEUE_HEAD}":
                 compare(squash(QUEUE_HEAD, "Post pp/score commit statuses (#1829)")),
             "repos/o/r/pulls/1829": {"head": {"sha": PR1777_HEAD}},
-            "repos/o/r/issues/1829/comments": [comment(PR1777_BODY.replace("anthropic`", "anthropic obstacles=none`"))],
+            "repos/o/r/issues/1829/comments": [[comment(PR1777_BODY.replace("anthropic`", "anthropic obstacles=none`"))]],
         }
         posted = []
         original_json, original_apply = pps.gh_json, pps.apply_plan
@@ -1486,18 +1510,17 @@ class ConfigIsolationTests(unittest.TestCase):
     """LocalGit reads no configuration it did not write (GRE-1859 round 3)."""
 
     # Settings that change what plain git prints for these commands.
-    SETTINGS = {"merge.renameLimit": "1", "diff.renameLimit": "1", "diff.algorithm": "patience",
-                "merge.conflictStyle": "zdiff3", "diff.relative": "true", "diff.noprefix": "true",
-                "diff.mnemonicPrefix": "true", "diff.external": "true", "diff.renames": "copies",
-                "diff.ignoreSubmodules": "all", "diff.context": "0", "diff.interHunkContext": "9",
-                "diff.indentHeuristic": "false", "diff.suppressBlankEmpty": "true", "core.quotePath": "false",
-                "core.abbrev": "7", "color.ui": "always", "color.diff": "always", "log.showSignature": "true",
-                "log.decorate": "full", "merge.renames": "false", "merge.directoryRenames": "true",
-                "merge.renormalize": "true", "core.commitGraph": "true", "i18n.logOutputEncoding": "ISO-8859-1",
-                "core.autocrlf": "true", "core.eol": "crlf", "diff.dirstat": "files"}
+    SETTINGS = {"merge.renameLimit": "1", "diff.renameLimit": "1", "diff.algorithm": "patience", "diff.relative": "true",
+                "merge.conflictStyle": "zdiff3", "diff.noprefix": "true", "diff.mnemonicPrefix": "true",
+                "diff.external": "true", "diff.renames": "copies", "diff.ignoreSubmodules": "all", "diff.context": "0",
+                "diff.interHunkContext": "9", "diff.indentHeuristic": "false", "diff.suppressBlankEmpty": "true",
+                "core.quotePath": "false", "core.abbrev": "7", "color.ui": "always", "color.diff": "always",
+                "log.showSignature": "true", "log.decorate": "full", "merge.renames": "false", "core.eol": "crlf",
+                "merge.directoryRenames": "true", "merge.renormalize": "true", "core.commitGraph": "true",
+                "i18n.logOutputEncoding": "ISO-8859-1", "core.autocrlf": "true", "diff.dirstat": "files"}
 
     def outputs(self, r, h0, h, side):
-        git = pps.LocalGit(r.path)
+        git = pps.LocalGit(f"{r.path}/d1")  # from a subdirectory, where diff.relative would apply
         main = git.parents(h)[1]
         (base,) = git.merge_bases(h0, main)
         return (git.parents(h), git.first_parents(main, 50), git.tree(h), git.merge_bases(h0, main),

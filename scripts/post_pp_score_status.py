@@ -27,7 +27,7 @@ from pathlib import Path
 # The record reader, its rules and the carry decision are shared with the coordinator's sensitive
 # merge check (agent-guard.py), so both read the same comments the same way.
 from merge_class import (DUAL_AUTHOR_FAMILIES, NO_CARRY_VENDORS, PASS_AT, Reading, Record, carry_source,  # noqa: F401
-                         classify, head_fault, load_classes, load_trust, read_comments)
+                         classify, comment_pages, head_fault, load_classes, load_trust, read_comments)
 from merge_class import (CARRY_MAX_HOPS, Carry, GitHubFacts, LocalGit,  # noqa: F401
                          check_state, decide_carry, gate_file, hop)
 
@@ -250,15 +250,12 @@ def _quote(arg: str) -> str:
 
 
 def gh_json(path: str, paginate: bool = False):
-    args = ["gh", "api"] + (["--paginate"] if paginate else []) + [path]
+    args = ["gh", "api"] + (["--paginate", "--slurp"] if paginate else []) + [path]
     return json.loads(subprocess.check_output(args, text=True))
 
 
 def fetch_comments(repo: str, pr: int) -> list[dict]:
-    data = gh_json(f"repos/{repo}/issues/{pr}/comments", paginate=True)
-    if not isinstance(data, list):
-        raise RuntimeError(f"unexpected comments payload for {repo}#{pr}")
-    return data
+    return comment_pages(gh_json(f"repos/{repo}/issues/{pr}/comments", paginate=True))
 
 
 # The REST file list stops at 3000 entries; a list that size may be incomplete.
@@ -361,7 +358,9 @@ UNSETTLED = "re-evaluation needed: the comments, head or checks kept changing"
 
 
 def snapshot(comments, head, checks):
-    return head, checks, tuple((c.get("id"), c.get("created_at"), c.get("updated_at")) for c in comments)
+    # A comment that is not an object is a fault the plan already holds; it must not stop the post.
+    return head, checks, tuple((c.get("id"), c.get("created_at"), c.get("updated_at")) if isinstance(c, dict)
+                               else (repr(c),) for c in comments)
 
 
 def read_snapshot(repo: str, pr: int):

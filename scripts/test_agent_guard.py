@@ -1029,6 +1029,14 @@ class CoordinatorMergeClassTests(unittest.TestCase):
     def test_sensitive_two_allowed_scores(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores()))
 
+    def test_comment_pages_are_read_whole(self):
+        # Page 2 decides: its valid record counts, its low record refuses, a page that is not a list refuses.
+        first, second = self.scores()
+        low = self.scores(seats=(("glm-5.3-flash-free", "zhipu"),), score=5)
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], [first, second]))
+        self.assertIn("glm-5.3-flash-free scored 5", self.check(["rust/rules/a.yml"], ["trusted"], [first, second] + low))
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], [first, {"page": 2}]))
+
     def test_sensitive_opus_and_grok_for_openai_author(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["poitee"], self.scores(author="poitee")))
 
@@ -1158,43 +1166,16 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                       self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.rebased, git=git,
                                  api=checks("success")))
 
-    def test_git_config_env_and_cwd_cannot_change_what_the_carry_sees(self):
-        # main-hunk edited the PR's own a.txt. diff.relative, an external diff or GIT_EXTERNAL_DIFF,
-        # run from a subdirectory, once hid that edit and let the merge through.
-        import test_post_pp_score_status as status_tests
-
-        status_tests.CarryTests.setUpClass()
-        c = status_tests.CarryTests
-        sub = os.path.join(c.r.path, "sub")
-        os.makedirs(sub)
-        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
-        api, git_in_sub = self.carry_api(c.r, "main-hunk", c.hunk), self.git_at(sub)
-
-        expected = f"{c.hunk[:7]}: the PR's own diff changed"
-        for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
-                                  ("diff.external", ("diff.external", "true"), {}),
-                                  ("GIT_EXTERNAL_DIFF", None, {"GIT_EXTERNAL_DIFF": "true", "GIT_DIFF_OPTS": "-u0"})):
-            with self.subTest(name):
-                if config:
-                    c.r.git("config", *config)
-                try:
-                    with patch.dict(os.environ, env):
-                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.hunk,
-                                                           git=git_in_sub, api=api))
-                finally:
-                    if config:
-                        c.r.git("config", "--unset", config[0])
-
     def test_no_git_configuration_reaches_the_carry(self):
-        # rename_repo's merge skipped a directory rename (renameLimit=1) and conflicts under Git's defaults.
-        # A renameLimit in local, included, HOME, XDG or system config once let the guard carry it.
+        # rename_repo's merge skipped a directory rename and conflicts under Git's defaults. A renameLimit in
+        # local, included, HOME, XDG or system config once let the guard carry it. The guard runs from d1/.
         import tempfile
 
         import test_post_pp_score_status as status_tests
 
         r, h0, h = status_tests.rename_repo()
         comments = self.scores(head=h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
-        api, git, run = self.carry_api(r, "main", h), self.git_at(r.path), subprocess.run
+        api, git, run = self.carry_api(r, "main", h), self.git_at(os.path.join(r.path, "d1")), subprocess.run
 
         home = tempfile.mkdtemp(prefix="pp-home-")
         os.makedirs(os.path.join(home, "git"))

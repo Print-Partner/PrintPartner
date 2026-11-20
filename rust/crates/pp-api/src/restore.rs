@@ -42,8 +42,14 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema, serde::Deserialize))]
 pub struct RestorePreview {
-    /// 32 lowercase hex digits. Valid until Print Partner restarts or another
-    /// backup is staged; after that, upload the backup again.
+    /// 32 lowercase hex digits, usable while its stage exists, unless an
+    /// earlier restore left its journal (then `restart_required`). Another
+    /// completed stage, a successful restore with it, and a restore with it
+    /// that publishes its journal and then rolls back each try to remove the
+    /// stage; a failed removal leaves it until the next start, which removes
+    /// it or refuses to start. A restore that fails before publishing its
+    /// journal keeps it. Once the id answers `restore_not_found`, upload the
+    /// backup again.
     pub restore_id: String,
     pub created_at: String,
     pub app_version: String,

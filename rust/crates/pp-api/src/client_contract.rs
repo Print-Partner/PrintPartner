@@ -2295,6 +2295,71 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
+    /// `CreateBuildRequest` cases that pin the client's `BuildName` to `BuildName::parse`:
+    /// JavaScript whitespace is trimmed before the 1 to 4096 scalar bound is counted.
+    fn build_create_cases() -> Vec<Value> {
+        let bmp = "\u{5c64}";
+        let astral = "\u{1f9f5}";
+        let pad = |name: String| format!(" \t\u{a0}{name}\u{3000}\n");
+        let mut names = vec![
+            ("empty", json!("")),
+            ("spaces", json!("   ")),
+            ("zero-width-space", json!("\u{200b}")),
+            ("embedded-controls", json!("a\u{0}\u{7}\u{1b}b")),
+            ("bmp-4096", json!(bmp.repeat(4096))),
+            ("astral-4096", json!(astral.repeat(4096))),
+            ("bmp-4096-padded", json!(pad(bmp.repeat(4096)))),
+            ("astral-4096-padded", json!(pad(astral.repeat(4096)))),
+            ("bmp-4097", json!(bmp.repeat(4097))),
+            ("astral-4097", json!(astral.repeat(4097))),
+            ("astral-4097-padded", json!(pad(astral.repeat(4097)))),
+            ("null", Value::Null),
+            ("number", json!(7)),
+            ("object", json!({})),
+        ];
+        // One name per character that JavaScript's trim, `trim_js` or Rust's
+        // `char::is_whitespace` may treat as whitespace, plus near misses.
+        let candidates = ('\u{9}'..='\u{d}')
+            .chain([' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{180e}'])
+            .chain('\u{2000}'..='\u{200d}')
+            .chain(['\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{2060}'])
+            .chain(['\u{3000}', '\u{feff}']);
+        let blank: Vec<_> = candidates
+            .map(|c| (format!("only-u{:04x}", u32::from(c)), json!(c.to_string())))
+            .collect();
+        names.extend(
+            blank
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.clone())),
+        );
+        let mut cases: Vec<Value> = names
+            .into_iter()
+            .map(|(name, value)| {
+                let body = json!({"name": value});
+                request::<CreateBuildRequest>("CreateBuildRequest", &format!("name-{name}"), body)
+            })
+            .collect();
+        cases.extend([
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "with-base",
+                json!({"name": format!("Build {UNICODE}"), "base_project_id": MAX_SAFE}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "no-base",
+                json!({"name": "Rack", "base_project_id": null}),
+            ),
+            request::<CreateBuildRequest>("CreateBuildRequest", "missing-name", json!({})),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "zero-source",
+                json!({"name": "Rack", "base_project_id": 0}),
+            ),
+        ]);
+        cases
+    }
+
     fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {
         let config = |filled: bool| crate::printers::PrinterConfig {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -2476,27 +2541,6 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
-            request::<CreateBuildRequest>(
-                "CreateBuildRequest",
-                "with-base",
-                json!({"name": format!("Build {UNICODE}"), "base_project_id": MAX_SAFE}),
-            ),
-            request::<CreateBuildRequest>(
-                "CreateBuildRequest",
-                "no-base",
-                json!({"name": "Rack", "base_project_id": null}),
-            ),
-            request::<CreateBuildRequest>("CreateBuildRequest", "empty-name", json!({"name": ""})),
-            request::<CreateBuildRequest>(
-                "CreateBuildRequest",
-                "long-name",
-                json!({"name": "\u{1f9f5}".repeat(4097)}),
-            ),
-            request::<CreateBuildRequest>(
-                "CreateBuildRequest",
-                "zero-source",
-                json!({"name": "Rack", "base_project_id": 0}),
-            ),
             request::<SourceAttachmentRequest>(
                 "SourceAttachmentRequest",
                 "max",
@@ -2551,6 +2595,7 @@ pub(crate) mod codegen {
                 value,
             ));
         }
+        cases.extend(build_create_cases());
         cases.extend(integration_cases()?);
         cases.extend(printer_cases()?);
         cases.extend(deduction_cases()?);

@@ -18,6 +18,7 @@ use pp_storage::{Limits, WriterOwner, ownership_marker::WriterGate};
 use pp_testkit::{Fixture, Installation};
 use reqwest::Method;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use support_installation::Server;
 
 const PLANS: &str = "/api/v2/plans";
@@ -85,7 +86,20 @@ async fn a_created_build_has_no_layers_is_listed_and_survives_a_restart() {
     let listed = builds(&server).await;
     assert_eq!(listed, [(id, "First Build".to_owned())]);
 
+    let (old_origin, old_owner) = (server.origin.clone(), Arc::downgrade(&server.owner));
     let server = server.restart().await;
+    // A real restart shut the old writer owner down and closed its listener.
+    assert!(
+        old_owner.upgrade().is_none(),
+        "the old writer owner is still open"
+    );
+    assert_ne!(server.origin, old_origin);
+    let old = server
+        .client
+        .get(format!("{old_origin}{PLANS}"))
+        .send()
+        .await;
+    assert!(old.is_err(), "the old listener still answers: {old:?}");
     assert_eq!(builds(&server).await, listed);
     let (status, read) = server.json(Method::GET, &format!("{PLANS}/{id}")).await;
     assert_eq!(status, 200, "{read}");
@@ -134,6 +148,11 @@ async fn a_repeated_create_is_refused_and_the_client_reconciles_by_listing() {
         let (status, refused) = create(&server, json!({"name": name})).await;
         assert_problem(status, &refused, 400, "Profile already exists: Rack");
     }
+    // Names compare exactly (`uq_profiles_tenant_name` is case-sensitive), so a
+    // case variant is a different Build.
+    let (status, lower) = create(&server, json!({"name": "rack"})).await;
+    assert_eq!(status, 200, "{lower}");
+    let lower = lower["id"].as_i64().unwrap();
 
     // Two creates in flight at once: one Build, one refusal.
     let (one, two) = tokio::join!(
@@ -154,7 +173,11 @@ async fn a_repeated_create_is_refused_and_the_client_reconciles_by_listing() {
     listed.sort_unstable();
     assert_eq!(
         listed,
-        [(rack, "Rack".to_owned()), (shelf, "Shelf".to_owned())]
+        [
+            (rack, "Rack".to_owned()),
+            (lower, "rack".to_owned()),
+            (shelf, "Shelf".to_owned())
+        ]
     );
     server.stop().await;
 }

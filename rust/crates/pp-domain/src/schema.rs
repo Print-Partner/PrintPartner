@@ -26,7 +26,7 @@ impl<const MIN: usize, const MAX: usize> JsonSchema for WireText<MIN, MAX> {
         format!("WireText_{MIN}_{MAX}")
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        scalar_text(MIN as u32, MAX as u32)
+        scalar_text(MIN as u32, MAX as u32).into()
     }
 }
 impl JsonSchema for Digest {
@@ -46,19 +46,22 @@ impl JsonSchema for Digest {
     }
 }
 
-/// A Build name as `BuildName::parse` takes it: 1 to 4096 Unicode scalars. The core also
-/// trims JavaScript whitespace first, so a blank name passes this schema and is refused.
+/// A Build name as `BuildName::parse` takes it: 1 to 4096 Unicode scalars after trimming
+/// JavaScript whitespace. `x-trim-js` tells the client generator to count the trimmed value,
+/// as `String.prototype.trim` strips the same characters as `trim_js`.
 impl JsonSchema for BuildName {
     fn schema_name() -> String {
         "BuildName".into()
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        scalar_text(1, 4096)
+        let mut schema = scalar_text(1, 4096);
+        schema.extensions.insert("x-trim-js".into(), true.into());
+        schema.into()
     }
 }
 
 /// A string of `min..=max` Unicode scalars, as the client generator reads `x-unicode-scalar`.
-fn scalar_text(min: u32, max: u32) -> Schema {
+fn scalar_text(min: u32, max: u32) -> SchemaObject {
     SchemaObject {
         instance_type: Some(InstanceType::String.into()),
         string: Some(Box::new(StringValidation {
@@ -69,5 +72,4 @@ fn scalar_text(min: u32, max: u32) -> Schema {
         extensions: [("x-unicode-scalar".into(), true.into())].into(),
         ..Default::default()
     }
-    .into()
 }

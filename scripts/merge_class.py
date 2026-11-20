@@ -4,17 +4,22 @@
 classify: the most restrictive class of the changed paths. owner beats sensitive
 beats lane. coverage: every CODEOWNERS entry must match an owner or sensitive
 pattern, so a new owned path cannot slip past the classification unnoticed.
+records: read_comments, the one reader that turns raw PR comments into trusted score records,
+for both evaluators: the pp/score status (post_pp_score_status.py) and the coordinator's
+sensitive merge check (sensitive_scores, called from agent-guard.py).
 scores: whether two allowed seats from two different vendors, neither the PR author's vendor,
-posted a score of 9 or more on the exact head.
-carry: decide_carry, the score carry-forward decision behind the pp/score status. The
-coordinator's sensitive merge check still needs two scores on the exact head (GRE-1859).
+posted a score of 9 or more on the exact head, or on the head a carry reaches.
+carry: decide_carry and carry_source, the one score carry-forward decision both evaluators use.
 """
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,17 +45,17 @@ def parse_obstacles(token):
     return tuple(names)
 
 
-def score_pattern(vendors):
-    """The pp-score record pattern for the vendors listed in merge-classes.json.
-
-    obstacles= is optional here so records written before it existed still parse; has_two_scores
-    refuses a record on the current head that lacks it."""
+def score_pattern(vendors, author_names=()):
+    """The pp-score record pattern for the vendors listed in merge-classes.json; author= also takes
+    author_names. obstacles= is optional here so records written before it existed still parse."""
+    names = set(author_names)
     if not isinstance(vendors, (list, tuple)) or not vendors or any(
-            not isinstance(v, str) or not VENDOR.fullmatch(v) for v in vendors):
+            not isinstance(v, str) or not VENDOR.fullmatch(v) for v in [*vendors, *names]):
         raise ValueError("invalid vendor list")
-    names = "|".join(re.escape(v) for v in sorted(set(vendors)))
-    return re.compile(rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({names})"
-                      rf" score=([0-9]+) author=({names})(?: obstacles=(\S+))?")
+    vendor_names = "|".join(re.escape(v) for v in sorted(set(vendors)))
+    authors = "|".join(re.escape(v) for v in sorted(set(vendors) | names))
+    return re.compile(rf"pp-score head=([0-9a-f]{{40}}) seat=(\S+) vendor=({vendor_names})"
+                      rf" score=([0-9]+) author=({authors})(?: obstacles=(\S+))?")
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -116,18 +121,181 @@ def uncovered(entries, classes):
     return [e for e in entries if not any(rx.match(e) for rx in covered)]
 
 
+# Not seat vendors. For pp/score, Cursor Auto and an unknown family need both an Anthropic and an
+# OpenAI score on the exact head (Chad, 2026-11-16 11:23 PM ET). The sensitive merge check refuses them.
+DUAL_AUTHOR_FAMILIES = frozenset({"cursor-auto", "unknown"})
+RECORD = "pp-score "
+# A record below PASS_AT fails its head for both evaluators: the pp/score status passes at PASS_AT,
+# and the sensitive merge check needs SENSITIVE_MIN.
+PASS_AT = 8
+SENSITIVE_MIN = 9
+NEED_TWO = "need two qualifying scorer seats from allowed authors"
+
+
+def _seat_map(raw, vendors, key):
+    if not isinstance(raw, dict) or any(
+            not isinstance(seat, str) or not seat or not isinstance(vendor, str) or vendor not in vendors
+            for seat, vendor in raw.items()):
+        raise ValueError(f"invalid {key}")
+    return raw
+
+
+def load_trust(path=CLASSES):
+    """scorer_authors, every seat a record may name (scorer_seats plus pp_score_seats, which must
+    agree), and the record pattern, from merge-classes.json."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    authors = data.get("scorer_authors") or ["poitee"]
+    if not isinstance(authors, list) or not authors or any(not isinstance(a, str) or not a for a in authors):
+        raise ValueError("invalid scorer_authors")
+    vendors = data.get("vendors") or []
+    seats = dict(_seat_map(data.get("scorer_seats") or {}, vendors, "scorer_seats"))
+    # pp_score_seats count for the pp/score status only; sensitive_fault reads scorer_seats.
+    for seat, vendor in _seat_map(data.get("pp_score_seats") or {}, vendors, "pp_score_seats").items():
+        if seats.setdefault(seat, vendor) != vendor:
+            raise ValueError(f"pp_score_seats disagrees with scorer_seats on {seat}")
+    return {"authors": tuple(authors), "seats": seats, "pattern": score_pattern(vendors, DUAL_AUTHOR_FAMILIES)}
+
+
+@dataclass(frozen=True)
+class Record:
+    head: str
+    seat: str
+    vendor: str
+    author: str
+    score: int
+    obstacles: tuple
+    # The line is the record alone at column 0, inside a fence or not. A record in backticks or indented
+    # is read and checked like any other, so a low or invalid one refuses, but it never counts toward a pass.
+    bare: bool = True
+
+
+@dataclass(frozen=True)
+class Reading:
+    """Records and faults read from comments. faults are (head, reason), with head None for a fault
+    on the whole PR. heads() includes the heads of faults as well as of records."""
+    records: tuple = ()
+    faults: tuple = ()
+    authors: frozenset = frozenset()  # every author= that a parsed record line names
+
+    def heads(self):
+        return {r.head for r in self.records} | {head for head, _ in self.faults if head}
+
+    def on(self, head):
+        return [r for r in self.records if r.head == head]
+
+    def without(self, head):
+        return Reading(tuple(r for r in self.records if r.head != head),
+                       tuple(f for f in self.faults if f[0] != head), self.authors)
+
+
+def unwrap(line):
+    """line without surrounding whitespace and inline-code backticks around the whole line."""
+    text = line.strip()
+    while len(text) >= 2 and text[0] == "`" and text[-1] == "`":
+        text = text[1:-1].strip()
+    return text
+
+
+def comment_pages(pages):
+    """A PR's comments, flattened from the output of `gh api --paginate --slurp <issue comments>`: a
+    non-empty list of pages, each a list. Anything else raises ValueError."""
+    if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+        raise ValueError("unreadable PR comment pages")
+    return [comment for page in pages for comment in page]
+
+
+def read_comments(comments, trust):
+    """Raw GitHub issue comments to a Reading. A comment without a readable author or body adds a fault
+    on the whole PR, whoever posted it; otherwise only comments by trust["authors"] are read.
+    docs/development/score-records.md ("How records are read") lists which lines are records, which
+    are faults on the whole PR, and which are faults on their own head."""
+    if not isinstance(comments, (list, tuple)):
+        return Reading(faults=((None, "the PR comments are unreadable"),))
+    records, faults, authors = [], [], set()
+    for comment in comments:
+        user = comment.get("user") if isinstance(comment, dict) else None
+        login = user.get("login") if isinstance(user, dict) else None
+        body = comment.get("body") if isinstance(comment, dict) else None
+        if not isinstance(login, str) or not login or not isinstance(body, str):
+            faults.append((None, "a PR comment has no readable author or body"))
+            continue
+        if login not in trust["authors"]:
+            continue
+        created, updated = comment.get("created_at"), comment.get("updated_at")
+        for line in body.splitlines():
+            # A column-0 record line is judged as it stands, as before GRE-1859; others are unwrapped first.
+            text = line if line.startswith(RECORD) else unwrap(line)
+            if not text.startswith(RECORD):
+                continue
+            match = trust["pattern"].fullmatch(text)
+            token = match and match.group(6)
+            obstacles = None if token is None else parse_obstacles(token)
+            if not match or (token is not None and obstacles is None) or len(match.group(4)) > 2:
+                faults.append((None, "a malformed pp-score record"))
+                continue
+            head, seat, vendor, score, author, _ = match.groups()
+            authors.add(author)
+            if not isinstance(created, str) or not created or not isinstance(updated, str) or not updated:
+                faults.append((head, f"the {seat} record's edit time is unreadable"))
+            elif created != updated:
+                faults.append((head, f"the {seat} record was edited after it was posted"))
+            elif obstacles is None:
+                faults.append((head, f"the {seat} record has no obstacles="))
+            elif trust["seats"].get(seat) != vendor:
+                faults.append((head, f"{seat} is not an allowed seat for vendor={vendor}"))
+            else:
+                records.append(Record(head, seat, vendor, author, int(score), obstacles, line == text))
+    return Reading(tuple(records), tuple(faults), frozenset(authors))
+
+
+def head_fault(reading, head):
+    """Why head's records refuse it under the rules both evaluators share, or None: a fault on the
+    PR or on head, only wrapped records, a seat from the author's own family, records that
+    disagree on author=, or a record below PASS_AT (bare or wrapped)."""
+    fault = next((why for at, why in reading.faults if at in (None, head)), None)
+    if fault:
+        return fault
+    group = reading.on(head)
+    if group and not any(r.bare for r in group):
+        return "a wrapped or indented record never counts"
+    own = next((r for r in group if r.vendor == r.author), None)
+    if own:
+        return f"{own.seat} is the author's own family ({own.vendor})"
+    if len({r.author for r in group}) > 1:
+        return "records disagree on the author family"
+    low = next((r for r in group if r.score < PASS_AT), None)
+    if low:
+        return f"{low.seat} scored {low.score}"
+    return None
+
+
+def sensitive_fault(reading, head, seats, vendors, uncounted=()):
+    """Why head's records do not let a sensitive PR merge, or None. On top of head_fault: every
+    author= on the PR is a seat vendor, every record on head is a seat in seats (scorer_seats) at
+    9 or more, and bare records from two vendors outside uncounted remain."""
+    fault = head_fault(reading, head)
+    if fault:
+        return fault
+    other = sorted(reading.authors - set(vendors))
+    if other:
+        return f"author={other[0]} is not a seat vendor"
+    group = reading.on(head)
+    for r in group:
+        if seats.get(r.seat) != r.vendor:
+            return f"{r.seat} is not a sensitive-merge seat"
+        if r.score < SENSITIVE_MIN:
+            return f"{r.seat} scored {r.score}"
+    if len({r.vendor for r in group if r.bare and r.vendor not in uncounted}) < 2:
+        return NEED_TWO
+    return None
+
+
 def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
-    """Require two allowed seats at 9+ from two different vendors, neither the author's vendor.
-
-    allowed_seats maps each seat to its vendor and vendors lists every vendor a record may name
-    (scorer_seats and vendors in merge-classes.json), so a seat or vendor change is data only. Malformed records, unknown seats and same-vendor-as-author records refuse.
-
-    A score record is a line that starts with "pp-score " at column 0; every record must parse,
-    including old ones. A record on the exact head must disclose obstacles=.
-    Other lines are ignored, including prose that mentions the token. Records for another head never count and are not checked against allowed_seats.
-    """
+    """sensitive_fault on the exact head for trusted, unedited comment bodies, where every record on
+    head must name author_vendor. allowed_seats is scorer_seats and vendors lists every vendor a
+    record may name, so a seat or vendor change is data only. False for invalid arguments."""
     try:
-        record_pattern = score_pattern(vendors)
+        pattern = score_pattern(vendors)
     except ValueError:
         return False
     if (not isinstance(head, str) or not FULL_SHA.fullmatch(head)
@@ -138,39 +306,18 @@ def has_two_scores(comments, head, author_vendor, allowed_seats, vendors):
                    for seat, vendor in allowed_seats.items())
             or not isinstance(comments, (list, tuple))):
         return False
-    seat_vendors = {}
-    for body in comments:
-        if not isinstance(body, str):
-            return False
-        for line in body.splitlines():
-            if not line.startswith("pp-score "):
-                continue
-            match = record_pattern.fullmatch(line)
-            if not match:
-                return False
-            record_head, seat, vendor, score, author, obstacles = match.groups()
-            if obstacles is not None and parse_obstacles(obstacles) is None:
-                return False
-            # Older heads' records may name seats the owner has since dropped; they never count.
-            if record_head != head:
-                continue
-            if obstacles is None:
-                return False
-            if allowed_seats.get(seat) != vendor or vendor == author:
-                return False
-            if author != author_vendor:
-                return False
-            try:
-                if int(score) < 9:
-                    return False
-            except ValueError:
-                return False
-            seat_vendors[seat] = vendor
-    return len(set(seat_vendors.values())) >= 2
+    stamp = "unedited"
+    reading = read_comments([{"user": {"login": "scorer"}, "body": body, "created_at": stamp, "updated_at": stamp}
+                             for body in comments],
+                            {"authors": ("scorer",), "seats": allowed_seats, "pattern": pattern})
+    if any(r.author != author_vendor for r in reading.on(head)):
+        return False
+    return sensitive_fault(reading, head, allowed_seats, vendors) is None
 
 
-# Score carry-forward (Chad, 2026-11-18 11:02 PM ET), used by the pp/score status
-# (post_pp_score_status.plan_carry). docs/development/score-records.md lists the rule.
+# Score carry-forward (Chad, 2026-11-18 11:02 PM ET). One decision for the pp/score status
+# (post_pp_score_status.plan_carry) and the coordinator's sensitive merge check (sensitive_scores):
+# both reach it only through carry_source. docs/development/score-records.md lists the rule.
 MAIN = "main"
 STATUS_CONTEXT = "pp/score"
 CARRY_MAX_HOPS = 5
@@ -195,24 +342,66 @@ class CarryError(ValueError):
 
 
 class LocalGit:
-    """A checkout of the repository."""
+    """A checkout of the repository; deadline (a time.monotonic value) bounds every git call. Each read runs
+    in a scratch git directory made under TMPDIR and left in place; its config, HEAD and alternates are
+    rewritten before each read. It has no refs, attributes, grafts, remote, commit-graph, multi-pack-index,
+    outside config or caller GIT_* variable, so a read fetches nothing and runs no program named by the
+    environment or a config. Only ensure() runs commands with transport variables (fetching whole commits
+    by SHA in the clone), and on return it drops the scratch directory; making a scratch directory also
+    runs one rev-parse in the clone, with no GIT_* variable. The threat model is in
+    docs/development/score-records.md."""
 
-    def __init__(self, cwd=ROOT, remote="origin"):
+    # Kept for the fetch in the clone only, so it can authenticate and reach the remote.
+    TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
+                     "GIT_SSL_", "GIT_HTTP_", "GIT_PROXY_", "GIT_CURL_")
+    CONFIG = ("[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tcommitGraph = false\n"
+              f"\tmultiPackIndex = false\n\tattributesFile = {os.devnull}\n")
+
+    def __init__(self, cwd=ROOT, remote="origin", deadline=None):
         self.cwd = Path(cwd)
         self.remote = remote
+        self.deadline = deadline
+        self._scratch = None
+
+    def _run(self, args, cwd, env, keep=(), check=True, text=True):
+        timeout = None if self.deadline is None else self.deadline - time.monotonic()
+        if timeout is not None and timeout <= 0:
+            raise subprocess.TimeoutExpired(["git", *args], 0)
+        base = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith(keep)}
+        return subprocess.run(["git", "--no-pager", *args], cwd=cwd, text=text, capture_output=True, check=check,
+                              timeout=timeout, env={**base, **env})
+
+    def _in_clone(self, *args, check=True):
+        """A git command in the clone, with the clone's configuration and the transport GIT_* variables."""
+        return self._run(args, self.cwd, {}, keep=self.TRANSPORT_ENV, check=check)
 
     def _git(self, *args, check=True, text=True):
-        return subprocess.run(["git", *args], cwd=self.cwd, text=text, capture_output=True, check=check)
+        """A read-only command in the scratch directory, with no configuration but its own."""
+        if self._scratch is None:
+            # Finds the clone's object store, with no GIT_* variable at all; it fetches nothing.
+            common = self._run(("rev-parse", "--path-format=absolute", "--git-common-dir"), self.cwd, {}).stdout.strip()
+            self._scratch = (Path(tempfile.mkdtemp(prefix="pp-carry-git-")), f"{common}/objects\n")
+            (self._scratch[0] / "objects" / "info").mkdir(parents=True)
+            (self._scratch[0] / "refs").mkdir()
+        scratch, alternates = self._scratch
+        for name, content in (("config", self.CONFIG), ("HEAD", "ref: refs/heads/none\n"),
+                              ("objects/info/alternates", alternates)):
+            (scratch / name).write_text(content, encoding="utf-8")
+        return self._run(["--no-replace-objects", *args], scratch, {
+            "GIT_DIR": str(scratch), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1", "GIT_GRAFT_FILE": os.devnull, "GIT_NO_LAZY_FETCH": "1",
+            "HOME": str(scratch), "XDG_CONFIG_HOME": str(scratch)}, check=check, text=text)
 
     def ensure(self, *shas):
-        if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-            # The workflow checkout is depth 1. Fetch the commits' full history without blobs
-            # (Git fetches the blobs a merge or diff reads on demand), so every merge base is there.
-            self._git("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
-            return
-        missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
-        if missing:
-            self._git("fetch", "--no-tags", "--quiet", self.remote, *missing)
+        """Fetches the commits it lacks by SHA in the clone (the full history when the clone is shallow).
+        On return it drops the scratch directory, so later reads use a new one."""
+        if self._in_clone("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+            # The workflow checkout is depth 1. Fetch the full history, blobs included, in the clone,
+            # because the scratch directory never fetches.
+            self._in_clone("fetch", "--no-tags", "--quiet", "--unshallow", self.remote, *shas)
+        elif missing := [s for s in shas if self._in_clone("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]:
+            self._in_clone("fetch", "--no-tags", "--quiet", self.remote, *missing)
+        self._scratch = None
 
     def parents(self, sha):
         return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]
@@ -239,10 +428,12 @@ class LocalGit:
             raise CarryError(f"git merge-tree failed: {done.stderr.strip()}")
         return done.stdout.splitlines()[0].strip()
 
-    # Byte-exact and independent of local config: no external diff, textconv, rename pairing or
-    # abbreviated blob IDs, so equal output means equal paths, modes and blobs on both sides.
-    _DIFF = ("-c", "core.quotePath=true", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-             "--no-color", "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/")
+    # Every path in the repository, whatever the cwd: no external diff, textconv, rename pairing,
+    # hidden submodule change or color.
+    _WHOLE = ("--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none",
+              "--no-color")
+    # Byte-exact: full blob IDs on every file, so equal output means equal paths, modes and blobs.
+    _DIFF = ("diff", *_WHOLE, "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/")
 
     def diff(self, base, tip):
         return self._git(*self._DIFF, base, tip, "--", text=False).stdout
@@ -253,13 +444,13 @@ class LocalGit:
 
     def changed(self, base, tip):
         """Paths that differ between base and tip, both sides of a rename."""
-        return self._paths("diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, tip, "--")
+        return self._paths("diff", *self._WHOLE, "--name-only", "-z", base, tip, "--")
 
     def touched(self, pr_head, base, main):
         """Paths that the main commits a merge brings in changed: every commit in pr_head..main
         (merges against each parent), plus the net diff base..main. A file that one commit
         changed and a later commit reverted still counts."""
-        each = self._paths("log", "-m", "--no-renames", "--name-only", "-z", "--format=",
+        each = self._paths("log", *self._WHOLE, "--no-show-signature", "-m", "--name-only", "-z", "--format=",
                            f"{pr_head}..{main}", "--")
         return each | self.changed(base, main)
 
@@ -401,7 +592,6 @@ def decide_carry(head, scored_heads, author_families, facts, classes, head_check
     check_state read of them; decide_carry never reads them again, so the status run records
     exactly the value it decided from. Superseded hops' checks are not read: those heads never
     merge, and their checks can change with nothing to re-run this.
-    Whether source's records pass is the caller's record rule (post_pp_score_status.plan_carry).
     """
     scored = set(scored_heads)
     if not scored:
@@ -422,6 +612,38 @@ def decide_carry(head, scored_heads, author_families, facts, classes, head_check
             return Carry(previous, why)
         current = previous
     return Carry(None, f"no scored head within {max_hops} merges of {MAIN}")
+
+
+def carry_source(reading, head, facts, classes, head_checks):
+    """(source, why) for a head with no records of its own, or (None, why). A fault on the PR
+    refuses; then decide_carry on the Reading's heads (faulted heads count as scored) and author
+    families; then head_fault on the source."""
+    fault = next((why for at, why in reading.faults if at is None), None)
+    if fault:
+        return None, fault
+    carry = decide_carry(head, reading.heads(), reading.authors, facts, classes, head_checks)
+    if carry.source is None:
+        return None, carry.reason
+    fault = head_fault(reading, carry.source)
+    if fault:
+        return None, f"{carry.source[:7]}: {fault}"
+    return carry.source, carry.reason
+
+
+def sensitive_scores(reading, head, seats, vendors, facts, classes):
+    """The coordinator's sensitive merge check: (records_head, why), records_head None to refuse.
+    When head has records or faults of its own (one edited record is enough), head is judged as the
+    exact head, even if a carry source exists. Otherwise the source carry_source reaches, with Grok
+    checked but not counted toward the two vendors. seats is scorer_seats. When a fact cannot be read
+    it raises, or returns None with the reason."""
+    if head in reading.heads():
+        fault = sensitive_fault(reading, head, seats, vendors)
+        return (None, fault) if fault else (head, "two qualifying seats on this head")
+    source, why = carry_source(reading, head, facts, classes, check_state(facts, head))
+    if source is None:
+        return None, why
+    fault = sensitive_fault(reading, source, seats, vendors, NO_CARRY_VENDORS)
+    return (None, f"{source[:7]}: {fault}") if fault else (source, f"carried from {source[:7]}")
 
 
 def main(argv=None):

@@ -1273,7 +1273,7 @@ for (const isolated of [false, true]) {
       action: { type: tool, plan_id: planId, label: `Add source ${name}`, summary, params } });
     const trace = (input: Record<string, unknown>, tables: string[], options: { files?: CategoryProbe[]; tenantId?: string; activePlanId?: number } = {}) => traceCategory(tool, input, tables, { repository, files, ...options });
     for (const input of [{}, { name: " " }, { name: 7 }]) expect(await trace({ ...input, plan_id: plan.id }, [], { files: [] })).toEqual({ error: "name required" });
-    for (const existing of [" Fixture ", "FIXTURE", "Fixture R2-0"]) {
+    for (const existing of [" Fixture ", "FIXTURE", "fix-ture"]) {
       expect(await trace({ name: existing, plan_id: plan.id }, sources)).toEqual({ error: "Source already exists: Fixture", hint: "Use set_base / add_addon / set_source_git_ref instead." });
     }
     expect(await trace({ name: ` ${name} ` }, sources)).toEqual(added());

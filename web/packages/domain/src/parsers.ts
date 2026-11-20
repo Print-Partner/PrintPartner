@@ -1,7 +1,9 @@
 /** STL filename conventions (ported from Python parsers.py). */
 
-import type { NamingProfile } from "./stl-naming.js";
+import type { MarkerStrip, NamingProfile } from "./stl-naming.js";
 import { getDefaultNamingProfile } from "./stl-naming.js";
+
+type AnywhereStrip = Extract<MarkerStrip, { anywhere: true }>;
 
 export type PartRole = "primary" | "accent" | "clear" | "opaque";
 
@@ -64,25 +66,131 @@ export function parseRole(pathOrName: string, profile?: NamingProfile | null): P
   return "primary";
 }
 
+const MODEL_EXTENSION_RE = /\.(?:stl|3mf)$/i;
+const THREE_MF_RE = /\.3mf$/i;
+
+const SEPARATORS = new Set([" ", "_", "-"]);
+
+/** A UTF-16 code unit and the marker code unit it matches ignoring case, or -1. */
+type Unit = readonly [string, number];
+
+/**
+ * Repeat rounds before one combined scan finishes. Results equal the old repeat-until-stable
+ * regexes for names nested up to this many alternating levels; past it, the kept separator
+ * may differ. Rust's `catalog::naming::markers::MAX_ROUNDS` has the same value.
+ */
+export const MARKER_ROUNDS = 8;
+
+/** How many units a prefix marker and the separator after it take from `units` at `from`. */
+function prefixLength(units: readonly Unit[], from: number, unitRes: readonly RegExp[]): number {
+  if (units.length - from < unitRes.length) return 0;
+  if (!unitRes.every((re, index) => re.test(units[from + index]![0]))) return 0;
+  return unitRes.length + (SEPARATORS.has(units[from + unitRes.length]?.[0] ?? "") ? 1 : 0);
+}
+
+/**
+ * Removes every occurrence of `markers`, leftmost first; with several, the first in role
+ * order that the stack ends with. The stack holds the scanned text with earlier matches
+ * removed, so this finds what repeated regex searches found. Each marker's KMP state is kept
+ * per stacked unit, so a step costs O(1) amortized per marker and a scan is linear.
+ */
+function stripEverywhere(input: readonly Unit[], markers: readonly AnywhereStrip[]): Unit[] {
+  const out: Unit[] = [];
+  const states: number[] = [];
+  const k = markers.length;
+  const push = (unit: Unit) => {
+    let found = 0;
+    const previous = states.length - k;
+    for (let j = 0; j < k; j++) {
+      const { units, fail } = markers[j]!;
+      let q = out.length > 0 ? states[previous + j]! : 0;
+      if (q === units.length) q = fail[q - 1]!;
+      while (q > 0 && units[q] !== unit[1]) q = fail[q - 1]!;
+      if (units[q] === unit[1]) q++;
+      if (q === units.length && !found) found = q;
+      states.push(q);
+    }
+    out.push(unit);
+    return found;
+  };
+  let next = 0;
+  while (next < input.length) {
+    for (let length = push(input[next++]!); length; ) {
+      out.length -= length;
+      const before = SEPARATORS.has(out.at(-1)?.[0] ?? "") ? out.pop() : undefined;
+      states.length = out.length * k;
+      const after = SEPARATORS.has(input[next]?.[0] ?? "") ? input[next++] : undefined;
+      const keep = before ?? after;
+      length = keep && out.length > 0 && next < input.length ? push(keep) : 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * Removes role markers from a slug, as the per-marker regexes `([ _-]?)<marker>([ _-]?)` (flag
+ * `i`) did. Markers run one at a time in role order: `anywhere` markers everywhere, prefix
+ * markers once at the start with the separator after them. Each removal takes one separator
+ * (space, `_` or `-`) on each side and puts one back when text remains on both sides. When
+ * that changed the name, the `anywhere` markers run again in role order until a round removes
+ * nothing, so a marker that removing a nested one exposes, as in `Panel_[a[c]]_Clip`, goes
+ * too; after `MARKER_ROUNDS` rounds one combined scan removes the rest. Code units compare
+ * through the old regexes' case folding, once per distinct unit.
+ * Rust's `catalog::naming::strip_markers` is the same algorithm.
+ */
+function stripMarkers(stem: string, prof: NamingProfile): string {
+  const classes = new Map<string, number>();
+  const classOf = (unit: string) => {
+    if (!classes.has(unit)) classes.set(unit, prof.markerUnitRes.findIndex((re) => re.test(unit)));
+    return classes.get(unit)!;
+  };
+  const name: Unit[] = Array.from({ length: stem.length }, (_, i) => [stem[i]!, classOf(stem[i]!)]);
+  let slug = name;
+  // Prefix removals advance `start`; the slug is copied only by a scan.
+  let start = 0;
+  for (const strip of prof.markerStrips) {
+    if (!strip.anywhere) start += prefixLength(slug, start, strip.unitRes);
+    else {
+      slug = stripEverywhere(start ? slug.slice(start) : slug, [strip]);
+      start = 0;
+    }
+  }
+  if (start) slug = slug.slice(start);
+  const anywhere = prof.markerStrips.filter((strip): strip is AnywhereStrip => strip.anywhere);
+  // Every removal shortens the name, so an unchanged length means nothing was removed.
+  for (let round = 0, before = name.length; slug.length !== before; round++) {
+    before = slug.length;
+    if (round === MARKER_ROUNDS) {
+      slug = stripEverywhere(slug, anywhere);
+      break;
+    }
+    for (const strip of anywhere) slug = stripEverywhere(slug, [strip]);
+  }
+  return slug.map(([unit]) => unit).join("");
+}
+
 export function parseQuantity(filename: string, profile?: NamingProfile | null): number {
   const prof = resolveProfile(profile);
-  const m = prof.quantityRe.exec(filename);
+  // The regex reads the name as written, so saved regexes keep their meaning. Most end in
+  // `\.stl$`, so a `.3mf` name they miss is read again as the `.stl` of the same name.
+  const m =
+    prof.quantityRe.exec(filename) ??
+    (THREE_MF_RE.test(filename) ? prof.quantityRe.exec(filename.replace(THREE_MF_RE, ".stl")) : null);
   if (m?.[1]) return Math.max(1, parseInt(m[1], 10));
   return Math.max(1, prof.quantityDefault);
 }
 
 export function parsePartSlug(filename: string, profile?: NamingProfile | null): string {
   const prof = resolveProfile(profile);
-  let name = basename(filename);
-  if (name.toLowerCase().endsWith(".stl")) name = name.slice(0, -4);
+  const file = basename(filename);
+  const name = file.replace(MODEL_EXTENSION_RE, "");
   let stem = name;
   if (prof.slugStripMarkers) {
-    for (const prefixRe of prof.rolePrefixRes) {
-      stem = stem.replace(prefixRe, "");
-    }
+    stem = stripMarkers(stem, prof);
   }
-  if (prof.slugStripQuantity && prof.quantityStripRe) {
-    stem = stem.replace(prof.quantityStripRe, "");
+  const quantityStrip = THREE_MF_RE.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
+  if (prof.slugStripQuantity && quantityStrip) {
+    stem = stem.replace(quantityStrip, "");
   }
   return stem || name;
 }

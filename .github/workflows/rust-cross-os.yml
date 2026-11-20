@@ -5,7 +5,9 @@ name: Rust cross-OS
 # an aggregate over the parts below. On ubuntu-latest, nextest is four hash
 # partitions and fmt/clippy are a separate part. On pp-local, one part runs all
 # three. The nightly schedule and a manual dispatch build the workspace on
-# Windows and macOS and do not run the Linux parts. See docs/development/ci.md.
+# Windows and macOS and do not run the Linux parts. `rust (windows tests)` runs
+# named Windows tests on a pull request that touches their crates, and on a
+# manual dispatch. It is not a required check. See docs/development/ci.md.
 
 on:
   pull_request:
@@ -49,6 +51,7 @@ jobs:
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
       linux_kind: ${{ steps.runner.outputs.linux_kind }}
       linux_parts: ${{ steps.runner.outputs.linux_parts }}
+      windows_tests: ${{ steps.windows_tests.outputs.windows_tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,6 +69,13 @@ jobs:
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py
           python3 scripts/ci-path-filter.py rust
           python3 scripts/ci-affected-nextest-filter.py
+      - name: Select Windows test inputs
+        id: windows_tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-path-filter.py windows-tests
       - name: Select the Linux Rust runner
         id: runner
         env:
@@ -272,6 +282,78 @@ jobs:
           "$MANIFEST_PYTHON" rust/scripts/build-desktop-manifest.py --web web --node "$node_path" --output rust/bundle-manifest.json --commit "$GITHUB_SHA"
       - name: Build the workspace
         run: cargo build --manifest-path rust/Cargo.toml --locked --workspace
+
+  # Not a required check. Runs the Windows tests named in GRE-1795, GRE-1796
+  # and GRE-1799, each in its own nextest call, and writes one result row per
+  # call to the job summary. A test that is renamed away fails its call
+  # (--no-tests=fail) instead of passing with nothing run.
+  rust-windows-tests:
+    name: rust (windows tests)
+    needs: changes
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && needs.changes.result == 'success' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.changes.outputs.windows_tests == 'true')))
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: rust-windows-tests
+          workspaces: rust -> target
+          # Pull requests restore main's cache and never save one.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: nextest@0.9.148
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+      - name: Build the old UI and generate the measured manifest
+        env:
+          VITE_PRINT_PARTNER_DESKTOP: '1'
+          MANIFEST_PYTHON: python3
+        run: |
+          set -euo pipefail
+          node_path=$(node -p process.execPath)
+          echo "PP_TEST_NODE=$node_path" >> "$GITHUB_ENV"
+          # Install without @print-partner/ui and rust-client, so the manifest
+          # script skips the replacement UI build. None of these tests read it.
+          npm --prefix web ci --include-workspace-root \
+            --workspace @print-partner/contracts --workspace @print-partner/domain \
+            --workspace @print-partner/server --workspace @print-partner/web
+          npm --prefix web run build
+          "$MANIFEST_PYTHON" rust/scripts/build-desktop-manifest.py --web web --node "$node_path" --output rust/bundle-manifest.json --commit "$GITHUB_SHA"
+      - name: Run the named Windows tests
+        run: |
+          set -uo pipefail
+          failed=0
+          printf '| Ticket | Tests | desktop_rebuild | Result |\n| --- | --- | --- | --- |\n' >> "$GITHUB_STEP_SUMMARY"
+          run_tests() {
+            local ticket=$1 features=$2 filter=$3 result=pass
+            shift 3
+            echo "::group::$ticket $filter ($features)"
+            cargo nextest run --manifest-path rust/Cargo.toml --locked --no-fail-fast --no-tests=fail \
+              --status-level pass "$@" -E "$filter" || { result=FAIL; failed=1; }
+            echo "::endgroup::"
+            echo "$ticket $filter desktop_rebuild=$features: $result"
+            echo "| $ticket | \`$filter\` | $features | $result |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          on=(-p pp-compat -p pp-gateway -p pp-server)
+          off=(-p pp-compat --no-default-features)
+          respawn='package(pp-compat) & test(=ticket_t_2::ticket_t_2_respawn_blocked_during_verification_starts_no_child)'
+          junctions='package(pp-compat) & test(=release::tests::junctions_are_recorded_links_and_cannot_escape)'
+          run_tests GRE-1795 on "$respawn" "${on[@]}"
+          run_tests GRE-1795 on "$junctions" "${on[@]}"
+          run_tests GRE-1796 on 'package(pp-gateway) & test(=slice0_mount::slice0_mount_over_limit_body_gets_the_413_over_a_real_socket)' "${on[@]}"
+          run_tests GRE-1799 on 'package(pp-server) & kind(bin) & test(/^health::tests::/)' "${on[@]}"
+          run_tests GRE-1795 off "$respawn" "${off[@]}"
+          run_tests GRE-1795 off "$junctions" "${off[@]}"
+          exit "$failed"
 
   alert-macos-main:
     needs: rust-nightly

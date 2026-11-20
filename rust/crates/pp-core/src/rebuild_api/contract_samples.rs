@@ -102,6 +102,8 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
             "expected_draft": null, "expected_header_version": null,
             "header": {"name": "Client contract", "order_number": null, "customer": null, "due_date": null}})
     }),
+    // No Source has id 1, so the handler answers its own not-found.
+    ("setBuildBase", || json!({"project_id": 1})),
     ("setModule", || json!({"on": true})),
     (
         "signIn",

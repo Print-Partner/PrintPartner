@@ -141,6 +141,22 @@ describe("Backups: create", () => {
     expect(fake.creates()[0]?.[1]?.body).toBeUndefined();
   });
 
+  it("after a page reload the section shows no backup and sends no create", async () => {
+    const fake = core(() => json(BACKUP));
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    fireEvent.click(within(region).getByRole("button", { name: "Create backup" }));
+    expect(await within(region).findByText(SHA)).toBeTruthy();
+    cleanup();
+    renderSettings(fake.fetchMock);
+    const reloaded = await backups();
+    await online(reloaded);
+    expect(within(reloaded).queryByLabelText("Backup made")).toBeNull();
+    expect(within(reloaded).getByText(/After a reload, create one again/)).toBeTruthy();
+    expect(fake.creates()).toHaveLength(1);
+  });
+
   it("says when the backup is large", async () => {
     const fake = core(() => json({ ...BACKUP, warnings: ["large"] }));
     renderSettings(fake.fetchMock);

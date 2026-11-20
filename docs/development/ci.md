@@ -5,7 +5,7 @@ A pull request, a push to `main`, and a merge group run four parts (GRE-1649):
 1. `actionlint` and `zizmor` in `.github/workflows/actionlint.yml`, unchanged.
 2. `rust (linux)` in `.github/workflows/rust-cross-os.yml`: `cargo fmt`, `cargo clippy -D warnings`, and `cargo nextest run` on the default build. After GRE-1646 that default is the Rust-only build. The commands do not pass `--features desktop_rebuild` or `--no-default-features`. On `ubuntu-latest` (GRE-1664) nextest runs as four `hash` partitions, and fmt plus clippy run on a separate part. The required check is the aggregate, still named `rust (linux)`.
 3. `ui` in `.github/workflows/web-ci.yml`: tests and a build of the replacement UI and the generated Rust client, when those inputs change.
-4. `rust image` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in.
+4. `rust image` and `rust image (arm64)` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in. `rust image` runs on `ubuntu-latest` (amd64) and `rust image (arm64)` on the native `ubuntu-24.04-arm` runner, so each architecture is built and run on its own hardware (GRE-1295).
 
 No pull-request job runs Node parity, the old UI's test or build jobs, or the Node desktop. The Linux Rust job still runs `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py`, because `pp-compat` embeds that manifest. That step is a compile input, not the old UI's test job. Desktop workflows (`desktop-contracts.yml`, `desktop-deny.yml`, `desktop-e2e.yml`, `desktop-webkit.yml`, `desktop-runtime.yml`, `desktop-fleet-rust.yml`, `desktop-packaged-smoke.yml`, `desktop-native-macos.yml`) stay in the tree and start only from `workflow_dispatch`. Desktop CI returns in M5.
 
@@ -45,7 +45,7 @@ When the Linux job runs on a pull request, nextest uses the affected-crate filte
 
 A push to `main` runs the same four parts, with nextest's filter `all()` (owner decision, 2026-11-12, GRE-1476, kept so a push does not wait on a macOS runner). A merge group runs the same Linux job, including nextest, on `ubuntu-latest` ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)).
 
-Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`, the job id that saved the cache before the split. The `1/4` part saves that same key on a pull request and on `main`. The other parts only restore. pp-local skips this cache. The Rust image job uses the GitHub Actions cache with scope `dockerfile-rust` and `mode=max`, including on pull requests. The first image build of a new cache is cold.
+Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`, the job id that saved the cache before the split. The `1/4` part saves that same key on a pull request and on `main`. The other parts only restore. pp-local skips this cache. The Rust image jobs use the GitHub Actions cache with `mode=max`, including on pull requests: scope `dockerfile-rust` for amd64 and `dockerfile-rust-arm64` for arm64. The first image build of a new cache is cold.
 
 This page covers what the jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks.
 
@@ -821,7 +821,7 @@ determine whether a disappeared queue entry merged; the canceller uses PR state.
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 
-The `ui` job times out at 20 minutes. Each Linux part times out at 45 minutes, and the `rust (linux)` aggregate times out at 5. `rust image` times out at 45 minutes. The nightly build times out at 90 minutes.
+The `ui` job times out at 20 minutes. Each Linux part times out at 45 minutes, and the `rust (linux)` aggregate times out at 5. `rust image` times out at 45 minutes and `rust image (arm64)` at 60. The nightly build times out at 90 minutes.
 
 ## Merge queue
 
@@ -832,7 +832,7 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 | `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` selects the `actions` kind on merge groups, because the group's diff against `main` is not the PR's diff. |
 | `rust (linux)` | `rust-cross-os.yml` | The aggregate. On `ubuntu-latest` it waits for fmt, clippy and four nextest hash partitions. The filter is `all()` because a merge group selects the `rust` kind without reading the PR diff. |
 
-`rust (windows)` and `rust (macos)` are the nightly build names. Neither runs on merge groups, and neither does `rust (windows tests)`. `ui` and `rust image` also run on a merge group. They are not required checks.
+`rust (windows)` and `rust (macos)` are the nightly build names. Neither runs on merge groups, and neither does `rust (windows tests)`. `ui`, `rust image` and `rust image (arm64)` also run on a merge group. They are not required checks.
 
 GRE-1466 (2026-11-12) kept merge groups to fmt and clippy because two measured groups took 47 and 49 minutes. GRE-1649 puts nextest back on the merge group. GRE-1664 splits that hosted nextest into four hash partitions so a warm pull request finishes in under 20 minutes. The commands are still one default-feature pass.
 

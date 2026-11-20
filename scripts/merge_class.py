@@ -125,6 +125,9 @@ def uncovered(entries, classes):
 # OpenAI score on the exact head (Chad, 2026-11-16 11:23 PM ET). The sensitive merge check refuses them.
 DUAL_AUTHOR_FAMILIES = frozenset({"cursor-auto", "unknown"})
 RECORD = "pp-score "
+# A record below PASS_AT fails its head for both evaluators: the pp/score status passes at PASS_AT,
+# and the sensitive merge check needs SENSITIVE_MIN.
+PASS_AT = 8
 SENSITIVE_MIN = 9
 NEED_TWO = "need two qualifying scorer seats from allowed authors"
 
@@ -244,8 +247,9 @@ def read_comments(comments, trust):
 
 def head_fault(reading, head):
     """Why head's records refuse it under the rules both evaluators share, or None: a fault on the
-    PR or on head, only wrapped records, a seat from the author's own family, or records that
-    disagree on author=."""
+    PR or on head, only wrapped records, a seat from the author's own family, records that
+    disagree on author=, or a record below PASS_AT (bare or wrapped). Both evaluators report this
+    one string, so a head both refuse is refused for the same reason."""
     fault = next((why for at, why in reading.faults if at in (None, head)), None)
     if fault:
         return fault
@@ -257,6 +261,9 @@ def head_fault(reading, head):
         return f"{own.seat} is the author's own family ({own.vendor})"
     if len({r.author for r in group}) > 1:
         return "records disagree on the author family"
+    low = next((r for r in group if r.score < PASS_AT), None)
+    if low:
+        return f"{low.seat} scored {low.score}"
     return None
 
 

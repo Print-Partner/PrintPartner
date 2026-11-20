@@ -81,6 +81,9 @@ Where the two evaluators once read a comment differently, the stricter reading n
   for its `vendor=`. Such a head counts as scored, so a carry walk stops there.
 - A record whose `vendor=` equals its `author=`, or a head whose records disagree on `author=`,
   fails that head.
+- A record below 8, bare or wrapped, fails its head in both evaluators with one reason,
+  `<seat> scored <n>`; the `pp/score` description reads `rejected: <seat> scored <n>`. A record
+  of 8 fails only the sensitive merge check, which needs 9.
 
 Records for heads that are neither the current head nor the head a carry reaches never count.
 

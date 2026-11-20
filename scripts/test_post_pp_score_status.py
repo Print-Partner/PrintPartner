@@ -58,7 +58,7 @@ class PostPpScoreStatusTests(unittest.TestCase):
         ]
         plans = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plans[0].state, "failure")
-        self.assertEqual(plans[0].description, "7/10 from grok-4.7")
+        self.assertEqual(plans[0].description, "rejected: grok-4.7 scored 7")
 
     def test_legacy_score_line_is_ignored(self):
         # The old "Score: N/10 from <seat>" form names no author family, so it cannot pass.
@@ -116,8 +116,7 @@ class PostPpScoreStatusTests(unittest.TestCase):
         ]
         plans = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plans[0].state, "failure")
-        self.assertIn("9/10 from grok-4.7", plans[0].description)
-        self.assertIn("5/10 from glm-5.3-flash-free", plans[0].description)
+        self.assertEqual(plans[0].description, "rejected: glm-5.3-flash-free scored 5")
 
     def test_dry_run_render_leaves_unscored_prs_quiet(self):
         import io
@@ -475,7 +474,7 @@ class MergeGroupTests(unittest.TestCase):
         cases = (
             ({1830: SHA, 1829: OTHER}, stale, f"#1830: no trusted score on its head {SHA[:7]}"),
             ({1830: SHA, 1829: OTHER}, {1830: self.records(SHA, score=7), 1829: self.records(OTHER)},
-             f"#1830 {SHA[:7]}: 7/10 from grok-4.7"),
+             f"#1830 {SHA[:7]}: rejected: grok-4.7 scored 7"),
             ({1830: SHA, 1829: OTHER},
              {1830: self.records(SHA, author="xai"), 1829: self.records(OTHER)},
              f"#1830 {SHA[:7]}: rejected: grok-4.7 is the author's own family (xai)"),
@@ -576,7 +575,7 @@ class CursorAutoAuthorTests(unittest.TestCase):
             self.line(SHA, "gpt-6.1-sol", "openai", 7),
         ))
         self.assertEqual(plan.state, "failure")
-        self.assertEqual(plan.description, "9/10 from claude-opus-5-5; 7/10 from gpt-6.1-sol")
+        self.assertEqual(plan.description, "rejected: gpt-6.1-sol scored 7")
 
     def test_stale_head_does_not_satisfy_the_current_head(self):
         records = self.records(
@@ -636,7 +635,7 @@ class CursorAutoMergeGroupTests(unittest.TestCase):
         self.assertEqual(plan.state, "failure")
         self.assertEqual(
             plan.description,
-            f"#1829 {SHA[:7]}: 9/10 from claude-opus-5-5; 7/10 from gpt-6.1-sol",
+            f"#1829 {SHA[:7]}: rejected: gpt-6.1-sol scored 7",
         )
 
 
@@ -1053,7 +1052,8 @@ class CarryTests(unittest.TestCase):
 
     def test_newer_records_stop_the_walk(self):
         # h1 was scored 7: its records win over h0's 9, so h2 does not carry.
-        self.assertIn(f"{self.h1[:7]} did not pass", self.refused(self.h2, [record(self.h0), record(self.h1, score=7)]))
+        self.assertEqual(self.refused(self.h2, [record(self.h0), record(self.h1, score=7)]),
+                         f"{self.h1[:7]}: gpt-6.2-sol scored 7")
 
     def test_head_with_its_own_records_does_not_carry(self):
         self.assertEqual(self.refused(self.h1, [record(self.h0), record(self.h1, score=7)]),
@@ -1086,7 +1086,7 @@ class CarryTests(unittest.TestCase):
         self.assertEqual(plan.description, f"carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol")
         # A failing Grok record still fails the source, so it fails the carry too.
         low_grok = record(self.h0, seat="grok-4.7", vendor="xai", score=5)
-        self.assertIn(f"{self.h0[:7]} did not pass", self.refused(self.h1, [low_grok, record(self.h0)]))
+        self.assertEqual(self.refused(self.h1, [low_grok, record(self.h0)]), f"{self.h0[:7]}: grok-4.7 scored 5")
 
     def test_a_record_with_a_wrong_author_family_never_carries(self):
         # The seat is the author's own family.
@@ -1101,7 +1101,7 @@ class CarryTests(unittest.TestCase):
                                  "records on this PR disagree on the author family (anthropic, openai)")
 
     def test_failing_source_does_not_carry(self):
-        self.assertIn(f"{self.h0[:7]} did not pass", self.refused(self.h1, [record(self.h0, score=7)]))
+        self.assertEqual(self.refused(self.h1, [record(self.h0, score=7)]), f"{self.h0[:7]}: gpt-6.2-sol scored 7")
 
     def test_sensitive_and_owner_paths_are_strict(self):
         self.assertTrue(pps.strict_class(["rust/crates/pp-storage/src/import.rs"]))
@@ -1179,11 +1179,28 @@ class GuardAgreementTests(unittest.TestCase):
 
     def test_a_low_valid_record_on_a_later_head_blocks_the_carry_in_both(self):
         c = self.c
-        for low in (self.line(c.h1, score=5), f"`{self.line(c.h1, score=5)}`", f"  {self.line(c.h1, score=5)}"):
+        # Alone on h1: a bare 5 fails on its score; a wrapped or indented one, which never counts, fails first.
+        bare = self.line(c.h1, score=5)
+        for low, reason in ((bare, "gpt-6.2-sol scored 5"), (f"`{bare}`", "a wrapped or indented record never counts"),
+                            (f"  {bare}", "a wrapped or indented record never counts")):
             with self.subTest(low=low):
-                ok_status, ok_guard, why = self.both(c.h2, self.two(c.h0) + [comment(low)])
-                self.assertEqual((ok_status, ok_guard), (False, False))
-                self.assertTrue(why.startswith(c.h1[:7]), why)
+                self.assertEqual(self.both(c.h2, self.two(c.h0) + [comment(low)]), (False, False, f"{c.h1[:7]}: {reason}"))
+
+    def test_a_low_record_gets_one_reason_on_the_exact_head_and_on_a_later_head(self):
+        # A record below 8 fails both bars, and head_fault gives both evaluators its one reason:
+        # bare, wrapped or indented, alone or beside two bare 9s.
+        c, h1 = self.c, self.c.h1
+        low = self.line(h1, score=5)
+        for form in (low, f"`{low}`", f"  {low}"):
+            with self.subTest(form=form):
+                comments = self.two(c.h0) + self.two(h1) + [comment(form)]
+                # On a later head: h2 carries nothing, from either evaluator, for the same reason.
+                self.assertEqual(self.both(c.h2, comments), (False, False, f"{h1[:7]}: gpt-6.2-sol scored 5"))
+                # On the exact head: the status's failure and the guard's refusal name the same record.
+                found = pps.read_comments(comments, pps.load_trust())
+                _, _, source, guard_why = carry_both(self, c.r, h1, comments, strict=True, guard=True)
+                self.assertEqual((source, guard_why), (None, "gpt-6.2-sol scored 5"))
+                self.assertEqual(pps.plan_head(h1, found).description, f"rejected: {guard_why}")
 
     def test_both_refuse_failing_records_and_checks(self):
         h0, h1 = self.c.h0, self.c.h1

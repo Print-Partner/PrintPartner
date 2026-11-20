@@ -26,7 +26,7 @@ from pathlib import Path
 
 # The record reader, its rules and the carry decision are shared with the coordinator's sensitive
 # merge check (agent-guard.py), so both read the same comments the same way.
-from merge_class import (DUAL_AUTHOR_FAMILIES, NO_CARRY_VENDORS, Reading, Record, carry_source,  # noqa: F401
+from merge_class import (DUAL_AUTHOR_FAMILIES, NO_CARRY_VENDORS, PASS_AT, Reading, Record, carry_source,  # noqa: F401
                          classify, head_fault, load_classes, load_trust, read_comments)
 from merge_class import (CARRY_MAX_HOPS, Carry, GitHubFacts, LocalGit,  # noqa: F401
                          check_state, decide_carry, gate_file, hop)
@@ -34,7 +34,6 @@ from merge_class import (CARRY_MAX_HOPS, Carry, GitHubFacts, LocalGit,  # noqa: 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
 DEFAULT_REPO = "Print-Partner/PrintPartner"
-PASS_AT = 8
 CONTEXT = "pp/score"
 MAX_DESCRIPTION = 140
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -82,7 +81,7 @@ def plan_head(head: str, reading: Reading) -> StatusPlan:
         unique.append(record)
     records = tuple(unique)
     # The rules shared with the sensitive merge check: faults, wrapped records, the author's own
-    # family, and author=.
+    # family, author=, and a record below PASS_AT.
     fault = head_fault(reading, head) or (None if unique else "no score records")
     if fault:
         return StatusPlan(head, "failure", _fit(f"rejected: {fault}", "rejected: invalid score record"), records)
@@ -94,14 +93,13 @@ def plan_head(head: str, reading: Reading) -> StatusPlan:
             return StatusPlan(head, "failure", _fit(
                 f"{author} requires anthropic and openai scores; missing {', '.join(missing)}",
                 f"{author}: missing a required family"), records)
-    # One status per SHA: the minimum recorded score is the conservative bar.
+    # head_fault refused any record below PASS_AT, so every record here passes.
     minimum = min(r.score for r in unique)
-    state = "success" if minimum >= PASS_AT else "failure"
     description = _fit(
         "; ".join(f"{format_score(r.score)}/10 from {r.seat}" for r in unique),
         f"{format_score(minimum)}/10 from {len(unique)} seats",
     )
-    return StatusPlan(head, state, description, records)
+    return StatusPlan(head, "success", description, records)
 
 
 def plan_statuses(reading: Reading) -> list[StatusPlan]:

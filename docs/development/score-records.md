@@ -1,7 +1,8 @@
 # Sensitive merge score records
 
-The coordinator guard reads score comments only from `scorer_authors` in
-`scripts/merge-classes.json`, currently `poitee`. That account posts every
+The coordinator guard and the `pp/score` status read score comments only from `scorer_authors` in
+`scripts/merge-classes.json`, currently `poitee`, and both read them with one reader,
+`read_comments` in `scripts/merge_class.py` (see [How records are read](#how-records-are-read)). That account posts every
 seat's score, so the login does not identify the model. A dedicated bot
 identity is the follow-up.
 
@@ -18,11 +19,11 @@ pp-score head=<40 hex> seat=<seat-id> vendor=<anthropic|cursor|deepseek|openai|x
 `approval-stall` (a tool approval stalled). Write `none`, or the ones hit, comma-separated, each
 once, in any order. A score that leaves out an obstacle the scorer hit is invalid. The parsers
 cannot check that `none` is true, so the scorer brief carries that rule; they make the field
-required. Listing an obstacle does not fail the score by itself. A line without the field, or with
-any other token, does not count for `pp/score`, and on the current head it refuses a sensitive
-merge. Records for older heads written before the field existed still parse.
+required. Listing an obstacle does not fail the score by itself. A record without the field fails
+its head. A record with any other token refuses every head. Records for older heads written before
+the field existed still parse, and they matter only when a carry walk stops at their head.
 
-`score=` is a whole number; `8.5` does not parse. A `pp-score-trial` line is not a record.
+`score=` is a whole number of at most two digits; `8.5` does not parse. A `pp-score-trial` line is not a record.
 
 A scorer thread posts its own record from its scorer worktree (branch
 `t3/score-<pr>-<seat>-<yyyymmdd>`); see [Safety guard](agent-workflow.md#safety-guard).
@@ -52,17 +53,41 @@ seats count once. Other seats do not qualify.
 
 Missing fields, malformed score lines, unknown seats or vendors, mismatched
 seat vendors, same-vendor scoring, conflicting author metadata, and scores
-below 9 on the current head refuse the merge. A score record is a line that starts with `pp-score ` at column 0; other lines, including prose that mentions the token, are ignored. Prose that happens to start a line with `pp-score ` is read as a record, fails to parse and refuses the merge, the safe side;
-records for older heads do not count and are not checked against the current seat list, but they must still parse. GitHub errors or unreadable data
+below 9 on the head whose records count refuse the merge. An `author=` that is not a seat vendor
+(`cursor-auto` or `unknown`) anywhere on the PR also refuses it. GitHub errors or unreadable data
 also refuse the merge. Owner and lane classifications are unchanged.
 
-Never edit a score record; post a new one. The guard refuses a sensitive merge when a trusted comment holding a record for the current head has `updated_at` different from `created_at`; edits to records for older heads do not matter, because those never count. Through the `gh` routes (`gh pr comment`, `gh issue comment`, `gh api` and its GraphQL endpoint), the guard refuses edits and deletes of PR comments outside the coordinator worktree: any method but GET or HEAD on `issues/comments/<id>` or `pulls/comments/<id>` (including POST, fields without `-X`, and an `X-HTTP-Method-Override` header), `--edit-last`, `--delete-last`, and the GraphQL update and delete comment mutations. A program that calls the GitHub API with the account's token directly is not covered, and a deleted record cannot be detected, until score records move to an identity lanes cannot use (GRE-1408).
+### How records are read
+
+One reader, `read_comments` in `scripts/merge_class.py`, turns the raw PR comments into records for
+both evaluators, the `pp/score` status and the coordinator's sensitive merge check. Both then apply
+the same head rules (`head_fault`) on the exact head and, through `carry_source`, on a carried head.
+Where the two evaluators once read a comment differently, the stricter reading now holds for both
+(GRE-1859):
+
+- A record line is a line that starts with `pp-score ` once surrounding whitespace and inline-code
+  backticks are dropped. Prose that mentions the token mid-line is ignored.
+- A record line at column 0 must be the record alone, with no trailing space or backtick. Every
+  record line must match the format with a valid `obstacles=` token, or it refuses every head. So
+  does a comment whose author or body cannot be read.
+- A record wrapped in backticks, indented, or indented inside a fence is read and checked like any
+  other record, so a low or invalid one fails its head and stops a carry walk. It never counts
+  toward a pass, and a head with only wrapped records fails. Post records bare, at column 0; a bare
+  line inside a code fence counts.
+- A record fails its own head when its comment was edited (`updated_at` differs from `created_at`)
+  or has no readable edit times, when it has no `obstacles=`, or when its seat is not an allowed seat
+  for its `vendor=`. Such a head counts as scored, so a carry walk stops there.
+- A record whose `vendor=` equals its `author=`, or a head whose records disagree on `author=`,
+  fails that head.
+
+Records for heads that are neither the current head nor the head a carry reaches never count.
+
+Never edit a score record; post a new one. An edited record fails its head in both evaluators; edits to records for other heads do not matter, because those never count. Through the `gh` routes (`gh pr comment`, `gh issue comment`, `gh api` and its GraphQL endpoint), the guard refuses edits and deletes of PR comments outside the coordinator worktree: any method but GET or HEAD on `issues/comments/<id>` or `pulls/comments/<id>` (including POST, fields without `-X`, and an `X-HTTP-Method-Override` header), `--edit-last`, `--delete-last`, and the GraphQL update and delete comment mutations. A program that calls the GitHub API with the account's token directly is not covered, and a deleted record cannot be detected, until score records move to an identity lanes cannot use (GRE-1408).
 
 The allowed seats (`scorer_seats`, seat to vendor) and the vendors a record may name (`vendors`) are data in `scripts/merge-classes.json`; the record pattern is built from them. Removing a vendor makes old records that name it unparseable, so a PR that carries one refuses the merge.
 
 When a trusted `scorer_authors` account posts a well-formed record, the `post-pp-score-status` workflow also posts a `pp/score` commit status on that exact head SHA (`N/10 from <seat>`, success at 8 or more). The status is copied from the comment; it is never invented or re-derived. Records for other SHAs are left untouched. For this status only:
 
-- A record may be wrapped in inline-code backticks (`` `pp-score ...` ``) or sit inside a code fence; surrounding whitespace and backticks are dropped before the line is matched. A record embedded in prose is still ignored.
 - A record whose `vendor=` equals its `author=` is a same-family score and fails the head, as does a head whose records disagree on `author=`. The old `Score: N/10 from <seat> on head <sha>` form names no author family and no longer counts.
 - If `author=` is `cursor-auto` or `unknown`, the head also needs a trusted Anthropic record and a trusted OpenAI record (`gpt-6.1-sol` or another OpenAI seat) on that exact SHA. The status uses the lower of those scores and succeeds only at 8 or more. A missing family, a score below 8, or a complete pair on a stale SHA fails closed, including on `merge_group`. Known families are unchanged: one trusted cross-family score of 8 or more is enough, and same-family scores still fail.
 - `pp_score_seats` in `scripts/merge-classes.json` adds seats the status accepts on top of `scorer_seats`. It holds the Codex seats `gpt-6.1-sol`, `gpt-6.2-sol` and `gpt-6.2-astra` (all OpenAI; 6.2-sol added 2026-11-17; 6.2-sol and 6.2-astra are also in `scorer_seats` since 2026-11-18). Since the 2026-11-18 7:38 PM ET owner decision it also holds `gemini-3.8-flash`, `qwen38-gufo`, `qwen38-flash`, `longcat-2.5-free` and `hy4-flash-free`, the same five seats as `scorer_seats`. The sensitive merge guard still reads `scorer_seats` only.
@@ -75,9 +100,7 @@ When a trusted `scorer_authors` account posts a well-formed record, the `post-pp
 
 ## Score carry-forward
 
-Merging main into a scored PR makes a new head with no records. That head can use the records of the nearest earlier head H0 that has records, through one or more hops. The carry decision is `decide_carry` in `scripts/merge_class.py`, and the `pp/score` status (`plan_carry` in `scripts/post_pp_score_status.py`) uses it. If a condition fails or a fact cannot be read, nothing carries and the head needs fresh scores.
-
-The coordinator's sensitive merge check does not accept a carry yet: it still needs two qualifying scores on the exact head, so a sensitive PR needs fresh scores after every update even when its `pp/score` passed by carry. This stricter guard is the intended fail-closed interim until GRE-1859 lets the guard carry through the same decision.
+Merging main into a scored PR makes a new head with no records. That head can use the records of the nearest earlier head H0 that has records, through one or more hops. There is one carry decision, `carry_source` in `scripts/merge_class.py` (which calls `decide_carry`), and both evaluators call it: the `pp/score` status (`plan_carry` in `scripts/post_pp_score_status.py`) and the coordinator's sensitive merge check (`sensitive_scores`, called from `scripts/agent-guard.py`). If a condition fails or a fact cannot be read, nothing carries and the head needs fresh scores. In the guard, an unreadable fact refuses the merge.
 
 Each hop from P to a new head H must hold all of these. Each is fixed by the commit SHAs, so a hop that qualified stops qualifying only when M falls past the bound in condition 2:
 
@@ -95,7 +118,12 @@ Each hop from P to a new head H must hold all of these. Each is fixed by the com
 - The walk stops at the first head with records, so newer records win, even failing ones. It goes back at most 5 hops.
 - Every required check of `main`'s rulesets except `pp/score` (today `actionlint`, `zizmor` and `rust (linux)`) concluded `success` on H itself. Nothing else qualifies: not `skipped`, `neutral`, `cancelled`, `timed_out`, `action_required` or `stale`, and not a check that is pending or missing. GitHub lets a skipped check satisfy branch protection, but the gate cannot prove that a skip came from the path filter rather than a draft, a failed `changes` job or a cancelled run, so it fails closed. **As a result, a PR whose path filters skip `rust (linux)`, `actionlint` or `zizmor` never carries.** That covers most docs-only, gate-only and non-Rust PRs; they need fresh scores after every update. The checks of earlier hops are not read. Those heads never merge, and GitHub requires the checks again on H and on the merge group SHA.
 
-Then the status applies its record rule to H0's records: H0's records, Grok included, must pass as they would on H0 itself (`plan_head`). Grok (`xai`) records are then dropped, and at least one must remain. If the PR touches an owner or sensitive path (both sides of a rename, from a complete file list), every record on H0 must be above 8. The status reads `carried from <sha7>: N/10 from <seat>`.
+`carry_source` then applies the shared head rules to H0 (a fault, only wrapped records, the author's own family, disagreeing `author=`). Each evaluator then applies its own bar to H0's records:
+
+- **`pp/score` status:** H0's records, Grok included, must pass as they would on H0 itself (`plan_head`). Grok (`xai`) and wrapped records are then dropped, and at least one must remain. If the PR touches an owner or sensitive path (both sides of a rename, from a complete file list), every record on H0 must be above 8. The status reads `carried from <sha7>: N/10 from <seat>`.
+- **Coordinator sensitive merge:** H0's records must pass as on an exact head: every record on H0 is a `scorer_seats` seat at 9 or more, and bare records from two different vendors, neither the author's, remain. Grok records are checked but do not count toward the two. The guard reads the head's required checks once, as the status does.
+
+So the guard never accepts a carry that the status refuses, and when it accepts one, it uses the same H0. The difference is deliberate: the status passes one seat, while a sensitive merge always needs two vendors. `carry_both` in `scripts/test_post_pp_score_status.py` runs both evaluators on every carry fixture, from raw comment bodies, and fails when they reach different `carry_source` results or a refusal reason differs.
 
 When the current head has no records and no carry, the workflow posts `pp/score=failure` (`no score and no carry: <reason>`), which replaces an earlier carried success. The `merge_group` run decides every carry again, so a newer failing record on H0 or a failing check on H fails the queue entry. If the run cannot read the PR's current head, it posts the statuses for heads with records, posts nothing on the unknown head, and exits 1. That head keeps its last `pp/score`. Every merge goes through the merge queue, whose run decides the carry again.
 

@@ -34,7 +34,7 @@ class PostPpScoreStatusTests(unittest.TestCase):
                 f"{SHA} seat=glm-5.3-flash-free vendor=zhipu score=9 author=anthropic obstacles=none\n"
             )
         ]
-        records = pps.trusted_records(comments, self.trust)
+        records = pps.read_comments(comments, self.trust)
         plans = pps.plan_statuses(records)
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].head, SHA)
@@ -56,16 +56,16 @@ class PostPpScoreStatusTests(unittest.TestCase):
         comments = [
             comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=7 author=anthropic obstacles=none")
         ]
-        plans = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        plans = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plans[0].state, "failure")
         self.assertEqual(plans[0].description, "7/10 from grok-4.7")
 
     def test_legacy_score_line_is_ignored(self):
         # The old "Score: N/10 from <seat>" form names no author family, so it cannot pass.
         comments = [comment(f"Score: 8/10 from claude-opus-5-5 on head {SHA}")]
-        self.assertEqual(pps.trusted_records(comments, self.trust), [])
+        self.assertEqual(pps.read_comments(comments, self.trust), pps.Reading())
 
-    def test_untrusted_author_and_edited_comments_are_ignored(self):
+    def test_untrusted_authors_are_ignored_and_an_edited_record_fails_its_head(self):
         comments = [
             comment(
                 f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none",
@@ -77,10 +77,13 @@ class PostPpScoreStatusTests(unittest.TestCase):
                 updated="2026-11-13T02:00:00Z",
             ),
         ]
-        self.assertEqual(pps.trusted_records(comments, self.trust), [])
-        self.assertEqual(pps.plan_statuses([]), [])
+        self.assertEqual(pps.read_comments(comments[:1], self.trust), pps.Reading())
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
+        self.assertEqual((plan.state, plan.description),
+                         ("failure", "rejected: the grok-4.7 record was edited after it was posted"))
+        self.assertEqual(pps.plan_statuses(pps.Reading()), [])
 
-    def test_prose_and_malformed_lines_are_ignored(self):
+    def test_prose_is_ignored_and_an_unknown_seat_fails_its_head(self):
         comments = [
             comment(
                 "a note about pp-score head= tokens in prose\n"
@@ -89,16 +92,18 @@ class PostPpScoreStatusTests(unittest.TestCase):
                 f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none\n"
             )
         ]
-        records = pps.trusted_records(comments, self.trust)
-        self.assertEqual([r.seat for r in records], ["grok-4.7"])
-        self.assertEqual(records[0].head, SHA)
+        found = pps.read_comments(comments, self.trust)
+        self.assertEqual([(r.head, r.seat) for r in found.records], [(SHA, "grok-4.7")])
+        (plan,) = pps.plan_statuses(found)
+        self.assertEqual((plan.state, plan.description),
+                         ("failure", "rejected: unknown is not an allowed seat for vendor=xai"))
 
     def test_records_stay_on_their_own_sha(self):
         comments = [
             comment(f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"),
             comment(f"pp-score head={OTHER} seat=grok-4.7 vendor=xai score=6 author=anthropic obstacles=none"),
         ]
-        plans = {p.head: p for p in pps.plan_statuses(pps.trusted_records(comments, self.trust))}
+        plans = {p.head: p for p in pps.plan_statuses(pps.read_comments(comments, self.trust))}
         self.assertEqual(plans[SHA].state, "success")
         self.assertEqual(plans[OTHER].state, "failure")
 
@@ -109,7 +114,7 @@ class PostPpScoreStatusTests(unittest.TestCase):
                 f"pp-score head={SHA} seat=glm-5.3-flash-free vendor=zhipu score=5 author=anthropic obstacles=none"
             ),
         ]
-        plans = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        plans = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plans[0].state, "failure")
         self.assertIn("9/10 from grok-4.7", plans[0].description)
         self.assertIn("5/10 from glm-5.3-flash-free", plans[0].description)
@@ -192,38 +197,49 @@ class RealFormatTests(unittest.TestCase):
     def setUp(self):
         self.trust = pps.load_trust()
 
-    def test_real_records_without_obstacles_no_longer_count(self):
+    def test_real_records_without_obstacles_fail_their_head(self):
         for body in (PR1777_BODY, PR1734_ED251_BODY, PR1734_765_BODY):
             with self.subTest(body=body[-60:]):
-                self.assertEqual(pps.trusted_records([comment(body)], self.trust), [])
+                found = pps.read_comments([comment(body)], self.trust)
+                self.assertEqual(found.records, ())
+                (plan,) = pps.plan_statuses(found)
+                self.assertEqual(plan.state, "failure")
+                self.assertRegex(plan.description, r"^rejected: the [a-z0-9.-]+ record has no obstacles=$")
 
-    def test_backticked_records_from_1777_and_1734_parse_with_obstacles(self):
+    def test_backticked_records_from_1777_and_1734_are_read_but_never_count(self):
+        # GRE-1859: the sensitive merge check never counted a wrapped record. Both evaluators now
+        # read it, so a low or invalid one fails its head, and neither counts it toward a pass.
         for body, head in ((PR1777_BODY, PR1777_HEAD), (PR1734_ED251_BODY, PR1734_ED251_HEAD)):
             with self.subTest(head=head):
                 body = body.replace("author=anthropic`", "author=anthropic obstacles=none`")
-                records = pps.trusted_records([comment(body)], self.trust)
-                self.assertEqual([(r.head, r.seat, r.score) for r in records], [(head, "grok-4.7", 10.0)])
-                (plan,) = pps.plan_statuses(records)
-                self.assertEqual((plan.state, plan.description), ("success", "10/10 from grok-4.7"))
+                found = pps.read_comments([comment(body)], self.trust)
+                self.assertEqual([(r.head, r.seat, r.score, r.bare) for r in found.records],
+                                 [(head, "grok-4.7", 10, False)])
+                (plan,) = pps.plan_statuses(found)
+                self.assertEqual((plan.state, plan.description),
+                                 ("failure", "rejected: a wrapped or indented record never counts"))
 
     def test_bare_records_from_1734_parse_with_obstacles(self):
         body = PR1734_765_BODY.replace("author=anthropic\n", "author=anthropic obstacles=none\n")
-        records = pps.trusted_records([comment(body)], self.trust)
+        records = pps.read_comments([comment(body)], self.trust).records
         self.assertEqual({r.head for r in records}, {PR1734_765_HEAD})
         self.assertEqual([r.seat for r in records], ["grok-4.7", "glm-5.3-flash-free"])
 
     def test_fenced_and_double_backticked_records_parse(self):
+        # A fenced line at column 0 is a bare record; the others are wrapped.
         line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
-        for body in (f"```text\n{line}\n```", f"``{line}``", f"  `{line}`  ", f"```\n  {line}\n```"):
+        for body, bare in ((f"```text\n{line}\n```", True), (f"``{line}``", False), (f"  `{line}`  ", False),
+                           (f"```\n  {line}\n```", False)):
             with self.subTest(body=body):
-                records = pps.trusted_records([comment(body)], self.trust)
-                self.assertEqual([r.seat for r in records], ["grok-4.7"])
+                found = pps.read_comments([comment(body)], self.trust)
+                self.assertEqual([(r.seat, r.bare) for r in found.records], [("grok-4.7", bare)])
+                self.assertEqual(pps.plan_statuses(found)[0].state, "success" if bare else "failure")
 
     def test_records_inside_prose_still_do_not_parse(self):
         line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
         for body in (f"Recorded `{line}` today.", f"`{line}` and more", f"> {line}", f"`{line}"):
             with self.subTest(body=body):
-                self.assertEqual(pps.trusted_records([comment(body)], self.trust), [])
+                self.assertEqual(pps.read_comments([comment(body)], self.trust), pps.Reading())
 
 
 class FamilyTests(unittest.TestCase):
@@ -234,7 +250,7 @@ class FamilyTests(unittest.TestCase):
         comments = [comment(
             f"pp-score head={SHA} seat=claude-opus-5-5 vendor=anthropic score=10 author=anthropic obstacles=none"
         )]
-        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plan.state, "failure")
         self.assertEqual(plan.description,
                          "rejected: claude-opus-5-5 is the author's own family (anthropic)")
@@ -244,12 +260,12 @@ class FamilyTests(unittest.TestCase):
             f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=10 author=anthropic obstacles=none\n"
             f"pp-score head={SHA} seat=claude-opus-5-5 vendor=anthropic score=10 author=anthropic obstacles=none"
         )]
-        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plan.state, "failure")
 
     def test_codex_scoring_a_codex_pr_fails(self):
         comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=openai obstacles=none")]
-        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual(plan.state, "failure")
         self.assertIn("(openai)", plan.description)
 
@@ -258,7 +274,7 @@ class FamilyTests(unittest.TestCase):
             f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=10 author=anthropic obstacles=none\n"
             f"pp-score head={SHA} seat=glm-5.3-flash-free vendor=zhipu score=9 author=openai obstacles=none"
         )]
-        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual((plan.state, plan.description),
                          ("failure", "rejected: records disagree on the author family"))
 
@@ -269,12 +285,13 @@ class CodexSeatTests(unittest.TestCase):
 
     def test_codex_seat_scores_a_claude_pr(self):
         comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=anthropic obstacles=none")]
-        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.1-sol"))
 
     def test_codex_seat_must_name_openai(self):
         comments = [comment(f"pp-score head={SHA} seat=gpt-6.1-sol vendor=xai score=9 author=anthropic obstacles=none")]
-        self.assertEqual(pps.trusted_records(comments, self.trust), [])
+        self.assertEqual(pps.read_comments(comments, self.trust).faults,
+                         ((SHA, "gpt-6.1-sol is not an allowed seat for vendor=xai"),))
 
     def test_only_sol_6_2_is_a_sensitive_merge_seat(self):
         import json
@@ -296,33 +313,36 @@ class CodexSeatTests(unittest.TestCase):
 
     def test_astra_seat_scores_a_claude_pr(self):
         line = f"pp-score head={SHA} seat=gpt-6.2-astra vendor=openai score=9 author=anthropic obstacles=none"
-        (plan,) = pps.plan_statuses(pps.trusted_records([comment(line)], self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments([comment(line)], self.trust))
         self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.2-astra"))
-        self.assertEqual(pps.trusted_records([comment(line.replace("vendor=openai", "vendor=cursor"))],
-                                             self.trust), [])
+        self.assertEqual(pps.read_comments([comment(line.replace("vendor=openai", "vendor=cursor"))],
+                                           self.trust).faults,
+                         ((SHA, "gpt-6.2-astra is not an allowed seat for vendor=cursor"),))
 
     def test_gemini_flash_and_qwen_flash_count_on_an_xai_pr(self):
         for seat, vendor in (("gemini-3.8-flash", "google"), ("qwen38-flash", "qwen")):
             with self.subTest(seat=seat):
                 body = (f"pp-score head={SHA} seat={seat} vendor={vendor} "
                         "score=9 author=xai obstacles=none")
-                (plan,) = pps.plan_statuses(pps.trusted_records([comment(body)], self.trust))
+                (plan,) = pps.plan_statuses(pps.read_comments([comment(body)], self.trust))
                 self.assertEqual((plan.state, plan.description), ("success", f"9/10 from {seat}"))
                 wrong = body.replace(f"vendor={vendor}", "vendor=cursor")
-                self.assertEqual(pps.trusted_records([comment(wrong)], self.trust), [])
+                (plan,) = pps.plan_statuses(pps.read_comments([comment(wrong)], self.trust))
+                self.assertEqual(plan.description, f"rejected: {seat} is not an allowed seat for vendor=cursor")
                 own = body.replace("author=xai", f"author={vendor}")
-                (plan,) = pps.plan_statuses(pps.trusted_records([comment(own)], self.trust))
+                (plan,) = pps.plan_statuses(pps.read_comments([comment(own)], self.trust))
                 self.assertEqual(plan.state, "failure")
 
     def test_sol_6_2_seat_scores_a_claude_pr(self):
         comments = [comment(
             f"pp-score head={SHA} seat=gpt-6.2-sol vendor=openai score=9 author=anthropic obstacles=none")]
-        (plan,) = pps.plan_statuses(pps.trusted_records(comments, self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, self.trust))
         self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.2-sol"))
         wrong = comments[0]["body"].replace("vendor=openai", "vendor=xai")
-        self.assertEqual(pps.trusted_records([comment(wrong)], self.trust), [])
+        (plan,) = pps.plan_statuses(pps.read_comments([comment(wrong)], self.trust))
+        self.assertEqual(plan.state, "failure")
         own = comments[0]["body"].replace("author=anthropic", "author=openai")
-        (plan,) = pps.plan_statuses(pps.trusted_records([comment(own)], self.trust))
+        (plan,) = pps.plan_statuses(pps.read_comments([comment(own)], self.trust))
         self.assertEqual(plan.state, "failure")
 
     def test_pp_score_seat_cannot_override_a_scorer_seat_vendor(self):
@@ -349,14 +369,17 @@ class ObstacleTests(unittest.TestCase):
         return f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 author=anthropic{obstacles}"
 
     def test_none_counts(self):
-        (record,) = pps.trusted_records([comment(self.line(" obstacles=none"))], self.trust)
-        self.assertEqual(record.obstacles, ())
-        (plan,) = pps.plan_statuses([record])
+        found = pps.read_comments([comment(self.line(" obstacles=none"))], self.trust)
+        self.assertEqual(found.records[0].obstacles, ())
+        (plan,) = pps.plan_statuses(found)
         self.assertEqual((plan.state, plan.description), ("success", "9/10 from gpt-6.1-sol"))
 
-    def test_missing_field_does_not_count(self):
-        self.assertEqual(pps.trusted_records([comment(self.line(""))], self.trust), [])
-        self.assertEqual(pps.plan_statuses(pps.trusted_records([comment(self.line(""))], self.trust)), [])
+    def test_missing_field_fails_the_head(self):
+        found = pps.read_comments([comment(self.line(""))], self.trust)
+        self.assertEqual(found.records, ())
+        (plan,) = pps.plan_statuses(found)
+        self.assertEqual((plan.head, plan.state, plan.description),
+                         (SHA, "failure", "rejected: the gpt-6.1-sol record has no obstacles="))
 
     def test_listed_obstacles_still_count_as_records(self):
         for token, expected in (("refusal", ("refusal",)), ("guard", ("guard",)),
@@ -364,33 +387,35 @@ class ObstacleTests(unittest.TestCase):
                                 ("guard,refusal", ("guard", "refusal")),
                                 ("refusal,guard,approval-stall", ("refusal", "guard", "approval-stall"))):
             with self.subTest(token=token):
-                (record,) = pps.trusted_records([comment(self.line(f" obstacles={token}"))], self.trust)
-                self.assertEqual(record.obstacles, expected)
-                (plan,) = pps.plan_statuses([record])
+                found = pps.read_comments([comment(self.line(f" obstacles={token}"))], self.trust)
+                self.assertEqual(found.records[0].obstacles, expected)
+                (plan,) = pps.plan_statuses(found)
                 self.assertEqual(plan.state, "success")
 
-    def test_invalid_tokens_do_not_count(self):
+    def test_invalid_tokens_refuse_every_head(self):
         for token in ("", "None", "NONE", "none,guard", "guard,guard", "guard,", ",guard", "stall",
                       "approval_stall", "guard refusal", "guard;refusal", "yes", "0"):
             with self.subTest(token=token):
-                self.assertEqual(pps.trusted_records([comment(self.line(f" obstacles={token}"))], self.trust), [])
+                self.assertEqual(pps.read_comments([comment(self.line(f" obstacles={token}"))], self.trust),
+                                 MALFORMED)
 
     def test_field_must_come_last(self):
         line = (f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=9 obstacles=none author=anthropic")
-        self.assertEqual(pps.trusted_records([comment(line)], self.trust), [])
-        self.assertEqual(pps.trusted_records([comment(self.line(" obstacles=none extra"))], self.trust), [])
+        self.assertEqual(pps.read_comments([comment(line)], self.trust), MALFORMED)
+        self.assertEqual(pps.read_comments([comment(self.line(" obstacles=none extra"))], self.trust), MALFORMED)
 
     def test_whole_number_and_exact_head_rules_still_hold(self):
         for line in (self.line(" obstacles=none").replace("score=9", "score=8.5"),
                      self.line(" obstacles=none").replace(SHA, SHA[:12])):
             with self.subTest(line=line):
-                self.assertEqual(pps.trusted_records([comment(line)], self.trust), [])
+                self.assertEqual(pps.read_comments([comment(line)], self.trust), MALFORMED)
 
     def test_trial_line_is_not_a_record(self):
         line = self.line(" obstacles=none").replace("pp-score ", "pp-score-trial ", 1)
-        self.assertEqual(pps.trusted_records([comment(line)], self.trust), [])
+        self.assertEqual(pps.read_comments([comment(line)], self.trust), pps.Reading())
 
 
+MALFORMED = pps.Reading(faults=((None, "a malformed pp-score record"),))
 QUEUE_BASE = "5348fa04c2657f661d489c5dc46fcdcec2df33f0"
 QUEUE_HEAD = "7acda503680cc741feb3b8c83426d0eb0bbbba20"
 
@@ -410,8 +435,8 @@ class MergeGroupTests(unittest.TestCase):
         self.trust = pps.load_trust()
 
     def records(self, head, score=9, author="anthropic"):
-        return pps.trusted_records([comment(
-            f"`pp-score head={head} seat=grok-4.7 vendor=xai score={score} author={author} obstacles=none`"
+        return pps.read_comments([comment(
+            f"pp-score head={head} seat=grok-4.7 vendor=xai score={score} author={author} obstacles=none"
         )], self.trust)
 
     def test_queue_prs_reads_the_squash_commits(self):
@@ -503,9 +528,11 @@ class MergeGroupTests(unittest.TestCase):
                 code = pps.run_merge_group("o/r", QUEUE_HEAD, QUEUE_BASE, self.ref, self.trust, post=True)
         finally:
             pps.gh_json, pps.apply_plan = original_json, original_apply
-        self.assertEqual(code, 0)
+        # The real record is wrapped in backticks, so it never counts (GRE-1859).
+        self.assertEqual(code, 1)
         self.assertEqual([(p.head, p.state, p.description) for p in posted],
-                         [(QUEUE_HEAD, "success", "#1829: 10/10 from grok-4.7")])
+                         [(QUEUE_HEAD, "failure",
+                           f"#1829 {PR1777_HEAD[:7]}: rejected: a wrapped or indented record never counts")])
 
 
 
@@ -514,13 +541,13 @@ class CursorAutoAuthorTests(unittest.TestCase):
         self.trust = pps.load_trust()
 
     def records(self, *lines):
-        return pps.trusted_records([comment("\n".join(lines))], self.trust)
+        return pps.read_comments([comment("\n".join(lines))], self.trust)
 
     def line(self, head, seat, vendor, score, author="cursor-auto"):
         return f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author} obstacles=none"
 
     def test_cursor_auto_record_parses(self):
-        records = self.records(self.line(SHA, "claude-opus-5-5", "anthropic", 9))
+        records = self.records(self.line(SHA, "claude-opus-5-5", "anthropic", 9)).records
         self.assertEqual([(r.author, r.vendor, r.seat, r.score) for r in records],
                          [("cursor-auto", "anthropic", "claude-opus-5-5", 9.0)])
 
@@ -574,14 +601,14 @@ class CursorAutoMergeGroupTests(unittest.TestCase):
     def setUp(self):
         self.trust = pps.load_trust()
 
-    def dual(self, head, anthropic=9, openai=8, author="cursor-auto"):
-        return pps.trusted_records([comment(
+    def dual(self, head, anthropic=9, openai=8, author="cursor-auto", read=True):
+        return (pps.read_comments if read else lambda c, _: c)([comment(
             f"pp-score head={head} seat=claude-opus-5-5 vendor=anthropic score={anthropic} author={author} obstacles=none\n"
             f"pp-score head={head} seat=gpt-6.1-sol vendor=openai score={openai} author={author} obstacles=none"
         )], self.trust)
 
-    def one(self, head, seat="claude-opus-5-5", vendor="anthropic", score=9, author="cursor-auto"):
-        return pps.trusted_records([comment(
+    def one(self, head, seat="claude-opus-5-5", vendor="anthropic", score=9, author="cursor-auto", read=True):
+        return (pps.read_comments if read else lambda c, _: c)([comment(
             f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author} obstacles=none"
         )], self.trust)
 
@@ -593,7 +620,7 @@ class CursorAutoMergeGroupTests(unittest.TestCase):
 
     def test_merge_group_fails_when_one_family_is_missing_on_the_current_head(self):
         # A complete pair on a stale SHA does not count for the current head.
-        records = self.dual(OTHER) + self.one(SHA)
+        records = pps.read_comments(self.dual(OTHER, read=False) + self.one(SHA, read=False), self.trust)
         plan = pps.plan_merge_group(
             QUEUE_HEAD, [1829], {1829: SHA}, {1829: records})
         self.assertEqual(plan.state, "failure")
@@ -706,7 +733,7 @@ class RepoFacts(pps.GitHubFacts):
 
 
 def record(head, seat="gpt-6.2-sol", vendor="openai", score=9, author="anthropic"):
-    return pps.Record(head, seat, vendor, author, float(score), ())
+    return pps.Record(head, seat, vendor, author, score, ())
 
 
 def body(rec, obstacles="none"):
@@ -714,50 +741,86 @@ def body(rec, obstacles="none"):
             f"author={rec.author} obstacles={obstacles}")
 
 
+def reading(*records):
+    return pps.read_comments([comment(body(r)) for r in records], pps.load_trust())
+
+
 CONFIG = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
-NO_CARRY_REASON = "no records on this head and no carry: "
-
-
 LANE_FILES, STRICT_FILES = ["docs/x.md"], ["scripts/merge-classes.json"]
+# The carry_source results of the current carry_both call, in call order.
+SOURCES = []
 
 
-def carry_status(test, repo, head, records, strict=False, failing=None, main_ref="main", git=None, files=None):
+def carry_both(test, repo, head, comments, strict=False, failing=None, main_ref="main", git=None, files=None,
+               guard=False):
     """The only route to a carry decision in this module besides main() (setUpModule makes a direct
-    call to any carry entry point raise). Returns carry_for_pr's result as the workflow gets it: the
-    checks from one check_state read, and files (default: a strict or a lane PR's) as the PR's file
-    list. Every carried success also pins the GRE-1859 interim: the sensitive guard's exact-head
-    check (has_two_scores) still refuses the head, even with a second vendor at 9 beside each record."""
-    facts = RepoFacts(repo, failing, main_ref, git)
-    with mock.patch.object(pps, "fetch_files", return_value=files or (STRICT_FILES if strict else LANE_FILES)):
-        plan, why = pps.carry_for_pr("o/r", 7, head, records, facts, pps.check_state(facts, head))
-    if plan is not None:
-        companions = [pps.Record(r.head, "glm-5.3-flash-free", "zhipu", r.author, 9.0, ()) for r in records]
-        test.assertFalse(merge_class.has_two_scores([body(r) for r in records + companions], head,
-                                                    records[0].author, CONFIG["scorer_seats"], CONFIG["vendors"]))
-    return plan, why
+    call to any carry entry point raise). comments are raw GitHub comments, or Records, each posted
+    as a comment holding one bare record line. One read_comments Reading of them goes to both
+    evaluators: the pp/score status (carry_for_pr, as the workflow calls it, with files as the PR's
+    file list) and the coordinator's sensitive merge check (merge_class.sensitive_scores, as
+    agent-guard.py calls it). Both must get the same carry_source result. A refusal there is each
+    evaluator's reason, verbatim; from a source, the guard passes only when the status passes. The
+    same holds with a second vendor at 9 beside each Record, which lets the guard pass. Returns the
+    status result for comments, followed by the guard's (source, why) when guard is set."""
+    raws = [c if isinstance(c, dict) else comment(body(c)) for c in comments]
+    companions = [comment(body(pps.Record(c.head, "glm-5.3-flash-free", "zhipu", c.author, 9, ())))
+                  for c in comments if not isinstance(c, dict)]
+    results = []
+    for group in (raws, raws + companions):
+        found = pps.read_comments(group, pps.load_trust())
+        facts = RepoFacts(repo, failing, main_ref, git)
+        SOURCES.clear()
+        with mock.patch.object(pps, "fetch_files", return_value=files or (STRICT_FILES if strict else LANE_FILES)):
+            plan, why = pps.carry_for_pr("o/r", 7, head, found, facts, pps.check_state(facts, head))
+        try:
+            source, guard_why = merge_class.sensitive_scores(found, head, CONFIG["scorer_seats"], CONFIG["vendors"],
+                                                             facts, merge_class.load_classes())
+        except Exception as err:  # noqa: BLE001 - agent-guard.py refuses the merge on any exception
+            source, guard_why = None, f"raised {type(err).__name__}"
+        results.append((plan, why, source, guard_why) if guard else (plan, why))
+        if head in found.heads():
+            # No carry: the guard reads head's own records, and passes only what the status passes.
+            if source is not None:
+                test.assertEqual(pps.plan_head(head, found).state, "success")
+            continue
+        if source is not None:
+            test.assertIsNotNone(plan, f"the guard passed what the status refused: {why}")
+            test.assertEqual((plan.state, why, guard_why), ("success", f"carried from {source[:7]}",
+                                                            f"carried from {source[:7]}"))
+        if len(SOURCES) == 2:
+            test.assertEqual(SOURCES[0], SOURCES[1], "the evaluators reached different carry decisions")
+            if SOURCES[0][0] is None:
+                test.assertEqual((why, guard_why), (SOURCES[0][1], SOURCES[0][1]))
+        else:
+            test.assertEqual((plan, source), (None, None), f"{len(SOURCES)} carry decisions: {why}; {guard_why}")
+    return results[0]
 
 
-# Every carry decision a test reaches goes through carry_status, or through main() or
+# Every carry decision a test reaches goes through carry_both, or through main() or
 # run_merge_group() as the workflow runs them.
-CARRY_ENTRY_POINTS = [(pps, "plan_carry"), (pps, "carry_for_pr"), (pps, "decide_carry"),
-                      (merge_class, "decide_carry")]
-DECIDING = {carry_status.__code__, pps.main.__code__, pps.run_merge_group.__code__}
+CARRY_ENTRY_POINTS = [(pps, "plan_carry"), (pps, "carry_for_pr"), (pps, "decide_carry"), (pps, "carry_source"),
+                      (merge_class, "decide_carry"), (merge_class, "carry_source"),
+                      (merge_class, "sensitive_scores")]
+DECIDING = {carry_both.__code__, pps.main.__code__, pps.run_merge_group.__code__}
 
 
-def only_through_carry_status(real):
+def only_through_carry_both(real):
     def guarded(*args, **kwargs):
         frame = sys._getframe(1)
         while frame is not None and frame.f_code not in DECIDING:
             frame = frame.f_back
         if frame is None:
-            raise AssertionError(f"{real.__name__} called outside carry_status or main()")
-        return real(*args, **kwargs)
+            raise AssertionError(f"{real.__name__} called outside carry_both or main()")
+        result = real(*args, **kwargs)
+        if real.__name__ == "carry_source":
+            SOURCES.append(result)
+        return result
     return guarded
 
 
 def setUpModule():
     for module, name in CARRY_ENTRY_POINTS:
-        patcher = mock.patch.object(module, name, only_through_carry_status(getattr(module, name)))
+        patcher = mock.patch.object(module, name, only_through_carry_both(getattr(module, name)))
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
 
@@ -826,12 +889,12 @@ class CarryTests(unittest.TestCase):
         cls.on_main = r.merge_commit(cls.m1, cls.base, cls.m1)
 
     def plan(self, head, records, strict=False, failing=None, main_ref="main"):
-        return carry_status(self, self.r, head, records, strict, failing, main_ref)
+        return carry_both(self, self.r, head, records, strict, failing, main_ref)
 
     def test_a_carry_entry_point_called_outside_carry_status_fails(self):
         # A new carry fixture cannot decide a carry another way: every entry point raises.
         for module, name in CARRY_ENTRY_POINTS:
-            with self.subTest(name), self.assertRaisesRegex(AssertionError, "outside carry_status"):
+            with self.subTest(name), self.assertRaisesRegex(AssertionError, "outside carry_both"):
                 getattr(module, name)(self.h1, [record(self.h0)])
 
     def refused(self, head, records=None, main_ref="main", **kw):
@@ -990,21 +1053,12 @@ class CarryTests(unittest.TestCase):
         plan, _ = self.plan(self.h1, [record(self.h0, score=9)], strict=True)
         self.assertEqual(plan.state, "success")
 
-    def test_a_carried_success_still_fails_the_sensitive_guard_on_its_head(self):
-        # GRE-1859 interim: the guard needs two scores on the exact head, as on main, so it is
-        # stricter than the status and refuses a head whose pp/score passed by carry.
-        records = [record(self.h0), record(self.h0, seat="glm-5.3-flash-free", vendor="zhipu")]
-        self.assertEqual(self.plan(self.h1, records, strict=True)[0].state, "success")
-        bodies, seats, vendors = [body(r) for r in records], CONFIG["scorer_seats"], CONFIG["vendors"]
-        self.assertTrue(merge_class.has_two_scores(bodies, self.h0, "anthropic", seats, vendors))
-        self.assertFalse(merge_class.has_two_scores(bodies, self.h1, "anthropic", seats, vendors))
-
     def test_sensitive_pr_class_comes_from_its_live_file_list(self):
         records = [record(self.h0, score=8)]
         for paths, state in ((["rust/crates/pp-storage/src/import.rs"], None),
                              (["scripts/merge-classes.json"], None), (["docs/x.md"], "success")):
             with self.subTest(paths=paths):
-                plan, why = carry_status(self, self.r, self.h1, records, files=paths)
+                plan, why = carry_both(self, self.r, self.h1, records, files=paths)
                 self.assertEqual(plan and plan.state, state, why)
 
     def test_grok_records_never_carry(self):
@@ -1038,13 +1092,111 @@ class CarryTests(unittest.TestCase):
 
     def test_merge_group_accepts_a_carried_head(self):
         carried = self.plan(self.h1, [record(self.h0)])
-        plan = pps.plan_merge_group(SHA, [1], {1: self.h1}, {1: [record(self.h0)]}, {1: carried})
+        plan = pps.plan_merge_group(SHA, [1], {1: self.h1}, {1: reading(record(self.h0))}, {1: carried})
         self.assertEqual((plan.state, plan.description),
                          ("success", f"#1: carried from {self.h0[:7]}: 9/10 from gpt-6.2-sol"))
         refused = self.plan(self.edited, [record(self.h0)])
-        plan = pps.plan_merge_group(SHA, [1], {1: self.edited}, {1: [record(self.h0)]}, {1: refused})
+        plan = pps.plan_merge_group(SHA, [1], {1: self.edited}, {1: reading(record(self.h0))}, {1: refused})
         self.assertEqual((plan.state, plan.description),
                          ("failure", f"#1: no trusted score on its head {self.edited[:7]}"))
+
+
+class GuardAgreementTests(unittest.TestCase):
+    """The pp/score status and the coordinator's sensitive merge check on raw comment bodies, through
+    carry_both: one read_comments Reading, one carry_source decision. The guard needs two non-Grok
+    vendors from scorer_seats at 9 or more where the status passes one seat at 8 or more, so one
+    seat, one vendor or Grok as the second seat passes the status but not the guard."""
+
+    @classmethod
+    def setUpClass(cls):
+        CarryTests.setUpClass()
+        cls.c = CarryTests
+
+    def line(self, head, seat="gpt-6.2-sol", vendor="openai", score=9, obstacles=" obstacles=none"):
+        return f"pp-score head={head} seat={seat} vendor={vendor} score={score} author=anthropic{obstacles}"
+
+    def two(self, head):
+        return [comment(self.line(head)), comment(self.line(head, "glm-5.3-flash-free", "zhipu"))]
+
+    def both(self, head, comments, **kw):
+        """(status passes, guard passes, status why) from carry_both, which checks that they agree."""
+        plan, why, source, _ = carry_both(self, self.c.r, head, comments, strict=True, guard=True, **kw)
+        return plan is not None, source is not None, why
+
+    def test_both_carry_two_vendors_across_one_and_two_clean_merges(self):
+        for head in (self.c.h1, self.c.h2):
+            with self.subTest(head=head):
+                self.assertEqual(self.both(head, self.two(self.c.h0)), (True, True, f"carried from {self.c.h0[:7]}"))
+
+    def test_the_four_parser_cases_get_one_decision_and_reason(self):
+        # Neon check of 320de029, case 11: each of these once split the two evaluators.
+        c, h0, h1 = self.c, self.c.h0, self.c.h1
+        edited = comment(self.line(h0), updated="2026-11-13T02:00:00Z")
+        cases = {
+            "a wrapped record alone on a later head": (
+                c.h2, self.two(h0) + [comment(f"`{self.line(h1)}`")],
+                f"{h1[:7]}: a wrapped or indented record never counts"),
+            "a wrong-vendor record beside a valid one": (
+                h1, self.two(h0) + [comment(self.line(h0, "composer-2.5", "openai"))],
+                f"{h0[:7]}: composer-2.5 is not an allowed seat for vendor=openai"),
+            "an edited record": (
+                h1, self.two(h0)[1:] + [edited], f"{h0[:7]}: the gpt-6.2-sol record was edited after it was posted"),
+            "a record without obstacles on a later head": (
+                c.h2, self.two(h0) + [comment(self.line(h1, obstacles=""))],
+                f"{h1[:7]}: the gpt-6.2-sol record has no obstacles="),
+            "a malformed record line on any head": (
+                h1, self.two(h0) + [comment(self.line(c.base, obstacles=" obstacles=maybe"))],
+                "a malformed pp-score record"),
+        }
+        for name, (head, comments, reason) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.both(head, comments), (False, False, reason))
+
+    def test_a_wrapped_record_is_checked_but_never_counts(self):
+        h0 = self.c.h0
+        wrapped = comment(f"`{self.line(h0, 'deepseek-v4.1-flash-free', 'deepseek')}`")
+        self.assertEqual(self.both(self.c.h1, self.two(h0) + [wrapped])[:2], (True, True))
+        # One bare vendor and a wrapped second vendor: the status passes one seat, the guard needs two.
+        self.assertEqual(self.both(self.c.h1, self.two(h0)[:1] + [wrapped])[:2], (True, False))
+
+    def test_a_low_valid_record_on_a_later_head_blocks_the_carry_in_both(self):
+        c = self.c
+        for low in (self.line(c.h1, score=5), f"`{self.line(c.h1, score=5)}`", f"  {self.line(c.h1, score=5)}"):
+            with self.subTest(low=low):
+                ok_status, ok_guard, why = self.both(c.h2, self.two(c.h0) + [comment(low)])
+                self.assertEqual((ok_status, ok_guard), (False, False))
+                self.assertTrue(why.startswith(c.h1[:7]), why)
+
+    def test_both_refuse_failing_records_and_checks(self):
+        h0, h1 = self.c.h0, self.c.h1
+        cases = {
+            "a seat at 8": self.two(h0)[:1] + [comment(self.line(h0, "glm-5.3-flash-free", "zhipu", 8))],
+            "a failing Grok record": self.two(h0) + [comment(self.line(h0, "grok-4.7", "xai", 7))],
+            "the author's own family": self.two(h0) + [comment(self.line(h0, "claude-opus-5-5", "anthropic"))],
+            "two author families": self.two(h0) + [
+                comment(self.line(h0, "deepseek-v4.1-flash-free", "deepseek").replace("author=anthropic",
+                                                                                        "author=cursor"))],
+        }
+        for name, comments in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.both(h1, comments)[:2], (False, False))
+        with self.subTest("a failing check on the carried head"):
+            self.assertEqual(self.both(h1, self.two(h0), failing={h1: "zizmor is failure"}),
+                             (False, False, f"{h1[:7]}: zizmor is failure"))
+
+    def test_the_status_passes_one_seat_but_the_guard_needs_two_vendors(self):
+        h0 = self.c.h0
+        for name, comments in {
+            "one seat": self.two(h0)[:1],
+            "two seats, one vendor": self.two(h0)[:1] + [comment(self.line(h0, "gpt-6.2-astra"))],
+            "Grok as the second seat": self.two(h0)[:1] + [comment(self.line(h0, "grok-4.7", "xai"))],
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.both(self.c.h1, comments)[:2], (True, False))
+
+    def test_the_guard_reads_the_exact_head_before_any_carry(self):
+        self.assertEqual(self.both(self.c.h1, self.two(self.c.h1))[1], True)
+        self.assertEqual(self.both(self.c.h1, self.two(self.c.h0) + [comment(self.line(self.c.h1))])[1], False)
 
 
 class CrissCrossTests(unittest.TestCase):
@@ -1078,7 +1230,7 @@ class CrissCrossTests(unittest.TestCase):
         # One explicit base (what GitHub's compare API returns) would certify the hand resolution.
         self.assertEqual(r.git("merge-tree", "--write-tree", f"--merge-base={x1}", h0, m),
                          r.git("rev-parse", f"{h1}^{{tree}}"))
-        plan, why = carry_status(self, r, h1, [record(h0)])
+        plan, why = carry_both(self, r, h1, [record(h0)])
         self.assertEqual((plan, why), (None, f"{h1[:7]}: 2 merge bases with main"))
 
 
@@ -1127,13 +1279,13 @@ class CommentModeCarryTests(unittest.TestCase):
         self.assertNotIn(f"statuses/{self.c.h2} -f state=success", out)
 
     def test_a_low_valid_record_on_a_later_head_blocks_the_carry(self):
-        # h1's 5 stops the walk at h1, bare or in the backtick form the docs call valid.
+        # h1's 5 stops the walk at h1, bare or wrapped in backticks: both evaluators read both forms.
         low = (f"pp-score head={self.c.h1} seat=gpt-6.2-sol vendor=openai score=5 author=anthropic "
                "obstacles=none")
         for line in (low, f"`{low}`"):
             with self.subTest(line=line):
                 _, out = self.run_main(self.c.h2, bodies=[self.body(), line])
-                self.assertIn(f"-f 'description=no score and no carry: {self.c.h1[:7]} did not pass", out)
+                self.assertIn(f"-f 'description=no score and no carry: {self.c.h1[:7]}", out)
                 self.assertNotIn(f"statuses/{self.c.h2} -f state=success", out)
 
     def test_merge_group_decides_the_carry_again(self):
@@ -1196,9 +1348,9 @@ class CarryLimitTests(unittest.TestCase):
             main = r.commit(f"m{i}.txt", f"{i}\n", f"main {i}")
             r.git("checkout", "-q", "pr")
             heads.append(r.merge(main))
-        plan, why = carry_status(self, r, heads[4], [record(h0)])
+        plan, why = carry_both(self, r, heads[4], [record(h0)])
         self.assertEqual((plan.state, why), ("success", f"carried from {h0[:7]}"))
-        self.assertEqual(carry_status(self, r, heads[5], [record(h0)]),
+        self.assertEqual(carry_both(self, r, heads[5], [record(h0)]),
                          (None, "no scored head within 5 merges of main"))
 
     def test_a_failed_unshallow_fetch_refuses(self):
@@ -1213,7 +1365,7 @@ class CarryLimitTests(unittest.TestCase):
                        check=True, env=c.r.env, capture_output=True)
         git = pps.LocalGit(clone)
         self.assertEqual(git._git("rev-parse", "--is-shallow-repository").stdout.strip(), "true")
-        plan, why = carry_status(self, c.r, c.h2, [record(c.h0)], git=git)
+        plan, why = carry_both(self, c.r, c.h2, [record(c.h0)], git=git)
         self.assertIsNone(plan)
         self.assertTrue(why.startswith("cannot verify carry: CalledProcessError"), why)
 

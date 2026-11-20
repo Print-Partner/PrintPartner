@@ -1350,31 +1350,6 @@ def changed_paths(pages, changed_files):
     return paths
 
 
-def trusted_comment_bodies(pages, authors, head):
-    """Return (bodies, edited) for PR comments whose author is in authors; refuse malformed pages.
-
-    edited says a trusted comment holding a pp-score record for head was changed after it was
-    posted (updated_at differs from created_at). Records for older heads never count, so their
-    edits do not matter. A deleted record cannot be seen here (GRE-1408)."""
-    if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
-        raise ValueError("missing PR comment pages")
-    bodies, edited = [], False
-    for page in pages:
-        for comment in page:
-            login, body = comment["user"]["login"], comment["body"]
-            if not isinstance(login, str) or not login or not isinstance(body, str):
-                raise ValueError("missing comment author or body")
-            if login not in authors:
-                continue
-            if any(line.startswith(f"pp-score head={head} ") for line in body.splitlines()):
-                created, updated = comment["created_at"], comment["updated_at"]
-                if not isinstance(created, str) or not created or not isinstance(updated, str) or not updated:
-                    raise ValueError("missing comment timestamps")
-                edited = edited or created != updated
-            bodies.append(body)
-    return bodies, edited
-
-
 def head_moved(gh_json, number, sha):
     """Refuse when the PR head changed while the guard read its files and comments."""
     if gh_json("pr", "view", number, "--json", "headRefOid")["headRefOid"] != sha:
@@ -1436,21 +1411,18 @@ def coordinator_merge_reason(args, cwd):
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
         pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
-        bodies, edited = trusted_comment_bodies(pages, authors, sha)
-        if edited:
-            return "Sensitive PR refused: a pp-score comment was edited after it was posted; edited records never count."
-        record_pattern = merge_class.score_pattern(config["vendors"])
-        # author= records the head branch's author vendor, supplied by the
-        # coordinator. Never infer a model vendor from the GitHub login.
-        author_vendors = set()
-        for body in bodies:
-            for line in body.splitlines():
-                match = record_pattern.fullmatch(line)
-                if match and match.group(1) == sha:
-                    author_vendors.add(match.group(5))
-        author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None
-        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"], config["vendors"]):
-            return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
+        if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+            raise ValueError("missing PR comment pages")
+        # The pp/score status reads the same comments with the same reader, rules and carry decision.
+        # author= records the head branch's author vendor, supplied by the coordinator. Never infer
+        # a model vendor from the GitHub login.
+        reading = merge_class.read_comments([c for page in pages for c in page], merge_class.load_trust())
+        facts = merge_class.GitHubFacts("{owner}/{repo}", lambda path: gh_json("api", path),
+                                        merge_class.LocalGit(cwd, deadline=deadline))
+        source, why = merge_class.sensitive_scores(reading, sha, config["scorer_seats"], config["vendors"], facts,
+                                                   classes)
+        if source is None:
+            return f"Sensitive PR refused: {why}; need two qualifying scorer seats on this head or a carried head."
         return head_moved(gh_json, number, sha)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
         return "Cannot verify merge class or scores; merge refused (missing or unreadable data)."

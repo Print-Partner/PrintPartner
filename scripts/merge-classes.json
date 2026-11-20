@@ -1,5 +1,5 @@
 {
-  "_about": "Merge class of each changed path. The coordinator merges a PR only if its class allows it: owner paths need Chad; sensitive paths need two scorer seats at 9 or more on the exact head; everything else is a lane PR. Patterns use ** for any depth and * within one segment. scripts/merge_class.py checks that every CODEOWNERS entry is classified here.",
+  "_about": "Merge class of each changed path. The coordinator merges a PR only if its class allows it: owner paths need Chad; sensitive paths need two scorer seats at 9 or more on the exact head, or on the head a score carry reaches (docs/development/score-records.md); everything else is a lane PR. Patterns use ** for any depth and * within one segment. scripts/merge_class.py checks that every CODEOWNERS entry is classified here.",
   "owner": [
     ".github/**",
     ".factory/**",

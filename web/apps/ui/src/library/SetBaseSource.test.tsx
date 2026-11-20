@@ -181,7 +181,7 @@ function scriptedCore({
   let layerMode: "held" | "failed" | undefined;
   const heldLayers: (() => void)[] = [];
   let holdPut = false;
-  const heldPuts: (() => void)[] = [];
+  const heldPuts: ((answer?: () => Response) => void)[] = [];
   let next: { answer: Answer; writesLater: boolean } | undefined;
   const lateWrites: (() => void)[] = [];
   let sourcesFail = false;
@@ -196,7 +196,9 @@ function scriptedCore({
       return Promise.resolve(heard);
     }
     if (init?.method === "PUT" && holdPut) {
-      return new Promise((resolve) => heldPuts.push(() => resolve(route(path, init))));
+      return new Promise((resolve) =>
+        heldPuts.push((answer) => resolve(answer ? answer() : route(path, init))),
+      );
     }
     if (/^\/api\/v2\/plans\/\d+\/layers$/.test(path) && !init?.method && layerMode) {
       if (layerMode === "failed") return Promise.resolve(problem(503, "Layers unreadable"));
@@ -219,11 +221,14 @@ function scriptedCore({
       layerMode = undefined;
       for (const answerHeld of heldLayers.splice(0)) answerHeld();
     },
-    /** Holds the next PUT before the core reads it; `releasePut` stores it and answers. */
+    /**
+     * Holds the next PUT before the core reads it. `releasePut()` stores it and answers 200;
+     * `releasePut(answer)` answers `answer` and stores nothing.
+     */
     holdPut: () => (holdPut = true),
-    releasePut: () => {
+    releasePut: (answer?: () => Response) => {
       holdPut = false;
-      for (const answerHeld of heldPuts.splice(0)) answerHeld();
+      for (const answerHeld of heldPuts.splice(0)) answerHeld(answer);
     },
     /** The UI hears `answer` for the next PUT; the core writes it only on `commitLate`. */
     answerLate: (answer: Answer) => (next = { answer, writesLater: true }),
@@ -310,27 +315,20 @@ describe("UI13-03: a Build with no layers names Set base Source", () => {
     await screen.findByRole("heading", { level: 1, name: "Library" });
   });
 
-  it("stays closed while the Build is read again after a lost answer", async () => {
+  it("shows no form while the Build is read again after a lost answer", async () => {
     const core = scriptedCore({
       sources: ["Kit A", "Kit B"],
       baseAnswer: () => problem(502, "Bad Gateway"),
     });
     renderAt("/builds/1000/sources", core.fetchMock);
     const form = await readyForm();
-    const select = within(form).getByLabelText("Base Source");
-    fireEvent.change(select, { target: { value: "2" } });
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
     core.holdLayers();
-    const set = within(form).getByRole("button", { name: "Set base Source" });
-    fireEvent.click(set);
-    await waitFor(() => expect(core.basePuts).toEqual([{ project_id: 2 }]));
-    await settle();
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
     // The PUT committed but its answer was lost; a second one would replace Kit B.
-    fireEvent.change(select, { target: { value: "1" } });
-    fireEvent.click(set);
-    await settle();
-    expect(core.basePuts).toHaveLength(1);
-    expect(within(form).getByText("Setting the base Source.")).toBeTruthy();
-    expect(set.getAttribute("aria-disabled")).toBe("true");
+    const panel = await unconfirmedPanel();
+    expect(within(panel).getByText("Reading the Build again.")).toBeTruthy();
+    expect(screen.queryByRole("form")).toBeNull();
 
     core.releaseLayers();
     const table = await screen.findByRole("table", { name: "Build Sources" });
@@ -425,37 +423,67 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     expect(core.basePuts).toEqual([{ project_id: 2 }]);
   });
 
-  it("keeps a remounted form closed while the PUT itself is still in flight", async () => {
+  // The council finding on #1880 at 6aa8e537: the plain form rendered, disabled, while the
+  // first PUT was still in flight. It must not render at all until that PUT has an outcome.
+  const returns: [string, (router: ReturnType<typeof renderAt>) => Promise<void>][] = [
+    [
+      "Overview and back",
+      async () => {
+        fireEvent.click(tab("Overview"));
+        await screen.findByRole("link", { name: "Choose its base Source" });
+        fireEvent.click(tab("Sources"));
+      },
+    ],
+    [
+      "leaving the Build and coming back",
+      async (router) => {
+        await act(() => router.navigate("/library"));
+        await screen.findByRole("heading", { level: 1, name: "Library" });
+        await act(() => router.navigate("/builds/1000/sources"));
+      },
+    ],
+    [
+      "Back then Forward",
+      async (router) => {
+        await act(() => router.navigate("/builds/1000"));
+        await act(() => router.navigate("/builds/1000/sources"));
+        await act(() => router.navigate(-1));
+        await screen.findByRole("link", { name: "Choose its base Source" });
+        await act(() => router.navigate(1));
+      },
+    ],
+  ];
+  it.each(
+    returns.flatMap(([how, go]) => [
+      [how, "200", "the base table", go] as const,
+      [how, "502", "the unconfirmed panel", go] as const,
+    ]),
+  )("with the first PUT held, %s shows no form; a %s release then shows %s", async (_, status, _shown, go) => {
     const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
-    renderAt("/builds/1000/sources", core.fetchMock);
+    const router = renderAt("/builds/1000/sources", core.fetchMock);
     const form = await readyForm();
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
     core.holdPut();
     fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
-    await waitFor(() =>
-      expect(core.fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(true),
-    );
+    await waitFor(() => expect(putCount(core)).toBe(1));
 
-    fireEvent.click(tab("Overview"));
-    await screen.findByRole("link", { name: "Choose its base Source" });
-    fireEvent.click(tab("Sources"));
-    const again = await screen.findByRole("form", { name: "Set base Source" });
-    // The layers read on return still have no base, but the send is in flight.
+    await go(router);
+    expect(await screen.findByText("Setting the base Source.")).toBeTruthy();
     await settle();
-    fireEvent.change(await within(again).findByLabelText("Base Source"), {
-      target: { value: "1" },
-    });
-    // The in-flight gate: the disabled button and a submit that bypasses it both send nothing.
-    fireEvent.click(within(again).getByRole("button", { name: "Set base Source" }));
-    fireEvent.submit(again);
-    await settle();
-    expect(core.fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
-    expect(within(again).getByText("Setting the base Source.")).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "Set base Source" })).toBeNull();
+    expect(screen.getByText("Setting the base Source.")).toBeTruthy();
+    expect(putCount(core)).toBe(1);
 
-    core.releasePut();
-    const table = await screen.findByRole("table", { name: "Build Sources" });
-    expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
-    expect(core.basePuts).toEqual([{ project_id: 2 }]);
+    if (status === "200") {
+      core.releasePut();
+      const table = await screen.findByRole("table", { name: "Build Sources" });
+      expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
+    } else {
+      core.releasePut(() => problem(502, "Bad Gateway"));
+      await within(await unconfirmedPanel()).findByText("The last read shows no base Source yet.");
+      expect(screen.queryByRole("form")).toBeNull();
+    }
+    expect(putCount(core)).toBe(1);
   });
 
   it("reads the Build again on return before it opens, so a base set elsewhere is kept", async () => {
@@ -468,14 +496,10 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     core.setBaseElsewhere("Kit A");
     core.holdLayers();
     fireEvent.click(tab("Sources"));
-    const form = await screen.findByRole("form", { name: "Set base Source" });
-    fireEvent.change(await within(form).findByLabelText("Base Source"), {
-      target: { value: "2" },
-    });
-    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    expect(await screen.findByText("Reading the Build again.")).toBeTruthy();
     await settle();
+    expect(screen.queryByRole("form")).toBeNull();
     expect(core.basePuts).toEqual([]);
-    expect(within(form).getByText("Reading the Build again.")).toBeTruthy();
 
     core.releaseLayers();
     const table = await screen.findByRole("table", { name: "Build Sources" });
@@ -560,17 +584,14 @@ describe("a send the UI never saw confirmed", () => {
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "1" } });
     core.refuseNext(() => problem(404, "Project not found"));
     fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
-    expect((await within(form).findByRole("alert")).textContent).toBe(
+    // The form left while the send was in flight; it is back with the reason.
+    const again = await readyForm();
+    expect(within(again).getByRole("alert").textContent).toBe(
       "That Source is no longer in the Library. Choose another.",
     );
     expect(screen.queryByRole("region", { name: "Unconfirmed base Source" })).toBeNull();
-    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
-    await waitFor(() =>
-      expect(
-        within(form).getByRole("button", { name: "Set base Source" }).getAttribute("aria-disabled"),
-      ).toBeNull(),
-    );
-    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    fireEvent.change(within(again).getByLabelText("Base Source"), { target: { value: "2" } });
+    fireEvent.click(within(again).getByRole("button", { name: "Set base Source" }));
     const table = await screen.findByRole("table", { name: "Build Sources" });
     expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
     expect(putCount(core)).toBe(2);

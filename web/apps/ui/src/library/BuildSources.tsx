@@ -1,4 +1,9 @@
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router";
 import {
@@ -154,10 +159,27 @@ function useSetBase(buildId: number) {
 }
 
 /**
+ * The one rule for the plain Set base Source form: this page has no send for the Build, in
+ * flight or unconfirmed, and a read since the tab opened shows the Build with no layers.
+ */
+function plainFormMayRender(
+  sends: readonly UnconfirmedSend[],
+  build: UseQueryResult<BuildData>,
+): boolean {
+  return (
+    sends.length === 0 &&
+    build.isFetchedAfterMount &&
+    !build.isFetching &&
+    build.isSuccess &&
+    build.data.layers.length === 0
+  );
+}
+
+/**
  * A Build with no layers: choose a Library Source as its base. The core's PUT moves an existing
- * base, so a second send would replace the first. The plain form opens only on layers read
- * after it mounted, with no send for this Build in flight and none unconfirmed. An unconfirmed
- * send shows `UnconfirmedPanel` instead, whose Set a base anyway is the only way to send again.
+ * base, so a second send would replace the first. Only `plainFormMayRender` opens the plain
+ * form. A send in flight shows its progress and no form; an unconfirmed one shows
+ * `UnconfirmedPanel`, whose Set a base anyway is the only way to send again.
  */
 function SetBaseSource({ buildId }: { buildId: number }) {
   const client = useQueryClient();
@@ -170,8 +192,8 @@ function SetBaseSource({ buildId }: { buildId: number }) {
       { cancelRefetch: false },
     );
   }, [client, buildId]);
-  const sending = useIsMutating({ mutationKey: setBaseKey(buildId), exact: true }) > 0;
-  const unconfirmed = useUnconfirmedSends(buildId).at(-1) ?? null;
+  const sends = useUnconfirmedSends(buildId);
+  const unconfirmed = sends.at(-1) ?? null;
   const { send, refusal, clearRefusal } = useSetBase(buildId);
   const [anyway, setAnyway] = useState(false);
   const read = build.isFetchedAfterMount && !build.isFetching;
@@ -181,8 +203,25 @@ function SetBaseSource({ buildId }: { buildId: number }) {
       ? "Could not read the Build again. Press Read again to see whether the base Source was set."
       : null;
   const readAgain = () => void build.refetch();
-  if (unconfirmed && !sending && !anyway) {
-    return (
+  const form = (explicit: boolean) => (
+    <BaseForm
+      unconfirmed={explicit ? unconfirmed : null}
+      reading={reading}
+      readAgain={readAgain}
+      refusal={refusal}
+      clearRefusal={clearRefusal}
+      send={(sourceId) => {
+        setAnyway(false);
+        send(sourceId, explicit);
+      }}
+      cancel={() => setAnyway(false)}
+    />
+  );
+  if (sends.some((entry) => entry.reason === null)) return <BaseStatus text="Setting the base Source." />;
+  if (unconfirmed) {
+    return anyway ? (
+      form(true)
+    ) : (
       <UnconfirmedPanel
         unconfirmed={unconfirmed}
         reading={reading}
@@ -191,20 +230,26 @@ function SetBaseSource({ buildId }: { buildId: number }) {
       />
     );
   }
+  if (plainFormMayRender(sends, build)) return form(false);
+  return <BaseStatus text={reading ?? READING} readAgain={reading === READING ? undefined : readAgain} />;
+}
+
+/** No form: a send is in flight, or the layers have not been read well since the tab opened. */
+function BaseStatus({ text, readAgain }: { text: string; readAgain?: () => void }) {
   return (
-    <BaseForm
-      unconfirmed={anyway ? unconfirmed : null}
-      sending={sending}
-      reading={reading}
-      readAgain={readAgain}
-      refusal={refusal}
-      clearRefusal={clearRefusal}
-      send={(sourceId) => {
-        setAnyway(false);
-        send(sourceId, anyway);
-      }}
-      cancel={() => setAnyway(false)}
-    />
+    <section aria-label="Base Source">
+      <p>This Build has no layers, so it uses no Sources.</p>
+      <div className="pp-dialog-actions">
+        {readAgain && (
+          <button type="button" className="pp-button" onClick={readAgain}>
+            Read again
+          </button>
+        )}
+        <span role="status" className="pp-mutation-reason">
+          {text}
+        </span>
+      </div>
+    </section>
   );
 }
 
@@ -268,7 +313,6 @@ function UnconfirmedPanel({
  */
 function BaseForm({
   unconfirmed,
-  sending,
   reading,
   readAgain,
   refusal,
@@ -277,7 +321,6 @@ function BaseForm({
   cancel,
 }: {
   unconfirmed: UnconfirmedSend | null;
-  sending: boolean;
   reading: string | null;
   readAgain: () => void;
   refusal: string;
@@ -292,9 +335,7 @@ function BaseForm({
   const label = unconfirmed ? "Set base anyway" : "Set base Source";
   const why = offline
     ? OFFLINE_REASON
-    : sending
-      ? "Setting the base Source."
-      : (reading ?? (sourceId === null ? "Choose a Source." : null));
+    : (reading ?? (sourceId === null ? "Choose a Source." : null));
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (why === null && sourceId !== null) send(sourceId);

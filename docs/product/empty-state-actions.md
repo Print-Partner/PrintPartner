@@ -38,15 +38,21 @@ GRE-1127. Keep the existing Help destinations and `planCopy.ts` wording.
 ## Set base Source
 
 The core's `PUT /api/v2/plans/{id}/layers/base` moves an existing base to the
-new Source, so a second send replaces the first. The plain form therefore opens
-only when all three hold:
+new Source, so a second send replaces the first. One function,
+`plainFormMayRender`, decides whether the plain form renders. It renders only
+when the Build has no recorded send, in flight or unconfirmed, and a read since
+the tab opened shows zero layers:
 
 - The Build's layers were read after the form mounted. Leaving the Sources tab
-  and coming back reads them again; cached layers never open it.
-- No `setBuildBase` for that Build is in flight. The send and the re-read after
-  it share the mutation key `["core", "setBuildBase", id]`, and a press checks
-  it again, so two forms cannot both send.
-- The Build has no unconfirmed send. Each send is recorded at the press, before
+  and coming back reads them again; cached layers never open it. Until that
+  read succeeds the tab shows its status and no form.
+- While a send for that Build is in flight, the tab shows "Setting the base
+  Source." and no form, on every mount: after Overview and back, after leaving
+  the Build, and after Back and Forward. When the send settles, the tab shows the
+  base, the unconfirmed panel, or the form with the core's refusal. A press
+  also checks the mutation key `["core", "setBuildBase", id]`, so two forms
+  cannot both send.
+- Each send is recorded at the press, before
   it leaves, in module state (`web/apps/ui/src/library/unconfirmedBase.ts`),
   not in the query client. Sign-in, account setup and sign-out clear or prune
   the query client, and the record survives each of them; only a page reload

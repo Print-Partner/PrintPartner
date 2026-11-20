@@ -7,8 +7,9 @@ import {
   type BuildData,
   type WorkspaceContext,
 } from "../builds/BuildWorkspace";
-import { CoreError } from "../core/client";
-import { writeCore } from "../core/rust";
+import { routePath, routes, type ProfileLayers } from "@print-partner/rust-client";
+import { CoreError, fetchCore } from "../core/client";
+import { ContractError, RequestContractError } from "../core/rust";
 import { sourcesQuery } from "../core/sources";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
@@ -19,10 +20,13 @@ import { LineCell } from "./LibraryScreen";
 import { SourceFiles } from "./SourceFiles";
 import { acceptedRevisionText, revisionText, type Source } from "./sources";
 import {
-  clearUnconfirmed,
-  markUnconfirmed,
-  useUnconfirmedBase,
-  type UnconfirmedBase,
+  baseSeen,
+  recordSend,
+  sendRefused,
+  sendUnconfirmed,
+  unconfirmedSends,
+  useUnconfirmedSends,
+  type UnconfirmedSend,
 } from "./unconfirmedBase";
 
 /** Each Source once, in layer order. A layer with no Source is skipped. */
@@ -49,11 +53,47 @@ const setBaseKey = (buildId: number) => ["core", "setBuildBase", buildId] as con
 const READING = "Reading the Build again.";
 
 const LATE_SEND =
-  "If that send reaches the core later, whichever of the two arrives last becomes the base and replaces the other.";
+  "That send can still reach the core and replace the base you set now, and the base you set now can replace one it already set.";
 
 /**
- * Sends `setBuildBase` once. From the press until the core confirms or refuses it, the send is
- * recorded as unconfirmed (see `unconfirmedBase.ts`); a 5xx or lost answer leaves it there.
+ * Statuses the core's own set-base handler refuses with, writing nothing
+ * (`set_base` in `rust/crates/pp-api/src/builds/http.rs`, through `attachment`, `receive`,
+ * `present` and `domain_error`): 400 an unreadable body, or a Source the Build cannot use
+ * ("Project not found"); 401 no valid session; 403 the account needs an owner mapping; 404 no
+ * such Build, no such Source, or the Source is already on the Build; 413 a body over the limit.
+ * Each is decided before or inside the one write transaction, so nothing of that request can
+ * commit after it. Its 503s (writer queue full, writer stopped, outcome unknown) and 500s
+ * can follow a write that still commits, so they are not refusals.
+ */
+const CORE_REFUSALS = new Set([400, 401, 403, 404, 413]);
+
+/** Only the core's own problem with a refusal status. A proxy's 4xx page is not one. */
+const refusedByCore = (error: Error) =>
+  error instanceof CoreError && error.problem && CORE_REFUSALS.has(error.status);
+
+/**
+ * One PUT. A redirect is refused, not followed: a followed 307 or 308 would send the PUT again,
+ * and the destination's answer is not the core's. The refused redirect is a network error, so
+ * the send stays unconfirmed.
+ */
+async function putBase(buildId: number, projectId: number): Promise<ProfileLayers> {
+  const path = routePath("setBuildBase", { id: buildId });
+  const request = routes.setBuildBase.request.safeParse({ project_id: projectId });
+  if (!request.success) throw new RequestContractError(path);
+  const response = await fetchCore(path, {
+    method: "PUT",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(request.data),
+    redirect: "error",
+  });
+  const parsed = routes.setBuildBase.response.safeParse(await response.json().catch(() => undefined));
+  if (!parsed.success) throw new ContractError(path);
+  return parsed.data;
+}
+
+/**
+ * Sends `setBuildBase` once. The send is recorded before it leaves (see `unconfirmedBase.ts`)
+ * and stays recorded until the core confirms it or refuses it with its own problem.
  */
 function useSetBase(buildId: number) {
   const client = useQueryClient();
@@ -62,24 +102,24 @@ function useSetBase(buildId: number) {
     mutationKey: setBaseKey(buildId),
     retry: false,
     networkMode: "always",
-    mutationFn: (projectId: number) =>
-      writeCore("setBuildBase", { id: buildId }, { project_id: projectId }),
-    onMutate: (projectId) => {
-      markUnconfirmed(client, buildId, { sourceId: projectId, reason: null });
-    },
+    mutationFn: ({ sourceId }: { sourceId: number; sendId: number }) => putBase(buildId, sourceId),
     // The answer is the Build's layers now: show them at once, so the form closes for good.
     onSuccess: (answer) => {
-      clearUnconfirmed(client, buildId);
+      baseSeen(buildId);
       client.setQueryData(buildQuery(buildId).queryKey, (old: BuildData | undefined) =>
         old ? { ...old, layers: answer.layers } : old,
       );
     },
-    onError: (error: Error, projectId) => {
-      if (error instanceof CoreError && error.status < 500) {
-        clearUnconfirmed(client, buildId);
-        setRefusal(refusalText(error.detail ?? error.message));
+    onError: (error: Error, { sendId }) => {
+      if (refusedByCore(error)) {
+        sendRefused(buildId, sendId);
+        setRefusal(refusalText((error as CoreError).detail ?? error.message));
+      } else if (error instanceof RequestContractError) {
+        // Refused before it left: nothing was sent.
+        sendRefused(buildId, sendId);
+        setRefusal(error.message);
       } else {
-        markUnconfirmed(client, buildId, { sourceId: projectId, reason: error.message });
+        sendUnconfirmed(buildId, sendId, error.message);
       }
     },
     // Returned, so the send stays in flight until the Build has been read again.
@@ -90,11 +130,13 @@ function useSetBase(buildId: number) {
         client.invalidateQueries({ queryKey: ["core", "tasks"] }),
       ]),
   });
-  const send = (sourceId: number) => {
+  /** `anyway` is the owner's explicit Set a base anyway; the plain form never passes it. */
+  const send = (sourceId: number, anyway: boolean) => {
     // Asked at the press, not taken from the last render, so two forms cannot both send.
     if (client.isMutating({ mutationKey: setBaseKey(buildId), exact: true }) > 0) return;
+    if (!anyway && unconfirmedSends(buildId).length > 0) return;
     setRefusal("");
-    mutation.mutate(sourceId);
+    mutation.mutate({ sourceId, sendId: recordSend(buildId, sourceId) });
   };
   return { send, refusal, clearRefusal: () => setRefusal("") };
 }
@@ -103,7 +145,7 @@ function useSetBase(buildId: number) {
  * A Build with no layers: choose a Library Source as its base. The core's PUT moves an existing
  * base, so a second send would replace the first. The plain form opens only on layers read
  * after it mounted, with no send for this Build in flight and none unconfirmed. An unconfirmed
- * send shows `UnconfirmedBase` instead, whose Set a base anyway is the only way to send again.
+ * send shows `UnconfirmedPanel` instead, whose Set a base anyway is the only way to send again.
  */
 function SetBaseSource({ buildId }: { buildId: number }) {
   const client = useQueryClient();
@@ -117,7 +159,7 @@ function SetBaseSource({ buildId }: { buildId: number }) {
     );
   }, [client, buildId]);
   const sending = useIsMutating({ mutationKey: setBaseKey(buildId), exact: true }) > 0;
-  const unconfirmed = useUnconfirmedBase(buildId);
+  const unconfirmed = useUnconfirmedSends(buildId).at(-1) ?? null;
   const { send, refusal, clearRefusal } = useSetBase(buildId);
   const [anyway, setAnyway] = useState(false);
   const read = build.isFetchedAfterMount && !build.isFetching;
@@ -129,7 +171,7 @@ function SetBaseSource({ buildId }: { buildId: number }) {
   const readAgain = () => void build.refetch();
   if (unconfirmed && !sending && !anyway) {
     return (
-      <UnconfirmedSend
+      <UnconfirmedPanel
         unconfirmed={unconfirmed}
         reading={reading}
         readAgain={readAgain}
@@ -147,7 +189,7 @@ function SetBaseSource({ buildId }: { buildId: number }) {
       clearRefusal={clearRefusal}
       send={(sourceId) => {
         setAnyway(false);
-        send(sourceId);
+        send(sourceId, anyway);
       }}
       cancel={() => setAnyway(false)}
     />
@@ -160,13 +202,13 @@ function useSourceName(sourceId: number): string {
 }
 
 /** An unconfirmed send: no plain form, only Read again and the explicit Set a base anyway. */
-function UnconfirmedSend({
+function UnconfirmedPanel({
   unconfirmed,
   reading,
   readAgain,
   setAnyway,
 }: {
-  unconfirmed: UnconfirmedBase;
+  unconfirmed: UnconfirmedSend;
   reading: string | null;
   readAgain: () => void;
   setAnyway: () => void;
@@ -222,7 +264,7 @@ function BaseForm({
   send,
   cancel,
 }: {
-  unconfirmed: UnconfirmedBase | null;
+  unconfirmed: UnconfirmedSend | null;
   sending: boolean;
   reading: string | null;
   readAgain: () => void;
@@ -250,7 +292,7 @@ function BaseForm({
       {unconfirmed ? (
         <p>
           The earlier send of {earlier} was not confirmed. {LATE_SEND} Choose the Source again to
-          set it now.
+          set a base now.
         </p>
       ) : (
         <p>This Build has no layers, so it uses no Sources. Choose its base Source to plan it.</p>
@@ -301,13 +343,12 @@ function BaseForm({
 }
 
 function SourcesBody({ build, layers }: BuildData) {
-  const client = useQueryClient();
   const sources = useQuery(sourcesQuery);
-  // A read that shows a base settles any unconfirmed send: whichever send it was, it arrived.
+  // A read that shows a base ends the record: no form shows while the Build has a base.
   const based = layers.length > 0;
   useEffect(() => {
-    if (based) clearUnconfirmed(client, build.id);
-  }, [client, build.id, based]);
+    if (based) baseSeen(build.id);
+  }, [build.id, based]);
   const byId = new Map(sources.data?.sources.map((source) => [source.id, source]));
   const layered = [...layers].sort((a, b) => a.layer_order - b.layer_order);
   const fileSources = sourcesInLayerOrder(layered);

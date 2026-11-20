@@ -44,34 +44,43 @@ only when all three hold:
 - The Build's layers were read after the form mounted. Leaving the Sources tab
   and coming back reads them again; cached layers never open it.
 - No `setBuildBase` for that Build is in flight. The send and the re-read after
-  it share the mutation key `["core", "setBuildBase", id]` in the query client,
-  which outlives the tab.
-- The Build has no unconfirmed send. From the press until the core confirms or
-  refuses it, a send is recorded per Build in the query client
-  (`web/apps/ui/src/library/unconfirmedBase.ts`). The record is never
-  garbage-collected, so it outlives the tab and the send settling. A 5xx or lost
-  answer leaves it in place.
+  it share the mutation key `["core", "setBuildBase", id]`, and a press checks
+  it again, so two forms cannot both send.
+- The Build has no unconfirmed send. Each send is recorded at the press, before
+  it leaves, in module state (`web/apps/ui/src/library/unconfirmedBase.ts`),
+  not in the query client. Sign-in, account setup and sign-out clear or prune
+  the query client, and the record survives each of them; only a page reload
+  ends it.
 
-A 200 answer is the Build's layers, and the UI writes them into the Build cache
-at once. A 4xx is a refusal: nothing was written, and the form shows the reason.
+A send leaves the record only when the core confirms it (a 200 whose body
+matches the contract) or refuses it with its own problem: an
+`application/problem+json` body valid against the generated `Problem` schema,
+whose `status` matches the answer, with a status the set-base handler refuses
+with: 400, 401, 403, 404 or 413. Each of those is decided before or inside the
+one write transaction, so nothing of that request commits later. Every other
+answer keeps the send: any other 4xx, such as a proxy's 408, 421, 425, 429 or
+its own 400 or 403 page; a redirect, which the PUT refuses to follow; every
+5xx, including the core's 503 "outcome unknown"; a dropped connection; and a
+200 whose body fails the contract.
 
 While a Build has an unconfirmed send, the Sources tab shows no form. It says
 the send could not be confirmed and that the core may still set that Source,
-and offers **Read again**. A read that shows a base clears the record and shows
-the base. A read of zero layers does not, because the write may still be on its
-way. **Set a base anyway** is the owner's way out when the first send never
-arrived. It explains that if the earlier send reaches the core later, whichever
-of the two arrives last becomes the base, and it needs the Source chosen again.
-It opens only after a read that succeeded since the Sources tab opened.
+and offers **Read again**. A read that shows a base ends the record. A read of
+zero layers does not, because the write may still be on its way. **Set a base
+anyway** is the owner's way out when the first send never arrived. It explains
+that the earlier send can still replace the base set now, and that the base set
+now can replace one the earlier send already set. It needs the Source chosen
+again, and it opens only after a read that succeeded since the Sources tab
+opened. A refusal of that send ends only its own record, so the earlier send
+still keeps the plain form closed.
 
-The UI cannot see a send from before a page reload, because the record lives in
-memory. Another window or client can also send at the same time. The real guard
-belongs in the core: a base PUT that refuses to replace an existing base unless
-the caller names the base it expects.
-`web/apps/ui/src/library/SetBaseSource.test.tsx` covers leaving and coming back
-while the PUT or its re-read is held, a base set from another window, a 502,
-500 or dropped answer whose write lands later, Set a base anyway, and a second
-Build.
+The UI cannot see a send from before a page reload, from another window or
+device, or from an MCP or API client. The real guard belongs in the core
+(GRE-1866): a base PUT that refuses to replace an existing base unless the
+caller names the base it expects.
+`web/apps/ui/src/library/SetBaseSource.test.tsx` covers each answer above that
+keeps a send, each cache reset, Set a base anyway and its refusal, Cancel, a
+second Build, and leaving and coming back while the PUT or its re-read is held.
 
 ## Capture and checks
 

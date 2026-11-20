@@ -11,17 +11,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 import { refusalText } from "../screen/SourceSelect";
+import { forgetAllSends } from "./unconfirmedBase";
 
 // GRE-1401 slice a: a scripted core on disposable, in-memory data. It keeps Sources, Builds
 // and layers, and answers set-base as Rust does: an unknown Source is a 404 with the core's
 // wording, and a PUT on a Build that has a base moves the base to the new Source.
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+/** The core's own problem: `application/problem+json`, valid, with the answer's status. */
 const problem = (status: number, detail: string) =>
-  json(
-    { type: "urn:print-partner:problem:validation", title: "Bad Request", status, detail },
-    status,
+  new Response(
+    JSON.stringify({ type: "urn:print-partner:problem:validation", title: "Refused", status, detail }),
+    { status, headers: { "content-type": "application/problem+json" } },
   );
+/** A proxy or load balancer's own error page: not the core's problem. */
+const page = (status: number) =>
+  new Response("<html><body>Upstream trouble</body></html>", {
+    status,
+    headers: { "content-type": "text/html" },
+  });
 
 const health: Health = {
   ok: true,
@@ -87,8 +95,18 @@ const storedBuild = (id: number, name: string): ProfileSummary => ({
   due_date: null,
 });
 
-/** How the UI hears about a PUT whose write the core applies only on `commitLate`. */
-type LateAnswer = "502" | "500" | "drop";
+/** What the UI hears for a PUT: a response, or a dropped connection. */
+type Answer = () => Response | "drop";
+
+const user = {
+  user_id: "user-1",
+  login: "owner",
+  display_name: "Owner",
+  email: "owner@example.com",
+  provider: "email",
+  is_admin: true,
+  hasPassword: true,
+};
 
 /** Builds 1000 and 1001, both with no layers, and a Library holding `sources`. */
 function scriptedCore({
@@ -115,8 +133,26 @@ function scriptedCore({
       },
     ]);
   };
-  const route = (path: string, init?: RequestInit): Response => {
+  let signedIn = true;
+  let setupRequired = false;
+  /** `/auth/*` and `/health`, which answer with or without a session. */
+  const authRoute = (path: string): Response | null => {
     if (path === "/health") return json(health);
+    if (path === "/auth/status") return json({ setup_required: setupRequired });
+    if (path === "/auth/login" || path === "/auth/register") {
+      signedIn = true;
+      setupRequired = false;
+      return json({ user });
+    }
+    if (path === "/auth/logout") {
+      signedIn = false;
+      return json({ ok: true });
+    }
+    return signedIn ? null : problem(401, "Authentication required");
+  };
+  const route = (path: string, init?: RequestInit): Response => {
+    const auth = authRoute(path);
+    if (auth) return auth;
     if (path === "/api/v2/tasks") return json({ tasks: [], unavailable: [] });
     if (path === "/api/v1/sources") return json({ sources });
     const files = /^\/api\/v1\/sources\/(\d+)\/files$/.exec(path);
@@ -145,17 +181,18 @@ function scriptedCore({
   const heldLayers: (() => void)[] = [];
   let holdPut = false;
   const heldPuts: (() => void)[] = [];
-  let late: LateAnswer | undefined;
+  let next: { answer: Answer; writesLater: boolean } | undefined;
   const lateWrites: (() => void)[] = [];
   let sourcesFail = false;
   const fetchMock = vi.fn((path: string, init?: RequestInit): Promise<Response> => {
-    if (init?.method === "PUT" && late) {
-      // The UI hears a failure now; the core writes only when `commitLate` runs.
-      const answer = late;
-      late = undefined;
-      lateWrites.push(() => void route(path, init));
-      if (answer === "drop") return Promise.reject(new TypeError("Failed to fetch"));
-      return Promise.resolve(problem(Number(answer), "Upstream failed"));
+    if (init?.method === "PUT" && next) {
+      // The UI hears `answer` now; a late write lands only when `commitLate` runs.
+      const { answer, writesLater } = next;
+      next = undefined;
+      if (writesLater) lateWrites.push(() => void route(path, init));
+      const heard = answer();
+      if (heard === "drop") return Promise.reject(new TypeError("Failed to fetch"));
+      return Promise.resolve(heard);
     }
     if (init?.method === "PUT" && holdPut) {
       return new Promise((resolve) => heldPuts.push(() => resolve(route(path, init))));
@@ -187,8 +224,14 @@ function scriptedCore({
       holdPut = false;
       for (const answerHeld of heldPuts.splice(0)) answerHeld();
     },
-    /** The next PUT fails at the UI as `answer`; the core writes it only on `commitLate`. */
-    answerLate: (answer: LateAnswer) => (late = answer),
+    /** The UI hears `answer` for the next PUT; the core writes it only on `commitLate`. */
+    answerLate: (answer: Answer) => (next = { answer, writesLater: true }),
+    /** The UI hears `answer` for the next PUT, and the core writes nothing. */
+    refuseNext: (answer: Answer) => (next = { answer, writesLater: false }),
+    /** The session ends: every core read and write answers 401 until a sign-in. */
+    expireSession: () => (signedIn = false),
+    /** `/auth/status` says the installation has no owner yet. */
+    requireSetup: () => (setupRequired = true),
     commitLate: () => {
       for (const write of lateWrites.splice(0)) write();
     },
@@ -206,11 +249,12 @@ function renderAt(path: string, fetchMock: ReturnType<typeof scriptedCore>["fetc
     queries: { ...queryClient.getDefaultOptions().queries, retry: false },
   });
   render(<App router={router} queryClient={queryClient} />);
-  return router;
+  return Object.assign(router, { queryClient });
 }
 
 afterEach(() => {
   cleanup();
+  forgetAllSends();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -437,95 +481,209 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
   });
 });
 
-// The council finding on #1880 at 5763056: the first PUT's answer is a 502 while the write is
-// still on its way to the core. The send settles, a read shows zero layers, and a second PUT
-// from a reopened form would replace the base the first one sets when it lands.
-describe("a send the UI never saw confirmed", () => {
-  const puts = (core: ReturnType<typeof scriptedCore>) =>
-    core.fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").length;
+const putCount = (core: ReturnType<typeof scriptedCore>) =>
+  core.fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").length;
 
-  /** Sends Kit A with a late write, waits for the panel and a read that shows no base. */
-  async function sendUnconfirmed(answer: LateAnswer) {
+/** Sends Kit A to Build 1000; the UI hears `answer` and the core writes Kit A only later. */
+async function sendUnconfirmed(answer: Answer = () => problem(502, "Bad Gateway")) {
+  const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
+  const router = renderAt("/builds/1000/sources", core.fetchMock);
+  const form = await readyForm();
+  fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "1" } });
+  core.answerLate(answer);
+  fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+  const panel = await unconfirmedPanel();
+  await within(panel).findByText("The last read shows no base Source yet.");
+  return { core, router };
+}
+
+/** Back on Sources: no form, a read of zero layers; then Kit A lands and is kept. */
+async function lateBaseKept(core: ReturnType<typeof scriptedCore>, puts = 1) {
+  const panel = await unconfirmedPanel();
+  await within(panel).findByText("The last read shows no base Source yet.");
+  expect(screen.queryByRole("form")).toBeNull();
+  core.commitLate();
+  fireEvent.click(within(panel).getByRole("button", { name: "Read again" }));
+  const table = await screen.findByRole("table", { name: "Build Sources" });
+  expect(within(table).getByRole("rowheader", { name: "Kit A" })).toBeTruthy();
+  expect(core.basePuts).toEqual([{ project_id: 1 }]);
+  expect(putCount(core)).toBe(puts);
+}
+
+// Council findings on #1880: at 5763056, a 502 while the write was still on its way let a
+// zero-layer read reopen the form; at 96188d94, an intermediary's 408 counted as a refusal.
+// Only the core's own problem with a refusal status clears a send; every other answer keeps it.
+describe("a send the UI never saw confirmed", () => {
+  it.each<[string, Answer]>([
+    ["an intermediary's 408", () => page(408)],
+    ["an intermediary's 421", () => page(421)],
+    ["an intermediary's 425", () => page(425)],
+    ["an intermediary's 429", () => page(429)],
+    ["a proxy's 400 page", () => page(400)],
+    ["a proxy's 403 page", () => page(403)],
+    [
+      "a 404 that is not a problem document",
+      () => json({ detail: "Project not found", status: 404 }, 404),
+    ],
+    ["the core's 502", () => problem(502, "Bad Gateway")],
+    ["the core's 500", () => problem(500, "Build service unavailable")],
+    ["the core's 503 outcome unknown", () => problem(503, "Build service temporarily unavailable")],
+    ["a 200 whose body is not the contract", () => json({ layers: "none" })],
+    ["a dropped connection", () => "drop"],
+  ])("after %s, leaving and coming back opens no form and keeps the late base", async (_, answer) => {
+    const { core } = await sendUnconfirmed(answer);
+    fireEvent.click(tab("Overview"));
+    await screen.findByRole("link", { name: "Choose its base Source" });
+    fireEvent.click(tab("Sources"));
+    expect((await unconfirmedPanel()).textContent).toMatch(
+      /^Could not confirm the base Source was set: .*The core may still set Kit A/,
+    );
+    await lateBaseKept(core);
+  });
+
+  it("sends the PUT with redirects refused", async () => {
+    const { core } = await sendUnconfirmed();
+    const [, init] = core.fetchMock.mock.calls.find(([, i]) => i?.method === "PUT")!;
+    expect(init?.redirect).toBe("error");
+  });
+
+  it("a core refusal wrote nothing, so the form stays open with the reason", async () => {
     const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
-    const router = renderAt("/builds/1000/sources", core.fetchMock);
+    renderAt("/builds/1000/sources", core.fetchMock);
     const form = await readyForm();
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "1" } });
-    core.answerLate(answer);
+    core.refuseNext(() => problem(404, "Project not found"));
     fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
-    const panel = await unconfirmedPanel();
-    await within(panel).findByText("The last read shows no base Source yet.");
-    return { core, router };
-  }
-
-  it.each(["502", "500", "drop"] as const)(
-    "after a %s, leaving and coming back reads no base but opens no form, and keeps the late base",
-    async (answer) => {
-      const { core } = await sendUnconfirmed(answer);
-      fireEvent.click(tab("Overview"));
-      await screen.findByRole("link", { name: "Choose its base Source" });
-      fireEvent.click(tab("Sources"));
-      const panel = await unconfirmedPanel();
-      expect(within(panel).getByRole("alert").textContent).toMatch(
-        /^Could not confirm the base Source was set: .*The core may still set Kit A/,
-      );
-      await within(panel).findByText("The last read shows no base Source yet.");
-      expect(screen.queryByRole("form")).toBeNull();
-
-      core.commitLate();
-      fireEvent.click(within(panel).getByRole("button", { name: "Read again" }));
-      const table = await screen.findByRole("table", { name: "Build Sources" });
-      expect(within(table).getByRole("rowheader", { name: "Kit A" })).toBeTruthy();
-      expect(core.basePuts).toEqual([{ project_id: 1 }]);
-      expect(puts(core)).toBe(1);
-    },
-  );
+    expect((await within(form).findByRole("alert")).textContent).toBe(
+      "That Source is no longer in the Library. Choose another.",
+    );
+    expect(screen.queryByRole("region", { name: "Unconfirmed base Source" })).toBeNull();
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
+    await waitFor(() =>
+      expect(
+        within(form).getByRole("button", { name: "Set base Source" }).getAttribute("aria-disabled"),
+      ).toBeNull(),
+    );
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    const table = await screen.findByRole("table", { name: "Build Sources" });
+    expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
+    expect(putCount(core)).toBe(2);
+  });
 
   it("Set a base anyway states what the earlier send may do, and sends once after a new choice", async () => {
-    const { core } = await sendUnconfirmed("502");
+    const { core } = await sendUnconfirmed();
     expect(screen.queryByRole("form")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Set a base anyway" }));
     const form = await screen.findByRole("form", { name: "Set base anyway" });
     expect(form.textContent).toContain(
-      "The earlier send of Kit A was not confirmed. If that send reaches the core later, whichever of the two arrives last becomes the base and replaces the other. Choose the Source again to set it now.",
+      "The earlier send of Kit A was not confirmed. That send can still reach the core and replace the base you set now, and the base you set now can replace one it already set. Choose the Source again to set a base now.",
     );
     const set = within(form).getByRole("button", { name: "Set base anyway" });
     expect(set.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(set);
     await settle();
-    expect(puts(core)).toBe(1);
+    expect(putCount(core)).toBe(1);
 
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
     fireEvent.click(set);
     const table = await screen.findByRole("table", { name: "Build Sources" });
     expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
     expect(core.basePuts).toEqual([{ project_id: 2 }]);
-    expect(puts(core)).toBe(2);
+    expect(putCount(core)).toBe(2);
+  });
+
+  it("a refused Set a base anyway keeps the earlier send, so no plain form opens", async () => {
+    const { core } = await sendUnconfirmed();
+    fireEvent.click(screen.getByRole("button", { name: "Set a base anyway" }));
+    const form = await screen.findByRole("form", { name: "Set base anyway" });
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
+    core.refuseNext(() => problem(404, "Project not found"));
+    fireEvent.click(within(form).getByRole("button", { name: "Set base anyway" }));
+    await waitFor(() => expect(putCount(core)).toBe(2));
+    await lateBaseKept(core, 2);
   });
 
   it("Cancel goes back to the panel without sending", async () => {
-    const { core } = await sendUnconfirmed("drop");
+    const { core } = await sendUnconfirmed(() => "drop");
     fireEvent.click(screen.getByRole("button", { name: "Set a base anyway" }));
     const form = await screen.findByRole("form", { name: "Set base anyway" });
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
     fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
     await unconfirmedPanel();
     expect(screen.queryByRole("form")).toBeNull();
-    expect(puts(core)).toBe(1);
+    expect(putCount(core)).toBe(1);
   });
 
   it("does not hold back another Build", async () => {
-    const { core, router } = await sendUnconfirmed("502");
+    const { core, router } = await sendUnconfirmed();
     await act(() => router.navigate("/builds/1001/sources"));
     const form = await readyForm();
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
     fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
     const table = await screen.findByRole("table", { name: "Build Sources" });
     expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
-    expect(puts(core)).toBe(2);
+    expect(putCount(core)).toBe(2);
 
     await act(() => router.navigate("/builds/1000/sources"));
     await unconfirmedPanel();
     expect(screen.queryByRole("form")).toBeNull();
+  });
+});
+
+const fill = async (label: string, value: string) =>
+  fireEvent.change(await screen.findByLabelText(label), { target: { value } });
+
+// Every place the app clears or resets its query client. The record of an unconfirmed send is
+// not query-client state, so none of them may reopen the plain form.
+describe("an unconfirmed send outlives the app's cache resets", () => {
+  it("signing in again after the session ends (sign-in calls queryClient.clear())", async () => {
+    const { core } = await sendUnconfirmed();
+    core.expireSession();
+    fireEvent.click(screen.getByRole("button", { name: "Read again" }));
+    await screen.findByRole("heading", { name: "Sign in" });
+    await fill("Email", "owner@example.com");
+    await fill("Password", "password-1234");
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await screen.findByRole("heading", { level: 1, name: "Sources" });
+    await lateBaseKept(core);
+  });
+
+  it("signing out and in again (sign-out removes every query but auth)", async () => {
+    const { core, router } = await sendUnconfirmed();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByRole("heading", { name: "Sign in" });
+    await fill("Email", "owner@example.com");
+    await fill("Password", "password-1234");
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(router.state.location.pathname).not.toBe("/login"));
+    await act(() => router.navigate("/builds/1000/sources"));
+    await lateBaseKept(core);
+  });
+
+  it("creating the owner account (setup calls queryClient.clear())", async () => {
+    const { core, router } = await sendUnconfirmed();
+    core.requireSetup();
+    await act(() => router.navigate("/setup"));
+    await screen.findByRole("button", { name: "Create account" });
+    await fill("Email", "owner@example.com");
+    await fill("Password", "password-1234");
+    await fill("Password again", "password-1234");
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(router.state.location.pathname).not.toBe("/setup"));
+    await act(() => router.navigate("/builds/1000/sources"));
+    await lateBaseKept(core);
+  });
+
+  it("clearing, resetting and removing every query and mutation", async () => {
+    const { core, router } = await sendUnconfirmed();
+    await act(() => router.navigate("/builds/1000"));
+    act(() => {
+      router.queryClient.clear();
+      void router.queryClient.resetQueries();
+      router.queryClient.removeQueries();
+    });
+    await act(() => router.navigate("/builds/1000/sources"));
+    await lateBaseKept(core);
   });
 });
 

@@ -377,6 +377,19 @@ The generated client names the routes `stageInstallationRestore` (no request DTO
 
 Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Installation::with_builds_drafts_and_history` (copied schema-34 database, valid marker, the same seed the storage restore tests use). It makes and downloads a backup through the mounted routes, adds a Build and changes the files, stages and restores the download, and checks that Build IDs, drafts, History tables and the files under `repos` and `exports` match the backup, and that the Build list, drafts and History routes answer as before. It also covers the auth, Origin, archive, confirmation, unknown-id and one-at-a-time refusals. `pp-core/tests/installation_backup_http.rs` checks that the routes are absent with the flag off. `pp_api::restore`'s unit tests pin every refusal's body.
 
+### Backup and restore from Settings
+
+The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`). Nothing is sent when the section opens.
+
+**Create backup** posts `createInstallationBackup` once, with `redirect: "error"`: a 307 or 308 is never followed, so one click never sends a second POST, and the refused redirect is read as not confirmed. While it runs, the section's status line says `Creating backup` and the button is off; the same mounted status line then says `Backup made`. Offline, the button is off and names the offline reason. The answer shows the archive's file name, time, app version, size (with the exact byte count) and SHA-256. The page keeps only the backup it made; after a reload, create one again.
+
+A failed create reads the answer this way:
+
+- The core's own problem keeps the backup already shown and says `The backup was not made`, with the core's reason, such as `A backup is already running`. The core's own problem means the body is `application/problem+json`, valid against the generated `Problem` schema, and its `status` equals the HTTP status (`CoreError.problem` in `web/apps/ui/src/core/client.ts`). The core keeps a new archive only when it answers 200, so its refusal changed nothing.
+- Anything else drops the shown backup and says `The core did not confirm the backup. Create backup again.` That covers a redirect of any kind (whatever the destination would answer), a proxy page, a cut-off body, a 200 that fails the contract, a lost answer, and a problem with a malformed member such as `"code": null`. The core may have made a new archive and dropped the one shown. Creating again only replaces the kept archive.
+
+Download, Check backup and the restore dialog come in the later GRE-1340 slices.
+
 ## Source thumbnail cache
 
 `GET /sources/{id}/thumbnail?path=` (GRE-430) renders a 256 x 256 PNG of one STL in a Source's current revision and caches it at `thumbs/sources/<revision id>/<SHA-256 of the path>-v<renderer version>.png`. Rust writes nothing else under `thumbs/`. Node writes only flat files directly in `thumbs/`: part thumbnails and previews as `thumbs/<16-hex digest>.png` (`globalThumbnailPath`, `globalPreviewPath` in `web/apps/server/src/lib/thumbnails.ts`) and the accepted-media cache as `thumbs/<basis>.png` (`web/apps/server/src/lib/accepted-media-cache.ts`). Node never creates a folder there, so its files and `thumbs/sources/` cannot collide.

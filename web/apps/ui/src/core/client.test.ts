@@ -160,3 +160,59 @@ describe("checkCoreHealth", () => {
     await expect(checkCoreHealth()).rejects.toBeInstanceOf(CoreError);
   });
 });
+
+describe("CoreError.problem", () => {
+  const PROBLEM = {
+    type: "urn:print-partner:problem:conflict",
+    title: "Conflict",
+    status: 409,
+    detail: "Installation has no Rust marker",
+  };
+  const refused = async (body: string, contentType = "application/problem+json", status = 409) => {
+    // A byte array, not a Blob, so no Content-Type is implied and every runtime reads it.
+    const bytes = new TextEncoder().encode(body);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(bytes, { status, headers: { "content-type": contentType } })),
+    );
+    const error: unknown = await fetchCore("/api/v2/installation/backup", { method: "POST" }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(CoreError);
+    return error as CoreError;
+  };
+
+  it.each([
+    ["without a code", PROBLEM],
+    ["with a known code", { ...PROBLEM, code: "restore_not_found" }],
+    ["with field errors and extra members", { ...PROBLEM, errors: [{ pointer: "/a", detail: "x" }], builds: [] }],
+  ])("is true for the core's own problem %s", async (_, body) => {
+    const error = await refused(JSON.stringify(body), "application/problem+json; charset=utf-8");
+    expect(error.problem).toBe(true);
+    expect(error.detail).toBe(PROBLEM.detail);
+  });
+
+  it.each([
+    ["a null code", { ...PROBLEM, code: null }],
+    ["a number code", { ...PROBLEM, code: 409 }],
+    ["an object code", { ...PROBLEM, code: { value: "restore_not_found" } }],
+    ["a null detail", { ...PROBLEM, detail: null }],
+    ["no title", { type: PROBLEM.type, status: 409, detail: PROBLEM.detail }],
+    ["an unknown type", { ...PROBLEM, type: "about:blank" }],
+    ["a status that disagrees", { ...PROBLEM, status: 400 }],
+    ["a string status", { ...PROBLEM, status: "409" }],
+  ])("is false for a problem with %s, and a malformed code is never read", async (_, body) => {
+    const error = await refused(JSON.stringify(body));
+    expect(error.problem).toBe(false);
+    expect(error.code).toBeUndefined();
+  });
+
+  it.each([
+    ["application/json", JSON.stringify(PROBLEM)],
+    ["text/html", "<html>Conflict</html>"],
+    ["application/problem+json", JSON.stringify(PROBLEM).slice(0, 40)],
+    ["application/problem+json", JSON.stringify([PROBLEM])],
+  ])("is false for a %s body that is not a whole problem object", async (contentType, body) => {
+    expect((await refused(body, contentType)).problem).toBe(false);
+  });
+});

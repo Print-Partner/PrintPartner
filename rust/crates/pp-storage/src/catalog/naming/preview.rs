@@ -154,16 +154,6 @@ fn merge(mut base: NamingProfile, overrides: NamingOverride) -> Result<NamingPro
     }
     base.validate_input()
 }
-fn escape_regex(text: &str) -> String {
-    let mut out = String::new();
-    for ch in text.chars() {
-        if ".*+?^${}()|[]\\".contains(ch) {
-            out.push('\\')
-        }
-        out.push(ch)
-    }
-    out
-}
 fn replace_first(text: &str, pattern: &str, replacement: &str) -> String {
     if let Ok(regex) = regress::Regex::with_flags(pattern, "i")
         && let Some(m) = regex.find(text)
@@ -174,7 +164,9 @@ fn replace_first(text: &str, pattern: &str, replacement: &str) -> String {
     }
     text.to_owned()
 }
-fn quantity_strip(pattern: &str) -> Option<regress::Regex> {
+/// Turns the quantity regex into one that matches the quantity suffix of a
+/// slug. For a `.3mf` slug a regex anchored on `\.3mf$` counts too.
+fn quantity_strip(pattern: &str, three_mf: bool) -> Option<regress::Regex> {
     let mut pattern = pattern.replace("(?:", "(");
     let named = regress::Regex::new(r"\(\?P<\w+>").ok()?;
     while let Some(m) = named.find(&pattern) {
@@ -183,6 +175,10 @@ fn quantity_strip(pattern: &str) -> Option<regress::Regex> {
     pattern = replace_first(&pattern, r"\([^?][^)]*\)", "[0-9]+");
     pattern = pattern.replacen(r"\.stl$", "$", 1);
     pattern = replace_first(&pattern, r"\.stl$", "$");
+    if three_mf {
+        pattern = pattern.replacen(r"\.3mf$", "$", 1);
+        pattern = replace_first(&pattern, r"\.3mf$", "$");
+    }
     regress::Regex::with_flags(&pattern, "i").ok()
 }
 fn parse_integer(text: &str) -> f64 {
@@ -242,12 +238,8 @@ pub(in crate::catalog) fn preview(
         .unwrap_or(RoleId::Primary);
     let quantity_re = regress::Regex::with_flags(&profile.quantity.regex, "i")
         .map_err(|_| CatalogFailure::Input("Invalid quantity regex".into()))?;
-    let captured = quantity_re
-        .find(&filename)
-        .and_then(|m| m.captures.first().cloned().flatten())
-        .map(|r| &filename[r])
-        .filter(|s| !s.is_empty());
-    let quantity = captured
+    let quantity = quantity_capture(&quantity_re, &filename)
+        .as_deref()
         .map(parse_integer)
         .unwrap_or(profile.quantity.default as f64);
     // JSON.stringify writes a whole number without a fraction (`2`, not `2.0`).
@@ -258,24 +250,20 @@ pub(in crate::catalog) fn preview(
         }
         other => serde_json::Number::from_f64(other),
     };
-    let name = if filename.to_lowercase().ends_with(".stl") {
-        &filename[..filename.len() - 4]
-    } else {
-        &filename
-    };
+    let name = model_stem(&filename).unwrap_or(&filename);
     let mut slug = name.to_owned();
     if profile.slug.strip_markers {
-        for marker in profile
+        let markers: Vec<&str> = profile
             .roles
             .iter()
             .flat_map(|r| &r.markers)
+            .map(String::as_str)
             .filter(|m| !trim(m).is_empty())
-        {
-            slug = replace_first(&slug, &format!("^{}", escape_regex(marker)), "")
-        }
+            .collect();
+        slug = strip_markers(&slug, &markers);
     }
     if profile.slug.strip_quantity
-        && let Some(regex) = quantity_strip(&profile.quantity.regex)
+        && let Some(regex) = quantity_strip(&profile.quantity.regex, is_3mf(&filename))
         && let Some(m) = regex.find(&slug)
     {
         slug.replace_range(m.range(), "");

@@ -14,12 +14,14 @@ import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import {
+  DEFAULT_SOURCE_SNAPSHOT_MAX_BYTES,
   LocalSourceSnapshotStore,
-  MAX_SOURCE_SNAPSHOT_BYTES,
   SOURCE_SNAPSHOT_MANIFEST_FILE,
+  SOURCE_SNAPSHOT_MAX_BYTES_ENV,
   releaseSharedSnapshot,
   sharedSnapshotHolderCount,
   sourceRelativePath,
+  sourceSnapshotMaxBytes,
   type SnapshotFile,
   type SnapshotSelection,
 } from "./local-source-snapshot.js";
@@ -73,6 +75,7 @@ async function candidateNames(reposDir: string, sourceId: number): Promise<strin
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -472,7 +475,10 @@ describe("LocalSourceSnapshotStore", () => {
 
   it.each([
     ["invalid", -1, "non-negative safe integer"],
-    ["oversized", MAX_SOURCE_SNAPSHOT_BYTES + 1, "stored-content limit"],
+    ["oversized", DEFAULT_SOURCE_SNAPSHOT_MAX_BYTES + 1, "2147483648 byte stored-content limit"],
+    // GRE-1396: DW-Tas/A4Tv2 (about 1.37 GB) hit the old 1 GiB cap. Under the 2 GiB default
+    // the declared length passes the cap and only the short test stream is refused.
+    ["above-1GiB", 1_370_000_000, "Source response length mismatch"],
   ])(
     "closes a response stream with an %s declared length",
     async (label, contentLengthBytes, errorMessage) => {
@@ -503,6 +509,97 @@ describe("LocalSourceSnapshotStore", () => {
       expect(await candidateNames(reposDir, 103)).toEqual([]);
     },
   );
+
+  it("reads the stored-content cap from PP_SOURCE_SNAPSHOT_MAX_BYTES", () => {
+    expect(sourceSnapshotMaxBytes({})).toBe(2 * 1024 * 1024 * 1024);
+    expect(sourceSnapshotMaxBytes({ [SOURCE_SNAPSHOT_MAX_BYTES_ENV]: " " })).toBe(
+      DEFAULT_SOURCE_SNAPSHOT_MAX_BYTES,
+    );
+    expect(sourceSnapshotMaxBytes({ [SOURCE_SNAPSHOT_MAX_BYTES_ENV]: "1610612736" })).toBe(
+      1610612736,
+    );
+    for (const raw of ["0", "-1", "1.5", "2GiB", "1e9", "99999999999999999999"]) {
+      expect(() => sourceSnapshotMaxBytes({ [SOURCE_SNAPSHOT_MAX_BYTES_ENV]: raw })).toThrow(
+        `${SOURCE_SNAPSHOT_MAX_BYTES_ENV} must be a whole number of bytes above 0`,
+      );
+    }
+  });
+
+  it("stores up to the configured cap and refuses one byte more", async () => {
+    vi.stubEnv(SOURCE_SNAPSHOT_MAX_BYTES_ENV, "10");
+    const reposDir = tempReposDir();
+    const store = new LocalSourceSnapshotStore({ reposDir });
+    const first = file("a.stl", "stl", "12345");
+    const second = file("b.stl", "stl", "67890");
+    const published = await store.materialize({
+      sourceId: 104,
+      upstreamRevisionKey: "at-cap",
+      files: [first.descriptor, second.descriptor],
+      selection: selection(),
+      openFile: async (descriptor) =>
+        response(descriptor.path === first.descriptor.path ? first.content : second.content),
+    });
+    expect(published.files.map((entry) => entry.sizeBytes)).toEqual([5, 5]);
+
+    const third = file("c.stl", "stl", "x");
+    await expect(
+      store.materialize({
+        sourceId: 104,
+        upstreamRevisionKey: "over-cap",
+        files: [first.descriptor, second.descriptor, third.descriptor],
+        selection: selection(),
+        // No declared length, so the streamed byte count is what trips the cap.
+        openFile: async (descriptor) => {
+          const content = [first, second, third].find(
+            (candidate) => candidate.descriptor.path === descriptor.path,
+          )!.content;
+          return { stream: Readable.from(content), contentLengthBytes: null };
+        },
+      }),
+    ).rejects.toThrow(
+      `Source snapshot exceeds the 10 byte stored-content limit; set ${SOURCE_SNAPSHOT_MAX_BYTES_ENV} to raise it`,
+    );
+    expect(await candidateNames(reposDir, 104)).toEqual([]);
+  });
+
+  it("refuses a bad cap setting before creating a candidate", async () => {
+    vi.stubEnv(SOURCE_SNAPSHOT_MAX_BYTES_ENV, "lots");
+    const reposDir = tempReposDir();
+    const store = new LocalSourceSnapshotStore({ reposDir });
+    const part = file("a.stl", "stl", "solid");
+    await expect(
+      store.materialize({
+        sourceId: 105,
+        upstreamRevisionKey: "bad-cap",
+        files: [part.descriptor],
+        selection: selection(),
+        openFile: async () => response(part.content),
+      }),
+    ).rejects.toThrow(`${SOURCE_SNAPSHOT_MAX_BYTES_ENV} must be a whole number`);
+    expect(await candidateNames(reposDir, 105)).toEqual([]);
+  });
+
+  it("reuses a stored revision without reading the cap setting", async () => {
+    const reposDir = tempReposDir();
+    const store = new LocalSourceSnapshotStore({ reposDir });
+    const part = file("a.stl", "stl", "solid");
+    const sync = () =>
+      store.materialize({
+        sourceId: 106,
+        upstreamRevisionKey: "stored",
+        files: [part.descriptor],
+        selection: selection(),
+        openFile: async () => response(part.content),
+      });
+    const first = await sync();
+    // Both a bad value and a cap below the stored size leave the stored revision usable.
+    for (const cap of ["lots", "1"]) {
+      vi.stubEnv(SOURCE_SNAPSHOT_MAX_BYTES_ENV, cap);
+      const reused = await sync();
+      expect(reused.publication).toBe("reused");
+      expect(reused.manifestDigest).toBe(first.manifestDigest);
+    }
+  });
 
   it("enforces the documentation budget using actual bytes when tree size is unknown", async () => {
     const reposDir = tempReposDir();

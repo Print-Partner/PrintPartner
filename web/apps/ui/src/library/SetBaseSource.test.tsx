@@ -5,7 +5,7 @@ import type {
   SourceAttachmentRequest,
   SourceList,
 } from "@print-partner/rust-client";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -87,7 +87,10 @@ const storedBuild = (id: number, name: string): ProfileSummary => ({
   due_date: null,
 });
 
-/** One Build, 1000, with no layers, and a Library holding `sources`. */
+/** How the UI hears about a PUT whose write the core applies only on `commitLate`. */
+type LateAnswer = "502" | "500" | "drop";
+
+/** Builds 1000 and 1001, both with no layers, and a Library holding `sources`. */
 function scriptedCore({
   sources: names = [],
   baseAnswer,
@@ -97,20 +100,20 @@ function scriptedCore({
   baseAnswer?: () => Response;
 } = {}) {
   const sources = names.map((name, i) => storedSource(i + 1, name));
-  const build = storedBuild(1000, "Bare");
-  let layers: Layer[] = [];
+  const builds = [storedBuild(1000, "Bare"), storedBuild(1001, "Second")];
+  const layers = new Map<number, Layer[]>(builds.map((b) => [b.id, []]));
   const basePuts: SourceAttachmentRequest[] = [];
   /** Stores `source` as the base, as the core's PUT does: added, or moved if one exists. */
-  const setBase = (source: Source) => {
-    layers = [
+  const setBase = (buildId: number, source: Source) => {
+    layers.set(buildId, [
       {
-        id: 10_000,
+        id: buildId * 10,
         layer_order: 0,
         layer_type: "base",
         project_id: source.id,
         project_name: source.name,
       },
-    ];
+    ]);
   };
   const route = (path: string, init?: RequestInit): Response => {
     if (path === "/health") return json(health);
@@ -118,42 +121,60 @@ function scriptedCore({
     if (path === "/api/v1/sources") return json({ sources });
     const files = /^\/api\/v1\/sources\/(\d+)\/files$/.exec(path);
     if (files) return json({ source_id: Number(files[1]), revision_id: null, files: [] });
-    if (path === "/api/v2/plans/1000") return json(build);
-    if (path === "/api/v2/plans/1000/layers") return json({ profile_id: 1000, layers });
-    if (path === "/api/v2/plans/1000/layers/base" && init?.method === "PUT") {
+    const plan = /^\/api\/v2\/plans\/(\d+)(\/.*)?$/.exec(path);
+    const build = builds.find((b) => b.id === Number(plan?.[1]));
+    if (!plan || !build) return problem(404, "Not scripted");
+    const rest = plan[2] ?? "";
+    if (rest === "") return json(build);
+    if (rest === "/layers") return json({ profile_id: build.id, layers: layers.get(build.id) });
+    if (rest === "/layers/base" && init?.method === "PUT") {
       const body = JSON.parse(String(init.body)) as SourceAttachmentRequest;
       basePuts.push(body);
       const source = sources.find((s) => s.id === body.project_id);
       if (!source) return problem(404, "Project not found");
-      setBase(source);
-      return baseAnswer ? baseAnswer() : json({ profile_id: 1000, layers });
+      setBase(build.id, source);
+      return baseAnswer ? baseAnswer() : json({ profile_id: build.id, layers: layers.get(build.id) });
     }
-    if (path === "/api/v2/plans/1000/filament-shortfalls") {
+    if (rest === "/filament-shortfalls") {
       return json({ kind: "module_off", module: "spoolman", reason: "default_off" });
     }
-    if (path === "/api/v2/plans/1000/workflow") return problem(503, "Workflow not scripted");
+    if (rest === "/workflow") return problem(503, "Workflow not scripted");
     return problem(404, "Not scripted");
   };
   let layerMode: "held" | "failed" | undefined;
   const heldLayers: (() => void)[] = [];
   let holdPut = false;
   const heldPuts: (() => void)[] = [];
+  let late: LateAnswer | undefined;
+  const lateWrites: (() => void)[] = [];
+  let sourcesFail = false;
   const fetchMock = vi.fn((path: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "PUT" && late) {
+      // The UI hears a failure now; the core writes only when `commitLate` runs.
+      const answer = late;
+      late = undefined;
+      lateWrites.push(() => void route(path, init));
+      if (answer === "drop") return Promise.reject(new TypeError("Failed to fetch"));
+      return Promise.resolve(problem(Number(answer), "Upstream failed"));
+    }
     if (init?.method === "PUT" && holdPut) {
       return new Promise((resolve) => heldPuts.push(() => resolve(route(path, init))));
     }
-    if (path === "/api/v2/plans/1000/layers" && !init?.method && layerMode) {
+    if (/^\/api\/v2\/plans\/\d+\/layers$/.test(path) && !init?.method && layerMode) {
       if (layerMode === "failed") return Promise.resolve(problem(503, "Layers unreadable"));
       return new Promise((resolve) => heldLayers.push(() => resolve(route(path, init))));
+    }
+    if (path === "/api/v1/sources" && sourcesFail) {
+      return Promise.resolve(problem(500, "Library unreadable"));
     }
     return Promise.resolve(route(path, init));
   });
   return {
     fetchMock,
     basePuts,
-    /** Sets the base without this UI, as another window would. */
-    setBaseElsewhere: (name: string) => setBase(sources.find((s) => s.name === name)!),
-    /** Holds or fails every later read of the Build's layers until `releaseLayers`. */
+    /** Sets Build 1000's base without this UI, as another window would. */
+    setBaseElsewhere: (name: string) => setBase(1000, sources.find((s) => s.name === name)!),
+    /** Holds or fails every later read of a Build's layers until `releaseLayers`. */
     holdLayers: () => (layerMode = "held"),
     failLayers: () => (layerMode = "failed"),
     releaseLayers: () => {
@@ -166,6 +187,14 @@ function scriptedCore({
       holdPut = false;
       for (const answerHeld of heldPuts.splice(0)) answerHeld();
     },
+    /** The next PUT fails at the UI as `answer`; the core writes it only on `commitLate`. */
+    answerLate: (answer: LateAnswer) => (late = answer),
+    commitLate: () => {
+      for (const write of lateWrites.splice(0)) write();
+    },
+    /** The Source list answers 500 until `recoverSources`. */
+    failSources: () => (sourcesFail = true),
+    recoverSources: () => (sourcesFail = false),
   };
 }
 
@@ -192,6 +221,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 const tab = (name: string) =>
   within(screen.getByRole("navigation", { name: "Build sections" })).getByRole("link", { name });
+
+const unconfirmedPanel = () => screen.findByRole("region", { name: "Unconfirmed base Source" });
 
 /** The form once its mount-time read of the Build has finished. */
 async function readyForm() {
@@ -272,24 +303,25 @@ describe("UI13-03: a Build with no layers names Set base Source", () => {
     const form = await readyForm();
     fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
     core.failLayers();
-    const set = within(form).getByRole("button", { name: "Set base Source" });
-    fireEvent.click(set);
-    expect((await within(form).findByRole("alert")).textContent).toMatch(
-      /^Could not confirm the base Source was set: /,
-    );
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
     // The Build read retries before it gives up.
     await vi.advanceTimersByTimeAsync(10_000);
+    const panel = await unconfirmedPanel();
+    expect(within(panel).getByRole("alert").textContent).toMatch(
+      /^Could not confirm the base Source was set: /,
+    );
     expect(
-      await within(form).findByText(
+      await within(panel).findByText(
         "Could not read the Build again. Press Read again to see whether the base Source was set.",
       ),
     ).toBeTruthy();
-    fireEvent.click(set);
+    fireEvent.click(within(panel).getByRole("button", { name: "Set a base anyway" }));
     await settle();
+    expect(screen.queryByRole("form")).toBeNull();
     expect(core.basePuts).toHaveLength(1);
 
     core.releaseLayers();
-    fireEvent.click(within(form).getByRole("button", { name: "Read again" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Read again" }));
     const table = await screen.findByRole("table", { name: "Build Sources" });
     expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
     expect(core.basePuts).toHaveLength(1);
@@ -322,7 +354,7 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     expect(core.basePuts).toEqual([{ project_id: 2 }]);
   });
 
-  it("keeps a remounted form closed while a send with a lost answer is read again", async () => {
+  it("shows no form on return after a send with a lost answer", async () => {
     const core = scriptedCore({
       sources: ["Kit A", "Kit B"],
       baseAnswer: () => problem(502, "Bad Gateway"),
@@ -337,17 +369,10 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     fireEvent.click(tab("Overview"));
     await screen.findByRole("link", { name: "Choose its base Source" });
     fireEvent.click(tab("Sources"));
-    // Leaving the tab cancelled the send's re-read; the new form waits for its own.
-    const again = await screen.findByRole("form", { name: "Set base Source" });
-    fireEvent.change(await within(again).findByLabelText("Base Source"), {
-      target: { value: "1" },
-    });
-    const set = within(again).getByRole("button", { name: "Set base Source" });
-    fireEvent.click(set);
-    await settle();
-    expect(core.basePuts).toHaveLength(1);
-    expect(set.getAttribute("aria-disabled")).toBe("true");
-    expect(within(again).getByText("Reading the Build again.")).toBeTruthy();
+    // Leaving the tab cancelled the send's re-read, so the send settled unconfirmed.
+    const panel = await unconfirmedPanel();
+    expect(within(panel).getByText("Reading the Build again.")).toBeTruthy();
+    expect(screen.queryByRole("form")).toBeNull();
 
     core.releaseLayers();
     const table = await screen.findByRole("table", { name: "Build Sources" });
@@ -409,6 +434,118 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     const table = await screen.findByRole("table", { name: "Build Sources" });
     expect(within(table).getByRole("rowheader", { name: "Kit A" })).toBeTruthy();
     expect(core.basePuts).toEqual([]);
+  });
+});
+
+// The council finding on #1880 at 5763056: the first PUT's answer is a 502 while the write is
+// still on its way to the core. The send settles, a read shows zero layers, and a second PUT
+// from a reopened form would replace the base the first one sets when it lands.
+describe("a send the UI never saw confirmed", () => {
+  const puts = (core: ReturnType<typeof scriptedCore>) =>
+    core.fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT").length;
+
+  /** Sends Kit A with a late write, waits for the panel and a read that shows no base. */
+  async function sendUnconfirmed(answer: LateAnswer) {
+    const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
+    const router = renderAt("/builds/1000/sources", core.fetchMock);
+    const form = await readyForm();
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "1" } });
+    core.answerLate(answer);
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    const panel = await unconfirmedPanel();
+    await within(panel).findByText("The last read shows no base Source yet.");
+    return { core, router };
+  }
+
+  it.each(["502", "500", "drop"] as const)(
+    "after a %s, leaving and coming back reads no base but opens no form, and keeps the late base",
+    async (answer) => {
+      const { core } = await sendUnconfirmed(answer);
+      fireEvent.click(tab("Overview"));
+      await screen.findByRole("link", { name: "Choose its base Source" });
+      fireEvent.click(tab("Sources"));
+      const panel = await unconfirmedPanel();
+      expect(within(panel).getByRole("alert").textContent).toMatch(
+        /^Could not confirm the base Source was set: .*The core may still set Kit A/,
+      );
+      await within(panel).findByText("The last read shows no base Source yet.");
+      expect(screen.queryByRole("form")).toBeNull();
+
+      core.commitLate();
+      fireEvent.click(within(panel).getByRole("button", { name: "Read again" }));
+      const table = await screen.findByRole("table", { name: "Build Sources" });
+      expect(within(table).getByRole("rowheader", { name: "Kit A" })).toBeTruthy();
+      expect(core.basePuts).toEqual([{ project_id: 1 }]);
+      expect(puts(core)).toBe(1);
+    },
+  );
+
+  it("Set a base anyway states what the earlier send may do, and sends once after a new choice", async () => {
+    const { core } = await sendUnconfirmed("502");
+    expect(screen.queryByRole("form")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Set a base anyway" }));
+    const form = await screen.findByRole("form", { name: "Set base anyway" });
+    expect(form.textContent).toContain(
+      "The earlier send of Kit A was not confirmed. If that send reaches the core later, whichever of the two arrives last becomes the base and replaces the other. Choose the Source again to set it now.",
+    );
+    const set = within(form).getByRole("button", { name: "Set base anyway" });
+    expect(set.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(set);
+    await settle();
+    expect(puts(core)).toBe(1);
+
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
+    fireEvent.click(set);
+    const table = await screen.findByRole("table", { name: "Build Sources" });
+    expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
+    expect(core.basePuts).toEqual([{ project_id: 2 }]);
+    expect(puts(core)).toBe(2);
+  });
+
+  it("Cancel goes back to the panel without sending", async () => {
+    const { core } = await sendUnconfirmed("drop");
+    fireEvent.click(screen.getByRole("button", { name: "Set a base anyway" }));
+    const form = await screen.findByRole("form", { name: "Set base anyway" });
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await unconfirmedPanel();
+    expect(screen.queryByRole("form")).toBeNull();
+    expect(puts(core)).toBe(1);
+  });
+
+  it("does not hold back another Build", async () => {
+    const { core, router } = await sendUnconfirmed("502");
+    await act(() => router.navigate("/builds/1001/sources"));
+    const form = await readyForm();
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    const table = await screen.findByRole("table", { name: "Build Sources" });
+    expect(within(table).getByRole("rowheader", { name: "Kit B" })).toBeTruthy();
+    expect(puts(core)).toBe(2);
+
+    await act(() => router.navigate("/builds/1000/sources"));
+    await unconfirmedPanel();
+    expect(screen.queryByRole("form")).toBeNull();
+  });
+});
+
+describe("Set base Source with a failed Source list", () => {
+  it("offers Try again, sends nothing, and sends one PUT after the list loads", async () => {
+    const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
+    core.failSources();
+    renderAt("/builds/1000/sources", core.fetchMock);
+    const form = await screen.findByRole("form", { name: "Set base Source" });
+    const retry = await within(form).findByRole("button", { name: "Try again" });
+    expect(within(form).getByText(/^Could not load the Library's Sources: /)).toBeTruthy();
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    await settle();
+    expect(core.basePuts).toEqual([]);
+
+    core.recoverSources();
+    fireEvent.click(retry);
+    fireEvent.change(await within(form).findByLabelText("Base Source"), { target: { value: "1" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    await waitFor(() => expect(core.basePuts).toEqual([{ project_id: 1 }]));
   });
 });
 

@@ -72,22 +72,29 @@ const SEPARATORS = new Set([" ", "_", "-"]);
 /** A UTF-16 code unit and the marker code unit it matches ignoring case, or -1. */
 type Unit = readonly [string, number];
 
+/**
+ * Repeat rounds before one combined scan finishes. Results equal the old repeat-until-stable
+ * regexes for names nested up to this many alternating levels; past it, the kept separator
+ * may differ. Rust's `catalog::naming::markers::MAX_ROUNDS` has the same value.
+ */
+export const MARKER_ROUNDS = 32;
+
 const unitMatches = (units: readonly Unit[], from: number, marker: readonly number[]) =>
-  marker.every((unit, index) => units[from + index]?.[1] === unit);
+  from >= 0 && marker.every((unit, index) => units[from + index]?.[1] === unit);
 
 /**
- * One marker everywhere, leftmost first, as repeated regex removals did. The stack holds the
- * scanned text with every earlier match removed, so the first match in the current name is
- * the first time the stack ends with the marker. Each removal takes one separator on each
- * side and puts one back when text remains on both sides. Each step shortens the stack or
+ * Removes every occurrence of `markers`, leftmost first; with several, the first in role
+ * order that the stack ends with. The stack holds the scanned text with earlier matches
+ * removed, so this finds what repeated regex searches found. Each step shortens the stack or
  * consumes input, so the pass is linear in the name's length.
  */
-function stripEverywhere(input: readonly Unit[], marker: readonly number[]): Unit[] {
+function stripEverywhere(input: readonly Unit[], markers: readonly (readonly number[])[]): Unit[] {
   const out: Unit[] = [];
+  const ending = () => markers.find((marker) => unitMatches(out, out.length - marker.length, marker));
   let next = 0;
   while (next < input.length) {
     out.push(input[next++]!);
-    while (out.length >= marker.length && unitMatches(out, out.length - marker.length, marker)) {
+    for (let marker = ending(); marker; marker = ending()) {
       out.length -= marker.length;
       const before = SEPARATORS.has(out.at(-1)?.[0] ?? "") ? out.pop() : undefined;
       const after = SEPARATORS.has(input[next]?.[0] ?? "") ? input[next++] : undefined;
@@ -98,41 +105,40 @@ function stripEverywhere(input: readonly Unit[], marker: readonly number[]): Uni
   return out;
 }
 
-/** One marker once, only at the start, with the separator after it. */
-function stripPrefix(units: Unit[], marker: readonly number[]): Unit[] {
-  if (units.length < marker.length || !unitMatches(units, 0, marker)) return units;
-  const end = marker.length + (SEPARATORS.has(units[marker.length]?.[0] ?? "") ? 1 : 0);
-  return units.slice(end);
-}
-
 /**
- * Removes role markers from a slug. Markers run one at a time in role order: `anywhere`
- * markers everywhere, prefix markers once at the start. When that changed the name, the
- * `anywhere` markers run again in role order until a round removes nothing, so a marker
- * that removing a nested one exposes, as in `Panel_[a[c]]_Clip`, goes too. The results are
- * the ones the per-marker regexes gave; Rust's `catalog::naming::strip_markers` matches.
+ * Removes role markers from a slug, as the per-marker regexes `([ _-]?)<marker>([ _-]?)` (flag
+ * `i`) did. Markers run one at a time in role order: `anywhere` markers everywhere, prefix
+ * markers once at the start with the separator after them. Each removal takes one separator
+ * (space, `_` or `-`) on each side and puts one back when text remains on both sides. When
+ * that changed the name, the `anywhere` markers run again in role order until a round removes
+ * nothing, so a marker that removing a nested one exposes, as in `Panel_[a[c]]_Clip`, goes
+ * too; after `MARKER_ROUNDS` rounds one combined scan removes the rest. Code units compare
+ * through the old regexes' case folding, once per distinct unit.
+ * Rust's `catalog::naming::strip_markers` is the same algorithm.
  */
 function stripMarkers(stem: string, prof: NamingProfile): string {
   const classes = new Map<string, number>();
   const classOf = (unit: string) => {
-    let found = classes.get(unit);
-    if (found === undefined) {
-      found = prof.markerUnitRes.findIndex((re) => re.test(unit));
-      classes.set(unit, found);
-    }
-    return found;
+    if (!classes.has(unit)) classes.set(unit, prof.markerUnitRes.findIndex((re) => re.test(unit)));
+    return classes.get(unit)!;
   };
   const name: Unit[] = Array.from({ length: stem.length }, (_, i) => [stem[i]!, classOf(stem[i]!)]);
   let slug = name;
-  for (const strip of prof.markerStrips) {
-    slug = strip.anywhere ? stripEverywhere(slug, strip.units) : stripPrefix(slug, strip.units);
-  }
-  // Every removal shortens the name, so an unchanged length means nothing was removed.
-  for (let before = name.length; slug.length !== before; ) {
-    before = slug.length;
-    for (const strip of prof.markerStrips) {
-      if (strip.anywhere) slug = stripEverywhere(slug, strip.units);
+  for (const { anywhere, units } of prof.markerStrips) {
+    if (anywhere) slug = stripEverywhere(slug, [units]);
+    else if (unitMatches(slug, 0, units)) {
+      slug = slug.slice(units.length + (SEPARATORS.has(slug[units.length]?.[0] ?? "") ? 1 : 0));
     }
+  }
+  const anywhere = prof.markerStrips.filter((strip) => strip.anywhere).map((strip) => strip.units);
+  // Every removal shortens the name, so an unchanged length means nothing was removed.
+  for (let round = 0, before = name.length; slug.length !== before; round++) {
+    before = slug.length;
+    if (round === MARKER_ROUNDS) {
+      slug = stripEverywhere(slug, anywhere);
+      break;
+    }
+    for (const units of anywhere) slug = stripEverywhere(slug, [units]);
   }
   return slug.map(([unit]) => unit).join("");
 }

@@ -1,22 +1,18 @@
 # GRE-1396: Source snapshot cap, duplicate names, and part slugs
 
-These rules apply to the Node server. In Rust, the naming preview
-(`catalog/naming/preview.rs`) and working-draft preparation
-(`working_drafts/preparation.rs`) call the same `naming::strip_marker` and
-`naming::quantity_capture`, so the slug and quantity the preview shows are the
-ones drafts use.
+These rules apply to the Node server. The Rust naming preview and working-draft
+preparation share `naming::strip_markers` and `naming::quantity_capture`, so
+drafts use the slug and quantity the preview shows.
 
 ## Snapshot cap
 
 A Source snapshot may store up to 2 GiB (2147483648 bytes) by default. The cap
 was 1 GiB, which refused DW-Tas/A4Tv2 (about 1.37 GB). To change it, set
 `PP_SOURCE_SNAPSHOT_MAX_BYTES` to a whole number of bytes and restart the
-server. The cap limits what a sync writes, so a sync reads it only when it
-writes a new snapshot. A bad value fails that sync with
-`PP_SOURCE_SNAPSHOT_MAX_BYTES must be a whole number of bytes above 0` and
-leaves no candidate folder. A sync whose upstream revision is already stored
-reuses that snapshot and does not read the cap, so a bad value does not fail
-it. The tenant disk quota and the documentation budget still apply.
+server. Only a sync that writes a new snapshot reads it; a bad value fails that
+sync with `PP_SOURCE_SNAPSHOT_MAX_BYTES must be a whole number of bytes above
+0` and leaves no candidate folder. A sync that reuses a stored revision does
+not read it. The tenant disk quota and the documentation budget still apply.
 
 ## Duplicate Sources
 
@@ -42,8 +38,10 @@ look a Source up by name still use the looser `sourceByName` match.
   name, with one separator (space, `_` or `-`) next to them. When words remain
   on both sides, one separator stays between them: `[a]_belt_clip` is
   `belt_clip`, `FlowChamber_BPM[a]` is `FlowChamber_BPM`, and `Duct_[c]_Left`
-  is `Duct_Left`. Removal repeats until none is left, so a run such as
-  `[a]_[a]_belt_clip` or `belt_clip_[a]_[a]` is also `belt_clip`.
+  is `Duct_Left`. Removal repeats until none is left, so `[a]_[a]_belt_clip`
+  and the nested `Panel_[a[c]]_Clip` lose every marker. Past 32 alternating
+  nesting levels, one combined scan removes the rest, and the kept separator
+  may differ.
 - This applies to any marker that starts and ends with a symbol. A custom
   marker that starts or ends with a letter or digit, such as `A`, is removed
   only as a prefix, so `gear` stays `gear` and `A_gear` becomes `gear`.
@@ -59,10 +57,9 @@ look a Source up by name still use the looser `sourceByName` match.
   anchored on `\.3mf$` or `\.stl$`. An `.stl` slug accepts only `\.stl$`, as
   before.
 
-Two files whose names differ only by a marker now share a slug. In one Plan
-they report a merge conflict, which is what marker stripping is for: an addon's
-`[a]_foo.stl` replacing a base `foo.stl`. Slugs are not stored. Plan parts
-are keyed by path, so the new slugs change only conflict status, not part
-identity or Required units.
+Two files whose names differ only by a marker now share a slug, so in one Plan
+they report a merge conflict: an addon's `[a]_foo.stl` replacing a base
+`foo.stl`. Slugs are not stored and Plan parts are keyed by path, so part
+identity and Required units do not change.
 
 GitHub sync still skips `.3mf` files. GRE-1776 tracks importing them as parts.

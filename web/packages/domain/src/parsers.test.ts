@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePartSlug, parseQuantity, parseRole, parseStlPath } from "./parsers.js";
+import { MARKER_ROUNDS, parsePartSlug, parseQuantity, parseRole, parseStlPath } from "./parsers.js";
 import {
   DEFAULT_NAMING_PROFILE,
   mergeNamingProfiles,
@@ -58,13 +58,6 @@ describe("parsers", () => {
   ])("strips a run of markers in %s without leaving a separator", (filename, slug) => {
     expect(parsePartSlug(filename)).toBe(slug);
     expect(parsePartSlug(filename)).toBe(parsePartSlug("belt_clip.stl"));
-  });
-
-  it.each([
-    ["STLs/Panel_[a[c]]_Clip.stl", "Panel_Clip"],
-    ["[o[a[c]]]_Panel.stl", "Panel"],
-  ])("strips a marker that removing a nested marker exposes in %s", (path, slug) => {
-    expect(parsePartSlug(path)).toBe(slug);
   });
 
   // The same matrix is asserted against the Rust naming preview in catalog_operations.rs.
@@ -169,27 +162,18 @@ describe("Voron repositories", () => {
   });
 });
 
-// The marker removal at 342b2c09 (stl-naming.ts `markerStrip`, parsers.ts `stripMarker` and
-// `parsePartSlug`), kept to check the one-scan passes against. Test names have no folders,
-// so `basename` is the identity here.
-const reference342b2c09 = (() => {
-  const WORD_CHARACTER = /^[\p{Alphabetic}\p{N}]$/u;
-  const MODEL_EXTENSION_RE = /\.(?:stl|3mf)$/i;
-  const THREE_MF_RE = /\.3mf$/i;
-  type MarkerStrip = { re: RegExp; anywhere: boolean };
-  function markerStrip(marker: string): MarkerStrip {
-    const characters = [...marker];
-    const anywhere =
-      !WORD_CHARACTER.test(characters[0]!) && !WORD_CHARACTER.test(characters.at(-1)!);
+// 342b2c09's marker removal (stl-naming.ts `markerStrip`, parsers.ts `stripMarker` and
+// `parsePartSlug`), kept to check `stripMarkers` against. Test names have no folders.
+function reference342b2c09(file: string, prof: ReturnType<typeof namingProfileFromDict>) {
+  const word = (c?: string) => /^[\p{Alphabetic}\p{N}]$/u.test(c ?? "");
+  const strips = prof.roles.flatMap((r) => r.markers).filter((m) => m.trim()).map((marker) => {
+    const anywhere = !word([...marker][0]) && !word([...marker].at(-1));
     const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return {
-      re: new RegExp(anywhere ? `([ _-]?)${escaped}([ _-]?)` : `^()${escaped}([ _-]?)`, "i"),
-      anywhere,
-    };
-  }
-  function stripMarker(stem: string, strip: MarkerStrip): string {
-    let current = stem;
-    for (;;) {
+    const re = new RegExp(anywhere ? `([ _-]?)${escaped}([ _-]?)` : `^()${escaped}([ _-]?)`, "i");
+    return { re, anywhere };
+  });
+  const stripMarker = (stem: string, strip: (typeof strips)[number]) => {
+    for (let current = stem; ; ) {
       const match = strip.re.exec(current);
       if (!match) return current;
       const [whole, before = "", after = ""] = match;
@@ -198,32 +182,18 @@ const reference342b2c09 = (() => {
       current = current.slice(0, match.index) + keep + current.slice(end);
       if (!strip.anywhere) return current;
     }
-  }
-  return function parsePartSlug(file: string, prof: ReturnType<typeof namingProfileFromDict>) {
-    const markerStrips = prof.roles
-      .flatMap((role) => role.markers)
-      .filter((marker) => marker.trim())
-      .map(markerStrip);
-    const name = file.replace(MODEL_EXTENSION_RE, "");
-    let stem = name;
-    if (prof.slugStripMarkers) {
-      for (const strip of markerStrips) {
-        stem = stripMarker(stem, strip);
-      }
-      for (let before = name; stem !== before; ) {
-        before = stem;
-        for (const strip of markerStrips) {
-          if (strip.anywhere) stem = stripMarker(stem, strip);
-        }
-      }
-    }
-    const quantityStrip = THREE_MF_RE.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
-    if (prof.slugStripQuantity && quantityStrip) {
-      stem = stem.replace(quantityStrip, "");
-    }
-    return stem || name;
   };
-})();
+  const name = file.replace(/\.(?:stl|3mf)$/i, "");
+  let stem = name;
+  for (const strip of strips) stem = stripMarker(stem, strip);
+  for (let before = name; stem !== before; ) {
+    before = stem;
+    for (const strip of strips) if (strip.anywhere) stem = stripMarker(stem, strip);
+  }
+  const quantityStrip = /\.3mf$/i.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
+  if (prof.slugStripQuantity && quantityStrip) stem = stem.replace(quantityStrip, "");
+  return stem || name;
+}
 
 describe("marker removal matches 342b2c09", () => {
   const profile = (markers: Partial<Record<"primary" | "accent", string[]>>) =>
@@ -232,31 +202,27 @@ describe("marker removal matches 342b2c09", () => {
         roles: Object.entries(markers).map(([id, list]) => ({ id: id as "primary", markers: list })),
       }),
     );
-  // Role-ordered marker lists match `PROFILES` in rust/crates/pp-storage/src/catalog/naming/markers.rs.
+  // The profiles, TOKENS, seed and generator match the tests in Rust's naming/markers.rs.
   const profiles = {
     default: profile({}),
     "multi-part [a]-[c]": profile({ primary: ["[a]-[c]"] }),
     "non-ASCII [Σ]": profile({ accent: ["[Σ]"] }),
     "prefix letter A": profile({ accent: ["A"] }),
   };
-  // The same token list, generator and seed as markers.rs.
+  // prettier-ignore
   const TOKENS = [
     "[", "]", "a", "A", "c", "C", "o", "O", "-", "_", " ", ".", "P", "n", "l", "x", "2",
     "Σ", "ς", "σ", "é", "中", "[a]", "[A]", "[c]", "[o]", "[Σ]", "[ς]", "[a]-[c]", "[a[c]]",
   ];
   const SEED = 1396;
   const NAMES = 20_000;
-  function mulberry32(seed: number) {
-    let state = seed >>> 0;
-    return () => {
-      state = (state + 0x6d2b79f5) >>> 0;
-      let t = state;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return (t ^ (t >>> 14)) >>> 0;
-    };
-  }
-  const random = mulberry32(SEED);
+  let state = SEED;
+  const random = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), state | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return (t ^ (t >>> 14)) >>> 0;
+  };
   const names = Array.from({ length: NAMES }, () => {
     const length = random() % 41;
     let name = "";
@@ -264,25 +230,23 @@ describe("marker removal matches 342b2c09", () => {
     return name;
   });
 
+  // Names of at most 47 characters nest fewer than MARKER_ROUNDS levels, so all must match.
   it.each(Object.entries(profiles))(
-    `gives the 342b2c09 slug and role for ${NAMES} generated names (seed ${SEED}) with the %s profile`,
+    `gives the 342b2c09 slug and role for ${NAMES} names (seed ${SEED}) with the %s profile`,
     (_, prof) => {
       let changed = 0;
       for (const name of names) {
         const filename = `${name}.stl`;
-        const expected = reference342b2c09(filename, prof);
-        if (expected !== name) changed += 1;
-        const actual = parseStlPath(filename, prof);
-        // `parseRole` is unchanged since 342b2c09; the role is asserted so a change shows here.
-        if (actual.partSlug !== expected || actual.role !== parseRole(filename, prof)) {
-          expect({ name, slug: actual.partSlug, role: actual.role }).toEqual({
-            name,
-            slug: expected,
-            role: parseRole(filename, prof),
-          });
+        const slug = reference342b2c09(filename, prof);
+        changed += slug === name ? 0 : 1;
+        // `parseRole` is unchanged since 342b2c09.
+        const expected = { name, slug, role: parseRole(filename, prof) };
+        const { partSlug, role } = parseStlPath(filename, prof);
+        if (partSlug !== slug || role !== expected.role) {
+          expect({ name, slug: partSlug, role }).toEqual(expected);
         }
       }
-      // The generator must exercise marker removal, not only pass names through.
+      // The generator must exercise removal, not only pass names through.
       expect(changed).toBeGreaterThan(NAMES / 2);
     },
   );
@@ -295,5 +259,27 @@ describe("marker removal matches 342b2c09", () => {
   ])("keeps the 342b2c09 result for %s", (filename, prof, role, partSlug) => {
     expect(parseStlPath(filename, prof)).toMatchObject({ role, partSlug });
     expect(reference342b2c09(filename, prof)).toBe(partSlug);
+  });
+
+  // The old regexes need `levels` repeat rounds; Rust's markers.rs pins the same.
+  const capped = (levels: number) => {
+    const nest = "[a[c".repeat(levels) + "]]".repeat(levels);
+    return `Panel[c${nest}]-_[a${nest}].stl`;
+  };
+  it("matches the old regexes at 32 alternating levels and scans once at 33", () => {
+    expect(MARKER_ROUNDS).toBe(32);
+    const both = (levels: number) => [
+      parsePartSlug(capped(levels)),
+      reference342b2c09(capped(levels), profiles.default),
+    ];
+    expect(both(32)).toEqual(["Panel", "Panel"]);
+    // Past the cap the combined scan keeps the `-` the rounds would drop.
+    expect(both(33)).toEqual(["Panel-", "Panel"]);
+  });
+
+  it("strips 30,000 characters of alternating nesting within 5 seconds", () => {
+    const started = performance.now();
+    expect(parsePartSlug(`P_${"[a[c".repeat(5000)}${"]]".repeat(5000)}_C.stl`)).toBe("P_C");
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 });

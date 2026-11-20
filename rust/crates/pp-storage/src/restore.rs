@@ -101,8 +101,9 @@ impl std::error::Error for Refusal {}
 /// that, a later completed stage, a successful activation, and an activation
 /// that publishes its journal and rolls back each try to remove it; those
 /// removals ignore errors, so its files may stay until the next open. An
-/// activation that fails before publishing its journal, or whose rollback
-/// fails, leaves it. Once it is gone the client uploads again.
+/// activation that fails before publishing its journal leaves it. One whose
+/// rollback fails may leave it or not: the rollback removes it before the
+/// previous database is reopened. Once it is gone the client uploads again.
 #[derive(Debug, Clone)]
 pub struct Staged {
     /// 32 lowercase hex digits; the stage lives in `.pp-restore/staged-<id>`.

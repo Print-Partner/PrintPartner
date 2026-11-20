@@ -113,7 +113,7 @@ So the guard never accepts a carry that the status refuses, and when it accepts 
 
 ### Git settings the carry ignores
 
-The read commands of `LocalGit` in `scripts/merge_class.py` see no Git configuration it did not write. These commands, which a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff` and `log`), run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. Before each command it rewrites that directory's config, `HEAD` and `objects/info/alternates`. The directory has no refs, grafts, attributes or remote, and its config turns off the commit-graph and the multi-pack-index. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every other `GIT_*` variable dropped, and with `--no-replace-objects`. So no command fetches, and none runs a program named by the environment or a config. The commands keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. The status and the guard therefore read the same Git defaults. A test writes 28 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
+The read commands of `LocalGit` in `scripts/merge_class.py` see no Git configuration it did not write. These commands, which a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff` and `log`), run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. Before each command it rewrites that directory's config, `HEAD` and `objects/info/alternates`. The directory has no refs, grafts, attributes or remote, and its config turns off the commit-graph and the multi-pack-index. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every other `GIT_*` variable dropped, and with `--no-replace-objects`. So no command fetches, and none runs a program named by the environment or a config. The commands keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. The status and the guard therefore read the same Git defaults. A test writes 30 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
 
 Tracked `.gitattributes` in the merged trees cannot apply. The scratch directory has no worktree, index or `HEAD` tree to read them from, merge drivers act only on paths both sides changed (which condition 6 refuses), and diff drivers are off.
 
@@ -123,10 +123,10 @@ Only `ensure` runs commands in the clone with its configuration and transport va
 
 In scope is state that ordinary Git commands or environment variables can set, by accident or on purpose:
 
-- Settings in the shared `.git/config`, its includes, global, XDG and system config. Tests: `test_no_git_configuration_reaches_the_carry` (local, included, `HOME`/XDG and `GIT_CONFIG_SYSTEM`) and `test_no_setting_anywhere_changes_what_local_git_reads` (28 settings).
+- Settings in the shared `.git/config`, its includes, global, XDG and system config. Tests: `test_no_git_configuration_reaches_the_carry` (local, included, `HOME`/XDG and `GIT_CONFIG_SYSTEM`) and `test_no_setting_anywhere_changes_what_local_git_reads` (30 settings).
 - The merge command's environment and working directory. Tests: `test_git_config_env_and_cwd_cannot_change_what_the_carry_sees`, `test_both_decide_the_same_from_a_subdirectory_with_diff_relative`, `test_a_read_never_fetches_or_runs_a_transport_program` and `test_no_caller_git_variable_reaches_a_read`.
 - Replace refs and grafts. Test: `test_replace_refs_and_grafts_do_not_change_the_parents`.
-- `info/attributes`. Covered by the 28-setting test.
+- `info/attributes`. Covered by the 30-setting test.
 - Other refs, the commit-graph and the multi-pack-index: by design (the scratch directory has no refs, and both indexes are off), not tested.
 
 Out of scope:

@@ -40,6 +40,8 @@ jobs:
         run: |
           export PP_EVIDENCE="$RUNNER_TEMP/desktop-runtime-evidence"
           echo "PP_EVIDENCE=$PP_EVIDENCE" >> "$GITHUB_ENV"
+          # The e2e receipt's timestamp: this job's start, so rewriting the receipt gives the same bytes.
+          echo "PP_JOB_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           mkdir -p "$PP_EVIDENCE"
           uname -a > "$PP_EVIDENCE/runner.txt"
           git rev-parse HEAD > "$PP_EVIDENCE/head.txt"
@@ -137,10 +139,12 @@ jobs:
           path: ${{ runner.temp }}/e2e-receipt/screenshots/
           if-no-files-found: warn
           retention-days: 14
+      # A receipt stands only for a Playwright step that succeeded; the writer also refuses any other outcome.
       - name: Write the e2e receipt
         id: e2e_receipt
-        if: ${{ !cancelled() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') }}
+        if: ${{ !cancelled() && steps.playwright.outcome == 'success' }}
         env:
+          E2E_OUTCOME: ${{ steps.playwright.outcome }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -154,9 +158,10 @@ jobs:
             --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --server-url "$SERVER_URL" \
             --suite web-playwright --artifact-url "$ARTIFACT_URL" \
             --runner-host "$RUNNER_NAME" --runner-environment "$RUNNER_ENVIRONMENT" \
+            --e2e-outcome "$E2E_OUTCOME" --timestamp "$PP_JOB_STARTED" \
             | tee "$PP_EVIDENCE/e2e-receipt.json"
       - name: Upload the e2e receipt
-        if: ${{ !cancelled() && steps.e2e_receipt.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.playwright.outcome == 'success' && steps.e2e_receipt.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-receipt-${{ github.run_id }}-${{ github.run_attempt }}

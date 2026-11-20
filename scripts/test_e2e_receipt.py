@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import io
 import json
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -13,6 +14,10 @@ HEAD = "1d7950189896bc6fc68ac7a9d4aa5739e845593b"
 OTHER = "f26fcb8fd71cc1215c55b1d6d38c8a9d3cbd68ce"
 ARTIFACT = "https://github.com/Print-Partner/PrintPartner/actions/runs/44460000000/artifacts/4471"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+STARTED = "2026-11-19T04:39:00Z"
+# Arguments the workflow always passes: the Playwright step's outcome and the job's start time.
+PASSED = ["--e2e-outcome", "success", "--timestamp", STARTED]
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "desktop-runtime.yml"
 
 
 def result(retry=0, shot=None):
@@ -71,7 +76,8 @@ class Fixture:
                 code = er.main(["write", *args, "--repo", "Print-Partner/PrintPartner", "--pr", pr,
                                 "--head", head, "--checkout-sha", HEAD, "--run-id", "44460000000",
                                 "--suite", "web-playwright", "--runner-host", "GitHub Actions 7",
-                                "--runner-environment", "github-hosted", "--artifact-url", artifact, *extra])
+                                "--runner-environment", "github-hosted", "--artifact-url", artifact,
+                                *PASSED, *extra])
         self.err = err.getvalue()
         return code
 
@@ -211,7 +217,7 @@ class ScreenshotTests(unittest.TestCase):
         (f.out / "screenshots" / "999-extra.png").write_bytes(PNG)
         args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "o/r", "--head", HEAD,
                 "--checkout-sha", HEAD, "--run-id", "1", "--suite", "s", "--runner-host", "h",
-                "--artifact-url", "https://github.com/o/r/actions/runs/1/artifacts/2"]
+                "--artifact-url", "https://github.com/o/r/actions/runs/1/artifacts/2", *PASSED]
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             self.assertEqual(er.main(args), 1)
         self.assertIn("holds 2 files; the report lists 1", err.getvalue())
@@ -233,7 +239,7 @@ class ScreenshotTests(unittest.TestCase):
         (f.out / "screenshots" / "001-help-r0.png").write_bytes(PNG[:-1] + b"X")
         args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "Print-Partner/PrintPartner",
                 "--head", HEAD, "--checkout-sha", HEAD, "--run-id", "44460000000", "--suite", "s",
-                "--runner-host", "h", "--artifact-url", ARTIFACT]
+                "--runner-host", "h", "--artifact-url", ARTIFACT, *PASSED]
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             self.assertEqual(er.main(args), 1)
         self.assertIn("differs from the report's attachment", err.getvalue())
@@ -251,7 +257,138 @@ class ScreenshotTests(unittest.TestCase):
         self.assertEqual(f.run(), 0, f.err)
         with redirect_stderr(io.StringIO()) as err:
             self.assertEqual(er.main(["collect", "--report", str(f.dir / "report.json"), "--out", str(f.out)]), 1)
-        self.assertIn("is not empty", err.getvalue())
+        self.assertIn("already exists", err.getvalue())
+
+    def test_collect_refuses_an_existing_empty_directory(self):
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        (f.out / "screenshots").mkdir(parents=True)
+        self.assertEqual(f.run(), 1)
+        self.assertIn("already exists", f.err)
+        self.assertEqual(list((f.out / "screenshots").iterdir()), [])
+        self.assertFalse((f.out / "receipt.json").exists())
+
+    def test_a_thousand_screenshots_pass_in_report_order(self):
+        specs = [spec(f"page {i}", "expected", result()) for i in range(1000)]
+        f = Fixture(specs)
+        for i, s in enumerate(specs):
+            s["tests"][0]["results"][0] = result(shot=f.png(f"{i}.png", PNG + str(i).encode()))
+        self.assertEqual(f.run(), 0, f.err)
+        shots = f.receipt()["screenshots"]
+        self.assertEqual(len(shots), 1000)
+        self.assertEqual([s["path"] for s in shots[:2] + shots[-1:]],
+                         ["screenshots/0001-page-0-r0.png", "screenshots/0002-page-1-r0.png",
+                          "screenshots/1000-page-999-r0.png"])
+        # Each copy in the receipt is the attachment of the test at the same report position.
+        for i, shot in enumerate(shots):
+            self.assertEqual((f.out / shot["path"]).read_bytes(), PNG + str(i).encode())
+
+
+class OutcomeTests(unittest.TestCase):
+    """A receipt never stands for a Playwright step that failed, was cancelled or was skipped."""
+
+    def passing(self):
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        return f
+
+    def test_only_a_successful_step_gets_a_receipt(self):
+        # A passing report with a failed step is what a missed clean-shutdown line looks like.
+        for outcome in ("failure", "cancelled", "skipped", "", "Success"):
+            with self.subTest(outcome=outcome):
+                f = self.passing()
+                self.assertEqual(f.run("--e2e-outcome", outcome), 1)
+                self.assertIn("not 'success'", f.err)
+                self.assertFalse((f.out / "receipt.json").exists())
+
+    def test_workflow_writes_and_uploads_only_after_a_successful_step(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        steps = {m.group(1): m.group(0) for m in
+                 re.finditer(r"(?ms)^      - name: ([^\n]+)\n.*?(?=^      - |\Z)", text)}
+        write = steps["Write the e2e receipt"]
+        self.assertIn("if: ${{ !cancelled() && steps.playwright.outcome == 'success' }}\n", write)
+        self.assertIn("E2E_OUTCOME: ${{ steps.playwright.outcome }}\n", write)
+        self.assertIn('--e2e-outcome "$E2E_OUTCOME" --timestamp "$PP_JOB_STARTED"', write)
+        self.assertIn("if: ${{ !cancelled() && steps.playwright.outcome == 'success' "
+                      "&& steps.e2e_receipt.outcome == 'success' }}\n", steps["Upload the e2e receipt"])
+        self.assertIn("id: playwright\n", steps["Run Playwright specs against pp-server"])
+
+
+class InputTests(unittest.TestCase):
+    """Malformed report input or arguments exit 1 and write no receipt."""
+
+    def passing(self):
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        return f
+
+    def refuse(self, f, *extra, message, **kw):
+        self.assertEqual(f.run(*extra, **kw), 1)
+        self.assertIn(message, f.err)
+        self.assertFalse((f.out / "receipt.json").exists())
+
+    def test_stats_must_be_non_negative_integers(self):
+        for key, bad in (("expected", True), ("unexpected", False), ("expected", 1.0), ("skipped", "0"),
+                         ("flaky", None), ("unexpected", -1)):
+            with self.subTest(key=key, value=bad):
+                f = self.passing()
+                f.report["stats"][key] = bad
+                self.refuse(f, message=f"stats.{key} must be a non-negative integer")
+        f = self.passing()
+        f.report["stats"] = [1, 0, 0, 0]
+        self.refuse(f, message="stats must be an object")
+
+    def test_errors_must_be_a_present_list(self):
+        for bad in (None, {}, "none", 0):
+            with self.subTest(errors=bad):
+                f = self.passing()
+                f.report["errors"] = bad
+                self.refuse(f, message="errors must be a list")
+        f = self.passing()
+        del f.report["errors"]
+        self.refuse(f, message="errors must be a list")
+
+    def test_run_numbers_must_be_positive_integers(self):
+        for bad in ("0", "-1", "01", "1.0", "", "two"):
+            with self.subTest(attempt=bad):
+                self.refuse(self.passing(), "--run-attempt", bad, message="run-attempt must be a positive integer")
+        for bad in ("0", "-5"):
+            with self.subTest(run_id=bad):
+                self.refuse(self.passing(), "--run-id", bad, message="run-id must be a positive integer")
+        self.refuse(self.passing(), pr="0", message="pr must be a positive integer")
+        f = self.passing()
+        self.assertEqual(f.run("--run-attempt", "2"), 0, f.err)
+        self.assertEqual(f.receipt()["run_attempt"], 2)
+
+    def test_checkout_sha_must_be_forty_lowercase_hex(self):
+        for bad in (HEAD.upper(), HEAD[:12], "g" * 40):
+            with self.subTest(checkout=bad):
+                self.refuse(self.passing(), "--checkout-sha", bad, message="checkout_sha must be a 40-character")
+
+    def test_timestamp_must_be_utc_seconds(self):
+        for bad in ("2026-11-19T04:39:00.000Z", "2026-11-19 04:39:00", "2026-11-19T04:39:00+00:00",
+                    "2026-02-30T04:39:00Z", ""):
+            with self.subTest(timestamp=bad):
+                self.refuse(self.passing(), "--timestamp", bad, message="timestamp must be")
+
+
+class StableBytesTests(unittest.TestCase):
+    def test_the_same_input_gives_the_same_bytes(self):
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        self.assertEqual(f.run(), 0, f.err)
+        first = (f.out / "receipt.json").read_bytes()
+        self.assertEqual(json.loads(first)["timestamp"], STARTED)
+        args = ["write", "--report", str(f.dir / "report.json"), "--out", str(f.out),
+                "--repo", "Print-Partner/PrintPartner", "--pr", "1866", "--head", HEAD, "--checkout-sha", HEAD,
+                "--run-id", "44460000000", "--suite", "web-playwright", "--runner-host", "GitHub Actions 7",
+                "--runner-environment", "github-hosted", "--artifact-url", ARTIFACT, *PASSED]
+        # A second write from the same input, at a later wall-clock second, gives the same bytes.
+        with redirect_stdout(io.StringIO()), mock.patch.object(er, "pr_head", lambda _: HEAD), \
+                mock.patch.object(er, "datetime", wraps=er.datetime) as clock:
+            clock.now.return_value = er.datetime(2030, 1, 1)
+            self.assertEqual(er.main(args), 0)
+        self.assertEqual((f.out / "receipt.json").read_bytes(), first)
 
 
 if __name__ == "__main__":

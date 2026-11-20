@@ -4,6 +4,9 @@
 collect: copy the run's PNG screenshot attachments from the Playwright JSON report into
 <out>/screenshots, in report order.
 write: count the report's tests, check the copied screenshots, and write <out>/receipt.json.
+It writes a receipt only when the Playwright step's outcome is `success`; for any other outcome
+it exits 1 and writes nothing, so a receipt never stands for a failed, cancelled or skipped run.
+Identical inputs give identical bytes: the timestamp is an input, not the clock.
 
 The two steps are split so CI can upload the screenshots first and put that artifact's URL
 in the receipt.
@@ -18,13 +21,14 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR = re.compile(r"^[1-9][0-9]{0,9}$")
 RUN_ID = re.compile(r"^[1-9][0-9]*$")
+TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 # Playwright's per-test outcome: expected passed, flaky passed on a retry, unexpected failed.
 STATUSES = ("expected", "flaky", "unexpected", "skipped")
 SCREENSHOTS = "screenshots"
@@ -56,16 +60,23 @@ def count(report) -> dict:
         if status not in tally:
             raise ReceiptError(f"unknown test status {status!r}")
         tally[status] += 1
-    stats = report.get("stats") or {}
+    stats = report.get("stats")
+    if not isinstance(stats, dict):
+        raise ReceiptError("stats must be an object")
     for status in STATUSES:
-        if stats.get(status) != tally[status]:
-            raise ReceiptError(f"stats.{status}={stats.get(status)!r} but the report lists {tally[status]}")
+        value = stats.get(status)
+        if type(value) is not int or value < 0:
+            raise ReceiptError(f"stats.{status} must be a non-negative integer, not {value!r}")
+        if value != tally[status]:
+            raise ReceiptError(f"stats.{status}={value!r} but the report lists {tally[status]}")
+    if not isinstance(report.get("errors"), list):
+        raise ReceiptError("errors must be a list")
     return {
         "pass": tally["expected"] + tally["flaky"],
         "fail": tally["unexpected"],
         "skipped": tally["skipped"],
         "flaky": tally["flaky"],
-        "errors": len(report.get("errors") or []),
+        "errors": len(report["errors"]),
     }
 
 
@@ -74,8 +85,11 @@ def slug(text: str) -> str:
 
 
 def screenshot_sources(report, report_dir: Path) -> list[tuple[Path, str]]:
-    """Every PNG attachment with a file path, in report order, with its copy's file name."""
-    out = []
+    """Every PNG attachment with a file path, in report order, with its copy's file name.
+
+    The index is zero-padded to the width of the count, so file-name order is report order.
+    """
+    found = []
     for spec, test in all_tests(report):
         for result in test.get("results") or []:
             for attachment in result.get("attachments") or []:
@@ -84,17 +98,19 @@ def screenshot_sources(report, report_dir: Path) -> list[tuple[Path, str]]:
                 source = Path(attachment["path"])
                 if not source.is_absolute():
                     source = report_dir / source
-                name = f"{len(out) + 1:03d}-{slug(spec.get('title') or '')}-r{result.get('retry', 0)}.png"
-                out.append((source, name))
-    return out
+                found.append((source, f"{slug(spec.get('title') or '')}-r{result.get('retry', 0)}.png"))
+    width = max(3, len(str(len(found))))
+    return [(source, f"{i:0{width}d}-{rest}") for i, (source, rest) in enumerate(found, 1)]
 
 
 def collect(report_path: Path, out: Path) -> list[Path]:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     target = out / SCREENSHOTS
-    target.mkdir(parents=True, exist_ok=True)
-    if any(target.iterdir()):
-        raise ReceiptError(f"{target} is not empty")
+    # A staging directory is never reused, even when empty: each run collects into a new one.
+    if target.exists():
+        raise ReceiptError(f"{target} already exists")
+    out.mkdir(parents=True, exist_ok=True)
+    target.mkdir()
     copied = []
     for source, name in screenshot_sources(report, report_path.parent):
         if not source.is_file() or source.stat().st_size == 0:
@@ -154,13 +170,22 @@ def pr_head(pr: int, remote: str = "origin", cwd: Path | None = None) -> str:
     return shas[0]
 
 
-def build(args, now: datetime | None = None) -> dict:
+def build(args) -> dict:
+    # Only a Playwright step that succeeded gets a receipt; failed, cancelled and skipped get none.
+    if args.e2e_outcome != "success":
+        raise ReceiptError(f"the e2e step's outcome is {args.e2e_outcome!r}, not 'success'")
+    if not TIMESTAMP.fullmatch(args.timestamp):
+        raise ReceiptError("timestamp must be YYYY-MM-DDTHH:MM:SSZ")
+    try:
+        datetime.strptime(args.timestamp, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        raise ReceiptError("timestamp must be a real UTC time") from None
     report = json.loads(Path(args.report).read_text(encoding="utf-8"))
     out = Path(args.out)
     sources = screenshot_sources(report, Path(args.report).parent)
     expected = [name for _, name in sources]
     present = sorted(p.name for p in (out / SCREENSHOTS).glob("*")) if (out / SCREENSHOTS).is_dir() else []
-    if present != expected:
+    if present != sorted(expected):
         raise ReceiptError(f"{out / SCREENSHOTS} holds {len(present)} files; the report lists {len(expected)}")
     # The staged copies are what CI uploaded; each must still equal the attachment Playwright wrote.
     for source, name in sources:
@@ -171,9 +196,13 @@ def build(args, now: datetime | None = None) -> dict:
         raise ReceiptError("pr must be a positive integer without leading zeros")
     if not RUN_ID.fullmatch(args.run_id):
         raise ReceiptError("run-id must be a positive integer")
+    if not RUN_ID.fullmatch(args.run_attempt):
+        raise ReceiptError("run-attempt must be a positive integer")
     # The receipt names the commit Playwright tested, and only a PR whose live head is that commit.
     if not FULL_SHA.fullmatch(args.head):
         raise ReceiptError("head must be a 40-character lowercase SHA")
+    if not FULL_SHA.fullmatch(str(args.checkout_sha)):
+        raise ReceiptError("checkout_sha must be a 40-character lowercase SHA")
     if args.head != args.checkout_sha:
         raise ReceiptError(f"head {args.head[:12]} is not the tested checkout {str(args.checkout_sha)[:12]}")
     if args.pr and pr_head(int(args.pr)) != args.head:
@@ -190,7 +219,7 @@ def build(args, now: datetime | None = None) -> dict:
         **count(report),
         "screenshots": [describe(out / SCREENSHOTS / name, out) for name in expected],
         "artifact_url": args.artifact_url or None,
-        "timestamp": (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": args.timestamp,
         "runner_host": args.runner_host,
         "runner_environment": args.runner_environment,
     }
@@ -221,6 +250,9 @@ def main(argv=None) -> int:
     w.add_argument("--artifact-url", default="", help="URL of the uploaded screenshots artifact")
     w.add_argument("--runner-host", required=True)
     w.add_argument("--runner-environment", default="")
+    w.add_argument("--e2e-outcome", required=True,
+                   help="the Playwright step's outcome; only 'success' gets a receipt")
+    w.add_argument("--timestamp", required=True, help="UTC start time, YYYY-MM-DDTHH:MM:SSZ")
     args = parser.parse_args(argv)
     try:
         if args.cmd == "collect":

@@ -486,6 +486,30 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     expect(putCount(core)).toBe(1);
   });
 
+  it.each(
+    returns.slice(0, 2).flatMap(([how, go]) => [[how, 404, go] as const, [how, 400, go] as const]),
+  )("after %s, a core %s refusal of the held PUT shows its reason on the returned form", async (_, status, go) => {
+    const gone = "That Source is no longer in the Library. Choose another.";
+    const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
+    const router = renderAt("/builds/1000/sources", core.fetchMock);
+    const form = await readyForm();
+    fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "2" } });
+    core.holdPut();
+    fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+    await go(router);
+    core.releasePut(() => problem(status, "Project not found"));
+    expect(within(await readyForm()).getByRole("alert").textContent).toBe(gone);
+    expect(putCount(core)).toBe(1);
+    await act(() => router.navigate("/builds/1001/sources"));
+    await readyForm();
+    expect(screen.queryByText(gone)).toBeNull();
+    await act(() => router.navigate("/builds/1000/sources"));
+    const back = await readyForm();
+    expect(within(back).getByRole("alert").textContent).toBe(gone);
+    fireEvent.change(within(back).getByLabelText("Base Source"), { target: { value: "1" } });
+    expect(screen.queryByText(gone)).toBeNull();
+  });
+
   it("reads the Build again on return before it opens, so a base set elsewhere is kept", async () => {
     const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
     renderAt("/builds/1000/sources", core.fetchMock);

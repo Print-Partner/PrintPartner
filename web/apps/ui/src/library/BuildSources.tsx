@@ -26,10 +26,12 @@ import { SourceFiles } from "./SourceFiles";
 import { acceptedRevisionText, revisionText, type Source } from "./sources";
 import {
   baseSeen,
+  clearRefusal,
   recordSend,
   sendRefused,
   sendUnconfirmed,
   unconfirmedSends,
+  useRefusal,
   useUnconfirmedSends,
   type UnconfirmedSend,
 } from "./unconfirmedBase";
@@ -114,7 +116,6 @@ async function putBase(buildId: number, projectId: number): Promise<ProfileLayer
  */
 function useSetBase(buildId: number) {
   const client = useQueryClient();
-  const [refusal, setRefusal] = useState("");
   const mutation = useMutation({
     mutationKey: setBaseKey(buildId),
     retry: false,
@@ -129,12 +130,10 @@ function useSetBase(buildId: number) {
     },
     onError: (error: Error, { sendId }) => {
       if (refusedByCore(error)) {
-        sendRefused(buildId, sendId);
-        setRefusal(refusalText((error as CoreError).detail ?? error.message));
+        sendRefused(buildId, sendId, refusalText((error as CoreError).detail ?? error.message));
       } else if (error instanceof RequestContractError) {
         // Refused before it left: nothing was sent.
-        sendRefused(buildId, sendId);
-        setRefusal(error.message);
+        sendRefused(buildId, sendId, error.message);
       } else {
         sendUnconfirmed(buildId, sendId, error.message);
       }
@@ -152,10 +151,10 @@ function useSetBase(buildId: number) {
     // Asked at the press, not taken from the last render, so two forms cannot both send.
     if (client.isMutating({ mutationKey: setBaseKey(buildId), exact: true }) > 0) return;
     if (!anyway && unconfirmedSends(buildId).length > 0) return;
-    setRefusal("");
+    clearRefusal(buildId);
     mutation.mutate({ sourceId, sendId: recordSend(buildId, sourceId) });
   };
-  return { send, refusal, clearRefusal: () => setRefusal("") };
+  return { send, refusal: useRefusal(buildId), clearRefusal: () => clearRefusal(buildId) };
 }
 
 /**

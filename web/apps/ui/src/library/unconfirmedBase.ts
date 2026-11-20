@@ -19,7 +19,10 @@ export interface UnconfirmedSend {
 
 const NONE: readonly UnconfirmedSend[] = [];
 const sends = new Map<string, readonly UnconfirmedSend[]>();
+/** The core's last refusal per Build, kept for whichever form mounts next. */
+const refusals = new Map<string, string>();
 const listeners = new Set<() => void>();
+const notify = () => listeners.forEach((listener) => listener());
 let nextId = 1;
 
 const key = (buildId: number) => `${globalThis.location?.origin ?? ""} ${buildId}`;
@@ -27,7 +30,7 @@ const key = (buildId: number) => `${globalThis.location?.origin ?? ""} ${buildId
 function write(buildId: number, next: readonly UnconfirmedSend[]) {
   if (next.length === 0) sends.delete(key(buildId));
   else sends.set(key(buildId), next);
-  for (const listener of listeners) listener();
+  notify();
 }
 
 export function unconfirmedSends(buildId: number): readonly UnconfirmedSend[] {
@@ -50,7 +53,8 @@ export function sendUnconfirmed(buildId: number, id: number, reason: string) {
 }
 
 /** The core refused this send, so it wrote nothing. Earlier unconfirmed sends stay. */
-export function sendRefused(buildId: number, id: number) {
+export function sendRefused(buildId: number, id: number, reason: string) {
+  refusals.set(key(buildId), reason);
   write(
     buildId,
     unconfirmedSends(buildId).filter((send) => send.id !== id),
@@ -59,13 +63,24 @@ export function sendRefused(buildId: number, id: number) {
 
 /** The Build has a base: a send was confirmed, or a read shows one. */
 export function baseSeen(buildId: number) {
+  clearRefusal(buildId);
   if (unconfirmedSends(buildId).length > 0) write(buildId, NONE);
+}
+
+/** A new choice, a new press, or a base read ends the refusal. */
+export function clearRefusal(buildId: number) {
+  if (refusals.delete(key(buildId))) notify();
+}
+
+export function useRefusal(buildId: number): string {
+  return useSyncExternalStore(subscribe, () => refusals.get(key(buildId)) ?? "");
 }
 
 /** Tests start each case with no sends. */
 export function forgetAllSends() {
   sends.clear();
-  for (const listener of listeners) listener();
+  refusals.clear();
+  notify();
 }
 
 function subscribe(listener: () => void) {

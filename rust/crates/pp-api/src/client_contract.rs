@@ -85,6 +85,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "ProfileLayers",
     ),
+    // Answers 200 with the new Build's summary and its `layers`; the client keeps the
+    // summary. A base Source is optional. Build names are unique, so a repeat is refused
+    // with 400 and writes nothing; the client reconciles by listing Builds.
+    route(
+        "createBuild",
+        "POST",
+        "/api/v2/plans",
+        Some("CreateBuildRequest"),
+        "ProfileSummary",
+    ),
     // Adds the base layer, or moves an existing one to that Source, and answers the layers.
     route(
         "setBuildBase",
@@ -583,9 +593,9 @@ pub(crate) mod codegen {
     use pp_storage::{
         build_graph::ExperimentCopy,
         build_graph::wire::{
-            AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
-            PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
-            ProfileList, ProfileSummary, SourceAttachmentRequest,
+            AcceptedProgressSummary, AcceptedProgressUnavailableReason, CreateBuildRequest,
+            FreshnessReasons, PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer,
+            ProfileLayers, ProfileList, ProfileSummary, SourceAttachmentRequest,
         },
         checkoff_progress::wire::{
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
@@ -660,6 +670,10 @@ pub(crate) mod codegen {
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
+        schema(
+            "CreateBuildRequest",
+            schemars::schema_for!(CreateBuildRequest),
+        )?;
         schema(
             "SourceAttachmentRequest",
             schemars::schema_for!(SourceAttachmentRequest),
@@ -2462,6 +2476,27 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "with-base",
+                json!({"name": format!("Build {UNICODE}"), "base_project_id": MAX_SAFE}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "no-base",
+                json!({"name": "Rack", "base_project_id": null}),
+            ),
+            request::<CreateBuildRequest>("CreateBuildRequest", "empty-name", json!({"name": ""})),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "long-name",
+                json!({"name": "\u{1f9f5}".repeat(4097)}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "zero-source",
+                json!({"name": "Rack", "base_project_id": 0}),
+            ),
             request::<SourceAttachmentRequest>(
                 "SourceAttachmentRequest",
                 "max",

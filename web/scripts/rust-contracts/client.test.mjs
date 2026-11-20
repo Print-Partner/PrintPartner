@@ -125,6 +125,8 @@ const optionalMembers = {
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
   // Create takes `enabled` (default true) and only the credential fields its kind uses; an edit sends only the fields it changes.
   CreateIntegrationRequest: new Set(["enabled", "username", "api_key", "password"]),
+  // Build create needs only a name; a base Source is optional.
+  CreateBuildRequest: new Set(["base_project_id"]),
   // Source create needs only a name; the core stores defaults for the rest (GRE-1490).
   CreateSourceRequest: new Set(["url", "branch", "tag", "source_kind", "role", "metadata"]),
   UpdateIntegrationRequest: new Set(["name", "base_url", "enabled", "username", "api_key", "password"]),

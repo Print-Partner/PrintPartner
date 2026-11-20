@@ -62,7 +62,7 @@ the base. A read of zero layers does not, because the write may still be on its
 way. **Set a base anyway** is the owner's way out when the first send never
 arrived. It explains that if the earlier send reaches the core later, whichever
 of the two arrives last becomes the base, and it needs the Source chosen again.
-It opens only after a read that succeeded since the panel appeared.
+It opens only after a read that succeeded since the Sources tab opened.
 
 The UI cannot see a send from before a page reload, because the record lives in
 memory. Another window or client can also send at the same time. The real guard

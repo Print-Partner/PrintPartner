@@ -27,7 +27,7 @@ from pathlib import Path
 from merge_class import classify, load_classes, parse_obstacles
 # The carry decision is shared with the coordinator's sensitive merge check (agent-guard.py).
 from merge_class import (CARRY_MAX_HOPS, NO_CARRY_VENDORS, Carry, GitHubFacts, LocalGit,  # noqa: F401
-                         decide_carry, gate_file, hop)
+                         check_state, decide_carry, gate_file, hop)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
@@ -220,15 +220,17 @@ def plan_statuses(records: list[Record]) -> list[StatusPlan]:
     return [plan_head(head, group) for head, group in sorted(by_head.items())]
 
 
-def plan_carry(head: str, records: list[Record], strict: bool, facts) -> tuple[StatusPlan | None, str]:
+def plan_carry(head: str, records: list[Record], strict: bool, facts,
+               checks: str | None) -> tuple[StatusPlan | None, str]:
     """pp/score for a head with no records of its own, carried from an earlier head, or (None, why).
 
     merge_class.decide_carry finds the source head (the same decision the coordinator's sensitive
-    merge check uses). Then the source's records must pass plan_head as they would on the source
+    merge check uses) from checks, the caller's one check_state read. Then the source's records must pass plan_head as they would on the source
     itself, Grok included; Grok records are then dropped and at least one must remain; and a
     strict (owner or sensitive) PR needs every record on the source above 8.
     """
-    carry = decide_carry(head, {r.head for r in records}, {r.author for r in records}, facts, load_classes())
+    carry = decide_carry(head, {r.head for r in records}, {r.author for r in records}, facts, load_classes(),
+                         checks)
     if carry.source is None:
         return None, carry.reason
     source = carry.source
@@ -258,11 +260,12 @@ def strict_class(paths: list[str]) -> bool:
     return classify(paths, load_classes()) != "lane"
 
 
-def carry_for_pr(repo: str, pr: int, head: str, records: list[Record], facts) -> tuple[StatusPlan | None, str]:
+def carry_for_pr(repo: str, pr: int, head: str, records: list[Record], facts,
+                 checks: str | None) -> tuple[StatusPlan | None, str]:
     """plan_carry for a live PR; any read failure means no carry."""
     try:
         files = fetch_files(repo, pr)
-        return plan_carry(head, records, strict_class(files), facts)
+        return plan_carry(head, records, strict_class(files), facts, checks)
     except Exception as err:  # noqa: BLE001 - an unreadable fact never carries a score
         return None, f"cannot verify carry: {type(err).__name__}: {err}"
 
@@ -441,7 +444,8 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
         heads = {pr: fetch_head(repo, pr) for pr in prs}
         records = {pr: trusted_records(fetch_comments(repo, pr), trust) for pr in prs}
         facts = GitHubFacts(repo, gh_json)
-        carried = {pr: carry_for_pr(repo, pr, heads[pr], records[pr], facts) for pr in prs
+        carried = {pr: carry_for_pr(repo, pr, heads[pr], records[pr], facts, check_state(facts, heads[pr]))
+                   for pr in prs
                    if isinstance(heads[pr], str) and FULL_SHA.fullmatch(heads[pr])
                    and not any(r.head == heads[pr] for r in records[pr])}
         for pr, (_, why) in carried.items():
@@ -464,13 +468,6 @@ def run_merge_group(repo, head_sha, base_sha, head_ref, trust, post, prs=None) -
 # If they are still changing after that, it posts failure on the head and exits 1 (fail closed).
 SETTLE_ROUNDS = 3
 UNSETTLED = "re-evaluation needed: the comments, head or checks kept changing"
-
-
-def check_state(facts, head):
-    try:
-        return facts.checks_failing(head)
-    except Exception as err:  # noqa: BLE001 - the same unreadable state reads the same way twice
-        return f"unreadable: {type(err).__name__}"
 
 
 def snapshot(comments, head, checks):
@@ -497,14 +494,14 @@ def comment_pass(repo: str, pr: int, trust, carry_only: bool):
         print(f"# no carry: cannot read the head of #{pr} ({type(err).__name__})")
     head_ok = isinstance(head, str) and bool(FULL_SHA.fullmatch(head))
     facts = GitHubFacts(repo, gh_json)
-    # Read before deciding, so a check that changes during the decision differs at the re-read.
+    # One read of the head's checks: the carry decides from it and the snapshot records it.
     checks = check_state(facts, head) if head_ok else None
     if carry_only:
         # Dry-run aid: decide the carry for the current head as if it had no records of its own.
         records = [r for r in records if r.head != head]
         plans = []
     if head_ok and not any(r.head == head for r in records):
-        carried, why = carry_for_pr(repo, pr, head, records, facts)
+        carried, why = carry_for_pr(repo, pr, head, records, facts, checks)
         print(f"# carry to {head}: {why}")
         plans.append(carried or no_carry_plan(head, why))
     return plans, snapshot(comments, head, checks), head_ok

@@ -384,14 +384,25 @@ def hop(facts, head, classes):
     return previous, f"clean merge of {MAIN}"
 
 
-def decide_carry(head, scored_heads, author_families, facts, classes, max_hops=CARRY_MAX_HOPS):
+def check_state(facts, head):
+    """One read of head's required checks: None when every one concluded success, otherwise why
+    not ("unreadable: <error>" when it cannot be read). A carry decides from this one value."""
+    try:
+        return facts.checks_failing(head)
+    except Exception as err:  # noqa: BLE001 - an unreadable check never passes
+        return f"unreadable: {type(err).__name__}"
+
+
+def decide_carry(head, scored_heads, author_families, facts, classes, head_checks, max_hops=CARRY_MAX_HOPS):
     """Carry(source, why): the earlier head whose records count for head, or Carry(None, why).
 
     head must have no records of its own, every record on the PR must name one author family,
     each hop back to source must pass hop(), the walk stops at the first head with records (so
     newer records win, even failing ones) and goes back at most max_hops, and every required
-    check of main must have concluded success on head itself. Superseded hops' checks are not
-    read: those heads never merge, and their checks can change with nothing to re-run this.
+    check of main must have concluded success on head itself. head_checks is the caller's one
+    check_state read of them; decide_carry never reads them again, so the status run records
+    exactly the value it decided from. Superseded hops' checks are not read: those heads never
+    merge, and their checks can change with nothing to re-run this.
     Whether source's records pass is each caller's record rule; see sensitive_scores.
     """
     scored = set(scored_heads)
@@ -408,9 +419,8 @@ def decide_carry(head, scored_heads, author_families, facts, classes, max_hops=C
         if previous is None:
             return Carry(None, f"{current[:7]}: {why}")
         if previous in scored:
-            failing = facts.checks_failing(head)
-            if failing:
-                return Carry(None, f"{head[:7]}: {failing}")
+            if head_checks:
+                return Carry(None, f"{head[:7]}: {head_checks}")
             return Carry(previous, why)
         current = previous
     return Carry(None, f"no scored head within {max_hops} merges of {MAIN}")
@@ -422,7 +432,8 @@ def sensitive_scores(bodies, head, config, facts, classes):
     records_head is head when head itself passes has_two_scores, or the source a carry reaches
     (decide_carry) when head has no records and that source passes has_two_scores with Grok
     not counted. The status evaluator carries the same source; it also accepts one seat, which
-    this check never does. None refuses. Raises on unreadable facts, which the guard refuses.
+    this check never does. None refuses, as does an unreadable check. Raises on other unreadable
+    facts, which the guard refuses.
     """
     pattern = score_pattern(config["vendors"])
     parsed = [m.groups() for body in bodies for line in body.splitlines()
@@ -435,7 +446,7 @@ def sensitive_scores(bodies, head, config, facts, classes):
             return head, "two qualifying seats on this head"
         return None, "need two qualifying scorer seats from allowed authors on this head"
     authors = {g[4] for g in parsed}
-    carry = decide_carry(head, {g[0] for g in parsed}, authors, facts, classes)
+    carry = decide_carry(head, {g[0] for g in parsed}, authors, facts, classes, check_state(facts, head))
     if carry.source is None:
         return None, f"no records on this head and no carry: {carry.reason}"
     if has_two_scores(bodies, carry.source, next(iter(authors)), seats, vendors, NO_CARRY_VENDORS):

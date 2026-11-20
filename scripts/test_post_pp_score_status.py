@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
+import sys
 import unittest
 import urllib.parse
+from unittest import mock
 
 import merge_class
 import post_pp_score_status as pps
@@ -718,27 +720,67 @@ CONFIG = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
 NO_CARRY_REASON = "no records on this head and no carry: "
 
 
-def carry_both(test, repo, head, records, strict=False, failing=None, main_ref="main"):
-    """The only way these tests evaluate a carry (test_every_carry_goes_through_carry_both checks
-    that). Returns plan_carry's result, and asserts that the coordinator's sensitive check agrees
-    with the strict status on these records and again with a second vendor at 9 added beside each
-    record: the guard carries only what the status carries, from the same source, and a carry both
-    refuse is refused for the same reason. One seat passing the status alone is the known case."""
-    def facts():
-        return RepoFacts(repo, failing, main_ref)
+LANE_FILES, STRICT_FILES = ["docs/x.md"], ["scripts/merge-classes.json"]
 
-    result = pps.plan_carry(head, records, strict, facts())
+
+def carry_both(test, repo, head, records, strict=False, failing=None, main_ref="main", git=None, files=None,
+               guard=False):
+    """The only route to a carry decision in this module besides main() (setUpModule makes a direct
+    call to any carry entry point raise). Returns carry_for_pr's result for files (default: a strict
+    or a lane PR's), with guard=True also the guard's (source, why) on these records. Asserts that
+    the coordinator's sensitive check agrees with the strict status on these records and again with
+    a second vendor at 9 added beside each record: the guard carries only what the status carries,
+    from the same source, a carry both refuse is refused for the same reason, and a guard that
+    raises (refuses) has a status that refused. One seat passing the status alone is the known case."""
+    def status(group, paths):
+        facts = RepoFacts(repo, failing, main_ref, git)
+        with mock.patch.object(pps, "fetch_files", return_value=paths):
+            return pps.carry_for_pr("o/r", 7, head, group, facts, pps.check_state(facts, head))
+
+    result = status(records, files or (STRICT_FILES if strict else LANE_FILES))
     companions = [pps.Record(r.head, "glm-5.3-flash-free", "zhipu", r.author, 9.0, ()) for r in records]
+    guards = []
     for group in (records, records + companions):
-        status, status_why = pps.plan_carry(head, group, True, facts())
-        source, guard_why = merge_class.sensitive_scores([body(r) for r in group], head, CONFIG, facts(),
-                                                         merge_class.load_classes())
+        plan, status_why = status(group, STRICT_FILES)
+        try:
+            source, guard_why = merge_class.sensitive_scores([body(r) for r in group], head, CONFIG,
+                                                             RepoFacts(repo, failing, main_ref, git),
+                                                             merge_class.load_classes())
+        except Exception as err:  # noqa: BLE001 - the guard refuses a fact it cannot read
+            source, guard_why = None, f"raised {type(err).__name__}"
+            test.assertIsNone(plan, f"the status carried what the guard could not verify: {err!r}")
+        guards.append((source, guard_why))
         if source is not None and source != head:
-            test.assertIsNotNone(status, f"the guard carried what the status refused: {status_why}")
+            test.assertIsNotNone(plan, f"the guard carried what the status refused: {status_why}")
             test.assertEqual(status_why, f"carried from {source[:7]}")
-        if status is None and guard_why.startswith(NO_CARRY_REASON):
+        if plan is None and guard_why.startswith(NO_CARRY_REASON):
             test.assertEqual(guard_why[len(NO_CARRY_REASON):], status_why)
-    return result
+    return (result, guards[0]) if guard else result
+
+
+# Every carry decision a test reaches goes through carry_both, which runs and compares both
+# evaluators, or through main() or run_merge_group() as the workflow runs them.
+CARRY_ENTRY_POINTS = [(pps, "plan_carry"), (pps, "carry_for_pr"), (pps, "decide_carry"),
+                      (merge_class, "decide_carry"), (merge_class, "sensitive_scores")]
+DECIDING = {carry_both.__code__, pps.main.__code__, pps.run_merge_group.__code__}
+
+
+def only_through_carry_both(real):
+    def guarded(*args, **kwargs):
+        frame = sys._getframe(1)
+        while frame is not None and frame.f_code not in DECIDING:
+            frame = frame.f_back
+        if frame is None:
+            raise AssertionError(f"{real.__name__} called outside carry_both or main()")
+        return real(*args, **kwargs)
+    return guarded
+
+
+def setUpModule():
+    for module, name in CARRY_ENTRY_POINTS:
+        patcher = mock.patch.object(module, name, only_through_carry_both(getattr(module, name)))
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
 
 
 class CarryTests(unittest.TestCase):
@@ -949,8 +991,8 @@ class CarryTests(unittest.TestCase):
         records = [record(self.h0, score=8)]
         for paths, state in ((["rust/crates/pp-storage/src/import.rs"], None),
                              (["scripts/merge-classes.json"], None), (["docs/x.md"], "success")):
-            with self.subTest(paths=paths), mock.patch.object(pps, "fetch_files", return_value=paths):
-                plan, why = pps.carry_for_pr("o/r", 7, self.h1, records, RepoFacts(self.r))
+            with self.subTest(paths=paths):
+                plan, why = carry_both(self, self.r, self.h1, records, files=paths)
                 self.assertEqual(plan and plan.state, state, why)
 
     def test_grok_records_never_carry(self):
@@ -1132,23 +1174,17 @@ class GuardAgreementTests(unittest.TestCase):
     def setUpClass(cls):
         CarryTests.setUpClass()
         cls.c = CarryTests
-        cls.config = json.loads(pps.CLASSES.read_text(encoding="utf-8"))
-        cls.classes = merge_class.load_classes()
 
     def both(self, head, records, main_ref="main", failing=None):
-        status, status_why = carry_both(self, self.c.r, head, records, True, failing, main_ref)
-        source, guard_why = merge_class.sensitive_scores([body(r) for r in records], head, self.config,
-                                                         RepoFacts(self.c.r, failing, main_ref), self.classes)
+        (status, status_why), (source, guard_why) = carry_both(self, self.c.r, head, records, True, failing,
+                                                               main_ref, guard=True)
         return status is not None, source is not None, status_why, guard_why
 
-    def test_every_carry_goes_through_carry_both(self):
-        # A new carry fixture cannot skip the guard: plan_carry is called only inside carry_both.
-        import inspect
-
-        call = "pps." + "plan_carry("
-        text = inspect.getsource(inspect.getmodule(carry_both))
-        self.assertEqual(text.count(call), inspect.getsource(carry_both).count(call))
-        self.assertEqual(text.count(call), 2)
+    def test_a_carry_entry_point_called_outside_carry_both_fails(self):
+        # A new carry fixture cannot skip the guard: every entry point raises outside carry_both.
+        for module, name in CARRY_ENTRY_POINTS:
+            with self.subTest(name), self.assertRaisesRegex(AssertionError, "outside carry_both"):
+                getattr(module, name)(self.c.h1, [record(self.c.h0)])
 
     def two(self, head):
         return [record(head), record(head, seat="glm-5.3-flash-free", vendor="zhipu")]
@@ -1201,8 +1237,7 @@ class GuardAgreementTests(unittest.TestCase):
 
     def test_the_guard_reads_the_exact_head_first(self):
         h1 = self.c.h1
-        source, _ = merge_class.sensitive_scores([body(r) for r in self.two(h1)], h1, self.config,
-                                                 RepoFacts(self.c.r), self.classes)
+        _, (source, _) = carry_both(self, self.c.r, h1, self.two(h1), True, guard=True)
         self.assertEqual(source, h1)
 
 
@@ -1235,16 +1270,10 @@ class CarryLimitTests(unittest.TestCase):
                        check=True, env=c.r.env, capture_output=True)
         git = pps.LocalGit(clone)
         self.assertEqual(git._git("rev-parse", "--is-shallow-repository").stdout.strip(), "true")
-        facts = RepoFacts(c.r, git=git)
-        from unittest import mock
-
-        with mock.patch.object(pps, "fetch_files", return_value=["docs/x.md"]):
-            plan, why = pps.carry_for_pr("o/r", 7, c.h2, [record(c.h0)], facts)
+        (plan, why), guard = carry_both(self, c.r, c.h2, [record(c.h0)], git=git, guard=True)
         self.assertIsNone(plan)
         self.assertTrue(why.startswith("cannot verify carry: CalledProcessError"), why)
-        with self.assertRaises(subprocess.CalledProcessError):
-            merge_class.sensitive_scores([body(record(c.h0))], c.h2, json.loads(pps.CLASSES.read_text()),
-                                         facts, merge_class.load_classes())
+        self.assertEqual(guard, (None, "raised CalledProcessError"))
 
 
 class CommentModeOrderTests(unittest.TestCase):
@@ -1321,6 +1350,15 @@ class CommentModeOrderTests(unittest.TestCase):
         code, posted, _ = self.run_posting([old, new], lambda repo, pr: self.c.h2)
         on_h2 = [p.state for p in posted if p.head == self.c.h2]
         self.assertEqual((code, on_h2), (0, ["success", "failure"]))
+
+    def test_checks_that_change_mid_decision_never_post_a_stale_success(self):
+        # The checks read in_progress, then success, then in_progress again. When the snapshot and
+        # decide_carry read them separately, the carry decided from success and the run settled on
+        # in_progress. Now one read decides and is recorded, and the next read is compared to it.
+        h2, facts, reads = self.c.h2, RepoFacts(self.c.r), iter(["zizmor is in_progress", None])
+        facts.checks_failing = lambda sha: next(reads, "zizmor is in_progress")
+        code, posted, _ = self.run_posting([[self.comment(9, 1)]], lambda repo, pr: h2, facts)
+        self.assertEqual((code, [p.state for p in posted if p.head == h2]), (0, ["failure", "failure"]))
 
     def test_a_settled_run_posts_once(self):
         code, posted, _ = self.run_posting([[self.comment(9, 1)]], lambda repo, pr: self.c.h2)

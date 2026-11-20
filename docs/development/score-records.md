@@ -61,31 +61,12 @@ also refuse the merge. Owner and lane classifications are unchanged.
 
 ### How records are read
 
-One reader, `read_comments` in `scripts/merge_class.py`, turns the raw PR comments into records for
-both evaluators, the `pp/score` status and the coordinator's sensitive merge check. Both then apply
-the same head rules (`head_fault`) on the exact head and, through `carry_source`, on a carried head.
-Where the two evaluators once read a comment differently, the stricter reading now holds for both
-(GRE-1859):
+`read_comments` in `scripts/merge_class.py` turns the raw PR comments into records for both evaluators, and `head_fault` applies the same head rules to the exact head and, through `carry_source`, to a carried head. Where the two once read a comment differently, the stricter reading now holds for both (GRE-1859):
 
-- A record line is a line that starts with `pp-score ` once surrounding whitespace and inline-code
-  backticks are dropped. Prose that mentions the token mid-line is ignored.
-- A record line at column 0 must be the record alone, with no trailing space or backtick. Every
-  record line must match the format with a valid `obstacles=` token, or it refuses every head. So
-  does a comment whose author or body cannot be read.
-- A record wrapped in backticks, indented, or indented inside a fence is read and checked like any
-  other record, so a low or invalid one fails its head and stops a carry walk. It never counts
-  toward a pass, and a head with only wrapped records fails. Post records bare, at column 0; a bare
-  line inside a code fence counts.
-- A record fails its own head when its comment was edited (`updated_at` differs from `created_at`)
-  or has no readable edit times, when it has no `obstacles=`, or when its seat is not an allowed seat
-  for its `vendor=`. Such a head counts as scored, so a carry walk stops there.
-- A record whose `vendor=` equals its `author=`, or a head whose records disagree on `author=`,
-  fails that head.
-- A record below 8, bare or wrapped, fails its head in both evaluators with one reason,
-  `<seat> scored <n>`; the `pp/score` description reads `rejected: <seat> scored <n>`. A record
-  of 8 fails only the sensitive merge check, which needs 9.
-
-Records for heads that are neither the current head nor the head a carry reaches never count.
+- A record line starts with `pp-score ` once surrounding whitespace and inline-code backticks are dropped; prose that mentions the token mid-line is ignored. At column 0 the line must be the record alone. A record line that does not match the format with a valid `obstacles=` token refuses every head, as does a comment whose author or body cannot be read.
+- A record wrapped in backticks or indented is checked like any other, so a low or invalid one fails its head, but it never counts toward a pass. Post records bare, at column 0; a bare line inside a code fence counts.
+- A record fails its own head, which then counts as scored for a carry walk, when its comment was edited or has no readable edit times, when it has no `obstacles=`, or when its seat is not an allowed seat for its `vendor=`. Records for other heads never count.
+- A seat from the author's own family, records that disagree on `author=`, or a record below 8 fail the head with one reason in both evaluators (`<seat> scored <n>` for a low record). A record of 8 fails only the sensitive merge check, which needs 9.
 
 Never edit a score record; post a new one. An edited record fails its head in both evaluators; edits to records for other heads do not matter, because those never count. Through the `gh` routes (`gh pr comment`, `gh issue comment`, `gh api` and its GraphQL endpoint), the guard refuses edits and deletes of PR comments outside the coordinator worktree: any method but GET or HEAD on `issues/comments/<id>` or `pulls/comments/<id>` (including POST, fields without `-X`, and an `X-HTTP-Method-Override` header), `--edit-last`, `--delete-last`, and the GraphQL update and delete comment mutations. A program that calls the GitHub API with the account's token directly is not covered, and a deleted record cannot be detected, until score records move to an identity lanes cannot use (GRE-1408).
 
@@ -132,11 +113,11 @@ So the guard never accepts a carry that the status refuses, and when it accepts 
 
 ### Git settings the carry ignores
 
-`LocalGit` in `scripts/merge_class.py` reads no Git configuration it did not write. The commands a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff` and `log`) run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. Before each command it rewrites that directory's config, `HEAD` and `objects/info/alternates`. The directory has no refs, grafts, attributes or remote, and its config turns off the commit-graph and the multi-pack-index. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every other `GIT_*` variable dropped, and with `--no-replace-objects`. So no command fetches, and none runs a program named by the environment or a config. The commands keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. The status and the guard therefore read the same Git defaults. A test writes 28 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
+The read commands of `LocalGit` in `scripts/merge_class.py` see no Git configuration it did not write. These commands, which a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff` and `log`), run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. Before each command it rewrites that directory's config, `HEAD` and `objects/info/alternates`. The directory has no refs, grafts, attributes or remote, and its config turns off the commit-graph and the multi-pack-index. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every other `GIT_*` variable dropped, and with `--no-replace-objects`. So no command fetches, and none runs a program named by the environment or a config. The commands keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. The status and the guard therefore read the same Git defaults. A test writes 28 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
 
 Tracked `.gitattributes` in the merged trees cannot apply. The scratch directory has no worktree, index or `HEAD` tree to read them from, merge drivers act only on paths both sides changed (which condition 6 refuses), and diff drivers are off.
 
-Only `ensure` runs in the clone, with the clone's configuration and transport variables, to fetch whole commits by full SHA. A fetch drops the scratch directory, so every later read uses a new one made after the fetch. A clone that lacks a blob a read needs (a `blob:none` clone) refuses rather than fetching it.
+Only `ensure` runs commands in the clone with its configuration and transport variables, to fetch whole commits by full SHA; it then drops the scratch directory, so every later read uses a new one. One `rev-parse --git-common-dir` also runs in the clone, with no `GIT_*` variable, to find the object store. A clone that lacks a blob a read needs (a `blob:none` clone) refuses rather than fetching it.
 
 ### What the guard defends against
 

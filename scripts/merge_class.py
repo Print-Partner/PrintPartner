@@ -349,8 +349,8 @@ class LocalGit:
     and alternates are rewritten before each read; it has no refs, attributes, grafts, remote,
     commit-graph or multi-pack-index; system, global and XDG config are off; and no GIT_* variable
     but its own reaches the command. So a read fetches nothing and runs no program named by the
-    environment or a config. Only ensure() runs in the clone, to fetch whole commits by SHA, and a
-    fetch drops the scratch directory. docs/development/score-records.md has the threat model."""
+    environment or a config. Only ensure() fetches (in the clone, whole commits by SHA), then drops
+    the scratch directory. docs/development/score-records.md has the threat model."""
 
     # Kept for the fetch in the clone only, so it can authenticate and reach the remote.
     TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
@@ -380,7 +380,8 @@ class LocalGit:
     def _git(self, *args, check=True, text=True):
         """A read-only command in the scratch directory, with no configuration but its own."""
         if self._scratch is None:
-            common = self._in_clone("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+            # Finds the clone's object store, with no GIT_* variable at all; it fetches nothing.
+            common = self._run(("rev-parse", "--path-format=absolute", "--git-common-dir"), self.cwd, {}).stdout.strip()
             self._scratch = (Path(tempfile.mkdtemp(prefix="pp-carry-git-")), f"{common}/objects\n")
             (self._scratch[0] / "objects" / "info").mkdir(parents=True)
             (self._scratch[0] / "refs").mkdir()
@@ -394,16 +395,15 @@ class LocalGit:
             "HOME": str(scratch), "XDG_CONFIG_HOME": str(scratch)}, check=check, text=text)
 
     def ensure(self, *shas):
+        """Fetches whole commits by SHA in the clone, then drops the scratch directory, so later reads
+        use a new one made after anything these commands ran."""
         if self._in_clone("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
             # The workflow checkout is depth 1. Fetch the full history, blobs included, in the clone,
             # because the scratch directory never fetches.
             self._in_clone("fetch", "--no-tags", "--quiet", "--unshallow", self.remote, *shas)
-            self._scratch = None
-            return
-        missing = [s for s in shas if self._in_clone("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
-        if missing:
+        elif missing := [s for s in shas if self._in_clone("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]:
             self._in_clone("fetch", "--no-tags", "--quiet", self.remote, *missing)
-            self._scratch = None
+        self._scratch = None
 
     def parents(self, sha):
         return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]

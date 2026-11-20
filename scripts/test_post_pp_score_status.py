@@ -1569,6 +1569,23 @@ class FetchIsolationTests(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
         self.assertEqual(carry_both(self, r, h2, [record(h0)]), (None, f"{h[:7]}: the merge of main had conflicts"))
 
+    def test_no_caller_git_variable_reaches_a_read(self):
+        import os
+        import subprocess
+
+        CarryTests.setUpClass()
+        envs, run = [], subprocess.run
+        caller = dict.fromkeys(("GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "GIT_PROXY_COMMAND", "GIT_FOO"), "x")
+        with mock.patch.dict(os.environ, caller), \
+                mock.patch.object(subprocess, "run", lambda *a, **kw: envs.append(kw.get("env") or {}) or run(*a, **kw)):
+            self.assertEqual(merge_class.hop(RepoFacts(CarryTests.r), CarryTests.h1, merge_class.load_classes())[0],
+                             CarryTests.h0)
+        reads = [env for env in envs if "GIT_DIR" in env]
+        self.assertGreater(len(reads), 5)
+        self.assertEqual({k for env in reads for k in env if k.startswith("GIT_")},
+                         {"GIT_DIR", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_ATTR_NOSYSTEM", "GIT_GRAFT_FILE",
+                          "GIT_NO_LAZY_FETCH"})
+
     def test_a_fetch_never_touches_the_directory_later_reads_use(self):
         # Round 5: a program run by the coordinator's own fetch could find the scratch directory under
         # TMPDIR and plant objects in it. Every fetch drops it, so later reads use a new directory
@@ -1576,6 +1593,7 @@ class FetchIsolationTests(unittest.TestCase):
         import os
         import subprocess
         import tempfile
+        from pathlib import Path
 
         CarryTests.setUpClass()
         c = CarryTests
@@ -1592,7 +1610,7 @@ class FetchIsolationTests(unittest.TestCase):
         git = pps.LocalGit(clone)
         with mock.patch.dict(os.environ, {"GIT_SSH_COMMAND": script}), mock.patch.object(tempfile, "tempdir", private):
             self.assertEqual(carry_both(self, c.r, c.h2, [record(c.h0)], git=git)[1], f"carried from {c.h0[:7]}")
-        planted = set(open(seen, encoding="utf-8").read().split())
+        planted = set(Path(seen).read_text(encoding="utf-8").split())
         self.assertTrue(planted)
         self.assertNotIn(str(git._scratch[0]), planted)
 

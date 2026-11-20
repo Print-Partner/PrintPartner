@@ -47,8 +47,7 @@ def parse_obstacles(token):
 
 def score_pattern(vendors, author_names=()):
     """The pp-score record pattern for the vendors listed in merge-classes.json; author= also takes
-    author_names. obstacles= is optional here so records written before it existed still parse;
-    read_comments makes a record without it a fault of its head."""
+    author_names. obstacles= is optional here so records written before it existed still parse."""
     names = set(author_names)
     if not isinstance(vendors, (list, tuple)) or not vendors or any(
             not isinstance(v, str) or not VENDOR.fullmatch(v) for v in [*vendors, *names]):
@@ -142,8 +141,8 @@ def _seat_map(raw, vendors, key):
 
 
 def load_trust(path=CLASSES):
-    """The trust both evaluators read records with: scorer_authors, every seat a record may name
-    (scorer_seats plus pp_score_seats, which must agree), and the record pattern."""
+    """scorer_authors, every seat a record may name (scorer_seats plus pp_score_seats, which must
+    agree), and the record pattern, from merge-classes.json."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     authors = data.get("scorer_authors") or ["poitee"]
     if not isinstance(authors, list) or not authors or any(not isinstance(a, str) or not a for a in authors):
@@ -172,8 +171,8 @@ class Record:
 
 @dataclass(frozen=True)
 class Reading:
-    """What read_comments found. faults are (head, reason): head None refuses every head; a fault
-    with a head refuses that head and marks it as scored, so a carry walk stops there."""
+    """Records and faults read from comments. faults are (head, reason), with head None for a fault
+    on the whole PR. heads() includes the heads of faults as well as of records."""
     records: tuple = ()
     faults: tuple = ()
     authors: frozenset = frozenset()  # every author= that a parsed record line names
@@ -190,8 +189,7 @@ class Reading:
 
 
 def unwrap(line):
-    """line without surrounding whitespace and inline-code backticks. Fence lines (```text) never
-    start with "pp-score "; a column-0 record line inside a fence is bare, an indented one is wrapped."""
+    """line without surrounding whitespace and inline-code backticks around the whole line."""
     text = line.strip()
     while len(text) >= 2 and text[0] == "`" and text[-1] == "`":
         text = text[1:-1].strip()
@@ -199,19 +197,18 @@ def unwrap(line):
 
 
 def comment_pages(pages):
-    """A PR's comments from `gh api --paginate --slurp <issue comments>`, the one fetch both evaluators
-    use: a non-empty list of pages, each a list. Anything else raises: the guard refuses, the status's
-    merge-group run posts failure, and its comment run exits without posting."""
+    """A PR's comments, flattened from the output of `gh api --paginate --slurp <issue comments>`: a
+    non-empty list of pages, each a list. Anything else raises ValueError."""
     if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
         raise ValueError("unreadable PR comment pages")
     return [comment for page in pages for comment in page]
 
 
 def read_comments(comments, trust):
-    """The one reader of score records, for both evaluators: raw GitHub issue comments to a Reading.
-    A comment without a readable author or body refuses every head, whoever posted it; otherwise only
-    comments by trust["authors"] count. docs/development/score-records.md ("How records are read")
-    lists which lines are records, which refuse every head, and which refuse their own head."""
+    """Raw GitHub issue comments to a Reading. A comment without a readable author or body adds a fault
+    on the whole PR, whoever posted it; otherwise only comments by trust["authors"] are read.
+    docs/development/score-records.md ("How records are read") lists which lines are records, which
+    are faults on the whole PR, and which are faults on their own head."""
     if not isinstance(comments, (list, tuple)):
         return Reading(faults=((None, "the PR comments are unreadable"),))
     records, faults, authors = [], [], set()
@@ -254,8 +251,7 @@ def read_comments(comments, trust):
 def head_fault(reading, head):
     """Why head's records refuse it under the rules both evaluators share, or None: a fault on the
     PR or on head, only wrapped records, a seat from the author's own family, records that
-    disagree on author=, or a record below PASS_AT (bare or wrapped). Both evaluators report this
-    one string, so a head both refuse is refused for the same reason."""
+    disagree on author=, or a record below PASS_AT (bare or wrapped)."""
     fault = next((why for at, why in reading.faults if at in (None, head)), None)
     if fault:
         return fault
@@ -351,8 +347,8 @@ class LocalGit:
     rewritten before each read. It has no refs, attributes, grafts, remote, commit-graph, multi-pack-index,
     outside config or caller GIT_* variable, so a read fetches nothing and runs no program named by the
     environment or a config. Only ensure() runs commands with transport variables (fetching whole commits
-    by SHA in the clone), and it drops the scratch directory however it returns; making a scratch
-    directory also runs one rev-parse in the clone, with no GIT_* variable. The threat model is in
+    by SHA in the clone), and on return it drops the scratch directory; making a scratch directory also
+    runs one rev-parse in the clone, with no GIT_* variable. The threat model is in
     docs/development/score-records.md."""
 
     # Kept for the fetch in the clone only, so it can authenticate and reach the remote.
@@ -376,8 +372,7 @@ class LocalGit:
                               timeout=timeout, env={**base, **env})
 
     def _in_clone(self, *args, check=True):
-        """The fetch side. It reads the clone's configuration and runs its transport, which can only
-        change where whole commits come from; Git checks every fetched object against its hash."""
+        """A git command in the clone, with the clone's configuration and the transport GIT_* variables."""
         return self._run(args, self.cwd, {}, keep=self.TRANSPORT_ENV, check=check)
 
     def _git(self, *args, check=True, text=True):
@@ -398,8 +393,8 @@ class LocalGit:
             "HOME": str(scratch), "XDG_CONFIG_HOME": str(scratch)}, check=check, text=text)
 
     def ensure(self, *shas):
-        """Fetches whole commits by SHA in the clone, then drops the scratch directory, so later reads
-        use a new one made after anything these commands ran."""
+        """Fetches the commits it lacks by SHA in the clone (the full history when the clone is shallow).
+        On return it drops the scratch directory, so later reads use a new one."""
         if self._in_clone("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
             # The workflow checkout is depth 1. Fetch the full history, blobs included, in the clone,
             # because the scratch directory never fetches.
@@ -597,7 +592,6 @@ def decide_carry(head, scored_heads, author_families, facts, classes, head_check
     check_state read of them; decide_carry never reads them again, so the status run records
     exactly the value it decided from. Superseded hops' checks are not read: those heads never
     merge, and their checks can change with nothing to re-run this.
-    Callers reach this only through carry_source.
     """
     scored = set(scored_heads)
     if not scored:
@@ -623,8 +617,7 @@ def decide_carry(head, scored_heads, author_families, facts, classes, head_check
 def carry_source(reading, head, facts, classes, head_checks):
     """(source, why) for a head with no records of its own, or (None, why). A fault on the PR
     refuses; then decide_carry on the Reading's heads (faulted heads count as scored) and author
-    families; then head_fault on the source. Both evaluators carry only through this, so they reach
-    the same source or refuse for the same reason. Each then applies its own bar to the source."""
+    families; then head_fault on the source."""
     fault = next((why for at, why in reading.faults if at is None), None)
     if fault:
         return None, fault
@@ -641,7 +634,8 @@ def sensitive_scores(reading, head, seats, vendors, facts, classes):
     """The coordinator's sensitive merge check: (records_head, why), records_head None to refuse.
     When head has records or faults of its own (one edited record is enough), head is judged as the
     exact head, even if a carry source exists. Otherwise the source carry_source reaches, with Grok
-    checked but not counted toward the two vendors. seats is scorer_seats. Raises on an unreadable fact."""
+    checked but not counted toward the two vendors. seats is scorer_seats. When a fact cannot be read
+    it raises, or returns None with the reason."""
     if head in reading.heads():
         fault = sensitive_fault(reading, head, seats, vendors)
         return (None, fault) if fault else (head, "two qualifying seats on this head")

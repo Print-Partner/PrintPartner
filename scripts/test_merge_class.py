@@ -146,6 +146,7 @@ class CoverageTests(unittest.TestCase):
         # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max.
         # Owner decision 2026-11-18: gpt-6.2-sol and composer-2.5 join the council scorer pool.
         # Owner decision 2026-11-18 7:38 PM ET: Gemini Flash, Qwen, longcat and hy4 count too.
+        # Owner decision 2026-11-18 (thin-relay plan): gpt-6.2-astra joins it too.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek",
@@ -153,14 +154,16 @@ class CoverageTests(unittest.TestCase):
                                                 "gemini-3.8-flash": "google",
                                                 "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
                                                 "longcat-2.5-free": "meituan",
-                                                "hy4-flash-free": "tencent"})
+                                                "hy4-flash-free": "tencent",
+                                                "gpt-6.2-astra": "openai"})
         # gpt-6.1-sol counts for the pp/score status only, not for the sensitive merge guard.
         # The 7:38 PM ET seats are in both maps.
         self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
                                                   "gemini-3.8-flash": "google",
                                                   "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
                                                   "longcat-2.5-free": "meituan",
-                                                  "hy4-flash-free": "tencent"})
+                                                  "hy4-flash-free": "tencent",
+                                                  "gpt-6.2-astra": "openai"})
 
 
 class ScoreTests(unittest.TestCase):

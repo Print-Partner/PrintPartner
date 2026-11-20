@@ -1150,6 +1150,46 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                       self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.rebased, git=git,
                                  api=checks("success")))
 
+    def test_git_config_env_and_cwd_cannot_change_what_the_carry_sees(self):
+        # main-hunk edited line 10 of the PR's own a.txt, so the PR's diff changed and nothing
+        # carries. A lane can set diff.relative or an external diff in the clone's shared config, or
+        # GIT_EXTERNAL_DIFF in the environment, and the guard may run from a subdirectory. Each of
+        # those once could hide the edit and let the merge through.
+        import test_post_pp_score_status as status_tests
+
+        status_tests.CarryTests.setUpClass()
+        c = status_tests.CarryTests
+        sub = os.path.join(c.r.path, "sub")
+        os.makedirs(sub)
+        comments = self.scores(head=c.h0, seats=(("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu")),
+                               author_vendor="anthropic")
+        api = {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": c.r.git("rev-parse", "main-hunk")}},
+               "repos/{owner}/{repo}/rules/branches/main": [
+                   {"type": "required_status_checks",
+                    "parameters": {"required_status_checks": [{"context": "rust (linux)"}]}}],
+               f"repos/{{owner}}/{{repo}}/commits/{c.hunk}/check-runs?": {
+                   "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": "success"}]}}
+        run = subprocess.run
+
+        def git_in_sub(command, **kwargs):
+            # The guard's own environment and flags, from a subdirectory of the worktree.
+            return run(command, **{**kwargs, "cwd": sub})
+
+        expected = f"{c.hunk[:7]}: the PR's own diff changed"
+        for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
+                                  ("diff.external", ("diff.external", "true"), {}),
+                                  ("GIT_EXTERNAL_DIFF", None, {"GIT_EXTERNAL_DIFF": "true", "GIT_DIFF_OPTS": "-u0"})):
+            with self.subTest(name):
+                if config:
+                    c.r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.hunk,
+                                                           git=git_in_sub, api=api))
+                finally:
+                    if config:
+                        c.r.git("config", "--unset", config[0])
+
     def test_missing_data_refused(self):
         for override in ({"files": None}, {"files": []}, {"files": [{}]}, {"changedFiles": 2},
                          {"headRefOid": "a" * 40}):

@@ -126,9 +126,39 @@ Each hop from P to a new head H must hold all of these. Each is fixed by the com
 `carry_source` then applies the shared head rules to H0 (a fault, only wrapped records, the author's own family, disagreeing `author=`). Each evaluator then applies its own bar to H0's records:
 
 - **`pp/score` status:** H0's records, Grok included, must pass as they would on H0 itself (`plan_head`). Grok (`xai`) and wrapped records are then dropped, and at least one must remain. If the PR touches an owner or sensitive path (both sides of a rename, from a complete file list), every record on H0 must be above 8. The status reads `carried from <sha7>: N/10 from <seat>`.
-- **Coordinator sensitive merge:** H0's records must pass as on an exact head: every record on H0 is a `scorer_seats` seat at 9 or more, and bare records from two different vendors, neither the author's, remain. Grok records are checked but do not count toward the two. The guard reads the head's required checks once, as the status does, and reads commits from the coordinator worktree's clone, bounded by its 45-second budget. Every git call ignores replace refs and `info/grafts`, which all worktrees of a clone share and which could give a commit false parents.
+- **Coordinator sensitive merge:** H0's records must pass as on an exact head: every record on H0 is a `scorer_seats` seat at 9 or more, and bare records from two different vendors, neither the author's, remain. Grok records are checked but do not count toward the two. The guard reads the head's required checks once, as the status does, and reads commits from the coordinator worktree's clone, bounded by its 45-second budget. See [Git settings the carry ignores](#git-settings-the-carry-ignores).
 
 So the guard never accepts a carry that the status refuses, and when it accepts one, it uses the same H0. The difference is deliberate: the status passes one seat, while a sensitive merge always needs two vendors. `carry_both` in `scripts/test_post_pp_score_status.py` runs both evaluators on every carry fixture, from raw comment bodies, and fails when they reach different `carry_source` results or a refusal reason differs.
+
+### Git settings the carry ignores
+
+`LocalGit` in `scripts/merge_class.py` runs `rev-parse`, `cat-file -e`, `fetch`, `rev-list --parents`, `rev-list --first-parent`, `merge-base --all`, `merge-tree --write-tree`, `diff` (patch and `--name-only -z`) and `log -m --name-only -z --format=`. The guard runs them in the coordinator's clone, from any directory inside the worktree. Every lane worktree shares that clone's `.git/config`, `info/attributes`, `refs/replace` and `info/grafts`, and a lane may set `GIT_*` variables. The status runs in a fresh Actions checkout with default settings. So every call pins what could change the output to those defaults:
+
+| Setting | How it is pinned |
+| --- | --- |
+| `diff.relative`, and the cwd inside the worktree | `-c diff.relative=false` and `--no-relative` on every diff and log. A test runs the guard from a subdirectory. |
+| `diff.external`, `GIT_EXTERNAL_DIFF`, `diff.<driver>.command` and `.textconv` | `--no-ext-diff --no-textconv` on every diff and log. Tested. |
+| `diff.renames` | `--no-renames` on every diff and log. |
+| `diff.ignoreSubmodules`, `submodule.<name>.ignore` | `-c diff.ignoreSubmodules=none` and `--ignore-submodules=none`. |
+| `diff.noprefix`, `diff.mnemonicPrefix` | Pinned `false`, and `--src-prefix=a/ --dst-prefix=b/`. |
+| `diff.orderFile` | Pinned to an empty file. |
+| `core.quotePath` | Pinned `true`. Path lists use `-z`. |
+| `core.attributesFile` | Pinned to an empty file. |
+| `color.ui`, `color.diff` | `-c color.ui=false` and `--no-color`. |
+| `log.showSignature` | Pinned `false` and `--no-show-signature`. |
+| `merge.renames`, `merge.directoryRenames`, `merge.renormalize` | Pinned to Git's defaults: `true`, `conflict`, `false`. |
+| `core.pager`, `pager.*`, `GIT_PAGER` | `--no-pager`. Output is captured, never a terminal. |
+| `refs/replace`, `info/grafts` | `--no-replace-objects` and `GIT_GRAFT_FILE=/dev/null`. Tested. |
+| `GIT_*` environment (`GIT_DIFF_OPTS`, `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE`, `GIT_REPLACE_REF_BASE` and the rest) | Dropped, except the transport variables a fetch needs (`GIT_ASKPASS`, `GIT_SSH*`, `GIT_TERMINAL_PROMPT`, `GIT_SSL_*`, `GIT_HTTP_*`, `GIT_PROXY_*`, `GIT_CURL_*`). |
+
+The rest cannot change a carry decision:
+
+- `diff.algorithm`, `diff.indentHeuristic`, `diff.context`, `diff.interHunkContext`, `diff.suppressBlankEmpty`: these change only the shape of hunks. Both diffs are made the same way, and `--full-index` prints every file's full blob IDs, so equal output still means equal paths, modes and blobs.
+- `core.abbrev`: every command here prints full object names.
+- `i18n.logOutputEncoding`, `log.decorate`, `log.mailmap`, `format.*`: `--format=` prints no commit text.
+- `info/attributes` and in-tree `.gitattributes`: diff drivers are off. `binary` changes only the patch body, and the index lines remain. Merge drivers and `merge.conflictStyle` act only on paths both sides changed, which condition 6 refuses.
+- `core.autocrlf`, `core.eol`, clean and smudge filters, `core.worktree`, `core.ignoreCase`: these act on a worktree, and every command here compares commits and trees.
+- `fetch.*`, the remote URL, `objects/info/alternates`: objects are addressed by their hash, so a fetched object is the one asked for, or the call fails and nothing carries. A shallow clone is unshallowed first, and a shallow boundary can only hide parents, which refuses.
 
 When the current head has no records and no carry, the workflow posts `pp/score=failure` (`no score and no carry: <reason>`), which replaces an earlier carried success. The `merge_group` run decides every carry again, so a newer failing record on H0 or a failing check on H fails the queue entry. If the run cannot read the PR's current head, it posts the statuses for heads with records, posts nothing on the unknown head, and exits 1. That head keeps its last `pp/score`. Every merge goes through the merge queue, whose run decides the carry again.
 

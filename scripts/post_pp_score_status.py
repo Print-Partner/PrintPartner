@@ -113,9 +113,9 @@ def plan_carry(head: str, reading: Reading, strict: bool, facts,
 
     merge_class.carry_source finds the source head from checks, the caller's one check_state
     read, exactly as the sensitive merge check does. Then the source's records must pass plan_head
-    as they would on the source itself, Grok included; Grok and wrapped records are then dropped
-    and at least one must remain; and a strict (owner or sensitive) PR needs every record on the
-    source above 8.
+    as they would on the source itself, Grok included; Grok and wrapped records are then dropped,
+    and the rest must pass plan_head again on their own; and a strict (owner or sensitive) PR needs
+    every record on the source above 8.
     """
     source, why = carry_source(reading, head, facts, load_classes(), checks)
     if source is None:
@@ -130,6 +130,9 @@ def plan_carry(head: str, reading: Reading, strict: bool, facts,
     if not carried:
         return None, f"{source[:7]} has no record that can carry"
     plan = plan_head(source, Reading(carried))
+    if plan.state != "success":
+        # The records that carry must pass on their own, for example a cursor-auto pair.
+        return None, f"{source[:7]} did not pass without its Grok and wrapped records: {plan.description}"
     prefix = f"carried from {source[:7]}: "
     return StatusPlan(head, "success", _fit(prefix + plan.description, prefix + "scored 8+"),
                       plan.records), f"carried from {source[:7]}"

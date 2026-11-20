@@ -341,7 +341,22 @@ class CarryError(ValueError):
 
 class LocalGit:
     """A checkout of the repository. deadline (a time.monotonic value) bounds every git call, so the
-    coordinator hook refuses on its own before its timeout would let the merge run."""
+    coordinator hook refuses on its own before its timeout would let the merge run.
+
+    The coordinator's clone shares .git/config, info/attributes, refs/replace and info/grafts with
+    every lane worktree, and the guard may run from any directory inside the worktree. So every call
+    pins each setting that can change what these commands print (PINNED and the flags on each
+    command), drops every GIT_* variable but the transport ones, and ignores replace refs and grafts.
+    docs/development/score-records.md lists each setting and why the rest cannot change a decision."""
+
+    PINNED = ("--no-pager", "--no-replace-objects",
+              "-c", "diff.relative=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+              "-c", "diff.ignoreSubmodules=none", "-c", f"diff.orderFile={os.devnull}", "-c", "core.quotePath=true",
+              "-c", f"core.attributesFile={os.devnull}", "-c", "color.ui=false", "-c", "log.showSignature=false",
+              "-c", "merge.renames=true", "-c", "merge.directoryRenames=conflict", "-c", "merge.renormalize=false")
+    # Kept so a fetch can still authenticate and reach the remote; none of them changes output.
+    TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
+                     "GIT_SSL_", "GIT_HTTP_", "GIT_PROXY_", "GIT_CURL_")
 
     def __init__(self, cwd=ROOT, remote="origin", deadline=None):
         self.cwd = Path(cwd)
@@ -352,10 +367,11 @@ class LocalGit:
         timeout = None if self.deadline is None else self.deadline - time.monotonic()
         if timeout is not None and timeout <= 0:
             raise subprocess.TimeoutExpired(["git", *args], 0)
-        # Every worktree of a clone shares refs/replace and info/grafts, and either can give a
-        # commit false parents. Git ignores both only with --no-replace-objects and an empty graft file.
-        return subprocess.run(["git", "--no-replace-objects", *args], cwd=self.cwd, text=text, capture_output=True,
-                              check=check, timeout=timeout, env={**os.environ, "GIT_GRAFT_FILE": os.devnull})
+        # refs/replace and info/grafts can give a commit false parents. Git ignores both only with
+        # --no-replace-objects (in PINNED) and an empty graft file.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith(self.TRANSPORT_ENV)}
+        return subprocess.run(["git", *self.PINNED, *args], cwd=self.cwd, text=text, capture_output=True,
+                              check=check, timeout=timeout, env={**env, "GIT_GRAFT_FILE": os.devnull})
 
     def ensure(self, *shas):
         if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
@@ -392,10 +408,12 @@ class LocalGit:
             raise CarryError(f"git merge-tree failed: {done.stderr.strip()}")
         return done.stdout.splitlines()[0].strip()
 
-    # Byte-exact and independent of local config: no external diff, textconv, rename pairing or
-    # abbreviated blob IDs, so equal output means equal paths, modes and blobs on both sides.
-    _DIFF = ("-c", "core.quotePath=true", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-             "--no-color", "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/")
+    # Every path in the repository, whatever the cwd: no external diff, textconv, rename pairing,
+    # hidden submodule change or color.
+    _WHOLE = ("--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none",
+              "--no-color")
+    # Byte-exact: full blob IDs on every file, so equal output means equal paths, modes and blobs.
+    _DIFF = ("diff", *_WHOLE, "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/")
 
     def diff(self, base, tip):
         return self._git(*self._DIFF, base, tip, "--", text=False).stdout
@@ -406,13 +424,13 @@ class LocalGit:
 
     def changed(self, base, tip):
         """Paths that differ between base and tip, both sides of a rename."""
-        return self._paths("diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base, tip, "--")
+        return self._paths("diff", *self._WHOLE, "--name-only", "-z", base, tip, "--")
 
     def touched(self, pr_head, base, main):
         """Paths that the main commits a merge brings in changed: every commit in pr_head..main
         (merges against each parent), plus the net diff base..main. A file that one commit
         changed and a later commit reverted still counts."""
-        each = self._paths("log", "-m", "--no-renames", "--name-only", "-z", "--format=",
+        each = self._paths("log", *self._WHOLE, "--no-show-signature", "-m", "--name-only", "-z", "--format=",
                            f"{pr_head}..{main}", "--")
         return each | self.changed(base, main)
 

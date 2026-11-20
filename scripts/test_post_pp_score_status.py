@@ -1088,6 +1088,18 @@ class CarryTests(unittest.TestCase):
         low_grok = record(self.h0, seat="grok-4.7", vendor="xai", score=5)
         self.assertEqual(self.refused(self.h1, [low_grok, record(self.h0)]), f"{self.h0[:7]}: grok-4.7 scored 5")
 
+    def test_a_carry_passes_only_when_the_records_that_carry_pass(self):
+        # GRE-1859 round 2: a cursor-auto source whose anthropic record is wrapped passes on itself,
+        # but without the wrapped record the pair is incomplete, so nothing carries.
+        line = (f"pp-score head={self.h0} seat=claude-opus-5-5 vendor=anthropic score=9 author=cursor-auto "
+                "obstacles=none")
+        comments = [comment(f"`{line}`"), comment(line.replace("claude-opus-5-5 vendor=anthropic",
+                                                                "gpt-6.2-sol vendor=openai"))]
+        self.assertEqual(pps.plan_statuses(pps.read_comments(comments, pps.load_trust()))[0].state, "success")
+        self.assertEqual(self.refused(self.h1, comments),
+                         f"{self.h0[:7]} did not pass without its Grok and wrapped records: "
+                         "cursor-auto requires anthropic and openai scores; missing anthropic")
+
     def test_a_record_with_a_wrong_author_family_never_carries(self):
         # The seat is the author's own family.
         own = record(self.h0, seat="claude-opus-5-5", vendor="anthropic")
@@ -1228,6 +1240,26 @@ class GuardAgreementTests(unittest.TestCase):
         }.items():
             with self.subTest(name):
                 self.assertEqual(self.both(self.c.h1, comments)[:2], (True, False))
+
+    def test_both_decide_the_same_from_a_subdirectory_with_diff_relative(self):
+        # GRE-1859 round 2: diff.relative in the clone's shared config and a cwd in a subdirectory
+        # once hid main's edit to the PR's own file from the guard. Both now refuse, for one reason.
+        import os
+
+        c = self.c
+        sub = os.path.join(c.r.path, "sub-relative")
+        os.makedirs(sub, exist_ok=True)
+        expected = f"{c.hunk[:7]}: the PR's own diff changed"
+        c.r.git("config", "diff.relative", "true")
+        try:
+            for where in (c.r.path, sub):
+                with self.subTest(where=where):
+                    plan, why, source, guard_why = carry_both(self, c.r, c.hunk, self.two(c.h0), strict=True,
+                                                              main_ref="main-hunk", git=pps.LocalGit(where),
+                                                              guard=True)
+                    self.assertEqual((plan, why, source, guard_why), (None, expected, None, expected))
+        finally:
+            c.r.git("config", "--unset", "diff.relative")
 
     def test_the_guard_reads_the_exact_head_before_any_carry(self):
         self.assertEqual(self.both(self.c.h1, self.two(self.c.h1))[1], True)

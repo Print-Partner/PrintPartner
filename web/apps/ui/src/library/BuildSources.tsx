@@ -22,6 +22,7 @@ import { NotFound } from "../screen/screens";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
 import { refusalText, SourceSelect } from "../screen/SourceSelect";
 import { LineCell } from "./LibraryScreen";
+import { BuildFilesNext } from "./FilesNext";
 import { SourceFiles } from "./SourceFiles";
 import { acceptedRevisionText, revisionText, type Source } from "./sources";
 import {
@@ -466,7 +467,12 @@ function SourcesBody({ build, layers }: BuildData) {
         </tbody>
       </table>
       {fileSources.map((source) => (
-        <SourceFiles key={source.id} sourceId={source.id} sourceName={source.name} />
+        <SourceFiles
+          key={source.id}
+          sourceId={source.id}
+          sourceName={source.name}
+          next={<BuildFilesNext sourceId={source.id} kind={byId.get(source.id)?.source_kind} />}
+        />
       ))}
     </>
   );

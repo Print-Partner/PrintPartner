@@ -52,12 +52,15 @@ pub enum Refusal {
     /// free. Nothing was written or extracted.
     NoSpace(archive::NoSpace),
     /// Extraction stopped before writing more than this many bytes, the
-    /// total the archive's headers declared. The stage was removed.
+    /// total the archive's headers declared. Staging tried to remove the
+    /// stage; if that failed, the next open tries again.
     LargerThanDeclared(u64),
     InvalidArchive(String),
     UnsupportedSchema(String),
     /// Too little free disk on the data volume for the schema check's
-    /// working copy of the staged database. The stage was removed.
+    /// working copy of the staged database. From staging, staging tried to
+    /// remove the stage (if that failed, the next open tries again); from
+    /// activation, the stage is kept.
     InsufficientSpace(schema::InsufficientSpace),
     Confirmation,
     UnknownRestore,
@@ -94,10 +97,12 @@ impl std::error::Error for Refusal {}
 ///
 /// Only the [`WriterOwner`] that made a stage can activate it: the next open
 /// removes every stage, complete or not, because schema admission holds only
-/// for the build that ran it. Before that, a later completed stage replaces
-/// it, a successful activation uses it up, and an activation that fails after
-/// publishing its journal removes it; one that fails earlier leaves it. Once
-/// it is gone the client uploads again.
+/// for the build that ran it, or refuses to open if a removal fails. Before
+/// that, a later completed stage, a successful activation, and an activation
+/// that publishes its journal and rolls back each try to remove it; those
+/// removals ignore errors, so its files may stay until the next open. An
+/// activation that fails before publishing its journal, or whose rollback
+/// fails, leaves it. Once it is gone the client uploads again.
 #[derive(Debug, Clone)]
 pub struct Staged {
     /// 32 lowercase hex digits; the stage lives in `.pp-restore/staged-<id>`.
@@ -106,7 +111,8 @@ pub struct Staged {
     /// Schema version of the archived database.
     pub schema_version: u64,
     /// Why an earlier stage could not be removed, if one could not. The new
-    /// stage is complete either way; the next open removes the leftover.
+    /// stage is complete either way; the earlier stage stays until the next
+    /// open tries again.
     pub cleanup_error: Option<String>,
 }
 
@@ -122,10 +128,14 @@ pub enum RestoreError {
     /// installation is kept and serving again. The cause is logged.
     #[error("restore failed; the previous installation is kept")]
     RolledBack,
-    /// An activation did not finish and could not roll back, or an earlier
-    /// one left its journal. A restart replays the journal. In the first
-    /// case storage refuses all work until then; in the second only
-    /// activation refuses. The cause is logged.
+    /// Restart Print Partner. Either an activation could not roll back
+    /// (moving files back, or reopening the previous database, its consumers
+    /// or the readers failed, with or without a published journal), or an
+    /// earlier activation left its journal. In the first case, until a
+    /// restart, writes and reader checkouts answer `Stopped` and restore
+    /// operations [`Refusal::Busy`]; a published journal is replayed at the
+    /// next open. In the second, storage keeps serving and only activating a
+    /// stage that still exists answers this. The cause is logged.
     #[error("restore did not finish; restart to recover")]
     RestartRequired,
     #[error(transparent)]
@@ -385,11 +395,13 @@ impl InstallationClient {
     /// totals the sizes the archive's tar headers declare and refuses with
     /// [`Refusal::NoSpace`] before extracting anything. Extraction then stops
     /// with [`Refusal::LargerThanDeclared`] before it writes more than that
-    /// total. Live files are not touched and the upload is removed either
-    /// way. A refusal removes only its own stage. Earlier stages are removed
-    /// only after the new one is complete; if that fails, the new stage is
-    /// still returned, with [`Staged::cleanup_error`] set, and the next open
-    /// removes the leftover. `.pp-restore` itself stays until the next open,
+    /// total. Live files are not touched, and the upload's removal is tried
+    /// either way. A refusal tries to remove only its own stage. Both of
+    /// those removals ignore errors; a file left behind stays until the next
+    /// open tries again. Earlier stages are removed only after the new one is
+    /// complete; if that fails, the new stage is still returned, with
+    /// [`Staged::cleanup_error`] set, and the earlier stage stays until the
+    /// next open tries again. `.pp-restore` itself stays until the next open,
     /// so a concurrent [`Self::begin_upload`] never loses its directory.
     pub fn stage(&self, upload: Upload) -> Result<Staged> {
         ensure!(
@@ -672,7 +684,10 @@ fn preflight(
 /// A `.pp-restore` entry this build creates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Leftover {
-    /// An unpublished journal intent; no live rename can precede publication.
+    /// `journal.json.tmp`: a journal write that was not published. Every
+    /// write uses it: the first, before any live rename, and later ones (the
+    /// commit, and a rollback of a committed journal) after the swap. A
+    /// later one leaves the published `journal.json` in charge of recovery.
     JournalTemporary,
     /// `incoming-<32 hex>.tar.gz`, a regular file.
     Incoming,
@@ -713,7 +728,8 @@ fn leftover(work: &pp_os::Dir, name: &str) -> Result<Option<Leftover>> {
 /// a real directory `staged-<id>` are removed, and `.pp-restore` itself. Any
 /// other entry, a link, a wrong type, or a `.pp-restore` that is not a real
 /// directory refuses the open without removing anything, because this build
-/// cannot tell whether it holds the only copy of an installation.
+/// cannot tell whether it holds the only copy of an installation. A failed
+/// replay or removal also refuses the open; each later open tries again.
 pub(crate) fn recover(data_dir: &Path) -> Result<bool> {
     let replayed = recover_work(data_dir)?;
     // Only an open that goes ahead removes anything.

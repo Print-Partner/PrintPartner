@@ -129,8 +129,11 @@ export function BackupsSection() {
     setStatus("Checking the core still keeps this backup");
     setNote("");
     try {
-      await fetchCore(archiveUrl(shown), { method: "HEAD", headers: { accept: "*/*" }, redirect: "error" });
-      save(archiveUrl(shown), shown.name);
+      const href = archiveUrl(shown);
+      const answer = await fetchCore(href, { method: "HEAD", headers: { accept: "*/*" }, redirect: "error" });
+      // Only a 200 says the core will send this archive; any other 2xx saves nothing.
+      if (answer.status !== 200) throw new CoreError(answer.status, href);
+      save(href, shown.name);
       setStatus("Download started");
     } catch (failure) {
       setStatus("");
@@ -138,6 +141,9 @@ export function BackupsSection() {
         // A HEAD answer has no body, so the status alone says the archive is gone or replaced.
         setBackup((now) => (now === shown ? null : now));
         setNote("The core no longer keeps this backup; a newer one may have been made in another window. Create backup again.");
+      } else if (failure instanceof CoreError && failure.status === 503) {
+        // A create or another download holds the core's one backup slot.
+        setNote("The core is busy with another backup or download. Try Download again in a moment.");
       } else {
         // A redirect is refused as a network error and never followed. Nothing was saved, and the
         // GET is bound to the shown digest, so trying again cannot save a different file.

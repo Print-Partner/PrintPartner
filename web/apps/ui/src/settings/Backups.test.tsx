@@ -367,14 +367,18 @@ describe("Backups: download", () => {
     expect(clicked).toEqual([]);
   });
 
-  it("any other HEAD answer saves nothing, keeps the backup and says to try again", async () => {
+  it.each([
+    [503, "The core is busy with another backup or download. Try Download again in a moment."],
+    [204, "The download did not start: the core answered 204. Try Download again."],
+    [206, "The download did not start: the core answered 206. Try Download again."],
+    [500, "The download did not start: the core answered 500. Try Download again."],
+  ])("a %i on HEAD saves nothing, keeps the backup and says why", async (status, said) => {
     const clicked = captureDownloads();
-    const fake = core(() => json(BACKUP), { head: () => new Response(null, { status: 503 }) });
+    const fake = core(() => json(BACKUP), { head: () => new Response(null, { status }) });
     const region = await created(fake);
     fireEvent.click(within(region).getByRole("button", { name: "Download" }));
-    expect((await within(region).findByRole("alert")).textContent).toBe(
-      "The download did not start: the core answered 503. Try Download again.",
-    );
+    expect((await within(region).findByRole("alert")).textContent).toBe(said);
+    expect(within(region).getAllByRole("status")[0]?.textContent).toBe("");
     expect(within(region).getByText(SHA)).toBeTruthy();
     expect(clicked).toEqual([]);
   });

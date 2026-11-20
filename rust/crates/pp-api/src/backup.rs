@@ -10,8 +10,8 @@
 //! The archive route takes an optional `sha256` query: the digest the create
 //! answered. When the kept archive has another digest, because a later create
 //! replaced it, the route answers 409 instead of sending different bytes.
-//! `HEAD` answers the same check without holding the slot, so a client can ask
-//! before it starts a browser download.
+//! `HEAD` answers the same checks, 503 while the slot is held included, without
+//! taking the slot, so a client can ask before it starts a browser download.
 
 use crate::admin::{AdminHttpConfig, Gate};
 use crate::loopback::PresentedCredential;
@@ -294,16 +294,27 @@ async fn download(
     method: Method,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
+    // A repeated `sha256` keeps its last value.
     let wanted = query.get("sha256").map(String::as_str);
     if method == Method::HEAD {
-        // Reads the slot without taking it, so the GET that follows is not refused as busy.
-        let kept = app.slot.lock().kept.clone();
-        return match chosen(kept.as_ref(), wanted)
-            .and_then(|kept| Ok((archive_name(&kept.path)?.to_owned(), kept.size_bytes)))
-        {
-            Ok((name, length)) => archive_headers(length, &name)
-                .and_then(|builder| builder.body(axum::body::Body::empty()).ok())
-                .unwrap_or_else(|| refused(&BackupFailure::Internal)),
+        // Looks at the slot without taking it, so the GET that follows is not refused as busy.
+        // It answers what a GET sent at the same moment would: 503 while a create or a download
+        // holds the slot.
+        let kept = {
+            let inner = app.slot.lock();
+            if inner.busy {
+                Err(BackupFailure::Busy)
+            } else {
+                chosen(inner.kept.as_ref(), wanted)
+            }
+        };
+        return match kept {
+            Ok(kept) => match opened(&kept).await {
+                Ok((_, name)) => archive_headers(kept.size_bytes, &name)
+                    .and_then(|builder| builder.body(axum::body::Body::empty()).ok())
+                    .unwrap_or_else(|| refused(&BackupFailure::Internal)),
+                Err(failure) => refused(&failure),
+            },
             Err(failure) => refused(&failure),
         };
     }
@@ -315,16 +326,20 @@ async fn download(
         Ok(kept) => kept,
         Err(failure) => return refused(&failure),
     };
-    let name = match archive_name(&kept.path) {
-        Ok(name) => name.to_owned(),
-        Err(failure) => return refused(&failure),
-    };
-    let opened = tokio::fs::File::open(&kept.path).await;
-    let file = match opened {
-        Ok(file) => file,
-        Err(_) => return refused(&BackupFailure::Internal),
-    };
-    archive_response(file, kept.size_bytes, &name, flight)
+    match opened(&kept).await {
+        Ok((file, name)) => archive_response(file, kept.size_bytes, &name, flight),
+        Err(failure) => refused(&failure),
+    }
+}
+
+/// Opens the kept archive and returns it with its file name. `HEAD` opens it too, so both
+/// methods refuse an archive that cannot be read.
+async fn opened(kept: &BackupFile) -> Result<(tokio::fs::File, String), BackupFailure> {
+    let name = archive_name(&kept.path)?.to_owned();
+    let file = tokio::fs::File::open(&kept.path)
+        .await
+        .map_err(|_| BackupFailure::Internal)?;
+    Ok((file, name))
 }
 
 /// A 200 JSON answer that no cache keeps.

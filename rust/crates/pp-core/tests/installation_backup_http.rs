@@ -138,6 +138,17 @@ async fn created_while_the_owner_is_held(server: &Server, create: &str, archive:
     let (status, during) = server.json(Method::GET, archive).await;
     assert_eq!(status, 503, "{during}");
     assert_eq!(during["detail"], "A backup is already running");
+    // HEAD answers what GET answers while the create holds the slot, with or without a digest.
+    for path in [
+        archive.to_owned(),
+        format!("{archive}?sha256={}", "0".repeat(64)),
+    ] {
+        let (status, response) = server.exchange(Method::HEAD, &path).await;
+        assert_eq!(status, 503, "HEAD {path}");
+        assert!(response.headers().get("content-disposition").is_none());
+        let (status, _) = server.json(Method::GET, &path).await;
+        assert_eq!(status, 503, "GET {path}");
+    }
     held.release();
     let created = match label {
         "first" => second.await.unwrap(),
@@ -192,6 +203,19 @@ async fn assert_download(server: &Server, archive: &str, created: &Value, sha256
     assert_eq!(entry_bytes(&bytes, "repos/source-a/part.stl"), SOURCE);
 }
 
+/// HEAD and then GET of `path` at once, `times` times. Both answer `status`
+/// each time, so a HEAD never leaves the slot held for the GET after it.
+async fn assert_head_then_get(server: &Server, path: &str, status: u16, times: usize) {
+    for round in 0..times {
+        let (head, response) = server.exchange(Method::HEAD, path).await;
+        assert_eq!(head, status, "HEAD {path} round {round}");
+        assert!(response.bytes().await.unwrap().is_empty());
+        let (get, response) = server.exchange(Method::GET, path).await;
+        assert_eq!(get, status, "GET {path} round {round}");
+        response.bytes().await.unwrap();
+    }
+}
+
 /// A later create replaced the archive whose digest was `old`. Asking for `old`
 /// by `sha256` is refused with 409 on HEAD and GET; asking for the kept digest
 /// answers its size on HEAD, and the GET right after is not refused as busy.
@@ -207,7 +231,31 @@ async fn assert_bound_to_digest(server: &Server, archive: &str, old: &str, kept:
         refused["detail"],
         "A newer backup replaced this one; create a backup again"
     );
-    let current = format!("{archive}?sha256={}", kept["sha256"].as_str().unwrap());
+    let digest = kept["sha256"].as_str().unwrap();
+    let malformed = [
+        String::new(),
+        "not-a-digest".to_owned(),
+        digest.to_uppercase(),
+        format!("{digest}0"),
+    ];
+    for wanted in malformed {
+        assert_head_then_get(server, &format!("{archive}?sha256={wanted}"), 409, 1).await;
+    }
+    // A repeated `sha256` keeps its last value.
+    let last_kept = format!("{archive}?sha256={old}&sha256={digest}");
+    assert_head_then_get(server, &last_kept, 200, 1).await;
+    let last_stale = format!("{archive}?sha256={digest}&sha256={old}");
+    assert_head_then_get(server, &last_stale, 409, 1).await;
+    let current = format!("{archive}?sha256={digest}");
+    assert_head_then_get(server, &current, 200, 5).await;
+    assert_head_then_get(server, archive, 200, 3).await;
+    // HEADs sent at the same moment never refuse each other, because a HEAD does
+    // not take the slot. A HEAD that took it would answer some of them 503.
+    let head = || server.exchange(Method::HEAD, &current);
+    let (a, b, c, d, e, f) = tokio::join!(head(), head(), head(), head(), head(), head());
+    for (status, _) in [a, b, c, d, e, f] {
+        assert_eq!(status, 200, "concurrent HEAD {current}");
+    }
     let (status, response) = server.exchange(Method::HEAD, &current).await;
     assert_eq!(status, 200);
     assert_eq!(
@@ -238,6 +286,14 @@ async fn an_authenticated_client_creates_and_downloads_one_backup() {
 
     let (status, missing) = server.json(Method::GET, archive).await;
     assert_eq!(status, 404, "{missing}");
+    assert_head_then_get(&server, archive, 404, 1).await;
+    assert_head_then_get(
+        &server,
+        &format!("{archive}?sha256={}", "0".repeat(64)),
+        404,
+        1,
+    )
+    .await;
     assert_eq!(missing["detail"], "No backup has been created");
     assert_eq!(missing["type"], "urn:print-partner:problem:not-found");
 

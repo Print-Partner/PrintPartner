@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -190,10 +191,20 @@ def check(receipt: dict, root: Path) -> None:
             raise ReceiptError(f"screenshot {shot['path']} does not match its size or sha256")
 
 
+# Git reads its repository from GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY,
+# GIT_CONFIG_* and similar variables. The child gets only these, so the repository it reads is
+# always the one in the directory it is given.
+GIT_ENV = ("PATH", "HOME", "LANG", "SYSTEMROOT")
+
+
+def git(cwd: Path, *args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if k in GIT_ENV or k.startswith("LC_")}
+    return subprocess.check_output(["git", "-C", str(cwd), *args], cwd=cwd, env=env, text=True, timeout=60)
+
+
 def pr_head(pr: int, remote: str = "origin", cwd: Path | None = None) -> str:
     """The PR's live head from refs/pull/<pr>/head; works anonymously on a public repository."""
-    out = subprocess.check_output(["git", "ls-remote", remote, f"refs/pull/{pr}/head"],
-                                  cwd=cwd, text=True, timeout=60)
+    out = git(cwd or Path.cwd(), "ls-remote", remote, f"refs/pull/{pr}/head")
     shas = [line.split()[0] for line in out.splitlines() if line.strip()]
     if len(shas) != 1 or not FULL_SHA.fullmatch(shas[0]):
         raise ReceiptError(f"cannot read the head of PR #{pr}")
@@ -259,7 +270,7 @@ def build(args, checkout_sha: str) -> dict:
 
 
 def git_head(cwd: Path) -> str:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cwd, text=True).strip()
+    return git(cwd, "rev-parse", "HEAD").strip()
 
 
 def main(argv=None) -> int:
@@ -289,7 +300,9 @@ def main(argv=None) -> int:
             copied = collect(Path(args.report), Path(args.out))
             print(f"collected {len(copied)} screenshots into {Path(args.out) / SCREENSHOTS}")
             return 0
-        # No option overrides this: the receipt's checkout is the commit checked out where write runs.
+        # The tested checkout is the working directory: the workflow runs write from the root of the
+        # repository actions/checkout checked out and Playwright tested. No option or Git environment
+        # variable overrides it.
         receipt = build(args, git_head(Path.cwd()))
     except (ReceiptError, OSError, ValueError, KeyError) as err:
         print(f"e2e receipt refused: {err}", file=sys.stderr)

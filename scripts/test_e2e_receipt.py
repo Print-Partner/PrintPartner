@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import io
 import json
+import os
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -18,9 +21,6 @@ STARTED = "2026-11-19T04:39:00Z"
 # Arguments the workflow always passes: the Playwright step's outcome and the job's start time.
 PASSED = ["--e2e-outcome", "success", "--timestamp", STARTED]
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "desktop-runtime.yml"
-
-
-REAL_GIT_HEAD = er.git_head
 
 
 def setUpModule():
@@ -393,27 +393,6 @@ class InputTests(unittest.TestCase):
         self.assertFalse((f.out / "receipt.json").exists())
         self.refuse(self.passing(), head=OTHER, pr_head=OTHER, message=f"is not the tested checkout {HEAD[:12]}")
 
-    def test_write_reads_the_checkout_from_git_in_its_working_directory(self):
-        f = self.passing()
-        report = f.write_report()
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(er.main(["collect", "--report", str(report), "--out", str(f.out)]), 0)
-        seen = []
-
-        def fake_git(cmd, **kw):
-            seen.append((cmd, kw.get("cwd")))
-            return OTHER + "\n"
-
-        args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "Print-Partner/PrintPartner",
-                "--head", HEAD, "--run-id", "44460000000", "--suite", "s", "--runner-host", "h",
-                "--artifact-url", ARTIFACT, *PASSED]
-        with mock.patch.object(er, "git_head", REAL_GIT_HEAD), mock.patch.object(er.subprocess, "check_output", fake_git), \
-                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(er.main(args), 1)
-        self.assertEqual(seen, [(["git", "rev-parse", "HEAD"], Path.cwd())])
-        self.assertIn(f"is not the tested checkout {OTHER[:12]}", err.getvalue())
-        self.assertFalse((f.out / "receipt.json").exists())
-
     def test_timestamp_must_be_utc_seconds(self):
         for bad in ("2026-11-19T04:39:00.000Z", "2026-11-19 04:39:00", "2026-11-19T04:39:00+00:00",
                     "2026-02-30T04:39:00Z", ""):
@@ -492,6 +471,70 @@ class ReportShapeTests(unittest.TestCase):
         first_result(f.report)["attachments"].append({"name": "inline", "contentType": "image/png", "body": "aGk="})
         self.assertEqual(f.run(), 0, f.err)
         self.assertEqual(len(f.receipt()["screenshots"]), 1)
+
+
+def make_repo(root: Path, name: str) -> tuple[Path, str]:
+    """A one-commit repository built with a clean Git environment."""
+    repo = root / name
+    repo.mkdir()
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG")}
+    env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@example.invalid", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    for cmd in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", name]):
+        subprocess.run(["git", *cmd], cwd=repo, env=env, check=True)
+    return repo, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, env=env, text=True).strip()
+
+
+class GitEnvironmentTests(unittest.TestCase):
+    """The checkout SHA comes from the working directory's repository, whatever GIT_* variables say."""
+
+    def setUp(self):
+        root = Path(tempfile.mkdtemp(prefix="e2e-receipt-git-"))
+        self.tested, self.tested_sha = make_repo(root, "tested")
+        self.other, self.other_sha = make_repo(root, "other")
+        self.assertNotEqual(self.tested_sha, self.other_sha)
+
+    def staged(self):
+        """A passing report with its screenshots collected into a new receipt directory."""
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        report = f.write_report()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(er.main(["collect", "--report", str(report), "--out", str(f.out)]), 0)
+        return report, f.out
+
+    def write(self, head, staged, **git_vars):
+        """Run the real CLI in the tested checkout, as the workflow does, with extra GIT_* variables."""
+        report, out = staged
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(git_vars)
+        script = Path(er.__file__).resolve()
+        return subprocess.run(
+            [sys.executable, "-B", str(script), "write", "--report", str(report), "--out", str(out),
+             "--repo", "Print-Partner/PrintPartner", "--head", head, "--run-id", "44460000000", "--suite", "s",
+             "--runner-host", "h", "--artifact-url", ARTIFACT, *PASSED],
+            cwd=self.tested, env=env, capture_output=True, text=True, timeout=60)
+
+    def test_git_variables_cannot_redirect_the_checkout(self):
+        redirects = {
+            "GIT_DIR": {"GIT_DIR": str(self.other / ".git")},
+            "GIT_WORK_TREE": {"GIT_WORK_TREE": str(self.other)},
+            "GIT_DIR + GIT_WORK_TREE": {"GIT_DIR": str(self.other / ".git"), "GIT_WORK_TREE": str(self.other)},
+            "GIT_CONFIG_COUNT": {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
+                                 "GIT_CONFIG_VALUE_0": str(self.other)},
+        }
+        for label, git_vars in redirects.items():
+            with self.subTest(label):
+                staged = self.staged()
+                run = self.write(self.other_sha, staged, **git_vars)
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertIn(f"is not the tested checkout {self.tested_sha[:12]}", run.stderr)
+                self.assertFalse((staged[1] / "receipt.json").exists())
+                staged = self.staged()
+                run = self.write(self.tested_sha, staged, **git_vars)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                receipt = json.loads((staged[1] / "receipt.json").read_text(encoding="utf-8"))
+                self.assertEqual((receipt["head"], receipt["checkout_sha"]), (self.tested_sha, self.tested_sha))
 
 
 class StableBytesTests(unittest.TestCase):

@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts -p test_agent_guidance.py -v
           python3 -B -m unittest discover -s scripts -p test_post_pp_score_status.py -v
+          python3 -B -m unittest discover -s scripts -p test_e2e_receipt.py -v
           python3 -B scripts/check-agent-guidance.py
           python3 -B -m unittest discover -s scripts -p test_agent_guard.py -v
           python3 -B -m unittest discover -s scripts -p test_pre_commit_sparse_snapshot.py -v
@@ -85,6 +86,7 @@ jobs:
         run: |
           python3 -m pip install PyYAML==6.0.3
           python3 -B -m unittest discover -s scripts -p test_merge_group_workflows.py
+          python3 -B -m unittest discover -s scripts -p test_rust_image_workflows.py
           python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py
           python3 -B -m unittest discover -s scripts -p test_devcontainer.py -v

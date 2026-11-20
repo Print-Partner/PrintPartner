@@ -6,7 +6,7 @@ import { readCore, writeCore } from "../core/rust";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
 import { syncStartFailure } from "./GithubSync";
-import { sourcesQuery } from "./sources";
+import { sourcesQuery } from "../core/sources";
 
 type SourceKind = "github" | "archive";
 

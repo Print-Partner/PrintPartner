@@ -85,6 +85,14 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "ProfileLayers",
     ),
+    // Adds the base layer, or moves an existing one to that Source, and answers the layers.
+    route(
+        "setBuildBase",
+        "PUT",
+        "/api/v2/plans/{id}/layers/base",
+        Some("SourceAttachmentRequest"),
+        "ProfileLayers",
+    ),
     route(
         "listDrafts",
         "GET",
@@ -577,7 +585,7 @@ pub(crate) mod codegen {
         build_graph::wire::{
             AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
             PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
-            ProfileList, ProfileSummary,
+            ProfileList, ProfileSummary, SourceAttachmentRequest,
         },
         checkoff_progress::wire::{
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
@@ -652,6 +660,10 @@ pub(crate) mod codegen {
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
+        schema(
+            "SourceAttachmentRequest",
+            schemars::schema_for!(SourceAttachmentRequest),
+        )?;
         schema("DraftList", schemars::schema_for!(DraftListResponse))?;
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
@@ -2450,6 +2462,16 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "max",
+                json!({"project_id": MAX_SAFE}),
+            ),
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "zero",
+                json!({"project_id": 0}),
+            ),
             served(
                 "DraftList",
                 "states",

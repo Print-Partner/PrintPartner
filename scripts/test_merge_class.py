@@ -346,5 +346,12 @@ class ScoreTests(unittest.TestCase):
                 self.assertTrue(self.check([prose, self.line(), self.grok()]))
 
 
+    def test_astra_and_sol_are_one_vendor(self):
+        # Both seats are OpenAI (merge-classes.json), so together they are not two vendors.
+        astra = self.line("gpt-6.2-astra", vendor="openai", author="anthropic")
+        sol = self.line("gpt-6.2-sol", vendor="openai", author="anthropic")
+        self.assertFalse(self.check([astra, sol], author="anthropic"))
+        self.assertTrue(self.check([astra, self.glm(author="anthropic")], author="anthropic"))
+
 if __name__ == "__main__":
     unittest.main()

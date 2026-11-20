@@ -941,7 +941,10 @@ class CoordinatorMergeTests(unittest.TestCase):
 
 
 class CoordinatorMergeClassTests(unittest.TestCase):
-    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA):
+    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA,
+              sha=SHA, git=None, api=None):
+        """git answers git commands and api maps a gh api path prefix to its JSON, for the carry."""
+        head_after = sha if head_after == SHA else head_after
         guard = load(CLI, "agent_guard_classes")
         config_path = ROOT / "scripts/merge-classes.json"
         config = json.loads(config_path.read_text())
@@ -952,6 +955,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             return json.dumps(config) if path == config_path else original_read(path, *args, **kwargs)
 
         def gh(command, **kwargs):
+            if git and command[0] == "git":
+                return git(command, **kwargs)
             self.assertEqual(kwargs["cwd"], "/coordinator")
             self.assertTrue(kwargs["check"])
             if error:
@@ -963,8 +968,11 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             if "files" in override:
                 files = override.pop("files")
                 pages = [files] if isinstance(files, list) and files else files
-            if command == ["gh", "pr", "view", "12", "--json", "headRefOid,changedFiles"]:
-                data = {"headRefOid": SHA, "changedFiles": len(entries)}
+            carry = next((v for k, v in (api or {}).items() if len(command) == 3 and command[2].startswith(k)), None)
+            if carry is not None:
+                data = carry
+            elif command == ["gh", "pr", "view", "12", "--json", "headRefOid,changedFiles"]:
+                data = {"headRefOid": sha, "changedFiles": len(entries)}
                 data.update(override)
             elif command == ["gh", "api", "repos/{owner}/{repo}/pulls/12/files", "--paginate", "--slurp"]:
                 data = pages
@@ -977,7 +985,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
         with patch.object(guard, "coordinator_worktree", return_value=True), \
                 patch.object(guard.subprocess, "run", side_effect=gh), patch.object(Path, "read_text", read):
-            return guard.check_command(MERGE_FORM, "/coordinator")
+            return guard.check_command(MERGE_FORM.replace(SHA, sha), "/coordinator")
 
     def scores(self, author="trusted", head=SHA, seats=(("claude-opus-5-5", "anthropic"), ("grok-4.7", "xai")),
                score=9, author_vendor="openai", obstacles=" obstacles=none"):
@@ -994,7 +1002,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         self.assertIn("edited", self.check(["rust/rules/a.yml"], ["trusted"], comments))
         missing = self.scores()
         del missing[1][0]["updated_at"]
-        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], missing))
+        self.assertIn("grok-4.7 record's edit time is unreadable", self.check(["rust/rules/a.yml"], ["trusted"], missing))
         # An edited record for an older head never counts, so its edit does not block the merge.
         old = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b",
                  "body": "pp-score head=" + "a" * 40 + " seat=grok-4.7 vendor=xai score=9 author=openai"}]]
@@ -1020,6 +1028,14 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_sensitive_two_allowed_scores(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores()))
+
+    def test_comment_pages_are_read_whole(self):
+        # Page 2 decides: its valid record counts, its low record refuses, a page that is not a list refuses.
+        first, second = self.scores()
+        low = self.scores(seats=(("glm-5.3-flash-free", "zhipu"),), score=5)
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], [first, second]))
+        self.assertIn("glm-5.3-flash-free scored 5", self.check(["rust/rules/a.yml"], ["trusted"], [first, second] + low))
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], [first, {"page": 2}]))
 
     def test_sensitive_opus_and_grok_for_openai_author(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["poitee"], self.scores(author="poitee")))
@@ -1099,17 +1115,133 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                 self.assertIn("merge refused", self.check(["docs/example.md"], error=error))
 
     def test_untrusted_stale_low_or_duplicate_scores_refused(self):
-        for comments in (self.scores(author="outsider"), self.scores(head="a" * 40),
+        for comments in (self.scores(author="outsider"),
                          self.scores(score=8), self.scores(seats=(("grok-4.7", "xai"), ("grok-4.7", "xai"))), [[]]):
             with self.subTest(comments=comments):
                 self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+
+    CARRY_SEATS = (("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu"))
+
+    @staticmethod
+    def carry_api(repo, main_ref, head, conclusion="success"):
+        """GitHub's answers for a carry to head: main's tip, and one required check on head."""
+        return {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": repo.git("rev-parse", main_ref)}},
+                "repos/{owner}/{repo}/rules/branches/main": [{"type": "required_status_checks", "parameters": {
+                    "required_status_checks": [{"context": "rust (linux)"}]}}],
+                f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?": {
+                    "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": conclusion}]}}
+
+    @staticmethod
+    def git_at(path):
+        """Runs the guard's git commands for real: clone commands in path, scratch ones as given."""
+        run = subprocess.run
+        return lambda command, **kw: run(command, **{**kw, "cwd": path if str(kw["cwd"]) == "/coordinator" else kw["cwd"]})
+
+    def test_a_carried_score_merges_only_through_the_shared_carry(self):
+        # Two vendors on h0, and h1 a clean merge of main: the guard carries through
+        # merge_class.sensitive_scores, the decision the pp/score status uses, on real git.
+        import test_post_pp_score_status as status_tests
+
+        status_tests.CarryTests.setUpClass()
+        c = status_tests.CarryTests
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        git = self.git_at(c.r.path)
+
+        def checks(conclusion):
+            return self.carry_api(c.r, "main", c.h1, conclusion)
+
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.h1, git=git,
+                                     api=checks("success")))
+        for expected, kwargs in {
+            f"{c.h1[:7]}: rust (linux) is failure": dict(git=git, api=checks("failure")),
+            "Cannot verify merge class or scores; merge refused": dict(git=lambda command, **_: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(128, command)), api=checks("success")),
+            f"{c.h0[:7]}: need two qualifying": dict(git=git, api=checks("success"), comments=comments[:1]),
+        }.items():
+            with self.subTest(expected):
+                kwargs.setdefault("comments", comments)
+                self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], sha=c.h1, **kwargs))
+        # The same records on another head that is not a clean merge of main do not carry.
+        self.assertIn("parents, not a two-parent merge",
+                      self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.rebased, git=git,
+                                 api=checks("success")))
+
+    def test_git_config_env_and_cwd_cannot_change_what_the_carry_sees(self):
+        # main-hunk edited the PR's own a.txt. diff.relative, an external diff or GIT_EXTERNAL_DIFF,
+        # run from a subdirectory, once hid that edit and let the merge through.
+        import test_post_pp_score_status as status_tests
+
+        status_tests.CarryTests.setUpClass()
+        c = status_tests.CarryTests
+        sub = os.path.join(c.r.path, "sub")
+        os.makedirs(sub)
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git_in_sub = self.carry_api(c.r, "main-hunk", c.hunk), self.git_at(sub)
+
+        expected = f"{c.hunk[:7]}: the PR's own diff changed"
+        for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
+                                  ("diff.external", ("diff.external", "true"), {}),
+                                  ("GIT_EXTERNAL_DIFF", None, {"GIT_EXTERNAL_DIFF": "true", "GIT_DIFF_OPTS": "-u0"})):
+            with self.subTest(name):
+                if config:
+                    c.r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.hunk,
+                                                           git=git_in_sub, api=api))
+                finally:
+                    if config:
+                        c.r.git("config", "--unset", config[0])
+
+    def test_no_git_configuration_reaches_the_carry(self):
+        # rename_repo's merge skipped a directory rename and conflicts under Git's defaults. A renameLimit in
+        # local, included, HOME, XDG or system config once let the guard carry it. The guard runs from d1/.
+        import tempfile
+
+        import test_post_pp_score_status as status_tests
+
+        r, h0, h = status_tests.rename_repo()
+        comments = self.scores(head=h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git, run = self.carry_api(r, "main", h), self.git_at(os.path.join(r.path, "d1")), subprocess.run
+
+        home = tempfile.mkdtemp(prefix="pp-home-")
+        os.makedirs(os.path.join(home, "git"))
+        for name in (".gitconfig", "git/config", "system.cfg"):
+            Path(home, name).write_text("[merge]\n\trenameLimit = 1\n", encoding="utf-8")
+        include = Path(home, "include.cfg")
+        include.write_text("[diff]\n\trenameLimit = 1\n", encoding="utf-8")
+        expected = f"{h[:7]}: the merge of main had conflicts"
+        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h,
+                                           git=git, api=api))
+        for name, config, env in (("local merge.renameLimit", ("merge.renameLimit", "1"), {}),
+                                  ("included diff.renameLimit", ("include.path", str(include)), {}),
+                                  ("HOME and XDG config", None, {"HOME": home, "XDG_CONFIG_HOME": home}),
+                                  ("system config", None, {"GIT_CONFIG_SYSTEM": str(Path(home, "system.cfg"))})):
+            with self.subTest(name):
+                if config:
+                    r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        # The setting is live: plain git in the clone merges cleanly with it.
+                        plain = run(["git", "merge-tree", "--write-tree", h0, "main"], cwd=r.path, capture_output=True,
+                                    env={k: v for k, v in os.environ.items()
+                                         if k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")})
+                        self.assertEqual(plain.returncode, 0, plain.stdout)
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h, git=git,
+                                                           api=api))
+                finally:
+                    if config:
+                        r.git("config", "--unset", config[0])
 
     def test_missing_data_refused(self):
         for override in ({"files": None}, {"files": []}, {"files": [{}]}, {"changedFiles": 2},
                          {"headRefOid": "a" * 40}):
             self.assertIn("merge refused", self.check(["docs/example.md"], pr_override=override))
-        for comments in (None, {}, [], [[{}]], [[{"user": {}, "body": ""}]]):
+        for comments in (None, {}, []):
             self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+        for comments in ([[{}]], [[{"user": {}, "body": ""}]]):
+            self.assertIn("a PR comment has no readable author or body",
+                          self.check(["rust/rules/a.yml"], ["trusted"], comments))
 
     def test_numeric_sha_before_number(self):
         guard = load(CLI, "agent_guard_numeric_sha")

@@ -234,6 +234,23 @@ class RealFormatTests(unittest.TestCase):
                 self.assertEqual([(r.seat, r.bare) for r in found.records], [("grok-4.7", bare)])
                 self.assertEqual(pps.plan_statuses(found)[0].state, "success" if bare else "failure")
 
+    def test_every_line_main_faulted_is_a_fault_here(self):
+        # origin/main d01b7a735's guard (has_two_scores): a body line that starts with "pp-score " must
+        # fullmatch the record pattern, or it refuses every head; it ignores any other line.
+        main = merge_class.score_pattern(CONFIG["vendors"])
+        cases = {"pp-score": "ignore", "pp-score ": "fault", "pp-score\t": "ignore", "pp-score  ": "fault",
+                 "pp-score\r\n": "ignore", "pp-score \r\n": "fault", "pp-score head=": "fault", "pp-scorex": "ignore",
+                 "pp-score-foo": "ignore", " pp-score": "ignore", "PP-SCORE ": "ignore", "pp-score\u00a0": "ignore",
+                 "pp-score\u200b": "ignore", "pp-score \u00a0": "fault"}
+        for line, expected in cases.items():
+            for body in (line, f"Scores:\n{line}"):
+                faults = [x for x in body.splitlines() if x.startswith("pp-score ") and not main.fullmatch(x)]
+                with self.subTest(body=body):
+                    self.assertEqual("fault" if faults else "ignore", expected)
+                    if faults:
+                        self.assertEqual(pps.read_comments([comment(body)], self.trust).faults,
+                                         ((None, "a malformed pp-score record"),))
+
     def test_records_inside_prose_still_do_not_parse(self):
         line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"
         for body in (f"Recorded `{line}` today.", f"`{line}` and more", f"> {line}", f"`{line}"):
@@ -730,11 +747,9 @@ class CarryRepo:
 
 
 def rename_repo():
-    """main renames d1/old_0..5.txt to d2/new_0..5.txt with small edits (inexact renames, so the
-    directory rename needs rename detection). The PR adds d1/added_by_pr.txt. With Git's defaults the
-    merge of main conflicts (the PR's file is in a renamed directory). The PR's merge commit h was
-    made with merge.renameLimit=1, which skips inexact renames and leaves the file in d1/.
-    Returns (repo, h0, h); main is main's tip."""
+    """(repo, h0, h): main renames d1/old_0..5.txt to d2/new_0..5.txt with edits, the PR adds
+    d1/added_by_pr.txt, and h merges main with merge.renameLimit=1, skipping the directory rename
+    that makes the merge conflict under Git's defaults."""
     r = CarryRepo()
     for i in range(6):
         r.write_path(f"d1/old_{i}.txt", "".join(f"file {i} line {n}\n" for n in range(20)))
@@ -1230,30 +1245,20 @@ class GuardAgreementTests(unittest.TestCase):
         # One bare vendor and a wrapped second vendor: the status passes one seat, the guard needs two.
         self.assertEqual(self.both(self.c.h1, self.two(h0)[:1] + [wrapped])[:2], (True, False))
 
-    def test_a_low_valid_record_on_a_later_head_blocks_the_carry_in_both(self):
-        c = self.c
-        # Alone on h1: a bare 5 fails on its score; a wrapped or indented one, which never counts, fails first.
-        bare = self.line(c.h1, score=5)
-        for low, reason in ((bare, "gpt-6.2-sol scored 5"), (f"`{bare}`", "a wrapped or indented record never counts"),
-                            (f"  {bare}", "a wrapped or indented record never counts")):
-            with self.subTest(low=low):
-                self.assertEqual(self.both(c.h2, self.two(c.h0) + [comment(low)]), (False, False, f"{c.h1[:7]}: {reason}"))
-
-    def test_a_low_record_gets_one_reason_on_the_exact_head_and_on_a_later_head(self):
-        # A record below 8 fails both bars, and head_fault gives both evaluators its one reason:
-        # bare, wrapped or indented, alone or beside two bare 9s.
+    def test_a_low_record_blocks_the_carry_in_both_with_one_reason(self):
+        # A 5 on h1, bare or wrapped, alone or beside two bare 9s: both evaluators refuse h2's carry and
+        # h1 itself for one reason. Alone, a wrapped 5 fails first, because a wrapped record never counts.
         c, h1 = self.c, self.c.h1
         low = self.line(h1, score=5)
         for form in (low, f"`{low}`", f"  {low}"):
-            with self.subTest(form=form):
-                comments = self.two(c.h0) + self.two(h1) + [comment(form)]
-                # On a later head: h2 carries nothing, from either evaluator, for the same reason.
-                self.assertEqual(self.both(c.h2, comments), (False, False, f"{h1[:7]}: gpt-6.2-sol scored 5"))
-                # On the exact head: the status's failure and the guard's refusal name the same record.
-                found = pps.read_comments(comments, pps.load_trust())
-                _, _, source, guard_why = carry_both(self, c.r, h1, comments, strict=True, guard=True)
-                self.assertEqual((source, guard_why), (None, "gpt-6.2-sol scored 5"))
-                self.assertEqual(pps.plan_head(h1, found).description, f"rejected: {guard_why}")
+            alone = "gpt-6.2-sol scored 5" if form == low else "a wrapped or indented record never counts"
+            for beside, reason in (([], alone), (self.two(h1), "gpt-6.2-sol scored 5")):
+                comments = self.two(c.h0) + beside + [comment(form)]
+                with self.subTest(form=form, beside=bool(beside)):
+                    self.assertEqual(self.both(c.h2, comments), (False, False, f"{h1[:7]}: {reason}"))
+                    self.assertEqual(carry_both(self, c.r, h1, comments, strict=True, guard=True)[2:], (None, reason))
+                    found = pps.read_comments(comments, pps.load_trust())
+                    self.assertEqual(pps.plan_head(h1, found).description, f"rejected: {reason}")
 
     def test_both_refuse_failing_records_and_checks(self):
         h0, h1 = self.c.h0, self.c.h1
@@ -1515,9 +1520,9 @@ class ConfigIsolationTests(unittest.TestCase):
         (home / "git").mkdir()
         (home / "attributes").write_text("* binary merge=union -diff\n", encoding="utf-8")
         (home / "order").write_text("d2/*\n", encoding="utf-8")
-        text = "".join(f"[{key.rsplit('.', 1)[0]}]\n\t{key.rsplit('.', 1)[1]} = {value}\n"
-                       for key, value in {**self.SETTINGS, "core.attributesFile": str(home / "attributes"),
-                                          "diff.orderFile": str(home / "order")}.items())
+        written = {**self.SETTINGS, "core.attributesFile": str(home / "attributes"), "diff.orderFile": str(home / "order")}
+        self.assertEqual(len(written), 30, "the docs and PR body say 30 settings")
+        text = "".join(f"[{key.rsplit('.', 1)[0]}]\n\t{key.rsplit('.', 1)[1]} = {value}\n" for key, value in written.items())
         for name in (".gitconfig", "git/config", "include.cfg"):
             (home / name).write_text(text, encoding="utf-8")
         local = Path(r.path, ".git", "config")
@@ -1539,9 +1544,7 @@ class FetchIsolationTests(unittest.TestCase):
     """gemini-4-neon, rounds 4 and 5: what the coordinator's own fetch can reach."""
 
     def test_a_read_never_fetches_or_runs_a_transport_program(self):
-        # In a blob:none clone whose remote is ssh://fakehost, a GIT_SSH_COMMAND that appended
-        # merge.renameLimit=1 to $GIT_DIR/config ran during an on-demand fetch of hop h2 -> h, so
-        # hop h -> h0 merged without rename detection and the carry passed. Reads now fetch nothing.
+        # A GIT_SSH_COMMAND run by an on-demand fetch once poisoned the scratch config between two hops.
         import os
         import subprocess
         import tempfile
@@ -1574,22 +1577,23 @@ class FetchIsolationTests(unittest.TestCase):
         import subprocess
 
         CarryTests.setUpClass()
-        envs, run = [], subprocess.run
+        calls, run = [], subprocess.run
         caller = dict.fromkeys(("GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "GIT_PROXY_COMMAND", "GIT_FOO"), "x")
         with mock.patch.dict(os.environ, caller), \
-                mock.patch.object(subprocess, "run", lambda *a, **kw: envs.append(kw.get("env") or {}) or run(*a, **kw)):
+                mock.patch.object(subprocess, "run", lambda *a, **kw: calls.append((a[0], kw.get("env") or {})) or run(*a, **kw)):
             self.assertEqual(merge_class.hop(RepoFacts(CarryTests.r), CarryTests.h1, merge_class.load_classes())[0],
                              CarryTests.h0)
-        reads = [env for env in envs if "GIT_DIR" in env]
+        reads = [env for _, env in calls if "GIT_DIR" in env]
         self.assertGreater(len(reads), 5)
+        common = [env for command, env in calls if "--git-common-dir" in command]
+        self.assertTrue(common and not any(k.startswith("GIT_") for env in common for k in env), common)
         self.assertEqual({k for env in reads for k in env if k.startswith("GIT_")},
                          {"GIT_DIR", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_ATTR_NOSYSTEM", "GIT_GRAFT_FILE",
                           "GIT_NO_LAZY_FETCH"})
 
     def test_a_fetch_never_touches_the_directory_later_reads_use(self):
-        # Round 5: a program run by the coordinator's own fetch could find the scratch directory under
-        # TMPDIR and plant objects in it. Every fetch drops it, so later reads use a new directory
-        # made after the fetch. Here the clone lacks main's new tip, so on_main fetches it.
+        # The clone lacks main's new tip, so on_main fetches it; the fetch program plants files in every
+        # scratch directory it finds, and later reads must use one it never saw.
         import os
         import subprocess
         import tempfile

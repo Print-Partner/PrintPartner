@@ -1159,10 +1159,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                                  api=checks("success")))
 
     def test_git_config_env_and_cwd_cannot_change_what_the_carry_sees(self):
-        # main-hunk edited line 10 of the PR's own a.txt, so the PR's diff changed and nothing
-        # carries. A lane can set diff.relative or an external diff in the clone's shared config, or
-        # GIT_EXTERNAL_DIFF in the environment, and the guard may run from a subdirectory. Each of
-        # those once could hide the edit and let the merge through.
+        # main-hunk edited the PR's own a.txt. diff.relative, an external diff or GIT_EXTERNAL_DIFF,
+        # run from a subdirectory, once hid that edit and let the merge through.
         import test_post_pp_score_status as status_tests
 
         status_tests.CarryTests.setUpClass()
@@ -1188,10 +1186,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                         c.r.git("config", "--unset", config[0])
 
     def test_no_git_configuration_reaches_the_carry(self):
-        # gemini-4-neon, round 3: main renamed d1/ to d2/ with edits, the PR added d1/added_by_pr.txt,
-        # and the PR's merge commit was made with merge.renameLimit=1, so it skipped the directory
-        # rename. With Git's defaults that merge conflicts. A renameLimit in the clone's config, in an
-        # included file, or in a HOME, XDG or system config once let the guard carry it.
+        # rename_repo's merge skipped a directory rename (renameLimit=1) and conflicts under Git's defaults.
+        # A renameLimit in local, included, HOME, XDG or system config once let the guard carry it.
         import tempfile
 
         import test_post_pp_score_status as status_tests

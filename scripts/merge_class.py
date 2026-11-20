@@ -222,10 +222,11 @@ def read_comments(comments, trust):
             continue
         created, updated = comment.get("created_at"), comment.get("updated_at")
         for line in body.splitlines():
-            text = unwrap(line)
+            # A column-0 record line is judged as it stands, as before GRE-1859; others are unwrapped first.
+            text = line if line.startswith(RECORD) else unwrap(line)
             if not text.startswith(RECORD):
                 continue
-            match = trust["pattern"].fullmatch(text) if line == text or not line.startswith(RECORD) else None
+            match = trust["pattern"].fullmatch(text)
             token = match and match.group(6)
             obstacles = None if token is None else parse_obstacles(token)
             if not match or (token is not None and obstacles is None) or len(match.group(4)) > 2:

@@ -719,6 +719,38 @@ impl Dir {
         )
     }
 
+    pub(crate) fn rename_to(&self, from: &str, target: &Self, to: &str) -> io::Result<()> {
+        let source = self.rename_source(from)?;
+        let root = target.directory.as_raw_handle();
+        with_fallback(
+            || rename_posix(&source, root, to, true),
+            || rename_classic(&source, root, to, true),
+        )
+    }
+
+    /// A name that is not valid Unicode is refused, as every other entry
+    /// operation refuses it.
+    pub(crate) fn remove_all(&self, name: &OsStr) -> io::Result<()> {
+        let name = name.to_str().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "entry name is not Unicode")
+        })?;
+        if self.status_nofollow(name)?.kind == Kind::Directory {
+            let child = self.open_directory_entry(name)?;
+            for entry in child.entries()? {
+                child.remove_all(&entry?)?;
+            }
+            drop(child);
+            return self.remove_dir(name);
+        }
+        // A file, or a link or junction itself, never its target.
+        delete_open(&self.open_entry(
+            name,
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_OPEN,
+            FILE_OPEN_REPARSE_POINT,
+        )?)
+    }
+
     pub(crate) fn rename_source(&self, from: &str) -> io::Result<File> {
         self.open_entry(
             from,

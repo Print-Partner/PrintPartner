@@ -1,0 +1,52 @@
+ISO-10303-21;
+HEADER;
+/* GRE-1007 fixture: a printer assembly six levels deep. A comment may hold ; and ' */
+FILE_DESCRIPTION(('Print Partner test assembly; not a real model'),'2;1');
+FILE_NAME('nested-assembly.step','2026-11-18T22:00:00',('Print Partner'),(''),
+  'hand written','hand written','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+#1=APPLICATION_CONTEXT('automotive design');
+#2=PRODUCT_CONTEXT('',#1,'mechanical');
+#3=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+/* Geometry the reader skips without buffering; its strings hold ; too. */
+#4=CARTESIAN_POINT('origin; not a part',(0.,0.,0.));
+#5=B_SPLINE_CURVE_WITH_KNOTS('',3,(#4,#4,#4,#4),.UNSPECIFIED.,.F.,.F.,(4,4),
+  (0.,1.),.UNSPECIFIED.);
+#10=PRODUCT('PRN-1','Printer','',(#2));
+#11=PRODUCT_DEFINITION_FORMATION('','',#10);
+#12=PRODUCT_DEFINITION('design','',#11,#3);
+#20=PRODUCT('FRM-1','Frame','',(#2));
+#21=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('','',#20,.NOT_KNOWN.);
+#22=PRODUCT_DEFINITION('design','',#21,#3);
+#30=PRODUCT('GNT-1','Gantry','',(#2));
+#31=PRODUCT_DEFINITION_FORMATION('','',#30);
+#32=PRODUCT_DEFINITION('design','',#31,#3);
+#40=PRODUCT('CAR-1','Carriage','',(#2));
+#41=PRODUCT_DEFINITION_FORMATION('','',#40);
+#42=PRODUCT_DEFINITION('design','',#41,#3);
+#50=PRODUCT('HOT-1','Hotend','',(#2));
+#51=PRODUCT_DEFINITION_FORMATION('','',#50);
+#52=PRODUCT_DEFINITION('design','',#51,#3);
+#60=PRODUCT('NOZ-1','D\X2\00FC\X0\se 0.4','',(#2));
+#61=PRODUCT_DEFINITION_FORMATION('','',#60);
+#62=PRODUCT_DEFINITION('design','',#61,#3);
+#70=PRODUCT('SCR-M3','','',(#2));
+#71=PRODUCT_DEFINITION_FORMATION('','',#70);
+#72=PRODUCT_DEFINITION('design','',#71,#3);
+#80=PRODUCT('BED-1',
+  'Bed; ''heated''','',(#2));
+#81=PRODUCT_DEFINITION_FORMATION('','',#80);
+#82=PRODUCT_DEFINITION('design','',#81,#3);
+#100=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO1','Frame:1','',#12,#22,$);
+#101=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO2','Gantry:1','',#22,#32,$);
+#102=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO3','Carriage:1','',#32,#42,$);
+#103=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO4','Hotend:1','',#42,#52,$);
+#104=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO5','Nozzle:1','',#52,#62,$);
+#105=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO6','Screw:1','',#42,#72,$);
+#106=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO7','Screw:2','',#42,#72,$);
+#107=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO8','','',#22,#72,$);
+#108=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO9','Bed:1','',#12,#82,$);
+ENDSEC;
+END-ISO-10303-21;

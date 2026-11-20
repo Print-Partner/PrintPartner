@@ -6,6 +6,8 @@
  * Typed reads go through `readCore` in ./rust.ts, which builds on this function
  * with the generated client's routes and schemas.
  */
+import { problemSchema } from "@print-partner/rust-client";
+
 /** One field the core refused: a JSON Pointer into the request body, and the core's reason. */
 export type FieldProblem = { pointer: string; detail: string };
 
@@ -20,6 +22,12 @@ export class CoreError extends Error {
   errors: readonly FieldProblem[] = [];
   /** The problem's `files` list: each Source file a download refused, in the core's order. */
   files: readonly UnavailableSourceFile[] = [];
+  /**
+   * True when the body is the core's own problem: `application/problem+json`, valid against the
+   * generated `Problem` schema, with a `status` equal to this answer's. A proxy page, a cut-off
+   * body or a malformed member such as `"code": null` leaves it false.
+   */
+  problem = false;
 
   constructor(
     readonly status: number,
@@ -42,6 +50,7 @@ export interface HoldingBuild {
 
 /** The problem code, detail, holding Builds and refused fields, when present. */
 async function problem(response: Response): Promise<{
+  own?: boolean;
   detail?: string;
   code?: string;
   conflictingBuilds?: HoldingBuild[];
@@ -50,6 +59,11 @@ async function problem(response: Response): Promise<{
 }> {
   const body: unknown = await response.json().catch(() => undefined);
   if (typeof body !== "object" || body === null) return {};
+  const type = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const own =
+    type === "application/problem+json" &&
+    problemSchema.safeParse(body).success &&
+    (body as Record<string, unknown>).status === response.status;
   const text = (key: string) => {
     const value: unknown = (body as Record<string, unknown>)[key];
     return typeof value === "string" ? value : undefined;
@@ -88,7 +102,7 @@ async function problem(response: Response): Promise<{
           : [];
       })
     : [];
-  return { detail: text("detail"), code: text("code"), conflictingBuilds, errors, files };
+  return { own, detail: text("detail"), code: text("code"), conflictingBuilds, errors, files };
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -125,10 +139,11 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
       const write = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
       for (const listener of unauthorized) listener({ write });
     }
-    const { detail, code, conflictingBuilds, errors, files } = await problem(response);
+    const { own, detail, code, conflictingBuilds, errors, files } = await problem(response);
     const error = new CoreError(response.status, path, detail, code, conflictingBuilds);
     error.errors = errors ?? [];
     error.files = files ?? [];
+    error.problem = own ?? false;
     throw error;
   }
   return response;

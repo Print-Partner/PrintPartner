@@ -512,6 +512,11 @@ body {
   color: var(--text-muted);
 }
 
+/* A SHA-256 or file name has no spaces; let it wrap on a phone. */
+.pp-digest {
+  overflow-wrap: anywhere;
+}
+
 .pp-settings-section {
   margin: 0 0 32px;
   /* Room above the heading when an in-page link scrolls to it. */

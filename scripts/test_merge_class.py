@@ -147,6 +147,7 @@ class CoverageTests(unittest.TestCase):
         # Owner decision 2026-11-18: gpt-6.2-sol and composer-2.5 join the council scorer pool.
         # Owner decision 2026-11-18 7:38 PM ET: Gemini Flash, Qwen, longcat and hy4 count too.
         # Owner decision 2026-11-18 (thin-relay plan): gpt-6.2-astra joins it too.
+        # Chad, 2026-11-19: Gemini 4 Neon (Antigravity, Google AI Pro) is a sensitive-merge seat.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
                                                 "deepseek-v4.1-flash-free": "deepseek",
@@ -155,7 +156,8 @@ class CoverageTests(unittest.TestCase):
                                                 "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
                                                 "longcat-2.5-free": "meituan",
                                                 "hy4-flash-free": "tencent",
-                                                "gpt-6.2-astra": "openai"})
+                                                "gpt-6.2-astra": "openai",
+                                                "gemini-4-neon-high": "google"})
         # gpt-6.1-sol counts for the pp/score status only, not for the sensitive merge guard.
         # The 7:38 PM ET seats are in both maps.
         self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
@@ -230,6 +232,32 @@ class ScoreTests(unittest.TestCase):
         pair = [self.line("qwen38-gufo", vendor="qwen", author="xai", score=9),
                 self.line("longcat-2.5-free", vendor="meituan", author="xai", score=9)]
         self.assertTrue(self.check(pair, author="xai"))
+
+    def test_neon_and_sol_pass_on_a_claude_pr(self):
+        # Gemini 4 Neon is a Google seat, read from merge-classes.json itself.
+        sol = self.line("gpt-6.2-sol", vendor="openai", author="anthropic")
+        neon = self.line("gemini-4-neon-high", vendor="google", author="anthropic")
+        self.assertTrue(self.check([sol, neon], author="anthropic"))
+        # A record naming another vendor for the Neon seat refuses.
+        self.assertFalse(self.check([sol, self.line("gemini-4-neon-high", vendor="cursor", author="anthropic")],
+                                    author="anthropic"))
+        # Other Neon effort ids are not seats.
+        self.assertFalse(self.check([sol, self.line("gemini-4-neon-xhigh", vendor="google", author="anthropic")],
+                                    author="anthropic"))
+
+    def test_neon_beside_astra(self):
+        def neon(author):
+            return self.line("gemini-4-neon-high", vendor="google", author=author)
+
+        def astra(author):
+            return self.line("gpt-6.2-astra", vendor="openai", author=author)
+
+        self.assertTrue(self.check([neon("anthropic"), astra("anthropic")], author="anthropic"))
+        self.assertTrue(self.check([neon("openai"), self.line()], author="openai"))
+        # Neon is refused on a Google-authored PR, and astra with Sol is one vendor, not two.
+        self.assertFalse(self.check([neon("google"), self.line(author="google")], author="google"))
+        self.assertFalse(self.check([astra("anthropic"), self.line("gpt-6.2-sol", vendor="openai",
+                                                                   author="anthropic")], author="anthropic"))
 
     def test_sol_seat_on_a_sol_pr_refused(self):
         self.assertFalse(self.check([self.line(), self.line("gpt-6.1-sol", vendor="openai")]))

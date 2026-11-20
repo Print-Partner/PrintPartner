@@ -45,6 +45,8 @@ Since 2026-11-18 (owner decision, Chad's card answer at 7:38 PM ET) these seats 
 unprefixed id and `vendor=google`), `qwen38-gufo` and `qwen38-flash` (Qwen), `longcat-2.5-free`
 (Meituan) and `hy4-flash-free` (Tencent). A `gemini-3.8-flash` record with `vendor=cursor` does not
 count.
+Since 2026-11-19 (Chad) `gemini-4-neon-high` (Google; Gemini 4 Neon through the Antigravity CLI on
+Google AI Pro) is a sensitive-merge seat too.
 A sensitive PR needs two allowed seats from two different vendors, neither of them the PR author's
 vendor (Anthropic for Claude lanes, OpenAI for Sol lanes), each scoring at least 9 on the exact
 head, or, when the head has no records of its own, on the head a carry reaches (see

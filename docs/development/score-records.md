@@ -94,7 +94,7 @@ The allowed seats (`scorer_seats`, seat to vendor) and the vendors a record may 
 When a trusted `scorer_authors` account posts a well-formed record, the `post-pp-score-status` workflow also posts a `pp/score` commit status on that exact head SHA (`N/10 from <seat>`, success at 8 or more). The status is copied from the comment; it is never invented or re-derived. Records for other SHAs are left untouched. For this status only:
 
 - A record whose `vendor=` equals its `author=` is a same-family score and fails the head, as does a head whose records disagree on `author=`. The old `Score: N/10 from <seat> on head <sha>` form names no author family and no longer counts.
-- If `author=` is `cursor-auto` or `unknown`, the head also needs a trusted Anthropic record and a trusted OpenAI record (`gpt-6.1-sol` or another OpenAI seat) on that exact SHA. The status uses the lower of those scores and succeeds only at 8 or more. A missing family, a score below 8, or a complete pair on a stale SHA fails closed, including on `merge_group`. Known families are unchanged: one trusted cross-family score of 8 or more is enough, and same-family scores still fail.
+- If `author=` is `cursor-auto` or `unknown`, the head also needs a bare trusted Anthropic record and a bare trusted OpenAI record (`gpt-6.1-sol` or another OpenAI seat) on that exact SHA; a wrapped record counts toward no pass. The status uses the lower of those scores and succeeds only at 8 or more. A missing family, a score below 8, or a complete pair on a stale SHA fails closed, including on `merge_group`. Known families are unchanged: one trusted cross-family score of 8 or more is enough, and same-family scores still fail.
 - `pp_score_seats` in `scripts/merge-classes.json` adds seats the status accepts on top of `scorer_seats`. It holds the Codex seats `gpt-6.1-sol`, `gpt-6.2-sol` and `gpt-6.2-astra` (all OpenAI; 6.2-sol added 2026-11-17; 6.2-sol and 6.2-astra are also in `scorer_seats` since 2026-11-18). Since the 2026-11-18 7:38 PM ET owner decision it also holds `gemini-3.8-flash`, `qwen38-gufo`, `qwen38-flash`, `longcat-2.5-free` and `hy4-flash-free`, the same five seats as `scorer_seats`. The sensitive merge guard still reads `scorer_seats` only.
 - The `post-pp-score-status` workflow checks out the default branch for a comment or a `workflow_dispatch`, whatever ref a dispatch selects, and the queue entry's base SHA for `merge_group`. It never runs the script or `merge-classes.json` from a PR head. A change to the record format takes effect for every PR once it merges, including the PR that makes it. A dispatch still runs the workflow file of the ref it selects. Only accounts with write access can dispatch, and they can already post a commit status directly (see below).
 - A head with no records of its own can carry the `pp/score` of an earlier head H0 across merges of main that leave the PR's code exactly as scored (Chad, 2026-11-18 11:02 PM ET). See [Score carry-forward](#score-carry-forward).
@@ -132,33 +132,12 @@ So the guard never accepts a carry that the status refuses, and when it accepts 
 
 ### Git settings the carry ignores
 
-`LocalGit` in `scripts/merge_class.py` runs `rev-parse`, `cat-file -e`, `fetch`, `rev-list --parents`, `rev-list --first-parent`, `merge-base --all`, `merge-tree --write-tree`, `diff` (patch and `--name-only -z`) and `log -m --name-only -z --format=`. The guard runs them in the coordinator's clone, from any directory inside the worktree. Every lane worktree shares that clone's `.git/config`, `info/attributes`, `refs/replace` and `info/grafts`, and a lane may set `GIT_*` variables. The status runs in a fresh Actions checkout with default settings. So every call pins what could change the output to those defaults:
+`LocalGit` in `scripts/merge_class.py` reads no Git configuration it did not write. The commands a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff` and `log`) run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. That directory holds only a config file `LocalGit` writes, no refs, grafts or attributes, and an `objects/info/alternates` line pointing at the clone's object store. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every `GIT_*` variable dropped except the transport ones, and with `--no-replace-objects`. The commands also keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. So nothing in the clone's `.git/config`, its includes, `info/attributes`, `refs/replace` or `info/grafts`, nothing in the user's config, and no directory inside the worktree can change what the carry reads. The status and the guard therefore read the same Git defaults. A test writes 28 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
 
-| Setting | How it is pinned |
-| --- | --- |
-| `diff.relative`, and the cwd inside the worktree | `-c diff.relative=false` and `--no-relative` on every diff and log. A test runs the guard from a subdirectory. |
-| `diff.external`, `GIT_EXTERNAL_DIFF`, `diff.<driver>.command` and `.textconv` | `--no-ext-diff --no-textconv` on every diff and log. Tested. |
-| `diff.renames` | `--no-renames` on every diff and log. |
-| `diff.ignoreSubmodules`, `submodule.<name>.ignore` | `-c diff.ignoreSubmodules=none` and `--ignore-submodules=none`. |
-| `diff.noprefix`, `diff.mnemonicPrefix` | Pinned `false`, and `--src-prefix=a/ --dst-prefix=b/`. |
-| `diff.orderFile` | Pinned to an empty file. |
-| `core.quotePath` | Pinned `true`. Path lists use `-z`. |
-| `core.attributesFile` | Pinned to an empty file. |
-| `color.ui`, `color.diff` | `-c color.ui=false` and `--no-color`. |
-| `log.showSignature` | Pinned `false` and `--no-show-signature`. |
-| `merge.renames`, `merge.directoryRenames`, `merge.renormalize` | Pinned to Git's defaults: `true`, `conflict`, `false`. |
-| `core.pager`, `pager.*`, `GIT_PAGER` | `--no-pager`. Output is captured, never a terminal. |
-| `refs/replace`, `info/grafts` | `--no-replace-objects` and `GIT_GRAFT_FILE=/dev/null`. Tested. |
-| `GIT_*` environment (`GIT_DIFF_OPTS`, `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE`, `GIT_REPLACE_REF_BASE` and the rest) | Dropped, except the transport variables a fetch needs (`GIT_ASKPASS`, `GIT_SSH*`, `GIT_TERMINAL_PROMPT`, `GIT_SSL_*`, `GIT_HTTP_*`, `GIT_PROXY_*`, `GIT_CURL_*`). |
+Two inputs remain:
 
-The rest cannot change a carry decision:
-
-- `diff.algorithm`, `diff.indentHeuristic`, `diff.context`, `diff.interHunkContext`, `diff.suppressBlankEmpty`: these change only the shape of hunks. Both diffs are made the same way, and `--full-index` prints every file's full blob IDs, so equal output still means equal paths, modes and blobs.
-- `core.abbrev`: every command here prints full object names.
-- `i18n.logOutputEncoding`, `log.decorate`, `log.mailmap`, `format.*`: `--format=` prints no commit text.
-- `info/attributes` and in-tree `.gitattributes`: diff drivers are off. `binary` changes only the patch body, and the index lines remain. Merge drivers and `merge.conflictStyle` act only on paths both sides changed, which condition 6 refuses.
-- `core.autocrlf`, `core.eol`, clean and smudge filters, `core.worktree`, `core.ignoreCase`: these act on a worktree, and every command here compares commits and trees.
-- `fetch.*`, the remote URL, `objects/info/alternates`: objects are addressed by their hash, so a fetched object is the one asked for, or the call fails and nothing carries. A shallow clone is unshallowed first, and a shallow boundary can only hide parents, which refuses.
+- Tracked `.gitattributes` in the merged trees: the scratch directory has no worktree, index or `HEAD` tree to read them from. Merge drivers also act only on paths both sides changed, which condition 6 refuses, and diff drivers are off.
+- The fetch of a missing commit, by full SHA, runs in the clone with the clone's configuration: remote URL, `fetch.*` and credentials. That configuration only decides where objects come from, and Git checks each fetched object against its hash. A blob:none clone's missing blobs are fetched on demand from the same remote URL, into the scratch directory. The shared object store itself is trusted. A process that can rewrite it can also rewrite the guard (GRE-1408).
 
 When the current head has no records and no carry, the workflow posts `pp/score=failure` (`no score and no carry: <reason>`), which replaces an earlier carried success. The `merge_group` run decides every carry again, so a newer failing record on H0 or a failing check on H fails the queue entry. If the run cannot read the PR's current head, it posts the statuses for heads with records, posts nothing on the unknown head, and exits 1. That head keeps its last `pp/score`. Every merge goes through the merge queue, whose run decides the carry again.
 

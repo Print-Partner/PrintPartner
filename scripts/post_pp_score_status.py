@@ -87,7 +87,7 @@ def plan_head(head: str, reading: Reading) -> StatusPlan:
         return StatusPlan(head, "failure", _fit(f"rejected: {fault}", "rejected: invalid score record"), records)
     author = unique[0].author
     if author in DUAL_AUTHOR_FAMILIES:
-        present = {r.vendor for r in unique}
+        present = {r.vendor for r in group if r.bare}  # a wrapped record counts toward no pass
         missing = [v for v in DUAL_REQUIRED_VENDORS if v not in present]
         if missing:
             return StatusPlan(head, "failure", _fit(

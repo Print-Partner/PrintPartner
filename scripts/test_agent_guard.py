@@ -1124,7 +1124,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         run = subprocess.run
 
         def git(command, **kwargs):
-            return run(command, **{**kwargs, "cwd": c.r.path, "env": c.r.env})
+            # Clone commands run in the repo; scratch commands keep their own cwd and environment.
+            return run(command, **{**kwargs, "cwd": c.r.path if str(kwargs["cwd"]) == "/coordinator" else kwargs["cwd"]})
 
         def checks(conclusion):
             return {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": c.r.git("rev-parse", "main")}},
@@ -1173,7 +1174,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
         def git_in_sub(command, **kwargs):
             # The guard's own environment and flags, from a subdirectory of the worktree.
-            return run(command, **{**kwargs, "cwd": sub})
+            return run(command, **{**kwargs, "cwd": sub if str(kwargs["cwd"]) == "/coordinator" else kwargs["cwd"]})
 
         expected = f"{c.hunk[:7]}: the PR's own diff changed"
         for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
@@ -1189,6 +1190,56 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                 finally:
                     if config:
                         c.r.git("config", "--unset", config[0])
+
+    def test_no_git_configuration_reaches_the_carry(self):
+        # gemini-4-neon, round 3: main renamed d1/ to d2/ with edits, the PR added d1/added_by_pr.txt,
+        # and the PR's merge commit was made with merge.renameLimit=1, so it skipped the directory
+        # rename. With Git's defaults that merge conflicts. A renameLimit in the clone's config, in an
+        # included file, or in a HOME or XDG config once let the guard carry it.
+        import tempfile
+
+        import test_post_pp_score_status as status_tests
+
+        r, h0, h = status_tests.rename_repo()
+        comments = self.scores(head=h0, seats=(("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu")),
+                               author_vendor="anthropic")
+        api = {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": r.git("rev-parse", "main")}},
+               "repos/{owner}/{repo}/rules/branches/main": [
+                   {"type": "required_status_checks",
+                    "parameters": {"required_status_checks": [{"context": "rust (linux)"}]}}],
+               f"repos/{{owner}}/{{repo}}/commits/{h}/check-runs?": {
+                   "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": "success"}]}}
+        run = subprocess.run
+
+        def git(command, **kwargs):
+            return run(command, **{**kwargs, "cwd": r.path if str(kwargs["cwd"]) == "/coordinator" else kwargs["cwd"]})
+
+        home = tempfile.mkdtemp(prefix="pp-home-")
+        os.makedirs(os.path.join(home, "git"))
+        for name in (".gitconfig", "git/config"):
+            Path(home, name).write_text("[merge]\n\trenameLimit = 1\n", encoding="utf-8")
+        include = Path(home, "include.cfg")
+        include.write_text("[diff]\n\trenameLimit = 1\n", encoding="utf-8")
+        expected = f"{h[:7]}: the merge of main had conflicts"
+        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h,
+                                           git=git, api=api))
+        for name, config, env in (("local merge.renameLimit", ("merge.renameLimit", "1"), {}),
+                                  ("included diff.renameLimit", ("include.path", str(include)), {}),
+                                  ("HOME and XDG config", None, {"HOME": home, "XDG_CONFIG_HOME": home})):
+            with self.subTest(name):
+                if config:
+                    r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        # The setting is live: plain git in the clone merges cleanly with it.
+                        plain = run(["git", "merge-tree", "--write-tree", h0, "main"], cwd=r.path, capture_output=True,
+                                    env={k: v for k, v in os.environ.items() if k != "GIT_CONFIG_GLOBAL"})
+                        self.assertEqual(plain.returncode, 0, plain.stdout)
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h, git=git,
+                                                           api=api))
+                finally:
+                    if config:
+                        r.git("config", "--unset", config[0])
 
     def test_missing_data_refused(self):
         for override in ({"files": None}, {"files": []}, {"files": [{}]}, {"changedFiles": 2},

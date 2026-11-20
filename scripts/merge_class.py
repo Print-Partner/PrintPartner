@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -343,17 +344,15 @@ class LocalGit:
     """A checkout of the repository. deadline (a time.monotonic value) bounds every git call, so the
     coordinator hook refuses on its own before its timeout would let the merge run.
 
-    The coordinator's clone shares .git/config, info/attributes, refs/replace and info/grafts with
-    every lane worktree, and the guard may run from any directory inside the worktree. So every call
-    pins each setting that can change what these commands print (PINNED and the flags on each
-    command), drops every GIT_* variable but the transport ones, and ignores replace refs and grafts.
-    docs/development/score-records.md lists each setting and why the rest cannot change a decision."""
+    Every lane worktree shares the coordinator clone's .git/config, info/attributes, refs and
+    object store, and a lane can set HOME, XDG_CONFIG_HOME or GIT_* variables. So the commands a
+    carry decides from (rev-list, rev-parse, merge-base, merge-tree, diff, log) run in a scratch
+    git directory that this class creates: its only configuration is the file written below, it has
+    no refs, attributes or grafts, and it reads the clone's objects through objects/info/alternates.
+    System, global and XDG configuration are switched off, so no setting the clone or its user
+    holds can change their output. Only the fetch of a missing commit runs in the clone itself.
+    The scratch directory is left in place under TMPDIR."""
 
-    PINNED = ("--no-pager", "--no-replace-objects",
-              "-c", "diff.relative=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
-              "-c", "diff.ignoreSubmodules=none", "-c", f"diff.orderFile={os.devnull}", "-c", "core.quotePath=true",
-              "-c", f"core.attributesFile={os.devnull}", "-c", "color.ui=false", "-c", "log.showSignature=false",
-              "-c", "merge.renames=true", "-c", "merge.directoryRenames=conflict", "-c", "merge.renormalize=false")
     # Kept so a fetch can still authenticate and reach the remote; none of them changes output.
     TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
                      "GIT_SSL_", "GIT_HTTP_", "GIT_PROXY_", "GIT_CURL_")
@@ -362,26 +361,57 @@ class LocalGit:
         self.cwd = Path(cwd)
         self.remote = remote
         self.deadline = deadline
+        self._scratch = None
 
-    def _git(self, *args, check=True, text=True):
+    def _run(self, args, cwd, env, check=True, text=True):
         timeout = None if self.deadline is None else self.deadline - time.monotonic()
         if timeout is not None and timeout <= 0:
             raise subprocess.TimeoutExpired(["git", *args], 0)
-        # refs/replace and info/grafts can give a commit false parents. Git ignores both only with
-        # --no-replace-objects (in PINNED) and an empty graft file.
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith(self.TRANSPORT_ENV)}
-        return subprocess.run(["git", *self.PINNED, *args], cwd=self.cwd, text=text, capture_output=True,
-                              check=check, timeout=timeout, env={**env, "GIT_GRAFT_FILE": os.devnull})
+        keep = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith(self.TRANSPORT_ENV)}
+        return subprocess.run(["git", "--no-pager", *args], cwd=cwd, text=text, capture_output=True, check=check,
+                              timeout=timeout, env={**keep, **env})
+
+    def _in_clone(self, *args, check=True):
+        """The fetch side. It reads the clone's configuration, which can only change where objects
+        come from; Git checks every fetched object against its hash."""
+        return self._run(args, self.cwd, {}, check=check)
+
+    def _scratch_dir(self):
+        if self._scratch is None:
+            objects = self._in_clone("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+            url = self._in_clone("config", "--get", f"remote.{self.remote}.url", check=False).stdout.strip()
+            scratch = Path(tempfile.mkdtemp(prefix="pp-carry-git-"))
+            (scratch / "objects" / "info").mkdir(parents=True)
+            (scratch / "refs").mkdir()
+            (scratch / "HEAD").write_text("ref: refs/heads/none\n", encoding="utf-8")
+            (scratch / "objects" / "info" / "alternates").write_text(f"{objects}/objects\n", encoding="utf-8")
+            # A blob:none clone fetches blobs on demand; the scratch directory fetches them from the
+            # same remote, into itself. A commit-graph file in the shared store is not trusted.
+            promisor = (f'[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl = {url}\n'
+                        "\tpromisor = true\n\tpartialclonefilter = blob:none\n") if url and "\n" not in url else ""
+            (scratch / "config").write_text(
+                "[core]\n\trepositoryformatversion = 1\n\tbare = true\n\tcommitGraph = false\n"
+                f"\tattributesFile = {os.devnull}\n" + promisor, encoding="utf-8")
+            self._scratch = scratch
+        return self._scratch
+
+    def _git(self, *args, check=True, text=True):
+        """A read-only command in the scratch directory, with no configuration but its own."""
+        scratch = self._scratch_dir()
+        return self._run(["--no-replace-objects", *args], scratch, {
+            "GIT_DIR": str(scratch), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1", "GIT_GRAFT_FILE": os.devnull, "HOME": str(scratch),
+            "XDG_CONFIG_HOME": str(scratch)}, check=check, text=text)
 
     def ensure(self, *shas):
-        if self._git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        if self._in_clone("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
             # The workflow checkout is depth 1. Fetch the commits' full history without blobs
             # (Git fetches the blobs a merge or diff reads on demand), so every merge base is there.
-            self._git("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
+            self._in_clone("fetch", "--no-tags", "--quiet", "--unshallow", "--filter=blob:none", self.remote, *shas)
             return
-        missing = [s for s in shas if self._git("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
+        missing = [s for s in shas if self._in_clone("cat-file", "-e", f"{s}^{{commit}}", check=False).returncode]
         if missing:
-            self._git("fetch", "--no-tags", "--quiet", self.remote, *missing)
+            self._in_clone("fetch", "--no-tags", "--quiet", self.remote, *missing)
 
     def parents(self, sha):
         return self._git("rev-list", "--parents", "-n1", sha).stdout.split()[1:]

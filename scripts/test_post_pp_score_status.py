@@ -677,6 +677,21 @@ class CarryRepo:
 
         Path(self.path, name).write_text(text, encoding="utf-8")
 
+    def mkdir(self, name):
+        from pathlib import Path
+
+        Path(self.path, name).mkdir(parents=True, exist_ok=True)
+
+    def write_path(self, name, text):
+        self.mkdir(name.rpartition("/")[0])
+        self.write(name, text)
+
+    def commit_path(self, name, text, message):
+        self.write_path(name, text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", message)
+        return self.head()
+
     def commit(self, name, text, message):
         self.write(name, text)
         self.git("add", name)
@@ -712,6 +727,32 @@ class CarryRepo:
         for parent in parents:
             args += ["-p", parent]
         return self.git(*args)
+
+
+def rename_repo():
+    """main renames d1/old_0..5.txt to d2/new_0..5.txt with small edits (inexact renames, so the
+    directory rename needs rename detection). The PR adds d1/added_by_pr.txt. With Git's defaults the
+    merge of main conflicts (the PR's file is in a renamed directory). The PR's merge commit h was
+    made with merge.renameLimit=1, which skips inexact renames and leaves the file in d1/.
+    Returns (repo, h0, h); main is main's tip."""
+    r = CarryRepo()
+    for i in range(6):
+        r.write_path(f"d1/old_{i}.txt", "".join(f"file {i} line {n}\n" for n in range(20)))
+    r.git("add", "-A")
+    r.git("commit", "-q", "-m", "base")
+    base = r.head()
+    r.branch("pr", base)
+    h0 = r.commit_path("d1/added_by_pr.txt", "added by the PR\n", "pr adds a file")
+    r.git("checkout", "-q", "main")
+    r.mkdir("d2")
+    for i in range(6):
+        r.git("mv", f"d1/old_{i}.txt", f"d2/new_{i}.txt")
+        r.write_path(f"d2/new_{i}.txt", "".join(f"file {i} line {n}\n" for n in range(20)) + "edited\n")
+    r.git("add", "-A")
+    r.git("commit", "-q", "-m", "main moves d1 to d2")
+    r.git("checkout", "-q", "pr")
+    r.git("-c", "merge.renameLimit=1", "-c", "diff.renameLimit=1", "merge", "-q", "--no-ff", "--no-edit", "main")
+    return r, h0, r.head()
 
 
 class RepoFacts(pps.GitHubFacts):
@@ -1088,17 +1129,17 @@ class CarryTests(unittest.TestCase):
         low_grok = record(self.h0, seat="grok-4.7", vendor="xai", score=5)
         self.assertEqual(self.refused(self.h1, [low_grok, record(self.h0)]), f"{self.h0[:7]}: grok-4.7 scored 5")
 
-    def test_a_carry_passes_only_when_the_records_that_carry_pass(self):
-        # GRE-1859 round 2: a cursor-auto source whose anthropic record is wrapped passes on itself,
-        # but without the wrapped record the pair is incomplete, so nothing carries.
+    def test_a_wrapped_record_completes_no_cursor_auto_pair(self):
+        # GRE-1859 rounds 2 and 3: a wrapped record counts toward no pass, so a cursor-auto head whose
+        # anthropic record is wrapped fails on itself (main passes it), and nothing carries from it.
         line = (f"pp-score head={self.h0} seat=claude-opus-5-5 vendor=anthropic score=9 author=cursor-auto "
                 "obstacles=none")
         comments = [comment(f"`{line}`"), comment(line.replace("claude-opus-5-5 vendor=anthropic",
                                                                 "gpt-6.2-sol vendor=openai"))]
-        self.assertEqual(pps.plan_statuses(pps.read_comments(comments, pps.load_trust()))[0].state, "success")
-        self.assertEqual(self.refused(self.h1, comments),
-                         f"{self.h0[:7]} did not pass without its Grok and wrapped records: "
-                         "cursor-auto requires anthropic and openai scores; missing anthropic")
+        missing = "cursor-auto requires anthropic and openai scores; missing anthropic"
+        (plan,) = pps.plan_statuses(pps.read_comments(comments, pps.load_trust()))
+        self.assertEqual((plan.state, plan.description), ("failure", missing))
+        self.assertEqual(self.refused(self.h1, comments), f"{self.h0[:7]} did not pass: {missing}")
 
     def test_a_record_with_a_wrong_author_family_never_carries(self):
         # The seat is the author's own family.
@@ -1431,10 +1472,88 @@ class CarryLimitTests(unittest.TestCase):
         subprocess.run(["git", "-C", clone, "remote", "set-url", "origin", clone + "-missing"],
                        check=True, env=c.r.env, capture_output=True)
         git = pps.LocalGit(clone)
-        self.assertEqual(git._git("rev-parse", "--is-shallow-repository").stdout.strip(), "true")
+        self.assertEqual(git._in_clone("rev-parse", "--is-shallow-repository").stdout.strip(), "true")
         plan, why = carry_both(self, c.r, c.h2, [record(c.h0)], git=git)
         self.assertIsNone(plan)
         self.assertTrue(why.startswith("cannot verify carry: CalledProcessError"), why)
+
+
+class ConfigIsolationTests(unittest.TestCase):
+    """LocalGit reads no configuration it did not write (GRE-1859 round 3)."""
+
+    # Settings that change what plain git prints for these commands.
+    SETTINGS = {"merge.renameLimit": "1", "diff.renameLimit": "1", "diff.algorithm": "patience",
+                "merge.conflictStyle": "zdiff3", "diff.relative": "true", "diff.noprefix": "true",
+                "diff.mnemonicPrefix": "true", "diff.external": "true", "diff.renames": "copies",
+                "diff.ignoreSubmodules": "all", "diff.context": "0", "diff.interHunkContext": "9",
+                "diff.indentHeuristic": "false", "diff.suppressBlankEmpty": "true", "core.quotePath": "false",
+                "core.abbrev": "7", "color.ui": "always", "color.diff": "always", "log.showSignature": "true",
+                "log.decorate": "full", "merge.renames": "false", "merge.directoryRenames": "true",
+                "merge.renormalize": "true", "core.commitGraph": "true", "i18n.logOutputEncoding": "ISO-8859-1",
+                "core.autocrlf": "true", "core.eol": "crlf", "diff.dirstat": "files"}
+
+    def outputs(self, r, h0, h, side):
+        git = pps.LocalGit(r.path)
+        main = git.parents(h)[1]
+        (base,) = git.merge_bases(h0, main)
+        return (git.parents(h), git.first_parents(main, 50), git.tree(h), git.merge_bases(h0, main),
+                git.merge_tree(h0, main), git.merge_tree(h0, side), git.diff(base, h0), git.diff(main, h),
+                git.diff(base, side), git.changed(base, main), git.touched(h0, base, main),
+                merge_class.hop(RepoFacts(r, git=git), h, merge_class.load_classes()))
+
+    def test_no_setting_anywhere_changes_what_local_git_reads(self):
+        import os
+        import tempfile
+        from pathlib import Path
+
+        r, h0, h = rename_repo()
+        side = r.line("side", r.git("rev-parse", f"{h0}~1"), ("x.txt", "x\n"))
+        r.git("checkout", "-q", "pr")
+        clean = self.outputs(r, h0, h, side)
+        self.assertEqual(clean[-1], (None, "the merge of main had conflicts"))
+        home = Path(tempfile.mkdtemp(prefix="pp-home-"))
+        (home / "git").mkdir()
+        (home / "attributes").write_text("* binary merge=union -diff\n", encoding="utf-8")
+        (home / "order").write_text("d2/*\n", encoding="utf-8")
+        text = "".join(f"[{key.rsplit('.', 1)[0]}]\n\t{key.rsplit('.', 1)[1]} = {value}\n"
+                       for key, value in {**self.SETTINGS, "core.attributesFile": str(home / "attributes"),
+                                          "diff.orderFile": str(home / "order")}.items())
+        for name in (".gitconfig", "git/config", "include.cfg"):
+            (home / name).write_text(text, encoding="utf-8")
+        local = Path(r.path, ".git", "config")
+        local.write_text(local.read_text(encoding="utf-8") + text + f"[include]\n\tpath = {home / 'include.cfg'}\n",
+                         encoding="utf-8")
+        Path(r.path, ".git", "info").mkdir(exist_ok=True)
+        Path(r.path, ".git", "info", "attributes").write_text("* binary merge=union -diff\n", encoding="utf-8")
+        # The settings are live: plain git in the clone now merges the rename cleanly.
+        self.assertEqual(r.git("merge-tree", "--write-tree", h0, "main", check=False).count("CONFLICT"), 0)
+        env = {"HOME": str(home), "XDG_CONFIG_HOME": str(home), "GIT_DIFF_OPTS": "-u0",
+               "GIT_EXTERNAL_DIFF": "true", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "merge.renameLimit",
+               "GIT_CONFIG_VALUE_0": "1", "GIT_CONFIG_PARAMETERS": "'diff.relative'='true'"}
+        with mock.patch.dict(os.environ, env):
+            os.environ.pop("GIT_CONFIG_GLOBAL", None)
+            self.assertEqual(self.outputs(r, h0, h, side), clean)
+
+
+class PartialCloneTests(unittest.TestCase):
+    def test_a_blob_none_clone_fetches_blobs_into_the_scratch_directory(self):
+        # The workflow's clone has no blobs. The scratch directory fetches the ones a carry reads
+        # from the clone's remote, and the carry decides as on a full clone.
+        import subprocess
+
+        CarryTests.setUpClass()
+        c = CarryTests
+        c.r.git("config", "uploadpack.allowFilter", "true")
+        clone = c.r.path + "-partial"
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{c.r.path}", clone],
+                       check=True, env=c.r.env, capture_output=True)
+        git = pps.LocalGit(clone)
+        missing = subprocess.run(["git", "-C", clone, "rev-list", "--objects", "--missing=print", "--all"],
+                                 env=c.r.env, capture_output=True, text=True, check=True).stdout
+        self.assertIn("?", missing)
+        self.assertEqual(merge_class.hop(RepoFacts(c.r, git=git), c.h1, merge_class.load_classes()),
+                         (c.h0, "clean merge of main"))
+        self.assertEqual(git.diff(c.m1, c.h1), pps.LocalGit(c.r.path).diff(c.m1, c.h1))
 
 
 class CommentModeOrderTests(unittest.TestCase):

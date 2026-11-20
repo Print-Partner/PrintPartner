@@ -228,7 +228,10 @@ export function SourceRows({
         : { kind: "idle" },
   );
   const sending = useRef(false);
-  const busy = phase.kind === "uploading" || phase.kind === "importing";
+  // Busy while this tab's map holds a job for the Source, the fact the files panel reads,
+  // or while this row's own send is unanswered. A job learned from another tab counts at
+  // once, before its first status read.
+  const busy = jobId != null || phase.kind === "uploading" || phase.kind === "importing";
 
   // A job that left the map while this row still showed it running was ended by another
   // tab, which read its result. Stop showing it and read the Source again.
@@ -239,8 +242,8 @@ export function SourceRows({
     if (previous && !jobId) {
       setPhase((current) => (current.kind === "importing" ? { kind: "idle" } : current));
       void client.invalidateQueries({ queryKey: ["core", "sources"] });
-    } else if (previous && jobId && jobId !== previous) {
-      // Another tab's newer job replaced this one: follow it as running.
+    } else if (jobId && jobId !== previous) {
+      // A job started or replaced by another tab: show it as running.
       setPhase({ kind: "importing", progress: null });
     }
   }, [jobId, client]);

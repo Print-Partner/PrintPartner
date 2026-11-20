@@ -167,10 +167,19 @@ function scriptedCore({
     if (path === "/api/v1/jobs/sync") return json({ job_id: `sync-${sent.length}` }, 202);
     return json({ detail: "not found" }, 404);
   };
-  const fetchMock = vi.fn((path: string, init?: RequestInit) =>
-    Promise.resolve(!init?.method || init.method === "GET" ? read(path) : write(path, init)),
-  );
-  return { fetchMock, sent, hold };
+  // While held, every write is recorded at once and answered when released.
+  let gate: Promise<void> | null = null;
+  const holdWrites = () => {
+    let open = () => {};
+    gate = new Promise((resolve) => (open = resolve));
+    return () => open();
+  };
+  const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+    if (!init?.method || init.method === "GET") return Promise.resolve(read(path));
+    const answer = write(path, init);
+    return gate ? gate.then(() => answer) : Promise.resolve(answer);
+  });
+  return { fetchMock, sent, hold, holdWrites };
 }
 
 function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
@@ -536,6 +545,83 @@ describe("GRE-1867 fix round 3: storage that throws never loses a job this tab f
       const elsewhere = await filesFor(other.name);
       expect(await within(elsewhere).findByText(/is running/)).toBeTruthy();
       expect(within(elsewhere).queryByRole("button")).toBeNull();
+    },
+  );
+});
+
+/** The row's own Upload ZIP input or Sync button for `source`. */
+const rowControl = (source: Source) =>
+  (source.source_kind === "github"
+    ? screen.getByRole("button", { name: `Sync ${source.name}` })
+    : screen.getByLabelText(`Upload ZIP for ${source.name}`)) as HTMLInputElement;
+
+/** A press on the row control that ignores `disabled`, as a script or assistive tool might. */
+function forcePress(source: Source) {
+  const control = rowControl(source);
+  if (source.source_kind === "github")
+    control.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  else fireEvent.change(control, { target: { files: [zipFile()] } });
+}
+
+const ENDS = CASES.flatMap(([what, kind]) => [
+  [what, "its failed answer", kind] as const,
+  [what, "another tab ending it", kind] as const,
+]);
+
+describe("GRE-1867 fix round 4: a Source with a job in this tab's map is busy on its row too", () => {
+  it.each(ENDS)(
+    "%s: a job learned from another tab disables the row at once, sends nothing on a forced press, and ends with %s",
+    async (_, end, { source, job }) => {
+      const core = scriptedCore({ sources: [ZIP, GITHUB] });
+      renderAt(`/library/${source.id}`, core);
+      const region = await filesFor(source.name);
+      await within(region).findByRole("button", { name: /^(Upload ZIP|Sync)$/ });
+      const answer = core.hold(job);
+      otherTabWrites({ [source.id]: job });
+      expect(await within(region).findByText(/is running/)).toBeTruthy();
+      expect(rowControl(source).disabled).toBe(true);
+      forcePress(source);
+      await act(async () => {});
+      expect(core.sent).toEqual([]);
+      if (end === "its failed answer") await act(async () => answer("error"));
+      else otherTabWrites({});
+      await waitFor(() => expect(rowControl(source).disabled).toBe(false));
+      expect(core.sent).toEqual([]);
+    },
+  );
+
+  it.each(CASES)(
+    "%s: a job found in storage at first render keeps the row disabled until it ends",
+    async (_, { source, job }) => {
+      const { core, answer } = await openRunning(source, job);
+      expect(rowControl(source).disabled).toBe(true);
+      forcePress(source);
+      await act(async () => {});
+      expect(core.sent).toEqual([]);
+      await act(async () => answer("error"));
+      await waitFor(() => expect(rowControl(source).disabled).toBe(false));
+    },
+  );
+
+  it.each(CASES)(
+    "%s: while this tab's own POST is in flight, the row and the panel send no second POST",
+    async (_, { source }) => {
+      const core = scriptedCore({ sources: [ZIP, GITHUB] });
+      const release = core.holdWrites();
+      renderAt(`/library/${source.id}`, core);
+      const region = await filesFor(source.name);
+      const action = source.source_kind === "github" ? "Sync" : "Upload ZIP";
+      fireEvent.click(await within(region).findByRole("button", { name: action }));
+      if (source.source_kind !== "github") forcePress(source);
+      await waitFor(() => expect(core.sent).toHaveLength(1));
+      forcePress(source);
+      fireEvent.click(within(region).getByRole("button", { name: action }));
+      expect(within(region).getByRole("status").textContent).toBe(
+        "This Source's row is busy. Its status is in the Sources table.",
+      );
+      await act(async () => release());
+      expect(await within(region).findByText(/is running/)).toBeTruthy();
+      expect(core.sent).toHaveLength(1);
     },
   );
 });

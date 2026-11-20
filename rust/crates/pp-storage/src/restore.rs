@@ -92,9 +92,12 @@ impl std::error::Error for Refusal {}
 
 /// A validated archive extracted beside the live installation.
 ///
-/// A stage lasts only as long as the [`WriterOwner`] that made it. The next
-/// open removes every stage, complete or not, because schema admission holds
-/// only for the build that ran it. After a restart the client uploads again.
+/// Only the [`WriterOwner`] that made a stage can activate it: the next open
+/// removes every stage, complete or not, because schema admission holds only
+/// for the build that ran it. Before that, a later completed stage replaces
+/// it, a successful activation uses it up, and an activation that fails after
+/// publishing its journal removes it; one that fails earlier leaves it. Once
+/// it is gone the client uploads again.
 #[derive(Debug, Clone)]
 pub struct Staged {
     /// 32 lowercase hex digits; the stage lives in `.pp-restore/staged-<id>`.
@@ -120,8 +123,9 @@ pub enum RestoreError {
     #[error("restore failed; the previous installation is kept")]
     RolledBack,
     /// An activation did not finish and could not roll back, or an earlier
-    /// one is still unfinished. Storage refuses work until a restart
-    /// replays the journal. The cause is logged.
+    /// one left its journal. A restart replays the journal. In the first
+    /// case storage refuses all work until then; in the second only
+    /// activation refuses. The cause is logged.
     #[error("restore did not finish; restart to recover")]
     RestartRequired,
     #[error(transparent)]
@@ -700,11 +704,13 @@ fn leftover(work: &pp_os::Dir, name: &str) -> Result<Option<Leftover>> {
     }
 }
 
-/// Clears an interrupted backup export and an interrupted stage. Runs at
-/// open, under the directory lock and after the ownership marker and both
-/// read-only schema preflights were admitted, before any client exists.
-/// Every entry is checked before anything is removed: only a regular file
-/// `incoming-<id>.tar.gz` and a real directory `staged-<id>` are removed. Any
+/// Clears an interrupted backup export, every stage, and an interrupted
+/// activation. Runs at open, under the directory lock and after the ownership
+/// marker and both read-only schema preflights were admitted, before any
+/// client exists. Every entry is checked before anything is removed. A
+/// journal is rolled back or finished first, through the copies it names.
+/// Then only a regular file `incoming-<id>.tar.gz` or `journal.json.tmp` and
+/// a real directory `staged-<id>` are removed, and `.pp-restore` itself. Any
 /// other entry, a link, a wrong type, or a `.pp-restore` that is not a real
 /// directory refuses the open without removing anything, because this build
 /// cannot tell whether it holds the only copy of an installation.

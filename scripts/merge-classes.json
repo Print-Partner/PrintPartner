@@ -81,7 +81,8 @@
     "qwen38-flash": "qwen",
     "longcat-2.5-free": "meituan",
     "hy4-flash-free": "tencent",
-    "gpt-6.2-astra": "openai"
+    "gpt-6.2-astra": "openai",
+    "gemini-4-neon-high": "google"
   },
   "pp_score_seats": {
     "gpt-6.1-sol": "openai",

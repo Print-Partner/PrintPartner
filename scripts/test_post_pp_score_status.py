@@ -1535,8 +1535,8 @@ class ConfigIsolationTests(unittest.TestCase):
             self.assertEqual(self.outputs(r, h0, h, side), clean)
 
 
-class ObjectStoreTests(unittest.TestCase):
-    """gemini-4-neon, round 4: a process acting on purpose in the clone's environment or object store."""
+class FetchIsolationTests(unittest.TestCase):
+    """gemini-4-neon, rounds 4 and 5: what the coordinator's own fetch can reach."""
 
     def test_a_read_never_fetches_or_runs_a_transport_program(self):
         # In a blob:none clone whose remote is ssh://fakehost, a GIT_SSH_COMMAND that appended
@@ -1569,50 +1569,32 @@ class ObjectStoreTests(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
         self.assertEqual(carry_both(self, r, h2, [record(h0)]), (None, f"{h[:7]}: the merge of main had conflicts"))
 
-    def forged_tip(self):
-        """h merges a side branch, not main, into h0. Returns (repo, h, tip, forged): forged is a
-        loose object stored under main's tip whose first parent is the side branch."""
-        import zlib
-
-        r = CarryRepo()
-        base = r.commit("a.txt", TEN, "base")
-        r.branch("pr", base)
-        h0 = r.commit("p.txt", "pr\n", "pr")
-        r.git("checkout", "-q", "main")
-        m1 = r.commit("b.txt", "b\n", "main 1")
-        side = r.line("side", m1, ("o.txt", "o\n"))
-        r.git("checkout", "-q", "main")
-        tip = r.commit("c.txt", "c\n", "main 2")
-        r.git("checkout", "-q", "pr")
-        h = r.merge(side)
-        self.assertEqual(merge_class.hop(RepoFacts(r), h, merge_class.load_classes()),
-                         (None, f"second parent {side[:7]} was never main's tip"))
-        body = r.git("cat-file", "commit", tip).encode() + b"\n"
-        body = body.replace(f"parent {m1}".encode(), f"parent {side}".encode())
-        return r, h, tip, zlib.compress(b"commit %d\0" % len(body) + body)
-
-    def test_a_forged_commit_fails_verification(self):
+    def test_a_fetch_never_touches_the_directory_later_reads_use(self):
+        # Round 5: a program run by the coordinator's own fetch could find the scratch directory under
+        # TMPDIR and plant objects in it. Every fetch drops it, so later reads use a new directory
+        # made after the fetch. Here the clone lacks main's new tip, so on_main fetches it.
         import os
         import subprocess
         import tempfile
-        from pathlib import Path
 
-        r, h, tip, forged = self.forged_tip()
-        # (d) An alternate listed before the real store holds the forged tip.
-        clone, other = tempfile.mkdtemp(prefix="pp-shared-"), Path(tempfile.mkdtemp(prefix="pp-forged-"))
-        subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", r.path, clone], check=True, env=r.env)
-        (other / tip[:2]).mkdir()
-        (other / tip[:2] / tip[2:]).write_bytes(forged)
-        alternates = Path(clone, ".git", "objects", "info", "alternates")
-        alternates.write_text(f"{other}\n" + alternates.read_text(encoding="utf-8"), encoding="utf-8")
-        # (a) The tip's own loose object in the clone holding main is replaced.
-        loose = Path(r.path, ".git", "objects", tip[:2], tip[2:])
-        os.chmod(loose, 0o644)
-        for where in (clone, r.path):
-            if where == r.path:
-                loose.write_bytes(forged)
-            with self.subTest(where=where), self.assertRaisesRegex(merge_class.CarryError, "failed verification"):
-                merge_class.hop(RepoFacts(r, git=pps.LocalGit(where)), h, merge_class.load_classes())
+        CarryTests.setUpClass()
+        c = CarryTests
+        clone = tempfile.mkdtemp(prefix="pp-behind-")
+        subprocess.run(["git", "clone", "-q", "--no-checkout", c.r.path, clone], check=True, env=c.r.env)
+        c.r.git("checkout", "-q", "main")
+        c.r.commit("d.txt", "d\n", "main moves on")
+        seen, script, private = os.path.join(clone, "seen"), os.path.join(clone, "fake-ssh"), tempfile.mkdtemp()
+        with open(script, "w", encoding="utf-8") as out:
+            out.write(f'#!/bin/sh\nfor d in {private}/pp-carry-git-*; do echo "$d" >> {seen}; '
+                      'echo planted > "$d/objects/planted"; done\nshift\nexec sh -c "$*"\n')
+        os.chmod(script, 0o755)
+        c.r.git("-C", clone, "remote", "set-url", "origin", f"ssh://fakehost{c.r.path}")
+        git = pps.LocalGit(clone)
+        with mock.patch.dict(os.environ, {"GIT_SSH_COMMAND": script}), mock.patch.object(tempfile, "tempdir", private):
+            self.assertEqual(carry_both(self, c.r, c.h2, [record(c.h0)], git=git)[1], f"carried from {c.h0[:7]}")
+        planted = set(open(seen, encoding="utf-8").read().split())
+        self.assertTrue(planted)
+        self.assertNotIn(str(git._scratch[0]), planted)
 
 
 class CommentModeOrderTests(unittest.TestCase):

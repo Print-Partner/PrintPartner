@@ -1112,6 +1112,23 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             with self.subTest(comments=comments):
                 self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
 
+    CARRY_SEATS = (("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu"))
+
+    @staticmethod
+    def carry_api(repo, main_ref, head, conclusion="success"):
+        """GitHub's answers for a carry to head: main's tip, and one required check on head."""
+        return {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": repo.git("rev-parse", main_ref)}},
+                "repos/{owner}/{repo}/rules/branches/main": [{"type": "required_status_checks", "parameters": {
+                    "required_status_checks": [{"context": "rust (linux)"}]}}],
+                f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?": {
+                    "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": conclusion}]}}
+
+    @staticmethod
+    def git_at(path):
+        """Runs the guard's git commands for real: clone commands in path, scratch ones as given."""
+        run = subprocess.run
+        return lambda command, **kw: run(command, **{**kw, "cwd": path if str(kw["cwd"]) == "/coordinator" else kw["cwd"]})
+
     def test_a_carried_score_merges_only_through_the_shared_carry(self):
         # Two vendors on h0, and h1 a clean merge of main: the guard carries through
         # merge_class.sensitive_scores, the decision the pp/score status uses, on real git.
@@ -1119,21 +1136,11 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
         status_tests.CarryTests.setUpClass()
         c = status_tests.CarryTests
-        seats = (("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu"))
-        comments = self.scores(head=c.h0, seats=seats, author_vendor="anthropic")
-        run = subprocess.run
-
-        def git(command, **kwargs):
-            # Clone commands run in the repo; scratch commands keep their own cwd and environment.
-            return run(command, **{**kwargs, "cwd": c.r.path if str(kwargs["cwd"]) == "/coordinator" else kwargs["cwd"]})
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        git = self.git_at(c.r.path)
 
         def checks(conclusion):
-            return {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": c.r.git("rev-parse", "main")}},
-                    "repos/{owner}/{repo}/rules/branches/main": [
-                        {"type": "required_status_checks",
-                         "parameters": {"required_status_checks": [{"context": "rust (linux)"}]}}],
-                    f"repos/{{owner}}/{{repo}}/commits/{c.h1}/check-runs?": {
-                        "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": conclusion}]}}
+            return self.carry_api(c.r, "main", c.h1, conclusion)
 
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.h1, git=git,
                                      api=checks("success")))
@@ -1162,19 +1169,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         c = status_tests.CarryTests
         sub = os.path.join(c.r.path, "sub")
         os.makedirs(sub)
-        comments = self.scores(head=c.h0, seats=(("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu")),
-                               author_vendor="anthropic")
-        api = {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": c.r.git("rev-parse", "main-hunk")}},
-               "repos/{owner}/{repo}/rules/branches/main": [
-                   {"type": "required_status_checks",
-                    "parameters": {"required_status_checks": [{"context": "rust (linux)"}]}}],
-               f"repos/{{owner}}/{{repo}}/commits/{c.hunk}/check-runs?": {
-                   "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": "success"}]}}
-        run = subprocess.run
-
-        def git_in_sub(command, **kwargs):
-            # The guard's own environment and flags, from a subdirectory of the worktree.
-            return run(command, **{**kwargs, "cwd": sub if str(kwargs["cwd"]) == "/coordinator" else kwargs["cwd"]})
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git_in_sub = self.carry_api(c.r, "main-hunk", c.hunk), self.git_at(sub)
 
         expected = f"{c.hunk[:7]}: the PR's own diff changed"
         for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
@@ -1195,28 +1191,18 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         # gemini-4-neon, round 3: main renamed d1/ to d2/ with edits, the PR added d1/added_by_pr.txt,
         # and the PR's merge commit was made with merge.renameLimit=1, so it skipped the directory
         # rename. With Git's defaults that merge conflicts. A renameLimit in the clone's config, in an
-        # included file, or in a HOME or XDG config once let the guard carry it.
+        # included file, or in a HOME, XDG or system config once let the guard carry it.
         import tempfile
 
         import test_post_pp_score_status as status_tests
 
         r, h0, h = status_tests.rename_repo()
-        comments = self.scores(head=h0, seats=(("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu")),
-                               author_vendor="anthropic")
-        api = {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": r.git("rev-parse", "main")}},
-               "repos/{owner}/{repo}/rules/branches/main": [
-                   {"type": "required_status_checks",
-                    "parameters": {"required_status_checks": [{"context": "rust (linux)"}]}}],
-               f"repos/{{owner}}/{{repo}}/commits/{h}/check-runs?": {
-                   "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": "success"}]}}
-        run = subprocess.run
-
-        def git(command, **kwargs):
-            return run(command, **{**kwargs, "cwd": r.path if str(kwargs["cwd"]) == "/coordinator" else kwargs["cwd"]})
+        comments = self.scores(head=h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git, run = self.carry_api(r, "main", h), self.git_at(r.path), subprocess.run
 
         home = tempfile.mkdtemp(prefix="pp-home-")
         os.makedirs(os.path.join(home, "git"))
-        for name in (".gitconfig", "git/config"):
+        for name in (".gitconfig", "git/config", "system.cfg"):
             Path(home, name).write_text("[merge]\n\trenameLimit = 1\n", encoding="utf-8")
         include = Path(home, "include.cfg")
         include.write_text("[diff]\n\trenameLimit = 1\n", encoding="utf-8")
@@ -1225,7 +1211,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                                            git=git, api=api))
         for name, config, env in (("local merge.renameLimit", ("merge.renameLimit", "1"), {}),
                                   ("included diff.renameLimit", ("include.path", str(include)), {}),
-                                  ("HOME and XDG config", None, {"HOME": home, "XDG_CONFIG_HOME": home})):
+                                  ("HOME and XDG config", None, {"HOME": home, "XDG_CONFIG_HOME": home}),
+                                  ("system config", None, {"GIT_CONFIG_SYSTEM": str(Path(home, "system.cfg"))})):
             with self.subTest(name):
                 if config:
                     r.git("config", *config)
@@ -1233,7 +1220,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                     with patch.dict(os.environ, env):
                         # The setting is live: plain git in the clone merges cleanly with it.
                         plain = run(["git", "merge-tree", "--write-tree", h0, "main"], cwd=r.path, capture_output=True,
-                                    env={k: v for k, v in os.environ.items() if k != "GIT_CONFIG_GLOBAL"})
+                                    env={k: v for k, v in os.environ.items()
+                                         if k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")})
                         self.assertEqual(plain.returncode, 0, plain.stdout)
                         self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h, git=git,
                                                            api=api))

@@ -132,19 +132,28 @@ So the guard never accepts a carry that the status refuses, and when it accepts 
 
 ### Git settings the carry ignores
 
-`LocalGit` in `scripts/merge_class.py` reads no Git configuration it did not write. The commands a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff`, `log` and `cat-file`) run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. Before each command it rewrites that directory's config, `HEAD` and `objects/info/alternates`. The directory has no refs, grafts, attributes or remote, and its config turns off the commit-graph and the multi-pack-index. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every other `GIT_*` variable dropped, and with `--no-replace-objects`. So no command fetches, and none runs a program named by the environment or a config. The commands keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. The status and the guard therefore read the same Git defaults. A test writes 28 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
-
-Every commit a decision relies on is read with one `git cat-file --batch` and hashed in Python against its name: the head, its parents, the merge base, and each commit on `main`'s first-parent walk, whose links are checked too. A mismatch refuses (`object store failed verification`). Trees and blobs are not checked; that would be a full `fsck`. On `main`'s real history (1,468 first-parent commits) the check adds about 0.1 seconds.
+`LocalGit` in `scripts/merge_class.py` reads no Git configuration it did not write. The commands a carry decides from (`rev-list`, `rev-parse`, `merge-base`, `merge-tree`, `diff` and `log`) run in a scratch Git directory that it creates under `TMPDIR` and leaves in place. Before each command it rewrites that directory's config, `HEAD` and `objects/info/alternates`. The directory has no refs, grafts, attributes or remote, and its config turns off the commit-graph and the multi-pack-index. Each command runs with system and global config off (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`), with `HOME` and `XDG_CONFIG_HOME` set to the scratch directory, with every other `GIT_*` variable dropped, and with `--no-replace-objects`. So no command fetches, and none runs a program named by the environment or a config. The commands keep explicit flags: `--no-relative`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--ignore-submodules=none`, `--full-index` and `-z`. The status and the guard therefore read the same Git defaults. A test writes 28 settings into local, included, `HOME` and XDG config and sets `GIT_CONFIG_*` variables, and checks that every `LocalGit` output is byte-identical.
 
 Tracked `.gitattributes` in the merged trees cannot apply. The scratch directory has no worktree, index or `HEAD` tree to read them from, merge drivers act only on paths both sides changed (which condition 6 refuses), and diff drivers are off.
 
-Only `ensure` runs in the clone, with the clone's configuration and transport variables, to fetch whole commits by full SHA. That can change only where objects come from, and Git checks each fetched object against its hash. A clone that lacks a blob a read needs (a `blob:none` clone) refuses rather than fetching it.
+Only `ensure` runs in the clone, with the clone's configuration and transport variables, to fetch whole commits by full SHA. A fetch drops the scratch directory, so every later read uses a new one made after the fetch. A clone that lacks a blob a read needs (a `blob:none` clone) refuses rather than fetching it.
 
 ### What the guard defends against
 
-The carry check defends against state that ordinary Git commands can set, by accident or on purpose. That includes settings, includes, refs, replace refs, grafts, attributes, the commit-graph and the multi-pack-index in the shared `.git` directory, global and system config, the merge command's environment and working directory, and forged commit objects. The tests in `scripts/test_post_pp_score_status.py` and `scripts/test_agent_guard.py` cover config in every place, the environment, the working directory, replace refs and grafts, and forged loose and alternate commit objects; the other items rest on the scratch directory's design and an outside adversarial check.
+In scope is state that ordinary Git commands or environment variables can set, by accident or on purpose:
 
-It does not defend against a process running as the coordinator's user that forges tree or blob objects in the shared object store, replaces the `git` binary, or edits the coordinator checkout's own files, which include the guard itself. Score records posted with the scorer account's token are the other gap (GRE-1408).
+- Settings in the shared `.git/config`, its includes, global, XDG and system config. Tests: `test_no_git_configuration_reaches_the_carry` (local, included, `HOME`/XDG and `GIT_CONFIG_SYSTEM`) and `test_no_setting_anywhere_changes_what_local_git_reads` (28 settings).
+- The merge command's environment and working directory. Tests: `test_git_config_env_and_cwd_cannot_change_what_the_carry_sees`, `test_both_decide_the_same_from_a_subdirectory_with_diff_relative`, and `test_a_read_never_fetches_or_runs_a_transport_program`.
+- Replace refs and grafts. Test: `test_replace_refs_and_grafts_do_not_change_the_parents`.
+- `info/attributes`. Covered by the 28-setting test.
+- Other refs, the commit-graph and the multi-pack-index: by design (the scratch directory has no refs, and both indexes are off), not tested.
+
+Out of scope:
+
+- Forged objects of any kind (commits, trees, blobs or pack indexes) in the shared object store, its alternates or the scratch directory.
+- A transport program named by the environment or the clone's config. The coordinator's own fetch runs it, so it is code execution as the coordinator.
+- A replaced `git` binary, and edits to the coordinator checkout's own files, which include the guard.
+- Score records posted with the scorer account's token (GRE-1408).
 
 When the current head has no records and no carry, the workflow posts `pp/score=failure` (`no score and no carry: <reason>`), which replaces an earlier carried success. The `merge_group` run decides every carry again, so a newer failing record on H0 or a failing check on H fails the queue entry. If the run cannot read the PR's current head, it posts the statuses for heads with records, posts nothing on the unknown head, and exits 1. That head keeps its last `pp/score`. Every merge goes through the merge queue, whose run decides the carry again.
 

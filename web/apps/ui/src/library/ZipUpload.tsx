@@ -89,44 +89,54 @@ function uploadFailure(error: unknown): string {
   return `${message} It was not sent again.`;
 }
 
+function sameJobs(a: JobMap, b: JobMap): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+}
+
 export function useLibraryJobs() {
   const [jobs, setJobs] = useState(readJobs);
   const [refusals, setRefusals] = useState<Record<string, string>>({});
-  const remember = useCallback((sourceId: number, jobId: string) => {
-    const next = { ...readJobs(), [String(sourceId)]: jobId };
-    writeJobs(next);
-    setJobs(next);
-    setRefusals((current) => {
-      if (!(String(sourceId) in current)) return current;
-      const rest = { ...current };
-      delete rest[String(sourceId)];
-      return rest;
-    });
+  // The one place this tab's map changes: it takes the map just written or read from
+  // storage, so it is never staler than storage after its own start, its own end of a
+  // job, or another tab's write.
+  const adopt = useCallback((stored: JobMap) => {
+    setJobs((current) => (sameJobs(current, stored) ? current : stored));
   }, []);
-  // Ends `jobId` only. A newer job for the same Source, in storage or in this tab, stays.
-  // This tab's map is updated even when another tab already removed the stored entry.
-  const forget = useCallback((sourceId: number, jobId: string) => {
-    const key = String(sourceId);
-    const stored = readJobs();
-    if (stored[key] === jobId) {
-      delete stored[key];
-      writeJobs(stored);
-    }
-    setJobs((current) => {
-      if (current[key] !== jobId) return current;
-      const rest = { ...current };
-      delete rest[key];
-      return rest;
-    });
-  }, []);
+  const remember = useCallback(
+    (sourceId: number, jobId: string) => {
+      const next = { ...readJobs(), [String(sourceId)]: jobId };
+      writeJobs(next);
+      adopt(next);
+      setRefusals((current) => {
+        if (!(String(sourceId) in current)) return current;
+        const rest = { ...current };
+        delete rest[String(sourceId)];
+        return rest;
+      });
+    },
+    [adopt],
+  );
+  // Ends `jobId` only. A newer job stored for the same Source is kept and followed.
+  const forget = useCallback(
+    (sourceId: number, jobId: string) => {
+      const stored = readJobs();
+      if (stored[String(sourceId)] === jobId) {
+        delete stored[String(sourceId)];
+        writeJobs(stored);
+      }
+      adopt(stored);
+    },
+    [adopt],
+  );
   // Another tab that starts, replaces or ends a job writes the shared map; follow it here.
   useEffect(() => {
     const follow = (event: StorageEvent) => {
-      if (event.key === null || event.key === JOBS_KEY) setJobs(readJobs());
+      if (event.key === null || event.key === JOBS_KEY) adopt(readJobs());
     };
     window.addEventListener("storage", follow);
     return () => window.removeEventListener("storage", follow);
-  }, []);
+  }, [adopt]);
   const refuse = useCallback((sourceId: number, message: string) => {
     setRefusals((current) => ({ ...current, [String(sourceId)]: message }));
   }, []);
@@ -210,6 +220,9 @@ export function SourceRows({
     if (previous && !jobId) {
       setPhase((current) => (current.kind === "importing" ? { kind: "idle" } : current));
       void client.invalidateQueries({ queryKey: ["core", "sources"] });
+    } else if (previous && jobId && jobId !== previous) {
+      // Another tab's newer job replaced this one: follow it as running.
+      setPhase({ kind: "importing", progress: null });
     }
   }, [jobId, client]);
 

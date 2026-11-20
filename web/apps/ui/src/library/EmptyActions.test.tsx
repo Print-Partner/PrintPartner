@@ -454,6 +454,26 @@ describe("GRE-1867 fix round 1: the files panel follows a remembered job that en
   );
 
   it.each(CASES)(
+    "a newer %s already stored, with no storage event yet, keeps the panel running when the older one fails late",
+    async (_, { source, job, action }) => {
+      const { core, region, answer } = await openRunning(source, job);
+      const answerNewer = core.hold(`${job}-newer`);
+      localStorage.setItem(JOBS_KEY, JSON.stringify({ [source.id]: `${job}-newer` }));
+      await act(async () => answer("error"));
+      expect(within(region).getByText(/is running/)).toBeTruthy();
+      expect(within(region).queryByRole("button", { name: action })).toBeNull();
+      await waitFor(() =>
+        expect(core.fetchMock.mock.calls.map(([path]) => path)).toContain(
+          `/api/v1/jobs/${job}-newer`,
+        ),
+      );
+      await act(async () => answerNewer("error"));
+      expect(await within(region).findByRole("button", { name: action })).toBeTruthy();
+      expect(core.sent).toEqual([]);
+    },
+  );
+
+  it.each(CASES)(
     "a storage event for another Source leaves the panel for the %s as it was",
     async (_, { source, other, job, action }) => {
       const { region } = await openRunning(source, job, { [other.id]: "other-1" });

@@ -13,6 +13,17 @@ import sys
 WORKAROUND_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
                          ".rs", ".py", ".sh", ".yml", ".yaml", ".css", ".html")
 
+# `rust (windows tests)` (GRE-1811) runs for every change except one limited to docs/,
+# root Markdown, or .github files other than its own workflow and the zizmor config.
+# Over-selection is intended: a new input cannot be forgotten.
+WINDOWS_TEST_GITHUB_INPUTS = {".github/workflows/rust-cross-os.yml", ".github/zizmor.yml"}
+
+
+def windows_tests_relevant(path):
+    if path.startswith("docs/") or ("/" not in path and path.endswith(".md")):
+        return False
+    return not path.startswith(".github/") or path in WINDOWS_TEST_GITHUB_INPUTS
+
 
 def relevant(path, kind):
     # A filter change must test its own consumers.
@@ -20,6 +31,8 @@ def relevant(path, kind):
                 "scripts/ci-affected-nextest-filter.py",
                 "scripts/test_ci_affected_nextest_filter.py"}:
         return True
+    if kind == "windows-tests":
+        return windows_tests_relevant(path)
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
@@ -83,19 +96,24 @@ def select(event, base, head, kind, labels=()):
         ).decode("utf-8", errors="surrogateescape").split("\0")
     except subprocess.CalledProcessError:
         return True
-    return any(relevant(path, kind) for path in paths if path)
+    paths = [path for path in paths if path]
+    # An empty diff cannot show that the Windows test inputs are unchanged.
+    if kind == "windows-tests" and not paths:
+        return True
+    return any(relevant(path, kind) for path in paths)
 
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "actions", "windows", "macos", "ui", "web"}:
-        raise SystemExit("Expected rust, actions, windows, macos, ui or web")
+    if kind not in {"rust", "actions", "windows", "windows-tests", "macos", "ui", "web"}:
+        raise SystemExit("Expected rust, actions, windows, windows-tests, macos, ui or web")
     labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
                        os.environ.get("HEAD_SHA"), kind, labels)).lower()
     message = f"{kind} inputs changed: {value}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"{kind if kind in {'windows', 'macos'} else 'relevant'}={value}\n")
+        key = {"windows": "windows", "macos": "macos", "windows-tests": "windows_tests"}.get(kind, "relevant")
+        output.write(f"{key}={value}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)

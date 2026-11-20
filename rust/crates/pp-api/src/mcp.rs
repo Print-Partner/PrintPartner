@@ -7,8 +7,9 @@
 //! the listener exactly. A request with a valid key then counts against
 //! MCP's shared budget of 1000 a minute, Node's limit; one without counts
 //! against its peer's own bucket, and a peer that used up its bucket is
-//! refused before its key is checked (`mcp/rate_limit.rs`). Write tools only
-//! propose; `confirm_apply` applies.
+//! refused before its key is checked (`mcp/rate_limit.rs`). A session answers
+//! only the key that opened it; any other key gets `404` for it
+//! (`mcp/session_keys.rs`). Write tools only propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
 //! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
 //! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
@@ -146,6 +147,7 @@ struct Guard {
     admission: Arc<Semaphore>,
     budget: Arc<rate_limit::Budget>,
     failures: Arc<rate_limit::PeerBudgets>,
+    sessions: Arc<session_keys::SessionKeys>,
 }
 
 /// The clients ported tools use: `get_build_workflow` reads the same client as
@@ -237,9 +239,10 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
     let rule = rate_limit::Rule::new(config.limit, config.window);
     #[cfg(test)]
     let rule = rule.with_clock(config.clock.clone());
+    let sessions = Arc::new(LocalSessionManager::default());
     let service = StreamableHttpService::new(
         move || Ok(ProductMcp::new(reads.clone())),
-        Arc::new(LocalSessionManager::default()),
+        sessions.clone(),
         transport,
     );
     Router::new()
@@ -249,6 +252,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
             Guard {
                 budget: Arc::new(rate_limit::Budget::new(rule.clone())),
                 failures: Arc::new(rate_limit::PeerBudgets::new(rule)),
+                sessions: Arc::new(session_keys::SessionKeys::new(sessions)),
                 config,
                 auth,
                 admission: Arc::new(Semaphore::new(ADMISSION_PERMITS)),
@@ -330,6 +334,7 @@ async fn guard(
         admission,
         budget,
         failures,
+        sessions,
     }): axum::extract::State<Guard>,
     mut request: axum::extract::Request,
     next: Next,
@@ -357,10 +362,23 @@ async fn guard(
             if let Some(refused) = quota.rejection() {
                 return refused;
             }
-            // rmcp copies the request parts into each handler's context.
-            request.extensions_mut().insert(key);
-            request.extensions_mut().insert(presented);
-            let mut response = next.run(request).await;
+            let named = session_keys::named(request.headers());
+            let deleting = request.method() == axum::http::Method::DELETE;
+            let key_id = key.key_id.clone();
+            let mut response = match &named {
+                Some(id) if !sessions.opened_by(id, &key_id) => session_keys::not_found(),
+                _ => {
+                    // rmcp copies the request parts into each handler's context.
+                    request.extensions_mut().insert(key);
+                    request.extensions_mut().insert(presented);
+                    next.run(request).await
+                }
+            };
+            match (named, session_keys::named(response.headers())) {
+                (None, Some(opened)) => sessions.bind(opened, key_id).await,
+                (Some(id), _) if deleting && response.status().is_success() => sessions.forget(&id),
+                _ => {}
+            }
             quota.apply(&mut response);
             response
         }
@@ -677,6 +695,8 @@ mod reads;
 mod rebuild_plan;
 #[path = "mcp/role_filament.rs"]
 mod role_filament;
+#[path = "mcp/session_keys.rs"]
+mod session_keys;
 #[path = "mcp/source_roles.rs"]
 mod source_roles;
 #[path = "mcp/write_result.rs"]

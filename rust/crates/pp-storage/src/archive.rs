@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
 };
 use tar::{EntryType, Header, HeaderMode};
@@ -663,26 +663,29 @@ pub fn validate(archive: &Path, limits: Limits) -> Result<Metadata> {
 /// [`validate`] with its extraction in `scratch`, a new directory this
 /// creates and removes.
 fn validate_in(archive: &Path, limits: Limits, scratch: &Path) -> Result<Metadata> {
-    let compressed = archive
-        .metadata()
-        .with_context(|| format!("Open backup archive {}", archive.display()))?
-        .len();
+    let source = open_archive(archive)?;
     pp_os::create_private_dir(scratch)?;
-    let result = validate_into(archive, compressed, limits, scratch, |_| false);
+    let result = pp_os::Dir::open(scratch)
+        .map_err(anyhow::Error::from)
+        .and_then(|into| validate_into(source, limits, (&into, scratch), |_| false));
     let _ = std::fs::remove_dir_all(scratch);
     Ok(result?.0)
+}
+
+fn open_archive(archive: &Path) -> Result<File> {
+    File::open(archive).with_context(|| format!("Open backup archive {}", archive.display()))
 }
 
 /// The decompressed bytes an archive's tar headers declare, read without
 /// extracting anything. Staging checks free space against it, then extracts
 /// with it as [`Limits::max_total_bytes`].
+/// `archive` is read from its start; its offset is shared with clones.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn declared_bytes(archive: &Path, limits: Limits) -> Result<u64> {
-    let compressed = archive
-        .metadata()
-        .with_context(|| format!("Open backup archive {}", archive.display()))?
-        .len();
-    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
+pub(crate) fn declared_bytes(archive: &File, limits: Limits) -> Result<u64> {
+    let mut archive = archive.try_clone()?;
+    archive.rewind()?;
+    let compressed = archive.metadata()?.len();
+    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(archive)));
     let mut tally = Tally::default();
     for entry in reader.entries()? {
         let entry = entry?;
@@ -736,17 +739,29 @@ impl Tally {
 }
 
 /// Validates like [`validate`] and writes every entry under `destination`,
-/// a new empty directory, for a whole-installation restore to stage. The
-/// entry guard admits only regular files and directories under the core
-/// files and declared roots, so nothing is written outside `destination`
-/// and no link is created.
+/// a new empty directory, for an import to stage. See [`extract_into`].
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn extract(archive: &Path, limits: Limits, destination: &Path) -> Result<Metadata> {
-    let compressed = archive
-        .metadata()
-        .with_context(|| format!("Open backup archive {}", archive.display()))?
-        .len();
-    Ok(validate_into(archive, compressed, limits, destination, |_| true)?.0)
+    let into = pp_os::Dir::open(destination)?;
+    extract_into(open_archive(archive)?, limits, (&into, destination))
+}
+
+/// Validates like [`validate`] and writes every entry under `destination`,
+/// a new empty directory opened as a handle, for a whole-installation
+/// restore to stage. The entry guard admits only regular files and
+/// directories under the core files and declared roots, and every entry is
+/// created relative to a handle opened without following a link, so nothing
+/// is written outside `destination` and no link is created or followed.
+/// `archive` is read from its start. The path names `destination` only for
+/// SQLite's integrity check; see [`same_directory`].
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn extract_into(
+    mut archive: File,
+    limits: Limits,
+    destination: (&pp_os::Dir, &Path),
+) -> Result<Metadata> {
+    archive.rewind()?;
+    Ok(validate_into(archive, limits, destination, |_| true)?.0)
 }
 
 /// Validates like [`validate`] and writes the database, its WAL and the
@@ -759,13 +774,13 @@ pub(crate) fn extract_documents(
     limits: Limits,
     destination: &Path,
 ) -> Result<(Metadata, BTreeSet<String>, BTreeSet<String>)> {
-    let compressed = archive
-        .metadata()
-        .with_context(|| format!("Open backup archive {}", archive.display()))?
-        .len();
-    validate_into(archive, compressed, limits, destination, |path| {
-        root_for(path).is_some_and(|(_, kind)| kind == RootKind::File)
-    })
+    let into = pp_os::Dir::open(destination)?;
+    validate_into(
+        open_archive(archive)?,
+        limits,
+        (&into, destination),
+        |path| root_for(path).is_some_and(|(_, kind)| kind == RootKind::File),
+    )
 }
 
 /// Checks what follows the tar end-of-archive block. Tar iteration stops at
@@ -803,16 +818,57 @@ fn check_stream_end(mut decoder: GzDecoder<BufReader<File>>) -> Result<()> {
     Ok(())
 }
 
+/// Checks that `path` names the directory `handle` holds: SQLite opens
+/// files by pathname, so a caller that wrote through the handle checks this
+/// before SQLite opens anything under `path`.
+pub(crate) fn same_directory(handle: &pp_os::Dir, path: &Path) -> Result<()> {
+    let moved = || {
+        format!(
+            "{} no longer names the directory being checked",
+            path.display()
+        )
+    };
+    let by_path = pp_os::status_nofollow(path).map_err(|error| anyhow!("{}: {error}", moved()))?;
+    ensure!(
+        by_path.is_dir() && by_path.identity() == handle.status()?.identity(),
+        moved()
+    );
+    Ok(())
+}
+
+/// Opens the directory `name` under `parent`, creating it when missing,
+/// without following a link.
+fn subdirectory(parent: &pp_os::Dir, name: &str) -> Result<pp_os::Dir> {
+    match parent.create_dir(name) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        result => result?,
+    }
+    Ok(parent.open_dir_nofollow(name)?)
+}
+
+/// Opens the directory that holds `path`, a checked entry path, under
+/// `root`, one handle per component, creating each missing directory on the
+/// way. Returns that handle and the final name.
+fn entry_parent<'a>(root: &pp_os::Dir, path: &'a str) -> Result<(pp_os::Dir, &'a str)> {
+    let mut parts = path.split('/');
+    let name = parts.next_back().unwrap_or(path);
+    let mut directory = root.try_clone()?;
+    for part in parts {
+        directory = subdirectory(&directory, part)?;
+    }
+    Ok((directory, name))
+}
+
 fn validate_into(
-    archive: &Path,
-    compressed: u64,
+    archive: File,
     limits: Limits,
-    scratch: &Path,
+    (scratch, scratch_path): (&pp_os::Dir, &Path),
     extract: fn(&str) -> bool,
 ) -> Result<(Metadata, BTreeSet<String>, BTreeSet<String>)> {
+    let compressed = archive.metadata()?.len();
     // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
     // and leaves anything after it there, so `check_stream_end` can see it.
-    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
+    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(archive)));
     let (mut seen, mut directories) = (BTreeSet::new(), BTreeSet::new());
     let mut tally = Tally::default();
     let mut metadata = None;
@@ -838,17 +894,12 @@ fn validate_into(
             metadata = Some(bytes);
         } else if entry_type == EntryType::Directory {
             if extract(&path) {
-                std::fs::create_dir_all(scratch.join(&path))?;
+                let (parent, name) = entry_parent(scratch, &path)?;
+                subdirectory(&parent, name)?;
             }
         } else if path == DATABASE_FILE || path == WAL_FILE || extract(&path) {
-            let target = scratch.join(&path);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut output = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(target)?;
+            let (parent, name) = entry_parent(scratch, &path)?;
+            let mut output = parent.open_file(name, pp_os::FileOpen::CreateWriteOnly)?;
             std::io::copy(&mut entry, &mut output)?;
         } else {
             std::io::copy(&mut entry, &mut std::io::sink())?;
@@ -870,9 +921,11 @@ fn validate_into(
             );
         }
     }
-    let database = scratch.join(DATABASE_FILE);
     let mut header = [0u8; 16];
-    match File::open(&database)?.read_exact(&mut header) {
+    match scratch
+        .open_file(DATABASE_FILE, pp_os::FileOpen::Read)?
+        .read_exact(&mut header)
+    {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {}
         Err(error) => return Err(error.into()),
@@ -881,6 +934,10 @@ fn validate_into(
         header == SQLITE_HEADER,
         "Backup contains an invalid SQLite database"
     );
+    // SQLite needs a pathname. It is checked against the handle first, so a
+    // directory swapped in after extraction is refused, not opened.
+    same_directory(scratch, scratch_path)?;
+    let database = scratch_path.join(DATABASE_FILE);
     let integrity = (|| -> rusqlite::Result<String> {
         let check = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         check.pragma_update(None, "query_only", true)?;

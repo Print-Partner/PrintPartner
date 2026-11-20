@@ -16,4 +16,4 @@ rules:
       # same commit as its caller; it holds no secrets and saves its cache only on main.
       - desktop-e2e.yml:29
       - desktop-webkit.yml:30
-      - rust-cross-os.yml:162
+      - rust-cross-os.yml:172

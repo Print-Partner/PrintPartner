@@ -12,7 +12,7 @@ fn little_free(_: &Path) -> std::io::Result<u64> {
     Ok(FREE_BYTES)
 }
 
-fn one_byte_short(archive: &Path, limits: archive::Limits) -> Result<u64> {
+fn one_byte_short(archive: &File, limits: archive::Limits) -> Result<u64> {
     Ok(archive::declared_bytes(archive, limits)? - 1)
 }
 
@@ -131,7 +131,11 @@ fn too_little_free_space_refuses_a_backup_and_a_stage_and_leaves_nothing() {
     assert!(work_entries(&root).is_empty());
 
     let backup = client.export_backup("test").unwrap();
-    let declared = archive::declared_bytes(&backup.path, archive::Limits::backup()).unwrap();
+    let declared = archive::declared_bytes(
+        &File::open(&backup.path).unwrap(),
+        archive::Limits::backup(),
+    )
+    .unwrap();
     assert!(declared > FREE_BYTES);
     let mut upload = client.begin_upload(backup.size_bytes).unwrap();
     upload.write(&std::fs::read(&backup.path).unwrap()).unwrap();
@@ -167,7 +171,11 @@ fn extraction_stops_before_writing_more_than_the_headers_declared() {
     let owner = open(&root).unwrap();
     let mut client = owner.installation().unwrap();
     let backup = client.export_backup("test").unwrap();
-    let declared = archive::declared_bytes(&backup.path, archive::Limits::backup()).unwrap();
+    let declared = archive::declared_bytes(
+        &File::open(&backup.path).unwrap(),
+        archive::Limits::backup(),
+    )
+    .unwrap();
     let live = state(&root);
     client.sizing.declared_bytes = one_byte_short;
     let error = stage(&client, &backup.path).unwrap_err();

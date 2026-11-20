@@ -49,6 +49,7 @@ Transition for lanes: after merging main, rerun the rust-client generator. Do no
 | `GET /api/v2/plans` | | `ProfileList` |
 | `GET /api/v2/plans/{id}` | | `ProfileSummary` |
 | `GET /api/v2/plans/{id}/layers` | | `ProfileLayers` |
+| `PUT /api/v2/plans/{id}/layers/base` (`setBuildBase`) | `SourceAttachmentRequest` | `ProfileLayers` |
 | `GET /api/v2/plans/{id}/drafts` | | `DraftList` |
 | `GET /api/v2/plans/{id}/drafts/{draft_id}` | | `DraftWorkspace` |
 | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | | `DraftAcceptPreview` |

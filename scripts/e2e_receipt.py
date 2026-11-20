@@ -38,31 +38,53 @@ class ReceiptError(Exception):
     """The report or the receipt is not consistent; no receipt is written."""
 
 
-def walk_tests(suite):
-    for spec in suite.get("specs") or []:
-        for test in spec.get("tests") or []:
-            yield spec, test
-    for child in suite.get("suites") or []:
-        yield from walk_tests(child)
+# Field types follow Playwright's JSONReport types (playwright/types/testReporter.d.ts). Every
+# field read here is required and must have its declared type; a missing or mistyped one refuses.
+def need(obj, key: str, kind: type, where: str):
+    if not isinstance(obj, dict):
+        raise ReceiptError(f"{where} must be an object")
+    value = obj.get(key)
+    if key not in obj or not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+        raise ReceiptError(f"{where}.{key} must be a {kind.__name__}, not {value!r}")
+    return value
 
 
-def all_tests(report) -> list[tuple[dict, dict]]:
-    if not isinstance(report, dict) or not isinstance(report.get("suites"), list):
+def objects(obj, key: str, where: str) -> list[tuple[dict, str]]:
+    """The list obj[key], each item checked to be an object, with its path for error messages."""
+    items = need(obj, key, list, where)
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ReceiptError(f"{where}.{key}[{i}] must be an object")
+    return [(item, f"{where}.{key}[{i}]") for i, item in enumerate(items)]
+
+
+def walk_tests(suite, where):
+    for spec, at in objects(suite, "specs", where):
+        for test, test_at in objects(spec, "tests", at):
+            yield spec, at, test, test_at
+    # JSONReportSuite declares `suites?`: the reporter omits it for a suite with no child suites.
+    if "suites" in suite:
+        for child, at in objects(suite, "suites", where):
+            yield from walk_tests(child, at)
+
+
+def all_tests(report) -> list[tuple[dict, str, dict, str]]:
+    if not isinstance(report, dict):
         raise ReceiptError("not a Playwright JSON report")
-    return [pair for suite in report["suites"] for pair in walk_tests(suite)]
+    return [found for suite, at in objects(report, "suites", "report") for found in walk_tests(suite, at)]
 
 
 def count(report) -> dict:
     """pass, fail, skipped and flaky from the tests, cross-checked against the report's stats."""
     tally = dict.fromkeys(STATUSES, 0)
-    for _, test in all_tests(report):
-        status = test.get("status")
+    for _, _, test, at in all_tests(report):
+        status = need(test, "status", str, at)
         if status not in tally:
             raise ReceiptError(f"unknown test status {status!r}")
         tally[status] += 1
-    stats = report.get("stats")
-    if not isinstance(stats, dict):
+    if not isinstance(report.get("stats"), dict):
         raise ReceiptError("stats must be an object")
+    stats = report["stats"]
     for status in STATUSES:
         value = stats.get(status)
         if type(value) is not int or value < 0:
@@ -90,15 +112,23 @@ def screenshot_sources(report, report_dir: Path) -> list[tuple[Path, str]]:
     The index is zero-padded to the width of the count, so file-name order is report order.
     """
     found = []
-    for spec, test in all_tests(report):
-        for result in test.get("results") or []:
-            for attachment in result.get("attachments") or []:
-                if attachment.get("contentType") != "image/png" or not attachment.get("path"):
+    for spec, spec_at, test, test_at in all_tests(report):
+        title = need(spec, "title", str, spec_at)
+        for result, at in objects(test, "results", test_at):
+            retry = need(result, "retry", int, at)
+            for attachment, attachment_at in objects(result, "attachments", at):
+                if need(attachment, "contentType", str, attachment_at) != "image/png":
                     continue
-                source = Path(attachment["path"])
+                # The attachment type declares `path?`: an attachment held inline as `body` has none.
+                if "path" not in attachment:
+                    continue
+                raw = need(attachment, "path", str, attachment_at)
+                if not raw:
+                    raise ReceiptError(f"{attachment_at}.path must not be empty")
+                source = Path(raw)
                 if not source.is_absolute():
                     source = report_dir / source
-                found.append((source, f"{slug(spec.get('title') or '')}-r{result.get('retry', 0)}.png"))
+                found.append((source, f"{slug(title)}-r{retry}.png"))
     width = max(3, len(str(len(found))))
     return [(source, f"{i:0{width}d}-{rest}") for i, (source, rest) in enumerate(found, 1)]
 
@@ -170,7 +200,8 @@ def pr_head(pr: int, remote: str = "origin", cwd: Path | None = None) -> str:
     return shas[0]
 
 
-def build(args) -> dict:
+def build(args, checkout_sha: str) -> dict:
+    """checkout_sha is `git rev-parse HEAD` of the tested checkout; main() is its only CLI source."""
     # Only a Playwright step that succeeded gets a receipt; failed, cancelled and skipped get none.
     if args.e2e_outcome != "success":
         raise ReceiptError(f"the e2e step's outcome is {args.e2e_outcome!r}, not 'success'")
@@ -201,17 +232,17 @@ def build(args) -> dict:
     # The receipt names the commit Playwright tested, and only a PR whose live head is that commit.
     if not FULL_SHA.fullmatch(args.head):
         raise ReceiptError("head must be a 40-character lowercase SHA")
-    if not FULL_SHA.fullmatch(str(args.checkout_sha)):
+    if not FULL_SHA.fullmatch(str(checkout_sha)):
         raise ReceiptError("checkout_sha must be a 40-character lowercase SHA")
-    if args.head != args.checkout_sha:
-        raise ReceiptError(f"head {args.head[:12]} is not the tested checkout {str(args.checkout_sha)[:12]}")
+    if args.head != checkout_sha:
+        raise ReceiptError(f"head {args.head[:12]} is not the tested checkout {str(checkout_sha)[:12]}")
     if args.pr and pr_head(int(args.pr)) != args.head:
         raise ReceiptError(f"PR #{args.pr}'s head is not {args.head[:12]}")
     receipt = {
         "repo": args.repo,
         "pr": int(args.pr) if args.pr else None,
         "head": args.head,
-        "checkout_sha": args.checkout_sha,
+        "checkout_sha": checkout_sha,
         "run_id": int(args.run_id),
         "run_attempt": int(args.run_attempt),
         "run_url": f"{args.server_url.rstrip('/')}/{args.repo}/actions/runs/{args.run_id}",
@@ -242,7 +273,6 @@ def main(argv=None) -> int:
     w.add_argument("--repo", required=True)
     w.add_argument("--pr", default="", help="PR number, or empty when the run has none")
     w.add_argument("--head", required=True, help="the exact head SHA the run tested")
-    w.add_argument("--checkout-sha", help="the checked-out commit (default: git rev-parse HEAD)")
     w.add_argument("--run-id", required=True)
     w.add_argument("--run-attempt", default="1")
     w.add_argument("--server-url", default="https://github.com")
@@ -259,8 +289,8 @@ def main(argv=None) -> int:
             copied = collect(Path(args.report), Path(args.out))
             print(f"collected {len(copied)} screenshots into {Path(args.out) / SCREENSHOTS}")
             return 0
-        args.checkout_sha = args.checkout_sha or git_head(Path.cwd())
-        receipt = build(args)
+        # No option overrides this: the receipt's checkout is the commit checked out where write runs.
+        receipt = build(args, git_head(Path.cwd()))
     except (ReceiptError, OSError, ValueError, KeyError) as err:
         print(f"e2e receipt refused: {err}", file=sys.stderr)
         return 1

@@ -20,6 +20,16 @@ PASSED = ["--e2e-outcome", "success", "--timestamp", STARTED]
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "desktop-runtime.yml"
 
 
+REAL_GIT_HEAD = er.git_head
+
+
+def setUpModule():
+    # write reads the checkout SHA from `git rev-parse HEAD` only; tests stand in for that lookup.
+    patcher = mock.patch.object(er, "git_head", lambda cwd: HEAD)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def result(retry=0, shot=None):
     attachments = [{"name": "trace", "contentType": "application/zip", "path": "results/trace.zip"}]
     if shot:
@@ -60,7 +70,7 @@ class Fixture:
         path.write_text(json.dumps(self.report), encoding="utf-8")
         return path
 
-    def run(self, *extra, pr="1866", head=HEAD, pr_head=HEAD, artifact=ARTIFACT):
+    def run(self, *extra, pr="1866", head=HEAD, pr_head=HEAD, artifact=ARTIFACT, checkout=HEAD):
         report = self.write_report()
         args = ["--report", str(report), "--out", str(self.out)]
         err = io.StringIO()
@@ -70,11 +80,12 @@ class Fixture:
             self.asked.append(number)
             return pr_head
 
-        with redirect_stdout(io.StringIO()), redirect_stderr(err), mock.patch.object(er, "pr_head", live_head):
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), mock.patch.object(er, "pr_head", live_head), \
+                mock.patch.object(er, "git_head", lambda cwd: checkout):
             code = er.main(["collect", *args])
             if code == 0:
                 code = er.main(["write", *args, "--repo", "Print-Partner/PrintPartner", "--pr", pr,
-                                "--head", head, "--checkout-sha", HEAD, "--run-id", "44460000000",
+                                "--head", head, "--run-id", "44460000000",
                                 "--suite", "web-playwright", "--runner-host", "GitHub Actions 7",
                                 "--runner-environment", "github-hosted", "--artifact-url", artifact,
                                 *PASSED, *extra])
@@ -216,7 +227,7 @@ class ScreenshotTests(unittest.TestCase):
             er.main(["collect", "--report", str(report), "--out", str(f.out)])
         (f.out / "screenshots" / "999-extra.png").write_bytes(PNG)
         args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "o/r", "--head", HEAD,
-                "--checkout-sha", HEAD, "--run-id", "1", "--suite", "s", "--runner-host", "h",
+                "--run-id", "1", "--suite", "s", "--runner-host", "h",
                 "--artifact-url", "https://github.com/o/r/actions/runs/1/artifacts/2", *PASSED]
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             self.assertEqual(er.main(args), 1)
@@ -238,7 +249,7 @@ class ScreenshotTests(unittest.TestCase):
         # Same name, same size, non-empty, different bytes: what a swap after the upload would look like.
         (f.out / "screenshots" / "001-help-r0.png").write_bytes(PNG[:-1] + b"X")
         args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "Print-Partner/PrintPartner",
-                "--head", HEAD, "--checkout-sha", HEAD, "--run-id", "44460000000", "--suite", "s",
+                "--head", HEAD, "--run-id", "44460000000", "--suite", "s",
                 "--runner-host", "h", "--artifact-url", ARTIFACT, *PASSED]
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             self.assertEqual(er.main(args), 1)
@@ -363,13 +374,124 @@ class InputTests(unittest.TestCase):
     def test_checkout_sha_must_be_forty_lowercase_hex(self):
         for bad in (HEAD.upper(), HEAD[:12], "g" * 40):
             with self.subTest(checkout=bad):
-                self.refuse(self.passing(), "--checkout-sha", bad, message="checkout_sha must be a 40-character")
+                self.refuse(self.passing(), checkout=bad, message="checkout_sha must be a 40-character")
+
+    def test_the_cli_cannot_override_the_checkout(self):
+        # Both SHAs set to another commit: the CLI has no such option, and git's answer stands.
+        f = self.passing()
+        report = f.write_report()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(er.main(["collect", "--report", str(report), "--out", str(f.out)]), 0)
+        args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "Print-Partner/PrintPartner",
+                "--head", OTHER, "--checkout-sha", OTHER, "--run-id", "44460000000", "--suite", "s",
+                "--runner-host", "h", "--artifact-url", ARTIFACT, *PASSED]
+        with self.assertRaises(SystemExit) as exit_, redirect_stderr(io.StringIO()) as err, \
+                mock.patch.object(er, "pr_head", lambda _: OTHER):
+            er.main(args)
+        self.assertEqual(exit_.exception.code, 2)
+        self.assertIn("unrecognized arguments: --checkout-sha", err.getvalue())
+        self.assertFalse((f.out / "receipt.json").exists())
+        self.refuse(self.passing(), head=OTHER, pr_head=OTHER, message=f"is not the tested checkout {HEAD[:12]}")
+
+    def test_write_reads_the_checkout_from_git_in_its_working_directory(self):
+        f = self.passing()
+        report = f.write_report()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(er.main(["collect", "--report", str(report), "--out", str(f.out)]), 0)
+        seen = []
+
+        def fake_git(cmd, **kw):
+            seen.append((cmd, kw.get("cwd")))
+            return OTHER + "\n"
+
+        args = ["write", "--report", str(report), "--out", str(f.out), "--repo", "Print-Partner/PrintPartner",
+                "--head", HEAD, "--run-id", "44460000000", "--suite", "s", "--runner-host", "h",
+                "--artifact-url", ARTIFACT, *PASSED]
+        with mock.patch.object(er, "git_head", REAL_GIT_HEAD), mock.patch.object(er.subprocess, "check_output", fake_git), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(er.main(args), 1)
+        self.assertEqual(seen, [(["git", "rev-parse", "HEAD"], Path.cwd())])
+        self.assertIn(f"is not the tested checkout {OTHER[:12]}", err.getvalue())
+        self.assertFalse((f.out / "receipt.json").exists())
 
     def test_timestamp_must_be_utc_seconds(self):
         for bad in ("2026-11-19T04:39:00.000Z", "2026-11-19 04:39:00", "2026-11-19T04:39:00+00:00",
                     "2026-02-30T04:39:00Z", ""):
             with self.subTest(timestamp=bad):
                 self.refuse(self.passing(), "--timestamp", bad, message="timestamp must be")
+
+
+def first_test(report):
+    return report["suites"][0]["specs"][0]["tests"][0]
+
+
+def first_result(report):
+    return first_test(report)["results"][0]
+
+
+class ReportShapeTests(unittest.TestCase):
+    """Every structural field write reads must have Playwright's declared type, or nothing is written."""
+
+    def passing(self):
+        f = Fixture([spec("help", "expected", result())])
+        f.report["suites"][0]["specs"][0]["tests"][0]["results"][0] = result(shot=f.png("help.png"))
+        return f
+
+    def refuse(self, change, message):
+        f = self.passing()
+        change(f.report)
+        self.assertEqual(f.run(), 1, f.err)
+        self.assertIn(message, f.err)
+        self.assertFalse((f.out / "receipt.json").exists())
+
+    def test_malformed_collections_refuse(self):
+        cases = [
+            ("specs: false", lambda r: r["suites"][0]["suites"][0].update(specs=False),
+             "report.suites[0].suites[0].specs must be a list, not False"),
+            ("suites: null", lambda r: r.update(suites=None), "report.suites must be a list, not None"),
+            ("child suites: null", lambda r: r["suites"][0].update(suites=None),
+             "report.suites[0].suites must be a list, not None"),
+            ("tests: {}", lambda r: r["suites"][0]["specs"][0].update(tests={}),
+             "report.suites[0].specs[0].tests must be a list, not {}"),
+            ("results: 'x'", lambda r: first_test(r).update(results="x"), ".tests[0].results must be a list, not 'x'"),
+            ("attachments: 0", lambda r: first_result(r).update(attachments=0),
+             ".results[0].attachments must be a list, not 0"),
+            ("specs missing", lambda r: r["suites"][0].pop("specs"), "report.suites[0].specs must be a list, not None"),
+            ("results missing", lambda r: first_test(r).pop("results"), ".tests[0].results must be a list, not None"),
+            ("attachments missing", lambda r: first_result(r).pop("attachments"),
+             ".results[0].attachments must be a list, not None"),
+            ("suite not an object", lambda r: r["suites"].append([]), "report.suites[1] must be an object"),
+            ("spec not an object", lambda r: r["suites"][0]["specs"].append("x"), "report.suites[0].specs[1] must be an object"),
+            ("attachment not an object", lambda r: first_result(r)["attachments"].append(None),
+             ".results[0].attachments[2] must be an object"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label):
+                self.refuse(change, message)
+
+    def test_malformed_fields_refuse(self):
+        shot = lambda r: first_result(r)["attachments"][1]  # noqa: E731
+        cases = [
+            ("status missing", lambda r: first_test(r).pop("status"), ".tests[0].status must be a str, not None"),
+            ("title missing", lambda r: r["suites"][0]["specs"][0].pop("title"), ".specs[0].title must be a str, not None"),
+            ("retry bool", lambda r: first_result(r).update(retry=True), ".results[0].retry must be a int, not True"),
+            ("retry missing", lambda r: first_result(r).pop("retry"), ".results[0].retry must be a int, not None"),
+            ("contentType missing", lambda r: shot(r).pop("contentType"),
+             ".attachments[1].contentType must be a str, not None"),
+            ("path not a string", lambda r: shot(r).update(path=7), ".attachments[1].path must be a str, not 7"),
+            ("path empty", lambda r: shot(r).update(path=""), ".attachments[1].path must not be empty"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label):
+                self.refuse(change, message)
+
+    def test_documented_optional_fields_may_be_absent(self):
+        # Playwright omits `suites` on a suite with no child suites, and `path` on an inline attachment.
+        f = self.passing()
+        del f.report["suites"][0]["suites"]
+        first_result(f.report)["attachments"].append({"name": "inline", "contentType": "image/png", "body": "aGk="})
+        self.assertEqual(f.run(), 0, f.err)
+        self.assertEqual(len(f.receipt()["screenshots"]), 1)
 
 
 class StableBytesTests(unittest.TestCase):
@@ -380,7 +502,7 @@ class StableBytesTests(unittest.TestCase):
         first = (f.out / "receipt.json").read_bytes()
         self.assertEqual(json.loads(first)["timestamp"], STARTED)
         args = ["write", "--report", str(f.dir / "report.json"), "--out", str(f.out),
-                "--repo", "Print-Partner/PrintPartner", "--pr", "1866", "--head", HEAD, "--checkout-sha", HEAD,
+                "--repo", "Print-Partner/PrintPartner", "--pr", "1866", "--head", HEAD,
                 "--run-id", "44460000000", "--suite", "web-playwright", "--runner-host", "GitHub Actions 7",
                 "--runner-environment", "github-hosted", "--artifact-url", ARTIFACT, *PASSED]
         # A second write from the same input, at a later wall-clock second, gives the same bytes.

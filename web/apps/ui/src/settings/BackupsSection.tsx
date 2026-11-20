@@ -1,7 +1,7 @@
-import type { RouteResponse } from "@print-partner/rust-client";
+import { routePath, routes, type RouteResponse } from "@print-partner/rust-client";
 import { useId, useRef, useState } from "react";
-import { CoreError } from "../core/client";
-import { RequestContractError, writeCore } from "../core/rust";
+import { CoreError, fetchCore } from "../core/client";
+import { ContractError } from "../core/rust";
 import { reason } from "../core/writes";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 
@@ -14,6 +14,23 @@ function timeText(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+/**
+ * Posts one create. A redirect is refused, not followed: a followed 307 or 308 would send the
+ * POST a second time, and the destination's answer is not the core's. The refused redirect is a
+ * network error, which the section reads as not confirmed.
+ */
+async function createBackup(): Promise<Backup> {
+  const path = routePath("createInstallationBackup", {});
+  const response = await fetchCore(path, {
+    method: "POST",
+    headers: { accept: "application/json" },
+    redirect: "error",
+  });
+  const parsed = routes.createInstallationBackup.response.safeParse(await response.json().catch(() => undefined));
+  if (!parsed.success) throw new ContractError(path);
+  return parsed.data;
 }
 
 function sizeText(bytes: number): string {
@@ -31,6 +48,8 @@ export function BackupsSection() {
   const [creating, setCreating] = useState(false);
   const [backup, setBackup] = useState<Backup | null>(null);
   const [note, setNote] = useState("");
+  // Mounted from the start, so a screen reader announces each change while focus stays put.
+  const [status, setStatus] = useState("");
   const sending = useRef(false);
   const reasonId = useId();
   const off = offline || creating;
@@ -38,13 +57,16 @@ export function BackupsSection() {
     if (off || sending.current) return;
     sending.current = true;
     setCreating(true);
+    setStatus("Creating backup");
     setNote("");
     try {
-      setBackup(await writeCore("createInstallationBackup", {}));
+      setBackup(await createBackup());
+      setStatus("Backup made");
     } catch (failure) {
-      if ((failure instanceof CoreError && failure.problem) || failure instanceof RequestContractError) {
-        // The core keeps a new archive only when it answers 200, so its own refusal, or a
-        // request never sent, leaves the kept backup as it was.
+      setStatus("");
+      if (failure instanceof CoreError && failure.problem) {
+        // The core keeps a new archive only when it answers 200, so its own refusal leaves the
+        // kept backup as it was.
         setNote(`The backup was not made: ${why(failure)}.`);
       } else {
         // A redirect, a proxy's page, a malformed problem, a cut-off body or a lost answer: the
@@ -74,7 +96,7 @@ export function BackupsSection() {
       >
         Create backup
       </button>
-      {creating && <p role="status">Creating backup</p>}
+      <p role="status">{status}</p>
       {note && <p role="alert" className="pp-field-error">{note}</p>}
       {backup && (
         <dl className="pp-facts" aria-label="Backup made">

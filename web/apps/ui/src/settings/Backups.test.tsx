@@ -1,7 +1,9 @@
 import type { Health } from "@print-partner/rust-client";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 
@@ -126,8 +128,10 @@ describe("Backups: create", () => {
     const region = await backups();
     await online(region);
     const button = within(region).getByRole("button", { name: "Create backup" });
+    const status = within(region).getByRole("status");
+    expect(status.textContent).toBe("");
     fireEvent.click(button);
-    expect(await within(region).findByText("Creating backup")).toBeTruthy();
+    await waitFor(() => expect(status.textContent).toBe("Creating backup"));
     expect(button.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(button);
     await act(async () => answer.resolve(json(BACKUP)));
@@ -136,7 +140,8 @@ describe("Backups: create", () => {
     expect(within(facts).getByText("1.2 MiB (1,234,567 bytes)")).toBeTruthy();
     expect(within(facts).getByText(SHA)).toBeTruthy();
     expect(within(facts).getByText(/app version 0\.42\.0/)).toBeTruthy();
-    expect(within(region).queryByText("Creating backup")).toBeNull();
+    expect(within(region).getByRole("status")).toBe(status);
+    expect(status.textContent).toBe("Backup made");
     expect(fake.creates()).toHaveLength(1);
     expect(fake.creates()[0]?.[1]?.body).toBeUndefined();
   });
@@ -237,5 +242,64 @@ describe("Backups: create", () => {
     expect(alert).toBe(LOST);
     expect(within(region).queryByText(SHA)).toBeNull();
     expect(fake.creates()).toHaveLength(2);
+  });
+});
+
+/**
+ * A real loopback HTTP server for the create route, so Node's own fetch decides whether to follow
+ * a redirect. The fake `fetch` below forwards only the create POST to it and counts nothing
+ * itself: every count is a request this server received.
+ */
+describe("Backups: a redirected create", () => {
+  const PROBLEM_503 = {
+    type: "urn:print-partner:problem:overloaded",
+    title: "Service Unavailable",
+    status: 503,
+    detail: "A backup is already running",
+  };
+  const received: string[] = [];
+  let redirect: { status: 307 | 308; to: "/ok" | "/problem" } = { status: 307, to: "/ok" };
+  let server: Server;
+  let origin = "";
+  const nodeFetch = globalThis.fetch;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      received.push(`${request.method} ${request.url}`);
+      request.resume();
+      const send = (status: number, type: string, body: unknown, headers: Record<string, string> = {}) => {
+        response.writeHead(status, { "content-type": type, ...headers });
+        response.end(JSON.stringify(body));
+      };
+      const creates = received.filter((line) => line === `POST ${CREATE}`).length;
+      if (request.url === CREATE && creates === 1) return send(200, "application/json", BACKUP);
+      if (request.url === CREATE) return send(redirect.status, "text/plain", "", { location: redirect.to });
+      if (request.url === "/ok") return send(200, "application/json", { ...BACKUP, sha256: "a1".repeat(32) });
+      if (request.url === "/problem") return send(503, "application/problem+json", PROBLEM_503);
+      send(404, "text/plain", "");
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((done) => server.close(() => done())));
+
+  it.each([
+    [307, "/ok"],
+    [308, "/ok"],
+    [307, "/problem"],
+    [308, "/problem"],
+  ] as const)("a %i to a destination that answers %s sends one POST and is not confirmed", async (status, to) => {
+    received.length = 0;
+    redirect = { status, to };
+    const fake = core((init) => nodeFetch(`${origin}${CREATE}`, init));
+    renderSettings(fake.fetchMock);
+    const region = await backups();
+    await online(region);
+    fireEvent.click(within(region).getByRole("button", { name: "Create backup" }));
+    expect(await within(region).findByText(SHA)).toBeTruthy();
+    fireEvent.click(within(region).getByRole("button", { name: "Create backup" }));
+    expect((await within(region).findByRole("alert")).textContent).toBe(LOST);
+    expect(within(region).queryByLabelText("Backup made")).toBeNull();
+    expect(received).toEqual([`POST ${CREATE}`, `POST ${CREATE}`]);
   });
 });

@@ -1166,6 +1166,33 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                       self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.rebased, git=git,
                                  api=checks("success")))
 
+    def test_git_config_env_and_cwd_cannot_change_what_the_carry_sees(self):
+        # main-hunk edited the PR's own a.txt. diff.relative, an external diff or GIT_EXTERNAL_DIFF,
+        # run from a subdirectory, once hid that edit and let the merge through.
+        import test_post_pp_score_status as status_tests
+
+        status_tests.CarryTests.setUpClass()
+        c = status_tests.CarryTests
+        sub = os.path.join(c.r.path, "sub")
+        os.makedirs(sub)
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git_in_sub = self.carry_api(c.r, "main-hunk", c.hunk), self.git_at(sub)
+
+        expected = f"{c.hunk[:7]}: the PR's own diff changed"
+        for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
+                                  ("diff.external", ("diff.external", "true"), {}),
+                                  ("GIT_EXTERNAL_DIFF", None, {"GIT_EXTERNAL_DIFF": "true", "GIT_DIFF_OPTS": "-u0"})):
+            with self.subTest(name):
+                if config:
+                    c.r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.hunk,
+                                                           git=git_in_sub, api=api))
+                finally:
+                    if config:
+                        c.r.git("config", "--unset", config[0])
+
     def test_no_git_configuration_reaches_the_carry(self):
         # rename_repo's merge skipped a directory rename and conflicts under Git's defaults. A renameLimit in
         # local, included, HOME, XDG or system config once let the guard carry it. The guard runs from d1/.

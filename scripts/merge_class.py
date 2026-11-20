@@ -200,7 +200,8 @@ def unwrap(line):
 
 def comment_pages(pages):
     """A PR's comments from `gh api --paginate --slurp <issue comments>`, the one fetch both evaluators
-    use: a non-empty list of pages, each a list. Anything else raises, and both refuse."""
+    use: a non-empty list of pages, each a list. Anything else raises: the guard refuses, the status's
+    merge-group run posts failure, and its comment run exits without posting."""
     if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
         raise ValueError("unreadable PR comment pages")
     return [comment for page in pages for comment in page]
@@ -208,8 +209,9 @@ def comment_pages(pages):
 
 def read_comments(comments, trust):
     """The one reader of score records, for both evaluators: raw GitHub issue comments to a Reading.
-    Only comments by trust["authors"] count. docs/development/score-records.md ("How records are
-    read") lists which lines are records, which refuse every head, and which refuse their own head."""
+    A comment without a readable author or body refuses every head, whoever posted it; otherwise only
+    comments by trust["authors"] count. docs/development/score-records.md ("How records are read")
+    lists which lines are records, which refuse every head, and which refuse their own head."""
     if not isinstance(comments, (list, tuple)):
         return Reading(faults=((None, "the PR comments are unreadable"),))
     records, faults, authors = [], [], set()
@@ -345,10 +347,13 @@ class CarryError(ValueError):
 
 class LocalGit:
     """A checkout of the repository; deadline (a time.monotonic value) bounds every git call. Each read runs
-    in a scratch git directory made under TMPDIR, left in place and rewritten before each read: no refs,
-    attributes, grafts, remote, commit-graph, multi-pack-index, outside config or caller GIT_* variable, so
-    it fetches nothing and runs no outside program. Only ensure() fetches (in the clone, whole commits by
-    SHA), then drops the scratch directory. docs/development/score-records.md has the threat model."""
+    in a scratch git directory made under TMPDIR and left in place; its config, HEAD and alternates are
+    rewritten before each read. It has no refs, attributes, grafts, remote, commit-graph, multi-pack-index,
+    outside config or caller GIT_* variable, so a read fetches nothing and runs no program named by the
+    environment or a config. Only ensure() runs commands with transport variables (fetching whole commits
+    by SHA in the clone), and it drops the scratch directory however it returns; making a scratch
+    directory also runs one rev-parse in the clone, with no GIT_* variable. The threat model is in
+    docs/development/score-records.md."""
 
     # Kept for the fetch in the clone only, so it can authenticate and reach the remote.
     TRANSPORT_ENV = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_TERMINAL_PROMPT",
@@ -634,8 +639,9 @@ def carry_source(reading, head, facts, classes, head_checks):
 
 def sensitive_scores(reading, head, seats, vendors, facts, classes):
     """The coordinator's sensitive merge check: (records_head, why), records_head None to refuse.
-    head's own records when it has any; otherwise the source carry_source reaches, with Grok checked
-    but not counted toward the two vendors. seats is scorer_seats. Raises on an unreadable fact."""
+    When head has records or faults of its own (one edited record is enough), head is judged as the
+    exact head, even if a carry source exists. Otherwise the source carry_source reaches, with Grok
+    checked but not counted toward the two vendors. seats is scorer_seats. Raises on an unreadable fact."""
     if head in reading.heads():
         fault = sensitive_fault(reading, head, seats, vendors)
         return (None, fault) if fault else (head, "two qualifying seats on this head")

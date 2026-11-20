@@ -165,8 +165,8 @@ class Record:
     author: str
     score: int
     obstacles: tuple
-    # The line is the record alone, at column 0. A record in backticks, indented or in a fence is
-    # read and checked like any other, so a low or invalid one refuses, but it never counts toward a pass.
+    # The line is the record alone at column 0, inside a fence or not. A record in backticks or indented
+    # is read and checked like any other, so a low or invalid one refuses, but it never counts toward a pass.
     bare: bool = True
 
 
@@ -191,7 +191,7 @@ class Reading:
 
 def unwrap(line):
     """line without surrounding whitespace and inline-code backticks. Fence lines (```text) never
-    start with "pp-score ", so the record lines inside a fence read as wrapped records."""
+    start with "pp-score "; a column-0 record line inside a fence is bare, an indented one is wrapped."""
     text = line.strip()
     while len(text) >= 2 and text[0] == "`" and text[-1] == "`":
         text = text[1:-1].strip()

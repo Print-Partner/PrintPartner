@@ -247,9 +247,8 @@ class RealFormatTests(unittest.TestCase):
                 faults = [x for x in body.splitlines() if x.startswith("pp-score ") and not main.fullmatch(x)]
                 with self.subTest(body=body):
                     self.assertEqual("fault" if faults else "ignore", expected)
-                    if faults:
-                        self.assertEqual(pps.read_comments([comment(body)], self.trust).faults,
-                                         ((None, "a malformed pp-score record"),))
+                    fault = pps.Reading(faults=((None, "a malformed pp-score record"),))
+                    self.assertEqual(pps.read_comments([comment(body)], self.trust), fault if faults else pps.Reading())
 
     def test_records_inside_prose_still_do_not_parse(self):
         line = f"pp-score head={SHA} seat=grok-4.7 vendor=xai score=9 author=anthropic obstacles=none"

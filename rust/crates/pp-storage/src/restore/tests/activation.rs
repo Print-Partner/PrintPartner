@@ -267,7 +267,8 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
             }
             assert!(matches!(&error, RestoreError::RestartRequired));
             assert!(owner.client().shared.queue.lock().unwrap().closed);
-            let committed = Journal::read(&root)
+            let work = Work::open(&root).unwrap().unwrap();
+            let committed = Journal::read(&work)
                 .unwrap()
                 .is_some_and(|journal| journal.state == JournalState::Committed);
             owner.shutdown().unwrap();
@@ -284,6 +285,38 @@ fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
             }
             assert_eq!(state(&root), old, "crash at step {at}");
         }
+    }
+}
+
+/// A rollback removes the stage only when the journal was published. A
+/// failure before that leaves the stage until the next open removes it.
+#[test]
+fn a_rollback_removes_the_stage_only_after_the_journal_was_published() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let (backup, _) = backup_then_modify(&owner, &root);
+    owner.shutdown().unwrap();
+    let old = state(&root);
+    // Step 0 is before the journal is published, step 1 just after it.
+    for (at, stage_kept) in [(0, true), (1, false)] {
+        let owner = open(&root).unwrap();
+        let client = owner.installation().unwrap();
+        let staged = stage(&client, backup.path()).unwrap();
+        let stage_dir = root
+            .join(WORK_DIR)
+            .join(format!("{STAGED_PREFIX}{}", staged.restore_id));
+        STEPS.lock().unwrap().push((root.clone(), at, false));
+        let error = client
+            .activate(&staged.restore_id, CONFIRMATION)
+            .unwrap_err();
+        assert!(matches!(error, RestoreError::RolledBack), "step {at}");
+        assert_eq!(state(&root), old, "step {at}");
+        assert_eq!(stage_dir.is_dir(), stage_kept, "step {at}");
+        assert!(!root.join(WORK_DIR).join("journal.json").exists());
+        owner.shutdown().unwrap();
+        open(&root).unwrap().shutdown().unwrap();
+        assert!(!root.join(WORK_DIR).exists(), "step {at}: next open");
+        assert_eq!(state(&root), old, "step {at}: next open");
     }
 }
 

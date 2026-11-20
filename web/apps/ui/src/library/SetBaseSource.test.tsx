@@ -8,6 +8,7 @@ import type {
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { QueryClient } from "@tanstack/react-query";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 import { refusalText } from "../screen/SourceSelect";
@@ -444,7 +445,9 @@ describe("Set base Source after leaving the Sources tab and coming back", () => 
     fireEvent.change(await within(again).findByLabelText("Base Source"), {
       target: { value: "1" },
     });
+    // The in-flight gate: the disabled button and a submit that bypasses it both send nothing.
     fireEvent.click(within(again).getByRole("button", { name: "Set base Source" }));
+    fireEvent.submit(again);
     await settle();
     expect(core.fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
     expect(within(again).getByText("Setting the base Source.")).toBeTruthy();
@@ -529,6 +532,9 @@ describe("a send the UI never saw confirmed", () => {
     ["the core's 500", () => problem(500, "Build service unavailable")],
     ["the core's 503 outcome unknown", () => problem(503, "Build service temporarily unavailable")],
     ["a 200 whose body is not the contract", () => json({ layers: "none" })],
+    ["a 200 whose valid body has no layers", () => json({ profile_id: 1000, layers: [] })],
+    ["a 202 with a valid empty layer list", () => json({ profile_id: 1000, layers: [] }, 202)],
+    ["a 204", () => new Response(null, { status: 204 })],
     ["a dropped connection", () => "drop"],
   ])("after %s, leaving and coming back opens no form and keeps the late base", async (_, answer) => {
     const { core } = await sendUnconfirmed(answer);
@@ -674,14 +680,24 @@ describe("an unconfirmed send outlives the app's cache resets", () => {
     await lateBaseKept(core);
   });
 
-  it("clearing, resetting and removing every query and mutation", async () => {
+  it.each<[string, (client: QueryClient) => void]>([
+    [
+      "clearing, resetting and removing every query and mutation",
+      (client) => {
+        client.clear();
+        void client.resetQueries();
+        client.removeQueries();
+      },
+    ],
+    [
+      "History's Restore as draft (removes the Build's Plan query)",
+      // `planKey(1000)` from builds/PlanReconcile.tsx; a screen may not import another screen.
+      (client) => client.removeQueries({ queryKey: ["core", "plan", 1000] }),
+    ],
+  ])("%s", async (_, reset) => {
     const { core, router } = await sendUnconfirmed();
     await act(() => router.navigate("/builds/1000"));
-    act(() => {
-      router.queryClient.clear();
-      void router.queryClient.resetQueries();
-      router.queryClient.removeQueries();
-    });
+    act(() => reset(router.queryClient));
     await act(() => router.navigate("/builds/1000/sources"));
     await lateBaseKept(core);
   });

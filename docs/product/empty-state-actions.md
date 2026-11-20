@@ -52,16 +52,20 @@ only when all three hold:
   the query client, and the record survives each of them; only a page reload
   ends it.
 
-A send leaves the record only when the core confirms it (a 200 whose body
-matches the contract) or refuses it with its own problem: an
+A send leaves the record only when the core confirms it or refuses it. The
+handler's only success is a 200 with the Build's layers, which then hold the
+base layer it wrote, so confirmation is HTTP 200 exactly, with a body that
+matches the contract and holds a `base` layer. A refusal is the core's own
+problem: an
 `application/problem+json` body valid against the generated `Problem` schema,
 whose `status` matches the answer, with a status the set-base handler refuses
 with: 400, 401, 403, 404 or 413. Each of those is decided before or inside the
 one write transaction, so nothing of that request commits later. Every other
 answer keeps the send: any other 4xx, such as a proxy's 408, 421, 425, 429 or
 its own 400 or 403 page; a redirect, which the PUT refuses to follow; every
-5xx, including the core's 503 "outcome unknown"; a dropped connection; and a
-200 whose body fails the contract.
+5xx, including the core's 503 "outcome unknown"; a dropped connection; any
+other 2xx, such as a proxy's 202 or 204; and a 200 whose body fails the
+contract or shows no base.
 
 While a Build has an unconfirmed send, the Sources tab shows no form. It says
 the send could not be confirmed and that the core may still set that Source,
@@ -75,11 +79,17 @@ opened. A refusal of that send ends only its own record, so the earlier send
 still keeps the plain form closed.
 
 The UI cannot see a send from before a page reload, from another window or
-device, or from an MCP or API client. The real guard belongs in the core
+device, or from an MCP or API client. It cannot tell an intermediary's forged
+problem document, valid and status-matched with one of the handler's refusal
+statuses, from the core's own refusal, so a forged refusal reopens the form.
+The browser may also re-send the same PUT below `fetch`, for example after a
+421 or a connection reset before the headers arrive. Both copies carry the same
+Source, so the base is the same. The real guard belongs in the core
 (GRE-1866): a base PUT that refuses to replace an existing base unless the
 caller names the base it expects.
 `web/apps/ui/src/library/SetBaseSource.test.tsx` covers each answer above that
-keeps a send, each cache reset, Set a base anyway and its refusal, Cancel, a
+keeps a send, each cache reset (including History's Restore as draft, which
+removes the Build's Plan query), Set a base anyway and its refusal, Cancel, a
 second Build, and leaving and coming back while the PUT or its re-read is held.
 
 ## Capture and checks

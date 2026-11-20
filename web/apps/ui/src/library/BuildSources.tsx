@@ -71,10 +71,18 @@ const CORE_REFUSALS = new Set([400, 401, 403, 404, 413]);
 const refusedByCore = (error: Error) =>
   error instanceof CoreError && error.problem && CORE_REFUSALS.has(error.status);
 
+/** An answer that neither confirms nor refuses the send. */
+class Unconfirmed extends Error {}
+
 /**
  * One PUT. A redirect is refused, not followed: a followed 307 or 308 would send the PUT again,
  * and the destination's answer is not the core's. The refused redirect is a network error, so
  * the send stays unconfirmed.
+ *
+ * The handler answers success only as `BuildOutcome::Layers`, which `present` sends as
+ * `json_response(StatusCode::OK, ProfileLayers { profile_id, layers })`, and its layers then
+ * hold the `'base'` layer it wrote. So only a 200 whose body matches the contract and holds a
+ * base layer confirms the send. Any other 2xx, or a 200 with no base, is not the core's success.
  */
 async function putBase(buildId: number, projectId: number): Promise<ProfileLayers> {
   const path = routePath("setBuildBase", { id: buildId });
@@ -86,8 +94,12 @@ async function putBase(buildId: number, projectId: number): Promise<ProfileLayer
     body: JSON.stringify(request.data),
     redirect: "error",
   });
+  if (response.status !== 200) throw new Unconfirmed(`the answer was ${response.status}, not 200`);
   const parsed = routes.setBuildBase.response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);
+  if (!parsed.data.layers.some((layer) => layer.layer_type === "base")) {
+    throw new Unconfirmed("the answer shows no base layer");
+  }
   return parsed.data;
 }
 

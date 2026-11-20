@@ -142,7 +142,7 @@ Only `ensure` runs in the clone, with the clone's configuration and transport va
 
 ### What the guard defends against
 
-The carry check defends against state that ordinary Git commands can set, by accident or on purpose. That includes settings, includes, refs, replace refs, grafts, attributes, the commit-graph and the multi-pack-index in the shared `.git` directory, global and system config, the merge command's environment and working directory, and forged commit objects. The tests above and in `scripts/test_agent_guard.py` cover each of these.
+The carry check defends against state that ordinary Git commands can set, by accident or on purpose. That includes settings, includes, refs, replace refs, grafts, attributes, the commit-graph and the multi-pack-index in the shared `.git` directory, global and system config, the merge command's environment and working directory, and forged commit objects. The tests in `scripts/test_post_pp_score_status.py` and `scripts/test_agent_guard.py` cover config in every place, the environment, the working directory, replace refs and grafts, and forged loose and alternate commit objects; the other items rest on the scratch directory's design and an outside adversarial check.
 
 It does not defend against a process running as the coordinator's user that forges tree or blob objects in the shared object store, replaces the `git` binary, or edits the coordinator checkout's own files, which include the guard itself. Score records posted with the scorer account's token are the other gap (GRE-1408).
 

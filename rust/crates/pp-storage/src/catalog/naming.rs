@@ -99,6 +99,14 @@ impl Default for NamingProfile {
         }
     }
 }
+/// A marker is symbol-bounded when neither its first nor its last character
+/// is a letter or digit (Unicode `Alphabetic` or `Numeric`): `[a]`, `_x_` or
+/// `-`. Only these are removed anywhere in a name, so only these scan the
+/// whole name. Node's `isSymbolBoundedMarker` is the same test.
+pub(crate) fn symbol_bounded(marker: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    !word(marker.chars().next()) && !word(marker.chars().next_back())
+}
 impl NamingProfile {
     pub(super) fn validate_input(self) -> Result<Self> {
         let validated = self.validate();
@@ -113,6 +121,16 @@ impl NamingProfile {
         ensure!(
             !self.roles.is_empty() && self.roles.iter().any(|r| r.id == RoleId::Primary),
             "Naming requires primary role"
+        );
+        // Bounds marker-stripping work per name, as Node's
+        // `MAX_STL_NAMING_MARKER_LENGTH` (UTF-16 units) and
+        // `MAX_STL_NAMING_SYMBOL_MARKERS`.
+        let markers = || self.roles.iter().flat_map(|r| &r.markers);
+        let scanning = markers().filter(|m| !trim(m).is_empty() && symbol_bounded(m));
+        ensure!(scanning.count() <= 16, "Too many naming markers");
+        ensure!(
+            markers().all(|m| m.encode_utf16().count() <= 64),
+            "Naming marker too long"
         );
         let mut seen = Vec::new();
         for r in &mut self.roles {
@@ -756,6 +774,55 @@ pub(super) fn save(
     get(tx, tenant, id)
 }
 
+/// The file name without a `.stl` or `.3mf` extension, in any case.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn model_stem(filename: &str) -> Option<&str> {
+    let split = filename.len().checked_sub(4)?;
+    let extension = filename.get(split..)?;
+    (extension.eq_ignore_ascii_case(".stl") || extension.eq_ignore_ascii_case(".3mf"))
+        .then(|| &filename[..split])
+}
+
+/// Whether `filename` ends in `.3mf`, in any case.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn is_3mf(filename: &str) -> bool {
+    filename
+        .len()
+        .checked_sub(4)
+        .and_then(|split| filename.get(split..))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(".3mf"))
+}
+
+/// The text the quantity regex's first group captures from `filename`, as
+/// Node's `parseQuantity` reads it. The regex reads the name as written, so
+/// saved regexes keep their meaning. Most end in `\.stl$`, so a `.3mf` name
+/// they miss is read again as the `.stl` of the same name. `None` when
+/// nothing matched or the group is empty.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn quantity_capture(regex: &regress::Regex, filename: &str) -> Option<String> {
+    let capture = |name: &str| {
+        regex.find(name).map(|m| {
+            m.captures
+                .first()
+                .cloned()
+                .flatten()
+                .map(|r| name[r].to_owned())
+        })
+    };
+    let captured = match capture(filename) {
+        Some(group) => group,
+        None if is_3mf(filename) => {
+            capture(&format!("{}.stl", &filename[..filename.len() - 4])).flatten()
+        }
+        None => None,
+    };
+    captured.filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "desktop_rebuild")]
+mod markers;
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) use markers::strip_markers;
 #[cfg(feature = "desktop_rebuild")]
 mod preview;
 #[cfg(feature = "desktop_rebuild")]

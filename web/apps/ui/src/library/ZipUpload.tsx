@@ -31,30 +31,35 @@ export function rowControlId(sourceId: number, control: "upload" | "sync"): stri
   return `pp-source-${sourceId}-${control}`;
 }
 
-export function readJobs(): JobMap {
+/** The stored map, or null when storage cannot be read or holds something else. */
+function readStored(): JobMap | null {
   try {
     const raw = localStorage.getItem(JOBS_KEY);
     if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return {};
+    if (typeof parsed !== "object" || parsed === null) return null;
     const jobs: JobMap = {};
     for (const [id, job] of Object.entries(parsed)) {
       if (typeof job === "string" && job !== "") jobs[id] = job;
     }
     return jobs;
   } catch {
-    return {};
+    return null;
   }
 }
 
-function writeJobs(jobs: JobMap) {
+export function readJobs(): JobMap {
+  return readStored() ?? {};
+}
+
+function writeJobs(jobs: JobMap): boolean {
   try {
     localStorage.setItem(JOBS_KEY, JSON.stringify(jobs));
+    return true;
   } catch {
-    // A blocked store still follows the job until this page closes.
+    return false;
   }
 }
-
 /** The strings in `result.warnings`, when that list is present. */
 export function importWarnings(result: unknown): string[] {
   if (typeof result !== "object" || result === null || !("warnings" in result)) return [];
@@ -97,17 +102,36 @@ function sameJobs(a: JobMap, b: JobMap): boolean {
 export function useLibraryJobs() {
   const [jobs, setJobs] = useState(readJobs);
   const [refusals, setRefusals] = useState<Record<string, string>>({});
-  // The one place this tab's map changes: it takes the map just written or read from
-  // storage, so it is never staler than storage after its own start, its own end of a
-  // job, or another tab's write.
-  const adopt = useCallback((stored: JobMap) => {
-    setJobs((current) => (sameJobs(current, stored) ? current : stored));
+  // Storage tells tabs about each other's jobs; it is never this tab's only copy. While it
+  // can be read and takes writes, this tab's map is what storage holds, so it is never
+  // staler than storage. A failed read changes only the named entry. Once storage refuses
+  // a write, or cannot record a start, this tab keeps its own map and stops following it.
+  const shared = useRef(true);
+  // Sets `key` to `jobId`, or ends job `ending` there when `jobId` is null.
+  const update = useCallback((key: string, jobId: string | null, ending = "") => {
+    let stored = shared.current ? readStored() : null;
+    if (stored === null && jobId !== null) shared.current = false;
+    if (stored && (jobId !== null || stored[key] === ending)) {
+      if (jobId === null) delete stored[key];
+      else stored[key] = jobId;
+      if (!writeJobs(stored)) {
+        shared.current = false;
+        stored = null;
+      }
+    }
+    const seen = stored;
+    setJobs((current) => {
+      if (seen) return sameJobs(current, seen) ? current : seen;
+      if (jobId !== null) return { ...current, [key]: jobId };
+      if (current[key] !== ending) return current;
+      const rest = { ...current };
+      delete rest[key];
+      return rest;
+    });
   }, []);
   const remember = useCallback(
     (sourceId: number, jobId: string) => {
-      const next = { ...readJobs(), [String(sourceId)]: jobId };
-      writeJobs(next);
-      adopt(next);
+      update(String(sourceId), jobId);
       setRefusals((current) => {
         if (!(String(sourceId) in current)) return current;
         const rest = { ...current };
@@ -115,28 +139,23 @@ export function useLibraryJobs() {
         return rest;
       });
     },
-    [adopt],
+    [update],
   );
   // Ends `jobId` only. A newer job stored for the same Source is kept and followed.
   const forget = useCallback(
-    (sourceId: number, jobId: string) => {
-      const stored = readJobs();
-      if (stored[String(sourceId)] === jobId) {
-        delete stored[String(sourceId)];
-        writeJobs(stored);
-      }
-      adopt(stored);
-    },
-    [adopt],
+    (sourceId: number, jobId: string) => update(String(sourceId), null, jobId),
+    [update],
   );
   // Another tab that starts, replaces or ends a job writes the shared map; follow it here.
   useEffect(() => {
     const follow = (event: StorageEvent) => {
-      if (event.key === null || event.key === JOBS_KEY) adopt(readJobs());
+      if (!shared.current || (event.key !== null && event.key !== JOBS_KEY)) return;
+      const stored = readStored();
+      if (stored) setJobs((current) => (sameJobs(current, stored) ? current : stored));
     };
     window.addEventListener("storage", follow);
     return () => window.removeEventListener("storage", follow);
-  }, [adopt]);
+  }, []);
   const refuse = useCallback((sourceId: number, message: string) => {
     setRefusals((current) => ({ ...current, [String(sourceId)]: message }));
   }, []);

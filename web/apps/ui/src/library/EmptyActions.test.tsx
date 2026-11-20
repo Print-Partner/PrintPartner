@@ -484,6 +484,62 @@ describe("GRE-1867 fix round 1: the files panel follows a remembered job that en
   );
 });
 
+/** Starts a job from the empty files panel of the Source on screen, through its row. */
+async function startFromPanel(source: Source) {
+  const region = await filesFor(source.name);
+  const action = source.source_kind === "github" ? "Sync" : "Upload ZIP";
+  fireEvent.click(await within(region).findByRole("button", { name: action }));
+  if (source.source_kind !== "github") {
+    fireEvent.change(screen.getByLabelText(`Upload ZIP for ${source.name}`), {
+      target: { files: [zipFile()] },
+    });
+  }
+  expect(await within(region).findByText(/is running/)).toBeTruthy();
+}
+
+const throwing = (method: "getItem" | "setItem" | "removeItem") =>
+  vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+    throw new DOMException("The store refused", "QuotaExceededError");
+  });
+
+const FAILURES = CASES.flatMap(([what, kind]) => [
+  [what, "a refused read", kind, ["getItem"]] as const,
+  [what, "a refused write", kind, ["setItem", "removeItem"]] as const,
+]);
+
+describe("GRE-1867 fix round 3: storage that throws never loses a job this tab follows", () => {
+  it.each(CASES)(
+    "with writes refused, starting a job for another Source keeps the %s running",
+    async (_, { source, other }) => {
+      throwing("setItem");
+      const core = scriptedCore({ sources: [ZIP, GITHUB] });
+      const router = renderAt(`/library/${source.id}`, core);
+      await startFromPanel(source);
+      await act(() => router.navigate(`/library/${other.id}`));
+      await startFromPanel(other);
+      await act(() => router.navigate(`/library/${source.id}`));
+      const region = await filesFor(source.name);
+      expect(await within(region).findByText(/is running/)).toBeTruthy();
+      expect(within(region).queryByRole("button")).toBeNull();
+      expect(core.sent).toHaveLength(2);
+    },
+  );
+
+  it.each(FAILURES)(
+    "when the %s ends with %s, the other Source's job keeps running",
+    async (_, _failure, { source, other, job, action }, methods) => {
+      const { region, answer } = await openRunning(source, job, { [other.id]: "other-1" });
+      for (const method of methods) throwing(method);
+      await act(async () => answer("error"));
+      expect(await within(region).findByRole("button", { name: action })).toBeTruthy();
+      fireEvent.click(screen.getByRole("link", { name: other.name }));
+      const elsewhere = await filesFor(other.name);
+      expect(await within(elsewhere).findByText(/is running/)).toBeTruthy();
+      expect(within(elsewhere).queryByRole("button")).toBeNull();
+    },
+  );
+});
+
 describe("GRE-1867 fix round 1: the files-panel button is never a silent no-op", () => {
   it.each([
     ["archive", "Upload ZIP"],

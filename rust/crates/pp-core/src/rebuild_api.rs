@@ -1109,7 +1109,8 @@ mod tests {
     }
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
-    /// print or queue item, so those handlers answer their own 404 with a code or detail.
+    /// print, queue item or Source to set as a Build's base, so those handlers answer
+    /// their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
         const CODES: [&str; 8] = [
             "integration_not_found",
@@ -1121,8 +1122,9 @@ mod tests {
             "source_not_found",
             "deduction_not_found",
         ];
-        const DETAILS: [&str; 6] = [
+        const DETAILS: [&str; 7] = [
             "beds[0]: Checkoff link not found",
+            "Project not found",
             "Checkoff burst not found",
             "History entry not found",
             "Unattributed print not found",

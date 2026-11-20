@@ -9,6 +9,7 @@ pub struct CreateBuildRequest {
     pub base_project_id: Option<crate::autosave::PositiveId>,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceAttachmentRequest {

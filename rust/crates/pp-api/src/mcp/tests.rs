@@ -26,6 +26,8 @@ mod reads;
 mod rebuild_plan;
 #[path = "tests/role_filament.rs"]
 mod role_filament;
+#[path = "tests/session_keys.rs"]
+mod session_keys;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
 #[path = "tests/writer_failures.rs"]
@@ -52,8 +54,9 @@ fn initialize() -> Value {
 struct McpServer {
     origin: String,
     client: Client,
+    /// Before `owner`: the server stops before the writer shuts down.
+    task: Serving,
     owner: pp_storage::WriterOwner,
-    task: tokio::task::JoinHandle<()>,
     /// Last field: removed only after `owner` has dropped, even on panic.
     _directory: crate::scratch::Scratch,
 }
@@ -123,6 +126,17 @@ impl McpServer {
                 &directory.to_string_lossy().replace('\'', "''"),
             ))
             .unwrap();
+        Self::serve(directory, flag, tenant, configure, observations).await
+    }
+
+    /// Serves the data in `directory` on a fresh loopback port.
+    async fn serve(
+        directory: crate::scratch::Scratch,
+        flag: Option<&str>,
+        tenant: &str,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+        observations: Option<Arc<dyn crate::farm::FarmObservations>>,
+    ) -> Self {
         let owner = pp_storage::WriterOwner::open(&directory, pp_storage::Limits::default())
             .unwrap()
             .0;
@@ -150,9 +164,28 @@ impl McpServer {
             origin,
             client: Client::builder().no_proxy().build().unwrap(),
             owner,
-            task,
+            task: Serving(task),
             _directory: directory,
         }
+    }
+
+    /// Stops serving, shuts the writer down and serves the same data
+    /// directory again, flag on for `default`, as a process restart would.
+    async fn restart(self) -> Self {
+        let Self {
+            client,
+            owner,
+            task,
+            _directory: directory,
+            ..
+        } = self;
+        drop(client);
+        drop(task);
+        tokio::task::spawn_blocking(move || owner.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        Self::serve(directory, Some("1"), "default", |config| config, None).await
     }
 
     async fn auth(&self, request: auth::Request) -> auth::Outcome {
@@ -290,9 +323,12 @@ fn lan_peers(router: Router, origin: &str) -> Router {
     ))
 }
 
-impl Drop for McpServer {
+/// The server task, stopped when its server drops.
+struct Serving(tokio::task::JoinHandle<()>);
+
+impl Drop for Serving {
     fn drop(&mut self) {
-        self.task.abort();
+        self.0.abort();
     }
 }
 

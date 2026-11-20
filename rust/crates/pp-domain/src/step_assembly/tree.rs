@@ -97,7 +97,7 @@ pub(super) fn build(
     let mut roots = Vec::new();
     for &definition in structure.definitions.keys() {
         if !placed.contains(&definition) {
-            roots.push(builder.subtree(definition, &mut cancelled)?);
+            builder.add_root(definition, &mut roots, &mut cancelled)?;
         }
     }
     Ok(PartTree { roots })
@@ -193,32 +193,33 @@ impl Builder<'_> {
         })
     }
 
-    /// The whole subtree of the root `definition`, built depth first with an
-    /// explicit path whose length is the level, so the level cap is checked
-    /// before each descent.
-    fn subtree(
+    /// Adds the whole subtree of the root `definition` to `roots`, built depth
+    /// first with an explicit path whose length is the level, so the level
+    /// cap is checked before each descent.
+    fn add_root(
         &mut self,
         definition: u64,
+        roots: &mut Vec<PartNode>,
         cancelled: &mut impl FnMut() -> bool,
-    ) -> Result<PartNode, StepError> {
+    ) -> Result<(), StepError> {
         let children = self.children;
         let below = |definition| children.get(&definition).map_or(&[][..], Vec::as_slice);
         let root = self.node(definition, None, 1, cancelled)?;
         let mut path = vec![(root, below(definition).iter())];
-        loop {
-            let level = path.len();
-            let (_, usages) = path.last_mut().expect("the path holds the root");
+        while let Some((node, mut usages)) = path.pop() {
             if let Some(usage) = usages.next() {
-                let node = self.node(usage.child, usage.instance.as_ref(), level + 1, cancelled)?;
-                path.push((node, below(usage.child).iter()));
-                continue;
-            }
-            let (node, _) = path.pop().expect("the path holds the root");
-            match path.last_mut() {
-                Some((parent, _)) => parent.children.push(node),
-                None => return Ok(node),
+                // `node` is at level `path.len() + 1`, its child one below.
+                let level = path.len() + 2;
+                let child = self.node(usage.child, usage.instance.as_ref(), level, cancelled)?;
+                path.push((node, usages));
+                path.push((child, below(usage.child).iter()));
+            } else if let Some((parent, _)) = path.last_mut() {
+                parent.children.push(node);
+            } else {
+                roots.push(node);
             }
         }
+        Ok(())
     }
 }
 

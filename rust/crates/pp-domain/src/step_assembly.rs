@@ -6,7 +6,8 @@
 //! `PRODUCT`, and each `NEXT_ASSEMBLY_USAGE_OCCURRENCE` places one definition
 //! inside another. [`product_structure`] reads the file once, checks every
 //! statement against the contract below, keeps those four kinds and drops the
-//! rest (the geometry) as it streams past. GRE-1855 builds the tree.
+//! rest (the geometry) as it streams past. [`part_tree`] builds the assembly
+//! tree from those records (GRE-1855).
 //!
 //! # Input contract
 //!
@@ -65,6 +66,10 @@ use std::fmt;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod tree;
+
+pub use tree::{PartNode, PartTree, TreeLimits, part_tree};
+
 /// The longest keyword, in bytes; the longest AP242 entity name is under 70.
 const MAX_KEYWORD: usize = 128;
 /// How many bytes are read between checks of the cancel flag.
@@ -111,7 +116,7 @@ impl Default for Limits {
     }
 }
 
-/// Which bound a [`StepError::TooLarge`] read passed.
+/// Which bound a [`StepError::TooLarge`] read or tree build passed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limit {
     FileBytes,
@@ -126,6 +131,12 @@ pub enum Limit {
     KeywordBytes,
     /// An instance number of 2^64 or more.
     InstanceNumber,
+    /// [`TreeLimits::max_nodes`].
+    Nodes,
+    /// [`TreeLimits::max_levels`].
+    Levels,
+    /// [`TreeLimits::max_name_bytes`].
+    NameBytes,
 }
 
 #[derive(Debug)]
@@ -151,7 +162,13 @@ pub enum StepError {
     InvalidStructure {
         entity: u64,
     },
-    /// Over this one of the [`Limits`].
+    /// The file has no `PRODUCT_DEFINITION`, so its tree would be empty.
+    NoProducts,
+    /// This definition contains itself, directly or through its children.
+    Cycle {
+        entity: u64,
+    },
+    /// Over this one of the [`Limits`] or [`TreeLimits`].
     TooLarge(Limit),
     Cancelled,
 }
@@ -165,6 +182,8 @@ impl fmt::Display for StepError {
             Self::Malformed { at } => write!(f, "the STEP file is not well formed at byte {at}"),
             Self::Unsupported { at } => write!(f, "unsupported STEP form at byte {at}"),
             Self::InvalidStructure { entity } => write!(f, "invalid product record #{entity}"),
+            Self::NoProducts => f.write_str("the STEP file has no product definitions"),
+            Self::Cycle { entity } => write!(f, "product definition #{entity} contains itself"),
             Self::TooLarge(limit) => write!(f, "over the {limit:?} limit"),
             Self::Cancelled => f.write_str("cancelled"),
         }

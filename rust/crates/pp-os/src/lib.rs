@@ -492,6 +492,24 @@ impl Dir {
             .rename_replace(checked_name(from)?, checked_name(to)?)
     }
 
+    /// Rename the entry `from`, a link itself rather than its target, to `to`
+    /// in `target`, replacing an existing `to` that is not a directory:
+    /// `renameat` with two handles on Unix. Both directories must be on one
+    /// volume. Follow with [`Dir::sync`] on both to make the move durable.
+    pub fn rename_to(&self, from: &str, target: &Dir, to: &str) -> io::Result<()> {
+        self.inner
+            .rename_to(checked_name(from)?, &target.inner, checked_name(to)?)
+    }
+
+    /// Remove the entry `name` and, when it is a directory, everything under
+    /// it, without following any link: each directory is opened relative to
+    /// its parent with `O_NOFOLLOW | O_DIRECTORY` on Unix, and a link or
+    /// junction is removed itself. Fails with `NotFound` when `name` is
+    /// missing.
+    pub fn remove_all(&self, name: &str) -> io::Result<()> {
+        self.inner.remove_all(OsStr::new(checked_name(name)?))
+    }
+
     /// Open the entry `name` itself, without following it, only to read and
     /// change its owner and DACL: `READ_CONTROL | WRITE_DAC`, without the
     /// `SYNCHRONIZE` every other open adds, so the owner of a file whose DACL

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router";
 import { rowControlId } from "./ZipUpload";
 
@@ -13,7 +14,8 @@ function isGithub(kind: string): boolean {
  * The next action under an empty Source-files view in Library. Its button presses the
  * Source's own Upload ZIP or Sync control on its row, so the row's existing flow runs and
  * this view sends nothing itself. While that row follows an import or sync, the view says so
- * and offers no button.
+ * and offers no button. A press that finds the row control missing or disabled says so
+ * instead of doing nothing.
  */
 export function LibraryFilesNext({
   sourceId,
@@ -25,12 +27,13 @@ export function LibraryFilesNext({
   running: boolean;
 }) {
   const github = isGithub(kind);
+  const [unavailable, setUnavailable] = useState<string | null>(null);
   if (running) {
     return (
       <p className="pp-muted">
         {github
-          ? "Its sync is running. Its files appear here when the sync finishes."
-          : "Its import is running. Its files appear here when the import finishes."}
+          ? "Its sync is running. If it succeeds, its files appear here."
+          : "Its import is running. If it succeeds, its files appear here."}
       </p>
     );
   }
@@ -45,12 +48,20 @@ export function LibraryFilesNext({
         className="pp-button"
         onClick={() => {
           const target = document.getElementById(control);
-          target?.focus();
-          target?.click();
+          if (!(target instanceof HTMLInputElement || target instanceof HTMLButtonElement)) {
+            setUnavailable("This Source's row is not on this page. Reload Library to find it.");
+          } else if (target.disabled) {
+            setUnavailable("This Source's row is busy. Its status is in the Sources table.");
+          } else {
+            setUnavailable(null);
+            target.focus();
+            target.click();
+          }
         }}
       >
         {github ? "Sync" : "Upload ZIP"}
-      </button>
+      </button>{" "}
+      <span role="status">{unavailable}</span>
     </p>
   );
 }

@@ -4,7 +4,8 @@ import { createMemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
-import { JOBS_KEY } from "./ZipUpload";
+import { LibraryFilesNext } from "./FilesNext";
+import { JOBS_KEY, rowControlId } from "./ZipUpload";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -105,18 +106,29 @@ function scriptedCore({
   sourcesFail?: boolean;
 }) {
   const sent: Sent[] = [];
-  const running = (path: string) =>
+  const held = new Map<string, Promise<Response>>();
+  const job = (id: string, status: "running" | "error") =>
     json({
-      job_id: decodeURIComponent(path.slice("/api/v1/jobs/".length)),
+      job_id: id,
       kind: "supplied-source-import",
-      status: "running",
-      message: "Running",
+      status,
+      message: status === "error" ? "Job failed" : "Running",
       progress: null,
       result: null,
-      error: null,
+      error: status === "error" ? "The archive is damaged" : null,
       created_at: "2026-11-20T10:00:00.000Z",
-      finished_at: null,
+      finished_at: status === "error" ? "2026-11-20T10:01:00.000Z" : null,
     });
+  /** Holds every read of job `id` until the returned function answers it with `status`. */
+  const hold = (id: string) => {
+    let answer: (status: "running" | "error") => void = () => {};
+    held.set(id, new Promise((resolve) => (answer = (status) => resolve(job(id, status)))));
+    return answer;
+  };
+  const jobRead = (path: string) => {
+    const id = decodeURIComponent(path.slice("/api/v1/jobs/".length));
+    return held.get(id) ?? job(id, "running");
+  };
   const layers = () => {
     const named = sources.find((item) => item.id === base);
     const layer = { id: 10, layer_order: 0, layer_type: "base", project_id: base ?? null };
@@ -128,7 +140,7 @@ function scriptedCore({
       revision_id: files[id]?.revision_id ?? null,
       files: files[id]?.files ?? [],
     });
-  const read = (path: string): Response => {
+  const read = (path: string): Response | Promise<Response> => {
     if (path === "/health") return json(health);
     if (path === "/api/v1/sources/activity?limit=100") return json({ events: [] });
     if (path === "/api/v1/sources") {
@@ -138,7 +150,7 @@ function scriptedCore({
     }
     const list = /^\/api\/v1\/sources\/(\d+)\/files$/.exec(path);
     if (list) return fileList(Number(list[1]));
-    if (path.startsWith("/api/v1/jobs/")) return running(path);
+    if (path.startsWith("/api/v1/jobs/")) return jobRead(path);
     if (path === "/api/v2/plans/5") return json(summary);
     if (path === "/api/v2/plans/5/layers") return layers();
     return json({ detail: "not found" }, 404);
@@ -158,7 +170,7 @@ function scriptedCore({
   const fetchMock = vi.fn((path: string, init?: RequestInit) =>
     Promise.resolve(!init?.method || init.method === "GET" ? read(path) : write(path, init)),
   );
-  return { fetchMock, sent };
+  return { fetchMock, sent, hold };
 }
 
 function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
@@ -173,6 +185,16 @@ function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
 }
 
 const filesFor = (name: string) => screen.findByRole("region", { name: `Files for ${name}` });
+
+/** Another tab writing the job map, as the browser reports it to this one. */
+function otherTabWrites(jobs: Record<string, string>) {
+  const oldValue = localStorage.getItem(JOBS_KEY);
+  const newValue = JSON.stringify(jobs);
+  localStorage.setItem(JOBS_KEY, newValue);
+  act(() => {
+    window.dispatchEvent(new StorageEvent("storage", { key: JOBS_KEY, oldValue, newValue }));
+  });
+}
 
 const zipFile = () => new File(["PK"], "rack.zip", { type: "application/zip" });
 
@@ -254,7 +276,7 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
     fireEvent.change(input, { target: { files: [zipFile()] } });
     expect(
       await within(region).findByText(
-        "Its import is running. Its files appear here when the import finishes.",
+        "Its import is running. If it succeeds, its files appear here.",
       ),
     ).toBeTruthy();
     expect(within(region).queryByRole("button", { name: "Upload ZIP" })).toBeNull();
@@ -290,7 +312,7 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
     fireEvent.click(within(region).getByRole("button", { name: "Sync" }));
     expect(
       await within(region).findByText(
-        "Its sync is running. Its files appear here when the sync finishes.",
+        "Its sync is running. If it succeeds, its files appear here.",
       ),
     ).toBeTruthy();
     expect(within(region).queryByRole("button", { name: "Sync" })).toBeNull();
@@ -367,5 +389,107 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
     ).toBeTruthy();
     fireEvent.click(within(region).getByRole("link", { name: "Open in Library" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/library/1"));
+  });
+});
+
+const CASES = [
+  ["import", { source: ZIP, other: GITHUB, job: "upload-7", action: "Upload ZIP" }],
+  ["sync", { source: GITHUB, other: ZIP, job: "sync-7", action: "Sync" }],
+] as const;
+
+/** Opens a Source whose remembered job is `job`, with that job's reads held. */
+async function openRunning(source: Source, job: string, jobs: Record<string, string> = {}) {
+  localStorage.setItem(JOBS_KEY, JSON.stringify({ ...jobs, [source.id]: job }));
+  const core = scriptedCore({ sources: [ZIP, GITHUB] });
+  const answer = core.hold(job);
+  renderAt(`/library/${source.id}`, core);
+  const region = await filesFor(source.name);
+  expect(await within(region).findByText(/^Its (import|sync) is running/)).toBeTruthy();
+  return { core, region, answer };
+}
+
+describe("GRE-1867 fix round 1: the files panel follows a remembered job that ends", () => {
+  it.each(CASES)(
+    "after another tab ends the %s first, the panel offers its action again and the late answer changes nothing",
+    async (_, { source, job, action }) => {
+      const { core, region, answer } = await openRunning(source, job);
+      otherTabWrites({});
+      expect(await within(region).findByRole("button", { name: action })).toBeTruthy();
+      expect(within(region).queryByText(/is running/)).toBeNull();
+      await act(async () => answer("error"));
+      expect(within(region).getByRole("button", { name: action })).toBeTruthy();
+      expect(core.sent).toEqual([]);
+    },
+  );
+
+  it.each(CASES)(
+    "when the %s entry is gone without a storage event, its own failed answer brings the action back",
+    async (_, { source, job, action }) => {
+      const { core, region, answer } = await openRunning(source, job);
+      localStorage.setItem(JOBS_KEY, "{}");
+      await act(async () => answer("error"));
+      expect(await within(region).findByRole("button", { name: action })).toBeTruthy();
+      expect(within(region).queryByText(/is running/)).toBeNull();
+      expect(core.sent).toEqual([]);
+    },
+  );
+
+  it.each(CASES)(
+    "a newer %s from another tab keeps the panel running when the older one fails late",
+    async (_, { source, job, action }) => {
+      const { core, region, answer } = await openRunning(source, job);
+      otherTabWrites({ [source.id]: `${job}-newer` });
+      await act(async () => answer("error"));
+      expect(within(region).getByText(/is running/)).toBeTruthy();
+      expect(within(region).queryByRole("button", { name: action })).toBeNull();
+      expect(JSON.parse(localStorage.getItem(JOBS_KEY) ?? "")).toEqual({
+        [source.id]: `${job}-newer`,
+      });
+      await waitFor(() =>
+        expect(core.fetchMock.mock.calls.map(([path]) => path)).toContain(
+          `/api/v1/jobs/${job}-newer`,
+        ),
+      );
+    },
+  );
+
+  it.each(CASES)(
+    "a storage event for another Source leaves the panel for the %s as it was",
+    async (_, { source, other, job, action }) => {
+      const { region } = await openRunning(source, job, { [other.id]: "other-1" });
+      otherTabWrites({ [source.id]: job });
+      expect(within(region).getByText(/is running/)).toBeTruthy();
+      expect(within(region).queryByRole("button", { name: action })).toBeNull();
+    },
+  );
+});
+
+describe("GRE-1867 fix round 1: the files-panel button is never a silent no-op", () => {
+  it.each([
+    ["archive", "Upload ZIP"],
+    ["github", "Sync"],
+  ])("a %s Source's %s says so when its row control is not on the page", (kind, action) => {
+    render(<LibraryFilesNext sourceId={1} kind={kind} running={false} />);
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    expect(screen.getByRole("status").textContent).toBe(
+      "This Source's row is not on this page. Reload Library to find it.",
+    );
+  });
+
+  it("says the row is busy when its control is disabled, and presses nothing", () => {
+    render(
+      <>
+        <LibraryFilesNext sourceId={1} kind="archive" running={false} />
+        <input id={rowControlId(1, "upload")} type="file" disabled aria-label="row input" />
+      </>,
+    );
+    const input = screen.getByLabelText("row input");
+    const opened = vi.fn();
+    input.addEventListener("click", opened);
+    fireEvent.click(screen.getByRole("button", { name: "Upload ZIP" }));
+    expect(opened).not.toHaveBeenCalled();
+    expect(screen.getByRole("status").textContent).toBe(
+      "This Source's row is busy. Its status is in the Sources table.",
+    );
   });
 });

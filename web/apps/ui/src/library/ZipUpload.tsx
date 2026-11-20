@@ -103,12 +103,29 @@ export function useLibraryJobs() {
       return rest;
     });
   }, []);
-  const forget = useCallback((sourceId: number) => {
-    const next = readJobs();
-    if (!(String(sourceId) in next)) return;
-    delete next[String(sourceId)];
-    writeJobs(next);
-    setJobs({ ...next });
+  // Ends `jobId` only. A newer job for the same Source, in storage or in this tab, stays.
+  // This tab's map is updated even when another tab already removed the stored entry.
+  const forget = useCallback((sourceId: number, jobId: string) => {
+    const key = String(sourceId);
+    const stored = readJobs();
+    if (stored[key] === jobId) {
+      delete stored[key];
+      writeJobs(stored);
+    }
+    setJobs((current) => {
+      if (current[key] !== jobId) return current;
+      const rest = { ...current };
+      delete rest[key];
+      return rest;
+    });
+  }, []);
+  // Another tab that starts, replaces or ends a job writes the shared map; follow it here.
+  useEffect(() => {
+    const follow = (event: StorageEvent) => {
+      if (event.key === null || event.key === JOBS_KEY) setJobs(readJobs());
+    };
+    window.addEventListener("storage", follow);
+    return () => window.removeEventListener("storage", follow);
   }, []);
   const refuse = useCallback((sourceId: number, message: string) => {
     setRefusals((current) => ({ ...current, [String(sourceId)]: message }));
@@ -169,7 +186,7 @@ export function SourceRows({
   jobId: string | undefined;
   note: string | undefined;
   remember: (sourceId: number, jobId: string) => void;
-  forget: (sourceId: number) => void;
+  forget: (sourceId: number, jobId: string) => void;
   /** This row's files are the ones on screen. Clicking the name clears that. */
   selected?: boolean;
 }) {
@@ -183,6 +200,18 @@ export function SourceRows({
   );
   const sending = useRef(false);
   const busy = phase.kind === "uploading" || phase.kind === "importing";
+
+  // A job that left the map while this row still showed it running was ended by another
+  // tab, which read its result. Stop showing it and read the Source again.
+  const followed = useRef(jobId);
+  useEffect(() => {
+    const previous = followed.current;
+    followed.current = jobId;
+    if (previous && !jobId) {
+      setPhase((current) => (current.kind === "importing" ? { kind: "idle" } : current));
+      void client.invalidateQueries({ queryKey: ["core", "sources"] });
+    }
+  }, [jobId, client]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -222,13 +251,13 @@ export function SourceRows({
           } else {
             setPhase({ kind: "idle" });
           }
-          forget(source.id);
+          forget(source.id, jobId);
         },
         (error: unknown) => {
           if (stopped || isAbort(error)) return;
           if (error instanceof CoreError && error.status === 404) {
             setPhase({ kind: "idle" });
-            forget(source.id);
+            forget(source.id, jobId);
             void client.invalidateQueries({ queryKey: ["core", "sources"] });
             return;
           }

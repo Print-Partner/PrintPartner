@@ -1770,11 +1770,11 @@ fn gre1396_preview_strips_markers_anywhere_and_reads_3mf() {
     owner.shutdown().unwrap();
 }
 
-// The preview runs on the storage writer and accepts any pasted name, so
-// marker removal must stay linear in the name's length.
+// The preview runs on the storage writer and accepts any pasted name. Marker
+// removal is linear for repeated nesting like this; see `naming::markers`.
 #[cfg(feature = "desktop_rebuild")]
 #[test]
-fn gre1396_preview_strips_markers_from_a_30000_character_name_in_one_pass() {
+fn gre1396_preview_strips_markers_from_a_30000_character_name_within_2_seconds() {
     let fixture = Fixture::new();
     let owner = fixture.open();
     let client = owner.local_source_catalog();

@@ -81,7 +81,7 @@ describe("parsers", () => {
     expect(parseStlPath(filename)).toEqual({ role, quantity: 1, partSlug, filename });
   });
 
-  it("strips markers from a 30,000-character name in one pass", () => {
+  it("strips markers from a 30,000-character repeated-nesting name within 2 seconds", () => {
     const filename = `Panel_${"[a[c]]_".repeat(4285)}Clip.stl`;
     const started = performance.now();
     expect(parsePartSlug(filename)).toBe("Panel_Clip");
@@ -166,5 +166,134 @@ describe("Voron repositories", () => {
     ],
   ])("voron-downdraft %s", (path, role, quantity, partSlug) => {
     expect(parseStlPath(path)).toMatchObject({ role, quantity, partSlug });
+  });
+});
+
+// The marker removal at 342b2c09 (stl-naming.ts `markerStrip`, parsers.ts `stripMarker` and
+// `parsePartSlug`), kept to check the one-scan passes against. Test names have no folders,
+// so `basename` is the identity here.
+const reference342b2c09 = (() => {
+  const WORD_CHARACTER = /^[\p{Alphabetic}\p{N}]$/u;
+  const MODEL_EXTENSION_RE = /\.(?:stl|3mf)$/i;
+  const THREE_MF_RE = /\.3mf$/i;
+  type MarkerStrip = { re: RegExp; anywhere: boolean };
+  function markerStrip(marker: string): MarkerStrip {
+    const characters = [...marker];
+    const anywhere =
+      !WORD_CHARACTER.test(characters[0]!) && !WORD_CHARACTER.test(characters.at(-1)!);
+    const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return {
+      re: new RegExp(anywhere ? `([ _-]?)${escaped}([ _-]?)` : `^()${escaped}([ _-]?)`, "i"),
+      anywhere,
+    };
+  }
+  function stripMarker(stem: string, strip: MarkerStrip): string {
+    let current = stem;
+    for (;;) {
+      const match = strip.re.exec(current);
+      if (!match) return current;
+      const [whole, before = "", after = ""] = match;
+      const end = match.index + whole.length;
+      const keep = match.index > 0 && end < current.length ? before || after : "";
+      current = current.slice(0, match.index) + keep + current.slice(end);
+      if (!strip.anywhere) return current;
+    }
+  }
+  return function parsePartSlug(file: string, prof: ReturnType<typeof namingProfileFromDict>) {
+    const markerStrips = prof.roles
+      .flatMap((role) => role.markers)
+      .filter((marker) => marker.trim())
+      .map(markerStrip);
+    const name = file.replace(MODEL_EXTENSION_RE, "");
+    let stem = name;
+    if (prof.slugStripMarkers) {
+      for (const strip of markerStrips) {
+        stem = stripMarker(stem, strip);
+      }
+      for (let before = name; stem !== before; ) {
+        before = stem;
+        for (const strip of markerStrips) {
+          if (strip.anywhere) stem = stripMarker(stem, strip);
+        }
+      }
+    }
+    const quantityStrip = THREE_MF_RE.test(file) ? prof.quantityStrip3mfRe : prof.quantityStripRe;
+    if (prof.slugStripQuantity && quantityStrip) {
+      stem = stem.replace(quantityStrip, "");
+    }
+    return stem || name;
+  };
+})();
+
+describe("marker removal matches 342b2c09", () => {
+  const profile = (markers: Partial<Record<"primary" | "accent", string[]>>) =>
+    namingProfileFromDict(
+      mergeNamingProfiles(validateNamingProfile(DEFAULT_NAMING_PROFILE), {
+        roles: Object.entries(markers).map(([id, list]) => ({ id: id as "primary", markers: list })),
+      }),
+    );
+  // Role-ordered marker lists match `PROFILES` in rust/crates/pp-storage/src/catalog/naming/markers.rs.
+  const profiles = {
+    default: profile({}),
+    "multi-part [a]-[c]": profile({ primary: ["[a]-[c]"] }),
+    "non-ASCII [Σ]": profile({ accent: ["[Σ]"] }),
+    "prefix letter A": profile({ accent: ["A"] }),
+  };
+  // The same token list, generator and seed as markers.rs.
+  const TOKENS = [
+    "[", "]", "a", "A", "c", "C", "o", "O", "-", "_", " ", ".", "P", "n", "l", "x", "2",
+    "Σ", "ς", "σ", "é", "中", "[a]", "[A]", "[c]", "[o]", "[Σ]", "[ς]", "[a]-[c]", "[a[c]]",
+  ];
+  const SEED = 1396;
+  const NAMES = 20_000;
+  function mulberry32(seed: number) {
+    let state = seed >>> 0;
+    return () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return (t ^ (t >>> 14)) >>> 0;
+    };
+  }
+  const random = mulberry32(SEED);
+  const names = Array.from({ length: NAMES }, () => {
+    const length = random() % 41;
+    let name = "";
+    while (name.length < length) name += TOKENS[random() % TOKENS.length];
+    return name;
+  });
+
+  it.each(Object.entries(profiles))(
+    `gives the 342b2c09 slug and role for ${NAMES} generated names (seed ${SEED}) with the %s profile`,
+    (_, prof) => {
+      let changed = 0;
+      for (const name of names) {
+        const filename = `${name}.stl`;
+        const expected = reference342b2c09(filename, prof);
+        if (expected !== name) changed += 1;
+        const actual = parseStlPath(filename, prof);
+        // `parseRole` is unchanged since 342b2c09; the role is asserted so a change shows here.
+        if (actual.partSlug !== expected || actual.role !== parseRole(filename, prof)) {
+          expect({ name, slug: actual.partSlug, role: actual.role }).toEqual({
+            name,
+            slug: expected,
+            role: parseRole(filename, prof),
+          });
+        }
+      }
+      // The generator must exercise marker removal, not only pass names through.
+      expect(changed).toBeGreaterThan(NAMES / 2);
+    },
+  );
+
+  it.each([
+    ["Panel[c]-_[a].stl", profiles.default, "accent", "Panel"],
+    ["Panel[a]-[c]_Clip.stl", profiles["multi-part [a]-[c]"], "primary", "Panel_Clip"],
+    // `parseRole` matches markers with a lower-case `includes`, so `[ς]` is not `[Σ]` there.
+    ["Panel_[ς]_Clip.stl", profiles["non-ASCII [Σ]"], "primary", "Panel_Clip"],
+  ])("keeps the 342b2c09 result for %s", (filename, prof, role, partSlug) => {
+    expect(parseStlPath(filename, prof)).toMatchObject({ role, partSlug });
+    expect(reference342b2c09(filename, prof)).toBe(partSlug);
   });
 });

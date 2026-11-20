@@ -618,7 +618,7 @@ pub(super) fn parse(
             b.visit(0)?;
             for marker in &r.markers {
                 b.visit(0)?;
-                // One pass compares each character with each marker.
+                // Each marker's pass compares each character with it once.
                 b.comparison(
                     slug.len()
                         .saturating_add(1)

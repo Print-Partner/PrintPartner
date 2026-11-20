@@ -801,91 +801,10 @@ pub(crate) fn quantity_capture(regex: &regress::Regex, filename: &str) -> Option
     captured.filter(|s| !s.is_empty())
 }
 
-/// Whether `marker` starts and ends with a symbol, so `strip_markers` removes
-/// it anywhere in the name rather than only as a prefix.
 #[cfg(feature = "desktop_rebuild")]
-fn strips_anywhere(marker: &str) -> bool {
-    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-    !word(marker.chars().next()) && !word(marker.chars().next_back())
-}
-
-/// `c` in lower case when that is one character, else `c`. Node's
-/// `foldCharacter` does the same, so both compare markers alike.
+mod markers;
 #[cfg(feature = "desktop_rebuild")]
-fn fold(c: char) -> char {
-    let mut lower = c.to_lowercase();
-    match (lower.next(), lower.next()) {
-        (Some(folded), None) => folded,
-        _ => c,
-    }
-}
-
-/// Removes role markers from a part slug, as Node's `stripMarkers` does.
-///
-/// A marker that starts and ends with a symbol, like `[a]`, cannot be part of
-/// a word, so it goes anywhere in the name. One left-to-right pass copies the
-/// name and drops a marker, ignoring case, as soon as the copy ends with it.
-/// A marker that removing a nested one exposes, as in `Panel_[a[c]]_Clip`,
-/// goes too. Each removal takes one separator (space, `_` or `-`) on each
-/// side, and puts one back when text remains on both sides: `Duct_[c]_Left`
-/// becomes `Duct_Left`. A marker that starts or ends with a letter or digit,
-/// like a custom `A`, then goes once as a prefix, so `gear` keeps its `a`.
-///
-/// Each removal shortens the copy or consumes input, so the work is linear in
-/// the name's length times the markers' total length.
-#[cfg(feature = "desktop_rebuild")]
-pub(crate) fn strip_markers(stem: &str, markers: &[&str]) -> String {
-    let separator = |c: &char| matches!(c, ' ' | '_' | '-');
-    let folded: Vec<(bool, Vec<char>)> = markers
-        .iter()
-        .filter(|marker| !marker.is_empty())
-        .map(|marker| (strips_anywhere(marker), marker.chars().map(fold).collect()))
-        .collect();
-    let input: Vec<char> = stem.chars().collect();
-    let mut out: Vec<char> = Vec::with_capacity(input.len());
-    let mut out_folded: Vec<char> = Vec::with_capacity(input.len());
-    let mut next = 0;
-    while let Some(&c) = input.get(next) {
-        next += 1;
-        out.push(c);
-        out_folded.push(fold(c));
-        while let Some((_, marker)) = folded
-            .iter()
-            .find(|(anywhere, marker)| *anywhere && out_folded.ends_with(marker))
-        {
-            let start = out.len() - marker.len();
-            out.truncate(start);
-            out_folded.truncate(start);
-            let before = out.last().copied().filter(separator);
-            if before.is_some() {
-                out.pop();
-                out_folded.pop();
-            }
-            let after = input.get(next).copied().filter(separator);
-            if after.is_some() {
-                next += 1;
-            }
-            if let Some(keep) = before.or(after)
-                && !out.is_empty()
-                && next < input.len()
-            {
-                out.push(keep);
-                out_folded.push(fold(keep));
-            }
-        }
-    }
-    let mut rest = out.as_slice();
-    for (_, marker) in folded.iter().filter(|(anywhere, _)| !anywhere) {
-        if rest.len() >= marker.len() && rest.iter().zip(marker).all(|(&c, &m)| fold(c) == m) {
-            rest = &rest[marker.len()..];
-            if rest.first().is_some_and(separator) {
-                rest = &rest[1..];
-            }
-        }
-    }
-    rest.iter().collect()
-}
-
+pub(crate) use markers::strip_markers;
 #[cfg(feature = "desktop_rebuild")]
 mod preview;
 #[cfg(feature = "desktop_rebuild")]

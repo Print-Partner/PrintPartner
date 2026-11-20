@@ -178,7 +178,7 @@ describe("UI14-01 Library lists Sources with revision, sync state and activity",
       "/library",
       core(() => json({ sources: [], events: [] })),
     );
-    expect(await screen.findByText("No Sources yet. Sources you add appear here.")).toBeTruthy();
+    expect(await screen.findByText(/^No Sources yet\. Press Add Source/)).toBeTruthy();
   });
 });
 

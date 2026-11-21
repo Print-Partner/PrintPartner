@@ -16,7 +16,7 @@ import {
   groupByFolder,
   sourceFilesQuery,
   type SourceFile,
-} from "./sourceFiles";
+} from "./sourceFilesModel";
 
 /**
  * Files of the selected Source, grouped by folder. An STL thumbnail is requested

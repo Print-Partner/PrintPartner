@@ -9,7 +9,7 @@ import { ScreenTemplate } from "../screen/ScreenTemplate";
 import { AddSource } from "./AddSourceDialog";
 import { LibraryFilesNext } from "./FilesNext";
 import { SourceFiles } from "./SourceFiles";
-import { selectedSourceId } from "./sourceFiles";
+import { selectedSourceId } from "./sourceFilesModel";
 import {
   ACTIVITY_LIMIT,
   eventText,

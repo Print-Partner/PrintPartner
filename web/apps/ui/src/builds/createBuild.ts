@@ -150,23 +150,24 @@ export async function startCreate(client: QueryClient, body: CreateBuildRequest)
  * The Builds list read after the create's answer, or null when a newer one replaced it. A list
  * read already in flight may have started before the create, so it is cancelled rather than
  * joined. The read is not the Builds query's own fetch, so leaving Builds cannot cancel it or
- * put the list from before the create back; a newer read aborts it, and it never writes over a
- * list the cache got after it started.
+ * put the list from before the create back; a newer read aborts it. A list the cache got while
+ * this read ran was read after the create too, and may be newer, so that list wins.
  */
 async function freshList(client: QueryClient): Promise<ProfileList | null> {
   const read = ++listRead;
   listAbort.abort();
   const abort = (listAbort = new AbortController());
   await client.cancelQueries({ queryKey: buildsQuery.queryKey });
-  const since = client.getQueryState(buildsQuery.queryKey)?.dataUpdatedAt ?? 0;
+  // A count, not a time, so two writes in the same millisecond still differ.
+  const writes = client.getQueryState(buildsQuery.queryKey)?.dataUpdateCount ?? 0;
   const list = await readCore("listBuilds", {}, abort.signal).catch((error: unknown) => {
     if (read === listRead) throw error;
   });
   if (!list || read !== listRead) return null;
-  if ((client.getQueryState(buildsQuery.queryKey)?.dataUpdatedAt ?? 0) <= since) {
-    client.setQueryData(buildsQuery.queryKey, list);
+  if ((client.getQueryState(buildsQuery.queryKey)?.dataUpdateCount ?? 0) > writes) {
+    return client.getQueryData<ProfileList>(buildsQuery.queryKey) ?? null;
   }
-  return list;
+  return client.setQueryData(buildsQuery.queryKey, list) ?? null;
 }
 
 /** Looks for the exact name in a fresh Builds list, as docs/gre-792-builds-http.md says. */

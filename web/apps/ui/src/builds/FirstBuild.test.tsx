@@ -714,4 +714,33 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
       );
     }
   });
+
+  it("a check never answers with a list older than the one Builds shows", async () => {
+    let release: () => void = () => {};
+    let commit: () => ProfileSummary = () => storedBuild(0, "");
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      list: (read, snapshot) =>
+        read === 2 ? new Promise((resolve) => (release = () => resolve(snapshot))) : undefined,
+      answer: (write) => {
+        commit = write;
+        return Promise.resolve(problem(502, "Bad Gateway", "unavailable"));
+      },
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Late"));
+    await within(dialog()).findByText("Checking the Builds list.");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("link", { name: "Library" }));
+    await heading("Library");
+    commit(); // The create lands after the check's read saw an empty list.
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    const table = await screen.findByRole("table", { name: "Builds" });
+    expect(within(table).getByRole("link", { name: "Late" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    release();
+    expect((await within(dialog()).findByRole("alert")).textContent).toContain("so it was created");
+    const cached = lastClient.getQueryData<{ profiles: ProfileSummary[] }>(["core", "builds"]);
+    expect(cached?.profiles.map((build) => build.name)).toEqual(["Late"]);
+  });
 });

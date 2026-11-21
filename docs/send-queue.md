@@ -323,8 +323,12 @@ to the mutation drain bound. For each job it:
    send whose Farm was turned off after Send now fails with `Feature farm is
    disabled.` and contacts no printer;
 3. sends once through the Moonraker or PrusaLink driver. An upload-only send
-   never calls `print/start`. A confirmed send finishes the job with the
-   printer, host and remote path, creates the Build's Checkoff link, and
+   never calls `print/start`. PrusaLink gets one bodyless `GET
+   /api/v1/status` for the Digest challenge, then one `PUT
+   /api/v1/files/<storage>/<name>` (storage `usb` unless pinned) with
+   `print-after-upload: ?1` for a send with Start and `?0` without, so a
+   PrusaLink start is never a second request. A confirmed send finishes the
+   job with the printer, host and remote path, creates the Build's Checkoff link, and
    deletes the staged directory, as Node does. A failed label read falls back
    to the printer id and `Printer`, and a link Node would not create is
    skipped, so a send the printer confirmed always finishes. When the file states the
@@ -380,6 +384,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core 
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(the_form)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(outcome_unknown) | test(farm_lists_skip)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild -E 'test(send_queue_rust_only_runtime) | test(client_routes_match_registrations)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild -E 'test(gre_1240)'
 ```
 
 `send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome`
@@ -389,3 +394,18 @@ connection without answering (`outcome_unknown`, refused Send now, unchanged
 after a restart, no second upload), and one refuses it (`error` with the
 printer's reason and no API key). The status watchers poll each simulator
 with GETs, so the test counts every other request as a send.
+
+`send_queue_rust_only_runtime_owns_prusalink_uploads_end_to_end` (GRE-1240)
+does the same against three loopback PrusaLink simulators with a username and
+password (`pp_testkit::prusalink::UploadPrinter`, which keeps each request's
+body, so the test checks that every `PUT` arrived whole and carried exactly
+the staged file, with exact `print-after-upload` and `overwrite` values).
+They answer the probe without a Digest challenge; the driver tests
+(`ticket_t_22_upload_puts_the_body_once` and the two `upload_is_not_replayed`
+tests) cover the challenge and a 401. A send with Start is one `PUT /api/v1/files/usb/plate.gcode` with
+`print-after-upload: ?1` and no other send request; a malformed answer to the
+`PUT` is `outcome_unknown`, refused on Send now and after a restart, and never
+resent; a refused `PUT` is `error` with the printer's reason. The worker tests
+named `gre_1240` cover the same cases without HTTP, plus a 401 refusal, the job
+result's `remote_path` (`usb/a.gcode`), the Checkoff link and the deleted
+staged directory.

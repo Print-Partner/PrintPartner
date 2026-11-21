@@ -13,6 +13,7 @@
     "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "strict": true,
+    "forceConsistentCasingInFileNames": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,

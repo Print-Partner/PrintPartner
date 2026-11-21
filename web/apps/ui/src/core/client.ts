@@ -28,6 +28,8 @@ export class CoreError extends Error {
    * body or a malformed member such as `"code": null` leaves it false.
    */
   problem = false;
+  /** True when `fetch` followed a redirect, so the answer is not the requested route's own. */
+  redirected = false;
 
   constructor(
     readonly status: number,
@@ -144,6 +146,7 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
     error.errors = errors ?? [];
     error.files = files ?? [];
     error.problem = own ?? false;
+    error.redirected = response.redirected;
     throw error;
   }
   return response;

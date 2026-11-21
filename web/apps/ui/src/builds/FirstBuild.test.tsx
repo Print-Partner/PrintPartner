@@ -6,7 +6,7 @@ import type {
   ProfileSummary,
   SourceList,
 } from "@print-partner/rust-client";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -213,6 +213,10 @@ afterEach(() => {
 });
 
 /** A create is sent a microtask or more after the click, so "nothing more sent" waits first. */
+/** A Response as `fetch` returns one after following a redirect. */
+const redirected = (response: Response) =>
+  Object.defineProperty(response, "redirected", { value: true });
+
 const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
 const dialog = () => screen.getByRole("dialog", { name: "Create Build" });
 const heading = (name: string) => screen.findByRole("heading", { level: 1, name });
@@ -385,6 +389,11 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     fireEvent.click(within(alert).getByRole("link", { name: "Open Maybe" }));
     await heading("Maybe");
     expect(router.state.location.pathname).toBe("/builds/1000");
+    // Back on Builds, a new dialog starts clean.
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
+    expect((within(dialog()).getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 
   it("a dropped connection before the write says so, and only a press sends again", async () => {
@@ -556,5 +565,80 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     expect((await within(dialog()).findByRole("alert")).textContent).toBe(
       "A Build with this name already exists. Choose another name.",
     );
+  });
+
+  it("never follows a redirect: the POST is sent once with redirect error, then checked", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      // What fetch does with `redirect: "error"` when the answer is a 307: it rejects.
+      answer: (write) => {
+        write();
+        return Promise.reject(new TypeError("Failed to fetch"));
+      },
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Moved"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "The answer to Create was lost, but the Builds list now holds this Build, so it was created. Open Moved",
+    );
+    const posts = core.fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]![1]?.redirect).toBe("error");
+  });
+
+  it.each([
+    ["a redirected 200", () => redirected(json(storedBuild(4242, "Elsewhere")))],
+    ["a redirected 403 problem", () => redirected(problem(403, "Forbidden", "forbidden"))],
+  ])("%s is checked, never trusted as an answer or a refusal", async (_case, reply) => {
+    const core = scriptedCore({ sources: ["Kit A"], answer: () => Promise.resolve(reply()) });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Elsewhere"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toMatch(
+      /^Could not confirm the Build was created, and the Builds list holds no Build with this name\./,
+    );
+    expect(core.listReads()).toBe(2);
+    expect(router.state.location.pathname).toBe("/builds");
+  });
+
+  it("a 200 that lands while the dialog is closed shows the Build in a list read after it", async () => {
+    let releaseFirst: () => void = () => {};
+    let reply: () => void = () => {};
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      // The first list read is held with the empty list it saw, past the create's answer.
+      list: (read, snapshot) =>
+        read === 1 ? new Promise((resolve) => (releaseFirst = () => resolve(snapshot))) : undefined,
+      answer: (write) =>
+        new Promise((resolve) => {
+          reply = () => {
+            const build = write();
+            resolve(json({ ...build, layers: [] }));
+          };
+        }),
+    });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Quiet"));
+    await within(dialog()).findByText("Creating the Build.");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    reply();
+    await pause();
+    releaseFirst();
+    const table = await screen.findByRole("table", { name: "Builds" });
+    expect(within(table).getByRole("link", { name: "Quiet" })).toBeTruthy();
+    expect(core.listReads()).toBe(2);
+    expect(router.state.location.pathname).toBe("/builds");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a 401 from Create opens sign-in, as every other write's does", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: () => Promise.resolve(problem(401, "Authentication required", "unauthenticated")),
+    });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Signed out"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
+    expect(router.state.location.search).toBe("?next=%2Fbuilds");
+    expect(core.buildPosts).toHaveLength(1);
   });
 });

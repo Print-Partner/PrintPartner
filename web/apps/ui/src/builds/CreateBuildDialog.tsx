@@ -171,7 +171,11 @@ function OutcomeText({ state }: { state: CreateState }) {
       {state.kind === "listed" && (
         <>
           {" "}
-          <Link to={`/builds/${state.build.id}`} className="pp-link">
+          <Link
+            to={`/builds/${state.build.id}`}
+            className="pp-link"
+            onClick={() => createStore.clear()}
+          >
             Open {state.build.name}
           </Link>
         </>

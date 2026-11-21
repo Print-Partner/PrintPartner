@@ -73,13 +73,17 @@ export async function writeCore<N extends WriteRoute>(
   params: RouteParams<N>,
   ...args: [...WriteBody<N>, idempotencyKey?: string]
 ): Promise<RouteResponse<N>> {
-  return (await writeCoreAnswer(name, params, ...args)).data;
+  return (await writeCoreAnswer(name, params, {}, ...args)).data;
 }
 
-/** `writeCore`, also returning the HTTP status and whether a redirect was followed. */
+/**
+ * `writeCore`, also returning the HTTP status and whether a redirect was followed. `init` sets
+ * how `fetch` treats a redirect; `"error"` keeps it from sending the write a second time.
+ */
 export async function writeCoreAnswer<N extends WriteRoute>(
   name: N,
   params: RouteParams<N>,
+  init: Pick<RequestInit, "redirect">,
   ...args: [...WriteBody<N>, idempotencyKey?: string]
 ): Promise<WriteAnswer<N>> {
   const route = routes[name];
@@ -93,6 +97,7 @@ export async function writeCoreAnswer<N extends WriteRoute>(
     throw new RequestContractError(path);
   }
   const response = await fetchCore(path, {
+    ...init,
     method: route.method,
     headers: {
       accept: "application/json",

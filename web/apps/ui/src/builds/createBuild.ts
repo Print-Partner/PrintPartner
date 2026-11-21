@@ -1,5 +1,5 @@
 import type { CreateBuildRequest, ProfileList, ProfileSummary } from "@print-partner/rust-client";
-import type { QueryClient } from "@tanstack/react-query";
+import { MutationObserver, type QueryClient } from "@tanstack/react-query";
 import { buildsQuery } from "../core/builds";
 import { CoreError } from "../core/client";
 import { readCore, RequestContractError, writeCoreAnswer } from "../core/rust";
@@ -75,7 +75,8 @@ const REFUSALS = new Set([400, 401, 403, 409, 413]);
 
 function refusal(error: unknown): string | null {
   if (error instanceof RequestContractError) return error.message;
-  if (!(error instanceof CoreError) || !error.problem || !REFUSALS.has(error.status)) return null;
+  if (!(error instanceof CoreError) || !error.problem || error.redirected) return null;
+  if (!REFUSALS.has(error.status)) return null;
   return error.detail || error.message;
 }
 
@@ -83,6 +84,20 @@ function refusal(error: unknown): string | null {
 function refusalCopy(detail: string): string {
   if (detail.startsWith("Profile name is")) return detail.replace("Profile", "Build");
   return refusalText(detail);
+}
+
+/**
+ * One `createBuild` POST. It never follows a redirect, because `fetch` would send the POST again
+ * to the redirect's target; a redirect rejects and is checked like a lost answer. It runs in the
+ * query client's mutation cache, so a 401 opens sign-in as every other write's does (`App.tsx`).
+ */
+function post(client: QueryClient, body: CreateBuildRequest) {
+  return new MutationObserver(client, {
+    retry: false,
+    networkMode: "always",
+    mutationFn: (request: CreateBuildRequest) =>
+      writeCoreAnswer("createBuild", {}, { redirect: "error" }, request),
+  }).mutate(body);
 }
 
 /**
@@ -97,9 +112,9 @@ export async function startCreate(client: QueryClient, body: CreateBuildRequest)
   // No loaded list before the press: a Build found later cannot be shown to be new.
   const before = listed ? new Set(listed.profiles.map((build) => build.id)) : null;
   set({ kind: "sending", name });
-  let answer: Awaited<ReturnType<typeof writeCoreAnswer<"createBuild">>>;
+  let answer: Awaited<ReturnType<typeof post>>;
   try {
-    answer = await writeCoreAnswer("createBuild", {}, body);
+    answer = await post(client, body);
   } catch (error: unknown) {
     const detail = refusal(error);
     if (detail === null) return check(client, name, before);
@@ -109,31 +124,38 @@ export async function startCreate(client: QueryClient, body: CreateBuildRequest)
     void client.invalidateQueries({ queryKey: ["core", "tasks"] });
   }
   if (answer.status !== 200 || answer.redirected) return check(client, name, before);
-  void client.invalidateQueries({ queryKey: buildsQuery.queryKey });
   set(dialogs > 0 ? { kind: "opened", name, build: answer.data } : IDLE);
+  // The list must show the Build even when no dialog opens it.
+  await freshList(client).catch(() => client.invalidateQueries({ queryKey: buildsQuery.queryKey }));
 }
 
 /**
- * Reads the Builds list fresh, after the create's answer, and looks for the exact name, as
- * docs/gre-792-builds-http.md says. A list read already in flight may have started before the
- * create, so it is cancelled rather than joined.
+ * The Builds list read after the create's answer, written into the query cache. A list read
+ * already in flight may have started before the create and would answer without its Build, so
+ * it is cancelled rather than joined.
  */
+async function freshList(client: QueryClient): Promise<ProfileList> {
+  await client.cancelQueries({ queryKey: buildsQuery.queryKey });
+  const list = await readCore("listBuilds", {});
+  client.setQueryData(buildsQuery.queryKey, list);
+  return list;
+}
+
+/** Looks for the exact name in a fresh Builds list, as docs/gre-792-builds-http.md says. */
 async function check(
   client: QueryClient,
   name: string,
   before: ReadonlySet<number> | null | "taken",
 ): Promise<void> {
   set({ kind: "checking", name });
-  await client.cancelQueries({ queryKey: buildsQuery.queryKey });
   let list: ProfileList;
   try {
-    list = await readCore("listBuilds", {});
+    list = await freshList(client);
   } catch {
     return set(
       before === "taken" ? { kind: "refused", name, text: TAKEN } : { kind: "unread", name },
     );
   }
-  client.setQueryData(buildsQuery.queryKey, list);
   const build = list.profiles.find((listedBuild) => listedBuild.name === name);
   if (!build) {
     return set(

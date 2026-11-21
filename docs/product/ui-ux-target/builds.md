@@ -42,11 +42,16 @@ Create sends `createBuild` once. The create and its check live outside the
 dialog (`web/apps/ui/src/builds/createBuild.ts`), so closing the dialog keeps
 them. A reopened dialog shows the same name, says the create is running or
 being checked, and cannot send a second one. An answer that arrives while no
-dialog is open opens nothing; the next dialog shows the check's result.
+dialog is open opens nothing: a 200 reads the Builds list again so the new Build
+shows, and any other answer's check result shows in the next dialog. The POST
+never follows a redirect (`redirect: "error"`), because `fetch` would send it
+again to the redirect's target. It runs in the query client's mutation cache,
+so a 401 opens sign-in as every other write's does.
 
 Only an exact HTTP 200, not redirected, with a body that matches the contract,
 opens the new Build's Overview. The core's own refusals keep the dialog open
-with the reason: a problem document with status 400, 401, 403, 409 or 413. A
+with the reason: a problem document with status 400, 401, 403, 409 or 413,
+not reached through a redirect. A
 400 `Profile name is ...` reads "Build name is ...", a 400 `Project not found`
 says the Source left the Library, and the 409 Build limit shows the core's
 detail. A 400 `Profile already exists` reads the Builds list and links to the
@@ -54,7 +59,8 @@ Build that holds the name; when the list does not load or does not show it, the
 dialog still says the name is in use.
 
 Every other answer may hide a created Build: a 5xx, a dropped connection, a
-proxy page, another 2xx such as 202, or a 200 that fails the contract. The
+proxy page, a redirect, another 2xx such as 202, or a 200 that fails the
+contract. The
 dialog never resends. As
 [the repeat rule](../../gre-792-builds-http.md#client-contract-createbuild-gre-1876)
 says, it reads the Builds list and looks for the exact name. It cancels any

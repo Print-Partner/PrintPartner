@@ -46,16 +46,21 @@ def builds(step):
 class PullRequestImageTest(unittest.TestCase):
     def test_each_architecture_builds_and_smoke_tests_on_its_own_runner(self):
         jobs = load("rust-image.yml")["jobs"]
-        by_runner = {job["runs-on"]: job for job in jobs.values()}
+        self.assertIn("changes", jobs)
+        image_jobs = {k: v for k, v in jobs.items() if k != "changes"}
+        by_runner = {job["runs-on"]: job for job in image_jobs.values()}
         self.assertEqual(set(by_runner), set(NATIVE_RUNNERS.values()))
         # The amd64 check keeps its name and cache, so the existing check and warm cache stay.
         self.assertEqual(by_runner["ubuntu-latest"]["name"], "rust image")
         self.assertEqual(by_runner["ubuntu-24.04-arm"]["name"], "rust image (arm64)")
         draft_guard = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
+        self.assertEqual(jobs["changes"]["if"], draft_guard)
         for arch, runner in NATIVE_RUNNERS.items():
             with self.subTest(arch=arch):
                 job = by_runner[runner]
-                self.assertEqual(job["if"], draft_guard)
+                self.assertEqual(job["needs"], ["changes"])
+                self.assertTrue(job["if"].startswith(f"({draft_guard}) && ("))
+                self.assertIn("needs.changes.outputs.relevant != 'false'", job["if"])
                 steps = job["steps"]
                 build = step_index(steps, builds, "builds the image")
                 smoke = step_index(steps, lambda s: s.get("run", "").startswith(SMOKE), "runs the smoke test")

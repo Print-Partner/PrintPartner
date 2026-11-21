@@ -75,12 +75,28 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "ui"), path)
 
     def test_merge_groups_select_queue_validation_only(self):
-        for kind in ("rust", "actions", "windows", "macos", "ui", "web"):
+        for kind in ("rust", "rust-image", "actions", "windows", "macos", "ui", "web"):
             self.assertEqual(ci_filter.select("merge_group", "", "", kind), kind != "web")
             for event in ("push", "schedule", "workflow_call", "workflow_dispatch"):
                 self.assertTrue(ci_filter.select(event, "", "", kind))
             self.assertEqual(ci_filter.select("pull_request", "", "", kind),
                              kind not in {"windows", "macos"})
+
+    def test_rust_image_and_governance_script_filters(self):
+        for path in ("Dockerfile.rust", ".dockerignore", "rust/crates/pp-server/src/main.rs",
+                     "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
+                     "scripts/docker-rust-smoke.py", ".github/workflows/rust-image.yml",
+                     "web/package-lock.json", "rust-toolchain.toml"):
+            self.assertTrue(ci_filter.relevant(path, "rust-image"), path)
+        for path in ("docs/development/ci.md", "README.md", "scripts/merge_class.py",
+                     "scripts/agent-guard.py", "scripts/linear/pr_status_sync.py",
+                     ".github/workflows/actionlint.yml"):
+            self.assertFalse(ci_filter.relevant(path, "rust-image"), path)
+        for path in ("scripts/merge_class.py", "scripts/test_merge_class.py",
+                     "scripts/agent-guard.py", "scripts/post_pp_score_status.py",
+                     "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py"):
+            self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
+            self.assertFalse(ci_filter.relevant(path, "ui"), path)
 
     def test_rust_inputs(self):
         for path in ["rust/Cargo.lock", "rust/crates/pp-storage/src/lib.rs",

@@ -256,7 +256,7 @@ function checkWorkflow(file, source = readFileSync(file, 'utf8')) {
     if (!new RegExp(`^${name}\\.ya?ml$`, 'i').test(basename(file))) continue;
     checkDesktopNodeSetups(workflow, file, lanes);
   }
-  if (/^web-ci\.ya?ml$/.test(basename(file))) checkNodeLanes(workflow, file, ['ui']);
+  if (/^web-ci\.ya?ml$/.test(basename(file))) checkNodeLanes(workflow, file, ['ui'], 'WEB', undefined, 24);
   if (/^integration-smoke\.ya?ml$/i.test(basename(file))) checkNodeLanes(workflow, file, ['postgres'], 'INTEGRATION', "github.event_name != 'workflow_dispatch' || inputs.postgres");
   const seen = new Set();
   for (const [name, job] of Object.entries(workflow.jobs)) {

@@ -193,6 +193,9 @@ function scriptedCore(seed: Seed = {}) {
   return { fetchMock, builds, sourcePosts, buildPosts, listReads: () => listReads };
 }
 
+/** The query client of the last `renderAt`, for checks on its mutation cache. */
+let lastClient: ReturnType<typeof createQueryClient>;
+
 function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
   vi.stubGlobal("fetch", core.fetchMock);
   const router = createMemoryRouter(routes, { initialEntries: [path] });
@@ -201,6 +204,7 @@ function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
     queries: { ...queryClient.getDefaultOptions().queries, retry: false },
   });
   render(<App router={router} queryClient={queryClient} />);
+  lastClient = queryClient;
   return router;
 }
 
@@ -640,5 +644,60 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
     expect(router.state.location.search).toBe("?next=%2Fbuilds");
     expect(core.buildPosts).toHaveLength(1);
+    // The settled Create holds no observer, so its mutation leaves the cache.
+    await waitFor(() => expect(lastClient.getMutationCache().getAll()).toHaveLength(0));
+  });
+
+  it("a 401 that came through a redirect is checked and does not open sign-in", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: () =>
+        Promise.resolve(redirected(problem(401, "Authentication required", "unauthenticated"))),
+    });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Proxied"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toMatch(
+      /^Could not confirm the Build was created, and the Builds list holds no Build with this name\./,
+    );
+    await pause();
+    expect(router.state.location.pathname).toBe("/builds");
+    expect(core.listReads()).toBe(2);
+  });
+
+  it("a confirmed Create leaves no observer on its mutation", async () => {
+    const core = scriptedCore({ sources: ["Kit A"] });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Collected"));
+    await heading("Collected");
+    await waitFor(() => expect(lastClient.getMutationCache().getAll()).toHaveLength(0));
+  });
+
+  it("an older Create's list read, answered late, never hides a newer Build", async () => {
+    let releaseSecond: () => void = () => {};
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      // Read 2 is the first Create's read after its 200; it is held with the list it saw.
+      list: (read, snapshot) =>
+        read === 2
+          ? new Promise((resolve) => (releaseSecond = () => resolve(snapshot)))
+          : undefined,
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Build 1"));
+    await heading("Build 1");
+    await waitFor(() => expect(core.listReads()).toBe(2));
+
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    fireEvent.click(await openWithName("Build 2"));
+    await heading("Build 2");
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    const table = await screen.findByRole("table", { name: "Builds" });
+    await within(table).findByRole("link", { name: "Build 2" });
+
+    // The first Create's read answers now, with a list that has only Build 1.
+    releaseSecond();
+    await pause();
+    expect(within(table).getByRole("link", { name: "Build 1" })).toBeTruthy();
+    expect(within(table).getByRole("link", { name: "Build 2" })).toBeTruthy();
   });
 });

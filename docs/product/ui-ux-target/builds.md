@@ -46,7 +46,10 @@ dialog is open opens nothing: a 200 reads the Builds list again so the new Build
 shows, and any other answer's check result shows in the next dialog. The POST
 never follows a redirect (`redirect: "error"`), because `fetch` would send it
 again to the redirect's target. It runs in the query client's mutation cache,
-so a 401 opens sign-in as every other write's does.
+so the core's own 401 opens sign-in as every other write's does; an error that
+came through a redirect is checked like a lost answer and opens nothing. Each
+list read after an answer is the Builds query's own fetch, so a later Create
+cancels an earlier one and a late answer never replaces a newer list.
 
 Only an exact HTTP 200, not redirected, with a body that matches the contract,
 opens the new Build's Overview. The core's own refusals keep the dialog open

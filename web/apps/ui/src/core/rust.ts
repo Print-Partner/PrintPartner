@@ -40,9 +40,11 @@ export async function readCore<N extends ReadRoute>(
   params: RouteParams<N>,
   signal?: AbortSignal,
   query?: Record<string, string>,
+  options?: { notifyUnauthorized?: boolean },
 ): Promise<RouteResponse<N>> {
   const path = routePath(name, params) + (query ? `?${new URLSearchParams(query)}` : "");
-  const response = await fetchCore(path, { headers: { accept: "application/json" }, signal });
+  const init = { headers: { accept: "application/json" }, signal };
+  const response = await fetchCore(path, init, options);
   const parsed = routes[name].response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);
   return parsed.data as RouteResponse<N>;

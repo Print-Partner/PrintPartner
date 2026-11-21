@@ -1,7 +1,7 @@
 import type { CreateBuildRequest, ProfileList, ProfileSummary } from "@print-partner/rust-client";
 import { MutationObserver, type QueryClient } from "@tanstack/react-query";
 import { buildsQuery } from "../core/builds";
-import { CoreError } from "../core/client";
+import { CoreError, notifyUnauthorized } from "../core/client";
 import { readCore, RequestContractError, writeCoreAnswer } from "../core/rust";
 import { refusalText } from "../screen/SourceSelect";
 
@@ -163,14 +163,24 @@ async function freshList(client: QueryClient): Promise<ProfileList | null> {
   const before = cache.find({ queryKey: buildsQuery.queryKey, exact: true });
   // A count, not a time, so two writes in one millisecond differ; sign-out makes a new query.
   const writes = before?.state.dataUpdateCount ?? 0;
-  const list = await readCore("listBuilds", {}, abort.signal).catch((error: unknown) => {
-    if (read === listRead) throw error;
-  });
-  if (!list || read !== listRead) return null;
+  let list: ProfileList | undefined;
+  let failure: unknown;
+  try {
+    const quiet = { notifyUnauthorized: false };
+    list = await readCore("listBuilds", {}, abort.signal, undefined, quiet);
+  } catch (error: unknown) {
+    failure = error;
+  }
+  if (read !== listRead) return null;
+  // A moved cache answers even when this read failed: its 401 is not this session's.
   const after = cache.find({ queryKey: buildsQuery.queryKey, exact: true });
   const afterWrites = after?.state.dataUpdateCount ?? 0;
   if (after === before ? afterWrites > writes : afterWrites > 0 || before !== undefined) {
     return after?.state.status === "success" ? profileList(after.state.data) : null;
+  }
+  if (!list) {
+    if (failure instanceof CoreError && failure.status === 401) notifyUnauthorized(false);
+    throw failure;
   }
   client.setQueryData(buildsQuery.queryKey, list);
   return list;

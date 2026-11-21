@@ -76,20 +76,14 @@ const storedBuild = (id: number, name: string): ProfileSummary => ({
 interface Seed {
   sources?: string[];
   builds?: string[];
-  /**
-   * The first create's answer in place of the core's, before its name and limit checks.
-   * `write` stores the Build as the core would; not calling it is a create that never landed.
-   */
+  /** The first create's reply, before any check; `write` stores the Build as the core would. */
   answer?: (write: () => ProfileSummary) => Promise<Response>;
-  /**
-   * Builds list read number `read`, from 1: a reply in place of the core's, or undefined for the
-   * core's. `snapshot` is the core's reply as of the moment the read arrived.
-   */
+  /** List read `read` (from 1): a reply, or undefined for `snapshot`, the core's at arrival. */
   list?: (read: number, snapshot: Response) => Promise<Response> | Response | undefined;
 }
 
 function scriptedCore(seed: Seed = {}) {
-  const sources = (seed.sources ?? []).map((name, i) => storedSource(i + 1, name));
+  const sources = (seed.sources ?? ["Kit A"]).map((name, i) => storedSource(i + 1, name));
   const builds: ProfileSummary[] = [];
   const layers = new Map<number, Layer[]>();
   const sourcePosts: CreateSourceRequest[] = [];
@@ -177,7 +171,6 @@ function scriptedCore(seed: Seed = {}) {
   return { fetchMock, builds, sourcePosts, buildPosts, listReads: () => listReads };
 }
 
-/** The query client of the last `renderAt`, for checks on its mutation cache. */
 let lastClient: ReturnType<typeof createQueryClient>;
 
 function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
@@ -200,7 +193,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** A create is sent a microtask or more after the click, so "nothing more sent" waits first. */
 /** A Response as `fetch` returns one after following a redirect. */
 const redirected = (response: Response) =>
   Object.defineProperty(response, "redirected", { value: true });
@@ -209,7 +201,6 @@ const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
 const dialog = () => screen.getByRole("dialog", { name: "Create Build" });
 const heading = (name: string) => screen.findByRole("heading", { level: 1, name });
 
-/** Opens Create Build on a loaded Builds list, waits for the Sources, and types a name. */
 async function openWithName(name: string) {
   fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
   await within(dialog()).findByLabelText("Base Source");
@@ -219,10 +210,9 @@ async function openWithName(name: string) {
 
 describe("UI13-01: first run walks to a first Source and Build", () => {
   it("goes from an empty install to a Build on a new Source", async () => {
-    const core = scriptedCore();
+    const core = scriptedCore({ sources: [] });
     const router = renderAt("/builds", core);
 
-    // Builds is empty: it names Create Build and lists the same first-Build steps as Help.
     expect(await screen.findByText(/^No Builds yet\. Press Create Build/)).toBeTruthy();
     const steps = screen.getByRole("list", { name: "Your first Build" });
     expect(
@@ -231,7 +221,6 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
         .map((li) => li.textContent),
     ).toEqual([...FIRST_BUILD_STEPS]);
 
-    // With no Sources, the dialog leads to Library.
     fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
     const toLibrary = await within(dialog()).findByRole("link", {
       name: "Add a Source in Library",
@@ -241,7 +230,6 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
     await heading("Library");
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    // Library is empty: Add Source creates the first Source.
     expect(await screen.findByText(/^No Sources yet\. Press Add Source/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Add Source" }));
     const add = screen.getByRole("dialog", { name: "Add Source" });
@@ -250,7 +238,6 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
     await screen.findByRole("rowheader", { name: /Disposable Kit/ });
     expect(core.sourcePosts).toEqual([{ name: "Disposable Kit", source_kind: "archive" }]);
 
-    // Back on Builds, Create Build preselects that Source as the base and sends one create.
     fireEvent.click(screen.getByRole("link", { name: "Builds" }));
     await heading("Builds");
     const create = await openWithName(" First Build ");
@@ -262,7 +249,6 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
     expect(base.selectedOptions[0]!.textContent).toBe("Disposable Kit");
     fireEvent.click(create);
 
-    // The new Build opens on its Overview with the Source as its base layer.
     await heading("First Build");
     expect(router.state.location.pathname).toBe("/builds/1000");
     expect(core.buildPosts).toEqual([{ name: "First Build", base_project_id: 1 }]);
@@ -276,7 +262,7 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
   });
 
   it("creates a Build with no base Source, and its Overview leads to Sources", async () => {
-    const core = scriptedCore({ sources: ["Kit A"] });
+    const core = scriptedCore();
     renderAt("/builds", core);
     const create = await openWithName("Loose");
     fireEvent.change(within(dialog()).getByLabelText("Base Source"), { target: { value: "" } });
@@ -290,7 +276,7 @@ describe("UI13-01: first run walks to a first Source and Build", () => {
 
 describe("Create Build answers", () => {
   it("a name in use shows the refusal, names that Build, and sends once", async () => {
-    const core = scriptedCore({ sources: ["Kit A"], builds: ["Taken"] });
+    const core = scriptedCore({ builds: ["Taken"] });
     const router = renderAt("/builds", core);
     const create = await openWithName("Taken");
     fireEvent.click(create);
@@ -300,14 +286,12 @@ describe("Create Build answers", () => {
     );
     expect(core.buildPosts).toHaveLength(1);
     expect(router.state.location.pathname).toBe("/builds");
-    // Editing the name clears the stale refusal.
     fireEvent.change(within(dialog()).getByLabelText("Name"), { target: { value: "Taken 2" } });
     expect(within(dialog()).queryByRole("alert")).toBeNull();
   });
 
   it("the Build limit shows the core's detail and writes nothing", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       builds: Array.from({ length: 64 }, (_, i) => `B${i}`),
     });
     renderAt("/builds", core);
@@ -319,7 +303,7 @@ describe("Create Build answers", () => {
   });
 
   it("an empty name and a name over 4,096 characters are not sent", async () => {
-    const core = scriptedCore({ sources: ["Kit A"] });
+    const core = scriptedCore();
     renderAt("/builds", core);
     const create = await openWithName("   ");
     expect(within(dialog()).getByText("Enter a name.")).toBeTruthy();
@@ -338,7 +322,6 @@ describe("Create Build answers", () => {
   it("disables Create while the create is in flight", async () => {
     let reply: (response: Response) => void = () => {};
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: () => new Promise((resolve) => (reply = resolve)),
     });
     renderAt("/builds", core);
@@ -360,7 +343,6 @@ describe("Create Build answers", () => {
 describe("Create Build repeat rule: an unconfirmed answer is checked, never resent", () => {
   it("a lost answer after the write finds the Build in the list and offers to open it", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: (write) => {
         write();
         return Promise.resolve(problem(502, "Bad Gateway", "unavailable"));
@@ -377,7 +359,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     fireEvent.click(within(alert).getByRole("link", { name: "Open Maybe" }));
     await heading("Maybe");
     expect(router.state.location.pathname).toBe("/builds/1000");
-    // Back on Builds, a new dialog starts clean.
     fireEvent.click(screen.getByRole("link", { name: "Builds" }));
     fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
     expect(within(dialog()).queryByRole("alert")).toBeNull();
@@ -386,7 +367,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
 
   it("a dropped connection before the write says so, and only a press sends again", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: () => Promise.reject(new TypeError("Failed to fetch")),
     });
     renderAt("/builds", core);
@@ -405,7 +385,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
 
   it("a lost answer with an unreadable list tells the user to check Builds", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: () => Promise.resolve(new Response("upstream timeout", { status: 504 })),
       list: (read) => (read > 1 ? problem(503, "List unreadable", "unavailable") : undefined),
     });
@@ -422,7 +401,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     let reply: (response: Response) => void = () => {};
     let write: () => ProfileSummary = () => storedBuild(0, "");
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: (store) => {
         write = store;
         return new Promise((resolve) => (reply = resolve));
@@ -459,7 +437,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
   it("a reopened dialog opens the Build when the held create answers 200", async () => {
     let reply: (response: Response) => void = () => {};
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: (write) => {
         const build = write();
         return new Promise((resolve) => (reply = () => resolve(json({ ...build, layers: [] }))));
@@ -478,7 +455,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
   it("checks with a list read started after the answer, not one started before the create", async () => {
     let releaseFirst: () => void = () => {};
     const core = scriptedCore({
-      sources: ["Kit A"],
       // The first list read is held with the empty list it saw, past the create's answer.
       list: (read, snapshot) =>
         read === 1 ? new Promise((resolve) => (releaseFirst = () => resolve(snapshot))) : undefined,
@@ -511,7 +487,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     ["a loaded list that already held it", () => undefined],
   ])("a Build that may be older is not called created: %s", async (_case, list) => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       builds: ["Old"],
       list,
       answer: () => Promise.resolve(new Response("upstream timeout", { status: 504 })),
@@ -537,7 +512,7 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
       () => redirected(problem(401, "Authentication required", "unauthenticated")),
     ],
   ])("%s is checked against the list, never trusted or resent", async (_case, reply) => {
-    const core = scriptedCore({ sources: ["Kit A"], answer: () => Promise.resolve(reply()) });
+    const core = scriptedCore({ answer: () => Promise.resolve(reply()) });
     const router = renderAt("/builds", core);
     fireEvent.click(await openWithName("Ghost"));
     expect((await within(dialog()).findByRole("alert")).textContent).toMatch(
@@ -551,7 +526,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
 
   it("a name the core refused as in use stays refused when the list cannot show it", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       builds: ["Taken"],
       list: (read) => (read > 1 ? problem(503, "List unreadable", "unavailable") : undefined),
     });
@@ -564,7 +538,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
 
   it("never follows a redirect: the POST is sent once with redirect error, then checked", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       // What fetch does with `redirect: "error"` when the answer is a 307: it rejects.
       answer: (write) => {
         write();
@@ -585,7 +558,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     let releaseFirst: () => void = () => {};
     let reply: () => void = () => {};
     const core = scriptedCore({
-      sources: ["Kit A"],
       list: (read, snapshot) =>
         read === 1 ? new Promise((resolve) => (releaseFirst = () => resolve(snapshot))) : undefined,
       answer: (write) =>
@@ -612,7 +584,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
 
   it("a 401 from Create opens sign-in, as every other write's does", async () => {
     const core = scriptedCore({
-      sources: ["Kit A"],
       answer: () => Promise.resolve(problem(401, "Authentication required", "unauthenticated")),
     });
     const router = renderAt("/builds", core);
@@ -627,7 +598,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
   it("an older Create's list read, answered late, never hides a newer Build", async () => {
     let releaseSecond: () => void = () => {};
     const core = scriptedCore({
-      sources: ["Kit A"],
       // Read 2 is the first Create's read after its 200; it is held with the list it saw.
       list: (read, snapshot) =>
         read === 2
@@ -658,7 +628,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
   ])("leaving Builds does not cancel %s or put the old list back", async (_case, status) => {
     let release: () => void = () => {};
     const core = scriptedCore({
-      sources: ["Kit A"],
       list: (read, snapshot) =>
         read === 2 ? new Promise((resolve) => (release = () => resolve(snapshot))) : undefined,
       answer: (write) => {
@@ -702,26 +671,35 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     const query = client.getQueryCache().find({ queryKey: KEY })!;
     query.setState({ status: "error", dataUpdateCount: query.state.dataUpdateCount + 1 });
   };
+  const signIn = (c: Client) => c.clear();
+  const signOut = (c: Client) => c.removeQueries({ queryKey: KEY });
+  const noList = (c: Client) => c.setQueryData(KEY, { no: 1 });
   it.each([
-    ["Builds read it again", () => {}, true, "listed"],
-    ["sign-in cleared the cache", (c: Client) => c.clear(), true, "listed"],
-    ["sign-out removed it", (c: Client) => c.removeQueries({ queryKey: KEY }), false, "unread"],
-    ["the cache holds no list", (c: Client) => c.setQueryData(KEY, { no: 1 }), false, "unread"],
-    ["a newer read failed", failNewer, false, "unread"],
+    ["Builds read it again", () => {}, true, "listed", 200],
+    ["sign-in cleared the cache", signIn, true, "listed", 200],
+    ["sign-in, then the old read 401s", signIn, true, "listed", 401],
+    ["sign-in, then the old read 503s", signIn, true, "listed", 503],
+    ["sign-out removed it", signOut, false, "unread", 200],
+    ["the cache holds no list", noList, false, "unread", 200],
+    ["a newer read failed", failNewer, false, "unread", 200],
+    ["this session's read 401s", () => {}, false, "unread", 401],
   ] as const)("a check never answers with a list older than the cache's: %s", async (...row) => {
-    const [, change, back, kind] = row;
+    const [, change, back, kind, status] = row;
     let release: () => void = () => {};
     let commit: () => ProfileSummary = () => storedBuild(0, "");
     const core = scriptedCore({
-      sources: ["Kit A"],
       list: (read, snapshot) =>
-        read === 2 ? new Promise((resolve) => (release = () => resolve(snapshot))) : undefined,
+        read !== 2
+          ? undefined
+          : new Promise((resolve) => {
+              release = () => resolve(status === 200 ? snapshot : problem(status, "Read failed"));
+            }),
       answer: (write) => {
         commit = write;
         return Promise.resolve(problem(502, "Bad Gateway", "unavailable"));
       },
     });
-    renderAt("/builds", core);
+    const router = renderAt("/builds", core);
     fireEvent.click(await openWithName("Late"));
     await within(dialog()).findByText("Checking the Builds list.");
     fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
@@ -739,5 +717,8 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     await waitFor(() => expect(createStore.get().kind).toBe(kind));
     // The read's older list is never written over what the cache holds.
     expect(lastClient.getQueryData(KEY)).toBe(held);
+    // Only this session's 401 opens sign-in.
+    const path = status === 401 && !back ? "/login" : back ? "/builds" : "/library";
+    expect(router.state.location.pathname).toBe(path);
   });
 });

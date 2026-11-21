@@ -129,7 +129,16 @@ export function onUnauthorized(listener: (answer: Unauthorized) => void): () => 
   return () => void unauthorized.delete(listener);
 }
 
-export async function fetchCore(path: string, init?: RequestInit): Promise<Response> {
+/** Tells every listener the core answered 401, as `fetchCore` does unless told not to. */
+export function notifyUnauthorized(write: boolean): void {
+  for (const listener of unauthorized) listener({ write });
+}
+
+export async function fetchCore(
+  path: string,
+  init?: RequestInit,
+  options?: { notifyUnauthorized?: boolean },
+): Promise<Response> {
   if (!SAME_ORIGIN_PATH.test(path)) {
     throw new TypeError(
       `Core requests take a same-origin path such as /health, got ${JSON.stringify(path)}`,
@@ -137,9 +146,8 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
   }
   const response = await fetch(path, { ...init, credentials: "same-origin" });
   if (!response.ok) {
-    if (response.status === 401) {
-      const write = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
-      for (const listener of unauthorized) listener({ write });
+    if (response.status === 401 && options?.notifyUnauthorized !== false) {
+      notifyUnauthorized(!["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase()));
     }
     const { own, detail, code, conflictingBuilds, errors, files } = await problem(response);
     const error = new CoreError(response.status, path, detail, code, conflictingBuilds);

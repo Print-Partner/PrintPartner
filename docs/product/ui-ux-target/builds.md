@@ -29,47 +29,27 @@ Numbers preserve the [product build order](../ui-ux-target.md#build-order); Line
 
 ## Create Build
 
-Builds has a **Create Build** button under its heading in every state
-(`web/apps/ui/src/builds/CreateBuildDialog.tsx`). The dialog takes a name and a
-**Base Source** from the Library. The first Source is preselected, and **No base
-Source** is the other choice. With no Sources it links to Library. While the
-Source list loads, **Create** waits. If the list fails, the dialog says so and
-offers **Try again**, so Create never sends a "No base Source" the user did not
-choose. **Create** is also disabled without a name, with a name over the core's
-4,096-character limit, offline, and while a create or its check is running.
+Builds has a **Create Build** button in every state (`CreateBuildDialog.tsx`):
+a name and a **Base Source**, the first Library Source by default or **No base
+Source**; with no Sources it links to Library. **Create** waits while Sources
+load, offers **Try again** if they fail, and is disabled without a valid name
+(4,096 characters at most), offline, and while a create or its check runs.
 
-Create sends `createBuild` once. The create and its check live outside the
-dialog (`web/apps/ui/src/builds/createBuild.ts`), so a reopened dialog shows the
-same name and state and cannot send a second one. An answer that arrives with no
-dialog open opens nothing; its result shows in the next dialog. The POST never
-follows a redirect (`redirect: "error"`), because `fetch` would resend it. It
-runs in the query client's mutation cache, so the core's own 401 opens sign-in;
-an error that came through a redirect is checked and opens nothing.
+The create lives outside the dialog (`createBuild.ts`), so a reopened dialog
+shows its name and state and cannot send a second one. Only an exact,
+unredirected HTTP 200 with a contract-valid body opens the new Build; the POST
+uses `redirect: "error"` so `fetch` never resends it. The core's own problem
+(400, 401, 403, 409 or 413, not redirected) is shown in the UI's words, and a
+401 opens sign-in. `Profile already exists` links to the Build holding the name.
 
-Only an exact HTTP 200, not redirected, with a body that matches the contract,
-opens the new Build's Overview. The core's own refusals keep the dialog open
-with the reason: a problem document with status 400, 401, 403, 409 or 413, not
-reached through a redirect. `Profile name is ...` reads "Build name is ...",
-`Project not found` says the Source left the Library, and the 409 Build limit
-shows the core's detail. `Profile already exists` links to the Build that holds
-the name when the list shows it, and says the name is in use either way.
-
-Every other answer may hide a created Build: a 5xx, a dropped connection, a
-proxy page, a redirect, another 2xx, or a 200 that fails the contract. The
-dialog never resends. As
+Any other answer may hide a created Build. As
 [the repeat rule](../../gre-792-builds-http.md#client-contract-createbuild-gre-1876)
-says, it reads the Builds list and looks for the exact name. Every 200 reads the
-list too. That read cancels any Builds query read in flight, which may predate
-the create, and is its own request: leaving Builds cannot cancel it, a newer
-read replaces it, and it never writes over a newer list.
-
-- The name is there, and the list loaded before the press did not hold it: the
-  Build was created, and the dialog links to it.
-- The name is there, but no list had loaded before the press, or that list
-  already held it: the dialog links to it and says it may be an earlier Build.
-- The name is not there: the dialog says pressing Create again is safe, because
-  the core refuses a second Build with the same name.
-- The list did not load: the dialog says to check Builds before pressing Create
-  again.
-
-`web/apps/ui/src/builds/FirstBuild.test.tsx` covers each answer.
+says, the dialog never resends: it reads the Builds list and looks for the exact
+name. It says the Build was **created** when the list loaded before the press
+lacked it, **may be an earlier one** when there was no such list or it held the
+name, that pressing Create again is safe when the name is missing, and to check
+Builds when the list did not load. Every 200 reads the list too. That read
+cancels older reads, survives leaving Builds, and never overwrites a newer list:
+if the cache moved on, as after sign-out or sign-in, it answers with the cache's
+list or not at all, and its 401 opens no sign-in. `FirstBuild.test.tsx` covers
+each case.

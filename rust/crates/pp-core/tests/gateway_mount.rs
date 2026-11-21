@@ -642,8 +642,9 @@ mod with_feature {
             })
             .to_string(),
         );
-        put(
-            &fixture,
+        // The generic write refuses `integrations`; store it with raw SQL.
+        pp_testkit::settings::seed_setting(
+            &fixture.root.join("data"),
             "integrations",
             &json!([
                 {"id": "canary-integration-id-4e4e", "kind": "spoolman",
@@ -654,7 +655,8 @@ mod with_feature {
                  "access_code": "canary-bambu-access-code-91d2"},
             ])
             .to_string(),
-        );
+        )
+        .unwrap();
         put(
             &fixture,
             "default_spoolman_integration_id",

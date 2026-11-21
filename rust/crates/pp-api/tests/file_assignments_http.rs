@@ -57,14 +57,7 @@ fn integrations(base_url: &str) -> String {
 }
 
 fn setting(fixture: &Fixture, key: &str, value: &str) {
-    fixture
-        .sql()
-        .execute(
-            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', ?1, ?2)
-             ON CONFLICT (tenant_id, key) DO UPDATE SET value=excluded.value",
-            [key, value],
-        )
-        .unwrap();
+    pp_testkit::settings::seed_setting(&fixture.0, key, value).unwrap();
 }
 
 /// The shared fixture with a fleet of three printers on loopback-only hosts.

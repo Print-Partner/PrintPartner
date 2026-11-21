@@ -28,6 +28,7 @@ pub mod node_schema;
 pub mod prusalink;
 pub mod rebuild_fixture;
 pub mod restore_fixture;
+pub mod settings;
 
 /// Keep the cookie pair from a response's `Set-Cookie` header for the next request.
 pub fn session_cookie(set_cookie: &str) -> String {

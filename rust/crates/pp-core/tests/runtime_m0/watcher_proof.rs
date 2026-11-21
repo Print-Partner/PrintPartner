@@ -6,10 +6,10 @@
 use super::{desktop_cookie, launch, request, temporary};
 use axum::http::StatusCode;
 use pp_core::CoreRuntime;
-use pp_storage::{Limits, Setting, SettingCommand, WriterOwner};
+use pp_storage::{Limits, WriterOwner};
 use pp_testkit::moonraker::RecordedPrinter;
 use serde_json::{Value, json};
-use std::{path::Path, sync::atomic::AtomicBool, time::Duration};
+use std::{path::Path, time::Duration};
 
 pub(super) const SUCCESS: &[u8] =
     include_bytes!("../../../../../fixtures/drivers/moonraker/moonraker-success.json");
@@ -60,27 +60,16 @@ pub(super) fn proof_data() -> std::path::PathBuf {
 }
 
 /// Stores each `(key, value)` setting for tenant `default` before any start.
+/// The writer only creates the schema: `integrations` and `printer.fleet`
+/// are refused by the generic write, so every row goes in with raw SQL.
 pub(super) fn seed_settings(data: &Path, settings: &[(&str, Value)]) {
     let data = pp_storage::lease::prepare_directory(data).unwrap();
     let (writer, _) =
         WriterOwner::open_with_job_feature_admission(&data, Limits::default()).unwrap();
-    for (key, value) in settings {
-        let setting = Setting {
-            tenant: "default".into(),
-            key: (*key).into(),
-            value: value.to_string(),
-        };
-        let reply = writer
-            .client()
-            .submit(
-                SettingCommand::Set(setting),
-                &AtomicBool::new(false),
-                Duration::from_secs(5),
-            )
-            .unwrap();
-        assert!(reply.recv().unwrap().unwrap());
-    }
     writer.shutdown().unwrap();
+    for (key, value) in settings {
+        pp_testkit::settings::seed_setting(&data, key, &value.to_string()).unwrap();
+    }
 }
 
 /// Starts the Rust-only launcher on `data` and returns it with its origin and

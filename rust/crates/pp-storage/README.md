@@ -29,7 +29,7 @@ Start with `WriterOwner::open(directory, limits)`. It takes the lease, migrates 
 | Item | What it does |
 | --- | --- |
 | `WriterOwner` | Owns the lease, writer thread and pools. `client`, `backup`, `create_archive`, `database_pages`, `admit_disk_quota`, `shutdown`. |
-| `SettingsClient` | Cloneable handle. `submit` queues a `SettingCommand` (`Set` or `CompareAndSet`); `reader` checks out a `ReaderCheckout`. |
+| `SettingsClient` | Cloneable handle. `submit` queues a `SettingCommand` (`Set` or `CompareAndSet`) and refuses the keys `auth` owns and `integrations` and `printer.fleet`, which `printer_setup` owns; `reader` checks out a `ReaderCheckout`. |
 | `ReaderCheckout` | A pooled read-only connection. `snapshot`, `get_setting`. Returns to the pool on drop. |
 | `Limits`, `SchemaReady`, `Setting`, `SettingSnapshot`, `WriteReply` | Open limits, migration result, and settings values. |
 

@@ -188,7 +188,7 @@ The script needs Linux and Docker. It checks that the runtime has no Node, npm, 
 
 ## CI and release builds
 
-Every pull request, push to `main` and merge group builds the image twice in `.github/workflows/rust-image.yml`, each on its own native runner, and runs the smoke test on each: `rust image` on amd64 (`ubuntu-latest`) and `rust image (arm64)` on arm64 (`ubuntu-24.04-arm`). The arm64 job also checks that the loaded image is `linux/arm64`. Neither is a required check.
+In `.github/workflows/rust-image.yml`, every push to `main` and every merge group builds the image twice, each on its own native runner, and runs the smoke test on each: `rust image` on amd64 (`ubuntu-latest`) and `rust image (arm64)` on arm64 (`ubuntu-24.04-arm`). Ready pull requests run the same two jobs when `scripts/ci-path-filter.py rust-image` selects the diff (fail-closed: skipped only when every changed path is under `docs/`, root Markdown other than the copied legal notices, non-build governance/sync/evidence scripts, or `.github/` files other than `rust-image.yml`). The arm64 job also checks that the loaded image is `linux/arm64`. Neither is a required check.
 
 ### Release image
 

@@ -365,8 +365,8 @@ for (const [name, source] of [
 
 const webCI = { jobs: Object.fromEntries(['ui'].map(name => [name, {
   steps: [
-    { uses: setupNode, with: { 'node-version': '22.23.3' } },
-    { run: 'test "$(node --version)" = "v22.23.3"' },
+    { uses: setupNode, with: { 'node-version': '24.21.0' } },
+    { run: 'test "$(node --version)" = "v24.21.0"' },
   ],
 }])) };
 
@@ -379,7 +379,7 @@ for (const filename of ['web-ci.yml', 'web-ci.yaml']) {
 }
 
 for (const name of ['ui']) {
-  for (const version of ['22', '22.23', '22.x', 'lts/*', '^22.23.3', 'v22.23.3', '22.23.3-rc.1', '022.23.3', '24.21.0', '1.0.0', '${{ inputs.node }}', 22, null]) {
+  for (const version of ['24', '24.21', '24.x', 'lts/*', '^24.21.0', 'v24.21.0', '24.21.0-rc.1', '024.21.0', '22.23.3', '1.0.0', '${{ inputs.node }}', 24, null]) {
     test(`reject Web CI ${name} Node ${JSON.stringify(version)}`, t => {
       const source = JSON.parse(JSON.stringify(webCI));
       source.jobs[name].steps[0].with['node-version'] = version;
@@ -393,14 +393,14 @@ for (const name of ['ui']) {
     ['conditional lane', source => { source.jobs[name].if = false; }, 'INVALID_WEB_NODE_SETUP'],
     ['tolerated lane failure', source => { source.jobs[name]['continue-on-error'] = true; }, 'INVALID_WEB_NODE_SETUP'],
     ['dependent lane', source => { source.jobs[name].needs = ['skipped']; }, 'INVALID_WEB_NODE_SETUP'],
-    ['matrix override', source => { source.jobs[name].strategy = { matrix: { node: ['22'] } }; }, 'INVALID_WEB_NODE_SETUP'],
-    ['duplicate setup', source => source.jobs[name].steps.push(source.jobs[name].steps[0]), 'INVALID_WEB_NODE_SETUP'],
-    ['missing setup', source => source.jobs[name].steps.shift(), 'INVALID_WEB_NODE_SETUP'],
+    ['matrix override', source => { source.jobs[name].strategy = { matrix: { node: ['24'] } }; }, 'INVALID_WEB_NODE_SETUP'],
+    ['duplicate setup', source => { source.jobs[name].steps.push(source.jobs[name].steps[0]); }, 'INVALID_WEB_NODE_SETUP'],
+    ['missing setup', source => { source.jobs[name].steps.shift(); }, 'INVALID_WEB_NODE_SETUP'],
     ['version file', source => { source.jobs[name].steps[0].with['node-version-file'] = '.nvmrc'; }, 'UNPINNED_WEB_NODE'],
     ['conditional setup', source => { source.jobs[name].steps[0].if = 'false'; }, 'UNPINNED_WEB_NODE'],
     ['tolerated setup failure', source => { source.jobs[name].steps[0]['continue-on-error'] = true; }, 'UNPINNED_WEB_NODE'],
     ['missing runtime check', source => source.jobs[name].steps.pop(), 'MISSING_WEB_NODE_VERIFICATION'],
-    ['mismatched runtime check', source => { source.jobs[name].steps[1].run = 'test "$(node --version)" = "v24.21.0"'; }, 'MISSING_WEB_NODE_VERIFICATION'],
+    ['mismatched runtime check', source => { source.jobs[name].steps[1].run = 'test "$(node --version)" = "v22.23.3"'; }, 'MISSING_WEB_NODE_VERIFICATION'],
     ['conditional runtime check', source => { source.jobs[name].steps[1].if = 'false'; }, 'MISSING_WEB_NODE_VERIFICATION'],
     ['tolerated runtime failure', source => { source.jobs[name].steps[1]['continue-on-error'] = true; }, 'MISSING_WEB_NODE_VERIFICATION'],
     ['install before setup', source => source.jobs[name].steps.unshift({ run: 'npm ci --ignore-scripts' }), 'EARLY_WEB_NODE_COMMAND'],
@@ -443,7 +443,7 @@ for (const name of ['ui']) {
 }
 
 test('accept coordinated future Web CI patch bump', t => {
-  const result = run(t, JSON.stringify(webCI).replaceAll('22.23.3', '22.23.4'), [], 'web-ci.yml');
+  const result = run(t, JSON.stringify(webCI).replaceAll('24.21.0', '24.21.1'), [], 'web-ci.yml');
   assert.equal(result.status, 0, result.stderr);
 });
 
@@ -462,7 +462,7 @@ for (const [filename, name, code, optional, major = 22] of [
   const source = () => ({ jobs: { [name]: {
     ...(optional ? { if: "github.event_name != 'workflow_dispatch' || inputs.postgres" }
       : ['E2E', 'WEBKIT'].includes(code) ? { if: "github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:desktop-smoke')" } : {}),
-    steps: JSON.parse(JSON.stringify(webCI.jobs.ui.steps).replaceAll('22.23.3', `${major}.23.3`)),
+    steps: JSON.parse(JSON.stringify(webCI.jobs.ui.steps).replaceAll('24.21.0', `${major}.21.0`)),
   } } });
   for (const extension of ['yml', 'yaml', 'YML']) {
     test(`accept exact Node pin in ${filename} as ${extension}`, t => {

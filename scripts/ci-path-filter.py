@@ -32,18 +32,33 @@ def is_non_build_script(path):
     return path.startswith(NON_BUILD_SCRIPT_PREFIXES) or path in NON_BUILD_SCRIPTS
 
 
+def is_web_test_only(path):
+    """Test-only web files excluded from Rust, Windows-test, and Rust-image PR jobs.
+
+    `ui` (Web CI) still runs Vitest, tsc and Vite build on `web/apps/ui/**` and
+    `web/test/**` diffs, and `daily-loop` covers `web/test/daily-loop/**`. Merge
+    groups run all jobs.
+    """
+    if path.startswith(("web/test/", "web/apps/ui/test/", "web/apps/ui/src/test/")):
+        return True
+    if not path.startswith("web/apps/ui/"):
+        return False
+    basename = path.rsplit("/", 1)[-1]
+    return ".test." in basename or ".spec." in basename
+
+
 def windows_tests_relevant(path):
     if path.startswith("docs/") or ("/" not in path and path.endswith(".md")):
         return False
-    if is_non_build_script(path):
+    if is_non_build_script(path) or is_web_test_only(path):
         return False
     return not path.startswith(".github/") or path in WINDOWS_TEST_GITHUB_INPUTS
 
 
 # `rust image` / `rust image (arm64)` runs on every PR except one limited to docs/,
 # root Markdown (other than the legal notices Dockerfile.rust copies), governance/sync
-# scripts, or .github files other than its own workflow. Over-selection is intended:
-# a new image input cannot be forgotten.
+# scripts, non-bundled UI/web test files, or .github files other than its own workflow.
+# Over-selection is intended: a new image input cannot be forgotten.
 RUST_IMAGE_GITHUB_INPUTS = {".github/workflows/rust-image.yml"}
 RUST_IMAGE_ROOT_MD_INPUTS = {"LICENSE-SUMMARY.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"}
 
@@ -53,7 +68,7 @@ def rust_image_relevant(path):
         return False
     if "/" not in path and path.endswith(".md") and path not in RUST_IMAGE_ROOT_MD_INPUTS:
         return False
-    if is_non_build_script(path):
+    if is_non_build_script(path) or is_web_test_only(path):
         return False
     return not path.startswith(".github/") or path in RUST_IMAGE_GITHUB_INPUTS
 
@@ -94,7 +109,7 @@ def relevant(path, kind):
                   or path in {".github/dependabot.yml", ".github/zizmor.yml",
                               ".github/actionlint.yaml", ".github/actionlint.yml"})
         if kind == "ui":
-            return shared or path.startswith(("web/apps/ui/", "web/packages/"))
+            return shared or path.startswith(("web/apps/ui/", "web/packages/", "web/test/"))
         # The old web kind still matches the paths the removed web job used.
         # The ui job is the one that runs.
         return (shared or path.startswith(("web/", "slicer-sidecar/", "rust/"))
@@ -105,6 +120,8 @@ def relevant(path, kind):
     # Markdown is not a Rust input, except the legal texts that pp-api and pp-gateway embed with
     # include_str!/include_bytes! and the fixture READMEs that sit inside hashed fixture trees.
     if path.endswith(".md") and not path.startswith(("web/apps/server/src/data/", "fixtures/")):
+        return False
+    if is_web_test_only(path):
         return False
     return (path.startswith(("rust/", "web/apps/", "web/packages/", "web/scripts/storage-fixtures/",
                              "fixtures/"))

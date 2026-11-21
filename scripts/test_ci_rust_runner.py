@@ -133,11 +133,11 @@ class RustRunnerTests(unittest.TestCase):
         self.assertEqual(runner.runner_kind(runner.HOSTED), "hosted")
         self.assertEqual(runner.runner_kind(["self-hosted", "linux", "x64", "other"]), "hosted")
 
-    def test_hosted_nextest_is_four_hash_parts_and_pp_local_is_one(self):
+    def test_hosted_nextest_is_six_hash_parts_and_pp_local_is_one(self):
         self.assertEqual(runner.linux_parts(runner.HOSTED),
-                         ["check", "1/4", "2/4", "3/4", "4/4"])
+                         ["check", "1/6", "2/6", "3/6", "4/6", "5/6", "6/6"])
         self.assertEqual(runner.linux_parts(runner.LOCAL), ["1/1"])
-        self.assertEqual(runner.HOSTED_TEST_PARTITIONS, 4)
+        self.assertEqual(runner.HOSTED_TEST_PARTITIONS, 6)
 
     def test_cli_keeps_pull_request_smoke_on_github_hosted_runners(self):
         for event, kind in (("pull_request", "hosted"), ("schedule", "hosted")):
@@ -177,7 +177,7 @@ class RustRunnerTests(unittest.TestCase):
             self.assertEqual(json.loads(values["linux_runs_on"]), runner.HOSTED)
             self.assertEqual(values["linux_kind"], "hosted")
             self.assertEqual(json.loads(values["linux_parts"]),
-                             ["check", "1/4", "2/4", "3/4", "4/4"])
+                             ["check", "1/6", "2/6", "3/6", "4/6", "5/6", "6/6"])
             self.assertEqual(json.loads(values["smoke_runs_on"]), "ubuntu-24.04")
             self.assertIn("schedule events stay hosted", summary.read_text())
         self.assertEqual(json.loads(json.dumps(runner.LOCAL, separators=(",", ":"))), runner.LOCAL)

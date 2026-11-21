@@ -95,7 +95,8 @@ class LocalReleaseArtifactTests(unittest.TestCase):
 class LocalCi:
     """Run main() with fake tools on PATH and a runner that records each step's script."""
 
-    def __init__(self, test, tools=TOOLS, node22="v22.23.3", fail=(), codes=None, affected="rdeps(=pp-fake)"):
+    def __init__(self, test, tools=TOOLS, node22="v22.23.3", fail=(), codes=None,
+                 affected="rdeps(=pp-fake)", changed=None):
         scratch = Path(test.enterContext(tempfile.TemporaryDirectory()))
         self.env = {"PATH": str(fake_tools(scratch / "bin", tools)), "CARGO_TARGET_DIR": str(scratch / "target")}
         if node22:
@@ -106,10 +107,14 @@ class LocalCi:
         self.envs = {}
         self.affected = affected
         self.affected_calls = 0
+        self.changed = changed
 
     def filter_for(self, env):
         self.affected_calls += 1
         return self.affected
+
+    def paths_for(self, env):
+        return ("a" * 40, self.changed) if self.changed is not None else (None, None)
 
     def runner(self, step_id, script, cwd, env):
         self.ran.append(step_id)
@@ -119,7 +124,8 @@ class LocalCi:
     def __call__(self, *argv):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = local_ci.main(list(argv), env=self.env, run=self.runner, affected=self.filter_for)
+            code = local_ci.main(list(argv), env=self.env, run=self.runner,
+                                 affected=self.filter_for, changed_paths=self.paths_for)
         self.output = out.getvalue()
         self.summary = {line.split()[1]: line.split()[0]
                         for line in self.output.split("== local CI summary ==")[-1].splitlines()
@@ -346,11 +352,11 @@ class LocalCiTests(unittest.TestCase):
                     checked += 1
         self.assertGreater(checked, 20)
 
-    def test_fast_runs_every_step_but_the_full_test_and_doc_passes_then_affected_nextest(self):
+    def test_fast_runs_every_step_but_the_full_test_and_clippy_limits_passes_then_affected_nextest(self):
         ci = LocalCi(self)
         self.assertEqual(ci("--fast"), 0)
         full = [step.id for step in local_ci.STEPS if not step.host_only]
-        left_out = ["nextest"]
+        left_out = ["nextest", "clippy-limits"]
         expected = [("nextest-affected" if step == "nextest" else step)
                     for step in full if step == "nextest" or step not in left_out]
         expected.insert(expected.index("nextest-affected"), "release-artifacts")
@@ -362,12 +368,84 @@ class LocalCiTests(unittest.TestCase):
             self.assertEqual(ci.summary[step], "SKIP", step)
         self.assertLess(ci.ran.index("historical-schema"), ci.ran.index("nextest-affected"))
 
+    def test_fast_path_filter_skips_unaffected_heavy_steps_and_fails_closed(self):
+        # Docs-only branch skips all Rust, web-assets, UI, workaround, duplication and node-fixtures.
+        ci = LocalCi(self, changed=["docs/development/ci.md"])
+        self.assertEqual(ci("--fast"), 0)
+        for skipped in ("ast-grep", "boundaries", "historical-schema", "fmt", "rust-deps",
+                        "web-assets", "ui-package", "workaround-ratchet", "duplication",
+                        "clippy", "nextest-affected", "node-fixtures"):
+            self.assertEqual(ci.summary[skipped], "SKIP", skipped)
+            self.assertNotIn(skipped, ci.ran)
+        self.assertNotIn("release-artifacts", ci.ran)
+        self.assertEqual(ci.affected_calls, 0)
+        self.assertIn("agent-guidance", ci.ran)
+
+        # UI-test-only branch runs web-assets, ui-package, workaround-ratchet; skips Rust + node-fixtures.
+        ci = LocalCi(self, changed=["web/apps/ui/src/farm/AnswerClearsNotice.test.tsx", "docs/farm-log.md"])
+        self.assertEqual(ci("--fast"), 0)
+        for ran in ("web-assets", "ui-package", "workaround-ratchet", "agent-guidance"):
+            self.assertIn(ran, ci.ran)
+        for skipped in ("fmt", "clippy", "nextest-affected", "node-fixtures", "duplication"):
+            self.assertEqual(ci.summary[skipped], "SKIP", skipped)
+            self.assertNotIn(skipped, ci.ran)
+
+        # Pure Rust crate edit runs Rust steps + duplication + workaround-ratchet; skips ui-package & node-fixtures.
+        ci = LocalCi(self, changed=["rust/crates/pp-api/src/mcp.rs"])
+        self.assertEqual(ci("--fast"), 0)
+        for ran in ("fmt", "clippy", "nextest-affected", "web-assets", "duplication", "workaround-ratchet"):
+            self.assertIn(ran, ci.ran)
+        for skipped in ("ui-package", "node-fixtures"):
+            self.assertEqual(ci.summary[skipped], "SKIP", skipped)
+            self.assertNotIn(skipped, ci.ran)
+
+        # Parity/server edit keeps node-fixtures enabled.
+        ci = LocalCi(self, changed=["fixtures/parity/auth-login/cases.json"])
+        self.assertEqual(ci("--fast"), 0)
+        self.assertIn("node-fixtures", ci.ran)
+
+        # Shared web tsconfig edits (extended by contracts, domain and server builds) keep node-fixtures enabled.
+        self.assertNotIn("node-fixtures", local_ci.fast_unaffected_steps(["web/tsconfig.base.json"]))
+        ci = LocalCi(self, changed=["web/tsconfig.base.json"])
+        self.assertEqual(ci("--fast"), 0)
+        self.assertIn("node-fixtures", ci.ran)
+
+        # Empty diff fails closed and runs every fast step.
+        ci = LocalCi(self, changed=[])
+        self.assertEqual(ci("--fast"), 0)
+        self.assertIn("clippy", ci.ran)
+        self.assertIn("nextest-affected", ci.ran)
+        self.assertIn("node-fixtures", ci.ran)
+
+        # --only bypasses --fast path skipping.
+        ci = LocalCi(self, changed=["docs/development/ci.md"])
+        self.assertEqual(ci("--fast", "--only", "fmt"), 0)
+        self.assertEqual(ci.ran, ["fmt"])
+
+        # Unaffected --fast skips do not fail --fail-on-skip, while missing tools still do.
+        ci = LocalCi(self, changed=["docs/development/ci.md"])
+        self.assertEqual(ci("--fast", "--skip", "rust-windows,rust-macos", "--fail-on-skip"), 0)
+        tools = {k: v for k, v in TOOLS.items() if k != "actionlint"}
+        ci = LocalCi(self, tools=tools, changed=["docs/development/ci.md"])
+        self.assertEqual(ci("--fast", "--skip", "rust-windows,rust-macos", "--fail-on-skip"), 1)
+
+    def test_fast_unaffected_steps_fails_closed_when_path_filter_breaks(self):
+        def broken():
+            raise SyntaxError("broken")
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            unaffected = local_ci.fast_unaffected_steps(["docs/x.md"], load_path_filter=broken)
+        self.assertEqual(unaffected, set())
+        self.assertIn("running all fast steps", out.getvalue())
+
     def test_fast_nextest_runs_the_default_build_with_the_affected_filter(self):
         ci = LocalCi(self, affected="rdeps(=pp-storage) + rdeps(=pp-gateway)")
         self.assertEqual(ci("--fast"), 0)
         self.assertEqual(ci.affected_calls, 1)
         env = ci.envs["nextest-affected"]
         self.assertEqual(env["NEXTEST_FILTER"], "rdeps(=pp-storage) + rdeps(=pp-gateway)")
+        self.assertEqual(env["NEXTEST_PARTITION"], "1/1")
         self.assertEqual(env["INSTA_UPDATE"], "no")
         step = next(step for step in local_ci.fast_steps() if step.id == "nextest-affected")
         nextest = next(step for step in local_ci.STEPS if step.id == "nextest")

@@ -270,7 +270,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     self.assertEqual(
                         cache["with"]["save-if"],
                         "${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') "
-                        "&& matrix.part == '1/4' }}")
+                        "&& matrix.part == '1/6' }}")
                     self.assertNotIn("rust-linux-build", jobs)
                     self.assertNotIn("rust-linux-rebuild", jobs)
                     failed = {"github": {"event_name": "merge_group"}, "needs": {

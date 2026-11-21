@@ -9,11 +9,12 @@
 // builds the Rust-only image from Dockerfile.rust at HEAD and creates a Docker network for
 // the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs)
 // and the image on a new volume with the run command from docs/docker.md. It creates a
-// second, empty volume for Step 2's import (installation.mjs). It checks that the container
-// reaches the simulator and that both publish ports on host loopback only, then runs the
-// twelve Playwright tests. Whether the run passed, failed or was stopped, it removes the
-// containers (product, importer and simulator), both volumes, the image tag, the network,
-// the Node installation's folder and the simulator's API key folder it created.
+// second, empty volume for Step 2's import and a third for Step 12's restore
+// (installation.mjs). It checks that the container reaches the simulator and that both
+// publish ports on host loopback only, then runs the twelve Playwright tests. Whether the
+// run passed, failed or was stopped, it removes the containers (product, importer, restore
+// and simulator), the three volumes, the image tag, the network, the Node installation's
+// folder and the simulator's API key folder it created.
 //
 // The tests read the simulator from these variables:
 //   PP_DAILY_LOOP_SIMULATOR        its container; `docker port` names its control port
@@ -23,6 +24,9 @@
 //   PP_DAILY_LOOP_NODE_INSTALLATION the synthetic Node installation's host folder
 //   PP_DAILY_LOOP_IMAGE, PP_DAILY_LOOP_NETWORK, PP_DAILY_LOOP_IMPORTER and
 //   PP_DAILY_LOOP_IMPORT_VOLUME     what Step 2 starts the importer and the new container from
+// and Step 12's restore from these:
+//   PP_DAILY_LOOP_RESTORE           the second product container Step 12 starts
+//   PP_DAILY_LOOP_RESTORE_VOLUME    the empty volume it restores the backup into
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
@@ -194,6 +198,8 @@ async function suite(keyFile, nodeDir) {
     ["docker", ["volume", "create", names.volume]],
     // Step 2 imports into this one; the import accepts only an empty folder.
     ["docker", ["volume", "create", names.importVolume]],
+    // Step 12 restores the backup on a second container on this one.
+    ["docker", ["volume", "create", names.restoreVolume]],
     ["docker", productRunArgs(names)],
   ];
   for (const [command, args] of steps) {
@@ -222,6 +228,8 @@ async function suite(keyFile, nodeDir) {
       PP_DAILY_LOOP_NETWORK: names.network,
       PP_DAILY_LOOP_IMPORTER: names.importer,
       PP_DAILY_LOOP_IMPORT_VOLUME: names.importVolume,
+      PP_DAILY_LOOP_RESTORE: names.restore,
+      PP_DAILY_LOOP_RESTORE_VOLUME: names.restoreVolume,
     },
   });
 }
@@ -256,9 +264,9 @@ try {
     console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;
   } else {
-    const { importer, importVolume } = names;
+    const { importer, restore, importVolume, restoreVolume } = names;
     console.log(
-      `Removed containers ${name}, ${importer} and ${simulator}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
+      `Removed containers ${name}, ${importer}, ${restore} and ${simulator}, volumes ${name}, ${importVolume} and ${restoreVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
     );
   }
 }

@@ -2,6 +2,7 @@
 // a new volume. Step 2 imports the synthetic Node installation into a second new volume with
 // a one-off `pp-server import` container, because the import refuses a folder that holds
 // data, then replaces the product container on that volume under the same name and network.
+// Step 12 restores a backup on a second product container, `restore`, on a third new volume.
 // run.mjs and daily-loop.spec.ts both start containers from these arguments.
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
@@ -19,6 +20,8 @@ export function runNames(name) {
     network: name,
     volume: name,
     importVolume: `${name}-imported`,
+    restore: `${name}-restore`,
+    restoreVolume: `${name}-restored`,
     image: `${name}:test`,
   };
 }
@@ -81,18 +84,20 @@ export function treeDigest(dir) {
  * The `docker` commands that remove what a run created, in order: containers before the
  * network and the volumes they use. Each names only this run's things.
  */
-export function cleanupCommands({ container, simulator, importer, network, volume, importVolume, image }) {
+export function cleanupCommands(names) {
+  const { container, simulator, importer, restore, network, volume, importVolume, restoreVolume, image } = names;
   return [
-    ["rm", "-f", container, importer, simulator],
+    ["rm", "-f", container, importer, restore, simulator],
     ["network", "rm", network],
-    ["volume", "rm", "-f", volume, importVolume],
+    ["volume", "rm", "-f", volume, importVolume, restoreVolume],
     ["rmi", image],
   ];
 }
 
 /**
  * The `docker` list commands that find what is left of a run. A name filter matches part
- * of a name, so `name=<run>` also finds the simulator, the importer and the second volume.
+ * of a name, so `name=<run>` also finds the simulator, the importer, the restore container
+ * and the other volumes.
  */
 export function leftoverLists(name) {
   return ["ps -aq", "volume ls -q", "network ls -q", "images -q"].map((list) =>

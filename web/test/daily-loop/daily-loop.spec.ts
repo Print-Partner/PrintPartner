@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1045,9 +1046,125 @@ step(11, "GRE-1887", async ({ page }) => {
   );
 });
 
-step(12, "GRE-1888", async ({ page }) => {
+/** What run.mjs made for Step 12: the second container's name and its new, empty volume. */
+const RESTORE = {
+  container: process.env.PP_DAILY_LOOP_RESTORE ?? "",
+  volume: process.env.PP_DAILY_LOOP_RESTORE_VOLUME ?? "",
+};
+
+/**
+ * Opens a new sign-in link of `container` in this browser, as openSignInLink does for the
+ * product container. The link is a secret, so nothing here prints it.
+ */
+async function openSignInLinkOn(page: Page, container: string) {
+  await harness(`${container} is not ready`, async () => {
+    const readiness = () =>
+      docker("exec", container, "pp-server", "healthcheck", "readiness", "--status-file", "/tmp/pp-server.status.json")
+        .status;
+    await expect.poll(readiness, { timeout: 180_000 }).toBe(0);
+  });
+  await harness(`the sign-in link of ${container} did not open`, async () => {
+    const link = docker("exec", container, "pp-server", "bootstrap-url", "--data", "/data");
+    if (link.status !== 0) throw new Error(`bootstrap-url: ${link.stderr.trim()}`);
+    const published = /-> (\S+)/.exec(docker("port", container).stdout)?.[1];
+    if (!published) throw new Error("docker port shows no published address");
+    const url = new URL(link.stdout.trim());
+    url.host = published;
+    await page.goto(url.href).catch(() => {
+      throw new Error("the browser could not load it");
+    });
+  });
+}
+
+type HistoryPage = { entries: { id: string; type: string }[]; next_cursor: string | null };
+
+/** Every History entry of each Build, newest first, read page by page. */
+async function histories(page: Page, builds: { id: number }[]) {
+  const all: Record<number, HistoryPage["entries"]> = {};
+  for (const { id } of builds) {
+    all[id] = [];
+    for (let cursor: string | null = ""; cursor !== null; ) {
+      const query: string = cursor ? `?${new URLSearchParams({ cursor })}` : "";
+      const next: HistoryPage = await core<HistoryPage>(page, `/api/v2/plans/${id}/history${query}`);
+      all[id].push(...next.entries);
+      cursor = next.next_cursor;
+    }
+  }
+  return all;
+}
+
+/** Every Build the core lists, with what readRustInstallation reads and its whole History. */
+async function snapshot(page: Page) {
+  const { profiles } = await core<{ profiles: { id: number; name: string }[] }>(page, "/api/v2/plans");
+  const builds = profiles.map(({ id, name }) => ({ id, name })).sort((a, b) => a.id - b.id);
+  const { installation } = await readRustInstallation(page, builds);
+  return { installation, history: await histories(page, builds) };
+}
+
+// The owner makes a whole-installation backup in Settings and downloads it, starts a second
+// container on a new volume, and restores the backup there after the confirmation. The copy
+// opens with the same Builds, Plans, Plates, Checkoff state and History, under the same IDs.
+step(12, null, async ({ page }) => {
+  // A second container's first start and a restore come on top of the usual sign-ins.
+  test.setTimeout(480_000);
   await signIn(page);
+  const before = await snapshot(page);
+  // Steps 5 and 10 left a Build of the owner's own and a Checkoff burst and its undo.
+  expect(before.installation.builds.map(({ name }) => name)).toContain(BUILD);
+  const anchor = before.installation.builds.find(({ name }) => name === CHECKOFF_BUILD)!;
+  expect(before.history[anchor.id].map(({ type }) => type), `${CHECKOFF_BUILD}'s History`).toContain(
+    "checkoff_burst",
+  );
+
   await go(page, "Settings");
   await page.getByRole("button", { name: "Create backup", exact: true }).click();
-  unwritten("the backup restores on a second container, which opens with the same Builds and history");
+  // What the core made: its file, time, size and SHA-256, which the download must match.
+  const facts = page.getByLabel("Backup made");
+  await expect(facts).toBeVisible({ timeout: 120_000 });
+  const sha256 = (await facts.locator('dt:text-is("SHA-256") + dd').textContent())?.trim() ?? "";
+  expect(sha256, "the SHA-256 Settings shows").toMatch(/^[0-9a-f]{64}$/);
+  const backup = await downloaded(page, facts.getByRole("button", { name: "Download" }));
+  expect(createHash("sha256").update(backup.body).digest("hex"), `${backup.name} SHA-256`).toBe(sha256);
+
+  // The second container: the same image and run command, on its own new volume.
+  const started = docker(
+    ...productRunArgs({ container: RESTORE.container, network: IMPORT.network, volume: RESTORE.volume, image: IMPORT.image }),
+  );
+  expect(started.status, started.stderr).toBe(0);
+  const ports = docker("port", RESTORE.container).stdout.trim().split("\n");
+  expect(ports, `docker port ${RESTORE.container}`).toEqual([expect.stringMatching(/ -> 127\.0\.0\.1:\d+$/)]);
+
+  // A new installation: the owner creates his account, then restores the backup over it.
+  await page.context().clearCookies();
+  await openSignInLinkOn(page, RESTORE.container);
+  await page.getByLabel("Email").fill(OWNER.email);
+  await page.getByLabel("Password", { exact: true }).fill(OWNER.password);
+  await page.getByLabel("Password again").fill(OWNER.password);
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(screen(page, "Today")).toBeVisible();
+  await go(page, "Settings");
+  await page
+    .getByLabel("Backup file")
+    .setInputFiles({ name: backup.name, mimeType: "application/gzip", buffer: backup.body });
+  await page.getByRole("button", { name: "Check backup", exact: true }).click();
+  await expect(page.getByLabel("Backup checked")).toBeVisible({ timeout: 120_000 });
+  await page.getByRole("button", { name: "Restore this backup" }).click();
+  const confirm = page.getByRole("dialog", { name: "Replace this installation?" });
+  await expect(confirm.locator("blockquote[data-confirmation]")).not.toBeEmpty();
+  await confirm.getByRole("button", { name: "Replace this installation" }).click();
+  await expect(confirm.getByRole("status")).toHaveText(/^Restore complete\./, { timeout: 180_000 });
+
+  // The restored copy holds the owner's account from the backup: he signs in afresh.
+  await page.context().clearCookies();
+  await openSignInLinkOn(page, RESTORE.container);
+  await fillSignIn(page);
+  await expect(screen(page, "Today")).toBeVisible();
+  await go(page, "Builds");
+  const list = page.getByRole("table", { name: "Builds" });
+  for (const { name } of before.installation.builds) {
+    await expect(list.getByRole("link", { name, exact: true })).toBeVisible();
+  }
+  const after = await snapshot(page);
+  expect(after.installation, "the restored Builds, Plans, Plates and Checkoff state").toEqual(before.installation);
+  expect(after.history, "the restored History of every Build").toEqual(before.history);
 });

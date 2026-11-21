@@ -26,7 +26,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -64,7 +64,14 @@ let child;
 let stopped = false;
 const stop = (signal) => {
   stopped = true;
-  child?.kill(signal);
+  if (!child?.group) child?.kill(signal);
+  else {
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      // The group has already exited.
+    }
+  }
 };
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
 // npm runs this with `exec`, so a signal sent to npm reaches this process. If the parent
@@ -73,10 +80,15 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => s
 const parent = process.ppid;
 setInterval(() => process.ppid !== parent && !stopped && stop("SIGTERM"), 1000).unref();
 
-/** Runs a command with this terminal's output; resolves to its exit code. */
-const run = (command, args, options = {}) =>
+/**
+ * Runs a command with this terminal's output; resolves to its exit code. With `group`, the
+ * command leads a new process group and a stop signals the whole group: `npm run` does not
+ * pass a signal on to the script it started.
+ */
+const run = (command, args, { group = false, ...options } = {}) =>
   new Promise((done) => {
-    child = spawn(command, args, { stdio: "inherit", cwd: root, ...options });
+    child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
+    child.group = group;
     child.on("error", () => done(1));
     child.on("close", (code) => done(code ?? 1));
   });
@@ -137,7 +149,7 @@ async function ensureBetterSqlite() {
   if (spawnSync(process.execPath, probe, { cwd: web, stdio: "ignore" }).status === 0) return 0;
   console.log("better-sqlite3 has no native binding; building it.");
   const build = ["run", "build-release", "--prefix", "node_modules/better-sqlite3"];
-  const code = await run("npm", build, { cwd: web });
+  const code = await run("npm", build, { cwd: web, group: true });
   if (code !== 0 || stopped) return code || 1;
   return spawnSync(process.execPath, probe, { cwd: web, stdio: "inherit" }).status ?? 1;
 }
@@ -151,7 +163,7 @@ async function writeNodeInstallation(dir) {
   const code = await ensureBetterSqlite();
   if (code !== 0 || stopped) return code || 1;
   const args = ["run", "fixture:synthetic", "--", "--seed", String(SYNTHETIC_SEED), dir];
-  const written = await run("npm", args, { cwd: resolve(root, "web") });
+  const written = await run("npm", args, { cwd: resolve(root, "web"), group: true });
   if (written !== 0 || stopped) return written || 1;
   const open = (path) => {
     const stat = statSync(path);
@@ -230,15 +242,18 @@ try {
   for (let pass = 0; pass < 3; pass++) {
     if (pass > 0) await delay(2000);
     for (const args of cleanupCommands(names)) spawnSync("docker", args, { stdio: "ignore" });
-    left = leftoverLists(name).filter((list) => {
-      const listed = spawnSync("docker", list, { encoding: "utf8" });
-      return listed.status !== 0 || listed.stdout.trim() !== "";
-    });
+    rmSync(nodeRoot, { recursive: true, force: true });
+    left = leftoverLists(name)
+      .filter((list) => {
+        const listed = spawnSync("docker", list, { encoding: "utf8" });
+        return listed.status !== 0 || listed.stdout.trim() !== "";
+      })
+      .map((list) => `docker ${list.join(" ")}`);
+    if (existsSync(nodeRoot)) left.push(`ls ${nodeRoot}`);
     if (left.length === 0) break;
   }
-  rmSync(nodeRoot, { recursive: true, force: true });
   if (left.length > 0) {
-    console.error(`Not removed, check by hand: ${left.map((list) => `docker ${list.join(" ")}`).join("; ")}`);
+    console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;
   } else {
     const { importer, importVolume } = names;

@@ -411,8 +411,42 @@ step(4, null, async ({ page }) => {
 });
 
 // The owner creates Builds through the assistant, so this step goes over MCP.
-step(5, "GRE-1885", async ({ page }) => {
+step(5, null, async ({ page }) => {
   await signIn(page);
+  const origin = new URL(page.url()).origin;
+  // The kit's printable files, as a ZIP in a new Library Source. Step 4 tests the Library's
+  // upload screen; this step uploads through the same routes so it does not depend on it.
+  const KIT = "Daily loop kit parts";
+  const STL = "bracket.stl";
+  const made = await page.request.post(`${origin}/api/v1/sources`, {
+    data: { name: KIT, source_kind: "archive" },
+    headers: { Origin: origin },
+  });
+  expect(made.ok(), `POST /api/v1/sources: ${made.status()} ${await made.text()}`).toBe(true);
+  const kit = (await made.json()) as { id: number };
+  const facet =
+    "facet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet";
+  const upload = await page.request.post(`${origin}/api/v1/sources/${kit.id}/upload-zip`, {
+    multipart: {
+      file: {
+        name: "kit.zip",
+        mimeType: "application/zip",
+        buffer: storedZip(STL, `solid bracket\n${facet}\nendsolid bracket\n`),
+      },
+    },
+    headers: { Origin: origin },
+  });
+  expect(upload.status(), `upload-zip: ${await upload.text()}`).toBe(202);
+  const { job_id } = (await upload.json()) as { job_id: string };
+  const job = async () =>
+    (await (await page.request.get(`${origin}/api/v1/jobs/${job_id}`)).json()) as {
+      status: string;
+    };
+  const running = /^(pending|running)$/;
+  await expect.poll(async () => (await job()).status, { timeout: 60_000 }).not.toMatch(running);
+  const unpacked = await job();
+  expect(unpacked.status, JSON.stringify(unpacked)).toBe("done");
+
   // The assistant refuses to create a Build while the Orders Module is off, which it is
   // on a new installation, and tells the owner to turn it on in Settings.
   await go(page, "Settings");
@@ -420,23 +454,80 @@ step(5, "GRE-1885", async ({ page }) => {
   await page.getByRole("button", { name: "Confirm Module change" }).click();
   await expect(page.getByRole("button", { name: "Turn Orders off" })).toBeVisible();
   const assistant = await connectAssistant(page);
+  /** Proposes a write and confirms it, as the owner does when the assistant asks. */
+  const apply = async (tool: string, args: object) => {
+    const proposed = await assistant.call(tool, args);
+    expect(proposed.status, JSON.stringify(proposed)).toBe("proposed");
+    const applied = await assistant.call("confirm_apply", { action_id: proposed.action.id });
+    expect(applied.ok, JSON.stringify(applied)).toBe(true);
+    return applied.result;
+  };
   const request = "One kit for the daily-loop test.";
-  const proposed = await assistant.call("propose_create_build", { name: BUILD, request });
-  expect(proposed.status, JSON.stringify(proposed)).toBe("proposed");
-  const applied = await assistant.call("confirm_apply", { action_id: proposed.action.id });
-  expect(applied.ok, JSON.stringify(applied)).toBe(true);
+  const { plan_id } = await apply("propose_create_build", { name: BUILD, request });
   await go(page, "Builds");
   const builds = page.getByRole("table", { name: "Builds" });
   await expect(builds.getByRole("link", { name: BUILD })).toBeVisible();
-  // Its Sources: he gives the assistant the kit's repository.
-  const inputs = [{ url: KIT_URL }];
-  const plan = applied.result.plan_id;
-  const sources = await assistant.call("propose_import_build_inputs", { plan_id: plan, inputs });
-  expect(sources.status, JSON.stringify(sources)).toBe("proposed");
-  unwritten(
-    "the import is confirmed, propose_rebuild_plan saves a first draft Plan (GRE-1434), and the Build's Sources and Plan tabs show both",
-  );
+
+  // Its Sources: the uploaded kit and the kit's repository. The repository is a stand-in
+  // that never syncs, so it stays reference evidence and the uploaded kit is the base.
+  const inputs = [{ source_id: kit.id }, { url: KIT_URL }];
+  const imported = await apply("propose_import_build_inputs", { plan_id, inputs });
+  const [base, repository] = imported.evidence as { id: string }[];
+  const roles = [
+    { evidence_id: base.id, role: "structural_base" },
+    { evidence_id: repository.id, role: "evidence" },
+  ];
+  await apply("propose_set_build_source_roles", { plan_id, roles });
+  const rebuilt = await apply("propose_rebuild_plan", { plan_id });
+  expect(rebuilt.recompute, JSON.stringify(rebuilt)).toBe("created");
+
+  // The Build's Sources tab shows the kit as its base layer, and its Plan tab the draft.
+  await builds.getByRole("link", { name: BUILD }).click();
+  await page.getByRole("link", { name: "Sources", exact: true }).click();
+  const layers = page.getByRole("table", { name: "Build Sources" });
+  await expect(layers.getByRole("row").filter({ hasText: KIT })).toContainText("base");
+  await page.getByRole("link", { name: "Plan", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: `Include ${STL}` })).toBeChecked();
+  await expect(page.getByRole("button", { name: "Review and accept" })).toBeVisible();
 });
+
+/** A ZIP that stores one file uncompressed: enough for the Source import to unpack. */
+function storedZip(name: string, text: string) {
+  const data = Buffer.from(text);
+  const path = Buffer.from(name);
+  let crc = ~0;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  crc = ~crc >>> 0;
+  // Version 2.0, no flags, stored, 1980-01-01 00:00.
+  const common = (header: Buffer, at: number) => {
+    header.writeUInt16LE(20, at);
+    header.writeUInt16LE(0, at + 2);
+    header.writeUInt16LE(0, at + 4);
+    header.writeUInt16LE(0, at + 6);
+    header.writeUInt16LE(0x21, at + 8);
+    header.writeUInt32LE(crc, at + 10);
+    header.writeUInt32LE(data.length, at + 14);
+    header.writeUInt32LE(data.length, at + 18);
+    header.writeUInt16LE(path.length, at + 22);
+  };
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  common(local, 4);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  common(central, 6);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + path.length, 12);
+  end.writeUInt32LE(local.length + path.length + data.length, 16);
+  return Buffer.concat([local, path, data, central, path, end]);
+}
 
 step(6, "GRE-1515", async ({ page }) => {
   await openBuild(page, "Plan");
@@ -481,6 +572,8 @@ step(10, "GRE-1515", async ({ page }) => {
   await expect(tally).toContainText("Recorded: +1 printed.");
   await tally.getByRole("button", { name: "Undo" }).click();
   await expect(tally).toContainText("Undid the last burst.");
+  // Until Step 2 imports Builds, the first Build is the one Step 5 created, with no print.
+  unwritten("the checked-off units are on a Build Step 2 imported, from the print Step 8 sent");
 });
 
 step(11, "GRE-1887", async ({ page }) => {

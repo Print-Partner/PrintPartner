@@ -102,6 +102,9 @@ class CiPathFilterTests(unittest.TestCase):
                      "scripts/agent-guard.py", "scripts/test_agent_guard.py",
                      "scripts/post_pp_score_status.py", "scripts/test_post_pp_score_status.py",
                      "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py",
+                     "web/apps/ui/src/farm/AnswerClearsNotice.test.tsx",
+                     "web/apps/ui/src/App.spec.ts", "web/apps/ui/test/browser/all.mjs",
+                     "web/test/daily-loop/daily-loop.spec.ts",
                      ".github/workflows/actionlint.yml", ".github/workflows/web-ci.yml",
                      ".github/CODEOWNERS", ".github/zizmor.yml"):
             with self.subTest(kind="rust-image", selected=False, path=path):
@@ -112,6 +115,23 @@ class CiPathFilterTests(unittest.TestCase):
                      "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py"):
             self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
             self.assertFalse(ci_filter.relevant(path, "ui"), path)
+        for path in ("web/apps/ui/src/farm/AnswerClearsNotice.test.tsx",
+                     "web/apps/ui/src/App.spec.ts", "web/apps/ui/src/App.spec.tsx",
+                     "web/apps/ui/test/browser/all.mjs",
+                     "web/test/daily-loop/daily-loop.spec.ts"):
+            with self.subTest(web_test_only=path):
+                self.assertFalse(ci_filter.relevant(path, "rust"), path)
+                self.assertFalse(ci_filter.relevant(path, "rust-image"), path)
+                self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
+                if path.startswith("web/apps/ui/"):
+                    self.assertTrue(ci_filter.relevant(path, "ui"), path)
+        for path in ("web/apps/ui/src/App.tsx", "web/apps/ui/src/testSetup.ts",
+                     "web/apps/ui/src/foo/testHelper.ts"):
+            with self.subTest(non_test_ui=path):
+                self.assertTrue(ci_filter.relevant(path, "rust"), path)
+                self.assertTrue(ci_filter.relevant(path, "rust-image"), path)
+                self.assertTrue(ci_filter.relevant(path, "windows-tests"), path)
+                self.assertTrue(ci_filter.relevant(path, "ui"), path)
 
     def test_rust_image_single_path_diffs_and_empty_diff_cli(self):
         with tempfile.TemporaryDirectory() as directory:

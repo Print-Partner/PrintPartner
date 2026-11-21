@@ -2,7 +2,7 @@ name: Rust cross-OS
 
 # Pull requests, pushes to main, and merge groups run Linux fmt, clippy, and
 # nextest on the default Rust-only build. The required check stays `rust (linux)`,
-# an aggregate over the parts below. On ubuntu-latest, nextest is four hash
+# an aggregate over the parts below. On ubuntu-latest, nextest is six hash
 # partitions and fmt/clippy are a separate part. On pp-local, one part runs all
 # three. The nightly schedule and a manual dispatch build the workspace on
 # Windows and macOS and do not run the Linux parts. `rust (windows tests)` runs
@@ -157,8 +157,8 @@ jobs:
           # that saved the warm cache before this job was split.
           shared-key: rust-linux
           workspaces: rust -> target
-          # One part saves. The test parts compile the same binaries; four saves would race.
-          save-if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') && matrix.part == '1/4' }}
+          # One part saves. The test parts compile the same binaries; six saves would race.
+          save-if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') && matrix.part == '1/6' }}
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         if: matrix.part != 'check'
         with:

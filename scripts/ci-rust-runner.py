@@ -7,7 +7,7 @@ Pull requests, merge groups and the nightly schedule stay on GitHub-hosted
 runners. A merge group holds PR code that has not landed, and the shared
 pp-local cache must only see code from main. rust (windows) always runs on
 windows-latest. The packaged smoke job stays on ubuntu-24.04. Required check
-names do not depend on the runner. Hosted Linux nextest is four hash
+names do not depend on the runner. Hosted Linux nextest is six hash
 partitions; pp-local stays one part. GITHUB_TOKEN cannot list runners, so the
 idle-runner check needs the optional PP_RUNNER_READ_TOKEN secret. Without it,
 a pp-local Rust job queued for STALE_MINUTES or more marks the fleet as
@@ -30,7 +30,7 @@ STALE_MINUTES = 15
 # Only these jobs run on pp-local; their names keep the required check names.
 LOCAL_JOBS = ("rust (linux)",)
 # Hosted nextest is this many hash partitions. One pp-local job runs 1/1.
-HOSTED_TEST_PARTITIONS = 4
+HOSTED_TEST_PARTITIONS = 6
 
 
 def idle_runners(runners):

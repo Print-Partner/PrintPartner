@@ -53,7 +53,7 @@ class Step:
 # instead of writing .snap.new files.
 def cargo(step_id, title, ci_step, command, requires=(("cargo", None),)):
     return Step(step_id, title, (command,), (CROSS_OS + ci_step,), requires=requires,
-                env={"NEXTEST_FILTER": "all()", "INSTA_UPDATE": "no"})
+                env={"NEXTEST_FILTER": "all()", "NEXTEST_PARTITION": "1/1", "INSTA_UPDATE": "no"})
 
 
 NEXTEST = (("cargo", None), ("cargo-nextest", None))
@@ -173,7 +173,9 @@ STEPS = [
          requires=(("git", None), ("cargo", None), ("python3", None)),
          host_only="" if sys.platform == "linux" else "needs Linux for the Clippy baseline"),
     cargo("nextest", "nextest", "nextest",
-          CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"', NEXTEST),
+          CARGO.format("nextest run")
+          + ' --no-fail-fast --no-tests=warn --partition "hash:${NEXTEST_PARTITION}" -E "$NEXTEST_FILTER"',
+          NEXTEST),
     # Last: `npm ci` here rebuilds web/node_modules for Node 22.
     Step("node-fixtures", "Node parity fixture and route inventory freshness (Node 22)",
          ("npm ci && npm rebuild better-sqlite3",
@@ -212,16 +214,30 @@ STEPS = [
 ]
 
 
-# --fast leaves the full nextest out and runs FAST_NEXTEST in its place.
-FAST_LEAVES_OUT = ("nextest",)
+# --fast leaves the full nextest and dual-feature clippy-limits passes out and
+# runs FAST_NEXTEST in place of nextest, skipping unaffected heavy steps.
+FAST_LEAVES_OUT = ("nextest", "clippy-limits")
 FAST_NEXTEST = "nextest-affected"
 FILTER_SCRIPT = ROOT / "scripts/ci-affected-nextest-filter.py"
+PATH_FILTER_SCRIPT = ROOT / "scripts/ci-path-filter.py"
+FAST_UNAFFECTED = "unaffected by branch diff (--fast)"
 # The agent fleet installs sccache here; PATH wins when both exist.
 FLEET_SCCACHE = Path("/opt/agent-fleet/bin/sccache")
+RUST_FAST_STEPS = frozenset({
+    "ast-grep", "boundaries", "historical-schema", "fmt", "rust-deps", "clippy", FAST_NEXTEST,
+})
+DUPLICATION_PREFIXES = (
+    "web/apps/server/", "web/apps/web/", "web/packages/",
+    "rust/crates/", "slicer-sidecar/", "scripts/check-duplication",
+)
+NODE_FIXTURE_PREFIXES = (
+    "web/apps/server/", "web/packages/contracts/", "web/packages/domain/",
+    "web/scripts/", "fixtures/", "rust/crates/pp-storage/tests/fixtures/",
+)
 
 
 def fast_steps():
-    """STEPS for --fast: nextest becomes FAST_NEXTEST."""
+    """STEPS for --fast: nextest becomes FAST_NEXTEST and FAST_LEAVES_OUT are omitted."""
     steps = []
     for step in STEPS:
         if step.id == "nextest":
@@ -242,11 +258,73 @@ def git_output(env, *args):
     return result.stdout.decode("utf-8", errors="surrogateescape") if result.returncode == 0 else None
 
 
-def load_filter_module():
-    spec = importlib.util.spec_from_file_location("ci_affected_nextest_filter", FILTER_SCRIPT)
+def load_module(name, script_path):
+    spec = importlib.util.spec_from_file_location(name, script_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_filter_module():
+    return load_module("ci_affected_nextest_filter", FILTER_SCRIPT)
+
+
+def load_path_filter_module():
+    return load_module("ci_path_filter", PATH_FILTER_SCRIPT)
+
+
+def branch_changed_paths(env, git=git_output):
+    """Return (base_sha, paths) from merge-base(origin/main, HEAD) + untracked, or (None, None)."""
+    base = (git(env, "merge-base", "origin/main", "HEAD") or "").strip()
+    if not base:
+        return None, None
+    changed = git(env, "diff", "--name-only", "--no-renames", "-z", base)
+    untracked = git(env, "ls-files", "--others", "--exclude-standard", "-z")
+    if changed is None or untracked is None:
+        return base, None
+    return base, [path for path in (changed + untracked).split("\0") if path]
+
+
+def fast_unaffected_steps(paths, load_path_filter=load_path_filter_module):
+    """Step ids --fast can skip for a non-empty changed-path list; fail closed to empty set."""
+    if not paths:
+        return set()
+    try:
+        pf = load_path_filter()
+    except Exception as error:  # noqa: BLE001 - any filter error means run everything
+        print(f"fast path filter: {PATH_FILTER_SCRIPT.name} failed ({error!r}), running all fast steps",
+              flush=True)
+        return set()
+    rust_changed = any(pf.relevant(p, "rust") for p in paths)
+    rust_deps_changed = rust_changed or any(
+        p in {"scripts/test_cargo_machete.py", ".github/workflows/rust-deps-weekly.yml"} for p in paths)
+    ui_changed = any(pf.relevant(p, "ui") for p in paths)
+    workaround_changed = any(
+        p.endswith(pf.WORKAROUND_EXTENSIONS) or p.startswith("scripts/workaround-ratchet") for p in paths)
+    duplication_changed = any(
+        p.startswith(DUPLICATION_PREFIXES) or p == "scripts/duplication-baseline.json" for p in paths)
+    node_fixtures_changed = any(
+        p.startswith(NODE_FIXTURE_PREFIXES)
+        or p in {"rust/scripts/inspect-node-routes.mjs", "scripts/local-ci.py"}
+        or re.fullmatch(r"web/package[^/]*\.json", p) is not None
+        for p in paths)
+    web_assets_needed = rust_changed or ui_changed or workaround_changed or duplication_changed
+    unaffected = set()
+    if not rust_changed:
+        unaffected.update(RUST_FAST_STEPS - {"rust-deps"})
+    if not rust_deps_changed:
+        unaffected.add("rust-deps")
+    if not ui_changed:
+        unaffected.add("ui-package")
+    if not workaround_changed:
+        unaffected.add("workaround-ratchet")
+    if not duplication_changed:
+        unaffected.add("duplication")
+    if not node_fixtures_changed:
+        unaffected.add("node-fixtures")
+    if not web_assets_needed:
+        unaffected.add("web-assets")
+    return unaffected
 
 
 def affected_nextest_filter(env, git=git_output):
@@ -256,16 +334,13 @@ def affected_nextest_filter(env, git=git_output):
     working tree, plus untracked files, so uncommitted edits count. The filter
     script's own rules decide, so shared inputs still force all(), as in CI.
     """
-    base = (git(env, "merge-base", "origin/main", "HEAD") or "").strip()
+    base, paths = branch_changed_paths(env, git=git)
     if not base:
         print("affected nextest filter: no merge-base with origin/main, using all()", flush=True)
         return "all()"
-    changed = git(env, "diff", "--name-only", "--no-renames", "-z", base)
-    untracked = git(env, "ls-files", "--others", "--exclude-standard", "-z")
-    if changed is None or untracked is None:
+    if paths is None:
         print("affected nextest filter: git diff failed, using all()", flush=True)
         return "all()"
-    paths = [path for path in (changed + untracked).split("\0") if path]
     try:
         module = load_filter_module()
         crates = ROOT / "rust/crates"
@@ -345,11 +420,12 @@ def ids(value):
     return [item for item in value.split(",") if item] if value else []
 
 
-def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
+def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter,
+         changed_paths=branch_changed_paths):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fast", action="store_true",
-                        help="leave out the full nextest pass; run nextest on the default "
-                             "build for the crates this branch affects")
+                        help="leave out full nextest and dual-feature clippy-limits; skip unaffected "
+                             "heavy steps and run affected nextest on the default build")
     parser.add_argument("--list", action="store_true", help="print the steps and exit")
     parser.add_argument("--only", help="comma-separated step ids to run")
     parser.add_argument("--skip", help="comma-separated step ids to leave out")
@@ -376,15 +452,26 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
         print(f"RUSTC_WRAPPER={env['RUSTC_WRAPPER']} CARGO_INCREMENTAL={env.get('CARGO_INCREMENTAL', '')}",
               flush=True)
     Path(env["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
-    nextest = [step for step in plan if step.id.startswith("nextest") and not unmet(step, env)]
+    unaffected = set()
+    if args.fast and not only:
+        _, paths = changed_paths(env)
+        unaffected = fast_unaffected_steps(paths)
+    nextest = [step for step in plan
+               if step.id.startswith("nextest") and step.id not in unaffected and not unmet(step, env)]
     if nextest and "web-assets" not in skip and not any(step.id == "web-assets" for step in plan):
         plan.insert(0, next(step for step in STEPS if step.id == "web-assets"))
     results = []
+    missing_skips = 0
     for step in plan:
+        if step.id in unaffected:
+            print(f"\n== SKIP {step.id}: {FAST_UNAFFECTED}", flush=True)
+            results.append(("SKIP", step, FAST_UNAFFECTED))
+            continue
         reason = unmet(step, env)
         if reason:
             print(f"\n== SKIP {step.id}: {reason}", flush=True)
             results.append(("SKIP", step, reason))
+            missing_skips += 1
             continue
         if step.id.startswith("nextest"):
             print(f"\n== CHECK release artifacts before {step.id}", flush=True)
@@ -404,6 +491,7 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
             status = "PASS"
         elif step.skip_status and code == step.skip_status:
             status, detail = "SKIP", f"{detail}; a check in the step printed SKIP"
+            missing_skips += 1
         else:
             status = "FAIL"
         results.append((status, step, detail))
@@ -413,7 +501,7 @@ def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
         print(f"{status} {step.id:20} {detail}")
     counts = {s: sum(1 for r in results if r[0] == s) for s in ("PASS", "FAIL", "SKIP")}
     print(f"{counts['PASS']} passed, {counts['FAIL']} failed, {counts['SKIP']} skipped")
-    return 1 if counts["FAIL"] or (args.fail_on_skip and counts["SKIP"]) else 0
+    return 1 if counts["FAIL"] or (args.fail_on_skip and missing_skips) else 0
 
 
 if __name__ == "__main__":

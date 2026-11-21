@@ -722,20 +722,194 @@ step(7, null, async ({ page }) => {
   }
 });
 
-step(8, "GRE-1531", async ({ page }) => {
-  await openBuild(page, "Production");
-  await page.getByRole("button", { name: /send/i }).click();
-  unwritten(
-    "a simulated printer receives the sliced file once, and an unknown outcome asks for a reconcile and is never resent",
+/** What the simulator's control port reports that Steps 8 and 9 read. */
+type SimulatorLog = {
+  state: string;
+  progress: number;
+  filename: string | null;
+  counts: { requests: number; unauthorized: number; uploads: number; starts: number };
+  files: { name: string; size: number; sha256: string; uploads: number }[];
+  fault: string | null;
+};
+
+/**
+ * One request to the simulator's control port: `log` reads it; `state` and `fault` change
+ * it with `body`. Each answers with the log after the request.
+ */
+async function simulator(path: "log" | "state" | "fault", body?: object) {
+  const name = process.env.PP_DAILY_LOOP_SIMULATOR ?? "";
+  const control = docker("port", name, "7200").stdout.trim().split("\n")[0];
+  expect(control, `docker port ${name} 7200`).toMatch(/^127\.0\.0\.1:\d+$/);
+  const answer = await fetch(
+    `http://${control}/_sim/${path}`,
+    body && {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
   );
+  expect(answer.status, `/_sim/${path}: ${body ? JSON.stringify(body) : ""}`).toBe(200);
+  return (await answer.json()) as SimulatorLog;
+}
+
+// The sliced file the owner sends in Step 8, and prints in Step 9. Its first send's answer
+// is lost; that send has its own name so the simulator counts each file's uploads apart.
+const GCODE = "; Daily loop bracket, sliced\nG28\nG1 Z0.2 F3000\nG1 X10 Y10 E1 F1500\nM84\n";
+const SENT = "bracket.gcode";
+const LOST = "bracket-lost-answer.gcode";
+
+/** A send's row on the Production tab, by its file name. */
+const sendRow = (page: Page, file: string) =>
+  page
+    .getByRole("table", { name: "Sends" })
+    .getByRole("row")
+    .filter({ has: page.getByRole("cell", { name: file, exact: true }) });
+
+/** Sends `file` to the simulator from the Production tab's sheet: upload, then start. */
+async function uploadAndStart(page: Page, file: string) {
+  await page.getByRole("button", { name: "Send a file" }).click();
+  const sheet = page.getByRole("dialog", { name: "Send a file" });
+  await sheet
+    .getByLabel("Sliced file")
+    .setInputFiles({ name: file, mimeType: "text/x-gcode", buffer: Buffer.from(GCODE) });
+  await sheet.getByLabel("Printer", { exact: true }).selectOption({ label: PRINTER });
+  await sheet.getByRole("radio", { name: "Upload and start print" }).check();
+  const send = sheet.getByRole("button", { name: "Send", exact: true });
+  await expect(send).toBeEnabled();
+  await send.click();
+  const confirm = page.getByRole("dialog", { name: "Start this print?" });
+  await expect(confirm).toContainText(`uploads ${file} to ${PRINTER} and starts the print`);
+  await confirm.getByRole("button", { name: "Start print" }).click();
+  await expect(confirm).toBeHidden();
+}
+
+step(8, null, async ({ page }) => {
+  await openBuild(page, "Production");
+  await expect(screen(page, "Production")).toBeVisible();
+  const before = await simulator("log");
+  expect(before.state, "the simulator's state").toBe("standby");
+  expect(before.fault, "the simulator's armed fault").toBeNull();
+
+  // The first send's answer is lost: the simulator stores the upload, then closes the
+  // connection without answering, so the core cannot know whether the printer has it.
+  await simulator("fault", { fault: "lose-upload" });
+  await uploadAndStart(page, LOST);
+  const lost = sendRow(page, LOST);
+  await expect(lost.getByRole("cell").nth(4)).toHaveText("Outcome unknown", { timeout: 60_000 });
+  // The row asks the owner what happened and offers no Send now.
+  await expect(
+    lost.getByRole("group", { name: `Actions for ${LOST}` }).getByRole("button"),
+  ).toHaveText(["It printed", "It did not print", "Remove"]);
+  const unknown = await simulator("log");
+  expect(unknown.fault, "the armed fault, after it fired").toBeNull();
+  expect(unknown.counts.uploads, "uploads").toBe(before.counts.uploads + 1);
+  expect(unknown.counts.starts, "print starts").toBe(before.counts.starts);
+  expect(unknown.state, "the simulator's state").toBe("standby");
+  // The core refuses Send now itself while the outcome is unknown, so nothing resends it.
+  const origin = new URL(page.url()).origin;
+  const queue = await page.request.get(`${origin}/api/v2/printer-send-queue`);
+  expect(queue.ok(), `GET printer-send-queue: ${queue.status()}`).toBe(true);
+  const { items } = (await queue.json()) as { items: { id: string; filename: string }[] };
+  const item = items.find(({ filename }) => filename === LOST);
+  expect(item, `${LOST} in the send queue`).toBeDefined();
+  const again = await page.request.post(
+    `${origin}/api/v2/printer-send-queue/${item?.id}/dispatch`,
+    { headers: { Origin: origin } },
+  );
+  expect(again.status(), `Send now on an unknown outcome: ${await again.text()}`).toBe(409);
+  expect((await simulator("log")).counts, "counts after the refused Send now").toEqual(
+    unknown.counts,
+  );
+
+  // The owner sees the simulator idle, not printing, and says so.
+  await lost.getByRole("button", { name: "It did not print" }).click();
+  await expect(lost.getByRole("cell").nth(4)).toContainText("Failed");
+  await expect(
+    lost.getByRole("group", { name: `Actions for ${LOST}` }).getByRole("button"),
+  ).toHaveText(["Send now", "Remove"]);
+
+  // Then he sends the file again. The printer receives it once and starts it once. This
+  // dispatch also wakes the send worker, which must leave the reconciled send alone.
+  await uploadAndStart(page, SENT);
+  await expect(sendRow(page, SENT).getByRole("cell").nth(4)).toHaveText("Sent", {
+    timeout: 60_000,
+  });
+  await expect(lost.getByRole("cell").nth(4)).toContainText("Failed");
+  const sent = await simulator("log");
+  expect(sent.counts.uploads, "uploads").toBe(unknown.counts.uploads + 1);
+  expect(sent.counts.starts, "print starts").toBe(unknown.counts.starts + 1);
+  expect(sent.state, "the simulator's state").toBe("printing");
+  expect(sent.filename, "the file printing").toBe(SENT);
+  const sha256 = Buffer.from(
+    await crypto.subtle.digest("SHA-256", Buffer.from(GCODE)),
+  ).toString("hex");
+  const files = Object.fromEntries(sent.files.map(({ name, ...file }) => [name, file]));
+  expect(files[SENT], `${SENT} on the simulator`).toEqual({
+    size: Buffer.byteLength(GCODE),
+    sha256,
+    uploads: 1,
+  });
+  expect(files[LOST]?.uploads, `uploads of ${LOST}`).toBe(1);
 });
 
-step(9, "GRE-1531", async ({ page }) => {
+/** The pulse line's count of printers in the state `label`; 0 when it lists none there. */
+async function pulseCount(page: Page, label: string) {
+  const line = page.getByRole("region", { name: "Printer pulse" });
+  await expect(line.getByRole("list")).toBeVisible();
+  const names = await line
+    .getByRole("listitem")
+    .evaluateAll((items) => items.map((item) => item.getAttribute("aria-label") ?? ""));
+  const count = names.map((name) => /^(\d+) (.+)$/.exec(name)).find((match) => match?.[2] === label);
+  return count ? Number(count[1]) : 0;
+}
+
+step(9, null, async ({ page }) => {
+  // Step 8 started bracket.gcode on the simulator. The owner keeps Today open in this tab
+  // and Farm in a second one while the print runs to its end.
+  expect((await simulator("log")).state, "the simulator's state").toBe("printing");
   await signIn(page);
-  await go(page, "Farm");
-  const printers = page.getByRole("table", { name: "Printers" });
-  await expect(printers.getByRole("cell", { name: "Printing" })).toBeVisible();
-  unwritten("Farm and Today follow the simulated printer to the end of the print without a page reload");
+  const farm = await page.context().newPage();
+  try {
+    await farm.goto(page.url());
+    await go(farm, "Farm");
+    const row = farm
+      .getByRole("table", { name: "Printers" })
+      .getByRole("row")
+      .filter({ has: farm.getByRole("rowheader", { name: PRINTER }) });
+    const [status, execution] = [row.getByRole("cell").nth(0), row.getByRole("cell").nth(1)];
+    // A mark on each tab that a page reload would wipe.
+    for (const tab of [page, farm]) {
+      await tab.evaluate(() => Object.assign(window, { ppNotReloaded: true }));
+    }
+
+    await simulator("state", { state: "printing", progress: 0, filename: SENT });
+    await expect(status).toHaveText("Printing", { timeout: 30_000 });
+    await expect(execution).toHaveText("Printing 0%", { timeout: 30_000 });
+    const printing = await pulseCount(page, "Printing");
+    expect(printing, "printers Today counts as printing").toBeGreaterThanOrEqual(1);
+    const bedsToClear = await pulseCount(page, "Bed to clear");
+
+    await simulator("state", { state: "printing", progress: 0.4 });
+    await expect(execution).toHaveText("Printing 40%", { timeout: 30_000 });
+    await expect(status).toHaveText("Printing");
+
+    // The print ends. The bed holds it, so Farm and Today both show it to clear.
+    await simulator("state", { state: "complete", progress: 1 });
+    await expect(status).toHaveText("Bed to clear", { timeout: 30_000 });
+    await expect(execution).toHaveText(/^Idle/);
+    await expect.poll(() => pulseCount(page, "Printing"), { timeout: 30_000 }).toBe(printing - 1);
+    expect(await pulseCount(page, "Bed to clear"), "printers Today counts with a bed to clear").toBe(
+      bedsToClear + 1,
+    );
+
+    for (const tab of [page, farm]) {
+      expect(await tab.evaluate(() => "ppNotReloaded" in window), "no page reload").toBe(true);
+    }
+    await expect(screen(page, "Today")).toBeVisible();
+    await expect(farm.getByText("Live printer updates are down")).toHaveCount(0);
+  } finally {
+    await farm.close();
+  }
 });
 
 step(10, "GRE-1515", async ({ page }) => {

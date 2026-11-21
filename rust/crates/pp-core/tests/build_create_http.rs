@@ -182,6 +182,28 @@ async fn a_repeated_create_is_refused_and_the_client_reconciles_by_listing() {
     server.stop().await;
 }
 
+/// The Builds list reads at most 64 Builds, so create stops there and the
+/// list a client reconciles from stays readable.
+#[tokio::test]
+async fn the_create_after_64_builds_is_refused_and_the_list_still_reads() {
+    let server = start().await;
+    for n in 0..64 {
+        let (status, created) = create(&server, json!({"name": format!("Build {n:02}")})).await;
+        assert_eq!(status, 200, "{created}");
+    }
+    let (status, refused) = create(&server, json!({"name": "One too many"})).await;
+    let detail = "Build limit reached: an installation holds at most 64 Builds";
+    assert_problem(status, &refused, 409, detail);
+    // A retry of a create that landed still says the name is taken.
+    let (status, refused) = create(&server, json!({"name": "Build 63"})).await;
+    assert_problem(status, &refused, 400, "Profile already exists: Build 63");
+
+    let listed = builds(&server).await;
+    assert_eq!(listed.len(), 64);
+    assert!(!listed.iter().any(|(_, name)| name == "One too many"));
+    server.stop().await;
+}
+
 #[tokio::test]
 async fn a_create_without_credentials_or_from_another_origin_writes_nothing() {
     let server = start().await;

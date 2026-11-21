@@ -79,6 +79,7 @@ export function generate(document) {
   function emit(schema, visiting) {
     assert(schema && typeof schema === "object" && !Array.isArray(schema), "Unsupported boolean schema");
     for (const key of Object.keys(schema)) assert(keywords.has(key), `Unsupported Rust schema keyword ${key}`);
+    assert(schema["x-trim-js"] === undefined || [schema.type].flat().includes("string"), "x-trim-js applies only to a string schema");
     if (schema.$ref) {
       assert(schema.$ref.startsWith("#/definitions/"), "External schema reference forbidden");
       return reference(schema.$ref.slice(14), visiting);

@@ -135,6 +135,27 @@ const optionalMembers = {
   UpdatePrinterRequest: new Set(["name", "model", "bed_width_mm", "bed_depth_mm", "bed_height_mm", "margin_mm", "max_filament_slots", "integration_id"]),
 };
 
+test("generate refuses x-trim-js except as true on a length-bounded string", () => {
+  const generating = (change) => {
+    const copy = globalThis.structuredClone(document);
+    change(copy.dtos.CreateBuildRequest.definitions.BuildName);
+    return () => generate(copy);
+  };
+  const unbounded = (name) => {
+    delete name.minLength;
+    delete name.maxLength;
+  };
+  const boolean = (name) => {
+    unbounded(name);
+    delete name["x-unicode-scalar"];
+    name.type = "boolean";
+  };
+  assert.throws(generating(boolean), /x-trim-js applies only to a string schema/);
+  assert.throws(generating((name) => (name["x-trim-js"] = false)), /x-trim-js must be true, on a length-bounded string/);
+  assert.throws(generating(unbounded), /x-trim-js must be true, on a length-bounded string/);
+  assert.doesNotThrow(generating(() => {}));
+});
+
 for (const fixture of document.fixtures) {
   test(`${fixture.dto} ${fixture.name}: agrees with Rust and round-trips`, () => {
     const schema = dtoSchemas[fixture.dto];

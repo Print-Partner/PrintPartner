@@ -1,4 +1,6 @@
-use crate::{Digest, WireInteger, WireText, build_identity::BuildName};
+#[cfg(feature = "desktop_rebuild")]
+use crate::build_identity::BuildName;
+use crate::{Digest, WireInteger, WireText};
 use schemars::{JsonSchema, r#gen::SchemaGenerator, schema::*};
 
 impl<const MIN: u64, const MAX: u64> JsonSchema for WireInteger<MIN, MAX> {
@@ -49,6 +51,7 @@ impl JsonSchema for Digest {
 /// A Build name as `BuildName::parse` takes it: 1 to 4096 Unicode scalars after trimming
 /// JavaScript whitespace. `x-trim-js` tells the client generator to count the trimmed value,
 /// as `String.prototype.trim` strips the same characters as `trim_js`.
+#[cfg(feature = "desktop_rebuild")]
 impl JsonSchema for BuildName {
     fn schema_name() -> String {
         "BuildName".into()

@@ -39,36 +39,29 @@ choose. **Create** is also disabled without a name, with a name over the core's
 4,096-character limit, offline, and while a create or its check is running.
 
 Create sends `createBuild` once. The create and its check live outside the
-dialog (`web/apps/ui/src/builds/createBuild.ts`), so closing the dialog keeps
-them. A reopened dialog shows the same name, says the create is running or
-being checked, and cannot send a second one. An answer that arrives while no
-dialog is open opens nothing: a 200 reads the Builds list again so the new Build
-shows, and any other answer's check result shows in the next dialog. The POST
-never follows a redirect (`redirect: "error"`), because `fetch` would send it
-again to the redirect's target. It runs in the query client's mutation cache,
-so the core's own 401 opens sign-in as every other write's does; an error that
-came through a redirect is checked like a lost answer and opens nothing. Each
-list read after an answer is the Builds query's own fetch, so a later Create
-cancels an earlier one and a late answer never replaces a newer list.
+dialog (`web/apps/ui/src/builds/createBuild.ts`), so a reopened dialog shows the
+same name and state and cannot send a second one. An answer that arrives with no
+dialog open opens nothing; its result shows in the next dialog. The POST never
+follows a redirect (`redirect: "error"`), because `fetch` would resend it. It
+runs in the query client's mutation cache, so the core's own 401 opens sign-in;
+an error that came through a redirect is checked and opens nothing.
 
 Only an exact HTTP 200, not redirected, with a body that matches the contract,
 opens the new Build's Overview. The core's own refusals keep the dialog open
-with the reason: a problem document with status 400, 401, 403, 409 or 413,
-not reached through a redirect. A
-400 `Profile name is ...` reads "Build name is ...", a 400 `Project not found`
-says the Source left the Library, and the 409 Build limit shows the core's
-detail. A 400 `Profile already exists` reads the Builds list and links to the
-Build that holds the name; when the list does not load or does not show it, the
-dialog still says the name is in use.
+with the reason: a problem document with status 400, 401, 403, 409 or 413, not
+reached through a redirect. `Profile name is ...` reads "Build name is ...",
+`Project not found` says the Source left the Library, and the 409 Build limit
+shows the core's detail. `Profile already exists` links to the Build that holds
+the name when the list shows it, and says the name is in use either way.
 
 Every other answer may hide a created Build: a 5xx, a dropped connection, a
-proxy page, a redirect, another 2xx such as 202, or a 200 that fails the
-contract. The
+proxy page, a redirect, another 2xx, or a 200 that fails the contract. The
 dialog never resends. As
 [the repeat rule](../../gre-792-builds-http.md#client-contract-createbuild-gre-1876)
-says, it reads the Builds list and looks for the exact name. It cancels any
-list read already in flight, because that read may have started before the
-create, and sends a new one:
+says, it reads the Builds list and looks for the exact name. Every 200 reads the
+list too. That read cancels any Builds query read in flight, which may predate
+the create, and is its own request: leaving Builds cannot cancel it, a newer
+read replaces it, and it never writes over a newer list.
 
 - The name is there, and the list loaded before the press did not hold it: the
   Build was created, and the dialog links to it.

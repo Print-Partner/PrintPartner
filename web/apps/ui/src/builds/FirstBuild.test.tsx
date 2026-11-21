@@ -546,6 +546,12 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     ["200 that fails the contract", () => json({ id: "not a Build" })],
     ["a proxy's 400 page", () => new Response("<h1>Bad Request</h1>", { status: 400 })],
     ["a proxy's 403 page", () => new Response("<h1>Forbidden</h1>", { status: 403 })],
+    ["a redirected 200", () => redirected(json(storedBuild(4242, "Ghost")))],
+    ["a redirected 403 problem", () => redirected(problem(403, "Forbidden", "forbidden"))],
+    [
+      "a redirected 401, which opens no sign-in,",
+      () => redirected(problem(401, "Authentication required", "unauthenticated")),
+    ],
   ])("%s is checked against the list, never trusted or resent", async (_case, reply) => {
     const core = scriptedCore({ sources: ["Kit A"], answer: () => Promise.resolve(reply()) });
     const router = renderAt("/builds", core);
@@ -556,6 +562,7 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     await pause();
     expect(router.state.location.pathname).toBe("/builds");
     expect(core.buildPosts).toHaveLength(1);
+    expect(core.listReads()).toBe(2);
   });
 
   it("a name the core refused as in use stays refused when the list cannot show it", async () => {
@@ -588,20 +595,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     const posts = core.fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
     expect(posts).toHaveLength(1);
     expect(posts[0]![1]?.redirect).toBe("error");
-  });
-
-  it.each([
-    ["a redirected 200", () => redirected(json(storedBuild(4242, "Elsewhere")))],
-    ["a redirected 403 problem", () => redirected(problem(403, "Forbidden", "forbidden"))],
-  ])("%s is checked, never trusted as an answer or a refusal", async (_case, reply) => {
-    const core = scriptedCore({ sources: ["Kit A"], answer: () => Promise.resolve(reply()) });
-    const router = renderAt("/builds", core);
-    fireEvent.click(await openWithName("Elsewhere"));
-    expect((await within(dialog()).findByRole("alert")).textContent).toMatch(
-      /^Could not confirm the Build was created, and the Builds list holds no Build with this name\./,
-    );
-    expect(core.listReads()).toBe(2);
-    expect(router.state.location.pathname).toBe("/builds");
   });
 
   it("a 200 that lands while the dialog is closed shows the Build in a list read after it", async () => {
@@ -648,30 +641,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     await waitFor(() => expect(lastClient.getMutationCache().getAll()).toHaveLength(0));
   });
 
-  it("a 401 that came through a redirect is checked and does not open sign-in", async () => {
-    const core = scriptedCore({
-      sources: ["Kit A"],
-      answer: () =>
-        Promise.resolve(redirected(problem(401, "Authentication required", "unauthenticated"))),
-    });
-    const router = renderAt("/builds", core);
-    fireEvent.click(await openWithName("Proxied"));
-    expect((await within(dialog()).findByRole("alert")).textContent).toMatch(
-      /^Could not confirm the Build was created, and the Builds list holds no Build with this name\./,
-    );
-    await pause();
-    expect(router.state.location.pathname).toBe("/builds");
-    expect(core.listReads()).toBe(2);
-  });
-
-  it("a confirmed Create leaves no observer on its mutation", async () => {
-    const core = scriptedCore({ sources: ["Kit A"] });
-    renderAt("/builds", core);
-    fireEvent.click(await openWithName("Collected"));
-    await heading("Collected");
-    await waitFor(() => expect(lastClient.getMutationCache().getAll()).toHaveLength(0));
-  });
-
   it("an older Create's list read, answered late, never hides a newer Build", async () => {
     let releaseSecond: () => void = () => {};
     const core = scriptedCore({
@@ -699,5 +668,50 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     await pause();
     expect(within(table).getByRole("link", { name: "Build 1" })).toBeTruthy();
     expect(within(table).getByRole("link", { name: "Build 2" })).toBeTruthy();
+  });
+
+  it.each([
+    ["a check after a lost answer", 502],
+    ["the read after a 200", 200],
+  ])("leaving Builds does not cancel %s or put the old list back", async (_case, status) => {
+    let release: () => void = () => {};
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      list: (read, snapshot) =>
+        read === 2 ? new Promise((resolve) => (release = () => resolve(snapshot))) : undefined,
+      answer: (write) => {
+        const build = write();
+        return Promise.resolve(
+          status === 200
+            ? json({ ...build, layers: [] })
+            : problem(502, "Bad Gateway", "unavailable"),
+        );
+      },
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Kept"));
+    if (status === 200) {
+      await heading("Kept");
+      // The settled Create holds no observer, so its mutation leaves the cache.
+      await waitFor(() => expect(lastClient.getMutationCache().getAll()).toHaveLength(0));
+    } else {
+      await within(dialog()).findByText("Checking the Builds list.");
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+      fireEvent.click(screen.getByRole("link", { name: "Library" }));
+      await heading("Library");
+    }
+    release();
+    await waitFor(() =>
+      expect(
+        lastClient.getQueryData<{ profiles: ProfileSummary[] }>(["core", "builds"])?.profiles,
+      ).toHaveLength(1),
+    );
+    if (status === 502) {
+      fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+      expect((await within(dialog()).findByRole("alert")).textContent).toContain(
+        "so it was created",
+      );
+    }
   });
 });

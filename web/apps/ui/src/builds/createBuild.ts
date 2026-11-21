@@ -1,8 +1,8 @@
 import type { CreateBuildRequest, ProfileList, ProfileSummary } from "@print-partner/rust-client";
-import { isCancelledError, MutationObserver, type QueryClient } from "@tanstack/react-query";
+import { MutationObserver, type QueryClient } from "@tanstack/react-query";
 import { buildsQuery } from "../core/builds";
 import { CoreError } from "../core/client";
-import { RequestContractError, writeCoreAnswer } from "../core/rust";
+import { readCore, RequestContractError, writeCoreAnswer } from "../core/rust";
 import { refusalText } from "../screen/SourceSelect";
 
 /**
@@ -30,6 +30,9 @@ const TAKEN = "A Build with this name already exists. Choose another name.";
 
 let state: CreateState = IDLE;
 let dialogs = 0;
+/** The latest list read after an answer; an older one is aborted and never written. */
+let listRead = 0;
+let listAbort = new AbortController();
 const listeners = new Set<() => void>();
 
 function set(next: CreateState) {
@@ -61,6 +64,8 @@ export const createStore = {
 export function resetCreateBuild() {
   state = IDLE;
   dialogs = 0;
+  listRead += 1;
+  listAbort.abort();
 }
 
 export function busy(current: CreateState): boolean {
@@ -86,12 +91,10 @@ function refusalCopy(detail: string): string {
 }
 
 /**
- * One `createBuild` POST. It never follows a redirect, because `fetch` would send the POST again
- * to the redirect's target; a redirect rejects and is checked like a lost answer. An error that
- * came through a redirect anyway is the target's, not the core's: it answers null, to be checked,
- * and never reaches the mutation cache. The POST runs in that cache, so the core's own 401 opens
- * sign-in as every other write's does (`App.tsx`). Nothing reads a settled Create from the cache,
- * so the observer lets go when it settles and the mutation is collected at once.
+ * One `createBuild` POST. `fetch` would resend it to a redirect's target, so a redirect rejects
+ * instead; an error that came through a redirect anyway answers null. Both are checked like a
+ * lost answer. It runs in the mutation cache, so the core's own 401 opens sign-in (`App.tsx`),
+ * and lets go of the cache once settled, since nothing reads a settled Create there.
  */
 async function post(client: QueryClient, body: CreateBuildRequest) {
   const observer = new MutationObserver(client, {
@@ -140,20 +143,30 @@ export async function startCreate(client: QueryClient, body: CreateBuildRequest)
   if (!answer || answer.status !== 200 || answer.redirected) return check(client, name, before);
   set(dialogs > 0 ? { kind: "opened", name, build: answer.data } : IDLE);
   // The list must show the Build even when no dialog opens it. A later Create cancels this read.
-  await freshList(client).catch((error: unknown) => {
-    if (!isCancelledError(error)) void client.invalidateQueries({ queryKey: buildsQuery.queryKey });
-  });
+  await freshList(client).catch(() => client.invalidateQueries({ queryKey: buildsQuery.queryKey }));
 }
 
 /**
- * The Builds list read after the create's answer, through the query client. A list read already
- * in flight may have started before the create and would answer without its Build, so it is
- * cancelled rather than joined. The read is the query's own fetch, so a later Create's cancel
- * stops it too, and a cancelled read never writes the cache over a newer list.
+ * The Builds list read after the create's answer, or null when a newer one replaced it. A list
+ * read already in flight may have started before the create, so it is cancelled rather than
+ * joined. The read is not the Builds query's own fetch, so leaving Builds cannot cancel it or
+ * put the list from before the create back; a newer read aborts it, and it never writes over a
+ * list the cache got after it started.
  */
-async function freshList(client: QueryClient): Promise<ProfileList> {
+async function freshList(client: QueryClient): Promise<ProfileList | null> {
+  const read = ++listRead;
+  listAbort.abort();
+  const abort = (listAbort = new AbortController());
   await client.cancelQueries({ queryKey: buildsQuery.queryKey });
-  return client.fetchQuery({ ...buildsQuery, staleTime: 0 });
+  const since = client.getQueryState(buildsQuery.queryKey)?.dataUpdatedAt ?? 0;
+  const list = await readCore("listBuilds", {}, abort.signal).catch((error: unknown) => {
+    if (read === listRead) throw error;
+  });
+  if (!list || read !== listRead) return null;
+  if ((client.getQueryState(buildsQuery.queryKey)?.dataUpdatedAt ?? 0) <= since) {
+    client.setQueryData(buildsQuery.queryKey, list);
+  }
+  return list;
 }
 
 /** Looks for the exact name in a fresh Builds list, as docs/gre-792-builds-http.md says. */
@@ -163,19 +176,12 @@ async function check(
   before: ReadonlySet<number> | null | "taken",
 ): Promise<void> {
   set({ kind: "checking", name });
-  let list: ProfileList;
-  try {
-    list = await freshList(client);
-  } catch {
-    return set(
-      before === "taken" ? { kind: "refused", name, text: TAKEN } : { kind: "unread", name },
-    );
-  }
-  const build = list.profiles.find((listedBuild) => listedBuild.name === name);
+  // No list, from a failed or replaced read, is "unread".
+  const list = await freshList(client).catch(() => null);
+  const build = list?.profiles.find((listedBuild) => listedBuild.name === name);
   if (!build) {
-    return set(
-      before === "taken" ? { kind: "refused", name, text: TAKEN } : { kind: "absent", name },
-    );
+    if (before === "taken") return set({ kind: "refused", name, text: TAKEN });
+    return set({ kind: list ? "absent" : "unread", name });
   }
   const why =
     before === "taken"

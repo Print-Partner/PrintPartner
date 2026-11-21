@@ -148,7 +148,10 @@ async function suite(keyFile) {
     if (problem) console.error(`Harness: ${problem}.`);
     return 1;
   }
-  return run("npx", ["playwright", "test", "--config", "test/daily-loop/playwright.config.ts"], {
+  // Playwright's own CLI, not `npx playwright`: npx runs it under a shell that does not
+  // pass a signal on, so a stopped run would leave the browser tests running.
+  const playwright = resolve(root, "web/node_modules/@playwright/test/cli.js");
+  return run(process.execPath, [playwright, "test", "--config", "test/daily-loop/playwright.config.ts"], {
     cwd: resolve(root, "web"),
     env: {
       ...process.env,

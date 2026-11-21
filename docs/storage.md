@@ -379,7 +379,7 @@ Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Install
 
 ### Backup and restore from Settings
 
-The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`). Nothing is sent when the section opens.
+The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`). Nothing is sent when the section opens or when a file is chosen. The section never calls the restore route.
 
 **Create backup** posts `createInstallationBackup` once, with `redirect: "error"`: a 307 or 308 is never followed, so one click never sends a second POST, and the refused redirect is read as not confirmed. While it runs, the section's status line says `Creating backup` and the button is off; the same mounted status line then says `Backup made`. Offline, the button is off and names the offline reason. The answer shows the archive's file name, time, app version, size (with the exact byte count) and SHA-256. The page keeps only the backup it made; after a reload, create one again.
 
@@ -388,7 +388,22 @@ A failed create reads the answer this way:
 - The core's own problem keeps the backup already shown and says `The backup was not made`, with the core's reason, such as `A backup is already running`. The core's own problem means the body is `application/problem+json`, valid against the generated `Problem` schema, and its `status` equals the HTTP status (`CoreError.problem` in `web/apps/ui/src/core/client.ts`). The core keeps a new archive only when it answers 200, so its refusal changed nothing.
 - Anything else drops the shown backup and says `The core did not confirm the backup. Create backup again.` That covers a redirect of any kind (whatever the destination would answer), a proxy page, a cut-off body, a 200 that fails the contract, a lost answer, and a problem with a malformed member such as `"code": null`. The core may have made a new archive and dropped the one shown. Creating again only replaces the kept archive.
 
-Download, Check backup and the restore dialog come in the later GRE-1340 slices.
+**Download** (GRE-1865) sits next to the shown file name. It first sends `HEAD /api/v2/installation/backup/archive?sha256=<shown digest>` with `redirect: "error"`. Only a 200 starts a browser download of the same URL, so the file saved is the one whose size and SHA-256 the page shows. The `GET` carries the digest too, so it never sends bytes other than the shown archive's. A HEAD answer has no body, so the section reads its status alone:
+
+- 404 or 409: the core no longer keeps the shown archive. The section drops it, saves nothing, and says to create a backup again.
+- 503: a create or another download holds the core's backup slot. Nothing is saved, the shown backup stays, and the section says `The core is busy with another backup or download. Try Download again in a moment.`
+- Any other answer, another 2xx such as 204 included, a redirect or a lost answer: nothing is saved, the shown backup stays, and the section says the download did not start. Trying again cannot save a different file.
+
+HEAD and the browser's `GET` are two requests, so the slot can change between them. If a create from any window is still running when the `GET` arrives, the core answers 503. If a create has finished and replaced the archive, the core answers 409. In neither case does it send other bytes. The section has already said `Download started`, and the browser's own download shows the failure. While the HEAD is pending, the Download button is off (`aria-disabled`), and a second press sends nothing. A press after it resolves starts a second download.
+
+Download streams the archive through a browser `<a download>` navigation on purpose, so the page never holds a backup of any size in memory, as `fetch` and a `Blob` would. That navigation's `GET` can follow a redirect if one appears after the HEAD. The HEAD before it asks the same URL with `redirect: "error"`, so a layer that redirects that URL stops the download before it starts. Every `fetch` in the section refuses redirects (`createInstallationBackup`, the archive HEAD, `stageInstallationRestore`). The owner accepted the streaming `GET` as a scope exception to GRE-1865 on 2026-11-20.
+
+**Restore from a backup** has a file field and **Check backup** (GRE-1865). Check backup posts the chosen file once as the body of `stageInstallationRestore` (`application/gzip`, with `redirect: "error"`). The section's second status line says `Checking backup`, then `Backup checked`, and the section shows the backup's time, app version and schema version. Staging never changes this installation. A new stage replaces the earlier one, so checking again is safe. A failed check drops any preview already shown:
+
+- The core's own problem, such as 422 `Invalid backup archive` for a truncated file, shows `The backup was not accepted: <reason>. This installation is unchanged.`
+- Anything else (a redirect, a proxy page, a malformed problem, a 200 that fails the contract, a lost answer) shows `The core did not confirm the check. This installation is unchanged. Check backup again.`
+
+There is no Restore button and no dialog yet. Those come in the last GRE-1340 slice.
 
 ## Source thumbnail cache
 
@@ -452,7 +467,7 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two r
 
 `POST /api/v2/installation/backup` calls `export_backup` with this build's version and answers the archive file name, `created_at`, app version, size in bytes, SHA-256 and warnings. The name is `print-partner-backup.tar.gz`. The router keeps that one archive. A later create drops the previous one, which removes its folder. Not enough free disk answers 503 `Not enough free disk space`, with `needed` and `available`. A restore in progress answers 503 `A restore is in progress`.
 
-`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
+`GET /api/v2/installation/backup/archive` streams the kept archive as `application/gzip`. Nothing has been created answers 404 `No backup has been created`. The optional `sha256` query names the archive the client wants by the digest the create answered. When a later create, from any window or client, has replaced it, the route answers 409 `A newer backup replaced this one; create a backup again` and sends no bytes (GRE-1865). A repeated `sha256` keeps its last value. `HEAD` runs the same checks as `GET` in the same order and answers the same status and headers with no body: 503 `A backup is already running` while a create or a download holds the one-request slot, then 404, 409, or 200 with the archive's `Content-Length`. `HEAD` only looks at the slot and never takes it, so HEADs never refuse each other and a `GET` right after a HEAD is not refused as busy. The two answers agree for one state of the slot. Between a HEAD and a `GET`, a create still running makes the `GET` answer 503, and a create that has finished and replaced the archive makes it answer 409; neither sends other bytes. The generated client names the create route `createInstallationBackup`. The download is a file, so it is not in the client.
 
 Tests: `pp-storage/src/restore/tests/export.rs` and `pp-core/tests/installation_backup_http.rs`.
 

@@ -221,13 +221,81 @@ step(2, "GRE-1515", async ({ page }) => {
   );
 });
 
-step(3, "GRE-1531", async ({ page }) => {
+// The Moonraker simulator run.mjs starts beside the container (web/test/moonraker-sim).
+// The name is not one the synthetic installation's printers use.
+const PRINTER = "Daily loop simulator";
+
+/** What the simulator's control port reports: its state and request counts, never the key. */
+async function simulatorLog() {
+  const simulator = process.env.PP_DAILY_LOOP_SIMULATOR ?? "";
+  const control = docker("port", simulator, "7200").stdout.trim().split("\n")[0];
+  expect(control, `docker port ${simulator} 7200`).toMatch(/^127\.0\.0\.1:\d+$/);
+  const answer = await fetch(`http://${control}/_sim/log`);
+  expect(answer.status, "GET /_sim/log").toBe(200);
+  return (await answer.json()) as {
+    state: string;
+    counts: { requests: number; unauthorized: number };
+  };
+}
+
+step(3, null, async ({ page }) => {
   await signIn(page);
   await go(page, "Settings");
-  await page.getByRole("button", { name: /add (a )?printer/i }).click();
-  unwritten(
-    "a simulated Moonraker or PrusaLink printer passes the probe, is saved, and shows live status on Farm after a restart",
+  await page.getByRole("button", { name: "Add a printer" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add a printer" });
+  await dialog.getByLabel("Kind").selectOption("moonraker");
+  await dialog.getByLabel("Address", { exact: true }).fill(process.env.PP_DAILY_LOOP_PRINTER_URL ?? "");
+  // The key file is a secret; it goes only into the password field.
+  const key = (await readFile(process.env.PP_DAILY_LOOP_PRINTER_KEY_FILE ?? "", "utf8")).trim();
+  await dialog.getByLabel("API key (optional)").fill(key);
+  // The probe sends no key, so the simulator answers 401 as a Moonraker that needs one.
+  await dialog.getByRole("button", { name: "Check address" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("The printer answered.");
+  await dialog.getByLabel("Name", { exact: true }).fill(PRINTER);
+  await dialog.getByLabel("Model", { exact: true }).fill("Moonraker simulator");
+  await dialog.getByLabel("Bed width (mm)").fill("220");
+  await dialog.getByLabel("Bed depth (mm)").fill("220");
+  await dialog.getByLabel("Bed height (mm)").fill("250");
+  await dialog.getByRole("button", { name: "Save printer" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("status").filter({ hasText: `Added ${PRINTER}.` })).toBeVisible();
+  await expect(page.getByRole("button", { name: `Edit ${PRINTER}` })).toBeVisible();
+
+  // Restart the container. Every request after this one must carry the saved key.
+  const before = await simulatorLog();
+  const restartedAt = Date.now();
+  const restarted = docker("restart", CONTAINER);
+  expect(restarted.status, restarted.stderr).toBe(0);
+  // The published port can change on restart, so sign in afresh on the new address.
+  await page.context().clearCookies();
+  await signIn(page);
+  await go(page, "Farm");
+
+  // The restarted core polls the simulator with the key: new requests, no new 401.
+  await expect
+    .poll(async () => (await simulatorLog()).counts.requests, { timeout: 60_000 })
+    .toBeGreaterThan(before.counts.requests);
+  const after = await simulatorLog();
+  expect(after.counts.unauthorized, "requests the simulator refused after the restart").toBe(
+    before.counts.unauthorized,
   );
+  // The simulator is in standby, so Farm shows it Ready and Idle, heard after the restart,
+  // from the live stream rather than a last-known state.
+  expect(after.state, "the simulator's state").toBe("standby");
+  const row = page
+    .getByRole("table", { name: "Printers" })
+    .getByRole("row")
+    .filter({ has: page.getByRole("rowheader", { name: PRINTER }) });
+  await expect(row).toHaveCount(1);
+  const cells = row.getByRole("cell");
+  await expect(cells.nth(0)).toHaveText("Ready", { timeout: 60_000 });
+  await expect(cells.nth(1)).toHaveText("Idle");
+  const heard = row.locator("time");
+  await expect(heard).toBeVisible();
+  const heardAt = Date.parse((await heard.getAttribute("datetime")) ?? "");
+  expect(heardAt, "last heard after the restart").toBeGreaterThanOrEqual(restartedAt - 1000);
+  await expect(page.getByText("Live printer updates are down")).toHaveCount(0);
+  await expect(page.getByText("Connecting to live printer updates.")).toHaveCount(0);
 });
 
 /**

@@ -404,6 +404,12 @@ class LocalCiTests(unittest.TestCase):
         self.assertEqual(ci("--fast"), 0)
         self.assertIn("node-fixtures", ci.ran)
 
+        # Shared web tsconfig edits (extended by contracts, domain and server builds) keep node-fixtures enabled.
+        self.assertNotIn("node-fixtures", local_ci.fast_unaffected_steps(["web/tsconfig.base.json"]))
+        ci = LocalCi(self, changed=["web/tsconfig.base.json"])
+        self.assertEqual(ci("--fast"), 0)
+        self.assertIn("node-fixtures", ci.ran)
+
         # Empty diff fails closed and runs every fast step.
         ci = LocalCi(self, changed=[])
         self.assertEqual(ci("--fast"), 0)

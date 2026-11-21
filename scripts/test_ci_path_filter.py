@@ -117,14 +117,16 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "ui"), path)
         for path in ("web/apps/ui/src/farm/AnswerClearsNotice.test.tsx",
                      "web/apps/ui/src/App.spec.ts", "web/apps/ui/src/App.spec.tsx",
+                     "web/apps/ui/src/App.test.mjs", "web/apps/ui/src/App.spec.js",
+                     "web/apps/ui/helper.test.cjs",
+                     "web/apps/ui/src/test/setup.ts",
                      "web/apps/ui/test/browser/all.mjs",
                      "web/test/daily-loop/daily-loop.spec.ts"):
             with self.subTest(web_test_only=path):
                 self.assertFalse(ci_filter.relevant(path, "rust"), path)
                 self.assertFalse(ci_filter.relevant(path, "rust-image"), path)
                 self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
-                if path.startswith("web/apps/ui/"):
-                    self.assertTrue(ci_filter.relevant(path, "ui"), path)
+                self.assertTrue(ci_filter.relevant(path, "ui"), path)
         for path in ("web/apps/ui/src/App.tsx", "web/apps/ui/src/testSetup.ts",
                      "web/apps/ui/src/foo/testHelper.ts"):
             with self.subTest(non_test_ui=path):

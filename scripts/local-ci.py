@@ -307,6 +307,7 @@ def fast_unaffected_steps(paths, load_path_filter=load_path_filter_module):
         p.startswith(NODE_FIXTURE_PREFIXES)
         or p in {"rust/scripts/inspect-node-routes.mjs", "scripts/local-ci.py"}
         or re.fullmatch(r"web/package[^/]*\.json", p) is not None
+        or re.fullmatch(r"web/tsconfig[^/]*\.json", p) is not None
         for p in paths)
     web_assets_needed = rust_changed or ui_changed or workaround_changed or duplication_changed
     unaffected = set()

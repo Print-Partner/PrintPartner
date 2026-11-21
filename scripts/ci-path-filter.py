@@ -35,13 +35,16 @@ def is_non_build_script(path):
 def is_web_test_only(path):
     """Test-only web files excluded from Rust, Windows-test, and Rust-image PR jobs.
 
-    `ui` (Web CI) still runs Vitest, tsc and Vite build on `web/apps/ui/**`, and
-    `daily-loop` covers `web/test/daily-loop/**`. Merge groups run all jobs.
+    `ui` (Web CI) still runs Vitest, tsc and Vite build on `web/apps/ui/**` and
+    `web/test/**` diffs, and `daily-loop` covers `web/test/daily-loop/**`. Merge
+    groups run all jobs.
     """
-    if path.startswith(("web/test/", "web/apps/ui/test/")):
+    if path.startswith(("web/test/", "web/apps/ui/test/", "web/apps/ui/src/test/")):
         return True
-    return (path.startswith("web/apps/ui/src/")
-            and path.endswith((".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")))
+    if not path.startswith("web/apps/ui/"):
+        return False
+    basename = path.rsplit("/", 1)[-1]
+    return ".test." in basename or ".spec." in basename
 
 
 def windows_tests_relevant(path):
@@ -106,7 +109,7 @@ def relevant(path, kind):
                   or path in {".github/dependabot.yml", ".github/zizmor.yml",
                               ".github/actionlint.yaml", ".github/actionlint.yml"})
         if kind == "ui":
-            return shared or path.startswith(("web/apps/ui/", "web/packages/"))
+            return shared or path.startswith(("web/apps/ui/", "web/packages/", "web/test/"))
         # The old web kind still matches the paths the removed web job used.
         # The ui job is the one that runs.
         return (shared or path.startswith(("web/", "slicer-sidecar/", "rust/"))

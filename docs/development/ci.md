@@ -20,7 +20,7 @@ The filter skips the job only when every changed path is on the skip list:
 - `docs/**`.
 - Markdown files at the repository root (`*.md` directly in the root, nothing deeper).
 - Non-build governance, sync and evidence scripts: `scripts/linear/**`, `scripts/evidence/**`, `scripts/merge_class.py`, `scripts/agent-guard.py`, `scripts/post_pp_score_status.py` and their tests.
-- Non-bundled web/UI test files: `web/test/**`, `web/apps/ui/test/**`, and `web/apps/ui/src/**/*.{test,spec}.{ts,tsx}`.
+- Non-bundled web/UI test files: `web/test/**`, `web/apps/ui/test/**`, `web/apps/ui/src/test/**`, and any `web/apps/ui/**` file whose basename contains `.test.` or `.spec.`.
 - Files under `.github/**`, except `.github/workflows/rust-cross-os.yml` and `.github/zizmor.yml`.
 
 Any other path selects it: everything under `rust/`, non-test `web/` paths (including `web/apps/ui/src/*.tsx` and `web/packages/rust-client`), `fixtures/` and other `scripts/`, any other root file, and any new top-level directory. Over-selection is intended, so a new input cannot be forgotten. A change that mixes skipped and other paths runs the job. So do an empty diff, a missing or malformed base or head SHA, a failed `git diff`, and every manual dispatch.
@@ -37,7 +37,7 @@ The job installs `web/` without `@print-partner/ui` and `@print-partner/rust-cli
 
 Draft pull requests skip CI jobs before runner allocation, while each job still reports a skipped check. Marking a PR ready starts CI. Converting it back to a draft cancels its older PR run.
 
-On a ready pull request, `rust (linux)` runs when `scripts/ci-path-filter.py rust` finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip it while keeping its check report present. The filter is a job `if`, not a workflow `paths:` list, so a skip still reports `skipped`. Markdown is not a Rust input, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed, and anything under `fixtures/`. Non-bundled UI/web test files (`web/test/**`, `web/apps/ui/test/**`, `web/apps/ui/src/**/*.{test,spec}.{ts,tsx}`) are also skipped for `rust`, `rust-image`, and `windows-tests` on pull requests (`ui` still typechecks and builds `@print-partner/ui`, and merge groups run all jobs). A change under `web/apps/web/` still selects `rust (linux)` because the job builds that tree into the manifest.
+On a ready pull request, `rust (linux)` runs when `scripts/ci-path-filter.py rust` finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip it while keeping its check report present. The filter is a job `if`, not a workflow `paths:` list, so a skip still reports `skipped`. Markdown is not a Rust input, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed, and anything under `fixtures/`. Non-bundled UI/web test files (`web/test/**`, `web/apps/ui/test/**`, `web/apps/ui/src/test/**`, and any `web/apps/ui/**` file whose basename contains `.test.` or `.spec.`) are also skipped for `rust`, `rust-image`, and `windows-tests` on pull requests (`ui` still typechecks and builds `@print-partner/ui`, and merge groups run all jobs). A change under `web/apps/web/` still selects `rust (linux)` because the job builds that tree into the manifest.
 
 When the Linux job runs on a pull request, nextest uses the affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)`. A crate whose sources read another crate's files by path joins the selection when that crate changes. The nextest step passes `--no-tests=warn`. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy covers the whole workspace. On `ubuntu-latest` that same filter is applied in six parts, `--partition hash:1/6` through `hash:6/6`. A part that matches nothing passes because of `--no-tests=warn`. pp-local runs one part, `hash:1/1`, which is the whole filter.
 
@@ -60,7 +60,7 @@ image is `.github/workflows/rust-image.yml`, not this file.
 
 The `changes` job runs `ci-path-filter.py ui`. The `ui` job needs that output.
 A failed selector or an unknown diff keeps the job selected. Draft PRs skip
-before runner allocation. The `ui` kind covers `web/apps/ui/`, shared packages
+before runner allocation. The `ui` kind covers `web/apps/ui/`, `web/test/`, shared packages
 including `rust-client`, web scripts and configuration, fixtures, manifests,
 scripts (other than the non-build governance, sync and evidence scripts) and CI inputs. The job runs on Node 24.21.0:
 
@@ -313,7 +313,7 @@ The Linux job and the nightly matrix use the toolchain pinned in `rust-toolchain
 
 | Check name | When it runs | Runner | What it runs |
 |------------|--------------|--------|--------------|
-| `rust (linux)` | pull request, push to `main`, merge group, when Rust inputs changed | pp-local on a push: one part (`1/1`) runs fmt, clippy and all of nextest. `ubuntu-latest` on a pull request, merge group, or hosted fallback: `check` plus four nextest partitions. The aggregate always runs on `ubuntu-latest` | fmt, clippy, nextest, default features, `--workspace` |
+| `rust (linux)` | pull request, push to `main`, merge group, when Rust inputs changed | pp-local on a push: one part (`1/1`) runs fmt, clippy and all of nextest. `ubuntu-latest` on a pull request, merge group, or hosted fallback: `check` plus six nextest partitions. The aggregate always runs on `ubuntu-latest` | fmt, clippy, nextest, default features, `--workspace` |
 | `rust (windows)` | nightly schedule or manual dispatch | `windows-latest` | `cargo build --locked --workspace` |
 | `rust (windows tests)` | pull request that changes its inputs, or manual dispatch | `windows-latest` | The named Windows tests in [Windows tests on pull requests](#windows-tests-on-pull-requests) |
 | `rust (macos)` | nightly schedule or manual dispatch | `macos-26` | `cargo build --locked --workspace` |
@@ -322,7 +322,7 @@ The Linux parts do not run on the nightly schedule or on a manual dispatch. See 
 
 Build caching and linking:
 
-- Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`. The `1/4` part saves that key on a pull request and on `main`. The other parts only restore. pp-local parts skip the action and use the container's sccache instead.
+- Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`. The `1/6` part saves that key on a pull request and on `main`. The other parts only restore. pp-local parts skip the action and use the container's sccache instead.
 - Linux installs `mold` and links with it through `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold`. The nightly Windows and macOS builds keep their default linkers.
 - On GitHub-hosted Linux runners only, a part prints `df -h /` and deletes preinstalled toolchains it never uses (`/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/.ghcup` and CodeQL in the tool cache) when fewer than 50G are free. The GRE-1649 warm run spent about two minutes on that delete while 80G were still free, and one default-feature tree fits without it. pp-local skips the step. A hosted part prints `df -h /` again after nextest.
 - The workflow sets `CARGO_PROFILE_DEV_DEBUG` and `CARGO_PROFILE_TEST_DEBUG` to `line-tables-only`.
@@ -338,7 +338,7 @@ Each Linux part runs these steps. `check` stops after clippy. A `m/n` part skips
 
 The `check` part does not run nextest, so a clippy failure does not cancel the partitions. A partition does not run clippy. On `1/1`, nextest still runs when clippy fails, because its `if` does not require the clippy step. The parts do not run doctests and do not run `rust/scripts/check-clippy-limits.py`. That scan builds with the feature off and on, which is the feature-off pass this cut removes from pull-request CI. `just ci` still runs it on Linux.
 
-`rust (linux)` is the aggregate. It runs on `ubuntu-latest` after the parts, with no checkout. It fails unless the `changes` job and every part succeeded. A failed selector still runs the aggregate, so the required check goes red instead of staying skipped. A docs-only pull request skips the parts and the aggregate. The warm run on GRE-1649 head `6bf5c6379` was 28m40s because nextest alone took 1170s inside one job. Four hosted partitions are what brings that wall under 20 minutes. pp-local stays one part: the fleet is six slots and the selector only requires one idle slot, so fanning a push out would queue.
+`rust (linux)` is the aggregate. It runs on `ubuntu-latest` after the parts, with no checkout. It fails unless the `changes` job and every part succeeded. A failed selector still runs the aggregate, so the required check goes red instead of staying skipped. A docs-only pull request skips the parts and the aggregate. The warm run on GRE-1649 head `6bf5c6379` was 28m40s because nextest alone took 1170s inside one job. Six hosted partitions (rebalanced from four in GRE-1892) bring that wall under 20 minutes. pp-local stays one part: the fleet is six slots and the selector only requires one idle slot, so fanning a push out would queue.
 
 The nightly job installs the toolchain and Node 24.21.0, writes the same manifest, and runs `cargo build --locked --workspace`. It does not mount a case-sensitive volume and does not run tests. The macOS volume note below is for a local test run.
 

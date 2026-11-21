@@ -817,9 +817,12 @@ step(8, null, async ({ page }) => {
     { headers: { Origin: origin } },
   );
   expect(again.status(), `Send now on an unknown outcome: ${await again.text()}`).toBe(409);
-  expect((await simulator("log")).counts, "counts after the refused Send now").toEqual(
-    unknown.counts,
-  );
+  // Only the send counters: Farm's status polls keep adding to `requests` meanwhile.
+  const { uploads, starts } = (await simulator("log")).counts;
+  expect({ uploads, starts }, "uploads and starts after the refused Send now").toEqual({
+    uploads: unknown.counts.uploads,
+    starts: unknown.counts.starts,
+  });
 
   // The owner sees the simulator idle, not printing, and says so.
   await lost.getByRole("button", { name: "It did not print" }).click();

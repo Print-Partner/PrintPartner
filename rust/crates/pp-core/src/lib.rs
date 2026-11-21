@@ -41,7 +41,6 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 pub mod layout;
 
 #[cfg(feature = "desktop_rebuild")]
-mod checked_dns;
 #[cfg(feature = "desktop_rebuild")]
 pub mod github;
 #[cfg(feature = "desktop_rebuild")]
@@ -113,8 +112,9 @@ pub use pp_gateway::RustStatus;
 /// The one-time import of a Node installation: its dry run and inventory.
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_storage::import as node_import;
-/// The terminal refusal for a stored schema this runtime does not open.
-pub use pp_storage::versions::IncompatibleSchema;
+/// The terminal refusal for a stored schema this runtime does not open, and
+/// the schema range each runtime opens.
+pub use pp_storage::versions::{IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA};
 
 /// What [`CoreHandle::subscribe`] reports: the supervised Node child's status,
 /// or, for a Rust-only runtime, the Rust backend's own status.
@@ -635,8 +635,8 @@ async fn start_rust_resources(
         network::for_listener(product.merge(status_routes.mount(status)), listen)
     };
     let served = match snapshot {
-        Some(files) => (pp_gateway::ServedUi::Replacement, Some(files)),
-        None => (pp_gateway::ServedUi::Legacy, None),
+        Some(files) => pp_gateway::ServedUi::Replacement(files),
+        None => pp_gateway::ServedUi::Legacy(assets),
     };
     let sign_out = if server_updates {
         pp_gateway::SignOut::KeepsServing
@@ -647,9 +647,8 @@ async fn start_rust_resources(
         network: listen.is_some(),
         sign_out,
     };
-    let gateway = Gateway::start_rust_only_with_network(
-        listener, mode, assets, served, product, receiver, hosts,
-    )?;
+    let gateway =
+        Gateway::start_rust_only_with_network(listener, mode, served, product, receiver, hosts)?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
     let stop_sends = Arc::new(std::sync::atomic::AtomicBool::new(false));

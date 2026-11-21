@@ -109,7 +109,8 @@ describe("SET-01 Module state and off reasons come from Rust", () => {
     expect(within(sharing).getByText("This screen cannot show sharing status or paired devices yet.")).toBeTruthy();
     expect(within(sharing).queryByRole("button")).toBeNull();
     const backups = screen.getByRole("region", { name: "Backups" });
-    expect(within(backups).getByText("Not available yet.")).toBeTruthy();
+    expect(within(backups).queryByText("Not available yet.")).toBeNull();
+    expect(within(backups).getByRole("button", { name: "Create backup" })).toBeTruthy();
   });
 });
 

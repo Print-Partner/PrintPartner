@@ -3,7 +3,7 @@
 Two images exist:
 
 - The **Node image** (`Dockerfile`) is the released image. It runs the Node server. [Install](INSTALL.md) describes it.
-- The **Rust-only image** (`Dockerfile.rust`) runs `pp-server` with the `desktop_rebuild` feature compiled in and `PP_DESKTOP_REBUILD=1`. No release workflow builds or publishes it yet. It is a try-it build, and the [limits below](#what-the-rust-only-image-cannot-do-yet) apply.
+- The **Rust-only image** (`Dockerfile.rust`) runs `pp-server` with the `desktop_rebuild` feature compiled in and `PP_DESKTOP_REBUILD=1`. A version tag publishes it as `ghcr.io/print-partner/pp-server` ([Release image](#release-image)). It is a try-it build, and the [limits below](#what-the-rust-only-image-cannot-do-yet) apply.
 
 The rest of this page describes the Rust-only image.
 
@@ -34,7 +34,7 @@ The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-
 A Rust-only start checks the release without Node. When `web/apps/ui/dist` is installed, `pp-core` calls `pp_compat::snapshot_rust_only_release`, which checks the `replacement_frontend` inventory and keeps the verified bytes for serving. When it is absent, as in an image built before GRE-1387, `pp-core` calls `pp_compat::verify_rust_only_legacy_release`, which checks the `frontend` inventory instead, and writes `Replacement UI bundle absent` to stderr once the data directory is admitted. A refused start writes only its refusal. Both check:
 
 - The runtime version and commit match the manifest embedded in the binary.
-- The selected frontend's file list and digests match exactly.
+- The selected frontend's file list and digests match exactly. The replacement inventory must include `index.html`, at most 1 MiB.
 - The community manifests' file list and digests match exactly.
 
 It does not measure the Node executable, the Node backend, the workspace packages or `node_modules`, so `pp-server` needs no `--node` in this mode. The Node-backed start still runs the full `verify_bundle` and still requires `--node`.
@@ -117,9 +117,11 @@ Configure the MCP client with the URL and the header `Authorization: Bearer ppk_
 
 - A valid key opens an MCP session; `tools/list` and the read tools work.
 - No key, or a key that is unknown, revoked or expired: `401` with `{"detail":"Valid API key required"}`, and no session. A POST or DELETE with neither a key nor an Origin is refused earlier with `403`, and so is any request whose Origin does not match the listener, even with a valid key.
-- Host, Origin, forwarded headers and DNS names follow the [Admission](#run) rules above. MCP also has its own budget of 1000 requests a minute ([Assistant MCP](assistant-mcp.md)).
+- Host, Origin, forwarded headers and DNS names follow the [Admission](#run) rules above. MCP also has its own budget of 1000 requests a minute for valid keys, and a separate bucket per peer for requests without one ([Assistant MCP](assistant-mcp.md)).
 
 Over a LAN, plain HTTP sends the key unencrypted. Prefer the loopback-only mapping, or reach the host through an encrypted tunnel.
+
+A client that launches only stdio MCP servers can run the bridge inside the container: `docker exec -i -e PRINT_PARTNER_API_KEY print-partner pp-server mcp-stdio --url http://127.0.0.1:8080/api/v1/mcp`. It forwards to this server with the key and never opens `/data`; see [Stdio bridge to the running core](assistant-mcp.md#stdio-bridge-to-the-running-core).
 
 ## Volumes and the data directory
 
@@ -175,7 +177,6 @@ Signing out (`POST /auth/logout`) revokes the account session and clears its coo
 - **No DNS names or reverse proxy.** The explicit listener accepts literal IP addresses only. Desktop [Network sharing](network-sharing.md) remains unimplemented and off by default.
 - **MCP has keys only.** MCP needs an API key ([Connect an MCP client](#connect-an-mcp-client)). There is no OAuth, no per-tool permission, no TLS and no key screen in the replacement UI yet.
 - **No GitHub or Discord sign-in.** These providers are unavailable on the explicit listener: their callback URL is built from the loopback origin, and the listener refuses the provider's cross-site redirect back to `/auth/callback`. This image configures neither provider ([GRE-974](https://linear.app/greetz/issue/GRE-974)); sign in with the owner account's email and password.
-- **amd64 only, locally.** The Dockerfile has no architecture-specific steps, but only amd64 has been built and smoke-tested. No workflow builds, signs or publishes this image, and it has no SBOM or provenance attestation yet.
 
 ## Smoke test
 
@@ -184,6 +185,33 @@ python3 scripts/docker-rust-smoke.py pp-server:test
 ```
 
 The script needs Linux and Docker. It checks that the runtime has no Node, npm, npx or Python. It checks that the image user is 1000:1000, that `PP_DESKTOP_REBUILD=1` is set, and that `pp-server healthcheck --help` works. It then starts the image hardened as in [Run](#run), on a new named volume. Both probes must pass, and Docker must report the container healthy. The script signs in with `docker exec <container> pp-server bootstrap-url --data /data`. The URL must work once and be refused the second time, its token must not appear in `docker logs`, and the same command as root (`docker exec -u 0`) must fail. With that sign-in, `GET /` must return the image's `apps/ui/dist/index.html` with one style nonce element added, and `docker logs` must not contain `Replacement UI bundle absent`. Its CSP `connect-src` must name `ws://127.0.0.1:<published port>/ws/printers`, the authority the browser used. The script then registers an account through the API. It then stops the container with SIGTERM, which must exit 0 with a complete receipt while only `tini` and `pp-server` ran. It starts a second container on the same volume and logs in with the stored account. The script reaches /health and sign-in through the published host loopback port over the Docker bridge. It verifies non-loopback login requirements. Over the published port, from a non-loopback peer, it makes an API key with the signed-in session, connects to `/mcp` and `/api/v1/mcp` with it, lists tools and runs `list_plans`, and checks that no key or a wrong key gets `401` (`403` without an Origin either) and no session. It records the bound address 0.0.0.0:8080. It never prints a sign-in URL or cookie. It still reads the test-only credential file to check that no Node child started. It removes its containers and volume on exit.
+
+## CI and release builds
+
+Every pull request, push to `main` and merge group builds the image twice in `.github/workflows/rust-image.yml`, each on its own native runner, and runs the smoke test on each: `rust image` on amd64 (`ubuntu-latest`) and `rust image (arm64)` on arm64 (`ubuntu-24.04-arm`). The arm64 job also checks that the loaded image is `linux/arm64`. Neither is a required check.
+
+### Release image
+
+A version tag (`v*.*.*`) runs `.github/workflows/release.yml`. After the Node release job passes, the `rust-image` jobs build `Dockerfile.rust` on the same two native runners, without the GitHub Actions cache. Each job:
+
+1. Builds and loads the image for its architecture, then runs `scripts/docker-rust-smoke.py` on it.
+2. Pushes the same build by digest, with no tag, with an SPDX SBOM (`sbom: true`) and SLSA provenance (`provenance: mode=max`) attestation.
+3. Checks that the pushed image's layer digests equal the smoke-tested image's, and only then tags that digest `ghcr.io/print-partner/pp-server:commit-<commit>-<arch>`.
+
+A rerun skips an architecture whose tag exists, because only a verified image gets that tag.
+
+`rust-image-publish` then joins the two into `:commit-<commit>` with the release's OCI annotations. It checks that the index holds exactly one amd64 and one arm64 image, each with an attestation manifest, and that each has an SPDX SBOM and provenance that records the release commit. It then signs the index by digest with the release key, as the Node image is signed, and adds the immutable `:<version>` alias. It never moves `latest`. A rerun reuses a candidate that already exists. `scripts/registry-tag-state.sh` decides whether a tag exists: only buildx's not-found error for that reference counts as absent, and any other registry error fails the job, so an unreadable `:<version>` is never overwritten. The Node image and its `release-identity.json` are unchanged and do not wait for this image.
+
+Verify a release by digest:
+
+```sh
+DIGEST="$(docker buildx imagetools inspect ghcr.io/print-partner/pp-server:<version> | awk '/^Digest:/ { print $2; exit }')"
+cosign verify --key cosign.pub "ghcr.io/print-partner/pp-server@$DIGEST"
+docker buildx imagetools inspect "ghcr.io/print-partner/pp-server@$DIGEST" --format '{{ json (index .SBOM "linux/arm64") }}'
+docker buildx imagetools inspect "ghcr.io/print-partner/pp-server@$DIGEST" --format '{{ json (index .Provenance "linux/arm64") }}'
+```
+
+`scripts/test_rust_image_workflows.py` pins these jobs, runs the publish job's index check on sample indexes, and runs `registry-tag-state.sh` against a fake `docker`.
 
 ## Importing Node data
 
@@ -194,7 +222,7 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> -
 PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> --data <new folder>
 ```
 
-The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a format 2 full backup. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
+The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a full backup, format 2 or the format 1 that v3.3.0 and earlier wrote. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
 
 ## To be written
 

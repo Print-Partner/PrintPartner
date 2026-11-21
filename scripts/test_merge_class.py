@@ -140,14 +140,32 @@ class CoverageTests(unittest.TestCase):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
         self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats", "vendors",
                                                    "pp_score_seats"})
-        self.assertEqual(data["vendors"], ["anthropic", "deepseek", "openai", "xai", "zhipu"])
+        self.assertEqual(data["vendors"], ["anthropic", "cursor", "deepseek", "openai", "xai", "zhipu",
+                                          "google", "qwen", "meituan", "tencent"])
         self.assertEqual(data["scorer_authors"], ["poitee"])
-        # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max. Sol is not a seat.
+        # Owner decision 2026-11-12: OpenCode runs the GLM and DeepSeek seats, variant max.
+        # Owner decision 2026-11-18: gpt-6.2-sol and composer-2.5 join the council scorer pool.
+        # Owner decision 2026-11-18 7:38 PM ET: Gemini Flash, Qwen, longcat and hy4 count too.
+        # Owner decision 2026-11-18 (thin-relay plan): gpt-6.2-astra joins it too.
+        # Chad, 2026-11-19: Gemini 4 Neon (Antigravity, Google AI Pro) is a sensitive-merge seat.
         self.assertEqual(data["scorer_seats"], {"claude-opus-5-5": "anthropic", "grok-4.7": "xai",
                                                 "glm-5.3-flash-free": "zhipu",
-                                                "deepseek-v4.1-flash-free": "deepseek"})
-        # The Codex seat counts for the pp/score status only, not for the sensitive merge guard.
-        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai"})
+                                                "deepseek-v4.1-flash-free": "deepseek",
+                                                "gpt-6.2-sol": "openai", "composer-2.5": "cursor",
+                                                "gemini-3.8-flash": "google",
+                                                "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
+                                                "longcat-2.5-free": "meituan",
+                                                "hy4-flash-free": "tencent",
+                                                "gpt-6.2-astra": "openai",
+                                                "gemini-4-neon-high": "google"})
+        # gpt-6.1-sol counts for the pp/score status only, not for the sensitive merge guard.
+        # The 7:38 PM ET seats are in both maps.
+        self.assertEqual(data["pp_score_seats"], {"gpt-6.1-sol": "openai", "gpt-6.2-sol": "openai",
+                                                  "gemini-3.8-flash": "google",
+                                                  "qwen38-gufo": "qwen", "qwen38-flash": "qwen",
+                                                  "longcat-2.5-free": "meituan",
+                                                  "hy4-flash-free": "tencent",
+                                                  "gpt-6.2-astra": "openai"})
 
 
 class ScoreTests(unittest.TestCase):
@@ -156,8 +174,10 @@ class ScoreTests(unittest.TestCase):
         data = json.loads(mc.CLASSES.read_text())
         self.allowed, self.vendors = data["scorer_seats"], data["vendors"]
 
-    def line(self, seat="claude-opus-5-5", sha=SHA, score=9, vendor="anthropic", author="openai"):
-        return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}"
+    def line(self, seat="claude-opus-5-5", sha=SHA, score=9, vendor="anthropic", author="openai",
+             obstacles="none"):
+        tail = "" if obstacles is None else f" obstacles={obstacles}"
+        return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}{tail}"
 
     def grok(self, **kwargs):
         return self.line("grok-4.7", vendor="xai", **kwargs)
@@ -191,6 +211,54 @@ class ScoreTests(unittest.TestCase):
         self.assertFalse(self.check([opus, self.glm(author="anthropic"), self.deepseek(author="anthropic")],
                                     author="anthropic"))
 
+    def test_sol_and_composer_pass_on_a_claude_pr(self):
+        # Chad's council pool of 2026-11-18, read from merge-classes.json itself.
+        sol = self.line("gpt-6.2-sol", vendor="openai", author="anthropic", score=9)
+        composer = self.line("composer-2.5", vendor="cursor", author="anthropic", score=10)
+        self.assertTrue(self.check([sol, composer], author="anthropic"))
+        # composer-2.5 is a Cursor seat; a record naming another vendor refuses.
+        wrong = self.line("composer-2.5", vendor="openai", author="anthropic")
+        self.assertFalse(self.check([sol, wrong], author="anthropic"))
+        self.assertFalse(self.check([sol, composer, wrong], author="anthropic"))
+
+    def test_gemini_and_qwen_pass_on_an_xai_pr(self):
+        # Chad, 2026-11-18 7:38 PM ET. Seats and vendors come from merge-classes.json.
+        gemini = self.line("gemini-3.8-flash", vendor="google", author="xai", score=9)
+        qwen = self.line("qwen38-flash", vendor="qwen", author="xai", score=9)
+        self.assertTrue(self.check([gemini, qwen], author="xai"))
+        # The seat is Google. A record that names Cursor does not count.
+        named_cursor = self.line("gemini-3.8-flash", vendor="cursor", author="xai")
+        self.assertFalse(self.check([named_cursor, qwen], author="xai"))
+        pair = [self.line("qwen38-gufo", vendor="qwen", author="xai", score=9),
+                self.line("longcat-2.5-free", vendor="meituan", author="xai", score=9)]
+        self.assertTrue(self.check(pair, author="xai"))
+
+    def test_neon_and_sol_pass_on_a_claude_pr(self):
+        # Gemini 4 Neon is a Google seat, read from merge-classes.json itself.
+        sol = self.line("gpt-6.2-sol", vendor="openai", author="anthropic")
+        neon = self.line("gemini-4-neon-high", vendor="google", author="anthropic")
+        self.assertTrue(self.check([sol, neon], author="anthropic"))
+        # A record naming another vendor for the Neon seat refuses.
+        self.assertFalse(self.check([sol, self.line("gemini-4-neon-high", vendor="cursor", author="anthropic")],
+                                    author="anthropic"))
+        # Other Neon effort ids are not seats.
+        self.assertFalse(self.check([sol, self.line("gemini-4-neon-xhigh", vendor="google", author="anthropic")],
+                                    author="anthropic"))
+
+    def test_neon_beside_astra(self):
+        def neon(author):
+            return self.line("gemini-4-neon-high", vendor="google", author=author)
+
+        def astra(author):
+            return self.line("gpt-6.2-astra", vendor="openai", author=author)
+
+        self.assertTrue(self.check([neon("anthropic"), astra("anthropic")], author="anthropic"))
+        self.assertTrue(self.check([neon("openai"), self.line()], author="openai"))
+        # Neon is refused on a Google-authored PR, and astra with Sol is one vendor, not two.
+        self.assertFalse(self.check([neon("google"), self.line(author="google")], author="google"))
+        self.assertFalse(self.check([astra("anthropic"), self.line("gpt-6.2-sol", vendor="openai",
+                                                                   author="anthropic")], author="anthropic"))
+
     def test_sol_seat_on_a_sol_pr_refused(self):
         self.assertFalse(self.check([self.line(), self.line("gpt-6.1-sol", vendor="openai")]))
         # Even when Sol is an allowed seat, its record on an OpenAI-authored PR refuses.
@@ -211,9 +279,10 @@ class ScoreTests(unittest.TestCase):
                                     self.grok(author="anthropic")], author="anthropic", allowed=allowed))
 
     def test_new_vendor_is_data_only(self):
-        allowed = {**self.allowed, "gemini-9-pro": "google"}
-        records = [self.line(), self.line("gemini-9-pro", vendor="google")]
-        self.assertTrue(self.check(records, allowed=allowed, vendors=self.vendors + ["google"]))
+        # google is a listed vendor as of 2026-11-18. This proof uses a name that is still absent.
+        allowed = {**self.allowed, "gemini-9-pro": "mistral"}
+        records = [self.line(), self.line("gemini-9-pro", vendor="mistral")]
+        self.assertTrue(self.check(records, allowed=allowed, vendors=self.vendors + ["mistral"]))
         # Without the vendor in the data, the record does not parse and refuses.
         self.assertFalse(self.check(records, allowed=allowed))
 
@@ -241,6 +310,8 @@ class ScoreTests(unittest.TestCase):
             self.line("unknown"), self.line(vendor="xai"),
             self.line(vendor="unknown"), self.line(author="unknown"),
             self.line().replace(" author=openai", ""),
+            self.line(obstacles=None), self.line(obstacles="nope"), self.line(obstacles="guard,guard"),
+            self.line(obstacles="None"), self.line(obstacles=""),
             self.line().replace(" vendor=anthropic", ""),
             self.line().replace("score=9", "score=nine"),
             self.line().replace("score=9", "score=" + "9" * 5000),
@@ -251,6 +322,13 @@ class ScoreTests(unittest.TestCase):
         ):
             with self.subTest(bad=bad):
                 self.assertFalse(self.check(good + [bad]))
+
+    def test_listed_obstacles_still_qualify(self):
+        self.assertTrue(self.check([self.line(obstacles="guard,approval-stall"), self.grok(obstacles="refusal")]))
+
+    def test_older_head_records_without_obstacles_still_parse(self):
+        self.assertTrue(self.check([self.line(sha=OTHER, obstacles=None), self.line(), self.grok()]))
+        self.assertFalse(self.check([self.line(sha=OTHER, obstacles="bogus"), self.line(), self.grok()]))
 
     def test_all_unapproved_seats_refused(self):
         for seat in ("opencode/pulse-alpha-free", "cursor/grok-4.7", "gpt-6.1-sol", "pi/halo/qwen38-flash"):
@@ -267,6 +345,13 @@ class ScoreTests(unittest.TestCase):
             with self.subTest(prose=prose):
                 self.assertTrue(self.check([prose, self.line(), self.grok()]))
 
+
+    def test_astra_and_sol_are_one_vendor(self):
+        # Both seats are OpenAI (merge-classes.json), so together they are not two vendors.
+        astra = self.line("gpt-6.2-astra", vendor="openai", author="anthropic")
+        sol = self.line("gpt-6.2-sol", vendor="openai", author="anthropic")
+        self.assertFalse(self.check([astra, sol], author="anthropic"))
+        self.assertTrue(self.check([astra, self.glm(author="anthropic")], author="anthropic"))
 
 if __name__ == "__main__":
     unittest.main()

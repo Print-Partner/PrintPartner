@@ -10,51 +10,48 @@ const DATABASE_FILES: [&str; 4] = [
     "print-partner.db-journal",
 ];
 
-pub(super) fn validate_work(data_dir: &Path) -> Result<()> {
-    let Some(journal) = Journal::read(data_dir)? else {
+pub(super) fn validate_work(work: &Work) -> Result<()> {
+    let Some(journal) = Journal::read(work)? else {
         return Ok(());
     };
-    let work = data_dir.join(WORK_DIR);
-    for entry in std::fs::read_dir(&work)? {
-        let path = entry?.path();
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
+    for name in work.dir.entries()? {
+        let name = name?;
+        let name = name.to_str().unwrap_or("");
         if name == JOURNAL {
             ensure!(
-                path.symlink_metadata()?.is_file(),
+                work.dir.status_nofollow(name)?.is_file(),
                 "Restore journal is not a regular file"
             );
         } else if name == journal.prior || name == journal.staged {
             ensure!(
-                path.symlink_metadata()?.is_dir(),
+                work.dir.status_nofollow(name)?.is_dir(),
                 "Restore copy is not a directory"
             );
         } else {
             ensure!(
-                leftover(&path, name)?.is_some(),
+                !name.is_empty() && leftover(&work.dir, name)?.is_some(),
                 "Restore work directory holds unexpected entry {name}"
             );
         }
     }
-    let prior = work.join(&journal.prior);
-    if prior.join(archive::DATABASE_FILE).exists() {
-        admit_schema(&prior)?;
+    if let Some(prior) = open_optional(&work.dir, &journal.prior)?
+        && exists(&prior, archive::DATABASE_FILE)?
+    {
+        admit_staged(&prior, &work.path.join(&journal.prior))?;
     }
     Ok(())
 }
 
-pub(super) fn recover(data_dir: &Path) -> Result<bool> {
-    let Some(mut journal) = Journal::read(data_dir)? else {
+pub(super) fn recover(work: &Work) -> Result<bool> {
+    let Some(mut journal) = Journal::read(work)? else {
         return Ok(false);
     };
     match journal.state {
-        JournalState::Swapping => journal.rollback(data_dir)?,
-        JournalState::Committed => journal.finish(data_dir),
+        JournalState::Swapping => journal.rollback(work)?,
+        JournalState::Committed => journal.finish(work),
     }
     ensure!(
-        !data_dir.join(WORK_DIR).join(JOURNAL).exists(),
+        !exists(&work.dir, JOURNAL)?,
         "Restore journal cleanup failed"
     );
     Ok(true)
@@ -68,19 +65,22 @@ fn managed() -> impl Iterator<Item = &'static str> {
         .chain(archive::FULL_ROOTS.iter().map(|(name, _)| *name))
 }
 
-fn exists(path: &Path) -> Result<bool> {
-    match path.symlink_metadata() {
+/// Whether `directory` has an entry `name`, a link counting as one.
+fn exists(directory: &pp_os::Dir, name: &str) -> Result<bool> {
+    match directory.status_nofollow(name) {
         Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
 
-fn remove_entry(path: &Path) -> std::io::Result<()> {
-    if path.symlink_metadata()?.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
+/// The directory `name` under `directory`, without following a link, or
+/// `None` when it is missing.
+fn open_optional(directory: &pp_os::Dir, name: &str) -> Result<Option<pp_os::Dir>> {
+    match directory.open_dir_nofollow(name) {
+        Ok(opened) => Ok(Some(opened)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -106,20 +106,17 @@ pub(super) struct Journal {
 }
 
 impl Journal {
-    pub(super) fn begin(data_dir: &Path, staged: &Path) -> Result<Self> {
-        sync_stage(staged)?;
-        let work = data_dir.join(WORK_DIR);
-        let staged_name = staged
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow!("Staged restore has no name"))?;
+    /// `staged` names a directory in `work`.
+    pub(super) fn begin(work: &Work, staged: &str) -> Result<Self> {
+        let stage = work.dir.open_dir_nofollow(staged)?;
+        sync_stage(&stage)?;
         let mut live = Vec::new();
         let mut incoming = Vec::new();
         for name in managed() {
-            if exists(&data_dir.join(name))? {
+            if exists(&work.data, name)? {
                 live.push(name.to_owned());
             }
-            if exists(&staged.join(name))? {
+            if exists(&stage, name)? {
                 incoming.push(name.to_owned());
             }
         }
@@ -130,7 +127,7 @@ impl Journal {
         let journal = Self {
             version: 1,
             state: JournalState::Swapping,
-            staged: staged_name.to_owned(),
+            staged: staged.to_owned(),
             prior: format!("prior-{}", random_id()),
             live,
             incoming,
@@ -142,18 +139,18 @@ impl Journal {
                 .any(|name| name == archive::DATABASE_FILE),
             "Staged restore has no database"
         );
-        journal.write(data_dir)?;
-        pp_os::create_private_dir(&work.join(&journal.prior))?;
-        pp_os::sync_directory(&work)?;
+        journal.write(work, || work.forward_step())?;
+        work.dir.create_dir(&journal.prior)?;
+        work.dir.sync()?;
         Ok(journal)
     }
 
-    pub(super) fn read(data_dir: &Path) -> Result<Option<Self>> {
-        let path = data_dir.join(WORK_DIR).join(JOURNAL);
-        let opened = pp_os::open_read_nofollow(&path);
+    pub(super) fn read(work: &Work) -> Result<Option<Self>> {
+        let path = work.path.join(JOURNAL);
+        let opened = work.dir.open_read_nofollow(JOURNAL);
         if opened
             .as_ref()
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            .is_err_and(|error| error.kind() == ErrorKind::NotFound)
         {
             return Ok(None);
         }
@@ -191,103 +188,122 @@ impl Journal {
         Ok(Some(journal))
     }
 
-    fn write(&self, data_dir: &Path) -> Result<()> {
-        let work = data_dir.join(WORK_DIR);
-        let temporary = work.join(format!("{JOURNAL}.tmp"));
-        std::fs::write(&temporary, serde_json::to_vec(self)?)?;
-        pp_os::sync_file(&temporary)?;
-        super::activation::hooks::step(data_dir)?;
-        pp_os::publish_rename(&temporary, &work.join(JOURNAL))?;
-        pp_os::sync_directory(&work)?;
-        super::activation::hooks::step(data_dir)?;
+    /// Publishes the journal, running `step` before and after the rename.
+    fn write(&self, work: &Work, step: impl Fn() -> Result<()>) -> Result<()> {
+        let temporary = format!("{JOURNAL}.tmp");
+        match work.dir.remove_file(&temporary) {
+            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        let mut file = work.dir.create_new_nofollow(&temporary)?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.sync_all()?;
+        drop(file);
+        step()?;
+        work.dir.rename_replace(&temporary, JOURNAL)?;
+        work.dir.sync()?;
+        step()?;
         Ok(())
     }
 
-    pub(super) fn swap(&self, data_dir: &Path) -> Result<()> {
-        let work = data_dir.join(WORK_DIR);
-        let (prior, staged) = (work.join(&self.prior), work.join(&self.staged));
+    /// Moves every live name aside and every staged one in. Each rename
+    /// first checks that `.pp-restore` still names the directory holding
+    /// the journal; if not, nothing more moves and the caller rolls back
+    /// through the same handles.
+    pub(super) fn swap(&self, work: &Work) -> Result<()> {
+        let step = || work.forward_step();
+        let prior = work.dir.open_dir_nofollow(&self.prior)?;
+        let staged = work.dir.open_dir_nofollow(&self.staged)?;
         for name in &self.live {
-            super::activation::hooks::step(data_dir)?;
-            std::fs::rename(data_dir.join(name), prior.join(name))
+            step()?;
+            (work.data.rename_to(name, &prior, name))
                 .with_context(|| format!("Move {name} aside"))?;
-            pp_os::sync_directory(data_dir)?;
-            pp_os::sync_directory(&prior)?;
-            super::activation::hooks::step(data_dir)?;
+            work.data.sync()?;
+            prior.sync()?;
+            step()?;
         }
         for name in &self.incoming {
-            super::activation::hooks::step(data_dir)?;
-            std::fs::rename(staged.join(name), data_dir.join(name))
+            step()?;
+            (staged.rename_to(name, &work.data, name))
                 .with_context(|| format!("Move restored {name} into place"))?;
-            pp_os::sync_directory(data_dir)?;
-            pp_os::sync_directory(&staged)?;
-            super::activation::hooks::step(data_dir)?;
+            work.data.sync()?;
+            staged.sync()?;
+            step()?;
         }
-        pp_os::sync_directory(data_dir)?;
-        pp_os::sync_directory(&prior)?;
+        work.data.sync()?;
+        prior.sync()?;
         Ok(())
     }
 
-    pub(super) fn commit(&mut self, data_dir: &Path) -> Result<()> {
+    pub(super) fn commit(&mut self, work: &Work) -> Result<()> {
         self.state = JournalState::Committed;
-        self.write(data_dir)
+        self.write(work, || work.forward_step())
     }
 
     /// Moves every prior entry back. An entry is new when it was not live
     /// before the swap or its prior copy is still aside; new entries are
-    /// removed first. Safe to repeat after a crash.
-    pub(super) fn rollback(&mut self, data_dir: &Path) -> Result<()> {
-        super::activation::hooks::fail_rollback(data_dir)?;
+    /// removed first. Safe to repeat after a crash. It works through the held
+    /// handles even when `.pp-restore` has moved, and checks nothing.
+    pub(super) fn rollback(&mut self, work: &Work) -> Result<()> {
+        super::activation::hooks::fail_rollback(&work.data_dir)?;
         if self.state == JournalState::Committed {
             self.state = JournalState::Swapping;
-            self.write(data_dir)?;
+            self.write(work, || Ok(()))?;
         }
-        let prior = data_dir.join(WORK_DIR).join(&self.prior);
+        // A crash between publishing the journal and creating `prior` leaves
+        // nothing aside.
+        let prior = open_optional(&work.dir, &self.prior)?;
         for name in managed() {
-            let (live, kept) = (data_dir.join(name), prior.join(name));
             let was_live = self.live.iter().any(|known| known == name);
-            let retained = exists(&kept)?;
-            if exists(&live)? && (!was_live || retained) {
-                remove_entry(&live).with_context(|| format!("Remove restored {name}"))?;
+            let kept = match &prior {
+                Some(prior) if exists(prior, name)? => Some(prior),
+                _ => None,
+            };
+            if exists(&work.data, name)? && (!was_live || kept.is_some()) {
+                (work.data.remove_all(name)).with_context(|| format!("Remove restored {name}"))?;
             }
-            if retained {
-                std::fs::rename(&kept, &live).with_context(|| format!("Move {name} back"))?;
+            if let Some(prior) = kept {
+                (prior.rename_to(name, &work.data, name))
+                    .with_context(|| format!("Move {name} back"))?;
             }
         }
-        pp_os::sync_directory(data_dir)?;
-        super::activation::hooks::after_rollback(data_dir);
-        self.finish(data_dir);
+        work.data.sync()?;
+        super::activation::hooks::after_rollback(&work.data_dir);
+        self.finish(work);
         Ok(())
     }
 
     /// Keep the journal until both copies are removed; restart can repeat cleanup.
-    pub(super) fn finish(&self, data_dir: &Path) {
-        let work = data_dir.join(WORK_DIR);
+    pub(super) fn finish(&self, work: &Work) {
         for name in [&self.prior, &self.staged] {
-            let path = work.join(name);
-            if let Err(error) = std::fs::remove_dir_all(path)
-                && error.kind() != std::io::ErrorKind::NotFound
+            if let Err(error) = work.dir.remove_all(name)
+                && error.kind() != ErrorKind::NotFound
             {
                 return;
             }
         }
-        if pp_os::sync_directory(&work).is_ok() {
-            let _ = std::fs::remove_file(work.join(JOURNAL));
-            let _ = pp_os::sync_directory(&work);
+        if work.dir.sync().is_ok() {
+            let _ = work.dir.remove_file(JOURNAL);
+            let _ = work.dir.sync();
         }
     }
 }
 
-fn sync_stage(path: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.file_type()?;
-        if metadata.is_dir() {
-            sync_stage(&entry.path())?;
+/// Makes every file and directory of a stage durable, reading through
+/// handles. A link anywhere in it is refused.
+fn sync_stage(stage: &pp_os::Dir) -> Result<()> {
+    for name in stage.entries()? {
+        let name = name?;
+        let name =
+            (name.to_str()).ok_or_else(|| anyhow!("Restore stage holds a non-UTF-8 name"))?;
+        let status = stage.status_nofollow(name)?;
+        if status.is_dir() {
+            sync_stage(&stage.open_dir_nofollow(name)?)?;
         } else {
-            ensure!(metadata.is_file(), "Restore stage contains a link");
-            pp_os::sync_file(&entry.path())?;
+            ensure!(status.is_file(), "Restore stage contains a link");
+            stage.open_write_nofollow(name)?.sync_all()?;
         }
     }
-    pp_os::sync_directory(path)?;
+    stage.sync()?;
     Ok(())
 }

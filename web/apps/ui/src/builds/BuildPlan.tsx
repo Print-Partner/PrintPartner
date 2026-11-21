@@ -25,6 +25,7 @@ import { NotFound } from "../screen/screens";
 import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { plural } from "../today/beds";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { ExperimentOption, holdersOf } from "./ExperimentOption";
 import { planKey, useMatchStep } from "./PlanReconcile";
 import { DRAFT_OPEN, NO_DRAFT, PLATES_CLEARED } from "./planCopy";
 import {
@@ -106,15 +107,18 @@ function useDraftWrites(id: number) {
     mutationKey,
     // A 401 keeps the page, so the typed edit stays on screen (`SignedOutNote`).
     meta: KEEP_EDITS,
-    mutationFn: ({ fields, key }: { fields: HeaderFields; key: string }) => {
+    // `changes` holds only the fields typed for this write. The rest come from the header
+    // saved when the write starts, so a queued write never resends an older field value.
+    mutationFn: ({ changes, key }: { changes: Partial<HeaderFields>; key: string }) => {
       const body = once(key, () => {
         const data = latest();
         if (!data) throw new Error("The Plan has not loaded yet");
+        const saved = data.draft?.header?.header ?? data.build;
         return {
           expected_base: data.draft?.workspace.draft.base ?? data.base,
           expected_draft: data.draft ? identityOf(data.draft.workspace.draft) : null,
           expected_header_version: data.draft?.header?.header_version ?? null,
-          header: headerOf(fields),
+          header: headerOf({ ...fieldsOf(saved), ...changes }),
         };
       });
       return writeCore("saveDraftHeader", { id }, body, key);
@@ -152,6 +156,28 @@ function useDraftWrites(id: number) {
 
 type Writes = ReturnType<typeof useDraftWrites>;
 
+const keyOf = (mutation: { state: { variables: unknown } }) =>
+  (mutation.state.variables as { key?: string } | undefined)?.key;
+
+/**
+ * The draft writes sent with `keys` that have settled, and whether each failed: refused,
+ * or its outcome never confirmed. A field that sent one keeps its value only when it failed.
+ */
+function useSettledWrites(writes: Writes, keys: readonly string[]) {
+  return useMutationState({
+    filters: {
+      mutationKey: writes.mutationKey,
+      predicate: (mutation) =>
+        keys.includes(keyOf(mutation) ?? "") &&
+        (mutation.state.status === "success" || mutation.state.status === "error"),
+    },
+    select: (mutation) => ({
+      key: keyOf(mutation) ?? "",
+      failed: mutation.state.status === "error",
+    }),
+  });
+}
+
 /** What the last write did, read out politely. */
 function SaveStatus({ writes }: { writes: Writes }) {
   // Writes run one at a time, so the last submitted is the last settled.
@@ -179,28 +205,64 @@ const HEADER_FIELDS = [
   { field: "due_date", label: "Due date", type: "date", orders: true },
 ] as const;
 
+/** A header write not yet settled, and the values typed for it. */
+interface HeldWrite {
+  key: string;
+  changes: Partial<HeaderFields>;
+}
+
+const carries = (write: HeldWrite, field: keyof HeaderFields) => field in write.changes;
+
 /**
- * The header form. Each field saves to the draft when it loses focus or on Enter. Once the
- * draft writes settle, the saved header replaces every field not typed in since the last
- * save was sent.
+ * The header form. Each field saves to the draft when it loses focus or on Enter, and each
+ * write carries only the fields typed since the last one. Once the draft writes settle, the
+ * saved header replaces every field not typed since. A field whose write fails, even because
+ * another window saved the same field, counts as typed again: it keeps its value and the
+ * next blur sends it. A blur with nothing typed sends nothing.
  */
 function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; busy: boolean }) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
-  const [shown, setShown] = useState(saved);
-  const [typed, setTyped] = useState<ReadonlySet<string>>(new Set());
-  const [sent, setSent] = useState<BuildHeader | null>(null);
-  if (!busy && !sameHeader(saved, shown)) {
-    const after = fieldsOf(saved);
-    setShown(saved);
-    setFields(
-      Object.fromEntries(
-        Object.entries(fields).map(([field, v]) => [
-          field,
-          typed.has(field) ? v : after[field as keyof HeaderFields],
-        ]),
-      ) as HeaderFields,
+  // The header the fields last took, or null after a write settles, so they take it again.
+  const [shown, setShown] = useState<BuildHeader | null>(saved);
+  const [typed, setTyped] = useState<ReadonlySet<keyof HeaderFields>>(new Set());
+  // Header writes not yet settled, oldest first.
+  const [held, setHeld] = useState<readonly HeldWrite[]>([]);
+  const settled = useSettledWrites(
+    writes,
+    held.map((write) => write.key),
+  );
+  let kept = typed;
+  if (settled.length > 0) {
+    const failed = new Set(settled.filter((write) => write.failed).map((write) => write.key));
+    const done = new Set(settled.map((write) => write.key));
+    // A failed write's field counts as typed again, unless a later write carries it.
+    const restored = held.flatMap((write, i) =>
+      failed.has(write.key)
+        ? (Object.keys(write.changes) as (keyof HeaderFields)[]).filter(
+            (f) => !held.slice(i + 1).some((later) => carries(later, f)),
+          )
+        : [],
     );
+    kept = new Set([...typed, ...restored]);
+    setHeld(held.filter((write) => !done.has(write.key)));
+    setTyped(kept);
+  }
+  if (settled.length > 0 || shown === null || !sameHeader(saved, shown)) {
+    if (busy) {
+      if (shown !== null) setShown(null);
+    } else {
+      const after = fieldsOf(saved);
+      setShown(saved);
+      setFields(
+        Object.fromEntries(
+          Object.entries(fields).map(([field, v]) => [
+            field,
+            kept.has(field as keyof HeaderFields) ? v : after[field as keyof HeaderFields],
+          ]),
+        ) as HeaderFields,
+      );
+    }
   }
   const [invalid, setInvalid] = useState(false);
   const offline = useConnection() === "offline";
@@ -209,14 +271,25 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
   const commit = () => {
     const header = headerOf(fields);
     setInvalid(header.name === "");
-    if (header.name === "" || sameHeader(header, sent ?? saved) || offline) return;
-    setSent(header);
-    setTyped(new Set());
-    // Only the latest header write calls this, and only it can still be the one sent.
-    writes.header.mutate(
-      { fields, key: newKey() },
-      { onSettled: () => setSent((current) => (current === header ? null : current)) },
+    if (header.name === "" || offline || typed.size === 0) return;
+    // A field is sent only when it differs from the value it will hold without this write:
+    // the latest unsettled write's value for it, or else the saved value.
+    const base = fieldsOf(saved);
+    const value = (field: keyof HeaderFields, text: string) =>
+      headerOf({ ...base, [field]: text })[field];
+    const changes: Partial<HeaderFields> = Object.fromEntries(
+      [...typed]
+        .filter((field) => {
+          const pending = held.findLast((write) => carries(write, field))?.changes[field];
+          return value(field, fields[field]) !== value(field, pending ?? base[field]);
+        })
+        .map((field) => [field, fields[field]]),
     );
+    setTyped(new Set());
+    if (Object.keys(changes).length === 0) return;
+    const key = newKey();
+    setHeld([...held, { key, changes }]);
+    writes.header.mutate({ changes, key });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") commit();
@@ -270,6 +343,57 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
 }
 
 /**
+ * A Part's quantity field. It shows the saved quantity, except text typed since the last
+ * save was sent, or sent by a save that failed, even because another window saved this
+ * Part: the field keeps that text, and the next blur or Enter sends it.
+ */
+function useQuantityField(
+  part: PartView,
+  writes: Writes,
+  queued: PlanChoice | undefined,
+  offline: boolean,
+  save: (choice: PlanChoice) => string,
+) {
+  const [text, setText] = useState(part.quantity_override?.toString() ?? "");
+  // The quantity the text last took, or undefined after a write settles, so it takes it again.
+  const [shown, setShown] = useState<number | null | undefined>(part.quantity_override);
+  const [edited, setEdited] = useState(false);
+  const [sentKey, setSentKey] = useState<string | null>(null);
+  const [settled] = useSettledWrites(writes, sentKey === null ? [] : [sentKey]);
+  if (settled) {
+    setSentKey(null);
+    if (settled.failed) setEdited(true);
+  }
+  if (settled || shown === undefined || part.quantity_override !== shown) {
+    if (queued) {
+      if (shown !== undefined) setShown(undefined);
+    } else {
+      setShown(part.quantity_override);
+      if (!edited && !settled?.failed) setText(part.quantity_override?.toString() ?? "");
+    }
+  }
+  const [invalid, setInvalid] = useState(false);
+  const sent = queued?.kind === "set_quantity_override" ? queued.value : part.quantity_override;
+  return {
+    text,
+    invalid,
+    type: (value: string) => {
+      setText(value);
+      setEdited(true);
+    },
+    commit: () => {
+      const value = quantityValue(text);
+      setInvalid(value === "invalid");
+      // A blur with nothing typed since the last write sends nothing.
+      if (value === "invalid" || offline || !edited) return;
+      setEdited(false);
+      if (value === sent) return;
+      setSentKey(save(quantityChoice(part, value)));
+    },
+  };
+}
+
+/**
  * One Part row: whether it is included and its quantity override. While an Included save
  * is queued or running, the box shows its value, and the next click toggles from that.
  */
@@ -283,29 +407,13 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
   const queued = (kind: PlanChoice["kind"]) => pending.findLast((choice) => choice?.kind === kind);
   const queuedInclude = queued("set_included");
   const included = queuedInclude?.kind === "set_included" ? queuedInclude.value : part.included;
-  const queuedQuantity = queued("set_quantity_override");
-  const sentQuantity =
-    queuedQuantity?.kind === "set_quantity_override"
-      ? queuedQuantity.value
-      : part.quantity_override;
-  const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
-  const [shown, setShown] = useState(part.quantity_override);
-  const [edited, setEdited] = useState(false);
-  if (!queuedQuantity && part.quantity_override !== shown) {
-    setShown(part.quantity_override);
-    if (!edited) setQuantity(part.quantity_override?.toString() ?? "");
-  }
-  const [invalid, setInvalid] = useState(false);
   const errorId = useId();
-  const save = (choice: PlanChoice) => writes.parts.mutate({ choice, key: newKey() });
-  const commitQuantity = () => {
-    const value = quantityValue(quantity);
-    setInvalid(value === "invalid");
-    if (value === "invalid" || offline) return;
-    setEdited(false);
-    if (value === sentQuantity) return;
-    save(quantityChoice(part, value));
+  const save = (choice: PlanChoice) => {
+    const key = newKey();
+    writes.parts.mutate({ choice, key });
+    return key;
   };
+  const quantity = useQuantityField(part, writes, queued("set_quantity_override"), offline, save);
   return (
     <tr>
       <th scope="row">
@@ -330,22 +438,20 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
         <input
           className="pp-quantity num"
           inputMode="numeric"
-          value={quantity}
+          value={quantity.text}
           placeholder={String(part.quantity_inferred)}
           readOnly={offline}
           aria-label={`Quantity of ${part.filename}, blank for ${part.quantity_inferred} from the Source`}
-          aria-invalid={invalid || undefined}
+          aria-invalid={quantity.invalid || undefined}
           aria-describedby={
-            [invalid && errorId, offline && reasonId].filter(Boolean).join(" ") || undefined
+            [quantity.invalid && errorId, offline && reasonId].filter(Boolean).join(" ") ||
+            undefined
           }
-          onChange={(event) => {
-            setQuantity(event.target.value);
-            setEdited(true);
-          }}
-          onBlur={commitQuantity}
-          onKeyDown={(event) => event.key === "Enter" && commitQuantity()}
+          onChange={(event) => quantity.type(event.target.value)}
+          onBlur={quantity.commit}
+          onKeyDown={(event) => event.key === "Enter" && quantity.commit()}
         />
-        {invalid && (
+        {quantity.invalid && (
           <span id={errorId} className="pp-field-error">
             A whole number from 1 to 10,000, or blank.
           </span>
@@ -499,6 +605,14 @@ function Changes({ changes }: { changes: PreviewChanges }) {
             (d) => `Order ${d.order_number} is also on ${d.name}`,
           )}
         />
+        {changes.duplicate_orders.length > 0 && (
+          <ExperimentOption
+            holders={changes.duplicate_orders.map((d) => ({
+              profileId: d.profile_id,
+              name: d.name,
+            }))}
+          />
+        )}
       </Section>
     </>
   );
@@ -616,6 +730,9 @@ function AcceptGate({
           </button>
         </div>
       )}
+      {preview.isError && !match.needed && holdersOf(preview.error).length > 0 && (
+        <ExperimentOption holders={holdersOf(preview.error)} />
+      )}
       {data && (
         <>
           {match.done}
@@ -700,9 +817,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
           </MutationButton>
         ) : (
           <MutationButton
-            onClick={() =>
-              !saving() && writes.header.mutate({ fields: fieldsOf(data.build), key: newKey() })
-            }
+            onClick={() => !saving() && writes.header.mutate({ changes: {}, key: newKey() })}
           >
             Start a draft
           </MutationButton>

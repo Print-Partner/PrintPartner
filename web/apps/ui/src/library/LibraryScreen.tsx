@@ -2,10 +2,12 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useId } from "react";
 import { useParams } from "react-router";
 import { dateText } from "../builds/format";
+import { sourcesQuery } from "../core/sources";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
 import { AddSource } from "./AddSourceDialog";
+import { LibraryFilesNext } from "./FilesNext";
 import { SourceFiles } from "./SourceFiles";
 import { selectedSourceId } from "./sourceFiles";
 import {
@@ -13,7 +15,6 @@ import {
   eventText,
   latestEvents,
   sourceActivityQuery,
-  sourcesQuery,
   type Line,
   type Source,
   type SourceEvent,
@@ -104,13 +105,21 @@ function SourcesTable({
   );
 }
 
-function RecentActivity({ events }: { events: SourceEvent[] }) {
+/**
+ * With no events, names the row control that fits the Library: Sync when any Source is a
+ * GitHub Source, otherwise Upload ZIP. It does not promise the action records activity.
+ */
+function RecentActivity({ events, hasGithub }: { events: SourceEvent[]; hasGithub: boolean }) {
   const headingId = useId();
   return (
     <section aria-labelledby={headingId}>
       <h2 id={headingId}>Recent activity</h2>
       {events.length === 0 ? (
-        <p className="pp-muted">No Source activity yet.</p>
+        <p className="pp-muted">
+          {hasGithub
+            ? "No Source activity yet. To bring a GitHub Source up to date, press Sync on its row."
+            : "No Source activity yet. To add or replace a Source's files, press Upload ZIP on its row."}
+        </p>
       ) : (
         <ul className="pp-reasons">
           {events.map((event) => (
@@ -156,6 +165,13 @@ export function LibraryScreen() {
                 key={selected.id}
                 sourceId={selected.id}
                 sourceName={selected.name}
+                next={
+                  <LibraryFilesNext
+                    sourceId={selected.id}
+                    kind={selected.source_kind}
+                    running={jobs.jobs[String(selected.id)] != null}
+                  />
+                }
               />
             ) : (
               selectedId != null && <p>That Source is not in the Library.</p>
@@ -172,11 +188,19 @@ export function LibraryScreen() {
                   : `None in the last ${ACTIVITY_LIMIT} events`
               }
             />
-            {events && <RecentActivity events={events} />}
+            {events && (
+              <RecentActivity
+                events={events}
+                hasGithub={data.sources.some((source) => source.source_kind === "github")}
+              />
+            )}
           </>
         );
       }}
-      empty={{ message: "No Sources yet. Sources you add appear here." }}
+      empty={{
+        message:
+          "No Sources yet. Press Add Source to add a kit from a ZIP archive or a GitHub repository.",
+      }}
     />
   );
 }

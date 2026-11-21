@@ -2,6 +2,7 @@ import type { Health } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
 import { healthQuery } from "../core/modules";
+import { BackupsSection } from "./BackupsSection";
 import { IntegrationsSection } from "./IntegrationsSection";
 import { ModuleList } from "./ModulesSection";
 import { PrintersSection } from "./PrintersSection";
@@ -9,7 +10,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 
-/** The Settings sections, in page order. Modules and Printers are editable and integrations listed; the other sections name their availability. */
+/** The Settings sections, in page order. Sharing and devices names its availability; the others work. */
 const SECTIONS = [
   { id: "modules", label: "Modules" },
   { id: "printers", label: "Printers" },
@@ -48,7 +49,7 @@ function Sections({ modules }: { modules: Modules }) {
               <p>Share on network is off by default. Pairing, device revocation and HTTPS trust
                 are not available here yet.</p>
             </>
-          ) : <p>Not available yet.</p>}
+          ) : <BackupsSection />}
         </Section>
       ))}
     </>
@@ -77,8 +78,9 @@ const hasData = (state: ScreenState<Modules>) =>
 
 /**
  * `/settings`: Modules, printers, integrations, sharing and devices, and backups. Module state is
- * read from GET /health and written through setModule. Printers are read and written by their section. Other sections land as their Rust
- * contracts arrive. Settings stays reachable when a Module is off.
+ * read from GET /health and written through setModule. Printers, integrations and backups call
+ * their own routes. Sharing and devices lands when its Rust contract arrives. Settings stays
+ * reachable when a Module is off.
  */
 export function SettingsScreen() {
   // The same cached GET /health that useModule reads, seen as its Module list. A core that

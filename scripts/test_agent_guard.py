@@ -941,7 +941,10 @@ class CoordinatorMergeTests(unittest.TestCase):
 
 
 class CoordinatorMergeClassTests(unittest.TestCase):
-    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA):
+    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=(), head_after=SHA,
+              sha=SHA, git=None, api=None):
+        """git answers git commands and api maps a gh api path prefix to its JSON, for the carry."""
+        head_after = sha if head_after == SHA else head_after
         guard = load(CLI, "agent_guard_classes")
         config_path = ROOT / "scripts/merge-classes.json"
         config = json.loads(config_path.read_text())
@@ -952,6 +955,8 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             return json.dumps(config) if path == config_path else original_read(path, *args, **kwargs)
 
         def gh(command, **kwargs):
+            if git and command[0] == "git":
+                return git(command, **kwargs)
             self.assertEqual(kwargs["cwd"], "/coordinator")
             self.assertTrue(kwargs["check"])
             if error:
@@ -963,8 +968,11 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             if "files" in override:
                 files = override.pop("files")
                 pages = [files] if isinstance(files, list) and files else files
-            if command == ["gh", "pr", "view", "12", "--json", "headRefOid,changedFiles"]:
-                data = {"headRefOid": SHA, "changedFiles": len(entries)}
+            carry = next((v for k, v in (api or {}).items() if len(command) == 3 and command[2].startswith(k)), None)
+            if carry is not None:
+                data = carry
+            elif command == ["gh", "pr", "view", "12", "--json", "headRefOid,changedFiles"]:
+                data = {"headRefOid": sha, "changedFiles": len(entries)}
                 data.update(override)
             elif command == ["gh", "api", "repos/{owner}/{repo}/pulls/12/files", "--paginate", "--slurp"]:
                 data = pages
@@ -977,14 +985,15 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
         with patch.object(guard, "coordinator_worktree", return_value=True), \
                 patch.object(guard.subprocess, "run", side_effect=gh), patch.object(Path, "read_text", read):
-            return guard.check_command(MERGE_FORM, "/coordinator")
+            return guard.check_command(MERGE_FORM.replace(SHA, sha), "/coordinator")
 
     def scores(self, author="trusted", head=SHA, seats=(("claude-opus-5-5", "anthropic"), ("grok-4.7", "xai")),
-               score=9, author_vendor="openai"):
+               score=9, author_vendor="openai", obstacles=" obstacles=none"):
         # Separate pages prove the guard includes all paginated results.
         stamp = "2026-11-11T00:00:00Z"
         return [[{"user": {"login": author}, "created_at": stamp, "updated_at": stamp,
-                  "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"}]
+                  "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"
+                          f"{obstacles}"}]
                 for seat, vendor in seats]
 
     def test_edited_score_record_refused(self):
@@ -993,7 +1002,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
         self.assertIn("edited", self.check(["rust/rules/a.yml"], ["trusted"], comments))
         missing = self.scores()
         del missing[1][0]["updated_at"]
-        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], missing))
+        self.assertIn("grok-4.7 record's edit time is unreadable", self.check(["rust/rules/a.yml"], ["trusted"], missing))
         # An edited record for an older head never counts, so its edit does not block the merge.
         old = [[{"user": {"login": "trusted"}, "created_at": "a", "updated_at": "b",
                  "body": "pp-score head=" + "a" * 40 + " seat=grok-4.7 vendor=xai score=9 author=openai"}]]
@@ -1020,8 +1029,21 @@ class CoordinatorMergeClassTests(unittest.TestCase):
     def test_sensitive_two_allowed_scores(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores()))
 
+    def test_comment_pages_are_read_whole(self):
+        # Page 2 decides: its valid record counts, its low record refuses, a page that is not a list refuses.
+        first, second = self.scores()
+        low = self.scores(seats=(("glm-5.3-flash-free", "zhipu"),), score=5)
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], [first, second]))
+        self.assertIn("glm-5.3-flash-free scored 5", self.check(["rust/rules/a.yml"], ["trusted"], [first, second] + low))
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], [first, {"page": 2}]))
+
     def test_sensitive_opus_and_grok_for_openai_author(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["poitee"], self.scores(author="poitee")))
+
+    def test_sensitive_records_must_disclose_obstacles(self):
+        self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(obstacles="")))
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"],
+                                     self.scores(obstacles=" obstacles=guard,approval-stall")))
 
     def test_sensitive_one_vendor_or_author_vendor_refused(self):
         for seats in ((("claude-opus-5-5", "anthropic"),) * 2, (("claude-opus-5-5", "anthropic"), ("gpt-6.1-sol", "openai"))):
@@ -1093,17 +1115,133 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                 self.assertIn("merge refused", self.check(["docs/example.md"], error=error))
 
     def test_untrusted_stale_low_or_duplicate_scores_refused(self):
-        for comments in (self.scores(author="outsider"), self.scores(head="a" * 40),
+        for comments in (self.scores(author="outsider"),
                          self.scores(score=8), self.scores(seats=(("grok-4.7", "xai"), ("grok-4.7", "xai"))), [[]]):
             with self.subTest(comments=comments):
                 self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+
+    CARRY_SEATS = (("gpt-6.2-sol", "openai"), ("glm-5.3-flash-free", "zhipu"))
+
+    @staticmethod
+    def carry_api(repo, main_ref, head, conclusion="success"):
+        """GitHub's answers for a carry to head: main's tip, and one required check on head."""
+        return {"repos/{owner}/{repo}/branches/main": {"commit": {"sha": repo.git("rev-parse", main_ref)}},
+                "repos/{owner}/{repo}/rules/branches/main": [{"type": "required_status_checks", "parameters": {
+                    "required_status_checks": [{"context": "rust (linux)"}]}}],
+                f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?": {
+                    "check_runs": [{"name": "rust (linux)", "status": "completed", "conclusion": conclusion}]}}
+
+    @staticmethod
+    def git_at(path):
+        """Runs the guard's git commands for real: clone commands in path, scratch ones as given."""
+        run = subprocess.run
+        return lambda command, **kw: run(command, **{**kw, "cwd": path if str(kw["cwd"]) == "/coordinator" else kw["cwd"]})
+
+    def test_a_carried_score_merges_only_through_the_shared_carry(self):
+        # Two vendors on h0, and h1 a clean merge of main: the guard carries through
+        # merge_class.sensitive_scores, the decision the pp/score status uses, on real git.
+        import test_post_pp_score_status as status_tests
+
+        status_tests.CarryTests.setUpClass()
+        c = status_tests.CarryTests
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        git = self.git_at(c.r.path)
+
+        def checks(conclusion):
+            return self.carry_api(c.r, "main", c.h1, conclusion)
+
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.h1, git=git,
+                                     api=checks("success")))
+        for expected, kwargs in {
+            f"{c.h1[:7]}: rust (linux) is failure": dict(git=git, api=checks("failure")),
+            "Cannot verify merge class or scores; merge refused": dict(git=lambda command, **_: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(128, command)), api=checks("success")),
+            f"{c.h0[:7]}: need two qualifying": dict(git=git, api=checks("success"), comments=comments[:1]),
+        }.items():
+            with self.subTest(expected):
+                kwargs.setdefault("comments", comments)
+                self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], sha=c.h1, **kwargs))
+        # The same records on another head that is not a clean merge of main do not carry.
+        self.assertIn("parents, not a two-parent merge",
+                      self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.rebased, git=git,
+                                 api=checks("success")))
+
+    def test_git_config_env_and_cwd_cannot_change_what_the_carry_sees(self):
+        # main-hunk edited the PR's own a.txt. diff.relative, an external diff or GIT_EXTERNAL_DIFF,
+        # run from a subdirectory, once hid that edit and let the merge through.
+        import test_post_pp_score_status as status_tests
+
+        status_tests.CarryTests.setUpClass()
+        c = status_tests.CarryTests
+        sub = os.path.join(c.r.path, "sub")
+        os.makedirs(sub)
+        comments = self.scores(head=c.h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git_in_sub = self.carry_api(c.r, "main-hunk", c.hunk), self.git_at(sub)
+
+        expected = f"{c.hunk[:7]}: the PR's own diff changed"
+        for name, config, env in (("diff.relative", ("diff.relative", "true"), {}),
+                                  ("diff.external", ("diff.external", "true"), {}),
+                                  ("GIT_EXTERNAL_DIFF", None, {"GIT_EXTERNAL_DIFF": "true", "GIT_DIFF_OPTS": "-u0"})):
+            with self.subTest(name):
+                if config:
+                    c.r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=c.hunk,
+                                                           git=git_in_sub, api=api))
+                finally:
+                    if config:
+                        c.r.git("config", "--unset", config[0])
+
+    def test_no_git_configuration_reaches_the_carry(self):
+        # rename_repo's merge skipped a directory rename and conflicts under Git's defaults. A renameLimit in
+        # local, included, HOME, XDG or system config once let the guard carry it. The guard runs from d1/.
+        import tempfile
+
+        import test_post_pp_score_status as status_tests
+
+        r, h0, h = status_tests.rename_repo()
+        comments = self.scores(head=h0, seats=self.CARRY_SEATS, author_vendor="anthropic")
+        api, git, run = self.carry_api(r, "main", h), self.git_at(os.path.join(r.path, "d1")), subprocess.run
+
+        home = tempfile.mkdtemp(prefix="pp-home-")
+        os.makedirs(os.path.join(home, "git"))
+        for name in (".gitconfig", "git/config", "system.cfg"):
+            Path(home, name).write_text("[merge]\n\trenameLimit = 1\n", encoding="utf-8")
+        include = Path(home, "include.cfg")
+        include.write_text("[diff]\n\trenameLimit = 1\n", encoding="utf-8")
+        expected = f"{h[:7]}: the merge of main had conflicts"
+        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h,
+                                           git=git, api=api))
+        for name, config, env in (("local merge.renameLimit", ("merge.renameLimit", "1"), {}),
+                                  ("included diff.renameLimit", ("include.path", str(include)), {}),
+                                  ("HOME and XDG config", None, {"HOME": home, "XDG_CONFIG_HOME": home}),
+                                  ("system config", None, {"GIT_CONFIG_SYSTEM": str(Path(home, "system.cfg"))})):
+            with self.subTest(name):
+                if config:
+                    r.git("config", *config)
+                try:
+                    with patch.dict(os.environ, env):
+                        # The setting is live: plain git in the clone merges cleanly with it.
+                        plain = run(["git", "merge-tree", "--write-tree", h0, "main"], cwd=r.path, capture_output=True,
+                                    env={k: v for k, v in os.environ.items()
+                                         if k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")})
+                        self.assertEqual(plain.returncode, 0, plain.stdout)
+                        self.assertIn(expected, self.check(["rust/rules/a.yml"], ["trusted"], comments, sha=h, git=git,
+                                                           api=api))
+                finally:
+                    if config:
+                        r.git("config", "--unset", config[0])
 
     def test_missing_data_refused(self):
         for override in ({"files": None}, {"files": []}, {"files": [{}]}, {"changedFiles": 2},
                          {"headRefOid": "a" * 40}):
             self.assertIn("merge refused", self.check(["docs/example.md"], pr_override=override))
-        for comments in (None, {}, [], [[{}]], [[{"user": {}, "body": ""}]]):
+        for comments in (None, {}, []):
             self.assertIn("merge refused", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+        for comments in ([[{}]], [[{"user": {}, "body": ""}]]):
+            self.assertIn("a PR comment has no readable author or body",
+                          self.check(["rust/rules/a.yml"], ["trusted"], comments))
 
     def test_numeric_sha_before_number(self):
         guard = load(CLI, "agent_guard_numeric_sha")
@@ -1128,7 +1266,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 MARKER = f"<!-- pp-review-gate head={SHA} reviewer=gpt-5.6-sol findings=0 -->"
 
 
-SCORE_LINE = f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=10 author=anthropic"
+SCORE_LINE = f"pp-score head={SHA} seat=gpt-6.1-sol vendor=openai score=10 author=anthropic obstacles=none"
 
 
 class ScoreRecordTests(unittest.TestCase):
@@ -1157,6 +1295,93 @@ class ScoreRecordTests(unittest.TestCase):
             for result in self.results(command, self.coordinator, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+
+def scorer_repo(path, branch="t3/score-1842-gpt-6.1-sol-20261117"):
+    """A checkout on a scorer branch, as the score tail's t3_thread_launch makes one."""
+    subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+    return str(Path(path).resolve())
+
+
+class ScorerWorktreeTests(unittest.TestCase):
+    """A scorer worktree (branch t3/score-<pr>-<seat>-<yyyymmdd>) posts its own score record as a new comment,
+    and nothing else the coordinator may do."""
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+
+    def setUp(self):
+        self.make_worktrees()
+        self.scorer = scorer_repo(Path(self.lane).parent / "scorer")
+        for folder in (self.scorer, self.lane):
+            Path(folder, "score.md").write_text(f"{SCORE_LINE}\n\nVerdict: no defects.\n")
+        Path(self.scorer, "both.md").write_text(f"{SCORE_LINE}\n{MARKER}\n")
+
+    # New comments only: the first four of ScoreRecordTests.POSTS, the encoded forms, and a body file.
+    NEW_POSTS = ScoreRecordTests.POSTS[:4] + ScoreRecordTests.POSTS[5:] + (
+        "gh pr comment 12 --body-file score.md", "gh api repos/o/r/issues/12/comments -F body=@score.md",
+        f"gh pr comment 12 -R Print-Partner/PrintPartner --body '{SCORE_LINE}'")
+
+    def assert_all(self, command, cwd, returncode, reason=None, coordinators=(None,)):
+        for coordinator in coordinators:
+            for result in self.results(command, cwd, coordinator):
+                with self.subTest(command=command, cwd=cwd, coordinator=coordinator):
+                    self.assertEqual(result.returncode, returncode, result.stderr)
+                    if reason:
+                        self.assertIn(reason, result.stderr)
+
+    def test_scorer_worktree_posts_its_own_score_record(self):
+        for command in self.NEW_POSTS:
+            self.assert_all(command, self.scorer, 0, coordinators=(None, self.coordinator))
+        # A subdirectory of the scorer checkout is still the scorer worktree.
+        Path(self.scorer, "sub").mkdir()
+        self.assert_all(self.NEW_POSTS[0], str(Path(self.scorer, "sub")), 0)
+
+    def test_other_branches_are_lanes(self):
+        for branch in ("t3/score-x", "t3/score-1842-gpt-6.1-sol", "t3/score-1842-gpt-6.1-sol-2026111",
+                       "t3/score-0-gpt-6.1-sol-20261117", "t3/scorer-1842-gpt-6.1-sol-20261117",
+                       "x/t3/score-1842-gpt-6.1-sol-20261117", "t3/score-1842-GPT-20261117",
+                       "gate/score-1842-gpt-6.1-sol-20261117", "main"):
+            lane = scorer_repo(Path(self.lane).parent / branch.replace("/", "_"), branch)
+            self.assert_all(ScoreRecordTests.POSTS[0], lane, 2, "pp-score records")
+        for command in self.NEW_POSTS:
+            self.assert_all(command, self.lane, 2, "pp-score records", (None, self.coordinator))
+
+    def test_coordinator_still_posts_scores_and_markers(self):
+        for command in self.NEW_POSTS[:3] + (f"gh pr comment 12 -b '{MARKER}'",):
+            self.assert_all(command, self.coordinator, 0, coordinators=(self.coordinator,))
+
+    def test_scorer_cannot_edit_or_delete_comments(self):
+        for command in CommentEditTests.EDITS + (
+                f"gh api -X PATCH repos/o/r/issues/comments/34 -f body='{SCORE_LINE}'",
+                f"gh pr comment 12 --edit-last -b '{SCORE_LINE}'", "gh pr comment 12 --edit-last --body-file score.md"):
+            self.assert_all(command, self.scorer, 2, "edits or deletes PR comments")
+
+    def test_scorer_cannot_post_review_markers(self):
+        for command in (f"gh pr comment 12 -b '{MARKER}'", f"gh api repos/o/r/issues/12/comments -f body='{MARKER}'",
+                        f"gh pr comment 12 -b '{SCORE_LINE}\n{MARKER}'", "gh pr comment 12 --body-file both.md",
+                        f"gh pr comment 12 -b '{MARKER.upper()}'", f"gh pr comment 12 -b 'pp%2Dreview-gate head={SHA}'",
+                        f"echo '{MARKER}' > m.md", f"bash -c 'gh pr comment 12 -b \"{MARKER}\"'"):
+            self.assert_all(command, self.scorer, 2, "pp-review-gate review markers")
+
+    def test_scorer_cannot_merge(self):
+        for command in (MERGE_FORM, "gh pr merge 12 --squash", f"{MERGE_FORM} --admin",
+                        "gh api -X PUT repos/o/r/pulls/12/merge"):
+            self.assert_all(command, self.scorer, 2, coordinators=(None, self.coordinator))
+
+    def test_scorer_rules_follow_the_command_directory(self):
+        # A line that starts in the scorer worktree and moves to a lane posts from the lane.
+        self.assert_all(f"cd {self.lane} && gh pr comment 12 -b '{SCORE_LINE}'", self.scorer, 2, "pp-score records")
+        self.assert_all(f"cd {self.scorer} && gh pr comment 12 -b '{SCORE_LINE}'", self.lane, 2, "pp-score records")
+
+    def test_git_location_variables_turn_the_scorer_into_a_lane(self):
+        guard = load(CLI, "agent_guard_scorer")
+        self.assertTrue(guard.scorer_worktree(self.scorer))
+        self.assertEqual(guard.refused_words(self.scorer), (guard.MARKER_WORD,))
+        for variable in ("GIT_DIR", "GIT_WORK_TREE"):
+            with self.subTest(variable=variable), patch.dict(os.environ, {variable: self.scorer}):
+                self.assertFalse(guard.scorer_worktree(self.scorer))
+                self.assertIn("pp-score records", guard.check_command(self.NEW_POSTS[0], self.scorer))
+        self.assertFalse(guard.scorer_worktree(None))
+        self.assertFalse(guard.scorer_worktree(self.lane))
 
 
 class CommentEditTests(unittest.TestCase):

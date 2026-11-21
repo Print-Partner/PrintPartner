@@ -9,6 +9,8 @@ pub mod print_file;
 pub mod printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
 pub mod slicer_grams;
+#[cfg(feature = "desktop_rebuild")]
+pub mod step_assembly;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::fmt;

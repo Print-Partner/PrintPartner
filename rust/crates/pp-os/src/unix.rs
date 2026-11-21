@@ -363,6 +363,30 @@ impl Dir {
         Ok(rfs::renameat(&self.directory, from, &self.directory, to)?)
     }
 
+    pub(crate) fn rename_to(&self, from: &str, target: &Self, to: &str) -> io::Result<()> {
+        Ok(rfs::renameat(&self.directory, from, &target.directory, to)?)
+    }
+
+    /// Children are named by their raw bytes, so a name that is not UTF-8
+    /// is removed too.
+    pub(crate) fn remove_all(&self, name: &OsStr) -> io::Result<()> {
+        let stat = rfs::statat(&self.directory, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        if rfs::FileType::from_raw_mode(stat.st_mode) != rfs::FileType::Directory {
+            return Ok(rfs::unlinkat(&self.directory, name, AtFlags::empty())?);
+        }
+        let child = Self::from_fd(rfs::openat(
+            &self.directory,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        for entry in child.entries()? {
+            child.remove_all(&entry?)?;
+        }
+        drop(child);
+        Ok(rfs::unlinkat(&self.directory, name, AtFlags::REMOVEDIR)?)
+    }
+
     pub(crate) fn remove_dir(&self, name: &str) -> io::Result<()> {
         Ok(rfs::unlinkat(&self.directory, name, AtFlags::REMOVEDIR)?)
     }

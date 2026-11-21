@@ -7,6 +7,8 @@
 //! [`crate::spoolman_deductions`], [`crate::backup`], [`crate::restore`] or [`crate::auth`].
 //! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
+//! A route with a `request` DTO also needs a row for its `name` in that test's
+//! route-keyed sample table, `pp-core/src/rebuild_api/contract_samples.rs`.
 //!
 //! The document's `descriptors` list holds constant tables the generator writes
 //! out as data: today only the printer display descriptors.
@@ -81,6 +83,14 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "GET",
         "/api/v2/plans/{id}/layers",
         None,
+        "ProfileLayers",
+    ),
+    // Adds the base layer, or moves an existing one to that Source, and answers the layers.
+    route(
+        "setBuildBase",
+        "PUT",
+        "/api/v2/plans/{id}/layers/base",
+        Some("SourceAttachmentRequest"),
         "ProfileLayers",
     ),
     route(
@@ -175,6 +185,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "AcceptDraftReceipt",
         )
     },
+    route(
+        "duplicateBuild",
+        "POST",
+        "/api/v2/plans/{id}/duplicate",
+        Some("DuplicateBuildRequest"),
+        "ExperimentCopy",
+    ),
     route(
         "readBuildWorkflow",
         "GET",
@@ -564,10 +581,11 @@ pub(crate) mod codegen {
         self, Actor, EntryType, Page as BuildHistoryPage, Undo, UndoReason, Undone,
     };
     use pp_storage::{
+        build_graph::ExperimentCopy,
         build_graph::wire::{
             AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
             PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
-            ProfileList, ProfileSummary,
+            ProfileList, ProfileSummary, SourceAttachmentRequest,
         },
         checkoff_progress::wire::{
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
@@ -642,6 +660,10 @@ pub(crate) mod codegen {
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
+        schema(
+            "SourceAttachmentRequest",
+            schemars::schema_for!(SourceAttachmentRequest),
+        )?;
         schema("DraftList", schemars::schema_for!(DraftListResponse))?;
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
@@ -672,6 +694,11 @@ pub(crate) mod codegen {
         schema("AcceptDraftReceipt", receipt)?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
+        schema(
+            "DuplicateBuildRequest",
+            schemars::schema_for!(crate::builds::DuplicateBuildRequest),
+        )?;
+        schema("ExperimentCopy", schemars::schema_for!(ExperimentCopy))?;
         schema(
             "ReconcileDraftRequest",
             schemars::schema_for!(ReconciliationRequest),
@@ -1452,6 +1479,47 @@ pub(crate) mod codegen {
     }
 
     /// Draft header reads, saves and save bodies (GRE-1197).
+    /// Duplicate bodies, and the experiment a duplicate answers with and
+    /// without a copied draft.
+    fn experiment_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let mut cases = vec![
+            served(
+                "ExperimentCopy",
+                "with-draft",
+                ExperimentCopy {
+                    build_id: MAX_SAFE,
+                    parent_build_id: 1,
+                    draft_id: Some(MAX_SAFE),
+                },
+            )?,
+            served(
+                "ExperimentCopy",
+                "never-accepted-parent",
+                ExperimentCopy {
+                    build_id: 2,
+                    parent_build_id: 1,
+                    draft_id: None,
+                },
+            )?,
+        ];
+        for (name, value) in [
+            ("named", json!({"name": UNICODE})),
+            ("missing", json!({})),
+            ("number-name", json!({"name": 7})),
+            (
+                "extra-field",
+                json!({"name": "Alternative", "clear_checkoff": true}),
+            ),
+        ] {
+            cases.push(request::<crate::builds::DuplicateBuildRequest>(
+                "DuplicateBuildRequest",
+                name,
+                value,
+            ));
+        }
+        Ok(cases)
+    }
+
     fn header_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let full = BuildHeader {
             name: UNICODE.into(),
@@ -2394,6 +2462,16 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "max",
+                json!({"project_id": MAX_SAFE}),
+            ),
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "zero",
+                json!({"project_id": 0}),
+            ),
             served(
                 "DraftList",
                 "states",
@@ -2589,6 +2667,7 @@ pub(crate) mod codegen {
             cases.push(served("DraftAcceptPreview", name, value)?);
         }
         cases.extend(header_fixtures()?);
+        cases.extend(experiment_fixtures()?);
         cases.extend(lifecycle_fixtures(&workspaces[0])?);
         for (index, value) in workspaces.into_iter().enumerate() {
             cases.push(served(

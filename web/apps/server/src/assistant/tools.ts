@@ -132,6 +132,7 @@ import {
   UNCATEGORIZED_CATEGORY,
   categoryNotFoundError,
   countSourcesUnderCategory,
+  existingSourceFor,
   sourceByName,
   sourceNotFoundError,
   summarizeSourceCategories,
@@ -3131,7 +3132,11 @@ export async function invokeAssistantTool(
       case "propose_add_source": {
         const name = typeof input.name === "string" ? input.name.trim() : "";
         if (!name) return { content: JSON.stringify({ error: "name required" }) };
-        const existing = sourceByName(ctx.repo, name);
+        const existing = existingSourceFor(
+          ctx.repo,
+          name,
+          typeof input.url === "string" ? input.url : null,
+        );
         if (existing) {
           return {
             content: JSON.stringify({
@@ -5368,11 +5373,12 @@ export async function applyAssistantAction(
       case "propose_add_source": {
         const name = String(action.params.name ?? "").trim();
         if (!name) return { ok: false, detail: "name required" };
-        if (sourceByName(deps.repo, name)) {
-          return { ok: false, detail: `Source already exists: ${name}` };
-        }
         const source_kind = String(action.params.source_kind ?? "github").toLowerCase();
         const url = typeof action.params.url === "string" ? action.params.url.trim() : undefined;
+        const existing = existingSourceFor(deps.repo, name, url);
+        if (existing) {
+          return { ok: false, detail: `Source already exists: ${existing.name}` };
+        }
         const tag = typeof action.params.tag === "string" ? action.params.tag.trim() : undefined;
         const branch =
           typeof action.params.branch === "string" ? action.params.branch.trim() : undefined;

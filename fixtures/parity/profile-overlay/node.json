@@ -9,7 +9,7 @@
       },
       {
         "path": "web/packages/domain/src/stl-naming.ts",
-        "sha256": "3f598102c81dfc1b5d628df1cc440e6062cf6594374939f3bb6643e2c5043c78"
+        "sha256": "a947fbdf43515f161bf85fe85a385053aa75c9ec6482afc29cf5e102fa52a61b"
       },
       {
         "path": "web/packages/domain/src/import-rules.ts",

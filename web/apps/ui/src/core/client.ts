@@ -6,6 +6,8 @@
  * Typed reads go through `readCore` in ./rust.ts, which builds on this function
  * with the generated client's routes and schemas.
  */
+import { problemSchema } from "@print-partner/rust-client";
+
 /** One field the core refused: a JSON Pointer into the request body, and the core's reason. */
 export type FieldProblem = { pointer: string; detail: string };
 
@@ -20,6 +22,12 @@ export class CoreError extends Error {
   errors: readonly FieldProblem[] = [];
   /** The problem's `files` list: each Source file a download refused, in the core's order. */
   files: readonly UnavailableSourceFile[] = [];
+  /**
+   * True when the body is the core's own problem: `application/problem+json`, valid against the
+   * generated `Problem` schema, with a `status` equal to this answer's. A proxy page, a cut-off
+   * body or a malformed member such as `"code": null` leaves it false.
+   */
+  problem = false;
 
   constructor(
     readonly status: number,
@@ -27,32 +35,47 @@ export class CoreError extends Error {
     readonly detail?: string,
     /** The problem's Node-compatible `code`, such as `draft_changed`. */
     readonly code?: string,
-    readonly conflictingBuilds: readonly string[] = [],
+    readonly conflictingBuilds: readonly HoldingBuild[] = [],
   ) {
     super(`Rust core answered ${status} for ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "CoreError";
   }
 }
 
-/** The problem code, detail, holding Build names and refused fields, when present. */
+/** A Build a refusal names, such as the one holding an order. `profileId` is null when absent. */
+export interface HoldingBuild {
+  name: string;
+  profileId: number | null;
+}
+
+/** The problem code, detail, holding Builds and refused fields, when present. */
 async function problem(response: Response): Promise<{
+  own?: boolean;
   detail?: string;
   code?: string;
-  conflictingBuilds?: string[];
+  conflictingBuilds?: HoldingBuild[];
   errors?: FieldProblem[];
   files?: UnavailableSourceFile[];
 }> {
   const body: unknown = await response.json().catch(() => undefined);
   if (typeof body !== "object" || body === null) return {};
+  const type = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const own =
+    type === "application/problem+json" &&
+    problemSchema.safeParse(body).success &&
+    (body as Record<string, unknown>).status === response.status;
   const text = (key: string) => {
     const value: unknown = (body as Record<string, unknown>)[key];
     return typeof value === "string" ? value : undefined;
   };
   const builds: unknown = (body as Record<string, unknown>).builds;
   const conflictingBuilds = Array.isArray(builds)
-    ? builds.flatMap((build: unknown) => {
-        if (typeof build !== "object" || build === null || !("name" in build)) return [];
-        return typeof build.name === "string" && build.name.trim() ? [build.name] : [];
+    ? builds.flatMap((build: unknown): HoldingBuild[] => {
+        if (typeof build !== "object" || build === null) return [];
+        const { name, profile_id } = build as Record<string, unknown>;
+        if (typeof name !== "string" || !name.trim()) return [];
+        const profileId = Number.isSafeInteger(profile_id) && (profile_id as number) > 0;
+        return [{ name, profileId: profileId ? (profile_id as number) : null }];
       })
     : [];
   const listed: unknown = (body as Record<string, unknown>).errors;
@@ -79,7 +102,7 @@ async function problem(response: Response): Promise<{
           : [];
       })
     : [];
-  return { detail: text("detail"), code: text("code"), conflictingBuilds, errors, files };
+  return { own, detail: text("detail"), code: text("code"), conflictingBuilds, errors, files };
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -116,10 +139,11 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
       const write = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
       for (const listener of unauthorized) listener({ write });
     }
-    const { detail, code, conflictingBuilds, errors, files } = await problem(response);
+    const { own, detail, code, conflictingBuilds, errors, files } = await problem(response);
     const error = new CoreError(response.status, path, detail, code, conflictingBuilds);
     error.errors = errors ?? [];
     error.files = files ?? [];
+    error.problem = own ?? false;
     throw error;
   }
   return response;

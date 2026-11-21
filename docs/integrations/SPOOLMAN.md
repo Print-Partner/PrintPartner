@@ -91,6 +91,8 @@ The send is `PUT /api/v1/spool/{id}/use` with the row's grams as `use_weight`. T
 
 The Build Overview's **Filament** section shows this Build's deductions from that list: the newest deduction per filament row, a notice for `unknown` and `failed` rows that links to the Farm log, and a line for `skipped` rows with the reason. With the Module off it makes no deduction request.
 
+The Farm log (`/farm/log`) has a **Filament deductions** list with the same rows for every Build. An `unknown` or `failed` row shows the spool, the grams, the grams Spoolman reported before the send and reports now, and the answers: **Deducted** (for `unknown` only), **Retry** and **Dismiss**. See [Farm log](../farm-log.md#filament-deductions).
+
 Deduction runs whenever the Spoolman Module is on; there is no per-printer setting. Do not also set `[spoolman]` in a printer's `moonraker.conf`, or the printer's own usage reports and these deductions would both count.
 
 ## Security

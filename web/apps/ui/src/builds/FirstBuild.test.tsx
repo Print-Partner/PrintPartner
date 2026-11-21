@@ -1,7 +1,6 @@
 import type {
   CreateBuildRequest,
   CreateSourceRequest,
-  Health,
   ProfileLayers,
   ProfileSummary,
   SourceList,
@@ -11,7 +10,8 @@ import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
-import { resetCreateBuild } from "./createBuild";
+import { createStore, resetCreateBuild } from "./createBuild";
+import { health } from "./sendQueueFake.test-utils";
 import { FIRST_BUILD_STEPS } from "./planCopy";
 
 // GRE-1401: a scripted core on disposable, in-memory data. It keeps Sources, Builds and layers
@@ -24,22 +24,6 @@ const problem = (status: number, detail: string, type = "validation") =>
     JSON.stringify({ type: `urn:print-partner:problem:${type}`, title: "Refused", status, detail }),
     { status, headers: { "content-type": "application/problem+json" } },
   );
-
-const health: Health = {
-  ok: true,
-  authenticated: true,
-  authentication_required: true,
-  capabilities: [],
-  degraded_detail: null,
-  discord_oauth_configured: false,
-  github_oauth_configured: false,
-  multi_user: false,
-  owner_mapping_required: false,
-  registration_open: false,
-  single_user_auth: true,
-  single_user_setup_required: false,
-  modules: [],
-};
 
 type Source = SourceList["sources"][number];
 type Layer = ProfileLayers["layers"][number];
@@ -185,7 +169,7 @@ function scriptedCore(seed: Seed = {}) {
   const route = (path: string, init?: RequestInit): Promise<Response> | Response => {
     const method = init?.method ?? "GET";
     const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
-    if (path === "/health") return json(health);
+    if (path === "/health") return json(health("off"));
     if (path === "/api/v2/tasks") return json({ tasks: [], unavailable: [] });
     return sourceRoute(path, method, body) ?? planRoute(path, method, body);
   };
@@ -602,7 +586,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     let reply: () => void = () => {};
     const core = scriptedCore({
       sources: ["Kit A"],
-      // The first list read is held with the empty list it saw, past the create's answer.
       list: (read, snapshot) =>
         read === 1 ? new Promise((resolve) => (releaseFirst = () => resolve(snapshot))) : undefined,
       answer: (write) =>
@@ -663,7 +646,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     const table = await screen.findByRole("table", { name: "Builds" });
     await within(table).findByRole("link", { name: "Build 2" });
 
-    // The first Create's read answers now, with a list that has only Build 1.
     releaseSecond();
     await pause();
     expect(within(table).getByRole("link", { name: "Build 1" })).toBeTruthy();
@@ -692,7 +674,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     fireEvent.click(await openWithName("Kept"));
     if (status === 200) {
       await heading("Kept");
-      // The settled Create holds no observer, so its mutation leaves the cache.
       await waitFor(() => expect(lastClient.getMutationCache().getAll()).toHaveLength(0));
     } else {
       await within(dialog()).findByText("Checking the Builds list.");
@@ -715,7 +696,20 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     }
   });
 
-  it("a check never answers with a list older than the one Builds shows", async () => {
+  type Client = ReturnType<typeof createQueryClient>;
+  const KEY = ["core", "builds"];
+  const failNewer = (client: Client) => {
+    const query = client.getQueryCache().find({ queryKey: KEY })!;
+    query.setState({ status: "error", dataUpdateCount: query.state.dataUpdateCount + 1 });
+  };
+  it.each([
+    ["Builds read it again", () => {}, true, "listed"],
+    ["sign-in cleared the cache", (c: Client) => c.clear(), true, "listed"],
+    ["sign-out removed it", (c: Client) => c.removeQueries({ queryKey: KEY }), false, "unread"],
+    ["the cache holds no list", (c: Client) => c.setQueryData(KEY, { no: 1 }), false, "unread"],
+    ["a newer read failed", failNewer, false, "unread"],
+  ] as const)("a check never answers with a list older than the cache's: %s", async (...row) => {
+    const [, change, back, kind] = row;
     let release: () => void = () => {};
     let commit: () => ProfileSummary = () => storedBuild(0, "");
     const core = scriptedCore({
@@ -734,13 +728,16 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     fireEvent.click(screen.getByRole("link", { name: "Library" }));
     await heading("Library");
     commit(); // The create lands after the check's read saw an empty list.
-    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
-    const table = await screen.findByRole("table", { name: "Builds" });
-    expect(within(table).getByRole("link", { name: "Late" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    change(lastClient);
+    if (back) {
+      fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+      const table = await screen.findByRole("table", { name: "Builds" });
+      expect(within(table).getByRole("link", { name: "Late" })).toBeTruthy();
+    }
+    const held = lastClient.getQueryData(KEY);
     release();
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("so it was created");
-    const cached = lastClient.getQueryData<{ profiles: ProfileSummary[] }>(["core", "builds"]);
-    expect(cached?.profiles.map((build) => build.name)).toEqual(["Late"]);
+    await waitFor(() => expect(createStore.get().kind).toBe(kind));
+    // The read's older list is never written over what the cache holds.
+    expect(lastClient.getQueryData(KEY)).toBe(held);
   });
 });

@@ -125,7 +125,7 @@ async function post(client: QueryClient, body: CreateBuildRequest) {
 export async function startCreate(client: QueryClient, body: CreateBuildRequest): Promise<void> {
   if (busy(state)) return;
   const { name } = body;
-  const listed = client.getQueryData<ProfileList>(buildsQuery.queryKey);
+  const listed = profileList(client.getQueryData(buildsQuery.queryKey));
   // No loaded list before the press: a Build found later cannot be shown to be new.
   const before = listed ? new Set(listed.profiles.map((build) => build.id)) : null;
   set({ kind: "sending", name });
@@ -151,24 +151,35 @@ export async function startCreate(client: QueryClient, body: CreateBuildRequest)
  * read already in flight may have started before the create, so it is cancelled rather than
  * joined. The read is not the Builds query's own fetch, so leaving Builds cannot cancel it or
  * put the list from before the create back; a newer read aborts it. A list the cache got while
- * this read ran was read after the create too, and may be newer, so that list wins.
+ * this read ran was read after the create too, and may be newer, so that list wins; a query that
+ * was removed, failed or holds no list since gives no answer and is never written.
  */
 async function freshList(client: QueryClient): Promise<ProfileList | null> {
   const read = ++listRead;
   listAbort.abort();
   const abort = (listAbort = new AbortController());
   await client.cancelQueries({ queryKey: buildsQuery.queryKey });
-  // A count, not a time, so two writes in the same millisecond still differ.
-  const writes = client.getQueryState(buildsQuery.queryKey)?.dataUpdateCount ?? 0;
+  const cache = client.getQueryCache();
+  const before = cache.find({ queryKey: buildsQuery.queryKey, exact: true });
+  // A count, not a time, so two writes in one millisecond differ; sign-out makes a new query.
+  const writes = before?.state.dataUpdateCount ?? 0;
   const list = await readCore("listBuilds", {}, abort.signal).catch((error: unknown) => {
     if (read === listRead) throw error;
   });
   if (!list || read !== listRead) return null;
-  if ((client.getQueryState(buildsQuery.queryKey)?.dataUpdateCount ?? 0) > writes) {
-    return client.getQueryData<ProfileList>(buildsQuery.queryKey) ?? null;
+  const after = cache.find({ queryKey: buildsQuery.queryKey, exact: true });
+  const afterWrites = after?.state.dataUpdateCount ?? 0;
+  if (after === before ? afterWrites > writes : afterWrites > 0 || before !== undefined) {
+    return after?.state.status === "success" ? profileList(after.state.data) : null;
   }
   client.setQueryData(buildsQuery.queryKey, list);
   return list;
+}
+
+/** The cache's Builds list, or null when the entry holds anything else. */
+function profileList(value: unknown): ProfileList | null {
+  const profiles: unknown = (value as { profiles?: unknown } | null)?.profiles;
+  return Array.isArray(profiles) ? (value as ProfileList) : null;
 }
 
 /** Looks for the exact name in a fresh Builds list, as docs/gre-792-builds-http.md says. */

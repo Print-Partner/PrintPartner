@@ -10,6 +10,9 @@
 //! An edit that changes nothing writes nothing. A stale basis or revision is
 //! refused without touching history.
 //!
+//! Accept copies the head into a new revision for the new Accepted Plan when
+//! every unit stays the same (GRE-1550, [`keep_for_accept`]).
+//!
 //! The client also serves the Build's Production setup (GRE-421), which
 //! Plates are packed by and whose route change reads the Accepted Plan.
 //!
@@ -159,13 +162,14 @@ impl PlatesClient {
 }
 
 /// The Accepted Plan a caller observed, as Node's `parseBasis` reads it.
+/// Accept names the Plan it replaces and the one it publishes with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Basis {
-    profile_id: i64,
-    plan_version: i64,
-    revision_id: i64,
-    revision_digest: String,
-    mapping_digest: String,
+pub(crate) struct Basis {
+    pub(crate) profile_id: i64,
+    pub(crate) plan_version: i64,
+    pub(crate) revision_id: i64,
+    pub(crate) revision_digest: String,
+    pub(crate) mapping_digest: String,
 }
 impl Basis {
     fn of(snapshot: &Snapshot) -> Self {
@@ -932,18 +936,113 @@ fn write_revision(
         )?,
     };
     ensure!(moved == 1, "Accepted Plate head update failed");
+    revision_changed(tx, tenant, cmd.profile, id)?;
+    Ok((id, number))
+}
+
+fn revision_changed(tx: &Transaction<'_>, tenant: &str, profile: i64, id: i64) -> Result<()> {
     domain_events::append(
         tx,
         tenant,
         domain_events::Change {
             kind: domain_events::PLATES_CHANGED,
             aggregate_type: "build",
-            aggregate_id: cmd.profile.to_string(),
+            aggregate_id: profile.to_string(),
             aggregate_version: None,
             payload: json!({ "plate_revision_id": id }),
         },
+    )
+}
+
+/// GRE-1550, rules 1 and 5 of an Accept that keeps the Plate layout: the
+/// head Plate revision when it stamps `replaced`, the Accepted Plan the
+/// Accept replaces, and its layout passes a Plate read's check for
+/// `included`, the Required units of included Parts. Plate data that fails
+/// either check gives `None`, never an error, so it cannot fail an Accept.
+pub(crate) fn head_kept_by_accept(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    replaced: &Basis,
+    included: &HashSet<RequiredUnitToken>,
+) -> Result<Option<i64>> {
+    let kept = (|| -> Result<Option<i64>> {
+        let Some(id) = head(tx, tenant, profile)? else {
+            return Ok(None);
+        };
+        let Some(revision) = revision(tx, tenant, profile, id)? else {
+            return Ok(None);
+        };
+        if !replaced.stamps(&revision) {
+            return Ok(None);
+        }
+        checked_layout(tx, tenant, &revision, included)?;
+        Ok(Some(id))
+    })();
+    match kept {
+        Err(error) if unreadable(&error) => Ok(None),
+        kept => kept,
+    }
+}
+
+/// A stored Plate row that fails its checks or does not decode.
+fn unreadable(error: &anyhow::Error) -> bool {
+    error.is::<Integrity>()
+        || matches!(
+            error.downcast_ref::<rusqlite::Error>(),
+            Some(
+                rusqlite::Error::InvalidColumnType(..)
+                    | rusqlite::Error::FromSqlConversionFailure(..)
+                    | rusqlite::Error::IntegralValueOutOfRange(..)
+            )
+        )
+}
+
+/// GRE-1550: copies Plate revision `kept` unchanged, with its Plates, units
+/// and layout digest, as the next revision for the Accepted Plan `accepted`,
+/// makes it the head and appends `plates.revision_changed`. Accept has
+/// removed the head by then; the copy links no arrange to undo.
+pub(crate) fn keep_for_accept(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    kept: i64,
+    accepted: &Basis,
+) -> Result<()> {
+    let number: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(revision_number),0)+1 FROM accepted_plate_revisions WHERE tenant_id=?1 AND profile_id=?2",
+        params![tenant, profile],
+        |row| row.get(0),
     )?;
-    Ok((id, number))
+    let copied = tx.execute(
+        "INSERT INTO accepted_plate_revisions(tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,undo_from_revision_id,created_at) SELECT tenant_id,profile_id,?3,?4,?5,?6,layout_digest,expected_plate_count,expected_unit_count,?7,NULL,?8 FROM accepted_plate_revisions WHERE tenant_id=?1 AND profile_id=?2 AND id=?9",
+        params![
+            tenant,
+            profile,
+            accepted.revision_id,
+            accepted.plan_version,
+            accepted.revision_digest,
+            accepted.mapping_digest,
+            number,
+            iso_time(SystemTime::now()),
+            kept,
+        ],
+    )?;
+    ensure!(copied == 1, "Kept Plate revision is missing");
+    let id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um) SELECT tenant_id,?1,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um FROM accepted_plates WHERE revision_id=?2 ORDER BY ordinal",
+        params![id, kept],
+    )?;
+    tx.execute(
+        "INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um,placement,pinned) SELECT tenant_id,?1,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um,placement,pinned FROM accepted_plate_units WHERE revision_id=?2 ORDER BY required_unit_token",
+        params![id, kept],
+    )?;
+    tx.execute(
+        "INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES(?1,?2,?3)",
+        params![tenant, profile, id],
+    )?;
+    revision_changed(tx, tenant, profile, id)
 }
 
 fn placement(value: Placement) -> &'static str {
@@ -1420,18 +1519,29 @@ fn stored_layout(
             if !basis.stamps(&revision) {
                 Stored::Setup(Some(id))
             } else {
-                let counted = |count: i64| (1..=i64::from(MAX_PLATE_UM)).contains(&count);
-                ensure!(
-                    counted(revision.plate_count)
-                        && counted(revision.unit_count)
-                        && Digest::parse(revision.layout_digest.as_str()).is_ok(),
-                    Integrity("revision")
-                );
-                let plates = layout(tx, tenant, &revision, &tokens(snapshot)?)?;
+                let plates = checked_layout(tx, tenant, &revision, &tokens(snapshot)?)?;
                 Stored::Ready(revision, plates)
             }
         }
     })
+}
+
+/// The check a Plate read makes of a head revision: its counts are in range,
+/// its digest is well formed, and [`layout`] reads it.
+fn checked_layout(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    revision: &Revision,
+    expected: &HashSet<RequiredUnitToken>,
+) -> Result<Vec<ValidatedPlate>> {
+    let counted = |count: i64| (1..=i64::from(MAX_PLATE_UM)).contains(&count);
+    ensure!(
+        counted(revision.plate_count)
+            && counted(revision.unit_count)
+            && Digest::parse(revision.layout_digest.as_str()).is_ok(),
+        Integrity("revision")
+    );
+    layout(tx, tenant, revision, expected)
 }
 
 type Views = (Vec<Value>, Vec<Map<String, Value>>, HashSet<String>);

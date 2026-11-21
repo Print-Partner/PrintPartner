@@ -203,7 +203,9 @@ pub struct UnitRef {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlateChanges {
-    /// Accept clears the accepted Plate layout; these Plates go.
+    /// Accept clears the accepted Plate layout; these Plates go. Empty when
+    /// Accept keeps the layout because every unit, its Part's `included` and
+    /// its STL stay the same.
     pub cleared: Vec<PlateRef>,
 }
 
@@ -361,7 +363,7 @@ pub(crate) fn preview(
             parts_removed,
             inputs,
             required_units: units(&checked, &diff)?,
-            plates: plates(tx, tenant, profile)?,
+            plates: plates(tx, tenant, profile, &checked)?,
             stock: stock(tx, tenant, profile, &checked)?,
             header,
             duplicate_orders: duplicate_orders(
@@ -498,7 +500,18 @@ fn units(checked: &Checked, diff: &DraftDiffModel) -> Result<UnitChanges> {
     Ok(result)
 }
 
-fn plates(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<PlateChanges> {
+/// The head's Plates when Accept clears the layout; none when it keeps it.
+fn plates(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    checked: &Checked,
+) -> Result<PlateChanges> {
+    if checked.kept_plate_revision(tx, tenant, profile)?.is_some() {
+        return Ok(PlateChanges {
+            cleared: Vec::new(),
+        });
+    }
     let cleared = rows(
         tx,
         "SELECT p.plate_id,p.ordinal,p.printer_name,(SELECT COUNT(*) FROM accepted_plate_units u WHERE u.tenant_id=p.tenant_id AND u.revision_id=p.revision_id AND u.plate_id=p.plate_id) AS unit_count FROM accepted_plate_heads h JOIN accepted_plates p ON p.tenant_id=h.tenant_id AND p.revision_id=h.current_revision_id WHERE h.tenant_id=? AND h.profile_id=? ORDER BY p.ordinal",

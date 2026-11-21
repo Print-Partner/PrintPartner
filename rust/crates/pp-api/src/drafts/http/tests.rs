@@ -3017,6 +3017,8 @@ mod export_after_accept;
 mod gre487_stale_patch;
 #[path = "tests/header.rs"]
 mod header;
+#[path = "tests/keep_plates.rs"]
+mod keep_plates;
 #[path = "tests/mcp_accept.rs"]
 mod mcp_accept;
 #[path = "tests/order_authority.rs"]

@@ -7,6 +7,7 @@ mod tests;
 use crate::{
     Envelope, Shared, WriterOwner, auth,
     manifest_text::{DraftPart, JsText},
+    production::model::RequiredUnitToken,
     read_model::Credential,
     required_units::{
         self as ru,
@@ -1042,6 +1043,8 @@ struct Checked {
     predecessors: Vec<DraftPart>,
     /// The selected reconciliation's header.
     selected: Value,
+    /// The base revision's Required-unit mapping digest.
+    base_mapping: Value,
     base_parts: Vec<ru::model::BasePart>,
     /// Base Required units by token: stored row, completed, assembled.
     base: HashMap<String, (Value, bool, bool)>,
@@ -1104,6 +1107,78 @@ impl Checked {
             unmappable,
         )))
     }
+
+    /// GRE-1550: the head Plate revision Accept keeps for the new Accepted
+    /// Plan, or `None` when Accept clears the Plate layout. Accept and its
+    /// preview both decide with this.
+    fn kept_plate_revision(
+        &self,
+        tx: &Transaction<'_>,
+        tenant: &str,
+        profile: i64,
+    ) -> Result<Option<i64>> {
+        let (Some(previous), Some(included), Some(mapping)) = (
+            self.previous,
+            kept_units(&self.base_parts, &self.predecessors, &self.prepared),
+            self.base_mapping.as_str(),
+        ) else {
+            return Ok(None);
+        };
+        let digest: String = tx.query_row(
+            "SELECT snapshot_digest FROM plan_revisions WHERE tenant_id=? AND profile_id=? AND id=?",
+            params![tenant, profile, previous],
+            |row| row.get(0),
+        )?;
+        let replaced = crate::plates::Basis {
+            profile_id: profile,
+            plan_version: self.version,
+            revision_id: previous,
+            revision_digest: digest,
+            mapping_digest: mapping.to_owned(),
+        };
+        crate::plates::head_kept_by_accept(tx, tenant, profile, &replaced, &included)
+    }
+}
+
+/// GRE-1550 rules 2 to 4: `prepared` maps exactly the Required-unit tokens of
+/// `base_parts`, and the Part holding each token keeps `included` and its STL
+/// digest; an empty digest equals a missing one. `predecessors` are the base
+/// revision's Parts. Returns the tokens of included Parts, the units a Plate
+/// may hold.
+fn kept_units(
+    base_parts: &[ru::model::BasePart],
+    predecessors: &[DraftPart],
+    prepared: &Prepared,
+) -> Option<HashSet<RequiredUnitToken>> {
+    let held = |part: &DraftPart| {
+        (
+            part["included"] == true,
+            part["artifactDigest"].as_str().unwrap_or("").to_owned(),
+        )
+    };
+    let mut before = HashMap::new();
+    for part in base_parts {
+        let row = predecessors.iter().find(|row| row["id"] == part.id)?;
+        for unit in &part.units {
+            before.insert(unit.token.as_str(), held(row));
+        }
+    }
+    let mut after = HashMap::new();
+    for assignment in &prepared.assignments {
+        let Assignment::Reuse { part, token, .. } = assignment else {
+            return None;
+        };
+        let row = prepared.parts.iter().find(|row| row["id"] == *part)?;
+        after.insert(token.as_str(), held(row));
+    }
+    if before != after {
+        return None;
+    }
+    before
+        .into_iter()
+        .filter(|(_, (included, _))| *included)
+        .map(|(token, _)| RequiredUnitToken::parse(token).ok())
+        .collect()
 }
 
 /// The Plan and draft rows, after Accept's first draft checks in its order:
@@ -1344,6 +1419,7 @@ fn check_selection(
         version,
         predecessors,
         selected: selected.header.clone(),
+        base_mapping: mapping,
         base_parts,
         base,
         old_tokens,
@@ -1424,6 +1500,8 @@ pub(crate) fn publish_in_transaction(
         Ok(remapping) => remapping,
         Err(refused) => return Ok(refused),
     };
+    // Decided before Accept writes: it reads the head and the replaced Plan.
+    let kept_plates = checked.kept_plate_revision(tx, tenant, profile)?;
     let Checked {
         inputs,
         previous,
@@ -1482,6 +1560,7 @@ pub(crate) fn publish_in_transaction(
         now.millisecond()
     );
     snapshot::save_before_accept(tx, tenant, profile, draft_id, (previous, version), &at)?;
+    // A kept layout gets a new head once the new Plan is accepted.
     tx.execute(
         "DELETE FROM accepted_plate_heads WHERE tenant_id=? AND profile_id=?",
         params![tenant, profile],
@@ -1665,6 +1744,16 @@ pub(crate) fn publish_in_transaction(
             payload: json!({ "revision_id": revision }),
         },
     )?;
+    if let Some(kept) = kept_plates {
+        let accepted = crate::plates::Basis {
+            profile_id: profile,
+            plan_version: version + 1,
+            revision_id: revision,
+            revision_digest: prepared.digest.clone(),
+            mapping_digest: mapping_digest.clone(),
+        };
+        crate::plates::keep_for_accept(tx, tenant, profile, kept, &accepted)?;
+    }
     Ok(Outcome::Applied { receipt })
 }
 

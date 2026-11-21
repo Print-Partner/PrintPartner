@@ -89,7 +89,7 @@ The send is `PUT /api/v1/spool/{id}/use` with the row's grams as `use_weight`. T
 
 `GET /api/v2/spoolman/deductions/{id}` returns the row plus `grams_before` and `grams_now`. Each is `{"kind":"known","grams":N}` or `{"kind":"unknown"}`. `grams` is whole grams, rounded down. `grams_before` is what Spoolman reported when the row was claimed. `grams_now` is what that spool reports at the read. A skipped row, or a missing, disabled or unreadable integration, is `unknown` and is not contacted. The Spoolman Module being off does not block the read.
 
-The Build Overview's **Filament** section shows this Build's deductions from that list: the newest deduction per filament row, a notice for `unknown` and `failed` rows that links to the Farm log, and a line for `skipped` rows with the reason. With the Module off it makes no deduction request.
+The Build Overview's **Filament** section shows this Build's deductions from that list: the newest deduction per filament row, a notice for `unknown` and `failed` rows that links to the Farm log, and a line for `skipped` rows with the reason. The Farm log and the Filament section share one cached deduction list, so after the owner answers on the Farm log the Overview opens without the notice, by in-app link or a full reload (GRE-1757). With the Module off it makes no deduction request.
 
 The Farm log (`/farm/log`) has a **Filament deductions** list with the same rows for every Build. An `unknown` or `failed` row shows the spool, the grams, the grams Spoolman reported before the send and reports now, and the answers: **Deducted** (for `unknown` only), **Retry** and **Dismiss**. See [Farm log](../farm-log.md#filament-deductions).
 

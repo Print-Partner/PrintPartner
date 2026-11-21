@@ -49,7 +49,9 @@ before the send and reports now, or "not known". It offers the answers that
 One answer is sent at a time; clicks while it is in flight send nothing. The
 core's answer replaces the row in the shared deduction cache, so the row changes
 in place without reading the list again, and the Build Overview's Filament
-section shows the same row. A refused answer shows the core's detail and reads
+section shows the same row. Each row links to its Build; once that Build has no
+`unknown` or `failed` row left, its Overview opens without the Filament notice
+(GRE-1757). A refused answer shows the core's detail and reads
 the list again. An answer whose reply is lost is not resent: the screen says it
 may not have reached the core and reads the list again.
 

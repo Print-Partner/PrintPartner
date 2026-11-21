@@ -15,8 +15,9 @@ export type RestoreAnswer =
   | { kind: "answered"; status: number; problem: boolean; code?: string };
 
 /**
- * `unchanged`: the core refused before the restore was queued; the same check may be sent
- * again. `choose-again`: unchanged, but the core no longer holds the check. `unknown`: the
+ * `unchanged`: the core refused before it swapped any file, so this request changed nothing and
+ * the same check may be sent again. `choose-again`: unchanged, but the same `restore_id` must not
+ * be sent again; check the file again. `unknown`: the
  * installation may have been replaced; nothing is sent again until the page reloads.
  */
 export type RestoreVerdict = "unchanged" | "choose-again" | "unknown";
@@ -31,11 +32,13 @@ const UNCHANGED_STATUSES: ReadonlySet<number> = new Set([400, 401, 403, 409, 422
 
 /** Coded answers that prove nothing changed, each only with the status the core sends it with. */
 const CODED: ReadonlyMap<string, { status: number; verdict: Exclude<RestoreVerdict, "unknown"> }> = new Map([
-  // The stage id is unknown; checked before the queue push.
+  // The stage id is unknown (for example after a restart); checked before the queue push.
   ["restore_not_found", { status: 404, verdict: "choose-again" }],
-  // The route, the activity gate, or the writer before it swaps any file (readers did not drain).
+  // `Refusal::Busy`: the route, the activity gate, or, after the queue push, the writer when
+  // readers did not drain, before it swaps any file.
   ["restore_busy", { status: 503, verdict: "unchanged" }],
-  // The writer put the previous installation back and removed the stage.
+  // The writer put the previous installation back. Removing the stage is best effort, so the
+  // section asks for a fresh check instead of resending this id.
   ["restore_rolled_back", { status: 500, verdict: "choose-again" }],
 ]);
 

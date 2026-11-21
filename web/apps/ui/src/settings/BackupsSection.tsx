@@ -332,6 +332,7 @@ function CheckBackup({ offline, reasonId, restore }: { offline: boolean; reasonI
         restore then replaces this whole installation and cannot be undone here; to bring back an
         earlier Plan of one Build, use that Build's History instead.
       </p>
+      <p>The core keeps a checked backup only until it restarts. If it restarts before you confirm, choose the file again and check it.</p>
       <div className="pp-field">
         <label htmlFor={fileId}>Backup file</label>
         <input

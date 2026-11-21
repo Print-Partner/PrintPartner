@@ -649,6 +649,11 @@ describe("Backups: restore", () => {
     const answer = deferred();
     const fake = core(undefined, { stage: () => json(PREVIEW), restore: () => answer.promise });
     const { region, dialog } = await confirming(fake);
+    expect(
+      within(region).getByText(
+        "The core keeps a checked backup only until it restarts. If it restarts before you confirm, choose the file again and check it.",
+      ),
+    ).toBeTruthy();
     expect(dialog.querySelector("[data-confirmation]")?.textContent).toBe(PREVIEW.confirmation);
     await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" })));
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));

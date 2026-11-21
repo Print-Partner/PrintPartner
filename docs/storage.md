@@ -344,7 +344,7 @@ Tests: `pp-storage/src/restore/tests/activation.rs`. They observe stopped admiss
 
 ### Stage and restore routes
 
-With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
+With `PP_DESKTOP_REBUILD` exactly `1` or `true`, `backup_router` also mounts two restore routes behind the same gate (GRE-1161, `pp_api::restore`). They are absent otherwise. Both require a session or an API key, and the loopback Host and Origin checks. The client sends no path. One stage or restore runs at a time; a second answers 503 `A restore is already running` with code `restore_busy`. Answers send `Cache-Control: private, no-store`, and refusals are problem documents ([Problem responses](problem-responses.md)) with fixed text: a staging or schema error can name a path, so its detail is logged, not sent.
 
 `POST /api/v2/installation/restore/stage` takes the backup archive as the request body (`application/gzip`, not a form) and needs `Content-Length`, which becomes `begin_upload`'s limit. The route passes the body to the upload in 1 MiB writes, then calls `stage`, and answers `RestorePreview`: `restore_id`, the archive's `created_at` and `app_version`, its `schema_version`, and the `confirmation` text to repeat. The stage stays until the first of these:
 
@@ -369,7 +369,7 @@ Each of the first three removals can fail without failing the operation; the sta
 | `RestoreRequest` not readable | 400 `Request is invalid`, with field errors |
 | `Refusal::Confirmation` | 400 `Restore confirmation does not match` |
 | `Refusal::UnknownRestore` (also any id that is not 32 lowercase hex) | 404, code `restore_not_found`: upload the backup again |
-| `Refusal::Busy` | 503 `Storage work is still active; try again` |
+| `Refusal::Busy` | 503 `Storage work is still active; try again`, code `restore_busy`: this request changed nothing |
 | `RestoreError::RolledBack` | 500, code `restore_rolled_back`: the previous installation is kept and serving |
 | `RestoreError::RestartRequired` | 503, code `restart_required`: restart Print Partner. After a failed rollback (with or without a published journal), writes and reads answer `Stopped` and restore operations `Busy` until then. When an earlier activation left its journal, storage keeps serving and only activating a stage that still exists answers this |
 
@@ -379,7 +379,7 @@ Tests: `pp-core/tests/installation_restore_http.rs` runs on `pp_testkit::Install
 
 ### Backup and restore from Settings
 
-The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`). Nothing is sent when the section opens or when a file is chosen. The section never calls the restore route.
+The replacement Settings screen has a Backups section (GRE-1340, `web/apps/ui/src/settings/BackupsSection.tsx`). Nothing is sent when the section opens or when a file is chosen. Only the confirmation dialog calls the restore route.
 
 **Create backup** posts `createInstallationBackup` once, with `redirect: "error"`: a 307 or 308 is never followed, so one click never sends a second POST, and the refused redirect is read as not confirmed. While it runs, the section's status line says `Creating backup` and the button is off; the same mounted status line then says `Backup made`. Offline, the button is off and names the offline reason. The answer shows the archive's file name, time, app version, size (with the exact byte count) and SHA-256. The page keeps only the backup it made; after a reload, create one again.
 
@@ -403,7 +403,27 @@ Download streams the archive through a browser `<a download>` navigation on purp
 - The core's own problem, such as 422 `Invalid backup archive` for a truncated file, shows `The backup was not accepted: <reason>. This installation is unchanged.`
 - Anything else (a redirect, a proxy page, a malformed problem, a 200 that fails the contract, a lost answer) shows `The core did not confirm the check. This installation is unchanged. Check backup again.`
 
-There is no Restore button and no dialog yet. Those come in the last GRE-1340 slice.
+**Restore this backup** appears only after a successful check. It opens a dialog that shows the core's confirmation text as sent. Focus starts on Cancel, and Cancel sends nothing. Only **Replace this installation** posts `restoreInstallation`, once, with the `restore_id` and that text and with `redirect: "error"`, so a 307 or 308 from a layer in front of the core is a network error and is never followed with a second POST. On success the section says `Restore complete` and offers Reload; the restored database brings its own sessions, so the page may then ask for sign-in.
+
+One pure function, `restoreVerdict` in `web/apps/ui/src/settings/restoreAnswer.ts`, decides what a failed restore shows. A retry is allowed only for an answer that proves this request changed nothing. Each row needs the core's own problem (`CoreError.problem`: `application/problem+json`, valid against the generated `Problem` schema, and `status` equal to the HTTP status) and, when a code is present, exactly the code listed:
+
+| Answer | Where the core decides it | Shown |
+| --- | --- | --- |
+| Request never sent (fails the generated request schema) | In the page | Unchanged; may confirm again |
+| 400, no code | Unreadable or invalid body, or a wrong confirmation | Unchanged; may confirm again |
+| 401, no code | Gate: no credential, or the credential fails | Unchanged; may confirm again |
+| 403, no code | Gate: loopback, Host, Origin, owner mapping | Unchanged; may confirm again |
+| 409, no code | `activate`: installation has no Rust marker | Unchanged; may confirm again |
+| 422, no code | `activate`: the staged database fails the schema preflight | Unchanged; may confirm again |
+| 404 `restore_not_found` | `activate`: unknown stage id | Unchanged; the file field empties, choose the file again |
+| 503 `restore_busy` | Route semaphore, the activity gate, or the writer when readers did not drain, before it swaps any file | Unchanged; may confirm again |
+| 500 `restore_rolled_back` | Writer: rollback put the previous files back | Unchanged; the file field empties, choose the file again |
+
+After a rollback the stage may or may not be removed (cleanup is best effort), so the section asks for a fresh check rather than resending the same `restore_id`.
+
+Everything else is an unknown outcome: every other status, every 3xx, a 2xx whose body fails the contract, any other code or a listed code on the wrong status, an empty or unknown code string, a `code` member that is not a string (`null`, a number, an object), a body that is not the core's problem (other content type, cut off, unreadable, or a `status` that disagrees), `restart_required`, `outcome_unknown`, any code-less 503 (`activate` answers `WriterFailure::Stopped` both before it queues the restore and when the writer's reply is lost after queueing), a refused redirect, and a network error or abort after the request left. An unknown outcome shows `The answer was lost. Reload to see which installation is open.` with Reload as the only action. `restoreAnswer.test.ts` runs `restoreVerdict` over every status from 100 to 599 with and without each code and the core's problem body, and reads malformed raw bodies through `fetchCore`; `Backups.test.tsx` drives the same bodies through Settings and asserts one POST.
+
+The restore's state lives for the page load in `web/apps/ui/src/settings/restoreOutcome.ts`, outside the Settings screen. Once a restore leaves and is not refused, Restore this backup is gone and Check backup, the file field and Create backup are off. Leaving Settings and coming back, choosing a file again, or a restore that answers after Settings closed keeps that lock and its Reload button. Only a page reload clears it.
 
 ## Source thumbnail cache
 

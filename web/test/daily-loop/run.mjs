@@ -4,23 +4,31 @@
 //
 //   npm --prefix web run test:daily-loop
 //
-// It checks the test titles against the steps table, builds the Rust-only image from
-// Dockerfile.rust at HEAD, and creates a Docker network for the run. On that network it
-// starts the Moonraker simulator as `pp-sim` (simulator.mjs) and the image on a new volume
-// with the run command from docs/docker.md. It checks that the container reaches the
-// simulator and that both publish ports on host loopback only, then runs the twelve
-// Playwright tests. It removes the two containers, the volume, the image tag, the network
-// and the simulator's API key file it created, whether the run passed, failed or was stopped.
+// It checks the test titles against the steps table and writes the synthetic Node
+// installation (`npm run fixture:synthetic`, seed 1138) into a new temporary folder. It
+// builds the Rust-only image from Dockerfile.rust at HEAD and creates a Docker network for
+// the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs)
+// and the image on a new volume with the run command from docs/docker.md. It creates a
+// second, empty volume for Step 2's import (installation.mjs). It checks that the container
+// reaches the simulator and that both publish ports on host loopback only, then runs the
+// twelve Playwright tests. Whether the run passed, failed or was stopped, it removes the
+// containers (product, importer and simulator), both volumes, the image tag, the network,
+// the Node installation's folder and the simulator's API key folder it created.
 //
 // The tests read the simulator from these variables:
 //   PP_DAILY_LOOP_SIMULATOR        its container; `docker port` names its control port
 //   PP_DAILY_LOOP_PRINTER_URL      the printer's address inside the product container
 //   PP_DAILY_LOOP_PRINTER_KEY_FILE a host file holding the printer's API key
+// and Step 2's import from these:
+//   PP_DAILY_LOOP_NODE_INSTALLATION the synthetic Node installation's host folder
+//   PP_DAILY_LOOP_IMAGE, PP_DAILY_LOOP_NETWORK, PP_DAILY_LOOP_IMPORTER and
+//   PP_DAILY_LOOP_IMPORT_VOLUME     what Step 2 starts the importer and the new container from
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { setInterval } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
@@ -35,21 +43,35 @@ import {
   simulatorRunArgs,
   withKeyFile,
 } from "./simulator.mjs";
+import {
+  cleanupCommands,
+  leftoverLists,
+  productRunArgs,
+  runNames,
+  SYNTHETIC_SEED,
+} from "./installation.mjs";
 
 const here = import.meta.dirname;
 const root = resolve(here, "../../..");
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 // Unique per run: another run on this machine keeps its own containers, volume, network and tag.
 const name = `pp-daily-loop-${randomBytes(4).toString("hex")}`;
-const image = `${name}:test`;
-const simulator = `${name}-sim`;
+const names = runNames(name);
+const { image, simulator } = names;
 
 // A stop ends the running command, starts no other, and still runs the cleanup below.
 let child;
 let stopped = false;
 const stop = (signal) => {
   stopped = true;
-  child?.kill(signal);
+  if (!child?.group) child?.kill(signal);
+  else {
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      // The group has already exited.
+    }
+  }
 };
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
 // npm runs this with `exec`, so a signal sent to npm reaches this process. If the parent
@@ -58,10 +80,15 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => s
 const parent = process.ppid;
 setInterval(() => process.ppid !== parent && !stopped && stop("SIGTERM"), 1000).unref();
 
-/** Runs a command with this terminal's output; resolves to its exit code. */
-const run = (command, args, options = {}) =>
+/**
+ * Runs a command with this terminal's output; resolves to its exit code. With `group`, the
+ * command leads a new process group and a stop signals the whole group: `npm run` does not
+ * pass a signal on to the script it started.
+ */
+const run = (command, args, { group = false, ...options } = {}) =>
   new Promise((done) => {
-    child = spawn(command, args, { stdio: "inherit", cwd: root, ...options });
+    child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
+    child.group = group;
     child.on("error", () => done(1));
     child.on("close", (code) => done(code ?? 1));
   });
@@ -110,9 +137,48 @@ async function checkSimulator(keyFile) {
   return null;
 }
 
-async function suite(keyFile) {
+/**
+ * The Node generator opens its database with better-sqlite3. `npm ci --ignore-scripts`, as
+ * daily-loop.yml runs it, installs no binding the package does not ship prebuilt, so build
+ * one here when it is missing. The package's own build script runs where `npm rebuild`
+ * would skip its install script under npm's `allowScripts`.
+ */
+async function ensureBetterSqlite() {
+  const web = resolve(root, "web");
+  const probe = ["-e", "new (require('better-sqlite3'))(':memory:').close()"];
+  if (spawnSync(process.execPath, probe, { cwd: web, stdio: "ignore" }).status === 0) return 0;
+  console.log("better-sqlite3 has no native binding; building it.");
+  const build = ["run", "build-release", "--prefix", "node_modules/better-sqlite3"];
+  const code = await run("npm", build, { cwd: web, group: true });
+  if (code !== 0 || stopped) return code || 1;
+  return spawnSync(process.execPath, probe, { cwd: web, stdio: "inherit" }).status ?? 1;
+}
+
+/**
+ * Writes the synthetic Node installation into `dir`, which is empty. Its files are made
+ * readable to the image's user (uid 1000), which may not be the host's: the folder above
+ * stays mode 0700, so no other host user reaches them.
+ */
+async function writeNodeInstallation(dir) {
+  const code = await ensureBetterSqlite();
+  if (code !== 0 || stopped) return code || 1;
+  const args = ["run", "fixture:synthetic", "--", "--seed", String(SYNTHETIC_SEED), dir];
+  const written = await run("npm", args, { cwd: resolve(root, "web"), group: true });
+  if (written !== 0 || stopped) return written || 1;
+  const open = (path) => {
+    const stat = statSync(path);
+    chmodSync(path, stat.mode | (stat.isDirectory() ? 0o055 : 0o044));
+    if (stat.isDirectory()) for (const entry of readdirSync(path)) open(join(path, entry));
+  };
+  open(dir);
+  return 0;
+}
+
+async function suite(keyFile, nodeDir) {
+  const tests = ["steps", "simulator", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
   const steps = [
-    [process.execPath, ["--test", resolve(here, "steps.test.mjs"), resolve(here, "simulator.test.mjs")]],
+    [process.execPath, ["--test", ...tests]],
+    [null, () => writeNodeInstallation(nodeDir)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],
     [
@@ -125,22 +191,13 @@ async function suite(keyFile) {
         user: `${process.getuid()}:${process.getgid()}`,
       }),
     ],
-    ["docker", ["volume", "create", name]],
-    // The run command from docs/docker.md, on the run's network, except that Docker picks
-    // the host port, so two runs on one machine do not collide; the tests read it back
-    // with `docker port`.
-    [
-      "docker",
-      [
-        ...["run", "-d", "--name", name, "--network", name, "-p", "127.0.0.1::8080"],
-        ...["--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:size=1g,mode=1777"],
-        ...["--cap-drop", "ALL", "--security-opt", "no-new-privileges"],
-        ...["-v", `${name}:/data`, image],
-      ],
-    ],
+    ["docker", ["volume", "create", names.volume]],
+    // Step 2 imports into this one; the import accepts only an empty folder.
+    ["docker", ["volume", "create", names.importVolume]],
+    ["docker", productRunArgs(names)],
   ];
   for (const [command, args] of steps) {
-    const code = await run(command, args);
+    const code = command ? await run(command, args) : await args();
     if (code !== 0 || stopped) return code || 1;
   }
   const problem = await checkSimulator(keyFile);
@@ -160,39 +217,49 @@ async function suite(keyFile) {
       PP_DAILY_LOOP_SIMULATOR: simulator,
       PP_DAILY_LOOP_PRINTER_URL: PRINTER_URL,
       PP_DAILY_LOOP_PRINTER_KEY_FILE: keyFile,
+      PP_DAILY_LOOP_NODE_INSTALLATION: nodeDir,
+      PP_DAILY_LOOP_IMAGE: image,
+      PP_DAILY_LOOP_NETWORK: names.network,
+      PP_DAILY_LOOP_IMPORTER: names.importer,
+      PP_DAILY_LOOP_IMPORT_VOLUME: names.importVolume,
     },
   });
 }
 
 let code = 1;
+// The synthetic Node installation, in a new 0700 folder; Step 2 imports it.
+const nodeRoot = mkdtempSync(join(tmpdir(), `${name}-node-`));
 try {
   // A run that stops before the tests must not leave an older run's score in place.
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
-  code = await withKeyFile(`${name}-`, suite);
+  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(nodeRoot, "node")));
   if (stopped) code ||= 1;
 } finally {
-  // Only what this run created, by its unique name. The network goes after its containers.
-  for (const args of [
-    ["rm", "-f", name, simulator],
-    ["network", "rm", name],
-    ["volume", "rm", "-f", name],
-    ["rmi", image],
-  ]) {
-    spawnSync("docker", args, { stdio: "ignore" });
+  // Only what this run created, by its unique name. A docker command the tests started just
+  // before a stop can still create its container after the first pass, so look again.
+  let left = [];
+  for (let pass = 0; pass < 3; pass++) {
+    if (pass > 0) await delay(2000);
+    for (const args of cleanupCommands(names)) spawnSync("docker", args, { stdio: "ignore" });
+    rmSync(nodeRoot, { recursive: true, force: true });
+    left = leftoverLists(name)
+      .filter((list) => {
+        const listed = spawnSync("docker", list, { encoding: "utf8" });
+        return listed.status !== 0 || listed.stdout.trim() !== "";
+      })
+      .map((list) => `docker ${list.join(" ")}`);
+    if (existsSync(nodeRoot)) left.push(`ls ${nodeRoot}`);
+    if (left.length === 0) break;
   }
-  // A name filter matches part of a name, so the first list also finds the simulator.
-  const left = ["ps -aq", "volume ls -q", "network ls -q", "images -q"]
-    .map((list) => `${list} --filter ${list.startsWith("images") ? "reference" : "name"}=${name}`)
-    .filter((list) => {
-      const listed = spawnSync("docker", list.split(" "), { encoding: "utf8" });
-      return listed.status !== 0 || listed.stdout.trim() !== "";
-    });
   if (left.length > 0) {
-    console.error(`Not removed, check by hand: ${left.map((list) => `docker ${list}`).join("; ")}`);
+    console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;
   } else {
-    console.log(`Removed containers ${name} and ${simulator}, volume and network ${name}, and image tag ${image}.`);
+    const { importer, importVolume } = names;
+    console.log(
+      `Removed containers ${name}, ${importer} and ${simulator}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
+    );
   }
 }
 process.exit(code);

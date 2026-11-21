@@ -398,6 +398,8 @@ step(10, "GRE-1515", async ({ page }) => {
   await expect(tally).toContainText("Recorded: +1 printed.");
   await tally.getByRole("button", { name: "Undo" }).click();
   await expect(tally).toContainText("Undid the last burst.");
+  // Until Step 2 imports Builds, the first Build is the one Step 5 created, with no print.
+  unwritten("the checked-off units are on a Build Step 2 imported, from the print Step 8 sent");
 });
 
 step(11, "GRE-1887", async ({ page }) => {

@@ -6,7 +6,7 @@ use pp_core::{
     DesktopRebuild,
     rebuild_api::{desktop_policy, product_router},
 };
-use pp_storage::WriterOwner;
+use pp_storage::{Limits, WriterOwner, ownership_marker::WriterGate};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::{
@@ -37,6 +37,40 @@ impl Server {
         root: impl Any + Send + Sync,
         flag: Option<&str>,
     ) -> Self {
+        let mut server = Self::serve(owner, data, Box::new(root), flag).await;
+        if matches!(flag, Some("1" | "true")) {
+            let account = json!({"email": "owner@example.test", "password": "password-1234"});
+            let request = server
+                .request(Method::POST, "/auth/register")
+                .json(&account);
+            let signed_in = request.send().await.unwrap();
+            assert_eq!(signed_in.status(), 200);
+            let set_cookie = signed_in.headers()["set-cookie"].to_str().unwrap();
+            server.cookie = pp_testkit::session_cookie(set_cookie);
+        }
+        server
+    }
+
+    /// Stops serving and shuts the owner down, then opens the same data
+    /// directory as the Rust-only runtime does and serves the product routes
+    /// on a new loopback port with the same session.
+    #[allow(dead_code)] // Only the Build create test restarts.
+    pub async fn restart(mut self) -> Self {
+        let root = std::mem::replace(&mut self._root, Box::new(()));
+        let (data, cookie) = (self.data.clone(), self.cookie.clone());
+        self.stop().await;
+        let opened = WriterOwner::open_with_gate(&data, Limits::default(), WriterGate::SwitchOn);
+        let mut server = Self::serve(opened.unwrap().0, data, root, Some("1")).await;
+        server.cookie = cookie;
+        server
+    }
+
+    async fn serve(
+        owner: WriterOwner,
+        data: PathBuf,
+        root: Box<dyn Any + Send + Sync>,
+        flag: Option<&str>,
+    ) -> Self {
         let owner = Arc::new(Mutex::new(owner));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -52,26 +86,15 @@ impl Server {
             let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
             pp_api::backup::backup_router(config, Arc::clone(&owner), reads)
         };
-        let mut server = Self {
+        Self {
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
             cookie: String::new(),
             serving: Some(pp_api::serving::Serving::start(listener, router)),
             origin,
             owner,
             data,
-            _root: Box::new(root),
-        };
-        if on {
-            let account = json!({"email": "owner@example.test", "password": "password-1234"});
-            let request = server
-                .request(Method::POST, "/auth/register")
-                .json(&account);
-            let signed_in = request.send().await.unwrap();
-            assert_eq!(signed_in.status(), 200);
-            let set_cookie = signed_in.headers()["set-cookie"].to_str().unwrap();
-            server.cookie = pp_testkit::session_cookie(set_cookie);
+            _root: root,
         }
-        server
     }
 
     /// A request with this server's Origin and, once signed in, its session.

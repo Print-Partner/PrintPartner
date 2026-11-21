@@ -2,6 +2,7 @@ pub use pp_api_types::build_identity::BuildName;
 pub(crate) use pp_api_types::build_identity::trim_js;
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateBuildRequest {

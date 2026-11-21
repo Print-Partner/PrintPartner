@@ -7,7 +7,7 @@ import { STEPS } from "./steps.mjs";
 
 type State = "pass" | "expected_fail" | "fail" | "unexpected_pass";
 
-/** Where the score lands locally. The workflow uploads this file as `daily-loop-score`. */
+/** Where the score lands by default. The workflow uploads this file as `daily-loop-score`. */
 const SCORE_FILE = resolve(
   import.meta.dirname,
   "../../test-results/daily-loop/daily-loop-score.json",
@@ -18,12 +18,19 @@ const numberOf = (test: TestCase) => Number(/^(\d+)\. /.exec(test.title)?.[1]);
 /**
  * Scores the run: a step is `pass` only when it passed with no marker. A marked step
  * that passes (`unexpected_pass`) fails the run. So does `fail`: an unmarked step that
- * fails, and any step that did not run, timed out or stopped on a harness failure.
+ * fails, and any step that did not run, failed before its body started (a fixture such
+ * as the browser context), timed out or stopped on a harness failure.
  */
 export default class ScoreReporter implements Reporter {
   private tickets = new Map<number, string | null>();
   private states = new Map<number, State>();
   private reasons = new Map<number, string>();
+  private scoreFile: string;
+
+  /** `scoreFile` is a reporter option, for score.test.mjs; the run uses the default. */
+  constructor({ scoreFile = SCORE_FILE }: { scoreFile?: string } = {}) {
+    this.scoreFile = scoreFile;
+  }
 
   onBegin(_config: unknown, suite: Suite) {
     for (const test of suite.allTests()) {
@@ -40,15 +47,20 @@ export default class ScoreReporter implements Reporter {
     // A marker excuses the step's own failure, not a harness that did not get that far.
     const harness = /Harness: |browserType\.launch/.test(lines[0]);
     const marked = test.expectedStatus === "failed";
-    // The spec adds `walked` when a body runs to its end; a pass without it did not run.
-    const walked = [...test.annotations, ...result.annotations].some((a) => a.type === "walked");
+    // The spec adds `entered` when a body starts and `walked` when it runs to its end. A
+    // pass without `walked` did not run; a failure without `entered` failed in a fixture.
+    const annotated = (type: string) =>
+      [...test.annotations, ...result.annotations].some((a) => a.type === type);
     let state: State = "fail";
-    if (result.status === "passed" && walked) state = marked ? "unexpected_pass" : "pass";
-    else if (result.status === "failed" && marked && !harness) state = "expected_fail";
+    if (result.status === "passed" && annotated("walked")) {
+      state = marked ? "unexpected_pass" : "pass";
+    } else if (result.status === "failed" && marked && annotated("entered") && !harness) {
+      state = "expected_fail";
+    }
     this.states.set(numberOf(test), state);
   }
 
-  onEnd(result: FullResult) {
+  async onEnd(result: FullResult) {
     const steps = STEPS.map((title, index) => ({
       number: index + 1,
       title,
@@ -58,8 +70,8 @@ export default class ScoreReporter implements Reporter {
     const score = steps.filter((step) => step.state === "pass").length;
     const total = `Daily loop: ${score} of ${steps.length}`;
     const commit = process.env.PP_DAILY_LOOP_COMMIT ?? "";
-    mkdirSync(dirname(SCORE_FILE), { recursive: true });
-    writeFileSync(SCORE_FILE, `${JSON.stringify({ commit, score, steps }, null, 2)}\n`);
+    mkdirSync(dirname(this.scoreFile), { recursive: true });
+    writeFileSync(this.scoreFile, `${JSON.stringify({ commit, score, steps }, null, 2)}\n`);
 
     console.log("");
     for (const step of steps) {

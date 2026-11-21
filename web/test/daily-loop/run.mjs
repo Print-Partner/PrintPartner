@@ -25,8 +25,15 @@ const image = `${name}:test`;
 // A run that stops before the tests must not leave an older run's score in place.
 rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
 
+// A stop ends the running command, starts no other, and still runs the cleanup below.
 let child;
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child?.kill(signal));
+let stopped = false;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    stopped = true;
+    child?.kill(signal);
+  });
+}
 
 /** Runs a command with this terminal's output; resolves to its exit code. */
 const run = (command, args, options = {}) =>
@@ -55,8 +62,9 @@ async function suite() {
   ];
   for (const [command, args] of steps) {
     const code = await run(command, args);
-    if (code !== 0) return code;
+    if (code !== 0 || stopped) return code || 1;
   }
+  if (stopped) return 1;
   return run("npx", ["playwright", "test", "--config", "test/daily-loop/playwright.config.ts"], {
     cwd: resolve(root, "web"),
     env: { ...process.env, PP_DAILY_LOOP_CONTAINER: name, PP_DAILY_LOOP_COMMIT: commit },
@@ -66,6 +74,7 @@ async function suite() {
 let code = 1;
 try {
   code = await suite();
+  if (stopped) code ||= 1;
 } finally {
   // Only what this run created, by its unique name.
   for (const args of [["rm", "-f", name], ["volume", "rm", "-f", name], ["rmi", image]]) {

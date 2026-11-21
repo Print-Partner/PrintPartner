@@ -19,6 +19,9 @@ type Body = (fixtures: { page: Page }) => Promise<void>;
 function step(number: number, ticket: `GRE-${number}` | null, body: Body) {
   const title = `${number}. ${STEPS[number - 1]}`;
   const walk: Body = async ({ page }) => {
+    // Proof for score.ts that the fixtures were set up and the body started. A marked
+    // step that fails before this, for one when the browser context fails, scores `fail`.
+    test.info().annotations.push({ type: "entered" });
     await body({ page });
     // Proof for score.ts that the body ran to its end. Playwright can report a test it
     // never ran as passed, for one, after the browser failed to start.
@@ -142,7 +145,11 @@ async function connectAssistant(page: Page) {
       const answer = /^(?:data: *)?(\{.*\})\s*$/m.exec(text)?.[1];
       if (answer && (done || text.endsWith("\n"))) {
         await reader.cancel();
-        return JSON.parse(answer).result;
+        const message = JSON.parse(answer);
+        if (message.error) {
+          throw new Error(`MCP ${method} answered error ${message.error.code}: ${message.error.message}`);
+        }
+        return message.result;
       }
       if (done) throw new Error(`MCP ${method} answered ${response.status} with no result`);
     }
@@ -220,7 +227,7 @@ step(3, "GRE-1531", async ({ page }) => {
   );
 });
 
-step(4, "GRE-1365", async ({ page }) => {
+step(4, "GRE-1884", async ({ page }) => {
   await signIn(page);
   await go(page, "Library");
   await page.getByRole("button", { name: /add (a )?source|upload/i }).click();
@@ -230,7 +237,7 @@ step(4, "GRE-1365", async ({ page }) => {
 });
 
 // The owner creates Builds through the assistant, so this step goes over MCP.
-step(5, "GRE-1300", async ({ page }) => {
+step(5, "GRE-1885", async ({ page }) => {
   await signIn(page);
   // The assistant refuses to create a Build while the Orders Module is off, which it is
   // on a new installation, and tells the owner to turn it on in Settings.
@@ -269,7 +276,7 @@ step(6, "GRE-1515", async ({ page }) => {
   unwritten("Required units keep their IDs across a second accepted revision");
 });
 
-step(7, "GRE-423", async ({ page }) => {
+step(7, "GRE-1886", async ({ page }) => {
   await openBuild(page);
   await expect(page.getByText(/STL pack/i)).toBeVisible();
   await expect(page.getByText(/HTML checklist/i)).toBeVisible();
@@ -302,7 +309,7 @@ step(10, "GRE-1515", async ({ page }) => {
   await expect(tally).toContainText("Undid the last burst.");
 });
 
-step(11, "GRE-1757", async ({ page }) => {
+step(11, "GRE-1887", async ({ page }) => {
   await openBuild(page);
   await expect(page.getByText(/\d+ of \d+ units printed/)).toBeVisible();
   unwritten(
@@ -310,7 +317,7 @@ step(11, "GRE-1757", async ({ page }) => {
   );
 });
 
-step(12, "GRE-1340", async ({ page }) => {
+step(12, "GRE-1888", async ({ page }) => {
   await signIn(page);
   await go(page, "Settings");
   await page.getByRole("button", { name: "Create backup", exact: true }).click();

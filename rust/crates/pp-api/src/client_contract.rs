@@ -85,6 +85,24 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "ProfileLayers",
     ),
+    // Answers 200 with the new Build's summary and its `layers`; the client keeps the
+    // summary. A base Source is optional. Build names are unique, so a repeat is refused
+    // with 400 and writes nothing; the client reconciles by listing Builds.
+    route(
+        "createBuild",
+        "POST",
+        "/api/v2/plans",
+        Some("CreateBuildRequest"),
+        "ProfileSummary",
+    ),
+    // Adds the base layer, or moves an existing one to that Source, and answers the layers.
+    route(
+        "setBuildBase",
+        "PUT",
+        "/api/v2/plans/{id}/layers/base",
+        Some("SourceAttachmentRequest"),
+        "ProfileLayers",
+    ),
     route(
         "listDrafts",
         "GET",
@@ -575,9 +593,9 @@ pub(crate) mod codegen {
     use pp_storage::{
         build_graph::ExperimentCopy,
         build_graph::wire::{
-            AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
-            PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
-            ProfileList, ProfileSummary,
+            AcceptedProgressSummary, AcceptedProgressUnavailableReason, CreateBuildRequest,
+            FreshnessReasons, PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer,
+            ProfileLayers, ProfileList, ProfileSummary, SourceAttachmentRequest,
         },
         checkoff_progress::wire::{
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
@@ -652,6 +670,14 @@ pub(crate) mod codegen {
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
+        schema(
+            "CreateBuildRequest",
+            schemars::schema_for!(CreateBuildRequest),
+        )?;
+        schema(
+            "SourceAttachmentRequest",
+            schemars::schema_for!(SourceAttachmentRequest),
+        )?;
         schema("DraftList", schemars::schema_for!(DraftListResponse))?;
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
@@ -2269,6 +2295,71 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
+    /// `CreateBuildRequest` cases that pin the client's `BuildName` to `BuildName::parse`:
+    /// JavaScript whitespace is trimmed before the 1 to 4096 scalar bound is counted.
+    fn build_create_cases() -> Vec<Value> {
+        let bmp = "\u{5c64}";
+        let astral = "\u{1f9f5}";
+        let pad = |name: String| format!(" \t\u{a0}{name}\u{3000}\n");
+        let mut names = vec![
+            ("empty", json!("")),
+            ("spaces", json!("   ")),
+            ("zero-width-space", json!("\u{200b}")),
+            ("embedded-controls", json!("a\u{0}\u{7}\u{1b}b")),
+            ("bmp-4096", json!(bmp.repeat(4096))),
+            ("astral-4096", json!(astral.repeat(4096))),
+            ("bmp-4096-padded", json!(pad(bmp.repeat(4096)))),
+            ("astral-4096-padded", json!(pad(astral.repeat(4096)))),
+            ("bmp-4097", json!(bmp.repeat(4097))),
+            ("astral-4097", json!(astral.repeat(4097))),
+            ("astral-4097-padded", json!(pad(astral.repeat(4097)))),
+            ("null", Value::Null),
+            ("number", json!(7)),
+            ("object", json!({})),
+        ];
+        // One name per character that JavaScript's trim, `trim_js` or Rust's
+        // `char::is_whitespace` may treat as whitespace, plus near misses.
+        let candidates = ('\u{9}'..='\u{d}')
+            .chain([' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{180e}'])
+            .chain('\u{2000}'..='\u{200d}')
+            .chain(['\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{2060}'])
+            .chain(['\u{3000}', '\u{feff}']);
+        let blank: Vec<_> = candidates
+            .map(|c| (format!("only-u{:04x}", u32::from(c)), json!(c.to_string())))
+            .collect();
+        names.extend(
+            blank
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.clone())),
+        );
+        let mut cases: Vec<Value> = names
+            .into_iter()
+            .map(|(name, value)| {
+                let body = json!({"name": value});
+                request::<CreateBuildRequest>("CreateBuildRequest", &format!("name-{name}"), body)
+            })
+            .collect();
+        cases.extend([
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "with-base",
+                json!({"name": format!("Build {UNICODE}"), "base_project_id": MAX_SAFE}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "no-base",
+                json!({"name": "Rack", "base_project_id": null}),
+            ),
+            request::<CreateBuildRequest>("CreateBuildRequest", "missing-name", json!({})),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "zero-source",
+                json!({"name": "Rack", "base_project_id": 0}),
+            ),
+        ]);
+        cases
+    }
+
     fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {
         let config = |filled: bool| crate::printers::PrinterConfig {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -2450,6 +2541,16 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "max",
+                json!({"project_id": MAX_SAFE}),
+            ),
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "zero",
+                json!({"project_id": 0}),
+            ),
             served(
                 "DraftList",
                 "states",
@@ -2494,6 +2595,7 @@ pub(crate) mod codegen {
                 value,
             ));
         }
+        cases.extend(build_create_cases());
         cases.extend(integration_cases()?);
         cases.extend(printer_cases()?);
         cases.extend(deduction_cases()?);

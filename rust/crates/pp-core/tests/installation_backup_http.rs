@@ -138,6 +138,17 @@ async fn created_while_the_owner_is_held(server: &Server, create: &str, archive:
     let (status, during) = server.json(Method::GET, archive).await;
     assert_eq!(status, 503, "{during}");
     assert_eq!(during["detail"], "A backup is already running");
+    // HEAD answers what GET answers while the create holds the slot, with or without a digest.
+    for path in [
+        archive.to_owned(),
+        format!("{archive}?sha256={}", "0".repeat(64)),
+    ] {
+        let (status, response) = server.exchange(Method::HEAD, &path).await;
+        assert_eq!(status, 503, "HEAD {path}");
+        assert!(response.headers().get("content-disposition").is_none());
+        let (status, _) = server.json(Method::GET, &path).await;
+        assert_eq!(status, 503, "GET {path}");
+    }
     held.release();
     let created = match label {
         "first" => second.await.unwrap(),
@@ -192,6 +203,181 @@ async fn assert_download(server: &Server, archive: &str, created: &Value, sha256
     assert_eq!(entry_bytes(&bytes, "repos/source-a/part.stl"), SOURCE);
 }
 
+/// HEAD and then GET of `path` at once, `times` times. Both answer `status`
+/// each time, so a HEAD never leaves the slot held for the GET after it.
+async fn assert_head_then_get(server: &Server, path: &str, status: u16, times: usize) {
+    for round in 0..times {
+        let (head, response) = server.exchange(Method::HEAD, path).await;
+        assert_eq!(head, status, "HEAD {path} round {round}");
+        assert!(response.bytes().await.unwrap().is_empty());
+        let (get, response) = server.exchange(Method::GET, path).await;
+        assert_eq!(get, status, "GET {path} round {round}");
+        response.bytes().await.unwrap();
+    }
+}
+
+/// How many threads of this test process are blocked in `openat`. nextest runs
+/// each test in its own process, so these are the server's archive opens.
+#[cfg(target_os = "linux")]
+fn blocked_in_open() -> usize {
+    let openat = libc::SYS_openat.to_string();
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .flatten()
+        .filter(|task| {
+            std::fs::read_to_string(task.path().join("syscall"))
+                .is_ok_and(|line| line.split(' ').next() == Some(openat.as_str()))
+        })
+        .count()
+}
+
+/// Waits until `count` server requests are blocked opening the archive.
+#[cfg(target_os = "linux")]
+async fn until_blocked_in_open(count: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while blocked_in_open() < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{count} requests never blocked opening the archive"));
+}
+
+/// Puts the archive back however the test ends. Opening the FIFO's write end
+/// without blocking first releases any request still waiting to open it, so a
+/// failed assertion cannot leave the runtime waiting on blocked threads.
+#[cfg(target_os = "linux")]
+struct HeldArchive {
+    path: std::path::PathBuf,
+    saved: std::path::PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for HeldArchive {
+    fn drop(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.path);
+        let _ = std::fs::rename(&self.saved, &self.path);
+    }
+}
+
+/// Holds a HEAD inside its handling: the kept archive is swapped for a FIFO, so
+/// the HEAD blocks opening it until the test opens the write end. While it is
+/// held, a stale-digest GET still answers 409 (the slot is free), a second HEAD
+/// and a GET for the kept digest both wait on the same open, and once the FIFO
+/// gets the archive's bytes both HEADs answer 200 and the GET's bytes hash to
+/// the digest. A HEAD that took the slot would make the stale GET answer 503.
+#[cfg(target_os = "linux")]
+async fn assert_held_head_leaves_the_slot_free(
+    server: &Server,
+    archive: &str,
+    old: &str,
+    kept: &Value,
+) {
+    let digest = kept["sha256"].as_str().unwrap().to_owned();
+    let dir = server
+        .data
+        .join("backups")
+        .join(&export_dirs(&server.data)[0]);
+    let path = dir.join("print-partner-backup.tar.gz");
+    let saved = dir.join("held.tar.gz");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(hex::encode(Sha256::digest(&bytes)), digest);
+    std::fs::rename(&path, &saved).unwrap();
+    let held = HeldArchive {
+        path: path.clone(),
+        saved,
+    };
+    let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let current = format!("{archive}?sha256={digest}");
+    let base = blocked_in_open();
+    let first = tokio::spawn(server.request(Method::HEAD, &current).send());
+    until_blocked_in_open(base + 1).await;
+    let (status, refused) = server
+        .json(Method::GET, &format!("{archive}?sha256={old}"))
+        .await;
+    assert_eq!(status, 409, "a held HEAD left the slot busy: {refused}");
+    let second = tokio::spawn(server.request(Method::HEAD, &current).send());
+    until_blocked_in_open(base + 2).await;
+    let get = tokio::spawn(server.request(Method::GET, &current).send());
+    until_blocked_in_open(base + 3).await;
+    assert!(!first.is_finished() && !second.is_finished() && !get.is_finished());
+
+    let writer = tokio::task::spawn_blocking(move || {
+        std::io::Write::write_all(&mut std::fs::File::create(&path).unwrap(), &bytes).unwrap();
+        (path, bytes)
+    });
+    for head in [first, second] {
+        let head = head.await.unwrap().unwrap();
+        assert_eq!(head.status(), 200);
+        assert_eq!(
+            head.headers()["content-length"],
+            kept["size_bytes"].to_string().as_str()
+        );
+    }
+    let get = get.await.unwrap().unwrap();
+    assert_eq!(get.status(), 200);
+    let got = get.bytes().await.unwrap();
+    let (_, bytes) = writer.await.unwrap();
+    assert_eq!(got.as_ref(), bytes.as_slice());
+    assert_eq!(hex::encode(Sha256::digest(&got)), digest);
+    drop(held);
+}
+
+/// A later create replaced the archive whose digest was `old`. Asking for `old`
+/// by `sha256` is refused with 409 on HEAD and GET; asking for the kept digest
+/// answers its size on HEAD, and the GET right after is not refused as busy.
+async fn assert_bound_to_digest(server: &Server, archive: &str, old: &str, kept: &Value) {
+    let stale = format!("{archive}?sha256={old}");
+    let (status, response) = server.exchange(Method::HEAD, &stale).await;
+    assert_eq!(status, 409);
+    assert!(response.headers().get("content-disposition").is_none());
+    let (status, refused) = server.json(Method::GET, &stale).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["type"], "urn:print-partner:problem:conflict");
+    assert_eq!(
+        refused["detail"],
+        "A newer backup replaced this one; create a backup again"
+    );
+    let digest = kept["sha256"].as_str().unwrap();
+    let malformed = [
+        String::new(),
+        "not-a-digest".to_owned(),
+        digest.to_uppercase(),
+        format!("{digest}0"),
+    ];
+    for wanted in malformed {
+        assert_head_then_get(server, &format!("{archive}?sha256={wanted}"), 409, 1).await;
+    }
+    // A repeated `sha256` keeps its last value.
+    let last_kept = format!("{archive}?sha256={old}&sha256={digest}");
+    assert_head_then_get(server, &last_kept, 200, 1).await;
+    let last_stale = format!("{archive}?sha256={digest}&sha256={old}");
+    assert_head_then_get(server, &last_stale, 409, 1).await;
+    let current = format!("{archive}?sha256={digest}");
+    assert_head_then_get(server, &current, 200, 5).await;
+    assert_head_then_get(server, archive, 200, 3).await;
+    let (status, response) = server.exchange(Method::HEAD, &current).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        response.headers()["content-length"],
+        kept["size_bytes"].as_u64().unwrap().to_string().as_str()
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
+    let (status, response) = server.exchange(Method::GET, &current).await;
+    assert_eq!(status, 200);
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(&bytes)),
+        kept["sha256"].as_str().unwrap()
+    );
+}
+
 #[tokio::test]
 async fn an_authenticated_client_creates_and_downloads_one_backup() {
     let server = start(Some("1")).await;
@@ -206,6 +392,14 @@ async fn an_authenticated_client_creates_and_downloads_one_backup() {
 
     let (status, missing) = server.json(Method::GET, archive).await;
     assert_eq!(status, 404, "{missing}");
+    assert_head_then_get(&server, archive, 404, 1).await;
+    assert_head_then_get(
+        &server,
+        &format!("{archive}?sha256={}", "0".repeat(64)),
+        404,
+        1,
+    )
+    .await;
     assert_eq!(missing["detail"], "No backup has been created");
     assert_eq!(missing["type"], "urn:print-partner:problem:not-found");
 
@@ -222,6 +416,9 @@ async fn an_authenticated_client_creates_and_downloads_one_backup() {
     assert_eq!(status, 200, "{again}");
     assert_ne!(again["sha256"], created["sha256"]);
     assert_eq!(export_dirs(&server.data).len(), 1);
+    assert_bound_to_digest(&server, archive, &sha256, &again).await;
+    #[cfg(target_os = "linux")]
+    assert_held_head_leaves_the_slot_free(&server, archive, &sha256, &again).await;
     let (status, response) = server.exchange(Method::GET, archive).await;
     assert_eq!(status, 200);
     let bytes = response.bytes().await.unwrap();

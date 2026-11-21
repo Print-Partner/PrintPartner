@@ -2,6 +2,7 @@
 
 import {
   DEFAULT_STL_NAMING_PROFILE,
+  isSymbolBoundedMarker,
   parseStlNamingProfile,
   parseStlNamingProfileOverride,
   type StlNamingFolderRule,
@@ -24,6 +25,55 @@ export type StlNamingProfileDict = StlNamingProfile;
 
 export const DEFAULT_NAMING_PROFILE = DEFAULT_STL_NAMING_PROFILE;
 
+/**
+ * How a role marker leaves a part slug. A marker that starts and ends with a symbol, like
+ * `[a]`, cannot be part of a word, so it is removed anywhere in the name (`anywhere`); `units`
+ * holds each UTF-16 code unit of it as the index of the first `NamingProfile.markerUnitRes`
+ * regex it matches. A marker that starts or ends with a letter or digit, like a custom `A`, is
+ * removed only as a prefix, so `gear` keeps its `a`; `unitRes` holds one case-insensitive regex
+ * per code unit of it, compared at the current offset.
+ */
+export type MarkerStrip =
+  | { anywhere: true; units: readonly number[]; fail: readonly number[] }
+  | { anywhere: false; unitRes: readonly RegExp[] };
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Builds `markerStrip` entries. Each distinct marker code unit gets one case-insensitive
+ * regex, so code units compare exactly as the per-marker `i` regexes did. Only symbol-bounded
+ * markers add to `unitRes`, which classifies every unit of a name.
+ */
+function markerStripper() {
+  const unitRes: RegExp[] = [];
+  const prefixRes = new Map<string, RegExp>();
+  const unitRe = (unit: string) => new RegExp(`^(?:${escapeRegExp(unit)})$`, "i");
+  const unitClass = (unit: string) => {
+    const found = unitRes.findIndex((re) => re.test(unit));
+    if (found >= 0) return found;
+    unitRes.push(unitRe(unit));
+    return unitRes.length - 1;
+  };
+  const strip = (marker: string): MarkerStrip => {
+    if (!isSymbolBoundedMarker(marker)) {
+      const prefixRe = (unit: string) => prefixRes.get(unit) ?? prefixRes.set(unit, unitRe(unit)).get(unit)!;
+      return { anywhere: false, unitRes: Array.from({ length: marker.length }, (_, i) => prefixRe(marker[i]!)) };
+    }
+    const units = Array.from({ length: marker.length }, (_, i) => unitClass(marker[i]!));
+    // KMP prefix table: `fail[i]` is the longest proper prefix of `units[..=i]` that is also its suffix.
+    const fail = [0];
+    for (let i = 1, q = 0; i < units.length; i++) {
+      while (q > 0 && units[i] !== units[q]) q = fail[q - 1]!;
+      if (units[i] === units[q]) q++;
+      fail.push(q);
+    }
+    return { units, fail, anywhere: true };
+  };
+  return { unitRes, strip };
+}
+
 export type PartFunctionalClass = "functional" | "cosmetic" | "unclassified";
 
 export type NamingProfile = {
@@ -36,12 +86,18 @@ export type NamingProfile = {
   exportRoleOrder: readonly StlNamingRoleId[];
   quantityRe: RegExp;
   markerRoleMap: ReadonlyArray<readonly [string, StlNamingRoleId]>;
-  rolePrefixRes: readonly RegExp[];
+  /** One per marker, in role order. See `MarkerStrip`. */
+  markerStrips: readonly MarkerStrip[];
+  /** One case-insensitive regex per distinct marker code unit. See `MarkerStrip`. */
+  markerUnitRes: readonly RegExp[];
+  /** Removes the quantity suffix from an `.stl` slug. */
   quantityStripRe: RegExp | null;
+  /** The same for a `.3mf` slug, which also accepts a regex anchored on `\.3mf$`. */
+  quantityStrip3mfRe: RegExp | null;
   toDict(): StlNamingProfileDict;
 };
 
-function compileQuantityStrip(quantityRegex: string): RegExp | null {
+function compileQuantityStrip(quantityRegex: string, extension: "stl" | "3mf"): RegExp | null {
   let strip = quantityRegex.trim();
   if (!strip) return null;
   strip = strip.replace(/\(\?P<\w+>/g, "(");
@@ -49,6 +105,10 @@ function compileQuantityStrip(quantityRegex: string): RegExp | null {
   strip = strip.replace(/\([^?][^)]*\)/, "[0-9]+");
   strip = strip.replace(/\\\.stl\$/, "$");
   strip = strip.replace(/\.stl$/i, "$");
+  if (extension === "3mf") {
+    strip = strip.replace(/\\\.3mf\$/, "$");
+    strip = strip.replace(/\.3mf$/i, "$");
+  }
   try {
     return new RegExp(strip, "i");
   } catch {
@@ -63,12 +123,13 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
   const quantityDefault = data.quantity.default;
 
   const markerPairs: Array<[string, StlNamingRoleId]> = [];
-  const prefixRes: RegExp[] = [];
+  const strips: MarkerStrip[] = [];
+  const stripper = markerStripper();
   for (const role of roles) {
     for (const marker of role.markers) {
       if (!marker.trim()) continue;
       markerPairs.push([marker, role.id]);
-      prefixRes.push(new RegExp(`^${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"));
+      strips.push(stripper.strip(marker));
     }
   }
   markerPairs.sort((a, b) => b[0].length - a[0].length);
@@ -85,8 +146,10 @@ function buildProfile(data: StlNamingProfileDict): NamingProfile {
     exportRoleOrder: exportOrder,
     quantityRe,
     markerRoleMap: markerPairs,
-    rolePrefixRes: prefixRes,
-    quantityStripRe: compileQuantityStrip(quantityRegex),
+    markerStrips: strips,
+    markerUnitRes: stripper.unitRes,
+    quantityStripRe: compileQuantityStrip(quantityRegex, "stl"),
+    quantityStrip3mfRe: compileQuantityStrip(quantityRegex, "3mf"),
     toDict() {
       return {
         roles: [...this.roles],

@@ -14,7 +14,7 @@ import { URL, fileURLToPath } from "node:url";
 export const generatorVersion = "rust-client-zod/1";
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 export const packageSource = join(repo, "web/packages/rust-client/src");
-const keywords = new Set(["$schema", "$ref", "definitions", "title", "description", "type", "properties", "required", "additionalProperties", "enum", "anyOf", "oneOf", "items", "minItems", "maxItems", "minimum", "maximum", "minLength", "maxLength", "pattern", "format", "x-unicode-scalar"]);
+const keywords = new Set(["$schema", "$ref", "definitions", "title", "description", "type", "properties", "required", "additionalProperties", "enum", "anyOf", "oneOf", "items", "minItems", "maxItems", "minimum", "maximum", "minLength", "maxLength", "pattern", "format", "x-unicode-scalar", "x-trim-js"]);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 // Integer formats schemars emits for Rust primitives. 64-bit and pointer-size
 // integers are bounded to the JavaScript safe range: a larger value is refused
@@ -79,6 +79,7 @@ export function generate(document) {
   function emit(schema, visiting) {
     assert(schema && typeof schema === "object" && !Array.isArray(schema), "Unsupported boolean schema");
     for (const key of Object.keys(schema)) assert(keywords.has(key), `Unsupported Rust schema keyword ${key}`);
+    assert(schema["x-trim-js"] === undefined || [schema.type].flat().includes("string"), "x-trim-js applies only to a string schema");
     if (schema.$ref) {
       assert(schema.$ref.startsWith("#/definitions/"), "External schema reference forbidden");
       return reference(schema.$ref.slice(14), visiting);
@@ -146,11 +147,16 @@ export function generate(document) {
       let code = schema.pattern ? `z.string().regex(new RegExp(${quote(schema.pattern)}))` : "z.string()";
       // WireText counts Unicode scalar values, as Rust's chars() does, so a
       // length bound comes with x-unicode-scalar and no lone surrogate passes.
-      if (schema.minLength === undefined && schema.maxLength === undefined) return code;
+      const bounded = schema.minLength !== undefined || schema.maxLength !== undefined;
+      assert(schema["x-trim-js"] === undefined || (schema["x-trim-js"] === true && bounded), "x-trim-js must be true, on a length-bounded string");
+      if (!bounded) return code;
       assert(schema["x-unicode-scalar"] === true, "A string length bound needs x-unicode-scalar");
       const min = schema.minLength ?? 0;
       const max = schema.maxLength ?? Number.MAX_SAFE_INTEGER;
-      return `${code}.refine((value) => !/[\\uD800-\\uDFFF]/u.test(value) && [...value].length >= ${min} && [...value].length <= ${max})`;
+      // x-trim-js: Rust trims JavaScript whitespace before it counts (BuildName), so the
+      // bound applies to value.trim(). The parsed value itself stays as sent.
+      const counted = schema["x-trim-js"] ? "[...value.trim()]" : "[...value]";
+      return `${code}.refine((value) => !/[\\uD800-\\uDFFF]/u.test(value) && ${counted}.length >= ${min} && ${counted}.length <= ${max})`;
     },
     boolean: () => "z.boolean()",
     null: () => "z.null()",

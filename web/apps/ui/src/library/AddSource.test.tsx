@@ -126,7 +126,7 @@ describe("GRE-1365 PR 2: Add Source in Library", () => {
   it("adds a ZIP Source from the empty state with one create, and lists it", async () => {
     const core = scriptedCore();
     renderLibrary(core.fetchMock);
-    expect(await screen.findByText("No Sources yet. Sources you add appear here.")).toBeTruthy();
+    expect(await screen.findByText(/^No Sources yet\. Press Add Source/)).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
     await openDialog();
     type("Name", "Rack");

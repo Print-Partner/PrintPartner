@@ -35,7 +35,7 @@ The Overview has a **Filament** section under its facts and above Layers (`web/a
 - Under the heading: "Checking off a linked print deducts its filament from the Part's pinned spool in Spoolman." The section has no deduction switch, per printer or per Build.
 - After a `ready` shortfall read, the section reads `listSpoolmanDeductions` (`GET /api/v2/spoolman/deductions`, the newest 100 rows of every Build) and keeps the rows whose `profile_id` is this Build. Refresh reads it again. With the Module off the section never asks for it.
 - Each filament row shows **Last deduction**: the newest deduction from one of that row's spools, as grams, spool, state and time. A row whose stock is not known has no spools to match and shows none.
-- When this Build has `unknown` or `failed` deductions, a notice above the rows gives how many of each and their grams, says Spoolman's numbers may be off by up to that much, and links to the Farm log (`/farm/log`). The Farm log's deduction list with its answers is GRE-411 part 4.
+- When this Build has `unknown` or `failed` deductions, a notice above the rows gives how many of each and their grams, says Spoolman's numbers may be off by up to that much, and links to the Farm log (`/farm/log`). The Farm log's **Filament deductions** list takes the answers (GRE-411; see [Farm log](../../farm-log.md#filament-deductions)).
 - Skipped deductions give one line with the count and the reason in words, for example "1 deduction was skipped because no spool is pinned."
 
 Not yet: a shortfall task on Today, and a color swatch.

@@ -34,17 +34,35 @@ const QuantityRegexSchema = z
 export const StlNamingRoleIdSchema = z.enum(["primary", "accent", "clear", "opaque"]);
 export type StlNamingRoleId = z.infer<typeof StlNamingRoleIdSchema>;
 
+/**
+ * A marker is symbol-bounded when neither its first nor its last character is a letter or
+ * digit (Unicode `Alphabetic` or `N`): `[a]`, `_x_` or `-`. Only these are removed anywhere
+ * in a name, so only these scan the whole name. Rust's `catalog::naming::symbol_bounded`
+ * is the same test.
+ */
+export function isSymbolBoundedMarker(marker: string): boolean {
+  const word = (c?: string) => c !== undefined && /^[\p{Alphabetic}\p{N}]$/u.test(c);
+  const characters = [...marker];
+  return !word(characters[0]) && !word(characters.at(-1));
+}
+
+/** Bounds marker-stripping work per name (UTF-16 units); Rust's `catalog::naming` matches. */
+export const MAX_STL_NAMING_MARKER_LENGTH = 64;
+export const MAX_STL_NAMING_SYMBOL_MARKERS = 16;
+// `.length` counts UTF-16 units, as Rust does; Zod's `.max` counts code points.
+const MarkerSchema = z.string().refine((m) => m.length <= MAX_STL_NAMING_MARKER_LENGTH, "must be at most 64 characters");
+
 export const StlNamingRoleSchema = z.strictObject({
   id: StlNamingRoleIdSchema,
   label: z.string().trim().min(1, "must not be blank"),
-  markers: z.array(z.string()),
+  markers: z.array(MarkerSchema),
 });
 export type StlNamingRole = z.infer<typeof StlNamingRoleSchema>;
 
 const StlNamingRoleOverrideSchema = z.strictObject({
   id: StlNamingRoleIdSchema,
   label: z.string().trim().min(1, "must not be blank").optional(),
-  markers: z.array(z.string()).optional(),
+  markers: z.array(MarkerSchema).optional(),
 });
 
 const StlNamingRoleOverridesSchema = z
@@ -67,6 +85,10 @@ const StlNamingRolesSchema = z
     }
     if (!ids.includes("primary")) {
       context.addIssue({ code: "custom", message: "must include the primary role" });
+    }
+    const scanning = roles.flatMap((role) => role.markers).filter((m) => m.trim() && isSymbolBoundedMarker(m));
+    if (scanning.length > MAX_STL_NAMING_SYMBOL_MARKERS) {
+      context.addIssue({ code: "custom", message: "must contain at most 16 symbol-bounded markers" });
     }
   });
 

@@ -9,6 +9,7 @@ import { UndoOutcome, useBurstUndo } from "../screen/BurstUndo";
 import { OlderEntries, pagedScreenState } from "../screen/OlderEntries";
 import { MutationButton, ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 import { dateText } from "../builds/format";
+import { FarmDeductions } from "./FarmDeductions";
 
 type Entry = FarmLogPage["entries"][number];
 type UndoReason = NonNullable<Entry["undo"]["reason"]>;
@@ -105,8 +106,9 @@ function LogTable({
 }
 
 /**
- * The farm log: printer and queue actions across the fleet, newest first, with Undo on
- * each entry the core says it can undo now. Sends never offer Undo.
+ * The farm log: the Filament deductions list, then printer and queue actions across the
+ * fleet, newest first, with Undo on each entry the core says it can undo now. Sends never
+ * offer Undo.
  */
 export function FarmLog() {
   const connection = useConnection();
@@ -138,6 +140,17 @@ export function FarmLog() {
     <ScreenTemplate
       title="Farm log"
       state={state}
+      // The deduction list stands apart from the log's own state: a deduction can outlive
+      // the log entry of the burst that recorded it.
+      subnav={
+        farm !== undefined &&
+        farm.state !== "off" && (
+          <>
+            <FarmDeductions />
+            <h2>Actions</h2>
+          </>
+        )
+      }
       renderData={(data) => (
         <>
           <UndoOutcome
@@ -157,7 +170,11 @@ export function FarmLog() {
       )}
       empty={{
         message: "No farm actions yet. Checkoff bursts and sends appear here.",
-        action: <Link to="/farm" className="pp-link">View Farm</Link>,
+        action: (
+          <Link to="/farm" className="pp-link">
+            View Farm
+          </Link>
+        ),
       }}
     />
   );

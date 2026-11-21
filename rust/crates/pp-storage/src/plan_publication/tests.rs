@@ -1632,8 +1632,12 @@ fn kept_units_require_the_same_tokens_included_and_stl() {
     let predecessors = [row(1, true, bracket.clone()), row(2, false, json!(""))];
     let reuse = |part: i64, index: i64, n: u8| json!({"kind": "reuse", "draftPartId": part, "unitIndex": index, "token": token(n)});
     let kept = |gear: (bool, Value), assignments: Value| {
+        let mut parts = vec![row(11, true, bracket.clone()), row(12, gear.0, gear.1)];
+        // Filament and notes are not part of the rule.
+        parts[0]["filamentColorId"] = json!("pla-red");
+        parts[1]["notes"] = json!("changed");
         let prepared = Prepared {
-            parts: vec![row(11, true, bracket.clone()), row(12, gear.0, gear.1)],
+            parts,
             assignments: serde_json::from_value(assignments).unwrap(),
             progress: Vec::new(),
             digest: String::new(),

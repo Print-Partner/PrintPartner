@@ -22,7 +22,7 @@
     "test:runtime": "node --test scripts/server-runtime.test.mjs ../scripts/verify-print-partner/control-print-partner.test.mjs",
     "test:browser": "npm run test:browser -w @print-partner/web",
     "test:e2e": "playwright test",
-    "test:daily-loop": "node test/daily-loop/run.mjs",
+    "test:daily-loop": "exec node test/daily-loop/run.mjs",
     "test:workflow-smoke": "python3 -m unittest scripts.test_workflow_smoke",
     "audit:cleanup": "node ../scripts/audit-cleanup.mjs",
     "audit:public": "node ../scripts/audit-public-release.mjs",

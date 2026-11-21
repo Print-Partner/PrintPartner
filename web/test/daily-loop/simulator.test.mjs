@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import test from "node:test";
 import {
   CONTROL_PORT,
@@ -8,6 +10,7 @@ import {
   parseAnswer,
   publishedOffLoopback,
   simulatorRunArgs,
+  withKeyFile,
 } from "./simulator.mjs";
 
 test("the simulator runs on the Node image Dockerfile.rust's web stage pins", () => {
@@ -68,4 +71,26 @@ test("a raw HTTP answer gives its status and body", () => {
   const text = 'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{"result":{"klippy_state":"ready"}}';
   assert.deepEqual(parseAnswer(text), { status: 200, body: '{"result":{"klippy_state":"ready"}}' });
   assert.deepEqual(parseAnswer(""), { status: null, body: "" });
+});
+
+test("the key file is private while the run uses it and gone when the run ends, or throws", async () => {
+  let kept;
+  const answer = await withKeyFile("pp-daily-loop-test-", async (file) => {
+    kept = file;
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.match(readFileSync(file, "utf8"), /^[0-9a-f]{48}\n$/);
+    return 7;
+  });
+  assert.equal(answer, 7);
+  assert.ok(!existsSync(dirname(kept)));
+
+  const failure = new Error("EACCES: the run failed part way");
+  await assert.rejects(
+    withKeyFile("pp-daily-loop-test-", async (file) => {
+      kept = file;
+      throw failure;
+    }),
+    failure,
+  );
+  assert.ok(!existsSync(dirname(kept)));
 });

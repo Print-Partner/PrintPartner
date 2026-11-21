@@ -19,10 +19,10 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
+import { setInterval } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   PRINTER_PORT,
@@ -33,6 +33,7 @@ import {
   parseAnswer,
   publishedOffLoopback,
   simulatorRunArgs,
+  withKeyFile,
 } from "./simulator.mjs";
 
 const here = import.meta.dirname;
@@ -42,23 +43,20 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding:
 const name = `pp-daily-loop-${randomBytes(4).toString("hex")}`;
 const image = `${name}:test`;
 const simulator = `${name}-sim`;
-// The printer's API key, new for each run. Only the simulator and the tests read it.
-const keyDir = mkdtempSync(join(tmpdir(), `${name}-`));
-const keyFile = join(keyDir, "api-key");
-writeFileSync(keyFile, `${randomBytes(24).toString("hex")}\n`, { mode: 0o600 });
-
-// A run that stops before the tests must not leave an older run's score in place.
-rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
 
 // A stop ends the running command, starts no other, and still runs the cleanup below.
 let child;
 let stopped = false;
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-  process.on(signal, () => {
-    stopped = true;
-    child?.kill(signal);
-  });
-}
+const stop = (signal) => {
+  stopped = true;
+  child?.kill(signal);
+};
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
+// npm runs this with `exec`, so a signal sent to npm reaches this process. If the parent
+// dies without passing one on (killed with SIGKILL, say), this process is reparented:
+// stop as if it sent SIGTERM.
+const parent = process.ppid;
+setInterval(() => process.ppid !== parent && !stopped && stop("SIGTERM"), 1000).unref();
 
 /** Runs a command with this terminal's output; resolves to its exit code. */
 const run = (command, args, options = {}) =>
@@ -77,7 +75,7 @@ const inspect = (container, format) => docker(["inspect", "--format", format, co
  * container reaches it at PRINTER_URL with the key, and no port is published off loopback.
  * Returns the first problem, or null.
  */
-async function checkSimulator() {
+async function checkSimulator(keyFile) {
   let ready = false;
   for (let tries = 0; tries < 60 && !ready && !stopped; tries++) {
     if (inspect(simulator, "{{.State.Running}}") !== "true") return "the simulator stopped";
@@ -112,7 +110,7 @@ async function checkSimulator() {
   return null;
 }
 
-async function suite() {
+async function suite(keyFile) {
   const steps = [
     [process.execPath, ["--test", resolve(here, "steps.test.mjs"), resolve(here, "simulator.test.mjs")]],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
@@ -123,7 +121,7 @@ async function suite() {
         container: simulator,
         network: name,
         image: nodeImage(),
-        keyDir,
+        keyDir: dirname(keyFile),
         user: `${process.getuid()}:${process.getgid()}`,
       }),
     ],
@@ -145,7 +143,7 @@ async function suite() {
     const code = await run(command, args);
     if (code !== 0 || stopped) return code || 1;
   }
-  const problem = await checkSimulator();
+  const problem = await checkSimulator(keyFile);
   if (problem || stopped) {
     if (problem) console.error(`Harness: ${problem}.`);
     return 1;
@@ -165,7 +163,10 @@ async function suite() {
 
 let code = 1;
 try {
-  code = await suite();
+  // A run that stops before the tests must not leave an older run's score in place.
+  rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
+  // The printer's API key, new for each run; only the simulator and the tests read it.
+  code = await withKeyFile(`${name}-`, suite);
   if (stopped) code ||= 1;
 } finally {
   // Only what this run created, by its unique name. The network goes after its containers.
@@ -177,7 +178,6 @@ try {
   ]) {
     spawnSync("docker", args, { stdio: "ignore" });
   }
-  rmSync(keyDir, { recursive: true, force: true });
   // A name filter matches part of a name, so the first list also finds the simulator.
   const left = ["ps -aq", "volume ls -q", "network ls -q", "images -q"]
     .map((list) => `${list} --filter ${list.startsWith("images") ? "reference" : "name"}=${name}`)

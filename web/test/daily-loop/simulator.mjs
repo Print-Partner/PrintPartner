@@ -2,8 +2,10 @@
 // Rust-only container (GRE-1531, architect ruling on GRE-1528): a second container on the
 // run's own Docker network, named `pp-sim` on that network, with only its control port
 // published, on host loopback.
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 export const SIM_ALIAS = "pp-sim";
 export const PRINTER_PORT = 7125;
@@ -12,6 +14,22 @@ export const CONTROL_PORT = 7200;
 export const PRINTER_URL = `http://${SIM_ALIAS}:${PRINTER_PORT}`;
 
 const root = resolve(import.meta.dirname, "../../..");
+
+/**
+ * Runs `use(keyFile)` with a new random printer API key in a mode-0600 file `api-key`, in a
+ * new temporary folder named from `prefix`. The folder is removed when `use` settles,
+ * whether it resolved or threw.
+ */
+export async function withKeyFile(prefix, use) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    const file = join(dir, "api-key");
+    writeFileSync(file, `${randomBytes(24).toString("hex")}\n`, { mode: 0o600 });
+    return await use(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /** The pinned Node image of Dockerfile.rust's `web` stage, which the image build pulls. */
 export function nodeImage(dockerfile = readFileSync(resolve(root, "Dockerfile.rust"), "utf8")) {

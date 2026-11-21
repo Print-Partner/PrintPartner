@@ -274,6 +274,39 @@ limit`, and an oversized file is probably 413 `request file too large`; Rust
 answers the texts above, and 400 `That upload could not be read` for a ninth
 field or a field named after an `Object.prototype` member.
 
+## Upload-only preference (GRE-366)
+
+The Rust-only send queue stores a tenant's opt-in upload-only preference as a
+JSON boolean in `app_settings` under `printer.upload_only`. A missing setting
+means disabled. It has no schema migration, timer or dispatcher of its own.
+
+- `GET /api/v2/printer-send-queue/settings/upload-only` returns
+  `{"enabled":false}` when the preference is absent.
+- `PUT` on that same route requires `{"enabled":true}` or
+  `{"enabled":false}` and answers the stored value in the same shape. Strings
+  and numbers are refused with 400. Both routes use the existing
+  session/API-key admission and default-off rebuild gates. They are not in the
+  generated `rust-client` yet.
+- With the preference enabled, Add stores `start=false` regardless of the form,
+  and Send now / Send ready force the queue row and its immutable job payload to
+  `start=false`, including rows queued before enabling it. The worker can admit
+  only an upload effect for that payload; combined-start and separate-start
+  effects are refused. Moonraker receives no print-start request; PrusaLink
+  receives `print-after-upload: ?0`.
+- A mode change sends nothing, creates no job and wakes no worker. Dispatch is
+  still an explicit user action. Disabling the preference never upgrades an
+  already confirmed upload-only job to upload-and-start. Changing the preference
+  does not rewrite a send already dispatched or running.
+- Interrupted uploads keep the existing uncertain-outcome/reconciliation rules.
+  Neither an idle worker tick, restart nor mode change resends them. A damaged
+  stored preference refuses a dispatch instead of guessing a send mode.
+
+Tests named `ticket_t_27` cover persistent defaults and tenant isolation,
+HTTP admission, explicit drain/dispatch, forbidden start effects, idle timers,
+and interruption/restart. Driver traffic uses only pp-testkit loopback printers;
+request receipts assert no start command and PrusaLink's upload-only header.
+The preference has no replacement-UI control in this backend slice.
+
 ## Upload worker (GRE-365, GRE-1215)
 
 `pp_core::send_worker::SendWorker` is the only code that uploads to a
@@ -290,8 +323,12 @@ to the mutation drain bound. For each job it:
    send whose Farm was turned off after Send now fails with `Feature farm is
    disabled.` and contacts no printer;
 3. sends once through the Moonraker or PrusaLink driver. An upload-only send
-   never calls `print/start`. A confirmed send finishes the job with the
-   printer, host and remote path, creates the Build's Checkoff link, and
+   never calls `print/start`. PrusaLink gets one bodyless `GET
+   /api/v1/status` for the Digest challenge, then one `PUT
+   /api/v1/files/<storage>/<name>` (storage `usb` unless pinned) with
+   `print-after-upload: ?1` for a send with Start and `?0` without, so a
+   PrusaLink start is never a second request. A confirmed send finishes the
+   job with the printer, host and remote path, creates the Build's Checkoff link, and
    deletes the staged directory, as Node does. A failed label read falls back
    to the printer id and `Printer`, and a link Node would not create is
    skipped, so a send the printer confirmed always finishes. When the file states the
@@ -347,6 +384,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core 
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(the_form)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(outcome_unknown) | test(farm_lists_skip)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild -E 'test(send_queue_rust_only_runtime) | test(client_routes_match_registrations)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild -E 'test(gre_1240)'
 ```
 
 `send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome`
@@ -356,3 +394,18 @@ connection without answering (`outcome_unknown`, refused Send now, unchanged
 after a restart, no second upload), and one refuses it (`error` with the
 printer's reason and no API key). The status watchers poll each simulator
 with GETs, so the test counts every other request as a send.
+
+`send_queue_rust_only_runtime_owns_prusalink_uploads_end_to_end` (GRE-1240)
+does the same against three loopback PrusaLink simulators with a username and
+password (`pp_testkit::prusalink::UploadPrinter`, which keeps each request's
+body, so the test checks that every `PUT` arrived whole and carried exactly
+the staged file, with exact `print-after-upload` and `overwrite` values).
+They answer the probe without a Digest challenge; the driver tests
+(`ticket_t_22_upload_puts_the_body_once` and the two `upload_is_not_replayed`
+tests) cover the challenge and a 401. A send with Start is one `PUT /api/v1/files/usb/plate.gcode` with
+`print-after-upload: ?1` and no other send request; a malformed answer to the
+`PUT` is `outcome_unknown`, refused on Send now and after a restart, and never
+resent; a refused `PUT` is `error` with the printer's reason. The worker tests
+named `gre_1240` cover the same cases without HTTP, plus a 401 refusal, the job
+result's `remote_path` (`usb/a.gcode`), the Checkoff link and the deleted
+staged directory.

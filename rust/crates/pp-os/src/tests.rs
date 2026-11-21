@@ -1088,3 +1088,75 @@ fn display_path_drops_only_the_verbatim_disk_and_unc_prefixes() {
         assert_eq!(display_path(Path::new(path)), Path::new(shown), "{path}");
     }
 }
+
+/// `rename_to` moves an entry between two handles, and keeps working after
+/// the target directory's path is renamed.
+#[test]
+fn rename_to_moves_an_entry_into_another_handle() {
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    dir.create_dir("from").unwrap();
+    dir.create_dir("to").unwrap();
+    let (from, to) = (
+        dir.open_dir_nofollow("from").unwrap(),
+        dir.open_dir_nofollow("to").unwrap(),
+    );
+    from.create_new_nofollow("file")
+        .unwrap()
+        .write_all(b"moved")
+        .unwrap();
+    dir.rename_no_replace("to", "renamed").unwrap();
+    from.rename_to("file", &to, "file").unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("renamed/file")).unwrap(),
+        b"moved"
+    );
+    assert_eq!(
+        from.rename_to("file", &to, "file").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+/// `remove_all` removes a tree through handles and removes a link inside it
+/// without touching the link's target.
+#[test]
+fn remove_all_removes_a_tree_but_never_follows_a_link() {
+    let root = scratch();
+    let outside = scratch();
+    std::fs::write(outside.path().join("keep"), b"keep").unwrap();
+    let tree = root.path().join("tree");
+    std::fs::create_dir_all(tree.join("a/b")).unwrap();
+    std::fs::write(tree.join("a/b/file"), b"x").unwrap();
+    std::fs::write(tree.join("top"), b"x").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), tree.join("a/link")).unwrap();
+    let dir = Dir::open(root.path()).unwrap();
+    dir.remove_all("tree").unwrap();
+    assert!(dir.entries().unwrap().next().is_none());
+    assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"keep");
+    assert_eq!(
+        dir.remove_all("tree").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+        dir.remove_all("link").unwrap();
+        assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"keep");
+    }
+}
+
+/// A name that is not UTF-8 under the tree is removed too.
+#[cfg(unix)]
+#[test]
+fn remove_all_removes_names_that_are_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = scratch();
+    let tree = root.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    let name = OsStr::from_bytes(b"bad-\xff");
+    std::fs::create_dir(tree.join(name)).unwrap();
+    std::fs::write(tree.join(name).join("file"), b"x").unwrap();
+    Dir::open(root.path()).unwrap().remove_all("tree").unwrap();
+    assert!(!tree.exists());
+}

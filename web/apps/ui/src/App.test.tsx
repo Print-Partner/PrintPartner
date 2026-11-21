@@ -121,6 +121,21 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     },
   );
 
+  it("with no match, says so, names what to try, and Clear search lists every command", () => {
+    renderAt("/today");
+    press("k", { ctrlKey: true });
+    const input = screen.getByRole("combobox");
+    const all = screen.getAllByRole("option").length;
+    fireEvent.change(input, { target: { value: "zzz" } });
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    const status = screen.getByText(/No command matches/).closest("[role=status]")!;
+    expect(status.textContent).toContain("No command matches “zzz”.");
+    expect(status.textContent).toContain("Try a screen name such as Builds or Library");
+    fireEvent.click(within(status as HTMLElement).getByRole("button", { name: "Clear search" }));
+    expect(screen.getAllByRole("option")).toHaveLength(all);
+    expect(document.activeElement).toBe(input);
+  });
+
   it("filters, moves with arrows, scrolls the active option into view and runs with Enter", () => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
     const { path } = renderAt("/today");

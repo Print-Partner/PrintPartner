@@ -141,12 +141,20 @@ VARIABLE_READS = {"get", "help", "list"}
 # automatic review. Outside the coordinator worktree, any command line that contains it in any case
 # or decodable encoding is refused, wherever it appears.
 MARKER_WORD = "pp-review-gate"
-# The coordinator's scorer record, which the sensitive-merge check trusts by comment author. Lanes post
-# as the same account, so the word gets the same protection as MARKER_WORD.
+# The scorer record, which the sensitive-merge check trusts by comment author. Lanes post as the same
+# account, so the word gets the same protection as MARKER_WORD, except in a scorer worktree.
 SCORE_WORD = "pp-score"
+# A scorer worktree is a checkout whose Git top level has a branch named t3/score-<pr>-<seat>-<yyyymmdd>
+# checked out: the branch the score tail's t3_thread_launch gives each scorer thread (Chad, 2026-11-17).
+# There, and only there besides the coordinator worktree, a command may name SCORE_WORD, so a scorer posts
+# its own record as a new comment. It still may not name MARKER_WORD, edit or delete comments, or merge.
+# Under the guard's threat model (GRE-1280) the branch name is enough: it catches a lane that posts a
+# score by mistake, not one that renames its branch to get past the guard.
+SCORER_BRANCH = re.compile(r"t3/score-[1-9][0-9]*-[a-z0-9][a-z0-9.-]*-[0-9]{8}")
 MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or pp-score records, or runs any "
-          "command that names pp-review-gate or pp-score, in any case or encoding; report readiness to the coordinator "
-          "instead.")
+          "command that names pp-review-gate or pp-score, in any case or encoding; a scorer worktree (branch "
+          "t3/score-<pr>-<seat>-<yyyymmdd>) may post its own pp-score record as a new comment. Report readiness "
+          "to the coordinator instead.")
 # Shells whose -c script the guard classifies like a top-level command, and the long options they
 # accept before it. Any other option makes the script position unknown.
 SHELLS = {"sh", "bash", "zsh", "dash"}
@@ -1048,8 +1056,9 @@ def json_unescape(text):
     return JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else JSON_SIMPLE[m.group(2)], text)
 
 
-def names_marker(text):
-    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD or SCORE_WORD.
+def named_words(text):
+    """The record words (MARKER_WORD, SCORE_WORD) that text, or any form GitHub or a browser could decode
+    it to, contains.
 
     The decoders (JSON and GraphQL escapes, URL encoding, HTML entities) are applied repeatedly in
     every order, up to four layers deep, and the match ignores case.
@@ -1058,7 +1067,22 @@ def names_marker(text):
     for _ in range(4):
         frontier = [decoded for value in frontier for decode in (json_unescape, unquote_plus, html.unescape)
                     if (decoded := decode(value)) not in forms and not forms.add(decoded)]
-    return any(word in form.casefold() for form in forms for word in (MARKER_WORD, SCORE_WORD))
+    return tuple(word for word in (MARKER_WORD, SCORE_WORD) if any(word in form.casefold() for form in forms))
+
+
+def names_marker(text, words=(MARKER_WORD, SCORE_WORD)):
+    """Whether text names one of words, decoded as named_words decodes it."""
+    return bool(set(named_words(text)) & set(words))
+
+
+def refused_words(cwd):
+    """The record words a command run in cwd may not name: none in the coordinator worktree, MARKER_WORD in
+    a scorer worktree (see SCORER_BRANCH), and both anywhere else, including an unknown cwd."""
+    if coordinator_worktree(cwd):
+        return ()
+    if scorer_worktree(cwd):
+        return (MARKER_WORD,)
+    return (MARKER_WORD, SCORE_WORD)
 
 
 def marker_reason(texts, files, cwd, alone, ansi_c=False):
@@ -1066,7 +1090,8 @@ def marker_reason(texts, files, cwd, alone, ansi_c=False):
     files the files it reads. Outside the coordinator worktree, a body the guard cannot read literally
     is refused like a marker: an expansion, a $'...' string (ansi_c says the command line has one),
     stdin, an unreadable file, or a file another command in the same line could change first."""
-    if coordinator_worktree(cwd):
+    words = refused_words(cwd)
+    if not words:
         return None
     if ansi_c or any(EXPANDED in text for text in texts) or files and not alone:
         return UNREAD_BODY
@@ -1074,7 +1099,7 @@ def marker_reason(texts, files, cwd, alone, ansi_c=False):
         bodies = [read_input(name, cwd) for name in files]
     except Unclear:
         return UNREAD_BODY
-    return MARKER if any(names_marker(text) for text in texts + bodies) else None
+    return MARKER if any(names_marker(text, words) for text in texts + bodies) else None
 
 
 def body_files(args):
@@ -1145,8 +1170,8 @@ def canonical_gh(args):
     return [group]
 
 
-def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
-    """Return why a gh command is refused. marker says the command text holds a review marker."""
+def gh_reason(args, cwd, alone=True, marker=(), ansi_c=False):  # noqa: C901
+    """Return why a gh command is refused. marker holds the record words the command text names (named_words)."""
     args = canonical_gh(gh_command(args))
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
@@ -1177,7 +1202,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
             return None
         return VARIABLE
     if args[:2] in COMMENT_COMMANDS:
-        if marker and not coordinator_worktree(cwd):
+        if marker and set(marker) & set(refused_words(cwd)):
             return MARKER
         reason = marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
         if reason:
@@ -1232,7 +1257,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         if override and COMMENT_ID.search(urlsplit(endpoint).path.strip("/")) and not coordinator_worktree(cwd):
             return COMMENT_EDIT
         return None
-    if marker and not coordinator_worktree(cwd):
+    if marker and set(marker) & set(refused_words(cwd)):
         return MARKER
     # The hook reads request files before the command runs. Any other command, such as a
     # checkout, redirect, or directory change, could replace what gh reads.
@@ -1325,31 +1350,6 @@ def changed_paths(pages, changed_files):
     return paths
 
 
-def trusted_comment_bodies(pages, authors, head):
-    """Return (bodies, edited) for PR comments whose author is in authors; refuse malformed pages.
-
-    edited says a trusted comment holding a pp-score record for head was changed after it was
-    posted (updated_at differs from created_at). Records for older heads never count, so their
-    edits do not matter. A deleted record cannot be seen here (GRE-1408)."""
-    if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
-        raise ValueError("missing PR comment pages")
-    bodies, edited = [], False
-    for page in pages:
-        for comment in page:
-            login, body = comment["user"]["login"], comment["body"]
-            if not isinstance(login, str) or not login or not isinstance(body, str):
-                raise ValueError("missing comment author or body")
-            if login not in authors:
-                continue
-            if any(line.startswith(f"pp-score head={head} ") for line in body.splitlines()):
-                created, updated = comment["created_at"], comment["updated_at"]
-                if not isinstance(created, str) or not created or not isinstance(updated, str) or not updated:
-                    raise ValueError("missing comment timestamps")
-                edited = edited or created != updated
-            bodies.append(body)
-    return bodies, edited
-
-
 def head_moved(gh_json, number, sha):
     """Refuse when the PR head changed while the guard read its files and comments."""
     if gh_json("pr", "view", number, "--json", "headRefOid")["headRefOid"] != sha:
@@ -1410,22 +1410,17 @@ def coordinator_merge_reason(args, cwd):
         authors = config["scorer_authors"]
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
+        # The pp/score status fetches and reads the same comments the same way, with the same rules and
+        # carry decision. author= records the head branch's author vendor, supplied by the coordinator.
+        # Never infer a model vendor from the GitHub login.
         pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
-        bodies, edited = trusted_comment_bodies(pages, authors, sha)
-        if edited:
-            return "Sensitive PR refused: a pp-score comment was edited after it was posted; edited records never count."
-        record_pattern = merge_class.score_pattern(config["vendors"])
-        # author= records the head branch's author vendor, supplied by the
-        # coordinator. Never infer a model vendor from the GitHub login.
-        author_vendors = set()
-        for body in bodies:
-            for line in body.splitlines():
-                match = record_pattern.fullmatch(line)
-                if match and match.group(1) == sha:
-                    author_vendors.add(match.group(5))
-        author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None
-        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"], config["vendors"]):
-            return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
+        reading = merge_class.read_comments(merge_class.comment_pages(pages), merge_class.load_trust())
+        facts = merge_class.GitHubFacts("{owner}/{repo}", lambda path: gh_json("api", path),
+                                        merge_class.LocalGit(cwd, deadline=deadline))
+        source, why = merge_class.sensitive_scores(reading, sha, config["scorer_seats"], config["vendors"], facts,
+                                                   classes)
+        if source is None:
+            return f"Sensitive PR refused: {why}; need two qualifying scorer seats on this head or a carried head."
         return head_moved(gh_json, number, sha)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
         return "Cannot verify merge class or scores; merge refused (missing or unreadable data)."
@@ -1446,6 +1441,21 @@ def coordinator_worktree(cwd):
         return False
     root, lanes = os.path.realpath(root), os.path.realpath(LANE_WORKTREES)
     return bool(top) and os.path.realpath(top) == root and os.path.commonpath([root, lanes]) != lanes
+
+
+def scorer_worktree(cwd):
+    """Whether cwd's Git checkout has a scorer branch (SCORER_BRANCH) checked out.
+
+    GIT_DIR or GIT_WORK_TREE in the guard's environment could point git at another checkout, so either
+    one makes the answer no.
+    """
+    if cwd is None or os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
+        return False
+    try:
+        branch = run_git(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(SCORER_BRANCH.fullmatch(branch))
 
 
 def shell_script(args):
@@ -2010,9 +2020,11 @@ def check_line(command, cwd, outer, state):
     """The body of check_command for one line or nested script, sharing the top-level line's state."""
     try:
         # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
-        # written now and posted later, so any mention of the word is refused outside the coordinator.
-        # coordinator_worktree runs git, which can run out the line's time, so this sits inside the handler.
-        if names_marker(command) and not coordinator_worktree(cwd):
+        # written now and posted later, so any mention of the word is refused outside the coordinator,
+        # and a scorer worktree may mention only SCORE_WORD.
+        # refused_words runs git, which can run out the line's time, so this sits inside the handler.
+        marker = named_words(command)
+        if marker and set(marker) & set(refused_words(cwd)):
             return MARKER
         facts = {}
         parsed = shell_commands(command, facts)
@@ -2030,7 +2042,6 @@ def check_line(command, cwd, outer, state):
         head_moves = (any(moves_head(name, rest) for _, name, rest, *_ in commands)
                       or any(GIT_LOCATION.match(word) for word in assigned))
         env_config = any(GIT_CONFIG_ENV.match(word) for word in assigned)
-        marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for _, name, rest, *_ in commands)
         if outer is not None:

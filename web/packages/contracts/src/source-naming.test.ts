@@ -4,6 +4,7 @@ import {
   parseSourceNamingEndpointError,
   parseSourceNamingPutInput,
   parseSourceNamingResponse,
+  parseStlNamingProfile,
   parseStlNamingProfileOverride,
 } from "./source-naming.js";
 
@@ -20,6 +21,22 @@ describe("Source naming contracts", () => {
         override: DEFAULT_STL_NAMING_PROFILE,
       }),
     ).toMatchObject({ use_defaults: false, override: DEFAULT_STL_NAMING_PROFILE });
+  });
+
+  it("limits markers to 64 units and symbol-bounded markers to 16", () => {
+    const profile = (markers: string[]) => ({
+      ...DEFAULT_STL_NAMING_PROFILE,
+      roles: [{ id: "primary", label: "Primary", markers }],
+    });
+    const letters = Array.from({ length: 513 }, (_, i) => `missing-marker-${i}`);
+    expect(() => parseStlNamingProfile(profile(letters))).not.toThrow();
+    expect(() => parseStlNamingProfile(profile(Array(16).fill("[".repeat(64))))).not.toThrow();
+    expect(() => parseStlNamingProfile(profile(Array(17).fill("[a]")))).toThrow("at most 16 symbol");
+    for (const [marker, ok] of [["[".repeat(64), true], ["[".repeat(65), false], ["😀".repeat(32), true],
+      ["😀".repeat(32) + "!", false], ["A" + "😀".repeat(31) + "B", true], ["A" + "😀".repeat(31) + "BB", false]] as const) {
+      const parse = () => parseStlNamingProfile(profile([marker]));
+      if (ok) expect(parse).not.toThrow(); else expect(parse).toThrow("at most 64 characters");
+    }
   });
 
   it("preserves sparse nested overrides", () => {

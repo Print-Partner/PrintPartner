@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
-import { PLAN_HELP } from "../builds/planCopy";
+import { FIRST_BUILD_STEPS, PLAN_HELP } from "../builds/planCopy";
 import { routes } from "../routes";
 import { DESTINATIONS, shortcutLabel } from "./destinations";
 
@@ -66,6 +66,16 @@ describe("Help explains destinations and draft acceptance", () => {
     for (const line of PLAN_HELP) expect(within(dialog).getByText(line)).toBeTruthy();
     expect(dialog.textContent).toContain("A saved draft is kept if the app closes.");
     expect(dialog.textContent).toContain("The Build does not change until you accept the draft.");
+  });
+
+  it("lists the first-Build steps the empty Builds list shows", () => {
+    const { dialog } = openHelp();
+    const section = within(dialog).getByRole("region", { name: "Your first Build" });
+    expect(
+      within(section)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual([...FIRST_BUILD_STEPS]);
   });
 
   it("explains shortcut scope and the command palette", () => {

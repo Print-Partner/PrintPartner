@@ -1,10 +1,17 @@
 //! `POST /api/v2/installation/backup` and `GET /api/v2/installation/backup/archive`
-//! (GRE-1371). Mounted only when `PP_DESKTOP_REBUILD` is exactly `1` or `true`.
+//! (GRE-1371), and the [`crate::restore`] routes (GRE-1161). Mounted only when
+//! `PP_DESKTOP_REBUILD` is exactly `1` or `true`.
 //!
 //! Create calls [`pp_storage::restore::InstallationClient::export_backup`], which
 //! writes one full archive under `<data>/backups/`. The router keeps that one
 //! archive and streams it. A later create drops the previous one. The client
 //! sends no path. One request runs at a time.
+//!
+//! The archive route takes an optional `sha256` query: the digest the create
+//! answered. When the kept archive has another digest, because a later create
+//! replaced it, the route answers 409 instead of sending different bytes.
+//! `HEAD` answers the same checks, 503 while the slot is held included, without
+//! taking the slot, so a client can ask before it starts a browser download.
 
 use crate::admin::{AdminHttpConfig, Gate};
 use crate::loopback::PresentedCredential;
@@ -12,8 +19,8 @@ use crate::problem::{self, Problem, ProblemType, ToProblem};
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::State,
-    http::{HeaderValue, StatusCode, header},
+    extract::{Query, State},
+    http::{HeaderValue, Method, StatusCode, header},
     response::Response,
     routing::{get, post},
 };
@@ -26,6 +33,7 @@ use pp_storage::{
 use serde::Serialize;
 use serde_json::{Map, json};
 use std::{
+    collections::HashMap,
     path::Path,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
@@ -73,6 +81,8 @@ enum BackupFailure {
     /// This router is already creating or sending a backup.
     Busy,
     NoneKept,
+    /// The kept archive is not the one the client asked for by digest.
+    Replaced,
     Writer(WriterFailure),
     Internal,
 }
@@ -103,6 +113,11 @@ impl ToProblem for BackupFailure {
             Self::NoneKept => {
                 Problem::new(ProblemType::NotFound, 404, "No backup has been created")
             }
+            Self::Replaced => Problem::new(
+                ProblemType::Conflict,
+                409,
+                "A newer backup replaced this one; create a backup again",
+            ),
             Self::Writer(failure) => failure.to_problem(),
             Self::Internal => Problem::new(ProblemType::Internal, 500, "Internal Server Error"),
         }
@@ -171,8 +186,9 @@ struct App {
     slot: Arc<Slot>,
 }
 
-/// Mounts the backup routes under `/api/v2` when `config` was built with
-/// `PP_DESKTOP_REBUILD` exactly `1` or `true`. Otherwise the router is empty.
+/// Mounts the backup and restore routes under `/api/v2` when `config` was
+/// built with `PP_DESKTOP_REBUILD` exactly `1` or `true`. Otherwise the router
+/// is empty.
 pub fn backup_router(
     config: AdminHttpConfig,
     owner: Arc<Mutex<WriterOwner>>,
@@ -181,16 +197,18 @@ pub fn backup_router(
     let Some(gate) = Gate::new(config, reads) else {
         return Router::new();
     };
+    let restore = crate::restore::routes(Arc::clone(&owner));
     let routes = Router::new()
         .route("/installation/backup", post(create))
-        .route("/installation/backup/archive", get(download));
-    gate.guard(Router::new().nest("/api/v2", routes))
+        .route("/installation/backup/archive", get(download))
         .with_state(App {
             owner,
             slot: Arc::new(Slot {
                 inner: Mutex::new(Inner::default()),
             }),
         })
+        .merge(restore);
+    gate.guard(Router::new().nest("/api/v2", routes))
 }
 
 fn export(owner: &Mutex<WriterOwner>) -> Result<BackupFile, BackupFailure> {
@@ -257,30 +275,75 @@ async fn create(
     }
 }
 
+/// The kept archive, when it is the one `wanted` names by digest. No `wanted`
+/// takes whichever archive is kept.
+fn chosen(
+    kept: Option<&Arc<BackupFile>>,
+    wanted: Option<&str>,
+) -> Result<Arc<BackupFile>, BackupFailure> {
+    let kept = kept.ok_or(BackupFailure::NoneKept)?;
+    match wanted {
+        Some(wanted) if wanted != kept.sha256 => Err(BackupFailure::Replaced),
+        _ => Ok(Arc::clone(kept)),
+    }
+}
+
 async fn download(
     State(app): State<App>,
     Extension(_presented): Extension<PresentedCredential>,
+    method: Method,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
+    // A repeated `sha256` keeps its last value.
+    let wanted = query.get("sha256").map(String::as_str);
+    if method == Method::HEAD {
+        // Looks at the slot without taking it, so the GET that follows is not refused as busy.
+        // It answers what a GET sent at the same moment would: 503 while a create or a download
+        // holds the slot.
+        let kept = {
+            let inner = app.slot.lock();
+            if inner.busy {
+                Err(BackupFailure::Busy)
+            } else {
+                chosen(inner.kept.as_ref(), wanted)
+            }
+        };
+        return match kept {
+            Ok(kept) => match opened(&kept).await {
+                Ok((_, name)) => archive_headers(kept.size_bytes, &name)
+                    .and_then(|builder| builder.body(axum::body::Body::empty()).ok())
+                    .unwrap_or_else(|| refused(&BackupFailure::Internal)),
+                Err(failure) => refused(&failure),
+            },
+            Err(failure) => refused(&failure),
+        };
+    }
     let flight = match app.slot.begin() {
         Ok(flight) => flight,
         Err(failure) => return refused(&failure),
     };
-    let Some(kept) = flight.kept.clone() else {
-        return refused(&BackupFailure::NoneKept);
-    };
-    let name = match archive_name(&kept.path) {
-        Ok(name) => name.to_owned(),
+    let kept = match chosen(flight.kept.as_ref(), wanted) {
+        Ok(kept) => kept,
         Err(failure) => return refused(&failure),
     };
-    let opened = tokio::fs::File::open(&kept.path).await;
-    let file = match opened {
-        Ok(file) => file,
-        Err(_) => return refused(&BackupFailure::Internal),
-    };
-    archive_response(file, kept.size_bytes, &name, flight)
+    match opened(&kept).await {
+        Ok((file, name)) => archive_response(file, kept.size_bytes, &name, flight),
+        Err(failure) => refused(&failure),
+    }
 }
 
-fn json_ok(body: &InstallationBackup) -> Response {
+/// Opens the kept archive and returns it with its file name. `HEAD` opens it too, so both
+/// methods refuse an archive that cannot be read.
+async fn opened(kept: &BackupFile) -> Result<(tokio::fs::File, String), BackupFailure> {
+    let name = archive_name(&kept.path)?.to_owned();
+    let file = tokio::fs::File::open(&kept.path)
+        .await
+        .map_err(|_| BackupFailure::Internal)?;
+    Ok((file, name))
+}
+
+/// A 200 JSON answer that no cache keeps.
+pub(crate) fn json_ok(body: &impl Serialize) -> Response {
     let bytes = match serde_json::to_vec(body) {
         Ok(bytes) => bytes,
         Err(_) => return refused(&BackupFailure::Internal),
@@ -294,9 +357,22 @@ fn json_ok(body: &InstallationBackup) -> Response {
         .unwrap_or_else(|_| refused(&BackupFailure::Internal))
 }
 
-fn archive_response(file: tokio::fs::File, length: u64, name: &str, flight: Flight) -> Response {
+/// The archive answer's status and headers, shared by `GET` and `HEAD`.
+fn archive_headers(length: u64, name: &str) -> Option<axum::http::response::Builder> {
     let disposition = format!("attachment; filename=\"{name}\"");
-    let Ok(disposition) = HeaderValue::from_str(&disposition) else {
+    let disposition = HeaderValue::from_str(&disposition).ok()?;
+    Some(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/gzip")
+            .header(header::CONTENT_LENGTH, length.to_string())
+            .header(header::CONTENT_DISPOSITION, disposition)
+            .header(header::CACHE_CONTROL, "private, no-store"),
+    )
+}
+
+fn archive_response(file: tokio::fs::File, length: u64, name: &str, flight: Flight) -> Response {
+    let Some(builder) = archive_headers(length, name) else {
         return refused(&BackupFailure::Internal);
     };
     let body = axum::body::Body::new(ArchiveBody {
@@ -304,12 +380,7 @@ fn archive_response(file: tokio::fs::File, length: u64, name: &str, flight: Flig
         remaining: length,
         _flight: flight,
     });
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/gzip")
-        .header(header::CONTENT_LENGTH, length.to_string())
-        .header(header::CONTENT_DISPOSITION, disposition)
-        .header(header::CACHE_CONTROL, "private, no-store")
+    builder
         .body(body)
         .unwrap_or_else(|_| refused(&BackupFailure::Internal))
 }
@@ -368,13 +439,17 @@ impl http_body::Body for ArchiveBody {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::to_bytes;
     use serde_json::Value;
 
     async fn document(failure: &BackupFailure) -> (u16, Value) {
-        let response = refused(failure);
+        answered(refused(failure)).await
+    }
+
+    /// The status and JSON body of a refusal.
+    pub(crate) async fn answered(response: Response) -> (u16, Value) {
         let status = response.status().as_u16();
         let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap())
@@ -417,6 +492,12 @@ mod tests {
                 404,
                 "No backup has been created",
                 ProblemType::NotFound,
+            ),
+            (
+                BackupFailure::Replaced,
+                409,
+                "A newer backup replaced this one; create a backup again",
+                ProblemType::Conflict,
             ),
             (
                 BackupFailure::Internal,

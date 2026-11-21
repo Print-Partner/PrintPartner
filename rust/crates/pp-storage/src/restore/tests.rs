@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{Limits, Setting, SettingCommand, ownership_marker::WriterGate};
-use pp_testkit::{Installation, MarkerState as KitMarker, Spec};
+use pp_testkit::Installation;
 use rusqlite::{Connection, OpenFlags};
 use std::{collections::BTreeMap, sync::mpsc, thread};
 use std::{io::Read, sync::atomic::AtomicBool, time::Duration};
@@ -25,6 +25,16 @@ static BEFORE_WORK_DIR_CREATE: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new
 /// creates it: another caller can create it in between.
 pub(super) fn before_work_dir_create(data_dir: &Path) {
     if let Some(hook) = take_hook(&BEFORE_WORK_DIR_CREATE, data_dir) {
+        hook();
+    }
+}
+
+static AFTER_WORK_CHECK: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+/// Called by `Work::open_in` right after it opened `.pp-restore` without
+/// following a link: the check every later entry operation relies on.
+pub(super) fn after_work_check(data_dir: &Path) {
+    if let Some(hook) = take_hook(&AFTER_WORK_CHECK, data_dir) {
         hook();
     }
 }
@@ -68,36 +78,11 @@ fn on_work_dir(root: &Path, hook: impl FnOnce() + Send + 'static) {
         .push((root.to_owned(), Box::new(hook)));
 }
 
-const SEED: &str = "INSERT INTO build_profiles(id, name) VALUES (7, 'Seven'), (29, 'Twenty-nine');
-INSERT INTO plan_snapshots(id, profile_id, name, created_at, payload_json)
-  VALUES (3, 29, 'before', '2026-10-01T00:00:00.000Z', '{\"layers\":2}');
-INSERT INTO plan_drafts(id, profile_id, base_plan_version, state, digest_format,
-  snapshot_digest, created_by, idempotency_key, created_at)
-  VALUES (41, 29, 0, 'open', 'v1', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  'user:1', 'seed', '2026-10-01T00:00:00.000Z');";
-
 /// A marked installation with Builds 7 and 29, a Plan snapshot, an open
 /// draft and Source and export files.
 fn installation() -> (Installation, PathBuf) {
-    let installation = Installation::create(Spec {
-        node_database: true,
-        marker: KitMarker::Valid,
-        ..Spec::default()
-    })
-    .unwrap();
-    Connection::open(installation.database_path())
-        .unwrap()
-        .execute_batch(SEED)
-        .unwrap();
+    let installation = Installation::with_builds_drafts_and_history().unwrap();
     let root = installation.path().canonicalize().unwrap();
-    std::fs::create_dir_all(root.join("repos/source-a")).unwrap();
-    std::fs::write(
-        root.join("repos/source-a/part.stl"),
-        b"solid a\nendsolid a\n",
-    )
-    .unwrap();
-    std::fs::create_dir_all(root.join("exports")).unwrap();
-    std::fs::write(root.join("exports/plate.3mf"), b"plate").unwrap();
     (installation, root)
 }
 
@@ -120,16 +105,8 @@ fn state(root: &Path) -> BTreeMap<String, String> {
     let mut tables = names.query([]).unwrap();
     while let Some(table) = tables.next().unwrap() {
         let name: String = table.get(0).unwrap();
-        let mut select = db.prepare(&format!("SELECT * FROM \"{name}\"")).unwrap();
-        let width = select.column_count();
-        let mut found = Vec::new();
-        let mut rows = select.query([]).unwrap();
-        while let Some(row) = rows.next().unwrap() {
-            let values: Vec<_> = (0..width).map(|i| row.get_ref(i).unwrap()).collect();
-            found.push(format!("{values:?}"));
-        }
-        found.sort();
-        state.insert(format!("table {name}"), found.join("\n"));
+        let rows = pp_testkit::restore_fixture::table_rows(&db, &name).unwrap();
+        state.insert(format!("table {name}"), rows);
     }
     for (name, _) in archive::FULL_ROOTS {
         let path = root.join(name);
@@ -419,7 +396,8 @@ fn ticket_t_8_restore_unmarked_installations_and_oversized_uploads_refuse_before
     upload.write(b"1234").unwrap();
     let error = upload.write(b"5").unwrap_err();
     assert_eq!(refusal(&error), Some(&Refusal::TooLarge(4)));
-    assert_eq!(std::fs::metadata(&upload.path).unwrap().len(), 4);
+    let written = std::fs::metadata(root.join(WORK_DIR).join(&upload.name)).unwrap();
+    assert_eq!(written.len(), 4);
     // A failed upload stays failed, even after a write that would fit.
     let error = upload.write(b"").unwrap_err();
     assert!(error.to_string().contains("already failed"), "{error:#}");
@@ -560,7 +538,8 @@ fn ticket_t_8_restore_an_upload_survives_a_refused_stage_racing_it() {
     });
     let mut upload = client.begin_upload(16).unwrap();
     upload.write(b"still here").unwrap();
-    assert_eq!(std::fs::read(&upload.path).unwrap(), b"still here");
+    let written = root.join(WORK_DIR).join(&upload.name);
+    assert_eq!(std::fs::read(written).unwrap(), b"still here");
     drop(upload);
     owner.shutdown().unwrap();
 }
@@ -676,7 +655,7 @@ fn ticket_t_8_restore_shutdown_keeps_the_lease_while_restore_work_runs_on() {
     assert!(open(&root).is_err());
     release.send(()).unwrap();
     let upload = upload.join().unwrap().unwrap();
-    assert!(upload.path.exists());
+    assert!(root.join(WORK_DIR).join(&upload.name).exists());
 }
 
 /// Shutdown closes writer, reader and restore admission before it waits,
@@ -877,6 +856,7 @@ fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_li
 }
 
 mod export;
+mod swap;
 
 /// A simulated process death: activation returns without rolling back.
 #[derive(Debug)]
@@ -891,9 +871,27 @@ impl std::error::Error for Crash {}
 /// (data directory, steps to pass before failing, crash instead of fail)
 static STEPS: Mutex<Vec<(PathBuf, usize, bool)>> = Mutex::new(Vec::new());
 static DURING: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+/// (data directory, steps to pass before running the hook, hook)
+static AT_STEP: Mutex<Vec<(PathBuf, usize, Hook)>> = Mutex::new(Vec::new());
 
 /// Called before each rename, before the journal commits and after it.
+/// Runs a hook registered in [`AT_STEP`] for this step, then fails or
+/// crashes as [`STEPS`] says.
 pub(crate) fn step(data_dir: &Path) -> Result<()> {
+    let hook = {
+        let mut hooks = AT_STEP.lock().unwrap();
+        match hooks.iter().position(|(dir, ..)| dir == data_dir) {
+            Some(index) if hooks[index].1 == 0 => Some(hooks.remove(index).2),
+            Some(index) => {
+                hooks[index].1 -= 1;
+                None
+            }
+            None => None,
+        }
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
     let mut steps = STEPS.lock().unwrap();
     let Some(index) = steps.iter().position(|(dir, ..)| dir == data_dir) else {
         return Ok(());

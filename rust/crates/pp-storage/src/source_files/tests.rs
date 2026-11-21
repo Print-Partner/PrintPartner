@@ -462,3 +462,96 @@ fn a_linked_cache_file_is_rendered_not_read() {
         b"\x89PNG\r\n\x1a\nnot this part"
     );
 }
+
+const SECOND: &str = "INSERT INTO source_revisions(id,tenant_id,project_id,upstream_revision_key,manifest_digest,snapshot_locator,synced_at) VALUES(11,'default',1,'r2','d2','1/revisions/r2','2026-11-13T00:00:00.000Z'); UPDATE projects SET current_source_revision_id=11 WHERE id=1";
+
+impl Fixture {
+    /// The names directly under `thumbs/sources`, sorted.
+    fn revision_folders(&self) -> Vec<String> {
+        let sources = self.directory.path().join("thumbs/sources");
+        let mut names: Vec<String> = fs::read_dir(sources)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn plant(&self, relative: &str) {
+        let path = self.directory.path().join("thumbs/sources").join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"png").unwrap();
+    }
+}
+
+/// GRE-1538: the first thumbnail of a new current revision makes its folder,
+/// and that write removes the folder of every revision that is no longer any
+/// Source's current revision. Another Source's current folder, and names Rust
+/// never writes, stay.
+#[test]
+fn a_new_revisions_first_thumbnail_removes_superseded_revision_folders() {
+    let stl = one_triangle_binary();
+    let fixture = Fixture::new();
+    fixture.snapshot("1/revisions/r1", &[("part.stl", &stl)]);
+    fixture.snapshot("1/revisions/r2", &[("part.stl", &stl), ("other.stl", &stl)]);
+    fixture.sql(FIRST);
+    fixture.sql("INSERT INTO projects(id,tenant_id,name,url,source_kind) VALUES(2,'default','Other','','local'); INSERT INTO source_revisions(id,tenant_id,project_id,upstream_revision_key,manifest_digest,snapshot_locator,synced_at) VALUES(20,'default',2,'o1','d3','2/revisions/o1','2026-11-12T00:00:00.000Z'); UPDATE projects SET current_source_revision_id=20 WHERE id=2");
+    fixture.thumbnail("part.stl").unwrap();
+    fixture.plant("10/.0000000000000001.tmp");
+    fixture.plant("20/kept-v1.png");
+    fixture.plant("99/left-by-a-deleted-source-v1.png");
+    fixture.plant("007/not-a-revision-name.png");
+    fixture.plant("notes/not-a-revision-name.png");
+    fixture.plant("12/nested/a-folder-rust-never-writes.png");
+    fixture.plant("13");
+    assert_eq!(
+        fixture.revision_folders(),
+        ["007", "10", "12", "13", "20", "99", "notes"]
+    );
+
+    fixture.sql(SECOND);
+    let answer = fixture.thumbnail("part.stl").unwrap();
+    assert_eq!(answer.revision_id, 11);
+    assert_eq!(answer.png, rendered(&stl));
+    // 10 and 99 are gone. 12 holds a folder, so it is left in place; 13 is a
+    // file, and 007 and notes are not revision names.
+    assert_eq!(
+        fixture.revision_folders(),
+        ["007", "11", "12", "13", "20", "notes"]
+    );
+    assert!(
+        fixture
+            .directory
+            .path()
+            .join("thumbs/sources/20/kept-v1.png")
+            .is_file()
+    );
+
+    // A write into a folder that already exists prunes nothing.
+    fixture.plant("98/stale-v1.png");
+    fixture.thumbnail("other.stl").unwrap();
+    assert!(fixture.revision_folders().contains(&"98".to_owned()));
+}
+
+/// GRE-1538: the prune removes links, never what they point to.
+#[cfg(unix)]
+#[test]
+fn pruning_never_follows_a_link() {
+    let stl = one_triangle_binary();
+    let fixture = Fixture::new();
+    fixture.snapshot("1/revisions/r1", &[("part.stl", &stl)]);
+    fixture.sql(FIRST);
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("keep"), b"keep").unwrap();
+    let sources = fixture.directory.path().join("thumbs/sources");
+    fs::create_dir_all(sources.join("6")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), sources.join("5")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), sources.join("6/linked")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("keep"), sources.join("6/file")).unwrap();
+
+    fixture.thumbnail("part.stl").unwrap();
+    // 5 is a link, not a folder, so it stays. 6 loses its links and goes.
+    assert_eq!(fixture.revision_folders(), ["10", "5"]);
+    assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"keep");
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+}

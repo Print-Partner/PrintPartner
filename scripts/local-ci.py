@@ -132,7 +132,7 @@ STEPS = [
          requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
          env={"VITE_PRINT_PARTNER_DESKTOP": "1", "MANIFEST_PYTHON": "python3"}),
     # The replacement UI package. The hosted `ui` job runs its tests and build on
-    # Node 22.23.3. These local lines also lint and open a browser, on Node 24.
+    # Node 24.21.0. These local lines also lint and open a browser, on Node 24.
     # After web-assets, which installs web/node_modules on Node 24. Vitest
     # exits nonzero when it finds no tests.
     Step("ui-package", "replacement UI package typecheck, lint, tests, build and font requests",

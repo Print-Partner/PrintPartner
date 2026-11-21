@@ -2,21 +2,18 @@ import type { ProfileSummary } from "@print-partner/rust-client";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router";
+import { buildsQuery } from "../core/builds";
 import { useModule } from "../core/modules";
-import { readCore } from "../core/rust";
 import { tasksByBuild, tasksQuery, type Task, type UnavailableBuild } from "../core/workflow";
 import { BuildSourceThumb, useVisibleBuildIds } from "./buildThumb";
+import { CreateBuild } from "./CreateBuildDialog";
+import { FIRST_BUILD_STEPS } from "./planCopy";
 
 type FeedEntries = ReadonlyMap<number, Task | UnavailableBuild>;
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
 import { dueDateText, progressText } from "./format";
-
-const buildsQuery = {
-  queryKey: ["core", "builds"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listBuilds", {}, signal),
-} as const;
 
 const ROW_KEYS = new Set(["ArrowDown", "ArrowUp", "Home", "End"]);
 
@@ -307,7 +304,7 @@ function DueList({
 }
 
 /**
- * Builds, read only. With the Orders module on they sort by due date and filter to overdue or
+ * Builds, with Create Build under the heading. With the Orders module on they sort by due date and filter to overdue or
  * undated Builds, and Builds sharing an order number are each shown, never merged. Otherwise
  * they keep the core's order.
  */
@@ -323,6 +320,13 @@ export function BuildsList() {
   return (
     <ScreenTemplate
       title="Builds"
+      // Under the heading in every state, so an open dialog survives the list going empty,
+      // offline or back.
+      subnav={
+        <p className="pp-screen-actions">
+          <CreateBuild />
+        </p>
+      }
       state={state}
       renderData={(data) => (
         <>
@@ -352,7 +356,16 @@ export function BuildsList() {
           )}
         </>
       )}
-      empty={{ message: "No Builds yet. Builds you create appear here." }}
+      empty={{
+        message: "No Builds yet. Press Create Build to start one from a Library Source.",
+        action: (
+          <ol className="pp-reasons" aria-label="Your first Build">
+            {FIRST_BUILD_STEPS.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        ),
+      }}
     />
   );
 }

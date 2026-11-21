@@ -1,0 +1,5 @@
+{
+  "archive_sha256": "c02201460106faf848e05f6c068f0b4b9ad88d83e85cb51841b0868e3cf5af50",
+  "content_disposition": "attachment; filename=\"tracked-operational-build-v1-stl.zip\"",
+  "entries": [{"crc32":247207563,"name":"primary/_root/included_01.stl","size":1289}]
+}

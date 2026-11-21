@@ -512,6 +512,11 @@ body {
   color: var(--text-muted);
 }
 
+/* A SHA-256 or file name has no spaces; let it wrap on a phone. */
+.pp-digest {
+  overflow-wrap: anywhere;
+}
+
 .pp-settings-section {
   margin: 0 0 32px;
   /* Room above the heading when an in-page link scrolls to it. */
@@ -739,6 +744,13 @@ body {
   font: inherit;
 }
 
+/* A file field's native button and name otherwise set its width, wider than a zoomed phone. */
+.pp-field input[type="file"] {
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+}
+
 .pp-field input[aria-invalid="true"],
 .pp-quantity[aria-invalid="true"] {
   border-color: var(--status-danger);
@@ -803,12 +815,20 @@ body {
   margin-top: 4px;
 }
 
+.pp-experiment {
+  margin-top: 8px;
+}
+
 .pp-gate-snapshot,
 .pp-gate-restored {
   margin: 0 0 8px;
   padding: 8px 12px;
   border-left: 4px solid var(--interaction-accent);
   background: var(--surface-raised);
+}
+
+.pp-farm-deductions {
+  margin: 0 0 24px;
 }
 
 .pp-screen-actions {

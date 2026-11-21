@@ -7,6 +7,7 @@ import {
   normalizeCategoryPath,
 } from "@print-partner/contracts";
 import type { AppRepository } from "../db/repository.js";
+import { parseGithubUrl } from "../services/github-sync.js";
 
 /** Sentinel accepted by `list_sources` for Sources with no category. */
 export const UNCATEGORIZED_CATEGORY = "__uncategorized__";
@@ -46,6 +47,37 @@ export function sourceByName(repo: AppRepository, name: string) {
     );
   }
   return null;
+}
+
+function compactSourceName(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+/** One key per repository: GitHub `owner/repo` in any URL form, else the URL itself. */
+function repositoryKey(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  const github = parseGithubUrl(trimmed);
+  if (github) return `github.com/${github.owner}/${github.repo}`.toLowerCase();
+  return trimmed.replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * The Source that adding `name` from `url` would duplicate: one whose name is equal after
+ * case and separator folding, or one cloned from the same repository. Unlike
+ * `sourceByName`, a name that only contains another ("A4Tv2" and "A4T") is a new Source.
+ * Names made only of separators fold to "" and so equal each other: `___` duplicates `---`.
+ */
+export function existingSourceFor(repo: AppRepository, name: string, url?: string | null) {
+  const wantedName = name.trim() ? compactSourceName(name) : null;
+  const wantedRepository = url ? repositoryKey(url) : null;
+  return (
+    repo.listSources().find(
+      (source) =>
+        (wantedName != null && compactSourceName(source.name) === wantedName) ||
+        (wantedRepository != null && repositoryKey(source.url) === wantedRepository),
+    ) ?? null
+  );
 }
 
 /** Closest source names for "did you mean" hints in tool errors (bigram Dice similarity). */

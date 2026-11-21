@@ -5,7 +5,7 @@ import {
   groupByFolder,
   selectedSourceId,
   thumbnailUrl,
-} from "./sourceFiles";
+} from "./sourceFilesModel";
 
 describe("source file list helpers", () => {
   it("groups by folder without requiring the same folder to be contiguous", () => {
@@ -43,5 +43,44 @@ describe("source file list helpers", () => {
     expect(thumbnailUrl(4, "stl/arms/arm.stl")).toBe(
       "/api/v1/sources/4/thumbnail?path=stl%2Farms%2Farm.stl",
     );
+  });
+});
+
+import { readdirSync } from "node:fs";
+import { dirname, extname, join, parse } from "node:path";
+import { fileURLToPath } from "node:url";
+
+describe("case-insensitive filesystem safety", () => {
+  it("has no sibling files under web/apps/ui/src that collide on macOS/Windows", () => {
+    const srcRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const collisions: string[] = [];
+    const walk = (dir: string) => {
+      const seenNames = new Map<string, string>();
+      const seenTsStems = new Map<string, string>();
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        const lower = entry.name.toLowerCase();
+        const prev = seenNames.get(lower);
+        if (prev) collisions.push(`${dir}: ${prev} vs ${entry.name}`);
+        else seenNames.set(lower, entry.name);
+
+        const ext = extname(entry.name);
+        if (ext === ".ts" || ext === ".tsx") {
+          const stem = parse(entry.name).name.toLowerCase();
+          const prevStem = seenTsStems.get(stem);
+          if (prevStem && prevStem !== entry.name) {
+            collisions.push(`${dir}: ${prevStem} vs ${entry.name}`);
+          } else {
+            seenTsStems.set(stem, entry.name);
+          }
+        }
+      }
+    };
+    walk(srcRoot);
+    expect(collisions).toEqual([]);
   });
 });

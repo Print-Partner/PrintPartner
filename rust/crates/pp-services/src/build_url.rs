@@ -65,6 +65,34 @@ pub fn classify(raw: &str) -> Option<BuildUrl> {
     })
 }
 
+/// The key two git repository URLs share when they name the same repository,
+/// for finding its Library Source: the [`normalize`]d URL without `.git` or
+/// trailing slashes at the end of its path. On `github.com`, which ignores
+/// case in owner and repository names, the key is only `/owner/repo`,
+/// lowercased. `None` when `raw` is not a git repository URL.
+pub fn repo_key(raw: &str) -> Option<String> {
+    let BuildUrl {
+        normalized,
+        class: UrlClass::Git { github },
+    } = classify(raw)?
+    else {
+        return None;
+    };
+    let mut url = Url::parse(&normalized).ok()?;
+    let mut path = url.path().to_owned();
+    if github {
+        let owner_repo: Vec<_> = path.split('/').filter(|s| !s.is_empty()).take(2).collect();
+        path = format!("/{}", owner_repo.join("/")).to_lowercase();
+        url.set_query(None);
+    }
+    if path.to_lowercase().ends_with(".git") {
+        path.truncate(path.len() - ".git".len());
+    }
+    let path = path.trim_end_matches('/');
+    url.set_path(if path.is_empty() { "/" } else { path });
+    Some(url.into())
+}
+
 fn parse(raw: &str) -> Option<Url> {
     let mut url =
         Url::parse(raw.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')).ok()?;
@@ -182,6 +210,36 @@ mod tests {
             assert_eq!(normalize(raw).as_deref(), Some(normalized), "{raw}");
             let hash = hex::encode(Sha256::digest(normalized.as_bytes()));
             assert_eq!(&hash[..20], id, "{raw}");
+        }
+    }
+
+    #[test]
+    fn repo_keys_match_one_repository_however_its_url_is_written() {
+        let kit = Some("https://github.com/owner/kit".to_owned());
+        for raw in [
+            "https://github.com/Owner/Kit",
+            "https://github.com/owner/kit/",
+            " HTTPS://GitHub.com/OWNER/kit.git ",
+            "https://github.com/owner/kit.GIT/#readme",
+            "https://github.com/owner/kit/tree/main/stl?tab=1",
+        ] {
+            assert_eq!(repo_key(raw), kit, "{raw}");
+        }
+        assert_eq!(
+            repo_key("https://git.example/Team/Kit.git/"),
+            Some("https://git.example/Team/Kit".into()),
+            "only GitHub ignores case"
+        );
+        assert_ne!(
+            repo_key("https://github.com/owner/kit"),
+            repo_key("https://github.com/owner/kit-2")
+        );
+        for raw in [
+            "https://example.com/owner/kit",
+            "https://www.printables.com/model/1-kit.git",
+            "ftp://github.com/owner/kit",
+        ] {
+            assert_eq!(repo_key(raw), None, "{raw}");
         }
     }
 

@@ -417,5 +417,7 @@ describe("Farm screen states", () => {
   it("shows the empty state with no printers", async () => {
     renderAt("/farm", core({ printers: [] }));
     expect(await screen.findByText(/No printers yet/)).toBeTruthy();
+    const add = screen.getByRole("link", { name: "Add a printer in Settings" });
+    expect(add.getAttribute("href")).toBe("/settings#printers");
   });
 });

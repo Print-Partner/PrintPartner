@@ -7,13 +7,15 @@
 //! and a size cap; list reads stop at [`MAX_PAGES`]. The stored token, when
 //! set, goes only to these two hosts.
 
-use crate::checked_dns::CheckedDns;
 use pp_api::sources_github::GithubConnector;
-use pp_net::outbound::{Resolver, SystemResolver, permitted};
+use pp_net::{
+    network::{CheckedDns, Policy, checked_client},
+    outbound::{Resolver, SystemResolver},
+};
 use pp_services::sync::{GithubPort, PortError, RawTree};
 use reqwest::{RequestBuilder, StatusCode, Url, header};
 use serde::Deserialize;
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// The largest API response read: Node's `MAX_GITHUB_API_RESPONSE_BYTES`.
@@ -64,21 +66,19 @@ impl GithubTransport {
     }
 }
 
-/// The one client builder. `resolver` is the checked DNS for production;
-/// `None` (tests only) also allows plain HTTP to a stand-in.
-fn client(resolver: Option<Arc<dyn Resolver>>) -> reqwest::Result<reqwest::Client> {
-    let builder = reqwest::Client::builder()
-        .no_proxy()
+/// The one client builder. `resolver` is the checked DNS for production,
+/// over [`pp_net::network::checked_client`]'s TLS setup; `None` (tests only)
+/// is a plain client that also allows HTTP to a stand-in.
+fn client(resolver: Option<Arc<dyn Resolver>>) -> anyhow::Result<reqwest::Client> {
+    let builder = match resolver {
+        Some(resolver) => checked_client(github_dns(resolver))?.https_only(true),
+        None => reqwest::Client::builder().no_proxy(),
+    };
+    Ok(builder
         .redirect(redirects())
         .user_agent("print-partner")
-        .connect_timeout(API_TIMEOUT);
-    match resolver {
-        Some(resolver) => builder
-            .https_only(true)
-            .dns_resolver(Arc::new(github_dns(resolver)))
-            .build(),
-        None => builder.build(),
-    }
+        .connect_timeout(API_TIMEOUT)
+        .build()?)
 }
 
 /// Follows up to [`MAX_REDIRECTS`] redirects that stay on the first
@@ -310,23 +310,9 @@ async fn fetch(
         .map_err(|_| failure("GitHub timed out"))?
 }
 
-/// An address GitHub can have: one `pp_net` permits that is not loopback,
-/// private or unique-local.
-fn public(ip: IpAddr) -> bool {
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
-        v4 => v4,
-    };
-    permitted(ip)
-        && match ip {
-            IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_private(),
-            IpAddr::V6(v6) => !v6.is_loopback() && v6.segments()[0] & 0xfe00 != 0xfc00,
-        }
-}
-
-/// GitHub DNS: every address must be [`public`].
+/// GitHub DNS: every address must be public.
 fn github_dns(resolver: Arc<dyn Resolver>) -> CheckedDns {
-    CheckedDns::new(resolver, public, "Prohibited GitHub DNS answer")
+    CheckedDns::new(resolver, Policy::Public, "Prohibited GitHub DNS answer")
 }
 
 #[cfg(test)]

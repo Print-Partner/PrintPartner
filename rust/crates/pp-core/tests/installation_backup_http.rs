@@ -1,15 +1,15 @@
 #![cfg(feature = "desktop_rebuild")]
 //! `POST /api/v2/installation/backup` and `GET /api/v2/installation/backup/archive`
-//! (GRE-1371) on a disposable installation.
+//! (GRE-1371) on a disposable installation, and the absence of these and the
+//! GRE-1161 restore routes with the flag off.
 
-use pp_api::admin::AdminHttpConfig;
-use pp_core::{
-    DesktopRebuild,
-    rebuild_api::{desktop_policy, product_router},
-};
+#[path = "support/installation.rs"]
+mod support_installation;
+
+use pp_core::{DesktopRebuild, rebuild_api::product_router};
 use pp_storage::{Limits, WriterOwner, archive};
 use reqwest::Method;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     io::Read,
@@ -17,106 +17,18 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use support_installation::Server;
 
 const SOURCE: &[u8] = b"solid a\nendsolid a\n";
 
-struct Server {
-    origin: String,
-    client: reqwest::Client,
-    cookie: String,
-    serving: Option<pp_api::serving::Serving>,
-    owner: Arc<Mutex<WriterOwner>>,
-    data: std::path::PathBuf,
-    _root: tempfile::TempDir,
-}
-
-impl Server {
-    async fn start(flag: Option<&str>) -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let data = root.path().join("data");
-        let owner = WriterOwner::open(&data, Limits::default()).unwrap().0;
-        std::fs::create_dir_all(data.join("repos/source-a")).unwrap();
-        std::fs::write(data.join("repos/source-a/part.stl"), SOURCE).unwrap();
-        let owner = Arc::new(Mutex::new(owner));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let router = match flag {
-            Some("1" | "true") => product_router(
-                DesktopRebuild::from_value(flag),
-                Arc::clone(&owner),
-                &origin,
-                None,
-            )
-            .unwrap()
-            .expect("flag on mounts the product routes"),
-            _ => {
-                let reads = owner
-                    .lock()
-                    .unwrap()
-                    .accepted_reads_with_policy(desktop_policy())
-                    .unwrap();
-                pp_api::backup::backup_router(
-                    AdminHttpConfig::from_startup(&origin, "default", flag).unwrap(),
-                    Arc::clone(&owner),
-                    reads,
-                )
-            }
-        };
-        let serving = pp_api::serving::Serving::start(listener, router);
-        let mut server = Self {
-            client: reqwest::Client::builder().no_proxy().build().unwrap(),
-            cookie: String::new(),
-            serving: Some(serving),
-            origin,
-            owner,
-            data,
-            _root: root,
-        };
-        if matches!(flag, Some("1" | "true")) {
-            let account = json!({"email": "owner@example.test", "password": "password-1234"});
-            let signed_in = server
-                .request(Method::POST, "/auth/register")
-                .json(&account)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(signed_in.status(), 200);
-            let set_cookie = signed_in.headers()["set-cookie"].to_str().unwrap();
-            server.cookie = set_cookie.split(';').next().unwrap().to_owned();
-        }
-        server
-    }
-
-    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
-        let request = self
-            .client
-            .request(method, format!("{}{path}", self.origin))
-            .header("Origin", &self.origin);
-        if self.cookie.is_empty() {
-            request
-        } else {
-            request.header("Cookie", &self.cookie)
-        }
-    }
-
-    async fn stop(mut self) {
-        if let Some(mut serving) = self.serving.take() {
-            serving.stop().await.unwrap();
-        }
-        let owner = Arc::into_inner(self.owner).expect("the router still holds the owner");
-        owner.into_inner().unwrap().shutdown().unwrap();
-    }
-
-    async fn exchange(&self, method: Method, path: &str) -> (u16, reqwest::Response) {
-        let response = self.request(method, path).send().await.unwrap();
-        (response.status().as_u16(), response)
-    }
-
-    async fn json(&self, method: Method, path: &str) -> (u16, Value) {
-        let (status, response) = self.exchange(method, path).await;
-        let body = response.json().await.unwrap_or(Value::Null);
-        (status, body)
-    }
+/// A disposable data directory with one Source file, served with `flag`.
+async fn start(flag: Option<&str>) -> Server {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let owner = WriterOwner::open(&data, Limits::default()).unwrap().0;
+    std::fs::create_dir_all(data.join("repos/source-a")).unwrap();
+    std::fs::write(data.join("repos/source-a/part.stl"), SOURCE).unwrap();
+    Server::start(owner, data, root, flag).await
 }
 
 fn export_dirs(data: &Path) -> Vec<String> {
@@ -164,16 +76,19 @@ async fn routes_are_absent_when_the_rebuild_flag_is_off() {
             "{flag:?}"
         );
     }
-    let server = Server::start(Some("0")).await;
+    let server = start(Some("0")).await;
     for (method, path) in [
         (Method::POST, "/api/v2/installation/backup"),
         (Method::GET, "/api/v2/installation/backup/archive"),
+        (Method::POST, "/api/v2/installation/restore/stage"),
+        (Method::POST, "/api/v2/installation/restore"),
     ] {
         let (status, response) = server.exchange(method.clone(), path).await;
         assert_eq!(status, 404, "{method} {path}");
         assert_eq!(response.text().await.unwrap(), "");
     }
     assert!(export_dirs(&server.data).is_empty());
+    assert!(!server.data.join(".pp-restore").exists());
     server.stop().await;
 }
 
@@ -204,16 +119,7 @@ async fn refused_from_another_origin(server: &Server, path: &str, method: Method
 /// One create holds the owner lock, so the other create and a download are
 /// refused. Returns the backup that finished after the lock was released.
 async fn created_while_the_owner_is_held(server: &Server, create: &str, archive: &str) -> Value {
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let (held_tx, held_rx) = std::sync::mpsc::channel();
-    let owner = Arc::clone(&server.owner);
-    let holder = std::thread::spawn(move || {
-        let guard = owner.lock().unwrap();
-        held_tx.send(()).unwrap();
-        let _ = release_rx.recv();
-        drop(guard);
-    });
-    held_rx.recv().unwrap();
+    let held = server.hold_owner();
     let first = server.request(Method::POST, create).send();
     let second = server.request(Method::POST, create).send();
     tokio::pin!(first, second);
@@ -232,8 +138,18 @@ async fn created_while_the_owner_is_held(server: &Server, create: &str, archive:
     let (status, during) = server.json(Method::GET, archive).await;
     assert_eq!(status, 503, "{during}");
     assert_eq!(during["detail"], "A backup is already running");
-    release_tx.send(()).unwrap();
-    holder.join().unwrap();
+    // HEAD answers what GET answers while the create holds the slot, with or without a digest.
+    for path in [
+        archive.to_owned(),
+        format!("{archive}?sha256={}", "0".repeat(64)),
+    ] {
+        let (status, response) = server.exchange(Method::HEAD, &path).await;
+        assert_eq!(status, 503, "HEAD {path}");
+        assert!(response.headers().get("content-disposition").is_none());
+        let (status, _) = server.json(Method::GET, &path).await;
+        assert_eq!(status, 503, "GET {path}");
+    }
+    held.release();
     let created = match label {
         "first" => second.await.unwrap(),
         "second" => first.await.unwrap(),
@@ -287,9 +203,184 @@ async fn assert_download(server: &Server, archive: &str, created: &Value, sha256
     assert_eq!(entry_bytes(&bytes, "repos/source-a/part.stl"), SOURCE);
 }
 
+/// HEAD and then GET of `path` at once, `times` times. Both answer `status`
+/// each time, so a HEAD never leaves the slot held for the GET after it.
+async fn assert_head_then_get(server: &Server, path: &str, status: u16, times: usize) {
+    for round in 0..times {
+        let (head, response) = server.exchange(Method::HEAD, path).await;
+        assert_eq!(head, status, "HEAD {path} round {round}");
+        assert!(response.bytes().await.unwrap().is_empty());
+        let (get, response) = server.exchange(Method::GET, path).await;
+        assert_eq!(get, status, "GET {path} round {round}");
+        response.bytes().await.unwrap();
+    }
+}
+
+/// How many threads of this test process are blocked in `openat`. nextest runs
+/// each test in its own process, so these are the server's archive opens.
+#[cfg(target_os = "linux")]
+fn blocked_in_open() -> usize {
+    let openat = libc::SYS_openat.to_string();
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .flatten()
+        .filter(|task| {
+            std::fs::read_to_string(task.path().join("syscall"))
+                .is_ok_and(|line| line.split(' ').next() == Some(openat.as_str()))
+        })
+        .count()
+}
+
+/// Waits until `count` server requests are blocked opening the archive.
+#[cfg(target_os = "linux")]
+async fn until_blocked_in_open(count: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while blocked_in_open() < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{count} requests never blocked opening the archive"));
+}
+
+/// Puts the archive back however the test ends. Opening the FIFO's write end
+/// without blocking first releases any request still waiting to open it, so a
+/// failed assertion cannot leave the runtime waiting on blocked threads.
+#[cfg(target_os = "linux")]
+struct HeldArchive {
+    path: std::path::PathBuf,
+    saved: std::path::PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for HeldArchive {
+    fn drop(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.path);
+        let _ = std::fs::rename(&self.saved, &self.path);
+    }
+}
+
+/// Holds a HEAD inside its handling: the kept archive is swapped for a FIFO, so
+/// the HEAD blocks opening it until the test opens the write end. While it is
+/// held, a stale-digest GET still answers 409 (the slot is free), a second HEAD
+/// and a GET for the kept digest both wait on the same open, and once the FIFO
+/// gets the archive's bytes both HEADs answer 200 and the GET's bytes hash to
+/// the digest. A HEAD that took the slot would make the stale GET answer 503.
+#[cfg(target_os = "linux")]
+async fn assert_held_head_leaves_the_slot_free(
+    server: &Server,
+    archive: &str,
+    old: &str,
+    kept: &Value,
+) {
+    let digest = kept["sha256"].as_str().unwrap().to_owned();
+    let dir = server
+        .data
+        .join("backups")
+        .join(&export_dirs(&server.data)[0]);
+    let path = dir.join("print-partner-backup.tar.gz");
+    let saved = dir.join("held.tar.gz");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(hex::encode(Sha256::digest(&bytes)), digest);
+    std::fs::rename(&path, &saved).unwrap();
+    let held = HeldArchive {
+        path: path.clone(),
+        saved,
+    };
+    let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let current = format!("{archive}?sha256={digest}");
+    let base = blocked_in_open();
+    let first = tokio::spawn(server.request(Method::HEAD, &current).send());
+    until_blocked_in_open(base + 1).await;
+    let (status, refused) = server
+        .json(Method::GET, &format!("{archive}?sha256={old}"))
+        .await;
+    assert_eq!(status, 409, "a held HEAD left the slot busy: {refused}");
+    let second = tokio::spawn(server.request(Method::HEAD, &current).send());
+    until_blocked_in_open(base + 2).await;
+    let get = tokio::spawn(server.request(Method::GET, &current).send());
+    until_blocked_in_open(base + 3).await;
+    assert!(!first.is_finished() && !second.is_finished() && !get.is_finished());
+
+    let writer = tokio::task::spawn_blocking(move || {
+        std::io::Write::write_all(&mut std::fs::File::create(&path).unwrap(), &bytes).unwrap();
+        (path, bytes)
+    });
+    for head in [first, second] {
+        let head = head.await.unwrap().unwrap();
+        assert_eq!(head.status(), 200);
+        assert_eq!(
+            head.headers()["content-length"],
+            kept["size_bytes"].to_string().as_str()
+        );
+    }
+    let get = get.await.unwrap().unwrap();
+    assert_eq!(get.status(), 200);
+    let got = get.bytes().await.unwrap();
+    let (_, bytes) = writer.await.unwrap();
+    assert_eq!(got.as_ref(), bytes.as_slice());
+    assert_eq!(hex::encode(Sha256::digest(&got)), digest);
+    drop(held);
+}
+
+/// A later create replaced the archive whose digest was `old`. Asking for `old`
+/// by `sha256` is refused with 409 on HEAD and GET; asking for the kept digest
+/// answers its size on HEAD, and the GET right after is not refused as busy.
+async fn assert_bound_to_digest(server: &Server, archive: &str, old: &str, kept: &Value) {
+    let stale = format!("{archive}?sha256={old}");
+    let (status, response) = server.exchange(Method::HEAD, &stale).await;
+    assert_eq!(status, 409);
+    assert!(response.headers().get("content-disposition").is_none());
+    let (status, refused) = server.json(Method::GET, &stale).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["type"], "urn:print-partner:problem:conflict");
+    assert_eq!(
+        refused["detail"],
+        "A newer backup replaced this one; create a backup again"
+    );
+    let digest = kept["sha256"].as_str().unwrap();
+    let malformed = [
+        String::new(),
+        "not-a-digest".to_owned(),
+        digest.to_uppercase(),
+        format!("{digest}0"),
+    ];
+    for wanted in malformed {
+        assert_head_then_get(server, &format!("{archive}?sha256={wanted}"), 409, 1).await;
+    }
+    // A repeated `sha256` keeps its last value.
+    let last_kept = format!("{archive}?sha256={old}&sha256={digest}");
+    assert_head_then_get(server, &last_kept, 200, 1).await;
+    let last_stale = format!("{archive}?sha256={digest}&sha256={old}");
+    assert_head_then_get(server, &last_stale, 409, 1).await;
+    let current = format!("{archive}?sha256={digest}");
+    assert_head_then_get(server, &current, 200, 5).await;
+    assert_head_then_get(server, archive, 200, 3).await;
+    let (status, response) = server.exchange(Method::HEAD, &current).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        response.headers()["content-length"],
+        kept["size_bytes"].as_u64().unwrap().to_string().as_str()
+    );
+    assert!(response.bytes().await.unwrap().is_empty());
+    let (status, response) = server.exchange(Method::GET, &current).await;
+    assert_eq!(status, 200);
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(&bytes)),
+        kept["sha256"].as_str().unwrap()
+    );
+}
+
 #[tokio::test]
 async fn an_authenticated_client_creates_and_downloads_one_backup() {
-    let server = Server::start(Some("1")).await;
+    let server = start(Some("1")).await;
     let create = "/api/v2/installation/backup";
     let archive = "/api/v2/installation/backup/archive";
     refused_without_a_session(&server, create, Method::POST).await;
@@ -301,6 +392,14 @@ async fn an_authenticated_client_creates_and_downloads_one_backup() {
 
     let (status, missing) = server.json(Method::GET, archive).await;
     assert_eq!(status, 404, "{missing}");
+    assert_head_then_get(&server, archive, 404, 1).await;
+    assert_head_then_get(
+        &server,
+        &format!("{archive}?sha256={}", "0".repeat(64)),
+        404,
+        1,
+    )
+    .await;
     assert_eq!(missing["detail"], "No backup has been created");
     assert_eq!(missing["type"], "urn:print-partner:problem:not-found");
 
@@ -317,6 +416,9 @@ async fn an_authenticated_client_creates_and_downloads_one_backup() {
     assert_eq!(status, 200, "{again}");
     assert_ne!(again["sha256"], created["sha256"]);
     assert_eq!(export_dirs(&server.data).len(), 1);
+    assert_bound_to_digest(&server, archive, &sha256, &again).await;
+    #[cfg(target_os = "linux")]
+    assert_held_head_leaves_the_slot_free(&server, archive, &sha256, &again).await;
     let (status, response) = server.exchange(Method::GET, archive).await;
     assert_eq!(status, 200);
     let bytes = response.bytes().await.unwrap();

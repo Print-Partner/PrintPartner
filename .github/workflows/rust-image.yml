@@ -1,7 +1,9 @@
 name: Rust image
 
 # Build the Rust-only image and smoke-test it, including sign-in. Runs on pull
-# requests, pushes to main, and merge groups. See docs/development/ci.md.
+# requests (when image inputs changed), pushes to main, and merge groups. Each
+# architecture builds and runs on its own native runner (GRE-1295): a multi-arch
+# manifest alone does not prove the arm64 image runs. See docs/development/ci.md.
 
 on:
   pull_request:
@@ -20,9 +22,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
+  changes:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.select.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select Rust image inputs
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-path-filter.py rust-image
+
   image:
     name: rust image
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -42,5 +64,34 @@ jobs:
             PP_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=dockerfile-rust
           cache-to: type=gha,scope=dockerfile-rust,mode=max
+      - name: Smoke-test sign-in and the replacement UI
+        run: python3 scripts/docker-rust-smoke.py pp-server:ci
+
+  image-arm64:
+    name: rust image (arm64)
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the Rust-only image on arm64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.rust
+          platforms: linux/arm64
+          tags: pp-server:ci
+          load: true
+          push: false
+          build-args: |
+            PP_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=dockerfile-rust-arm64
+          cache-to: type=gha,scope=dockerfile-rust-arm64,mode=max
+      - name: Check the image is arm64
+        run: test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' pp-server:ci)" = linux/arm64
       - name: Smoke-test sign-in and the replacement UI
         run: python3 scripts/docker-rust-smoke.py pp-server:ci

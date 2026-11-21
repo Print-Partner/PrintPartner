@@ -3614,6 +3614,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "zip",
 ]
 
 [[package]]
@@ -3675,7 +3676,12 @@ dependencies = [
  "hyper",
  "hyper-util",
  "proptest",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -3707,6 +3713,8 @@ dependencies = [
  "libc",
  "pp-core",
  "pp-testkit",
+ "reqwest",
+ "rmcp",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4320,6 +4328,7 @@ dependencies = [
  "pastey",
  "pin-project-lite",
  "rand 0.10.3",
+ "reqwest",
  "schemars 1.2.2",
  "serde",
  "serde_json",

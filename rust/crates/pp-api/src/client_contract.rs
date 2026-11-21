@@ -4,9 +4,11 @@
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
 //! [`crate::farm`], [`crate::checkoff`], [`crate::catalog`], [`crate::source_files`],
 //! [`crate::modules`], [`crate::integrations`], [`crate::printers`],
-//! [`crate::spoolman_deductions`], [`crate::backup`] or [`crate::auth`].
+//! [`crate::spoolman_deductions`], [`crate::backup`], [`crate::restore`] or [`crate::auth`].
 //! `pp-core`'s `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
+//! A route with a `request` DTO also needs a row for its `name` in that test's
+//! route-keyed sample table, `pp-core/src/rebuild_api/contract_samples.rs`.
 //!
 //! The document's `descriptors` list holds constant tables the generator writes
 //! out as data: today only the printer display descriptors.
@@ -81,6 +83,24 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "GET",
         "/api/v2/plans/{id}/layers",
         None,
+        "ProfileLayers",
+    ),
+    // Answers 200 with the new Build's summary and its `layers`; the client keeps the
+    // summary. A base Source is optional. Build names are unique, so a repeat is refused
+    // with 400 and writes nothing; the client reconciles by listing Builds.
+    route(
+        "createBuild",
+        "POST",
+        "/api/v2/plans",
+        Some("CreateBuildRequest"),
+        "ProfileSummary",
+    ),
+    // Adds the base layer, or moves an existing one to that Source, and answers the layers.
+    route(
+        "setBuildBase",
+        "PUT",
+        "/api/v2/plans/{id}/layers/base",
+        Some("SourceAttachmentRequest"),
         "ProfileLayers",
     ),
     route(
@@ -175,6 +195,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "AcceptDraftReceipt",
         )
     },
+    route(
+        "duplicateBuild",
+        "POST",
+        "/api/v2/plans/{id}/duplicate",
+        Some("DuplicateBuildRequest"),
+        "ExperimentCopy",
+    ),
     route(
         "readBuildWorkflow",
         "GET",
@@ -528,6 +555,22 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "InstallationBackup",
     ),
+    // The body is the backup archive as `application/gzip`, so there is no
+    // request DTO.
+    route(
+        "stageInstallationRestore",
+        "POST",
+        "/api/v2/installation/restore/stage",
+        None,
+        "RestorePreview",
+    ),
+    route(
+        "restoreInstallation",
+        "POST",
+        "/api/v2/installation/restore",
+        Some("RestoreRequest"),
+        "RestoreOutcome",
+    ),
 ];
 
 #[cfg(feature = "codegen")]
@@ -548,10 +591,11 @@ pub(crate) mod codegen {
         self, Actor, EntryType, Page as BuildHistoryPage, Undo, UndoReason, Undone,
     };
     use pp_storage::{
+        build_graph::ExperimentCopy,
         build_graph::wire::{
-            AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
-            PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
-            ProfileList, ProfileSummary,
+            AcceptedProgressSummary, AcceptedProgressUnavailableReason, CreateBuildRequest,
+            FreshnessReasons, PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer,
+            ProfileLayers, ProfileList, ProfileSummary, SourceAttachmentRequest,
         },
         checkoff_progress::wire::{
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
@@ -626,6 +670,14 @@ pub(crate) mod codegen {
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
+        schema(
+            "CreateBuildRequest",
+            schemars::schema_for!(CreateBuildRequest),
+        )?;
+        schema(
+            "SourceAttachmentRequest",
+            schemars::schema_for!(SourceAttachmentRequest),
+        )?;
         schema("DraftList", schemars::schema_for!(DraftListResponse))?;
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
@@ -656,6 +708,11 @@ pub(crate) mod codegen {
         schema("AcceptDraftReceipt", receipt)?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
+        schema(
+            "DuplicateBuildRequest",
+            schemars::schema_for!(crate::builds::DuplicateBuildRequest),
+        )?;
+        schema("ExperimentCopy", schemars::schema_for!(ExperimentCopy))?;
         schema(
             "ReconcileDraftRequest",
             schemars::schema_for!(ReconciliationRequest),
@@ -847,6 +904,18 @@ pub(crate) mod codegen {
         schema(
             "InstallationBackup",
             schemars::schema_for!(crate::backup::InstallationBackup),
+        )?;
+        schema(
+            "RestorePreview",
+            schemars::schema_for!(crate::restore::RestorePreview),
+        )?;
+        schema(
+            "RestoreRequest",
+            schemars::schema_for!(crate::restore::RestoreRequest),
+        )?;
+        schema(
+            "RestoreOutcome",
+            schemars::schema_for!(crate::restore::RestoreOutcome),
         )?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
@@ -1424,6 +1493,47 @@ pub(crate) mod codegen {
     }
 
     /// Draft header reads, saves and save bodies (GRE-1197).
+    /// Duplicate bodies, and the experiment a duplicate answers with and
+    /// without a copied draft.
+    fn experiment_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let mut cases = vec![
+            served(
+                "ExperimentCopy",
+                "with-draft",
+                ExperimentCopy {
+                    build_id: MAX_SAFE,
+                    parent_build_id: 1,
+                    draft_id: Some(MAX_SAFE),
+                },
+            )?,
+            served(
+                "ExperimentCopy",
+                "never-accepted-parent",
+                ExperimentCopy {
+                    build_id: 2,
+                    parent_build_id: 1,
+                    draft_id: None,
+                },
+            )?,
+        ];
+        for (name, value) in [
+            ("named", json!({"name": UNICODE})),
+            ("missing", json!({})),
+            ("number-name", json!({"name": 7})),
+            (
+                "extra-field",
+                json!({"name": "Alternative", "clear_checkoff": true}),
+            ),
+        ] {
+            cases.push(request::<crate::builds::DuplicateBuildRequest>(
+                "DuplicateBuildRequest",
+                name,
+                value,
+            ));
+        }
+        Ok(cases)
+    }
+
     fn header_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let full = BuildHeader {
             name: UNICODE.into(),
@@ -1789,6 +1899,42 @@ pub(crate) mod codegen {
         ])
     }
 
+    fn installation_restore_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        use crate::restore::{RestoreOutcome, RestorePreview, RestoreRequest};
+        let restore_id = "a".repeat(32);
+        Ok(vec![
+            served(
+                "RestorePreview",
+                "staged",
+                RestorePreview {
+                    restore_id: restore_id.clone(),
+                    created_at: "2026-11-17T02:50:00.000Z".into(),
+                    app_version: "0.1.0".into(),
+                    schema_version: 34,
+                    confirmation: pp_storage::restore::CONFIRMATION.into(),
+                },
+            )?,
+            served(
+                "RestoreOutcome",
+                "migrated",
+                RestoreOutcome {
+                    restored_schema_version: 34,
+                    schema_version: 50,
+                },
+            )?,
+            request::<RestoreRequest>(
+                "RestoreRequest",
+                "confirmed",
+                json!({"restore_id": restore_id, "confirmation": pp_storage::restore::CONFIRMATION}),
+            ),
+            request::<RestoreRequest>(
+                "RestoreRequest",
+                "extra-member",
+                json!({"restore_id": "a".repeat(32), "confirmation": "yes", "path": "/data"}),
+            ),
+        ])
+    }
+
     fn health(
         degraded_detail: Option<&'static str>,
         modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
@@ -2149,6 +2295,71 @@ pub(crate) mod codegen {
         Ok(cases)
     }
 
+    /// `CreateBuildRequest` cases that pin the client's `BuildName` to `BuildName::parse`:
+    /// JavaScript whitespace is trimmed before the 1 to 4096 scalar bound is counted.
+    fn build_create_cases() -> Vec<Value> {
+        let bmp = "\u{5c64}";
+        let astral = "\u{1f9f5}";
+        let pad = |name: String| format!(" \t\u{a0}{name}\u{3000}\n");
+        let mut names = vec![
+            ("empty", json!("")),
+            ("spaces", json!("   ")),
+            ("zero-width-space", json!("\u{200b}")),
+            ("embedded-controls", json!("a\u{0}\u{7}\u{1b}b")),
+            ("bmp-4096", json!(bmp.repeat(4096))),
+            ("astral-4096", json!(astral.repeat(4096))),
+            ("bmp-4096-padded", json!(pad(bmp.repeat(4096)))),
+            ("astral-4096-padded", json!(pad(astral.repeat(4096)))),
+            ("bmp-4097", json!(bmp.repeat(4097))),
+            ("astral-4097", json!(astral.repeat(4097))),
+            ("astral-4097-padded", json!(pad(astral.repeat(4097)))),
+            ("null", Value::Null),
+            ("number", json!(7)),
+            ("object", json!({})),
+        ];
+        // One name per character that JavaScript's trim, `trim_js` or Rust's
+        // `char::is_whitespace` may treat as whitespace, plus near misses.
+        let candidates = ('\u{9}'..='\u{d}')
+            .chain([' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{180e}'])
+            .chain('\u{2000}'..='\u{200d}')
+            .chain(['\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{2060}'])
+            .chain(['\u{3000}', '\u{feff}']);
+        let blank: Vec<_> = candidates
+            .map(|c| (format!("only-u{:04x}", u32::from(c)), json!(c.to_string())))
+            .collect();
+        names.extend(
+            blank
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.clone())),
+        );
+        let mut cases: Vec<Value> = names
+            .into_iter()
+            .map(|(name, value)| {
+                let body = json!({"name": value});
+                request::<CreateBuildRequest>("CreateBuildRequest", &format!("name-{name}"), body)
+            })
+            .collect();
+        cases.extend([
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "with-base",
+                json!({"name": format!("Build {UNICODE}"), "base_project_id": MAX_SAFE}),
+            ),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "no-base",
+                json!({"name": "Rack", "base_project_id": null}),
+            ),
+            request::<CreateBuildRequest>("CreateBuildRequest", "missing-name", json!({})),
+            request::<CreateBuildRequest>(
+                "CreateBuildRequest",
+                "zero-source",
+                json!({"name": "Rack", "base_project_id": 0}),
+            ),
+        ]);
+        cases
+    }
+
     fn printer_cases() -> Result<Vec<Value>, serde_json::Error> {
         let config = |filled: bool| crate::printers::PrinterConfig {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -2330,6 +2541,16 @@ pub(crate) mod codegen {
             )?,
             served("ProfileLayers", "filled", layers(true))?,
             served("ProfileLayers", "nulls", layers(false))?,
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "max",
+                json!({"project_id": MAX_SAFE}),
+            ),
+            request::<SourceAttachmentRequest>(
+                "SourceAttachmentRequest",
+                "zero",
+                json!({"project_id": 0}),
+            ),
             served(
                 "DraftList",
                 "states",
@@ -2374,6 +2595,7 @@ pub(crate) mod codegen {
                 value,
             ));
         }
+        cases.extend(build_create_cases());
         cases.extend(integration_cases()?);
         cases.extend(printer_cases()?);
         cases.extend(deduction_cases()?);
@@ -2413,6 +2635,7 @@ pub(crate) mod codegen {
         cases.extend(catalog_fixtures()?);
         cases.extend(source_file_fixtures()?);
         cases.extend(installation_backup_fixtures()?);
+        cases.extend(installation_restore_fixtures()?);
         let log = farm_log();
         for entry in &log.entries {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);
@@ -2524,6 +2747,7 @@ pub(crate) mod codegen {
             cases.push(served("DraftAcceptPreview", name, value)?);
         }
         cases.extend(header_fixtures()?);
+        cases.extend(experiment_fixtures()?);
         cases.extend(lifecycle_fixtures(&workspaces[0])?);
         for (index, value) in workspaces.into_iter().enumerate() {
             cases.push(served(

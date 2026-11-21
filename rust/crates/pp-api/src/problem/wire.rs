@@ -151,6 +151,13 @@ problem_codes! {
     SourceFileNotFound = "source_file_not_found";
     SourceFileUnrenderable = "source_file_unrenderable";
     SourceFilePathRequired = "source_file_path_required";
+    // `POST /api/v2/installation/restore`. `RestoreBusy` is the one 503 that
+    // proves the restore changed nothing; a 503 without it may follow a
+    // restore whose answer was lost.
+    RestoreNotFound = "restore_not_found";
+    RestoreRolledBack = "restore_rolled_back";
+    RestartRequired = "restart_required";
+    RestoreBusy = "restore_busy";
 }
 
 impl ProblemType {

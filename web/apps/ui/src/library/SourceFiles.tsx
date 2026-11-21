@@ -1,14 +1,37 @@
 import type { SourceFileList } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { StlThumb, type ThumbStatus } from "../screen/StlThumb";
-import { fileName, fileSize, groupByFolder, sourceFilesQuery, type SourceFile } from "./sourceFiles";
+import {
+  fileName,
+  fileSize,
+  groupByFolder,
+  sourceFilesQuery,
+  type SourceFile,
+} from "./sourceFilesModel";
 
 /**
  * Files of the selected Source, grouped by folder. An STL thumbnail is requested
- * once its row is in the viewport; a failed thumbnail is a placeholder.
+ * once its row is in the viewport; a failed thumbnail is a placeholder. `next` is the
+ * next action shown when the Source has no files.
  */
-export function SourceFiles({ sourceId, sourceName }: { sourceId: number; sourceName: string }) {
+export function SourceFiles({
+  sourceId,
+  sourceName,
+  next,
+}: {
+  sourceId: number;
+  sourceName: string;
+  next: ReactNode;
+}) {
   const query = useQuery(sourceFilesQuery(sourceId));
   const headingId = useId();
   const [thumbsBusy, setThumbsBusy] = useState(false);
@@ -31,7 +54,7 @@ export function SourceFiles({ sourceId, sourceName }: { sourceId: number; source
           </button>
         </div>
       )}
-      {query.data && <FileBody list={query.data} sourceId={sourceId} onBusy={onBusy} />}
+      {query.data && <FileBody list={query.data} sourceId={sourceId} onBusy={onBusy} next={next} />}
     </section>
   );
 }
@@ -40,18 +63,25 @@ function FileBody({
   list,
   sourceId,
   onBusy,
+  next,
 }: {
   list: SourceFileList;
   sourceId: number;
   onBusy: (busy: boolean) => void;
+  next: ReactNode;
 }) {
-  const hasThumbs =
-    list.revision_id != null && list.files.some((file) => file.kind === "stl");
+  const hasThumbs = list.revision_id != null && list.files.some((file) => file.kind === "stl");
   useLayoutEffect(() => {
     if (!hasThumbs) onBusy(false);
   }, [hasThumbs, onBusy]);
-  if (list.revision_id == null) return <p>No files yet.</p>;
-  if (list.files.length === 0) return <p>This revision has no files.</p>;
+  if (list.revision_id == null || list.files.length === 0) {
+    return (
+      <>
+        <p>{list.revision_id == null ? "No files yet." : "This revision has no files."}</p>
+        {next}
+      </>
+    );
+  }
   return <GroupedFiles files={list.files} sourceId={sourceId} onBusy={onBusy} />;
 }
 

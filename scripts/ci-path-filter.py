@@ -13,6 +13,50 @@ import sys
 WORKAROUND_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
                          ".rs", ".py", ".sh", ".yml", ".yaml", ".css", ".html")
 
+# `rust (windows tests)` (GRE-1811) runs for every change except one limited to docs/,
+# root Markdown, governance/sync scripts, or .github files other than its own workflow
+# and the zizmor config. Over-selection is intended: a new input cannot be forgotten.
+WINDOWS_TEST_GITHUB_INPUTS = {".github/workflows/rust-cross-os.yml", ".github/zizmor.yml"}
+NON_BUILD_SCRIPT_PREFIXES = ("scripts/linear/", "scripts/evidence/")
+NON_BUILD_SCRIPTS = {
+    "scripts/merge_class.py",
+    "scripts/test_merge_class.py",
+    "scripts/agent-guard.py",
+    "scripts/test_agent_guard.py",
+    "scripts/post_pp_score_status.py",
+    "scripts/test_post_pp_score_status.py",
+}
+
+
+def is_non_build_script(path):
+    return path.startswith(NON_BUILD_SCRIPT_PREFIXES) or path in NON_BUILD_SCRIPTS
+
+
+def windows_tests_relevant(path):
+    if path.startswith("docs/") or ("/" not in path and path.endswith(".md")):
+        return False
+    if is_non_build_script(path):
+        return False
+    return not path.startswith(".github/") or path in WINDOWS_TEST_GITHUB_INPUTS
+
+
+# `rust image` / `rust image (arm64)` runs on every PR except one limited to docs/,
+# root Markdown (other than the legal notices Dockerfile.rust copies), governance/sync
+# scripts, or .github files other than its own workflow. Over-selection is intended:
+# a new image input cannot be forgotten.
+RUST_IMAGE_GITHUB_INPUTS = {".github/workflows/rust-image.yml"}
+RUST_IMAGE_ROOT_MD_INPUTS = {"LICENSE-SUMMARY.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"}
+
+
+def rust_image_relevant(path):
+    if path.startswith("docs/"):
+        return False
+    if "/" not in path and path.endswith(".md") and path not in RUST_IMAGE_ROOT_MD_INPUTS:
+        return False
+    if is_non_build_script(path):
+        return False
+    return not path.startswith(".github/") or path in RUST_IMAGE_GITHUB_INPUTS
+
 
 def relevant(path, kind):
     # A filter change must test its own consumers.
@@ -20,6 +64,10 @@ def relevant(path, kind):
                 "scripts/ci-affected-nextest-filter.py",
                 "scripts/test_ci_affected_nextest_filter.py"}:
         return True
+    if kind == "windows-tests":
+        return windows_tests_relevant(path)
+    if kind == "rust-image":
+        return rust_image_relevant(path)
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
@@ -37,9 +85,11 @@ def relevant(path, kind):
                 and path not in {"web/DEPLOY.md", "LICENSE-SUMMARY.md", "ATTRIBUTION.md",
                                  "THIRD_PARTY_NOTICES.md"}):
             return False
+        script_input = path.startswith("scripts/") and (kind != "ui" or not is_non_build_script(path))
         shared = (path.startswith(("web/scripts/", "web/eslint", "web/knip", "web/tsconfig"))
                   or re.fullmatch(r"web/package[^/]*\.json", path) is not None
-                  or path.startswith(("scripts/", "fixtures/", "manifests/", ".github/workflows/",
+                  or script_input
+                  or path.startswith(("fixtures/", "manifests/", ".github/workflows/",
                                       ".github/actions/"))
                   or path in {".github/dependabot.yml", ".github/zizmor.yml",
                               ".github/actionlint.yaml", ".github/actionlint.yml"})
@@ -69,7 +119,7 @@ def relevant(path, kind):
 
 def select(event, base, head, kind, labels=()):
     if event == "merge_group":
-        return kind in {"rust", "actions", "windows", "macos", "ui"}
+        return kind in {"rust", "rust-image", "actions", "windows", "macos", "ui"}
     if event != "pull_request":
         return True
     if kind in {"windows", "macos"}:
@@ -83,19 +133,24 @@ def select(event, base, head, kind, labels=()):
         ).decode("utf-8", errors="surrogateescape").split("\0")
     except subprocess.CalledProcessError:
         return True
-    return any(relevant(path, kind) for path in paths if path)
+    paths = [path for path in paths if path]
+    # An empty diff cannot show that deny-listed job inputs are unchanged.
+    if kind in {"windows-tests", "rust-image"} and not paths:
+        return True
+    return any(relevant(path, kind) for path in paths)
 
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "actions", "windows", "macos", "ui", "web"}:
-        raise SystemExit("Expected rust, actions, windows, macos, ui or web")
+    if kind not in {"rust", "rust-image", "actions", "windows", "windows-tests", "macos", "ui", "web"}:
+        raise SystemExit("Expected rust, rust-image, actions, windows, windows-tests, macos, ui or web")
     labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
                        os.environ.get("HEAD_SHA"), kind, labels)).lower()
     message = f"{kind} inputs changed: {value}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"{kind if kind in {'windows', 'macos'} else 'relevant'}={value}\n")
+        key = {"windows": "windows", "macos": "macos", "windows-tests": "windows_tests"}.get(kind, "relevant")
+        output.write(f"{key}={value}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)

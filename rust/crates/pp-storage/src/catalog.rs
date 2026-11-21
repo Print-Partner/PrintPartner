@@ -1237,6 +1237,28 @@ fn create_source(
     tenant: &str,
     s: CreateSource,
 ) -> Result<SourceSummary> {
+    insert_source(tx, &state.directory.join("repos"), tenant, s)
+}
+
+/// Runs `POST /sources`' checks on a new Source without writing: its GitHub
+/// location rules and name check. [`insert_source`] stores the Source it
+/// answers.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn check_new_source(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    s: CreateSource,
+) -> Result<CreateSource> {
+    rebuild::create(tx, tenant, s)
+}
+
+/// Stores a new Source, its folder under `repos`.
+pub(crate) fn insert_source(
+    tx: &Transaction<'_>,
+    repos: &std::path::Path,
+    tenant: &str,
+    s: CreateSource,
+) -> Result<SourceSummary> {
     let name = trim(&s.name);
     ensure!(!name.is_empty(), "Source name is required");
     let exists: bool = tx.query_row(
@@ -1257,7 +1279,7 @@ fn create_source(
     let metadata_json = stamped_create_metadata(s.metadata)?;
     tx.execute("INSERT INTO projects(tenant_id,name,url,branch,tag,source_kind,source_type,role,metadata_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![tenant,name,s.url.unwrap_or_default(),s.branch.unwrap_or("main".into()),s.tag.as_deref().map(trim).filter(|s|!s.is_empty()),kind,source_type,s.role.unwrap_or("unassigned".into()),metadata_json])?;
     let id = tx.last_insert_rowid();
-    let path = state.directory.join("repos").join(id.to_string());
+    let path = repos.join(id.to_string());
     tx.execute(
         "UPDATE projects SET local_path=?1 WHERE tenant_id=?2 AND id=?3",
         params![pp_os::display_path(&path).to_string_lossy(), tenant, id],

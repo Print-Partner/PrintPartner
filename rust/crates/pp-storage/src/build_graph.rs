@@ -14,7 +14,7 @@ pub use source_roles::{RoleChange, RoleSet, SourceRolesError};
 pub mod role_filament;
 pub use role_filament::{AssignedRole, RoleFilamentError};
 pub mod import_inputs;
-pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, Target};
+pub use import_inputs::{ImportInput, ImportInputsError, Imported, Page, RepoKey, Target};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
@@ -45,6 +45,10 @@ pub enum BudgetResource {
     GraphBytes,
     PlateOverlapChecks,
 }
+
+/// The most Builds one installation lists. `List` refuses more, so `Create`
+/// refuses to make the next one and the Builds list stays readable.
+pub const MAX_BUILDS: usize = 64;
 
 #[derive(Debug)]
 pub enum Failure {
@@ -165,6 +169,8 @@ pub enum BuildOutcome {
     DuplicateName {
         name: String,
     },
+    /// The installation already has [`MAX_BUILDS`] Builds; nothing was written.
+    BuildLimitReached,
     DuplicateAttachment {
         source_name: String,
     },
@@ -422,6 +428,14 @@ pub(crate) fn mutation(
                     name: name.as_str().to_owned(),
                 });
             }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM build_profiles WHERE tenant_id=?1",
+                [tenant],
+                |row| row.get(0),
+            )?;
+            if count >= MAX_BUILDS as i64 {
+                return Ok(BuildOutcome::BuildLimitReached);
+            }
             let source = if let Some(source) = base_source {
                 let id = source.get() as i64;
                 if source_name(tx, tenant, id)?.is_none() {
@@ -647,12 +661,14 @@ fn read(
             let mut budget = read_model::graph::Budget::default();
             let ids = {
                 let mut statement = tx.prepare(
-                    "SELECT id FROM build_profiles WHERE tenant_id=?1 ORDER BY name,id LIMIT 65",
+                    "SELECT id FROM build_profiles WHERE tenant_id=?1 ORDER BY name,id LIMIT ?2",
                 )?;
-                let rows = statement.query_map([tenant], |row| row.get::<_, i64>(0))?;
+                let limit = MAX_BUILDS as i64 + 1;
+                let rows =
+                    statement.query_map(params![tenant, limit], |row| row.get::<_, i64>(0))?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
-            ensure!(ids.len() <= 64, Failure::TooManyBuilds);
+            ensure!(ids.len() <= MAX_BUILDS, Failure::TooManyBuilds);
             let profiles = ids
                 .into_iter()
                 .map(|build| {

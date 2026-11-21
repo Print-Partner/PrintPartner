@@ -429,12 +429,18 @@ describe("UI2-03 Builds list states", () => {
     expect(section.textContent).not.toMatch(/\d/);
   });
 
-  it("empty says so", async () => {
+  it("empty says so and names Create Build", async () => {
     renderAt(
       "/builds",
       core(() => json({ profiles: [] })),
     );
-    expect(await screen.findByText("No Builds yet. Builds you create appear here.")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "No Builds yet. Press Create Build to start one from a Library Source.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Build" })).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Your first Build" })).toBeTruthy();
   });
 
   it("error with nothing loaded offers Retry and recovers", async () => {

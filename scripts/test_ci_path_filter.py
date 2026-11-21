@@ -75,12 +75,90 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "ui"), path)
 
     def test_merge_groups_select_queue_validation_only(self):
-        for kind in ("rust", "actions", "windows", "macos", "ui", "web"):
+        for kind in ("rust", "rust-image", "actions", "windows", "macos", "ui", "web"):
             self.assertEqual(ci_filter.select("merge_group", "", "", kind), kind != "web")
             for event in ("push", "schedule", "workflow_call", "workflow_dispatch"):
                 self.assertTrue(ci_filter.select(event, "", "", kind))
             self.assertEqual(ci_filter.select("pull_request", "", "", kind),
                              kind not in {"windows", "macos"})
+
+    def test_rust_image_and_governance_script_filters(self):
+        for path in ("Dockerfile.rust", ".dockerignore", "rust/crates/pp-server/src/main.rs",
+                     "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
+                     "web/apps/web/src/App.tsx", "web/apps/web/vite.config.ts",
+                     "web/apps/web/package.json", "web/apps/server/src/app.ts",
+                     "web/apps/server/src/config.ts", "web/apps/server/package.json",
+                     "web/apps/server/tsconfig.build.json", "web/DEPLOY.md",
+                     "fixtures/parity/jobs-model/jobs-model.json",
+                     "scripts/docker-rust-smoke.py", "scripts/unknown-build-helper.py",
+                     ".github/workflows/rust-image.yml", "web/package-lock.json",
+                     "rust-toolchain.toml", "LICENSE", "LICENSE-SUMMARY.md",
+                     "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md", "justfile",
+                     ".gitattributes", "new-top-level/file.txt", "docs.md/x.rs"):
+            with self.subTest(kind="rust-image", selected=True, path=path):
+                self.assertTrue(ci_filter.relevant(path, "rust-image"), path)
+        for path in ("docs/development/ci.md", "docs/index.html", "README.md", "AGENTS.md",
+                     "scripts/merge_class.py", "scripts/test_merge_class.py",
+                     "scripts/agent-guard.py", "scripts/test_agent_guard.py",
+                     "scripts/post_pp_score_status.py", "scripts/test_post_pp_score_status.py",
+                     "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py",
+                     ".github/workflows/actionlint.yml", ".github/workflows/web-ci.yml",
+                     ".github/CODEOWNERS", ".github/zizmor.yml"):
+            with self.subTest(kind="rust-image", selected=False, path=path):
+                self.assertFalse(ci_filter.relevant(path, "rust-image"), path)
+        for path in ("scripts/merge_class.py", "scripts/test_merge_class.py",
+                     "scripts/agent-guard.py", "scripts/test_agent_guard.py",
+                     "scripts/post_pp_score_status.py", "scripts/test_post_pp_score_status.py",
+                     "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py"):
+            self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
+            self.assertFalse(ci_filter.relevant(path, "ui"), path)
+
+    def test_rust_image_single_path_diffs_and_empty_diff_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
+
+            def select(base, head):
+                output = Path(directory, "output")
+                output.write_text("")
+                subprocess.run(["python3", str(SCRIPT), "rust-image"], cwd=directory, check=True,
+                               capture_output=True,
+                               env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
+                                    "HEAD_SHA": head, "GITHUB_OUTPUT": str(output),
+                                    "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
+                return output.read_text()
+
+            git("init", "-q")
+            git("config", "user.email", "proof@example.com")
+            git("config", "user.name", "Proof")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            for paths, expected in (
+                    (["docs/development/ci.md"], "false"),
+                    (["README.md"], "false"),
+                    (["scripts/merge_class.py"], "false"),
+                    (["scripts/linear/pr_status_sync.py"], "false"),
+                    ([".github/workflows/web-ci.yml"], "false"),
+                    (["docs/x.md", "README.md", "scripts/agent-guard.py",
+                      ".github/workflows/actionlint.yml"], "false"),
+                    (["web/apps/web/src/App.tsx"], "true"),
+                    (["web/apps/web/vite.config.ts"], "true"),
+                    (["web/apps/server/src/app.ts"], "true"),
+                    (["web/apps/server/src/config.ts"], "true"),
+                    (["new-top-level/file.txt"], "true"),
+                    (["LICENSE-SUMMARY.md"], "true"),
+                    ([".github/workflows/rust-image.yml"], "true"),
+                    (["docs/x.md", "web/apps/server/src/config.ts"], "true")):
+                with self.subTest(paths=paths):
+                    git("checkout", "-q", "--detach", base)
+                    for path in paths:
+                        Path(directory, path).parent.mkdir(parents=True, exist_ok=True)
+                        Path(directory, path).write_text("proof\n")
+                        git("add", "--", path)
+                    git("commit", "-qm", "change")
+                    self.assertEqual(select(base, git("rev-parse", "HEAD")), f"relevant={expected}\n")
+            # An empty diff fails closed and runs the image jobs.
+            self.assertEqual(select(base, base), "relevant=true\n")
 
     def test_rust_inputs(self):
         for path in ["rust/Cargo.lock", "rust/crates/pp-storage/src/lib.rs",
@@ -106,6 +184,84 @@ class CiPathFilterTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(ci_filter.relevant(path, "rust"))
 
+    def test_windows_tests_runs_unless_every_path_is_skipped(self):
+        for path in [
+                # Round 1: the three inputs the first selector missed.
+                "rust/scripts/precompress-spa.py", "web/package-lock.json", "web/apps/server/package.json",
+                # Round 2: nested Markdown, workspace, cargo, toolchain, npm and git files.
+                "web/apps/web/AGENTS.md", "web/packages/contracts/README.md", "web/apps/web/public/new.md",
+                "rust/crates/pp-desktop/Cargo.toml", "web/.npmrc", "rust/.cargo/config.toml",
+                "rust/rust-toolchain", "fixtures/parity/yaml-flow-properties/node.json",
+                # Round 3: the skipped workspaces, now covered whole.
+                "web/apps/ui/dist", "web/apps/ui/dist/index.html", "web/apps/ui/.gitattributes",
+                "web/packages/rust-client/.gitattributes", "web/apps/ui/src/App.tsx",
+                "web/packages/rust-client/src/client.ts",
+                # Round 3: root files and scripts the changes job runs.
+                "npm-shrinkwrap.json", "scripts/test_alert_macos_main.py", "scripts/alert-macos-main.py",
+                "scripts/workaround-ratchet.mjs", "scripts/test_ci_rust_runner.py",
+                "scripts/ci-rust-runner.py",
+                # Any other root file, a root dotfile, and a new top-level directory.
+                "justfile", "Cargo.lock", "rust-toolchain.toml", ".gitattributes", ".editorconfig",
+                "new-top-level/file.txt", "docs.md/x.rs",
+                # The job's own workflow and the zizmor config.
+                ".github/workflows/rust-cross-os.yml", ".github/zizmor.yml"]:
+            self.assertTrue(ci_filter.relevant(path, "windows-tests"), path)
+        for path in ["docs/development/ci.md", "docs/index.html", "README.md", "AGENTS.md",
+                     ".github/workflows/web-ci.yml", ".github/CODEOWNERS",
+                     ".github/actions/linux-gui-deps/action.yml"]:
+            self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
+
+    def test_windows_tests_fails_towards_running(self):
+        self.assertTrue(ci_filter.select("workflow_dispatch", "", "", "windows-tests"))
+        self.assertTrue(ci_filter.select("pull_request", "", "", "windows-tests"))
+        self.assertTrue(ci_filter.select("pull_request", "not-a-sha", "1" * 40, "windows-tests"))
+        self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, "windows-tests"))
+        self.assertFalse(ci_filter.select("merge_group", "", "", "windows-tests"))
+
+    def test_windows_tests_writes_its_own_output_from_a_real_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
+
+            def select(base, head):
+                output = Path(directory, "output")
+                output.write_text("")
+                subprocess.run(["python3", str(SCRIPT), "windows-tests"], cwd=directory, check=True,
+                               capture_output=True,
+                               env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
+                                    "HEAD_SHA": head, "GITHUB_OUTPUT": str(output),
+                                    "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
+                return output.read_text()
+
+            git("init", "-q")
+            git("config", "user.email", "proof@example.com")
+            git("config", "user.name", "Proof")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            for paths, expected in (
+                    (["docs/development/ci.md"], "false"),
+                    (["README.md"], "false"),
+                    ([".github/workflows/web-ci.yml"], "false"),
+                    (["docs/x.md", "README.md", ".github/workflows/web-ci.yml"], "false"),
+                    (["docs/x.md", "rust/y.rs"], "true"),
+                    (["web/apps/ui/dist"], "true"),
+                    (["web/apps/ui/src/App.tsx"], "true"),
+                    (["npm-shrinkwrap.json"], "true"),
+                    ([".nvmrc"], "true"),
+                    (["new-top-level/file.txt"], "true"),
+                    (["web/apps/web/AGENTS.md"], "true"),
+                    ([".github/workflows/rust-cross-os.yml"], "true")):
+                with self.subTest(paths=paths):
+                    git("checkout", "-q", "--detach", base)
+                    for path in paths:
+                        Path(directory, path).parent.mkdir(parents=True, exist_ok=True)
+                        Path(directory, path).write_text("proof\n")
+                        git("add", "--", path)
+                    git("commit", "-qm", "change")
+                    self.assertEqual(select(base, git("rev-parse", "HEAD")), f"windows_tests={expected}\n")
+            # A diff with no paths, as from a head equal to its base, runs the job.
+            self.assertEqual(select(base, base), "windows_tests=true\n")
+
     def test_linux_setup_selects_rust(self):
         self.assertTrue(ci_filter.relevant("scripts/setup-ci-linux.sh", "rust"))
 
@@ -118,7 +274,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "actions", "ui", "web"]:
+        for kind in ["rust", "rust-image", "actions", "ui", "web"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))

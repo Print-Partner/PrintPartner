@@ -354,22 +354,21 @@ struct Seeded {
     build: u64,
     sources: [i64; 3],
     evidence: [String; 2],
+    /// The Library, B's layers and B's Accepted Plan (none) once seeded.
+    invariant: Value,
 }
 
 async fn seed(gateway: &Gateway) -> Seeded {
     let mut mcp = gateway.mcp("/api/v1/mcp").await;
     let build = mcp.build("Voron for Sam").await;
-    let sources = [
-        gateway
-            .create_source("S1", "https://github.com/example/s1", "mod")
-            .await,
-        gateway
-            .create_source("S2", "https://github.com/example/s2", "overlay")
-            .await,
-        gateway
-            .create_source("S3", "https://github.com/example/s3", "mod")
-            .await,
-    ];
+    let mut sources = [0; 3];
+    for (index, (name, role)) in [("S1", "mod"), ("S2", "overlay"), ("S3", "mod")]
+        .into_iter()
+        .enumerate()
+    {
+        let url = format!("https://github.com/example/{}", name.to_lowercase());
+        sources[index] = gateway.create_source(name, &url, role).await;
+    }
     let base = json!({ "project_id": sources[0] });
     let path = format!("/api/v2/plans/{build}/layers/base");
     let (status, body) = gateway.rest(Method::PUT, &path, Some(base)).await;
@@ -391,342 +390,377 @@ async fn seed(gateway: &Gateway) -> Seeded {
     for item in brief["evidence"].as_array().unwrap() {
         assert!(item["source_role"].is_null(), "no role yet: {item}");
     }
+    let invariant = gateway.untouched(build).await;
+    assert_eq!(
+        invariant["accepted"]["kind"], "empty",
+        "no Accepted Plan: {invariant}"
+    );
     Seeded {
         build,
         sources,
         evidence,
+        invariant,
     }
+}
+
+impl Seeded {
+    /// B's layers and Accepted Plan are as seeded.
+    async fn build_kept(&self, gateway: &Gateway) {
+        let now = gateway.untouched(self.build).await;
+        assert_eq!(now["layers"], self.invariant["layers"], "B's layers");
+        assert_eq!(now["accepted"], self.invariant["accepted"], "Accepted Plan");
+    }
+
+    fn roles(&self, first: &str, second: &str) -> Value {
+        let [e1, e2] = &self.evidence;
+        json!({ "plan_id": self.build, "roles": [
+            { "evidence_id": e1, "role": first },
+            { "evidence_id": e2, "role": second },
+        ] })
+    }
+
+    fn inputs(&self, inputs: Value) -> Value {
+        json!({ "plan_id": self.build, "inputs": inputs })
+    }
+}
+
+/// Starts the server on a disposable directory, signs in and seeds B.
+fn open(root: &std::path::Path) -> (tokio::runtime::Runtime, Gateway, Seeded) {
+    let server = rust_only::Server::start(root);
+    let runtime = runtime();
+    let (gateway, seeded) = runtime.block_on(async {
+        let gateway = Gateway::open(server).await;
+        let seeded = seed(&gateway).await;
+        (gateway, seeded)
+    });
+    (runtime, gateway, seeded)
+}
+
+impl Gateway {
+    /// SIGTERM; the server stops cleanly and never logged the API key.
+    fn stop(self) {
+        let (exit, printed, logged) = self.server.stop();
+        assert!(exit.success(), "{logged}");
+        assert!(
+            !printed.contains(&self.key) && !logged.contains(&self.key),
+            "key in output"
+        );
+    }
+}
+
+/// No key or an unknown key gets 401 on both paths and proposes nothing;
+/// `/mcp` lists both tools; a Build without a brief is refused at propose.
+async fn roles_refused_without_a_key_or_a_brief(gateway: &Gateway, seeded: &Seeded) {
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let call = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+        "params": { "name": ROLES, "arguments": seeded.roles("structural_base", "addon") } });
+    for path in ["/api/v1/mcp", "/mcp"] {
+        for key in [None, Some(UNKNOWN_KEY)] {
+            let (status, body, _) = gateway.post_mcp(path, key, None, &call).await;
+            assert_eq!(status, 401, "{path} {key:?}: {body}");
+        }
+    }
+    let session = Some(mcp.session.as_str());
+    let (status, body, _) = gateway.post_mcp("/api/v1/mcp", None, session, &call).await;
+    assert_eq!(status, 401, "keyless call on a keyed session: {body}");
+    assert!(mcp.pending().await.is_empty());
+
+    let mut root_mcp = gateway.mcp("/mcp").await;
+    let tools = root_mcp.tools().await;
+    for tool in [ROLES, IMPORT] {
+        assert!(tools.iter().any(|name| name == tool), "{tool} in {tools:?}");
+    }
+
+    let plain = Some(json!({ "name": "No brief" }));
+    let (status, plain) = gateway.rest(Method::POST, "/api/v2/plans", plain).await;
+    assert!(status == 200 || status == 201, "{status}: {plain}");
+    let role = json!([{ "evidence_id": seeded.evidence[0], "role": "addon" }]);
+    let no_brief = json!({ "plan_id": plain["id"], "roles": role });
+    mcp.refused_at_propose(ROLES, no_brief.clone(), "no_planning_brief")
+        .await;
+    root_mcp
+        .refused_at_propose(ROLES, no_brief, "no_planning_brief")
+        .await;
+    assert_eq!(gateway.untouched(seeded.build).await, seeded.invariant);
+}
+
+/// Propose writes nothing; confirm sets both roles and clears draft D, and
+/// the Library, B's layers and the Accepted Plan stay as they are.
+async fn roles_set_and_clear_the_selected_draft(gateway: &Gateway, seeded: &Seeded) {
+    let (build, [e1, e2]) = (seeded.build, &seeded.evidence);
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    gateway.select_draft(build);
+    assert_eq!(gateway.brief(build).await["draft_id"], DRAFT);
+    let action = mcp
+        .proposed(build, ROLES, seeded.roles("structural_base", "addon"))
+        .await;
+    let (applied, error) = mcp.confirm(&action).await;
+    assert!(!error, "{applied}");
+    assert_eq!(
+        applied,
+        json!({ "ok": true, "result": { "updated": 2, "evidence": [
+            { "id": e1, "source_id": seeded.sources[0], "source_role": "structural_base" },
+            { "id": e2, "source_id": seeded.sources[1], "source_role": "addon" },
+        ] } })
+    );
+    let planning = gateway.planning(build).await;
+    let brief = &planning["planning"]["brief"];
+    let set: Vec<_> = brief["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| (item["id"].clone(), item["source_role"].clone()))
+        .collect();
+    let expected = [
+        (json!(e1), json!("structural_base")),
+        (json!(e2), json!("addon")),
+    ];
+    assert_eq!(set, expected);
+    assert!(
+        brief["draft_id"].is_null(),
+        "selected draft cleared: {brief}"
+    );
+    let phase = &planning["planning"]["planning_phase"];
+    assert_eq!(phase, &json!({ "kind": "preparing" }), "{planning}");
+    assert_eq!(gateway.untouched(build).await, seeded.invariant);
+}
+
+/// Confirm refuses an unknown evidence id, a role outside the four and a
+/// second structural base with a code, and the brief stays as it is.
+async fn roles_refused_at_confirm(gateway: &Gateway, seeded: &Seeded) {
+    let (build, e2) = (seeded.build, &seeded.evidence[1]);
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    for (roles, code) in [
+        (
+            json!([{ "evidence_id": "E9", "role": "addon" }]),
+            "evidence_not_found",
+        ),
+        (
+            json!([{ "evidence_id": e2, "role": "base" }]),
+            "invalid_source_role",
+        ),
+        (
+            json!([{ "evidence_id": e2, "role": "structural_base" }]),
+            "multiple_structural_bases",
+        ),
+    ] {
+        let args = json!({ "plan_id": build, "roles": roles });
+        let action = mcp.proposed(build, ROLES, args).await;
+        let refused = mcp.refused_at_confirm(build, &action, code).await;
+        assert!(refused["detail"].is_string(), "{refused}");
+    }
+    assert_eq!(
+        mcp.pending().await.len(),
+        3,
+        "refused proposals stay pending"
+    );
+    assert_eq!(gateway.untouched(build).await, seeded.invariant);
 }
 
 #[test]
 fn source_roles_through_the_rust_only_gateway() {
     let root = scratch::Scratch::new("pp-mcp-gateway-roles-");
-    let server = rust_only::Server::start(&root);
-    runtime().block_on(async {
-        let gateway = Gateway::open(server).await;
-        let seeded = seed(&gateway).await;
-        let (build, [e1, e2]) = (seeded.build, seeded.evidence.clone());
-        let invariant = gateway.untouched(build).await;
-        assert_eq!(
-            invariant["accepted"]["kind"], "empty",
-            "no Accepted Plan: {invariant}"
-        );
-        let roles = |first: &str, second: &str| {
-            json!({ "plan_id": build, "roles": [
-                { "evidence_id": e1, "role": first },
-                { "evidence_id": e2, "role": second },
-            ] })
-        };
-
-        // No key, an unknown key: 401 on both paths, and no proposal.
-        let mut mcp = gateway.mcp("/api/v1/mcp").await;
-        let call = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
-            "params": { "name": ROLES, "arguments": roles("structural_base", "addon") } });
-        for path in ["/api/v1/mcp", "/mcp"] {
-            for key in [None, Some(UNKNOWN_KEY)] {
-                let (status, body, _) = gateway.post_mcp(path, key, None, &call).await;
-                assert_eq!(status, 401, "{path} {key:?}: {body}");
-            }
-        }
-        let (status, body, _) = gateway
-            .post_mcp("/api/v1/mcp", None, Some(&mcp.session), &call)
-            .await;
-        assert_eq!(status, 401, "keyless call on a keyed session: {body}");
-        assert!(mcp.pending().await.is_empty());
-
-        // `/mcp` reaches both tools.
-        let mut root_mcp = gateway.mcp("/mcp").await;
-        let tools = root_mcp.tools().await;
-        for tool in [ROLES, IMPORT] {
-            assert!(tools.iter().any(|name| name == tool), "{tool} in {tools:?}");
-        }
-
-        // A Build with no brief is refused at propose, on both paths.
-        let (status, plain) = gateway
-            .rest(
-                Method::POST,
-                "/api/v2/plans",
-                Some(json!({ "name": "No brief" })),
-            )
-            .await;
-        assert!(status == 200 || status == 201, "{status}: {plain}");
-        let plain = plain["id"].as_u64().unwrap();
-        let no_brief =
-            json!({ "plan_id": plain, "roles": [{ "evidence_id": e1, "role": "addon" }] });
-        mcp.refused_at_propose(ROLES, no_brief.clone(), "no_planning_brief")
-            .await;
-        root_mcp
-            .refused_at_propose(ROLES, no_brief, "no_planning_brief")
-            .await;
-
-        // Propose writes nothing; confirm sets both roles and clears draft D.
-        gateway.select_draft(build);
-        assert_eq!(gateway.brief(build).await["draft_id"], DRAFT);
-        let action = mcp
-            .proposed(build, ROLES, roles("structural_base", "addon"))
-            .await;
-        let (applied, error) = mcp.confirm(&action).await;
-        assert!(!error, "{applied}");
-        assert_eq!(
-            applied,
-            json!({ "ok": true, "result": { "updated": 2, "evidence": [
-                { "id": e1, "source_id": seeded.sources[0], "source_role": "structural_base" },
-                { "id": e2, "source_id": seeded.sources[1], "source_role": "addon" },
-            ] } })
-        );
-        let planning = gateway.planning(build).await;
-        let brief = &planning["planning"]["brief"];
-        let set: Vec<_> = brief["evidence"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|item| (item["id"].clone(), item["source_role"].clone()))
-            .collect();
-        assert_eq!(
-            set,
-            [
-                (json!(e1), json!("structural_base")),
-                (json!(e2), json!("addon"))
-            ]
-        );
-        assert!(
-            brief["draft_id"].is_null(),
-            "selected draft cleared: {brief}"
-        );
-        assert_eq!(
-            planning["planning"]["planning_phase"],
-            json!({ "kind": "preparing" }),
-            "{planning}"
-        );
-        assert_eq!(
-            gateway.untouched(build).await,
-            invariant,
-            "Library, layers, Accepted Plan"
-        );
-
-        // Refused at confirm with a code; the brief stays as it is.
-        for (roles, code) in [
-            (
-                json!([{ "evidence_id": "E9", "role": "addon" }]),
-                "evidence_not_found",
-            ),
-            (
-                json!([{ "evidence_id": e2, "role": "base" }]),
-                "invalid_source_role",
-            ),
-            (
-                json!([{ "evidence_id": e2, "role": "structural_base" }]),
-                "multiple_structural_bases",
-            ),
-        ] {
-            let args = json!({ "plan_id": build, "roles": roles });
-            let action = mcp.proposed(build, ROLES, args).await;
-            let refused = mcp.refused_at_confirm(build, &action, code).await;
-            assert!(refused["detail"].is_string(), "{refused}");
-        }
-        // Each refused proposal stays pending.
-        assert_eq!(mcp.pending().await.len(), 3);
-        assert_eq!(
-            gateway.untouched(build).await,
-            invariant,
-            "Library, layers, Accepted Plan"
-        );
+    let (runtime, gateway, seeded) = open(&root);
+    runtime.block_on(async {
+        roles_refused_without_a_key_or_a_brief(&gateway, &seeded).await;
+        roles_set_and_clear_the_selected_draft(&gateway, &seeded).await;
+        roles_refused_at_confirm(&gateway, &seeded).await;
     });
+    gateway.stop();
+}
+
+/// No key gets 401; bad inputs are refused at propose with a code.
+async fn import_refused_without_a_key_or_at_propose(gateway: &Gateway, seeded: &Seeded) {
+    let s3 = seeded.sources[2];
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let call = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+        "params": { "name": IMPORT, "arguments": seeded.inputs(json!([{ "source_id": s3 }])) } });
+    let session = Some(mcp.session.as_str());
+    let (status, body, _) = gateway.post_mcp("/api/v1/mcp", None, session, &call).await;
+    assert_eq!(status, 401, "{body}");
+    assert!(mcp.pending().await.is_empty());
+    for (inputs, code) in [
+        (json!([{ "source_id": 999_999 }]), "source_not_found"),
+        (
+            json!([{ "source_id": s3, "kind": "part" }]),
+            "invalid_evidence_kind",
+        ),
+        (
+            json!([{ "source_id": s3, "derived_from_evidence_id": "E9" }]),
+            "derived_evidence_not_found",
+        ),
+        (
+            json!([{ "url": "ftp://example.com/kit.zip" }]),
+            "invalid_url",
+        ),
+    ] {
+        mcp.refused_at_propose(IMPORT, seeded.inputs(inputs), code)
+            .await;
+    }
+    assert_eq!(gateway.untouched(seeded.build).await, seeded.invariant);
+}
+
+/// Library Source S3: confirm attaches it once and clears draft D, and no
+/// Source is created or changed; importing it again keeps one item.
+async fn import_attaches_a_library_source(gateway: &Gateway, seeded: &Seeded) {
+    let (build, s3) = (seeded.build, seeded.sources[2]);
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    gateway.select_draft(build);
+    let inputs = seeded.inputs(json!([{ "source_id": s3, "kind": "mod" }]));
+    let action = mcp.proposed(build, IMPORT, inputs).await;
+    let (applied, error) = mcp.confirm(&action).await;
+    assert!(!error, "{applied}");
+    let id = applied["result"]["evidence"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        applied,
+        json!({ "ok": true, "result": {
+            "evidence": [{ "id": id, "kind": "mod", "source_id": s3,
+                "url": format!("printpartner:source:{s3}"), "upload_required": false }],
+            "created_source_ids": [],
+        } })
+    );
+    let brief = gateway.brief(build).await;
+    let items = evidence_for(&brief, s3);
+    assert_eq!(items.len(), 1, "{brief}");
+    assert_eq!(
+        (&items[0]["id"], &items[0]["kind"]),
+        (&json!(id), &json!("mod"))
+    );
+    assert!(
+        brief["draft_id"].is_null(),
+        "selected draft cleared: {brief}"
+    );
+    assert_eq!(
+        gateway.untouched(build).await,
+        seeded.invariant,
+        "no Source changed"
+    );
+
+    let again = seeded.inputs(json!([{ "source_id": s3, "title": "Kit" }]));
+    mcp.applied(build, IMPORT, again).await;
+    let items = evidence_for(&gateway.brief(build).await, s3);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        (&items[0]["id"], &items[0]["title"]),
+        (&json!(id), &json!("Kit"))
+    );
+    assert_eq!(gateway.untouched(build).await, seeded.invariant);
+}
+
+/// A GitHub URL creates one unsynced git Source, listed by `GET /sources`;
+/// the same URL on another Build reuses it.
+async fn import_creates_a_git_source_once(gateway: &Gateway, seeded: &Seeded) {
+    let build = seeded.build;
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let library = gateway.sources().await;
+    let kit = "https://github.com/owner/kit";
+    let imported = mcp
+        .applied(build, IMPORT, seeded.inputs(json!([{ "url": kit }])))
+        .await;
+    let created = imported["created_source_ids"].clone();
+    let kit_id = created[0].as_i64().unwrap();
+    assert_eq!(created, json!([kit_id]), "{imported}");
+    assert_eq!(imported["evidence"][0]["source_id"], kit_id);
+    let listed = gateway.sources().await;
+    assert_eq!(listed.len(), library.len() + 1);
+    let source = listed.iter().find(|source| source["id"] == kit_id).unwrap();
+    assert_eq!(
+        (&source["url"], &source["source_type"]),
+        (&json!(kit), &json!("git"))
+    );
+    assert!(source["last_synced_at"].is_null(), "unsynced: {source}");
+
+    let other = mcp.build("Second kit").await;
+    let again = json!({ "plan_id": other, "inputs": [{ "url": kit }] });
+    let reused = mcp.applied(other, IMPORT, again).await;
+    assert_eq!(reused["created_source_ids"], json!([]), "{reused}");
+    assert_eq!(reused["evidence"][0]["source_id"], kit_id);
+    assert_eq!(gateway.sources().await, listed, "reused, not created");
+    seeded.build_kept(gateway).await;
+}
+
+/// Model pages need an upload and create no Source; an extract is stored
+/// with its SHA-256 and retrieval time.
+async fn import_attaches_pages_and_an_extract(gateway: &Gateway, seeded: &Seeded) {
+    let build = seeded.build;
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let library = gateway.sources().await;
+    let inputs = seeded.inputs(json!([
+        { "url": "https://www.printables.com/model/12345-kit" },
+        { "url": "https://makerworld.com/en/models/678" },
+        { "url": "https://example.com/guide", "extract": " Print the frame first. " },
+    ]));
+    let imported = mcp.applied(build, IMPORT, inputs).await;
+    let fields: Vec<_> = imported["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| (item["source_id"].clone(), item["upload_required"].clone()))
+        .collect();
+    let page = (Value::Null, json!(true));
+    assert_eq!(fields, [page.clone(), page, (Value::Null, json!(false))]);
+    assert_eq!(imported["created_source_ids"], json!([]));
+    assert_eq!(gateway.sources().await, library, "a page creates no Source");
+    let brief = gateway.brief(build).await;
+    let guide = brief["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["normalized_url"] == "https://example.com/guide")
+        .unwrap_or_else(|| panic!("{brief}"))
+        .clone();
+    assert_eq!(guide["extract"], "Print the frame first.");
+    // sha256("Print the frame first.")
+    let hash = "8a59b5bfc58ba8baf8e26fece6b3fd9bbe768c98773b1cdf772da15e06bdb1a4";
+    assert_eq!(guide["content_hash"], hash);
+    assert!(guide["retrieved_at"].is_string(), "{guide}");
+    seeded.build_kept(gateway).await;
+}
+
+/// One confirm attaches all of its inputs or none: a new repository and a
+/// Source deleted after propose attach neither, and no Source is created.
+async fn import_confirm_is_atomic(gateway: &Gateway, seeded: &Seeded) {
+    let build = seeded.build;
+    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let gone = gateway
+        .create_source("Gone", "https://github.com/example/gone", "mod")
+        .await;
+    let library = gateway.sources().await;
+    let inputs = json!([{ "url": "https://github.com/owner/other" }, { "source_id": gone }]);
+    let action = mcp.proposed(build, IMPORT, seeded.inputs(inputs)).await;
+    let path = format!("/api/v1/sources/{gone}");
+    let (status, body) = gateway.rest(Method::DELETE, &path, None).await;
+    assert!(status == 200 || status == 204, "{status}: {body}");
+    let library: Vec<_> = library
+        .into_iter()
+        .filter(|source| source["id"] != gone)
+        .collect();
+    assert_eq!(gateway.sources().await, library);
+    let refused = mcp
+        .refused_at_confirm(build, &action, "source_not_found")
+        .await;
+    assert_eq!(refused["source_id"], gone, "{refused}");
+    assert_eq!(
+        mcp.pending().await.len(),
+        1,
+        "the refused proposal stays pending"
+    );
+    seeded.build_kept(gateway).await;
 }
 
 #[test]
 fn import_inputs_through_the_rust_only_gateway() {
     let root = scratch::Scratch::new("pp-mcp-gateway-import-");
-    let server = rust_only::Server::start(&root);
-    runtime().block_on(async {
-        let gateway = Gateway::open(server).await;
-        let seeded = seed(&gateway).await;
-        let (build, s3) = (seeded.build, seeded.sources[2]);
-        let invariant = gateway.untouched(build).await;
-        assert_eq!(
-            invariant["accepted"]["kind"], "empty",
-            "no Accepted Plan: {invariant}"
-        );
-        let library = gateway.sources().await;
-        let args = |inputs: Value| json!({ "plan_id": build, "inputs": inputs });
-        let mut mcp = gateway.mcp("/api/v1/mcp").await;
-
-        // Without a key: 401 and no proposal.
-        let call = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
-            "params": { "name": IMPORT, "arguments": args(json!([{ "source_id": s3 }])) } });
-        let (status, body, _) = gateway
-            .post_mcp("/api/v1/mcp", None, Some(&mcp.session), &call)
-            .await;
-        assert_eq!(status, 401, "{body}");
-        assert!(mcp.pending().await.is_empty());
-
-        // Refused at propose with a code; nothing proposed or written.
-        for (inputs, code) in [
-            (json!([{ "source_id": 999_999 }]), "source_not_found"),
-            (
-                json!([{ "source_id": s3, "kind": "part" }]),
-                "invalid_evidence_kind",
-            ),
-            (
-                json!([{ "source_id": s3, "derived_from_evidence_id": "E9" }]),
-                "derived_evidence_not_found",
-            ),
-            (
-                json!([{ "url": "ftp://example.com/kit.zip" }]),
-                "invalid_url",
-            ),
-        ] {
-            mcp.refused_at_propose(IMPORT, args(inputs), code).await;
-        }
-        assert_eq!(gateway.untouched(build).await, invariant);
-
-        // A Library Source: propose writes nothing, confirm attaches it and
-        // clears draft D, and no Source is created or changed.
-        gateway.select_draft(build);
-        let action = mcp
-            .proposed(
-                build,
-                IMPORT,
-                args(json!([{ "source_id": s3, "kind": "mod" }])),
-            )
-            .await;
-        let (applied, error) = mcp.confirm(&action).await;
-        assert!(!error, "{applied}");
-        let attached = &applied["result"]["evidence"][0];
-        let s3_evidence = attached["id"].as_str().unwrap().to_owned();
-        assert_eq!(
-            applied,
-            json!({ "ok": true, "result": {
-                "evidence": [{ "id": s3_evidence, "kind": "mod", "source_id": s3,
-                    "url": format!("printpartner:source:{s3}"), "upload_required": false }],
-                "created_source_ids": [],
-            } })
-        );
-        let brief = gateway.brief(build).await;
-        let items = evidence_for(&brief, s3);
-        assert_eq!(items.len(), 1, "{brief}");
-        assert_eq!(
-            (&items[0]["id"], &items[0]["kind"]),
-            (&json!(s3_evidence), &json!("mod"))
-        );
-        assert!(
-            brief["draft_id"].is_null(),
-            "selected draft cleared: {brief}"
-        );
-        assert_eq!(
-            gateway.sources().await,
-            library,
-            "no Source created or changed"
-        );
-
-        // Importing S3 again leaves one item for it.
-        mcp.applied(
-            build,
-            IMPORT,
-            args(json!([{ "source_id": s3, "title": "Kit" }])),
-        )
-        .await;
-        let items = evidence_for(&gateway.brief(build).await, s3);
-        assert_eq!(items.len(), 1, "{items:?}");
-        assert_eq!(items[0]["title"], "Kit");
-        assert_eq!(gateway.untouched(build).await, invariant);
-
-        // A GitHub URL creates one unsynced git Source, listed by GET
-        // /sources; the same URL on another Build reuses it.
-        let kit = "https://github.com/owner/kit";
-        let imported = mcp
-            .applied(build, IMPORT, args(json!([{ "url": kit }])))
-            .await;
-        let created = imported["created_source_ids"].clone();
-        let kit_id = created[0].as_i64().unwrap();
-        assert_eq!(created, json!([kit_id]), "{imported}");
-        assert_eq!(imported["evidence"][0]["source_id"], kit_id);
-        let listed = gateway.sources().await;
-        assert_eq!(listed.len(), library.len() + 1);
-        let source = listed.iter().find(|source| source["id"] == kit_id).unwrap();
-        assert_eq!(
-            (&source["url"], &source["source_type"]),
-            (&json!(kit), &json!("git"))
-        );
-        assert!(source["last_synced_at"].is_null(), "unsynced: {source}");
-        let other = mcp.build("Second kit").await;
-        let again = json!({ "plan_id": other, "inputs": [{ "url": kit }] });
-        let reused = mcp.applied(other, IMPORT, again).await;
-        assert_eq!(reused["created_source_ids"], json!([]), "{reused}");
-        assert_eq!(reused["evidence"][0]["source_id"], kit_id);
-        assert_eq!(gateway.sources().await, listed, "reused, not created");
-        let library = listed;
-
-        // Model pages need an upload and create no Source; an extract is
-        // stored with its SHA-256 and retrieval time.
-        let imported = mcp
-            .applied(
-                build,
-                IMPORT,
-                args(json!([
-                    { "url": "https://www.printables.com/model/12345-kit" },
-                    { "url": "https://makerworld.com/en/models/678" },
-                    { "url": "https://example.com/guide", "extract": " Print the frame first. " },
-                ])),
-            )
-            .await;
-        let fields: Vec<_> = imported["evidence"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|item| (item["source_id"].clone(), item["upload_required"].clone()))
-            .collect();
-        let page = (Value::Null, json!(true));
-        assert_eq!(fields, [page.clone(), page, (Value::Null, json!(false))]);
-        assert_eq!(imported["created_source_ids"], json!([]));
-        assert_eq!(gateway.sources().await, library, "a page creates no Source");
-        let brief = gateway.brief(build).await;
-        let guide = brief["evidence"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["normalized_url"] == "https://example.com/guide")
-            .unwrap_or_else(|| panic!("{brief}"))
-            .clone();
-        assert_eq!(guide["extract"], "Print the frame first.");
-        // sha256("Print the frame first.")
-        assert_eq!(
-            guide["content_hash"],
-            "8a59b5bfc58ba8baf8e26fece6b3fd9bbe768c98773b1cdf772da15e06bdb1a4"
-        );
-        assert!(guide["retrieved_at"].is_string(), "{guide}");
-
-        // One confirm attaches all of its inputs or none: a new repository
-        // and a Source deleted after propose attach neither, and no Source
-        // is created.
-        let gone = gateway
-            .create_source("Gone", "https://github.com/example/gone", "mod")
-            .await;
-        let library = gateway.sources().await;
-        let inputs = json!([{ "url": "https://github.com/owner/other" }, { "source_id": gone }]);
-        let action = mcp.proposed(build, IMPORT, args(inputs)).await;
-        let (status, body) = gateway
-            .rest(Method::DELETE, &format!("/api/v1/sources/{gone}"), None)
-            .await;
-        assert!(status == 200 || status == 204, "{status}: {body}");
-        let library: Vec<_> = library
-            .into_iter()
-            .filter(|source| source["id"] != gone)
-            .collect();
-        assert_eq!(gateway.sources().await, library);
-        let refused = mcp
-            .refused_at_confirm(build, &action, "source_not_found")
-            .await;
-        assert_eq!(refused["source_id"], gone, "{refused}");
-        assert_eq!(
-            mcp.pending().await.len(),
-            1,
-            "the refused proposal stays pending"
-        );
-        // B's layers and Accepted Plan never changed; the Library changed
-        // only by the Sources created above.
-        let after = gateway.untouched(build).await;
-        assert_eq!(after["layers"], invariant["layers"]);
-        assert_eq!(after["accepted"], invariant["accepted"]);
+    let (runtime, gateway, seeded) = open(&root);
+    runtime.block_on(async {
+        import_refused_without_a_key_or_at_propose(&gateway, &seeded).await;
+        import_attaches_a_library_source(&gateway, &seeded).await;
+        import_creates_a_git_source_once(&gateway, &seeded).await;
+        import_attaches_pages_and_an_extract(&gateway, &seeded).await;
+        import_confirm_is_atomic(&gateway, &seeded).await;
     });
+    gateway.stop();
 }

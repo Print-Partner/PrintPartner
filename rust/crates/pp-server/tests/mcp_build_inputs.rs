@@ -6,6 +6,8 @@
 
 #[path = "../../pp-storage/tests/common/process.rs"]
 mod child_process;
+#[path = "../../pp-api/tests/support/mcp_reply.rs"]
+mod mcp_reply;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
 #[path = "support/rust_only.rs"]
@@ -44,17 +46,6 @@ fn first_cookie(response: &reqwest::Response) -> String {
     let header = response.headers().get("set-cookie").expect("a cookie");
     let value = header.to_str().unwrap();
     value.split(';').next().unwrap().to_owned()
-}
-
-/// The first JSON-RPC message in an SSE or JSON body.
-fn rpc_message(body: &str) -> Value {
-    let data = body
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(str::trim)
-        .find(|data| !data.is_empty())
-        .unwrap_or(body);
-    serde_json::from_str(data).unwrap_or_else(|_| panic!("JSON-RPC body: {body}"))
 }
 
 impl Gateway {
@@ -151,13 +142,7 @@ impl Gateway {
         if let Some(session) = session {
             request = request.header("mcp-session-id", session);
         }
-        let response = request.send().await.unwrap();
-        let status = response.status().as_u16();
-        let session = response
-            .headers()
-            .get("mcp-session-id")
-            .map(|value| value.to_str().unwrap().to_owned());
-        (status, response.text().await.unwrap(), session)
+        mcp_reply::send(request).await
     }
 
     async fn mcp(&self, path: &'static str) -> Mcp<'_> {
@@ -249,7 +234,7 @@ impl Mcp<'_> {
             .post_mcp(self.path, key, Some(&self.session), &message)
             .await;
         assert_eq!(status, 200, "{body}");
-        rpc_message(&body)["result"].clone()
+        mcp_reply::rpc(&body)["result"].clone()
     }
 
     async fn tools(&mut self) -> Vec<String> {

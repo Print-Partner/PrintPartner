@@ -953,4 +953,5 @@ async fn run_next_never_claims_a_source_import() {
     assert_eq!(state, "queued");
 }
 
+mod prusalink;
 mod upload_only;

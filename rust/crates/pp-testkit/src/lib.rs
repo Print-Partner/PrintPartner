@@ -25,6 +25,7 @@ pub mod moonraker;
 pub mod node_installation;
 pub mod node_path;
 pub mod node_schema;
+pub mod prusalink;
 pub mod rebuild_fixture;
 pub mod restore_fixture;
 

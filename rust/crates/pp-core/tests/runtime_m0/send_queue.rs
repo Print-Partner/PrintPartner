@@ -7,7 +7,10 @@ use super::watcher_proof::{
     proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
 use axum::http::StatusCode;
-use pp_testkit::moonraker::RoutedPrinter;
+use pp_testkit::{
+    moonraker::RoutedPrinter,
+    prusalink::{Request, UploadPrinter},
+};
 use serde_json::{Value, json};
 use std::{
     io::Read,
@@ -22,6 +25,8 @@ use std::{
 const QUEUE: &str = "/api/v2/printer-send-queue";
 const UPLOAD: &str = "/server/files/upload";
 const API_KEY: &str = "simulator-api-key-0d5f";
+/// The file Add to queue stages.
+const GCODE: &str = "G28\nG1 X10\n";
 
 #[tokio::test]
 async fn send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome() {
@@ -98,15 +103,15 @@ async fn call(origin: &str, cookie: &str, method: &str, path: &str) -> (StatusCo
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
-/// Add to queue for `printer`: an upload-only send of a small G-code file
-/// bound to Build `build`.
-async fn add(origin: &str, cookie: &str, printer: &str, build: i64) -> Value {
+/// Add to queue for `printer`: a send of a small G-code file bound to Build
+/// `build`, upload-only unless `start`.
+async fn add(origin: &str, cookie: &str, printer: &str, build: i64, start: bool) -> Value {
     let boundary = "send-queue-proof";
     let mut body = String::new();
     for (name, value) in [
         ("printer_id", printer.to_owned()),
         ("profile_id", build.to_string()),
-        ("start", "false".into()),
+        ("start", start.to_string()),
         ("wait_for_idle", "false".into()),
     ] {
         body.push_str(&format!(
@@ -114,7 +119,7 @@ async fn add(origin: &str, cookie: &str, printer: &str, build: i64) -> Value {
         ));
     }
     body.push_str(&format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"plate.gcode\"\r\nContent-Type: application/octet-stream\r\n\r\nG28\nG1 X10\n\r\n--{boundary}--\r\n"
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"plate.gcode\"\r\nContent-Type: application/octet-stream\r\n\r\n{GCODE}\r\n--{boundary}--\r\n"
     ));
     let response = reqwest::Client::builder()
         .no_proxy()
@@ -262,7 +267,7 @@ async fn create_build(origin: &str, cookie: &str) -> i64 {
 async fn upload_only_sends_once(origin: &str, cookie: &str, build: i64, printers: &Printers) {
     let (_, queue) = call(origin, cookie, "GET", QUEUE).await;
     assert_eq!(queue, json!({"items": []}));
-    let item = add(origin, cookie, "p-accepting", build).await;
+    let item = add(origin, cookie, "p-accepting", build, false).await;
     let none = Value::Null;
     assert_eq!(
         outcome(&item),
@@ -284,7 +289,7 @@ async fn upload_only_sends_once(origin: &str, cookie: &str, build: i64, printers
 /// A connection closed without an answer leaves the outcome unknown; the
 /// item's id and upload job.
 async fn unknown_outcome_is_refused(origin: &str, cookie: &str, build: i64) -> (String, Value) {
-    let lost = add(origin, cookie, "p-silent", build).await;
+    let lost = add(origin, cookie, "p-silent", build, false).await;
     let id = lost["id"].as_str().unwrap().to_owned();
     let job = json!(send_now(origin, cookie, &id).await);
     let unknown = settled(origin, cookie, &id).await;
@@ -300,7 +305,7 @@ async fn unknown_outcome_is_refused(origin: &str, cookie: &str, build: i64) -> (
 
 /// A refused upload is a known failure with the printer's reason.
 async fn refused_upload_keeps_the_reason(origin: &str, cookie: &str, build: i64) {
-    let refused = add(origin, cookie, "p-refusing", build).await;
+    let refused = add(origin, cookie, "p-refusing", build, false).await;
     let id = refused["id"].as_str().unwrap().to_owned();
     send_now(origin, cookie, &id).await;
     let failed = settled(origin, cookie, &id).await;
@@ -350,5 +355,194 @@ async fn send_queue_rust_only_runtime_in_child() {
     assert!(
         !text.contains(API_KEY) && !text.contains("printer-uploads"),
         "{text}"
+    );
+}
+
+const PRUSA_PUT: &str = "/api/v1/files/usb/plate.gcode";
+const PRUSA_PASSWORD: &str = "simulator-digest-password-7c1e";
+
+/// GRE-1240: the same user actions against loopback PrusaLink simulators. A
+/// confirmed send with Start is one `PUT` carrying `print-after-upload: ?1`;
+/// an unknown outcome and a refusal are handled as for Moonraker.
+#[tokio::test]
+async fn send_queue_rust_only_runtime_owns_prusalink_uploads_end_to_end() {
+    let data = super::temporary("send-queue-prusalink");
+    let stdout = run_in_child(
+        "send_queue::send_queue_rust_only_runtime_prusalink_in_child",
+        &data,
+    )
+    .await;
+    let _ = std::fs::remove_dir_all(data);
+    let receipt = stdout
+        .lines()
+        .find(|line| line.starts_with("GRE_1240_RUNTIME_RECEIPT "))
+        .expect("the child printed its receipt");
+    println!("{receipt}");
+}
+
+/// PrusaLink simulators whose Digest probe answers 200: one accepts the
+/// upload, one answers it with a malformed status line (outcome unknown) and
+/// one refuses it.
+struct PrusaPrinters {
+    accepting: UploadPrinter,
+    lost: UploadPrinter,
+    refusing: UploadPrinter,
+}
+
+impl PrusaPrinters {
+    fn start() -> Self {
+        let printer =
+            |status: u16, body: &[u8]| UploadPrinter::start(PRUSA_PUT, status, body).unwrap();
+        Self {
+            accepting: printer(201, b"{}"),
+            lost: printer(0, b"{}"),
+            refusing: printer(500, br#"{"title":"Disk full"}"#),
+        }
+    }
+
+    /// Farm on, and one saved PrusaLink printer per simulator.
+    fn seed(&self, data: &std::path::Path) {
+        let host = |id: &str, url: &str| {
+            json!({"id": id, "name": id, "type": "prusalink", "config": {
+                "base_url": url, "username": "maker", "password": PRUSA_PASSWORD}})
+        };
+        let printer = |id: &str| json!({"id": format!("p-{id}"), "name": id, "integration_id": id});
+        seed_settings(
+            data,
+            &[
+                ("feature_toggles", json!({"farm": true})),
+                (
+                    "integrations",
+                    json!([
+                        host("accepting", self.accepting.url()),
+                        host("lost", self.lost.url()),
+                        host("refusing", self.refusing.url()),
+                    ]),
+                ),
+                (
+                    "printer.fleet",
+                    json!([printer("accepting"), printer("lost"), printer("refusing")]),
+                ),
+            ],
+        );
+    }
+
+    /// The send requests each simulator received, in the order above. Each
+    /// must be a whole `PUT` of the file Add staged, with exact header values:
+    /// only `accepting` gets a send with Start.
+    fn sends(&self) -> [Vec<Request>; 3] {
+        [
+            (&self.accepting, "?1"),
+            (&self.lost, "?0"),
+            (&self.refusing, "?0"),
+        ]
+        .map(|(printer, start)| {
+            let sends = printer.sends();
+            for send in &sends {
+                assert!(
+                    send.line().starts_with(&format!("PUT {PRUSA_PUT} ")),
+                    "{}",
+                    send.head
+                );
+                assert!(send.complete, "{}", send.head);
+                assert_eq!(send.body, GCODE.as_bytes(), "{}", send.head);
+                assert_eq!(
+                    send.header("print-after-upload"),
+                    Some(start),
+                    "{}",
+                    send.head
+                );
+                assert_eq!(send.header("overwrite"), Some("?1"), "{}", send.head);
+            }
+            sends
+        })
+    }
+
+    fn counts(&self) -> [usize; 3] {
+        self.sends().map(|sends| sends.len())
+    }
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn send_queue_rust_only_runtime_prusalink_in_child() {
+    let data = proof_data();
+    let printers = PrusaPrinters::start();
+    printers.seed(&data);
+    let (runtime, origin, desktop) = start_rust_only(&data).await;
+    let cookie = signed_in(&origin, &desktop, 1).await;
+    let build = create_build(&origin, &cookie).await;
+    let none = Value::Null;
+
+    // Add sends nothing; Send now with Start is one PUT that starts the print.
+    let item = add(&origin, &cookie, "p-accepting", build, true).await;
+    assert_eq!(
+        outcome(&item),
+        [&json!("queued"), &none, &none, &json!(false)]
+    );
+    assert_eq!(printers.counts(), [0, 0, 0]);
+    let id = item["id"].as_str().unwrap();
+    let job = json!(send_now(&origin, &cookie, id).await);
+    let done = settled(&origin, &cookie, id).await;
+    assert_eq!(outcome(&done), [&json!("done"), &none, &job, &json!(false)]);
+    // `sends` checks the PUT's bytes and its exact `print-after-upload: ?1`.
+    assert_eq!(printers.counts(), [1, 0, 0], "one PUT, no start request");
+
+    // A malformed answer to the PUT leaves the outcome unknown.
+    let lost = add(&origin, &cookie, "p-lost", build, false).await;
+    let lost_id = lost["id"].as_str().unwrap().to_owned();
+    let lost_job = json!(send_now(&origin, &cookie, &lost_id).await);
+    let unknown = settled(&origin, &cookie, &lost_id).await;
+    let [state, _, upload, flag] = outcome(&unknown);
+    assert_eq!(
+        [state, upload, flag],
+        [&json!("error"), &lost_job, &json!(true)],
+        "{unknown}"
+    );
+    refused_as_unknown(&origin, &cookie, &lost_id).await;
+
+    // A refused PUT is a known failure with the printer's reason.
+    let refused = add(&origin, &cookie, "p-refusing", build, false).await;
+    let refused_id = refused["id"].as_str().unwrap().to_owned();
+    send_now(&origin, &cookie, &refused_id).await;
+    let failed = settled(&origin, &cookie, &refused_id).await;
+    let [state, _, _, flag] = outcome(&failed);
+    assert_eq!([state, flag], [&json!("error"), &json!(false)], "{failed}");
+    let reason = failed["error"].as_str().unwrap();
+    assert!(reason.starts_with("Upload failed (HTTP 500)"), "{reason}");
+    assert!(reason.contains("Disk full"), "{reason}");
+    assert_eq!(printers.counts(), [1, 1, 1]);
+    shut_down(runtime).await;
+
+    // After a restart the unknown outcome stays, and nothing is resent.
+    let (runtime, origin, desktop) = start_rust_only(&data).await;
+    let cookie = signed_in(&origin, &desktop, 2).await;
+    let (_, queue) = call(&origin, &cookie, "GET", QUEUE).await;
+    let after = queue["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == lost_id.as_str())
+        .unwrap();
+    let [state, _, upload, flag] = outcome(after);
+    assert_eq!(
+        [state, upload, flag],
+        [&json!("error"), &lost_job, &json!(true)],
+        "{after}"
+    );
+    refused_as_unknown(&origin, &cookie, &lost_id).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    shut_down(runtime).await;
+    assert_eq!(printers.counts(), [1, 1, 1], "a send was repeated");
+    let text = queue.to_string();
+    assert!(
+        !text.contains(PRUSA_PASSWORD) && !text.contains("printer-uploads"),
+        "{text}"
+    );
+    println!(
+        "GRE_1240_RUNTIME_RECEIPT {}",
+        json!({"sends": printers.sends().map(|sends| sends.iter().map(|send| json!({
+            "head": send.head, "bytes": send.body.len()})).collect::<Vec<_>>()), "done": done["state"],
+        "unknown_after_restart": after["outcome_unknown"], "refused": reason})
     );
 }

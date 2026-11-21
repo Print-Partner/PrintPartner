@@ -1,13 +1,19 @@
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import process from "node:process";
+import { DatabaseSync } from "node:sqlite";
 import { crc32, inflateRawSync } from "node:zlib";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { importerRunArgs, productRunArgs, treeDigest } from "./installation.mjs";
 import { STEPS } from "./steps.mjs";
 
-// The twelve steps of docs/product/daily-loop.md, in order, on one installation of the
-// Rust-only image. Each test does what the owner does, at the screen or command he uses.
+// The twelve steps of docs/product/daily-loop.md, in order, on the Rust-only image. Step 1
+// starts on a new installation; Step 2 imports the synthetic Node installation and the
+// steps after it run on the imported one. Each test does what the owner does, at the
+// screen or command he uses.
 
 const CONTAINER = process.env.PP_DAILY_LOOP_CONTAINER ?? "";
 const OWNER = { email: "owner@example.test", password: "daily-loop-owner-1" };
@@ -203,22 +209,234 @@ step(1, null, async ({ page }) => {
   }).toPass({ timeout: 120_000 });
 });
 
-// GRE-1515 writes this step: the import is to write the synthetic installation (22 Builds
-// with accepted Plans, 10 Sources, 2 printers) into a new data folder, and the server is to
-// start on it. Steps 6 and 10 use its Builds.
-step(2, "GRE-1515", async ({ page }) => {
+/** What run.mjs made for Step 2: the Node installation and the import's new volume. */
+const IMPORT = {
+  nodeDir: process.env.PP_DAILY_LOOP_NODE_INSTALLATION ?? "",
+  image: process.env.PP_DAILY_LOOP_IMAGE ?? "",
+  network: process.env.PP_DAILY_LOOP_NETWORK ?? "",
+  importer: process.env.PP_DAILY_LOOP_IMPORTER ?? "",
+  volume: process.env.PP_DAILY_LOOP_IMPORT_VOLUME ?? "",
+};
+
+/** A Required unit as Checkoff shows it: its Plate, and whether it is printed or assembled. */
+type Unit = { plate: string | null; printed: boolean; assembled: boolean };
+/** A Build's accepted Plan: its revision ID and version, and its Required units by ID. */
+type AcceptedBuild = {
+  id: number;
+  name: string;
+  revision: number;
+  version: number;
+  units: Record<string, Unit>;
+};
+type Installation = {
+  builds: AcceptedBuild[];
+  printers: { id: string; name: string }[];
+  sources: { id: number; name: string; revision: number | null }[];
+  unmatched: string[];
+};
+
+/**
+ * The Builds, accepted Plans, Plates, Checkoff state, printers, Sources and unmatched
+ * prints the Node installation stores. It reads a copy of the database in the test's
+ * output folder, so nothing opens the original.
+ */
+function readNodeInstallation(dir: string): Installation {
+  const copy = test.info().outputPath("node-database");
+  mkdirSync(copy, { recursive: true });
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const file = `print-partner.db${suffix}`;
+    if (existsSync(join(dir, file))) copyFileSync(join(dir, file), join(copy, file));
+  }
+  const db = new DatabaseSync(join(copy, "print-partner.db"), { readOnly: true });
+  try {
+    const rows = <T>(sql: string, ...values: (number | string)[]) =>
+      db.prepare(sql).all(...values) as T[];
+    const builds = rows<{ id: number; name: string; revision: number; version: number }>(
+      `SELECT id, name, accepted_plan_revision_id AS revision, accepted_plan_version AS version
+         FROM build_profiles WHERE archived_at IS NULL ORDER BY id`,
+    ).map((build) => {
+      // Each Required unit of the accepted revision, with its Checkoff row and its Plate in
+      // the Build's current accepted Plate revision.
+      const units = rows<{ token: string; plate: string | null; printed: number; assembled: number }>(
+        `SELECT u.required_unit_token AS token, pu.plate_id AS plate,
+                COALESCE(pp.completed, 0) AS printed, COALESCE(pp.assembled, 0) AS assembled
+           FROM plan_revision_required_units u
+           JOIN plan_revision_parts rp ON rp.id = u.revision_part_id
+           LEFT JOIN print_progress pp
+             ON pp.part_id = rp.projection_part_id AND pp.unit_index = u.unit_index
+           LEFT JOIN accepted_plate_heads h ON h.profile_id = ?
+           LEFT JOIN accepted_plate_units pu
+             ON pu.revision_id = h.current_revision_id AND pu.required_unit_token = u.required_unit_token
+          WHERE u.revision_id = ?`,
+        build.id,
+        build.revision,
+      );
+      return {
+        ...build,
+        units: Object.fromEntries(
+          units.map(({ token, plate, printed, assembled }) => [
+            token,
+            { plate, printed: printed === 1, assembled: assembled === 1 },
+          ]),
+        ),
+      };
+    });
+    const setting = (key: string) =>
+      JSON.parse(rows<{ value: string }>("SELECT value FROM app_settings WHERE key = ?", key)[0]?.value ?? "[]");
+    return {
+      builds,
+      printers: (setting("printer.fleet") as { id: string; name: string }[])
+        .map(({ id, name }) => ({ id, name }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      sources: rows<{ id: number; name: string; revision: number | null }>(
+        "SELECT id, name, current_source_revision_id AS revision FROM projects ORDER BY id",
+      ),
+      unmatched: (setting("printer.unattributed_prints") as { id: string }[]).map(({ id }) => id).sort(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** A GET of the core's JSON API as the signed-in browser. */
+async function core<T>(page: Page, path: string): Promise<T> {
+  const response = await page.request.get(new URL(path, page.url()).href);
+  expect(response.ok(), `GET ${path}: ${response.status()}`).toBe(true);
+  return (await response.json()) as T;
+}
+
+type CheckoffUnits = {
+  basis: { plan_revision_id: number; plan_version: number } | null;
+  parts: {
+    filename: string;
+    printed_count: number;
+    quantity: number;
+    units: {
+      token: string;
+      unit_index: number;
+      plate: { plate_id: string } | null;
+      printed: boolean;
+      assembled: boolean;
+    }[];
+  }[];
+};
+
+/** A Build's Required units as its Checkoff tab reads them, by ID. */
+async function checkoffUnits(page: Page, id: number) {
+  const { parts } = await core<CheckoffUnits>(page, `/api/v2/plans/${id}/checkoff/units`);
+  return Object.fromEntries(
+    parts.flatMap(({ units }) =>
+      units.map(({ token, plate, printed, assembled }) => [
+        token,
+        { plate: plate?.plate_id ?? null, printed, assembled },
+      ]),
+    ),
+  ) as Record<string, Unit>;
+}
+
+type Workflow = {
+  accepted_plan: { kind: string; revision_id?: number; plan_version?: number; total_units?: number };
+};
+
+/** A Build's accepted Plan as the core reports it. */
+async function acceptedPlan(page: Page, id: number) {
+  const { accepted_plan: accepted } = await core<Workflow>(page, `/api/v2/plans/${id}/workflow`);
+  expect(accepted.kind, `Build ${id}'s accepted Plan: ${JSON.stringify(accepted)}`).toBe("ready");
+  return { revision: accepted.revision_id!, version: accepted.plan_version! };
+}
+
+/** The same facts as readNodeInstallation, read from Rust, for the Builds `builds` names. */
+async function readRustInstallation(page: Page, builds: { id: number; name: string }[]) {
+  const { profiles } = await core<{ profiles: { id: number; name: string }[] }>(page, "/api/v2/plans");
+  const { printers } = await core<{ printers: { id: string; name: string }[] }>(page, "/api/v2/printers");
+  const { sources } = await core<{
+    sources: { id: number; name: string; current_source_revision_id: number | null; local_path: string | null }[];
+  }>(page, "/api/v1/sources");
+  const { prints } = await core<{ prints: { id: string }[] }>(page, "/api/v2/printer-checkoff/unattributed");
+  return {
+    profiles: profiles.map(({ id, name }) => ({ id, name })).sort((a, b) => a.id - b.id),
+    installation: {
+      builds: await Promise.all(
+        builds.map(async ({ id, name }) => ({
+          id,
+          name,
+          ...(await acceptedPlan(page, id)),
+          units: await checkoffUnits(page, id),
+        })),
+      ),
+      printers: printers.map(({ id, name }) => ({ id, name })).sort((a, b) => a.id.localeCompare(b.id)),
+      sources: sources
+        .map(({ id, name, current_source_revision_id }) => ({ id, name, revision: current_source_revision_id }))
+        .sort((a, b) => a.id - b.id),
+      unmatched: prints.map(({ id }) => id).sort(),
+    } satisfies Installation,
+    paths: sources.map(({ local_path }) => local_path),
+  };
+}
+
+/** Creates the owner's account from a sign-in link, as on a new installation. */
+async function createOwner(page: Page) {
+  await openSignInLink(page);
+  await harness("the owner could not create his account", async () => {
+    await page.getByLabel("Email").fill(OWNER.email);
+    await page.getByLabel("Password", { exact: true }).fill(OWNER.password);
+    await page.getByLabel("Password again").fill(OWNER.password);
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(screen(page, "Today")).toBeVisible();
+  });
+}
+
+// The owner stops his installation, imports a copy of its folder into a new one, and starts
+// the image on the new one. The import refuses a folder that holds data, so it writes a
+// second volume from a one-off container; the product container is then replaced on that
+// volume under the same name, on the same network, so the simulator stays at pp-sim.
+step(2, null, async ({ page }) => {
   await serverReady();
-  const imported = inContainer(
-    "pp-server",
-    "import",
-    ...["--from", "/tmp/node-installation", "--data", "/tmp/imported"],
+  const node = readNodeInstallation(IMPORT.nodeDir);
+  expect(node.builds, "the synthetic installation's Builds").toHaveLength(22);
+  // The comparison below means something only if the source holds units, Plates and rows.
+  const units = node.builds.flatMap((build) => Object.values(build.units));
+  expect(units.length, "Required units in accepted Plans").toBeGreaterThan(0);
+  expect(units.filter(({ plate }) => plate).length, "Required units on a Plate").toBeGreaterThan(0);
+  for (const facts of [node.printers, node.sources, node.unmatched]) expect(facts.length).toBeGreaterThan(0);
+  const original = treeDigest(IMPORT.nodeDir);
+
+  const imported = spawnSync(
+    "docker",
+    importerRunArgs({ container: IMPORT.importer, volume: IMPORT.volume, image: IMPORT.image, nodeDir: IMPORT.nodeDir }),
+    { encoding: "utf8", timeout: 600_000 },
   );
-  expect(imported.status, imported.stderr).toBe(0);
-  await signIn(page);
+  expect(imported.status, `pp-server import: ${imported.stderr}`).toBe(0);
+  expect(imported.stdout, "the import report").toMatch(/complete: true/);
+  // ADR 0016: the import leaves the original untouched.
+  expect(treeDigest(IMPORT.nodeDir), "the Node installation after the import").toBe(original);
+
+  const removed = docker("rm", "-f", CONTAINER);
+  expect(removed.status, removed.stderr).toBe(0);
+  const started = docker(...productRunArgs({ container: CONTAINER, network: IMPORT.network, volume: IMPORT.volume, image: IMPORT.image }));
+  expect(started.status, started.stderr).toBe(0);
+  // The synthetic installation holds no account, so the first sign-in link makes one.
+  await createOwner(page);
+
+  // Every Build opens on the Builds screen.
   await go(page, "Builds");
-  unwritten(
-    "the synthetic installation is imported and the server restarted on it: its Builds, accepted Plans, Plates, Checkoff history, printers and Sources open, Plan, Plate and Required-unit IDs match, and the original is unchanged",
-  );
+  const list = page.getByRole("table", { name: "Builds" });
+  for (const { name } of node.builds) {
+    await expect(list.getByRole("link", { name, exact: true })).toBeVisible();
+  }
+  // Rust holds the same Builds, accepted Plans, Plates, Checkoff state, printers, Sources
+  // and unmatched prints, under the same Plan, Plate and Required-unit IDs.
+  const rust = await readRustInstallation(page, node.builds);
+  expect(rust.profiles).toEqual(node.builds.map(({ id, name }) => ({ id, name })));
+  expect(rust.installation).toEqual(node);
+  // Each Source's files are in the new folder.
+  for (const path of rust.paths) expect(path ?? "", "a Source path").toMatch(/^\/data\//);
+
+  // One of them, as the owner opens it: the anchor Build's Checkoff tab shows its 47 units.
+  const anchor = node.builds.find(({ name }) => name === "Synthetic Build Anchor 47u6p")!;
+  await list.getByRole("link", { name: anchor.name, exact: true }).click();
+  await page.getByRole("link", { name: "Checkoff", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: / unit \d+$/ })).toHaveCount(Object.keys(anchor.units).length);
 });
 
 step(3, "GRE-1531", async ({ page }) => {
@@ -532,16 +750,65 @@ function storedZip(name: string, text: string) {
   return Buffer.concat([local, path, data, central, path, end]);
 }
 
-step(6, "GRE-1515", async ({ page }) => {
-  await openBuild(page, "Plan");
-  const quantity = page.getByRole("textbox", { name: /^Quantity of / }).first();
-  await quantity.fill("2");
-  await quantity.press("Enter");
+/** Signs in and opens the Build named `name`, on the named tab; returns its ID. */
+async function openNamedBuild(page: Page, name: string, tab: string) {
+  await signIn(page);
+  await go(page, "Builds");
+  await page.getByRole("table", { name: "Builds" }).getByRole("link", { name, exact: true }).click();
+  await page.getByRole("link", { name: tab, exact: true }).click();
+  await expect(screen(page, tab)).toBeVisible();
+  return Number(/\/builds\/(\d+)\//.exec(page.url())?.[1]);
+}
+
+/** Opens the Accept gate on the Plan tab and accepts; returns the new version it shows. */
+async function acceptDraft(page: Page) {
   await page.getByRole("button", { name: "Review and accept" }).click();
   const gate = page.getByRole("dialog", { name: "Accept this draft" });
   await gate.getByRole("button", { name: "Accept" }).click();
-  await expect(page.getByText("Accepted. The Plan is now version")).toBeVisible();
-  unwritten("Required units keep their IDs across a second accepted revision");
+  const accepted = page.getByText(/^Accepted\. The Plan is now version \d+\.$/);
+  await expect(accepted).toBeVisible();
+  return Number(/version (\d+)/.exec((await accepted.textContent()) ?? "")?.[1]);
+}
+
+// An imported Build with no Plates, so a larger quantity touches no placed or printed unit.
+const PLAN_BUILD = "Synthetic Build 02";
+
+step(6, null, async ({ page }) => {
+  // Step 7 checks the downloads of Step 5's Build against the Plan accepted here: its
+  // first accepted revision, with bracket.stl at quantity 2.
+  await openNamedBuild(page, BUILD, "Plan");
+  const quantity = page.getByRole("textbox", { name: /^Quantity of / }).first();
+  await quantity.fill("2");
+  await quantity.press("Enter");
+  await acceptDraft(page);
+
+  // On a Build the import brought, whose accepted Plan is a later revision: one more of its
+  // first Part makes a new accepted revision, and every Required unit keeps its ID.
+  await page.context().clearCookies();
+  const id = await openNamedBuild(page, PLAN_BUILD, "Plan");
+  const before = await acceptedPlan(page, id);
+  const units = await checkoffUnits(page, id);
+  const action = page.getByRole("button", { name: /^(Start a draft|Review and accept)$/ });
+  await expect(action).toBeVisible();
+  if ((await action.textContent()) === "Start a draft") {
+    await action.click();
+    await expect(page.getByRole("button", { name: "Review and accept" })).toBeVisible();
+  }
+  const part = page.getByRole("textbox", { name: /^Quantity of / }).first();
+  const current = Number((await part.inputValue()) || (await part.getAttribute("placeholder")));
+  expect(current, "the first Part's quantity").toBeGreaterThan(0);
+  await part.fill(String(current + 1));
+  await part.press("Enter");
+  expect(await acceptDraft(page), "the new version").toBe(before.version + 1);
+
+  const after = await acceptedPlan(page, id);
+  expect(after.version).toBe(before.version + 1);
+  expect(after.revision, "a new accepted revision").not.toBe(before.revision);
+  const kept = await checkoffUnits(page, id);
+  const added = Object.keys(kept).filter((token) => !(token in units));
+  expect(added, "the Required unit the edit added").toHaveLength(1);
+  // Every unit of the earlier revision is there under its ID, as it was.
+  expect(Object.fromEntries(Object.entries(kept).filter(([token]) => token in units))).toEqual(units);
 });
 
 /** Clicks `button` and returns the file the browser saved, read back from disk. */
@@ -665,16 +932,36 @@ step(9, "GRE-1531", async ({ page }) => {
   unwritten("Farm and Today follow the simulated printer to the end of the print without a page reload");
 });
 
-step(10, "GRE-1515", async ({ page }) => {
-  await openBuild(page, "Checkoff");
-  await page.getByRole("checkbox", { name: / unit 1$/ }).first().click();
+// An imported Build with Plates and no unit printed yet.
+const CHECKOFF_BUILD = "Synthetic Build Anchor 47u6p";
+
+step(10, null, async ({ page }) => {
+  const id = await openNamedBuild(page, CHECKOFF_BUILD, "Checkoff");
+  const before = await checkoffUnits(page, id);
+  const unit = page.getByRole("checkbox", { name: / unit 1$/ }).first();
+  const token = (await unit.getAttribute("data-token")) ?? "";
+  expect(before[token], `Required unit ${token}`).toMatchObject({ printed: false });
+
+  type History = { entries: { id: string; type: string }[] };
+  const history = async () => (await core<History>(page, `/api/v2/plans/${id}/history`)).entries;
+  const earlier = new Set((await history()).map((entry) => entry.id));
+
+  // He ticks the finished unit and records it: the burst marks that unit printed and no other.
+  await unit.click();
   await page.getByRole("button", { name: "Record 1 picked unit" }).click();
   const tally = page.getByRole("status", { name: "Checkoff tally" });
   await expect(tally).toContainText("Recorded: +1 printed.");
+  await expect(unit).toBeChecked();
+  expect(await checkoffUnits(page, id)).toEqual({ ...before, [token]: { ...before[token], printed: true } });
+  // The Build's history records the burst.
+  const recorded = (await history()).filter((entry) => !earlier.has(entry.id));
+  expect(recorded.map((entry) => entry.type), "new history entries").toEqual(["checkoff_burst"]);
+
+  // Undo reverses the burst: every unit is as it was before.
   await tally.getByRole("button", { name: "Undo" }).click();
   await expect(tally).toContainText("Undid the last burst.");
-  // Until Step 2 imports Builds, the first Build is the one Step 5 created, with no print.
-  unwritten("the checked-off units are on a Build Step 2 imported, from the print Step 8 sent");
+  await expect(unit).not.toBeChecked();
+  expect(await checkoffUnits(page, id)).toEqual(before);
 });
 
 step(11, "GRE-1887", async ({ page }) => {

@@ -1059,12 +1059,16 @@ describe("UI6-02 Accept gate", () => {
     expect(within(gate).getByText("gear.stl: Quantity none to 4")).toBeTruthy();
     expect(within(gate).getByText("gear.stl, unit 1: printed")).toBeTruthy();
     expect(within(gate).getByText("Plate 1 on Voron 2.4 is cleared (3 units)")).toBeTruthy();
-    expect(within(gate).getByText(PLATES_CLEARED)).toBeTruthy();
+    expect(
+      within(gate).getByText(
+        "The Plan's units change, so Accept clears these Plates. Laying Plates out again is not available in this UI yet.",
+      ),
+    ).toBeTruthy();
     expect(within(gate).getByText(/Spoolman is off/)).toBeTruthy();
     expect(within(gate).getByText("Order PO-7 is also on Other kit")).toBeTruthy();
   });
 
-  it("says why Plates go only when the preview clears some (GRE-1530)", async () => {
+  it("says no plates change when Accept keeps the layout (GRE-1530, GRE-1550)", async () => {
     const kept = preview(1);
     if (kept.kind === "changed") kept.changes.plates.cleared = [];
     renderAt(core({ preview: () => json(kept) }));

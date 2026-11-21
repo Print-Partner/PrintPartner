@@ -1600,3 +1600,72 @@ fn running_supplied_import_is_not_a_publication_conflict() {
             .is_empty()
     );
 }
+
+/// GRE-1550 rules 2 to 4, from the data Accept's gate loads: the Plate
+/// layout survives only when every token stays and its Part keeps `included`
+/// and its STL digest.
+#[test]
+fn kept_units_require_the_same_tokens_included_and_stl() {
+    let token = |n: u8| format!("ppu_{n:032}");
+    let unit = |n: u8, index: i64| ru::model::Unit {
+        token: token(n),
+        prior_index: index,
+        created_at: "2026-08-21T00:00:00.000Z".into(),
+        completed: false,
+        assembled: false,
+    };
+    let base = |id: i64, units| ru::model::BasePart {
+        id,
+        source_id: None,
+        artifact: None,
+        role: "primary".into(),
+        units,
+    };
+    let base_parts = [
+        base(1, vec![unit(1, 0), unit(2, 1)]),
+        base(2, vec![unit(3, 0)]),
+    ];
+    let row = |id: i64, included: bool, digest: Value| {
+        part(json!({"id": id, "included": included, "artifactDigest": digest}))
+    };
+    let bracket = json!("a".repeat(64));
+    let predecessors = [row(1, true, bracket.clone()), row(2, false, json!(""))];
+    let reuse = |part: i64, index: i64, n: u8| json!({"kind": "reuse", "draftPartId": part, "unitIndex": index, "token": token(n)});
+    let kept = |gear: (bool, Value), assignments: Value| {
+        let mut parts = vec![row(11, true, bracket.clone()), row(12, gear.0, gear.1)];
+        // Filament and notes are not part of the rule.
+        parts[0]["filamentColorId"] = json!("pla-red");
+        parts[1]["notes"] = json!("changed");
+        let prepared = Prepared {
+            parts,
+            assignments: serde_json::from_value(assignments).unwrap(),
+            progress: Vec::new(),
+            digest: String::new(),
+        };
+        kept_units(&base_parts, &predecessors, &prepared)
+    };
+    let same = json!([reuse(11, 0, 1), reuse(11, 1, 2), reuse(12, 0, 3)]);
+    let included: HashSet<_> = [1, 2]
+        .map(|n| RequiredUnitToken::parse(token(n)).unwrap())
+        .into();
+    // An empty digest equals a missing one; the excluded unit stays off Plates.
+    assert_eq!(kept((false, Value::Null), same.clone()), Some(included));
+    // Rule 4: the Part's STL changed.
+    assert_eq!(kept((false, json!("b".repeat(64))), same.clone()), None);
+    // Rule 3: the Part is included now.
+    assert_eq!(kept((true, json!("")), same.clone()), None);
+    // Rule 2: a unit is dropped, or one is created.
+    assert_eq!(
+        kept(
+            (false, json!("")),
+            json!([reuse(11, 0, 1), reuse(12, 0, 3)])
+        ),
+        None
+    );
+    let created = json!([reuse(11, 0, 1), reuse(11, 1, 2), reuse(12, 0, 3),
+        {"kind": "create", "draftPartId": 11, "unitIndex": 2}]);
+    assert_eq!(kept((false, json!("")), created), None);
+    // Rule 3 per token: units swapped between an included and an excluded Part.
+    let moved = json!([reuse(11, 0, 1), reuse(11, 1, 3), reuse(12, 0, 2)]);
+    assert_eq!(kept((false, json!("")), moved), None);
+}

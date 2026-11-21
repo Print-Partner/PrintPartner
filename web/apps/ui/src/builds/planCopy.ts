@@ -26,11 +26,12 @@ export const HISTORY_EMPTY =
   "Nothing has happened to this Build yet. Accepted Plans, checkoffs and sends appear here, and so do the snapshots Accept saves of the Plans it replaces. Restore as draft can bring a snapshot back.";
 
 /**
- * The Accept gate's line under the Plates it lists as cleared (GRE-1530). Every Accept starts
- * the new accepted Plan with no Plate layout, as Node does, even when every unit is kept.
+ * The Accept gate's line under the Plates it lists as cleared (GRE-1530). Accept keeps the
+ * Plate layout when every unit, its Part's inclusion and its STL stay the same (GRE-1550), so
+ * the preview lists Plates only when the Plan's units change.
  */
 export const PLATES_CLEARED =
-  "A new accepted Plan starts with no Plate layout, so Accept clears these Plates even when every unit is kept. Laying Plates out again is not available in this UI yet.";
+  "The Plan's units change, so Accept clears these Plates. Laying Plates out again is not available in this UI yet.";
 
 /**
  * The first-run walk from an empty install to a first Build (GRE-1401). Help and the empty

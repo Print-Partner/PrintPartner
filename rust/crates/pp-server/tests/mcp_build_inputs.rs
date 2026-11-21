@@ -12,11 +12,10 @@ mod mcp_reply;
 mod release;
 #[path = "support/rust_only.rs"]
 mod rust_only;
-#[path = "../../pp-storage/tests/common/scratch.rs"]
-mod scratch;
 
 use reqwest::Method;
 use serde_json::{Value, json};
+use std::os::unix::fs::PermissionsExt;
 
 const ROLES: &str = "propose_set_build_source_roles";
 const IMPORT: &str = "propose_import_build_inputs";
@@ -192,6 +191,48 @@ impl Gateway {
         body["id"].as_i64().unwrap()
     }
 
+    /// A local Source with role `mod` and one uploaded STL, imported: it has
+    /// a revision, `last_synced_at` and `last_commit_sha`. No network.
+    async fn synced_source(&self, name: &str) -> i64 {
+        let source = json!({ "name": name, "source_kind": "local", "role": "mod" });
+        let (status, body) = self
+            .rest(Method::POST, "/api/v1/sources", Some(source))
+            .await;
+        assert!(status == 200 || status == 201, "{status}: {body}");
+        let id = body["id"].as_i64().unwrap();
+        let boundary = "pp-gateway-boundary";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"kit/part.stl\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\nsolid part\nendsolid part\n\r\n--{boundary}--\r\n"
+        );
+        let response = self
+            .http
+            .post(format!("{}/api/v1/sources/{id}/upload-files", self.origin))
+            .header("origin", &self.origin)
+            .header("cookie", &self.cookies)
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 202);
+        let accepted: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        let job = format!("/api/v1/jobs/{}", accepted["job_id"].as_str().unwrap());
+        let mut status = Value::Null;
+        for _ in 0..600 {
+            status = self.get(&job).await["status"].clone();
+            if status != "pending" && status != "running" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(status, "done", "the upload imported");
+        id
+    }
+
     /// What must not change: the Library, Build `build`'s layers and its
     /// Accepted Plan.
     async fn untouched(&self, build: u64) -> Value {
@@ -287,13 +328,16 @@ impl Mcp<'_> {
         applied["result"].clone()
     }
 
-    /// `name` is refused at propose with `code`, and proposes nothing.
-    async fn refused_at_propose(&mut self, name: &str, arguments: Value, code: &str) {
+    /// `name` is refused at propose with `code`, proposes nothing, and
+    /// changes nothing `observed` reads for `build`, its brief included.
+    async fn refused_at_propose(&mut self, build: u64, name: &str, arguments: Value, code: &str) {
         let pending = self.pending().await.len();
+        let before = self.gateway.observed(build).await;
         let (refused, error) = self.call(name, arguments.clone()).await;
         assert!(error, "{arguments}: {refused}");
         assert_eq!(refused["code"], code, "{arguments}: {refused}");
         assert_eq!(self.pending().await.len(), pending, "{arguments}");
+        assert_eq!(self.gateway.observed(build).await, before, "{arguments}");
     }
 
     /// Confirm is refused with `code`, and nothing `observed` reads changes.
@@ -328,13 +372,36 @@ fn evidence_for(brief: &Value, source: i64) -> Vec<Value> {
     mine.cloned().collect()
 }
 
+/// Source `id` in a `GET /sources` list, checked synced: it has a
+/// revision, `last_synced_at` and `last_commit_sha`.
+fn synced(listed: &[Value], id: i64) -> Value {
+    let found = source(listed, id);
+    let fields = [
+        "current_source_revision_id",
+        "last_synced_at",
+        "last_commit_sha",
+    ];
+    for field in fields {
+        assert!(!found[field].is_null(), "{field}: {found}");
+    }
+    found
+}
+
+/// Source `id` in a `GET /sources` list.
+fn source(listed: &[Value], id: i64) -> Value {
+    let found = listed.iter().find(|source| source["id"] == id);
+    found
+        .unwrap_or_else(|| panic!("Source {id} in {listed:?}"))
+        .clone()
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().unwrap()
 }
 
 /// Build B and its Library: Sources S1 (`mod`), S2 (`overlay`) and S3
-/// (`mod`), a base layer of B on S1, and B's brief with evidence E1 (S1) and
-/// E2 (S2), neither with a role.
+/// (`mod`, synced from an upload), a base layer of B on S1, and B's brief
+/// with evidence E1 (S1) and E2 (S2), neither with a role.
 struct Seeded {
     build: u64,
     sources: [i64; 3],
@@ -347,13 +414,11 @@ async fn seed(gateway: &Gateway) -> Seeded {
     let mut mcp = gateway.mcp("/api/v1/mcp").await;
     let build = mcp.build("Voron for Sam").await;
     let mut sources = [0; 3];
-    for (index, (name, role)) in [("S1", "mod"), ("S2", "overlay"), ("S3", "mod")]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, (name, role)) in [("S1", "mod"), ("S2", "overlay")].into_iter().enumerate() {
         let url = format!("https://github.com/example/{}", name.to_lowercase());
         sources[index] = gateway.create_source(name, &url, role).await;
     }
+    sources[2] = gateway.synced_source("S3").await;
     let base = json!({ "project_id": sources[0] });
     let path = format!("/api/v2/plans/{build}/layers/base");
     let (status, body) = gateway.rest(Method::PUT, &path, Some(base)).await;
@@ -409,6 +474,17 @@ impl Seeded {
     }
 }
 
+/// A disposable directory under /tmp, so the server's bootstrap socket path
+/// fits `sun_path` however long `TMPDIR` is. Mode 0700, which the client
+/// requires of a data directory.
+fn short_root() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("ppg-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap()
+}
+
 /// Starts the server on a disposable directory, signs in and seeds B.
 fn open(root: &std::path::Path) -> (tokio::runtime::Runtime, Gateway, Seeded) {
     let server = rust_only::Server::start(root);
@@ -460,11 +536,12 @@ async fn roles_refused_without_a_key_or_a_brief(gateway: &Gateway, seeded: &Seed
     let (status, plain) = gateway.rest(Method::POST, "/api/v2/plans", plain).await;
     assert!(status == 200 || status == 201, "{status}: {plain}");
     let role = json!([{ "evidence_id": seeded.evidence[0], "role": "addon" }]);
-    let no_brief = json!({ "plan_id": plain["id"], "roles": role });
-    mcp.refused_at_propose(ROLES, no_brief.clone(), "no_planning_brief")
+    let plain = plain["id"].as_u64().unwrap();
+    let no_brief = json!({ "plan_id": plain, "roles": role });
+    mcp.refused_at_propose(plain, ROLES, no_brief.clone(), "no_planning_brief")
         .await;
     root_mcp
-        .refused_at_propose(ROLES, no_brief, "no_planning_brief")
+        .refused_at_propose(plain, ROLES, no_brief, "no_planning_brief")
         .await;
     assert_eq!(gateway.untouched(seeded.build).await, seeded.invariant);
 }
@@ -511,10 +588,11 @@ async fn roles_set_and_clear_the_selected_draft(gateway: &Gateway, seeded: &Seed
 }
 
 /// Confirm refuses an unknown evidence id, a role outside the four and a
-/// second structural base with a code, and the brief stays as it is.
+/// second structural base with a code, and the brief stays as it is. These
+/// proposals and confirms run on `/mcp`.
 async fn roles_refused_at_confirm(gateway: &Gateway, seeded: &Seeded) {
     let (build, e2) = (seeded.build, &seeded.evidence[1]);
-    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let mut mcp = gateway.mcp("/mcp").await;
     for (roles, code) in [
         (
             json!([{ "evidence_id": "E9", "role": "addon" }]),
@@ -544,8 +622,8 @@ async fn roles_refused_at_confirm(gateway: &Gateway, seeded: &Seeded) {
 
 #[test]
 fn source_roles_through_the_rust_only_gateway() {
-    let root = scratch::Scratch::new("pp-mcp-gateway-roles-");
-    let (runtime, gateway, seeded) = open(&root);
+    let root = short_root();
+    let (runtime, gateway, seeded) = open(root.path());
     runtime.block_on(async {
         roles_refused_without_a_key_or_a_brief(&gateway, &seeded).await;
         roles_set_and_clear_the_selected_draft(&gateway, &seeded).await;
@@ -579,7 +657,7 @@ async fn import_refused_without_a_key_or_at_propose(gateway: &Gateway, seeded: &
             "invalid_url",
         ),
     ] {
-        mcp.refused_at_propose(IMPORT, seeded.inputs(inputs), code)
+        mcp.refused_at_propose(seeded.build, IMPORT, seeded.inputs(inputs), code)
             .await;
     }
     assert_eq!(gateway.untouched(seeded.build).await, seeded.invariant);
@@ -590,7 +668,9 @@ async fn import_refused_without_a_key_or_at_propose(gateway: &Gateway, seeded: &
 async fn import_attaches_a_library_source(gateway: &Gateway, seeded: &Seeded) {
     let (build, s3) = (seeded.build, seeded.sources[2]);
     let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let synced = synced(&gateway.sources().await, s3);
     gateway.select_draft(build);
+    assert_eq!(gateway.brief(build).await["draft_id"], DRAFT);
     let inputs = seeded.inputs(json!([{ "source_id": s3, "kind": "mod" }]));
     let action = mcp.proposed(build, IMPORT, inputs).await;
     let (applied, error) = mcp.confirm(&action).await;
@@ -623,6 +703,7 @@ async fn import_attaches_a_library_source(gateway: &Gateway, seeded: &Seeded) {
         seeded.invariant,
         "no Source changed"
     );
+    assert_eq!(source(&gateway.sources().await, s3), synced, "S3 as it was");
 
     let again = seeded.inputs(json!([{ "source_id": s3, "title": "Kit" }]));
     mcp.applied(build, IMPORT, again).await;
@@ -668,10 +749,10 @@ async fn import_creates_a_git_source_once(gateway: &Gateway, seeded: &Seeded) {
 }
 
 /// Model pages need an upload and create no Source; an extract is stored
-/// with its SHA-256 and retrieval time.
+/// with its SHA-256 and retrieval time. This import runs on `/mcp`.
 async fn import_attaches_pages_and_an_extract(gateway: &Gateway, seeded: &Seeded) {
     let build = seeded.build;
-    let mut mcp = gateway.mcp("/api/v1/mcp").await;
+    let mut mcp = gateway.mcp("/mcp").await;
     let library = gateway.sources().await;
     let inputs = seeded.inputs(json!([
         { "url": "https://www.printables.com/model/12345-kit" },
@@ -690,13 +771,32 @@ async fn import_attaches_pages_and_an_extract(gateway: &Gateway, seeded: &Seeded
     assert_eq!(imported["created_source_ids"], json!([]));
     assert_eq!(gateway.sources().await, library, "a page creates no Source");
     let brief = gateway.brief(build).await;
-    let guide = brief["evidence"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["normalized_url"] == "https://example.com/guide")
-        .unwrap_or_else(|| panic!("{brief}"))
-        .clone();
+    let stored = |url: &str| {
+        let items = brief["evidence"].as_array().unwrap();
+        let found = items.iter().find(|item| item["normalized_url"] == url);
+        found.unwrap_or_else(|| panic!("{url} in {brief}")).clone()
+    };
+    for page in [
+        "https://www.printables.com/model/12345-kit",
+        "https://makerworld.com/en/models/678",
+    ] {
+        let item = stored(page);
+        let fields = [
+            &item["url"],
+            &item["kind"],
+            &item["input_kind"],
+            &item["upload_required"],
+        ];
+        let expected = [
+            json!(page),
+            json!("model_source"),
+            json!("model_page"),
+            json!(true),
+        ];
+        assert_eq!(fields, expected.each_ref(), "{item}");
+        assert!(item["source_id"].is_null(), "{item}");
+    }
+    let guide = stored("https://example.com/guide");
     assert_eq!(guide["extract"], "Print the frame first.");
     // sha256("Print the frame first.")
     let hash = "8a59b5bfc58ba8baf8e26fece6b3fd9bbe768c98773b1cdf772da15e06bdb1a4";
@@ -738,8 +838,8 @@ async fn import_confirm_is_atomic(gateway: &Gateway, seeded: &Seeded) {
 
 #[test]
 fn import_inputs_through_the_rust_only_gateway() {
-    let root = scratch::Scratch::new("pp-mcp-gateway-import-");
-    let (runtime, gateway, seeded) = open(&root);
+    let root = short_root();
+    let (runtime, gateway, seeded) = open(root.path());
     runtime.block_on(async {
         import_refused_without_a_key_or_at_propose(&gateway, &seeded).await;
         import_attaches_a_library_source(&gateway, &seeded).await;

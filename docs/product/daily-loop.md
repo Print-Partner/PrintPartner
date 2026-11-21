@@ -53,7 +53,7 @@ only. No step is skipped.
 | `fail` | The step failed and has no marker. Or, marker or not, it did not finish: it timed out, did not run, or the harness failed (the server was not ready or the sign-in did not work). | fails |
 | `unexpected_pass` | The step passed and still has a marker. | fails |
 
-A marker is the ticket in `step(3, "GRE-1431", …)`. The test of a marked step goes as far
+A marker is the ticket in `step(3, "GRE-1531", …)`. The test of a marked step goes as far
 as the screens allow and then stops at `unwritten(…)`, which names what is still to check.
 The ticket that makes a step work finishes that test and sets the marker to `null` in the
 same PR; the label `ci:daily-loop` runs the test on that PR. The `Daily loop` workflow runs

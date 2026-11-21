@@ -181,10 +181,9 @@ step(1, null, async ({ page }) => {
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(screen(page, "Sign in")).toBeVisible();
-  // Signed out, he asks for Builds; the sign-in screen takes him there. Until GRE-1453,
-  // sign-out also stops pp-server: Docker starts it again, perhaps on another host port,
-  // and the browser needs a new sign-in link. A server that keeps serving takes one too.
-  // Each try starts from a browser with no cookies and runs again if the stop cuts it off.
+  // Signed out, he asks for Builds; the sign-in screen takes him there. The browser
+  // takes a new sign-in link. Each try starts from a browser with no cookies and runs
+  // again if a restart of pp-server cuts it off.
   await expect(async () => {
     await page.context().clearCookies();
     await openSignInLink(page);
@@ -194,12 +193,16 @@ step(1, null, async ({ page }) => {
   }).toPass({ timeout: 120_000 });
 });
 
-// GRE-412's parts land one by one, and the marker names the open one. The import is to
-// write the synthetic installation (22 Builds with accepted Plans, 10 Sources, 2 printers)
-// into the data volume, and the server is to restart on it. Steps 6 and 10 use its Builds.
-step(2, "GRE-1450", async ({ page }) => {
+// GRE-1515 writes this step: the import is to write the synthetic installation (22 Builds
+// with accepted Plans, 10 Sources, 2 printers) into a new data folder, and the server is to
+// start on it. Steps 6 and 10 use its Builds.
+step(2, "GRE-1515", async ({ page }) => {
   await serverReady();
-  const imported = inContainer("pp-server", "import", "--from", "/tmp/node-installation");
+  const imported = inContainer(
+    "pp-server",
+    "import",
+    ...["--from", "/tmp/node-installation", "--data", "/tmp/imported"],
+  );
   expect(imported.status, imported.stderr).toBe(0);
   await signIn(page);
   await go(page, "Builds");
@@ -208,7 +211,7 @@ step(2, "GRE-1450", async ({ page }) => {
   );
 });
 
-step(3, "GRE-1431", async ({ page }) => {
+step(3, "GRE-1531", async ({ page }) => {
   await signIn(page);
   await go(page, "Settings");
   await page.getByRole("button", { name: /add (a )?printer/i }).click();
@@ -254,7 +257,7 @@ step(5, "GRE-1300", async ({ page }) => {
   );
 });
 
-step(6, "GRE-1450", async ({ page }) => {
+step(6, "GRE-1515", async ({ page }) => {
   await openBuild(page, "Plan");
   const quantity = page.getByRole("textbox", { name: /^Quantity of / }).first();
   await quantity.fill("2");
@@ -273,7 +276,7 @@ step(7, "GRE-423", async ({ page }) => {
   unwritten("both downloads match the accepted Plan");
 });
 
-step(8, "GRE-1103", async ({ page }) => {
+step(8, "GRE-1531", async ({ page }) => {
   await openBuild(page, "Production");
   await page.getByRole("button", { name: /send/i }).click();
   unwritten(
@@ -281,7 +284,7 @@ step(8, "GRE-1103", async ({ page }) => {
   );
 });
 
-step(9, "GRE-1103", async ({ page }) => {
+step(9, "GRE-1531", async ({ page }) => {
   await signIn(page);
   await go(page, "Farm");
   const printers = page.getByRole("table", { name: "Printers" });
@@ -289,7 +292,7 @@ step(9, "GRE-1103", async ({ page }) => {
   unwritten("Farm and Today follow the simulated printer to the end of the print without a page reload");
 });
 
-step(10, "GRE-1450", async ({ page }) => {
+step(10, "GRE-1515", async ({ page }) => {
   await openBuild(page, "Checkoff");
   await page.getByRole("checkbox", { name: / unit 1$/ }).first().click();
   await page.getByRole("button", { name: "Record 1 picked unit" }).click();
@@ -299,7 +302,7 @@ step(10, "GRE-1450", async ({ page }) => {
   await expect(tally).toContainText("Undid the last burst.");
 });
 
-step(11, "GRE-1102", async ({ page }) => {
+step(11, "GRE-1757", async ({ page }) => {
   await openBuild(page);
   await expect(page.getByText(/\d+ of \d+ units printed/)).toBeVisible();
   unwritten(
@@ -310,6 +313,6 @@ step(11, "GRE-1102", async ({ page }) => {
 step(12, "GRE-1340", async ({ page }) => {
   await signIn(page);
   await go(page, "Settings");
-  await page.getByRole("button", { name: /back ?up/i }).click();
+  await page.getByRole("button", { name: "Create backup", exact: true }).click();
   unwritten("the backup restores on a second container, which opens with the same Builds and history");
 });

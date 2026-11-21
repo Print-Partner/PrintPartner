@@ -167,7 +167,8 @@ async function freshList(client: QueryClient): Promise<ProfileList | null> {
   if ((client.getQueryState(buildsQuery.queryKey)?.dataUpdateCount ?? 0) > writes) {
     return client.getQueryData<ProfileList>(buildsQuery.queryKey) ?? null;
   }
-  return client.setQueryData(buildsQuery.queryKey, list) ?? null;
+  client.setQueryData(buildsQuery.queryKey, list);
+  return list;
 }
 
 /** Looks for the exact name in a fresh Builds list, as docs/gre-792-builds-http.md says. */

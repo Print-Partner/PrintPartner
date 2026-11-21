@@ -1,5 +1,7 @@
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
+import { crc32 } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
 import { STEPS } from "./steps.mjs";
 
@@ -227,13 +229,185 @@ step(3, "GRE-1531", async ({ page }) => {
   );
 });
 
-step(4, "GRE-1884", async ({ page }) => {
+/**
+ * A ZIP of `entries`, stored without compression and dated 1980-01-01, so each run uploads
+ * the same bytes. The kit comes from a ZIP rather than GitHub, so the step needs no network.
+ */
+function zipOf(entries: Record<string, string>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [path, text] of Object.entries(entries)) {
+    const name = Buffer.from(path);
+    const data = Buffer.from(text);
+    // Version 2.0, no flags, stored, time 00:00, date 1980-01-01, CRC-32, sizes, name length.
+    const fields = Buffer.alloc(26);
+    fields.writeUInt16LE(20, 0);
+    fields.writeUInt16LE(0x21, 8);
+    fields.writeUInt32LE(crc32(data), 10);
+    fields.writeUInt32LE(data.length, 14);
+    fields.writeUInt32LE(data.length, 18);
+    fields.writeUInt16LE(name.length, 22);
+    const local = Buffer.concat([u32(0x04034b50), fields, name, data]);
+    // The central record: made-by version, the same fields, no comment or attributes, then
+    // the local header's offset.
+    const tail = Buffer.alloc(14);
+    tail.writeUInt32LE(offset, 10);
+    centrals.push(Buffer.concat([u32(0x02014b50), u16(20), fields, tail, name]));
+    locals.push(local);
+    offset += local.length;
+  }
+  const central = Buffer.concat(centrals);
+  const end = Buffer.alloc(18);
+  end.writeUInt16LE(centrals.length, 4);
+  end.writeUInt16LE(centrals.length, 6);
+  end.writeUInt32LE(central.length, 8);
+  end.writeUInt32LE(offset, 12);
+  return Buffer.concat([...locals, central, u32(0x06054b50), end]);
+}
+
+function u16(value: number) {
+  const bytes = Buffer.alloc(2);
+  bytes.writeUInt16LE(value);
+  return bytes;
+}
+
+function u32(value: number) {
+  const bytes = Buffer.alloc(4);
+  bytes.writeUInt32LE(value);
+  return bytes;
+}
+
+/** An ASCII STL of a 10 mm tetrahedron: enough geometry to render a thumbnail. */
+function tetrahedron(name: string) {
+  const facets = [
+    ["0 0 -1", "0 0 0", "0 10 0", "10 0 0"],
+    ["0 -1 0", "0 0 0", "10 0 0", "0 0 10"],
+    ["-1 0 0", "0 0 0", "0 0 10", "0 10 0"],
+    ["0.577 0.577 0.577", "10 0 0", "0 10 0", "0 0 10"],
+  ].map(
+    ([normal, ...corners]) =>
+      ` facet normal ${normal}\n  outer loop\n${corners.map((corner) => `   vertex ${corner}\n`).join("")}  endloop\n endfacet\n`,
+  );
+  return `solid ${name}\n${facets.join("")}endsolid ${name}\n`;
+}
+
+const KIT_SOURCE = "Daily loop kit files";
+const KIT_V1 = {
+  "body/frame.stl": tetrahedron("frame"),
+  "arms/left.stl": tetrahedron("left"),
+  "README.txt": "Daily-loop test kit.\n",
+};
+// The second upload adds a part, so its files tell the two revisions apart.
+const KIT_V2 = { ...KIT_V1, "arms/right.stl": tetrahedron("right") };
+
+/**
+ * Starts recording each text the Sync cell of the kit's row shows to a screen reader while
+ * it is busy. Uploading and importing can end between two polls of an assertion, so
+ * `seenProgress` reads the record instead of the screen.
+ */
+async function recordProgress(page: Page) {
+  await page.getByRole("table", { name: "Sources" }).evaluate((table, source) => {
+    const seen: string[] = [];
+    Object.assign(window, { ppSeenProgress: seen });
+    const record = () => {
+      for (const status of table.querySelectorAll('tbody [role="status"]')) {
+        const row = status.closest("tr")?.querySelector("th a")?.textContent;
+        if (row === source) seen.push(status.textContent ?? "");
+      }
+    };
+    new MutationObserver(record).observe(table, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+  }, KIT_SOURCE);
+}
+
+const seenProgress = (page: Page) =>
+  page.evaluate(() => (window as unknown as { ppSeenProgress: string[] }).ppSeenProgress);
+
+const kitRow = (page: Page) =>
+  page
+    .getByRole("table", { name: "Sources" })
+    .getByRole("row")
+    .filter({ has: page.getByRole("link", { name: KIT_SOURCE, exact: true }) });
+
+/** Uploads `files` as a ZIP on the kit's Library row and returns the job the core accepted. */
+async function uploadKit(page: Page, files: Record<string, string>) {
+  const accepted = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && /\/sources\/\d+\/upload-zip$/.test(response.url()),
+  );
+  await kitRow(page)
+    .getByLabel(`Upload ZIP for ${KIT_SOURCE}`)
+    .setInputFiles({ name: "daily-loop-kit.zip", mimeType: "application/zip", buffer: zipOf(files) });
+  const answer = await accepted;
+  expect(answer.status(), "POST upload-zip").toBe(202);
+}
+
+/** Waits for the kit's row to finish its import and returns its revision text. */
+async function importedRevision(page: Page) {
+  const row = kitRow(page);
+  await expect(row.getByLabel(`Upload ZIP for ${KIT_SOURCE}`)).toBeEnabled({ timeout: 60_000 });
+  await expect(row).not.toContainText(/Import failed|No revision yet|No files on disk/);
+  const revision = row.getByText(/^Revision \d+$/);
+  await expect(revision).toBeVisible();
+  return revision.textContent();
+}
+
+/** Opens the kit's files in Library and checks each file is listed and each STL has a thumbnail. */
+async function expectKitFiles(page: Page, files: Record<string, string>) {
+  await kitRow(page).getByRole("link", { name: KIT_SOURCE, exact: true }).click();
+  const panel = page.getByRole("region", { name: `Files for ${KIT_SOURCE}` });
+  for (const path of Object.keys(files)) {
+    const row = panel.getByRole("listitem").filter({ hasText: path.split("/").pop() });
+    await expect(row).toHaveCount(1);
+  }
+  const stls = Object.keys(files).filter((path) => path.endsWith(".stl")).length;
+  // The panel is busy until every thumbnail in view has loaded or failed.
+  await expect(panel).not.toHaveAttribute("aria-busy", "true", { timeout: 30_000 });
+  await expect(panel.getByRole("img", { name: "No thumbnail" })).toHaveCount(0);
+  const thumbnails = panel.locator(".pp-stl-thumb img");
+  await expect(thumbnails).toHaveCount(stls);
+  for (const thumbnail of await thumbnails.all()) {
+    const width = await thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth);
+    expect(width, "thumbnail width").toBeGreaterThan(0);
+  }
+}
+
+step(4, null, async ({ page }) => {
   await signIn(page);
   await go(page, "Library");
-  await page.getByRole("button", { name: /add (a )?source|upload/i }).click();
-  unwritten(
-    "an uploaded ZIP's files and thumbnails appear in Library, and sync shows progress and resumes after a restart",
-  );
+  await page.getByRole("button", { name: "Add Source" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add Source" });
+  await dialog.getByLabel("Name").fill(KIT_SOURCE);
+  await dialog.getByRole("radio", { name: "ZIP archive" }).check();
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(kitRow(page)).toContainText("No revision yet");
+
+  // The first upload: the row shows its progress, then the files and thumbnails show.
+  await recordProgress(page);
+  await uploadKit(page, KIT_V1);
+  const first = await importedRevision(page);
+  expect(await seenProgress(page)).toContainEqual(expect.stringMatching(/^(Uploading|Importing)/));
+  await expectKitFiles(page, KIT_V1);
+
+  // The second upload, then a restart of the container as soon as the core has accepted it.
+  // The import may finish before the stop or be settled on the next start; either way the
+  // new revision must land, and the row must not stay busy or show a failed import.
+  await uploadKit(page, KIT_V2);
+  const restarted = docker("restart", CONTAINER);
+  expect(restarted.status, restarted.stderr).toBe(0);
+  // The published port can change on restart, so sign in afresh on the new address.
+  await page.context().clearCookies();
+  await signIn(page);
+  await go(page, "Library");
+  const second = await importedRevision(page);
+  expect(second, "the revision after the restart").not.toBe(first);
+  await expectKitFiles(page, KIT_V2);
 });
 
 // The owner creates Builds through the assistant, so this step goes over MCP.

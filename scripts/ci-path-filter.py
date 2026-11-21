@@ -40,18 +40,22 @@ def windows_tests_relevant(path):
     return not path.startswith(".github/") or path in WINDOWS_TEST_GITHUB_INPUTS
 
 
+# `rust image` / `rust image (arm64)` runs on every PR except one limited to docs/,
+# root Markdown (other than the legal notices Dockerfile.rust copies), governance/sync
+# scripts, or .github files other than its own workflow. Over-selection is intended:
+# a new image input cannot be forgotten.
+RUST_IMAGE_GITHUB_INPUTS = {".github/workflows/rust-image.yml"}
+RUST_IMAGE_ROOT_MD_INPUTS = {"LICENSE-SUMMARY.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"}
+
+
 def rust_image_relevant(path):
-    if path in {"Dockerfile.rust", ".dockerignore", "rust-toolchain.toml",
-                ".github/workflows/rust-image.yml", "scripts/docker-rust-smoke.py",
-                "web/scripts/atomic-package-build.mjs",
-                "LICENSE", "LICENSE-SUMMARY.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"}:
-        return True
-    if path.endswith(".md") and not path.startswith(("web/apps/server/src/data/", "fixtures/")):
+    if path.startswith("docs/"):
         return False
-    return (path.startswith(("rust/", "web/apps/ui/", "web/packages/",
-                             "web/apps/server/src/data/", "fixtures/"))
-            or re.fullmatch(r"web/tsconfig[^/]*\.json", path) is not None
-            or re.fullmatch(r"web/package[^/]*\.json", path) is not None)
+    if "/" not in path and path.endswith(".md") and path not in RUST_IMAGE_ROOT_MD_INPUTS:
+        return False
+    if is_non_build_script(path):
+        return False
+    return not path.startswith(".github/") or path in RUST_IMAGE_GITHUB_INPUTS
 
 
 def relevant(path, kind):
@@ -130,8 +134,8 @@ def select(event, base, head, kind, labels=()):
     except subprocess.CalledProcessError:
         return True
     paths = [path for path in paths if path]
-    # An empty diff cannot show that the Windows test inputs are unchanged.
-    if kind == "windows-tests" and not paths:
+    # An empty diff cannot show that deny-listed job inputs are unchanged.
+    if kind in {"windows-tests", "rust-image"} and not paths:
         return True
     return any(relevant(path, kind) for path in paths)
 

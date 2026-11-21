@@ -85,18 +85,80 @@ class CiPathFilterTests(unittest.TestCase):
     def test_rust_image_and_governance_script_filters(self):
         for path in ("Dockerfile.rust", ".dockerignore", "rust/crates/pp-server/src/main.rs",
                      "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
-                     "scripts/docker-rust-smoke.py", ".github/workflows/rust-image.yml",
-                     "web/package-lock.json", "rust-toolchain.toml"):
-            self.assertTrue(ci_filter.relevant(path, "rust-image"), path)
-        for path in ("docs/development/ci.md", "README.md", "scripts/merge_class.py",
-                     "scripts/agent-guard.py", "scripts/linear/pr_status_sync.py",
-                     ".github/workflows/actionlint.yml"):
-            self.assertFalse(ci_filter.relevant(path, "rust-image"), path)
+                     "web/apps/web/src/App.tsx", "web/apps/web/vite.config.ts",
+                     "web/apps/web/package.json", "web/apps/server/src/app.ts",
+                     "web/apps/server/src/config.ts", "web/apps/server/package.json",
+                     "web/apps/server/tsconfig.build.json", "web/DEPLOY.md",
+                     "fixtures/parity/jobs-model/jobs-model.json",
+                     "scripts/docker-rust-smoke.py", "scripts/unknown-build-helper.py",
+                     ".github/workflows/rust-image.yml", "web/package-lock.json",
+                     "rust-toolchain.toml", "LICENSE", "LICENSE-SUMMARY.md",
+                     "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md", "justfile",
+                     ".gitattributes", "new-top-level/file.txt", "docs.md/x.rs"):
+            with self.subTest(kind="rust-image", selected=True, path=path):
+                self.assertTrue(ci_filter.relevant(path, "rust-image"), path)
+        for path in ("docs/development/ci.md", "docs/index.html", "README.md", "AGENTS.md",
+                     "scripts/merge_class.py", "scripts/test_merge_class.py",
+                     "scripts/agent-guard.py", "scripts/test_agent_guard.py",
+                     "scripts/post_pp_score_status.py", "scripts/test_post_pp_score_status.py",
+                     "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py",
+                     ".github/workflows/actionlint.yml", ".github/workflows/web-ci.yml",
+                     ".github/CODEOWNERS", ".github/zizmor.yml"):
+            with self.subTest(kind="rust-image", selected=False, path=path):
+                self.assertFalse(ci_filter.relevant(path, "rust-image"), path)
         for path in ("scripts/merge_class.py", "scripts/test_merge_class.py",
-                     "scripts/agent-guard.py", "scripts/post_pp_score_status.py",
+                     "scripts/agent-guard.py", "scripts/test_agent_guard.py",
+                     "scripts/post_pp_score_status.py", "scripts/test_post_pp_score_status.py",
                      "scripts/linear/pr_status_sync.py", "scripts/evidence/publisher.py"):
             self.assertFalse(ci_filter.relevant(path, "windows-tests"), path)
             self.assertFalse(ci_filter.relevant(path, "ui"), path)
+
+    def test_rust_image_single_path_diffs_and_empty_diff_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
+
+            def select(base, head):
+                output = Path(directory, "output")
+                output.write_text("")
+                subprocess.run(["python3", str(SCRIPT), "rust-image"], cwd=directory, check=True,
+                               capture_output=True,
+                               env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
+                                    "HEAD_SHA": head, "GITHUB_OUTPUT": str(output),
+                                    "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
+                return output.read_text()
+
+            git("init", "-q")
+            git("config", "user.email", "proof@example.com")
+            git("config", "user.name", "Proof")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            for paths, expected in (
+                    (["docs/development/ci.md"], "false"),
+                    (["README.md"], "false"),
+                    (["scripts/merge_class.py"], "false"),
+                    (["scripts/linear/pr_status_sync.py"], "false"),
+                    ([".github/workflows/web-ci.yml"], "false"),
+                    (["docs/x.md", "README.md", "scripts/agent-guard.py",
+                      ".github/workflows/actionlint.yml"], "false"),
+                    (["web/apps/web/src/App.tsx"], "true"),
+                    (["web/apps/web/vite.config.ts"], "true"),
+                    (["web/apps/server/src/app.ts"], "true"),
+                    (["web/apps/server/src/config.ts"], "true"),
+                    (["new-top-level/file.txt"], "true"),
+                    (["LICENSE-SUMMARY.md"], "true"),
+                    ([".github/workflows/rust-image.yml"], "true"),
+                    (["docs/x.md", "web/apps/server/src/config.ts"], "true")):
+                with self.subTest(paths=paths):
+                    git("checkout", "-q", "--detach", base)
+                    for path in paths:
+                        Path(directory, path).parent.mkdir(parents=True, exist_ok=True)
+                        Path(directory, path).write_text("proof\n")
+                        git("add", "--", path)
+                    git("commit", "-qm", "change")
+                    self.assertEqual(select(base, git("rev-parse", "HEAD")), f"relevant={expected}\n")
+            # An empty diff fails closed and runs the image jobs.
+            self.assertEqual(select(base, base), "relevant=true\n")
 
     def test_rust_inputs(self):
         for path in ["rust/Cargo.lock", "rust/crates/pp-storage/src/lib.rs",
@@ -212,7 +274,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "actions", "ui", "web"]:
+        for kind in ["rust", "rust-image", "actions", "ui", "web"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))

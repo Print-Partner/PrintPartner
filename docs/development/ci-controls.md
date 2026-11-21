@@ -217,7 +217,7 @@ The rule, as added (it changed nothing else in the ruleset):
 | `merge_method` | `SQUASH` | Matches `allowed_merge_methods: ["squash"]`. |
 | `grouping_strategy` | `ALLGREEN` | Only passing combinations land. A failing group ejects its PR; read the log before you queue it again. |
 | `max_entries_to_build` | `2` | Each entry builds the full Linux Rust path on hosted runners. Hosted concurrency is the limit. |
-| `min_entries_to_merge`, `max_entries_to_merge`, `min_entries_to_merge_wait_minutes` | `1`, `5`, `5` | A lone PR is not held. Merge limits only batch the final merge and save no CI. |
+| `min_entries_to_merge`, `max_entries_to_merge`, `min_entries_to_merge_wait_minutes` | `1`, `5`, `1` | A lone PR is not held. Merge limits only batch the final merge and save no CI. |
 | `check_response_timeout_minutes` | `150` | Covers a full Linux and Windows run with hosted queueing. |
 
 The required status checks and `strict_required_status_checks_policy: false` stay as they are; the queue replaces "branch must be up to date".

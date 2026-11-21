@@ -241,6 +241,10 @@ async function simulatorLog() {
 step(3, null, async ({ page }) => {
   await signIn(page);
   await go(page, "Settings");
+  // Farm is off on a new installation; the owner turns it on to see his printers there.
+  await page.getByRole("button", { name: "Turn Farm on" }).click();
+  await page.getByRole("button", { name: "Confirm Module change" }).click();
+  await expect(page.getByRole("button", { name: "Turn Farm off" })).toBeVisible();
   await page.getByRole("button", { name: "Add a printer" }).click();
   const dialog = page.getByRole("dialog", { name: "Add a printer" });
   await dialog.getByLabel("Kind").selectOption("moonraker");
@@ -279,8 +283,9 @@ step(3, null, async ({ page }) => {
   expect(after.counts.unauthorized, "requests the simulator refused after the restart").toBe(
     before.counts.unauthorized,
   );
-  // The simulator is in standby, so Farm shows it Ready and Idle, heard after the restart,
-  // from the live stream rather than a last-known state.
+  // The simulator is in standby and no one has confirmed its bed clear, so Farm shows it
+  // Idle with its bed to clear, heard after the restart, from the live stream rather than a
+  // last-known state.
   expect(after.state, "the simulator's state").toBe("standby");
   const row = page
     .getByRole("table", { name: "Printers" })
@@ -288,7 +293,7 @@ step(3, null, async ({ page }) => {
     .filter({ has: page.getByRole("rowheader", { name: PRINTER }) });
   await expect(row).toHaveCount(1);
   const cells = row.getByRole("cell");
-  await expect(cells.nth(0)).toHaveText("Ready", { timeout: 60_000 });
+  await expect(cells.nth(0)).toHaveText("Bed to clear", { timeout: 60_000 });
   await expect(cells.nth(1)).toHaveText("Idle");
   const heard = row.locator("time");
   await expect(heard).toBeVisible();

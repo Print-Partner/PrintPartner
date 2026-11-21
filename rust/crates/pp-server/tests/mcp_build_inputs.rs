@@ -515,6 +515,7 @@ async fn roles_refused_without_a_key_or_a_brief(gateway: &Gateway, seeded: &Seed
     let mut mcp = gateway.mcp("/api/v1/mcp").await;
     let call = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
         "params": { "name": ROLES, "arguments": seeded.roles("structural_base", "addon") } });
+    let before = gateway.observed(seeded.build).await;
     for path in ["/api/v1/mcp", "/mcp"] {
         for key in [None, Some(UNKNOWN_KEY)] {
             let (status, body, _) = gateway.post_mcp(path, key, None, &call).await;
@@ -525,6 +526,7 @@ async fn roles_refused_without_a_key_or_a_brief(gateway: &Gateway, seeded: &Seed
     let (status, body, _) = gateway.post_mcp("/api/v1/mcp", None, session, &call).await;
     assert_eq!(status, 401, "keyless call on a keyed session: {body}");
     assert!(mcp.pending().await.is_empty());
+    assert_eq!(gateway.observed(seeded.build).await, before, "a 401 wrote");
 
     let mut root_mcp = gateway.mcp("/mcp").await;
     let tools = root_mcp.tools().await;
@@ -639,9 +641,11 @@ async fn import_refused_without_a_key_or_at_propose(gateway: &Gateway, seeded: &
     let call = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
         "params": { "name": IMPORT, "arguments": seeded.inputs(json!([{ "source_id": s3 }])) } });
     let session = Some(mcp.session.as_str());
+    let before = gateway.observed(seeded.build).await;
     let (status, body, _) = gateway.post_mcp("/api/v1/mcp", None, session, &call).await;
     assert_eq!(status, 401, "{body}");
     assert!(mcp.pending().await.is_empty());
+    assert_eq!(gateway.observed(seeded.build).await, before, "a 401 wrote");
     for (inputs, code) in [
         (json!([{ "source_id": 999_999 }]), "source_not_found"),
         (
@@ -794,7 +798,7 @@ async fn import_attaches_pages_and_an_extract(gateway: &Gateway, seeded: &Seeded
             json!(true),
         ];
         assert_eq!(fields, expected.each_ref(), "{item}");
-        assert!(item["source_id"].is_null(), "{item}");
+        assert_eq!(item.get("source_id"), Some(&Value::Null), "{item}");
     }
     let guide = stored("https://example.com/guide");
     assert_eq!(guide["extract"], "Print the frame first.");

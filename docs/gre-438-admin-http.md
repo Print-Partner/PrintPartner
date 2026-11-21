@@ -243,6 +243,10 @@ removed. No response or problem carries an API key or a password.
 - `pp-storage::printer_setup` owns the rules and answers a typed
   `PrinterSetupError`; `pp-api/src/integrations.rs` is the one place that maps
   it. Failures every write shares go through `pp_api::problem::writer_failure`.
+- Only `printer_setup` writes `integrations` and `printer.fleet`. The generic
+  setting write, `SettingsClient::submit`, refuses both keys and leaves the
+  stored row as it is (GRE-1480). Tests seed them with
+  `pp_testkit::settings::seed_setting`.
 
 | Case | Status | `code` |
 | --- | --- | --- |

@@ -1,13 +1,13 @@
 import type { DeductionView, FilamentShortfalls } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
+import { deductionsQuery } from "../core/deductions";
 import { readCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
 import { LoadedAt, ModuleOff, MutationButton } from "../screen/ScreenTemplate";
 import {
   DeductionFact,
   DeductionNotices,
-  deductionsQuery,
   newestOnSpools,
 } from "./FilamentDeductions";
 

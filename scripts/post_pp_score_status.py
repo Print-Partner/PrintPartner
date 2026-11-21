@@ -26,8 +26,8 @@ from pathlib import Path
 
 # The record reader, its rules and the carry decision are shared with the coordinator's sensitive
 # merge check (agent-guard.py), so both read the same comments the same way.
-from merge_class import (DUAL_AUTHOR_FAMILIES, NO_CARRY_VENDORS, PASS_AT, Reading, Record, carry_source,  # noqa: F401
-                         classify, comment_pages, head_fault, load_classes, load_trust, read_comments)
+from merge_class import (DUAL_AUTHOR_FAMILIES, NO_CARRY_VENDORS, PASS_AT, STRICT_CARRY_MIN, Reading, Record,  # noqa: F401
+                         carry_source, classify, comment_pages, head_fault, load_classes, load_trust, read_comments)
 from merge_class import (CARRY_MAX_HOPS, Carry, GitHubFacts, LocalGit,  # noqa: F401
                          check_state, decide_carry, gate_file, hop)
 
@@ -123,7 +123,7 @@ def plan_carry(head: str, reading: Reading, strict: bool, facts,
     plan = plan_head(source, reading)
     if plan.state != "success":
         return None, f"{source[:7]} did not pass: {plan.description}"
-    low = [r for r in plan.records if r.score <= PASS_AT]
+    low = [r for r in plan.records if r.score < STRICT_CARRY_MIN]
     if strict and low:
         return None, f"sensitive: {low[0].seat} scored {format_score(low[0].score)} on {source[:7]}"
     carried = tuple(r for r in reading.on(source) if r.vendor not in NO_CARRY_VENDORS and r.bare)

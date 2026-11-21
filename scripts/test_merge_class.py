@@ -189,6 +189,13 @@ class ScoreTests(unittest.TestCase):
     def test_opus_and_grok_pass_on_a_sol_pr(self):
         self.assertTrue(self.check([self.line(), self.grok()]))
 
+    def test_eight_qualifies_and_seven_refuses(self):
+        # Chad, 2026-11-20: a sensitive PR merges when its runs score 8/10 or higher.
+        self.assertEqual(mc.SENSITIVE_MIN, 8)
+        self.assertTrue(self.check([self.line(score=8), self.grok(score=8)]))
+        self.assertFalse(self.check([self.line(score=7), self.grok()]))
+        self.assertFalse(self.check([self.line(), self.grok(score=7)]))
+
     def glm(self, **kwargs):
         return self.line("glm-5.3-flash-free", vendor="zhipu", **kwargs)
 
@@ -306,7 +313,7 @@ class ScoreTests(unittest.TestCase):
     def test_invalid_record_refuses_even_with_two_good_scores(self):
         good = [self.line(), self.grok()]
         for bad in (
-            self.line(score=8), self.line(author="anthropic"),
+            self.line(score=7), self.line(author="anthropic"),
             self.line("unknown"), self.line(vendor="xai"),
             self.line(vendor="unknown"), self.line(author="unknown"),
             self.line().replace(" author=openai", ""),

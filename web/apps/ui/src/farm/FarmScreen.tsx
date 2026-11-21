@@ -231,7 +231,14 @@ export function FarmScreen() {
           </p>
         </>
       )}
-      empty={{ message: "No printers yet. Printers you add in Settings appear here." }}
+      empty={{
+        message: "No printers yet. Printers you add in Settings appear here.",
+        action: (
+          <Link to="/settings#printers" className="pp-link">
+            Add a printer in Settings
+          </Link>
+        ),
+      }}
     />
   );
 }

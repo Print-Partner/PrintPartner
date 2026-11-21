@@ -1,0 +1,419 @@
+import type {
+  CreateBuildRequest,
+  CreateSourceRequest,
+  Health,
+  ProfileLayers,
+  ProfileSummary,
+  SourceList,
+} from "@print-partner/rust-client";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { createMemoryRouter } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { App, createQueryClient } from "../App";
+import { routes } from "../routes";
+import { FIRST_BUILD_STEPS } from "./planCopy";
+
+// GRE-1401: a scripted core on disposable, in-memory data. It keeps Sources, Builds and layers
+// and answers createBuild as Rust does (docs/gre-792-builds-http.md): a name already in use is
+// 400, the 65th Build is 409, and a refusal writes nothing.
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const problem = (status: number, detail: string, type = "validation") =>
+  new Response(
+    JSON.stringify({ type: `urn:print-partner:problem:${type}`, title: "Refused", status, detail }),
+    { status, headers: { "content-type": "application/problem+json" } },
+  );
+
+const health: Health = {
+  ok: true,
+  authenticated: true,
+  authentication_required: true,
+  capabilities: [],
+  degraded_detail: null,
+  discord_oauth_configured: false,
+  github_oauth_configured: false,
+  multi_user: false,
+  owner_mapping_required: false,
+  registration_open: false,
+  single_user_auth: true,
+  single_user_setup_required: false,
+  modules: [],
+};
+
+type Source = SourceList["sources"][number];
+type Layer = ProfileLayers["layers"][number];
+
+const storedSource = (id: number, name: string): Source => ({
+  id,
+  name,
+  url: "",
+  source_kind: "archive",
+  source_type: "local",
+  role: "unassigned",
+  category: null,
+  branch: "main",
+  tag: null,
+  local_path: null,
+  content_available: false,
+  last_synced_at: null,
+  last_commit_sha: null,
+  current_source_revision_id: null,
+  docs_url: null,
+  manifest_community_slug: null,
+  metadata: null,
+  naming_use_defaults: true,
+  update_status: null,
+  update_checked_at: null,
+  doc_count: 0,
+});
+
+/** A Build as Rust answers one with no accepted Plan yet. */
+const storedBuild = (id: number, name: string): ProfileSummary => ({
+  id,
+  name,
+  order_number: null,
+  special_request: null,
+  part_count: 0,
+  accepted_progress: { kind: "empty" },
+  build_stale: false,
+  freshness: {
+    status: "untracked",
+    accepted_at: null,
+    accepted_input_set_id: null,
+    reasons: [{ kind: "no_accepted_inputs" }],
+  },
+  archived_at: null,
+  last_used_at: null,
+  customer: null,
+  due_date: null,
+});
+
+interface Seed {
+  sources?: string[];
+  builds?: string[];
+  /**
+   * The create's answer in place of the core's. `stored` is the Build it wrote, or null when
+   * `store` is false and nothing was written: a reply lost before or after the write.
+   */
+  answer?: (stored: ProfileSummary | null) => Promise<Response>;
+  /** Whether a create with `answer` writes the Build first. Defaults to true. */
+  store?: boolean;
+  /** Fails every Builds list read after the first. */
+  listFailsAfterFirst?: boolean;
+}
+
+function scriptedCore(seed: Seed = {}) {
+  const sources = (seed.sources ?? []).map((name, i) => storedSource(i + 1, name));
+  const builds: ProfileSummary[] = [];
+  const layers = new Map<number, Layer[]>();
+  const sourcePosts: CreateSourceRequest[] = [];
+  const buildPosts: CreateBuildRequest[] = [];
+  let listReads = 0;
+  let answer = seed.answer;
+  const addBuild = (name: string, sourceId: number | null) => {
+    const build = storedBuild(1000 + builds.length, name);
+    builds.push(build);
+    const source = sources.find((s) => s.id === sourceId);
+    const base: Layer[] = source
+      ? [
+          {
+            id: build.id * 10,
+            layer_order: 0,
+            layer_type: "base",
+            project_id: source.id,
+            project_name: source.name,
+          },
+        ]
+      : [];
+    layers.set(build.id, base);
+    return build;
+  };
+  for (const name of seed.builds ?? []) addBuild(name, null);
+  const createBuild = (request: CreateBuildRequest): Promise<Response> => {
+    buildPosts.push(request);
+    if (builds.some((b) => b.name === request.name)) {
+      return Promise.resolve(problem(400, `Profile already exists: ${request.name}`));
+    }
+    if (builds.length >= 64) {
+      return Promise.resolve(
+        problem(409, "Build limit reached: an installation holds at most 64 Builds", "conflict"),
+      );
+    }
+    const store = !answer || seed.store !== false;
+    const build = store ? addBuild(request.name, request.base_project_id ?? null) : null;
+    if (answer) {
+      const once = answer;
+      answer = undefined;
+      return once(build);
+    }
+    return Promise.resolve(json({ ...build, layers: layers.get(build!.id) }));
+  };
+  const sourceRoute = (path: string, method: string, body: unknown): Response | null => {
+    if (path.startsWith("/api/v1/sources/activity")) return json({ events: [] });
+    if (path === "/api/v1/sources" && method === "POST") {
+      const request = body as CreateSourceRequest;
+      sourcePosts.push(request);
+      const source = storedSource(sources.length + 1, request.name);
+      sources.push(source);
+      return json(source);
+    }
+    if (path === "/api/v1/sources") return json({ sources });
+    const files = /^\/api\/v1\/sources\/(\d+)\/files$/.exec(path);
+    return files && json({ source_id: Number(files[1]), revision_id: null, files: [] });
+  };
+  const planRoute = (path: string, method: string, body: unknown): Promise<Response> | Response => {
+    if (path === "/api/v2/plans" && method === "POST") {
+      return createBuild(body as CreateBuildRequest);
+    }
+    if (path === "/api/v2/plans") {
+      listReads += 1;
+      if (seed.listFailsAfterFirst && listReads > 1) return problem(503, "List unreadable");
+      return json({ profiles: builds });
+    }
+    const plan = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow|\/filament-shortfalls)?$/.exec(path);
+    const build = builds.find((b) => b.id === Number(plan?.[1]));
+    if (!plan || !build) return problem(404, "Profile not found", "not-found");
+    if (plan[2] === "/layers") return json({ profile_id: build.id, layers: layers.get(build.id) });
+    if (plan[2] === "/filament-shortfalls") {
+      return json({ kind: "module_off", module: "spoolman", reason: "default_off" });
+    }
+    if (plan[2] === "/workflow") return problem(503, "Workflow not scripted", "unavailable");
+    return json(build);
+  };
+  const route = (path: string, init?: RequestInit): Promise<Response> | Response => {
+    const method = init?.method ?? "GET";
+    const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
+    if (path === "/health") return json(health);
+    if (path === "/api/v2/tasks") return json({ tasks: [], unavailable: [] });
+    return sourceRoute(path, method, body) ?? planRoute(path, method, body);
+  };
+  const fetchMock = vi.fn((path: string, init?: RequestInit) => Promise.resolve(route(path, init)));
+  return { fetchMock, builds, sourcePosts, buildPosts };
+}
+
+function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
+  vi.stubGlobal("fetch", core.fetchMock);
+  const router = createMemoryRouter(routes, { initialEntries: [path] });
+  const queryClient = createQueryClient();
+  queryClient.setDefaultOptions({
+    queries: { ...queryClient.getDefaultOptions().queries, retry: false },
+  });
+  render(<App router={router} queryClient={queryClient} />);
+  return router;
+}
+
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+/** A create is sent a microtask or more after the click, so "nothing more sent" waits first. */
+const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+const dialog = () => screen.getByRole("dialog", { name: "Create Build" });
+const heading = (name: string) => screen.findByRole("heading", { level: 1, name });
+
+/** Opens Create Build on a loaded Builds list, waits for the Sources, and types a name. */
+async function openWithName(name: string) {
+  fireEvent.click(await screen.findByRole("button", { name: "Create Build" }));
+  await within(dialog()).findByLabelText("Base Source");
+  fireEvent.change(within(dialog()).getByLabelText("Name"), { target: { value: name } });
+  return within(dialog()).getByRole("button", { name: "Create" });
+}
+
+describe("UI13-01: first run walks to a first Source and Build", () => {
+  it("goes from an empty install to a Build on a new Source", async () => {
+    const core = scriptedCore();
+    const router = renderAt("/builds", core);
+
+    // Builds is empty: it names Create Build and lists the same first-Build steps as Help.
+    expect(await screen.findByText(/^No Builds yet\. Press Create Build/)).toBeTruthy();
+    const steps = screen.getByRole("list", { name: "Your first Build" });
+    expect(
+      within(steps)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual([...FIRST_BUILD_STEPS]);
+
+    // With no Sources, the dialog leads to Library.
+    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    const toLibrary = await within(dialog()).findByRole("link", {
+      name: "Add a Source in Library",
+    });
+    expect(within(dialog()).queryByRole("combobox")).toBeNull();
+    fireEvent.click(toLibrary);
+    await heading("Library");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // Library is empty: Add Source creates the first Source.
+    expect(await screen.findByText(/^No Sources yet\. Press Add Source/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add Source" }));
+    const add = screen.getByRole("dialog", { name: "Add Source" });
+    fireEvent.change(within(add).getByLabelText("Name"), { target: { value: "Disposable Kit" } });
+    fireEvent.click(within(add).getByRole("button", { name: "Create" }));
+    await screen.findByRole("rowheader", { name: /Disposable Kit/ });
+    expect(core.sourcePosts).toEqual([{ name: "Disposable Kit", source_kind: "archive" }]);
+
+    // Back on Builds, Create Build preselects that Source as the base and sends one create.
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    await heading("Builds");
+    const create = await openWithName(" First Build ");
+    const base = within(dialog()).getByLabelText("Base Source") as HTMLSelectElement;
+    expect([...base.options].map((o) => o.textContent)).toEqual([
+      "No base Source",
+      "Disposable Kit",
+    ]);
+    expect(base.selectedOptions[0]!.textContent).toBe("Disposable Kit");
+    fireEvent.click(create);
+
+    // The new Build opens on its Overview with the Source as its base layer.
+    await heading("First Build");
+    expect(router.state.location.pathname).toBe("/builds/1000");
+    expect(core.buildPosts).toEqual([{ name: "First Build", base_project_id: 1 }]);
+    const layers = screen.getByRole("list", { name: "Layers" });
+    expect(layers.textContent).toContain("Disposable Kit");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    const table = await screen.findByRole("table", { name: "Builds" });
+    expect(within(table).getByRole("link", { name: "First Build" })).toBeTruthy();
+  });
+
+  it("creates a Build with no base Source, and its Overview leads to Sources", async () => {
+    const core = scriptedCore({ sources: ["Kit A"] });
+    renderAt("/builds", core);
+    const create = await openWithName("Loose");
+    fireEvent.change(within(dialog()).getByLabelText("Base Source"), { target: { value: "" } });
+    fireEvent.click(create);
+    await heading("Loose");
+    expect(core.buildPosts).toEqual([{ name: "Loose", base_project_id: null }]);
+    fireEvent.click(screen.getByRole("link", { name: "Choose its base Source" }));
+    await heading("Sources");
+  });
+});
+
+describe("Create Build answers", () => {
+  it("a name in use shows the refusal, names that Build, and sends once", async () => {
+    const core = scriptedCore({ sources: ["Kit A"], builds: ["Taken"] });
+    const router = renderAt("/builds", core);
+    const create = await openWithName("Taken");
+    fireEvent.click(create);
+    fireEvent.click(create);
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "A Build with this name already exists. Open it, or choose another name. Open Taken",
+    );
+    expect(core.buildPosts).toHaveLength(1);
+    expect(router.state.location.pathname).toBe("/builds");
+    // Editing the name clears the stale refusal.
+    fireEvent.change(within(dialog()).getByLabelText("Name"), { target: { value: "Taken 2" } });
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
+  });
+
+  it("the Build limit shows the core's detail and writes nothing", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      builds: Array.from({ length: 64 }, (_, i) => `B${i}`),
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("One more"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "Build limit reached: an installation holds at most 64 Builds",
+    );
+    expect(core.builds).toHaveLength(64);
+  });
+
+  it("an empty name and a name over 4,096 characters are not sent", async () => {
+    const core = scriptedCore({ sources: ["Kit A"] });
+    renderAt("/builds", core);
+    const create = await openWithName("   ");
+    expect(within(dialog()).getByText("Enter a name.")).toBeTruthy();
+    fireEvent.change(within(dialog()).getByLabelText("Name"), {
+      target: { value: "\u{1f9f5}".repeat(4097) },
+    });
+    expect(
+      within(dialog()).getByText("Shorten the name to 4,096 characters or fewer."),
+    ).toBeTruthy();
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(create);
+    await pause();
+    expect(core.buildPosts).toEqual([]);
+  });
+
+  it("disables Create while the create is in flight", async () => {
+    let reply: (response: Response) => void = () => {};
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: () => new Promise((resolve) => (reply = resolve)),
+      store: false,
+    });
+    renderAt("/builds", core);
+    const create = await openWithName("Slow");
+    fireEvent.click(create);
+    expect(await within(dialog()).findByText("Creating the Build.")).toBeTruthy();
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(create);
+    fireEvent.submit(create.closest("form")!);
+    await pause();
+    expect(core.buildPosts).toHaveLength(1);
+    reply(problem(400, "Project not found"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "That Source is no longer in the Library. Choose another.",
+    );
+  });
+});
+
+describe("Create Build repeat rule: an unconfirmed answer is checked, never resent", () => {
+  it("a lost answer after the write finds the Build in the list and offers to open it", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: () => Promise.resolve(problem(502, "Bad Gateway", "unavailable")),
+    });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Maybe"));
+    const alert = await within(dialog()).findByRole("alert");
+    expect(alert.textContent).toBe(
+      "The answer to Create was lost, but the Builds list now holds this Build, so it was created. Open Maybe",
+    );
+    await pause();
+    expect(core.buildPosts).toHaveLength(1);
+    fireEvent.click(within(alert).getByRole("link", { name: "Open Maybe" }));
+    await heading("Maybe");
+    expect(router.state.location.pathname).toBe("/builds/1000");
+  });
+
+  it("a dropped connection before the write says so, and only a press sends again", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: () => Promise.reject(new TypeError("Failed to fetch")),
+      store: false,
+    });
+    renderAt("/builds", core);
+    const create = await openWithName("Second try");
+    fireEvent.click(create);
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "Could not confirm the Build was created, and the Builds list holds no Build with this name. Pressing Create again is safe: the core refuses a second Build with the same name.",
+    );
+    await pause();
+    expect(core.buildPosts).toHaveLength(1);
+    fireEvent.click(create);
+    await heading("Second try");
+    expect(core.buildPosts).toHaveLength(2);
+    expect(core.builds.map((b) => b.name)).toEqual(["Second try"]);
+  });
+
+  it("a lost answer with an unreadable list tells the user to check Builds", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: () => Promise.resolve(new Response("upstream timeout", { status: 504 })),
+      listFailsAfterFirst: true,
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Unknown"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "Could not confirm the Build was created, and the Builds list did not load. Check Builds before you press Create again.",
+    );
+    await pause();
+    expect(core.buildPosts).toHaveLength(1);
+  });
+});

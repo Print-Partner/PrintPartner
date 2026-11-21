@@ -1,9 +1,9 @@
 name: Rust image
 
 # Build the Rust-only image and smoke-test it, including sign-in. Runs on pull
-# requests, pushes to main, and merge groups. Each architecture builds and runs
-# on its own native runner (GRE-1295): a multi-arch manifest alone does not
-# prove the arm64 image runs. See docs/development/ci.md.
+# requests (when image inputs changed), pushes to main, and merge groups. Each
+# architecture builds and runs on its own native runner (GRE-1295): a multi-arch
+# manifest alone does not prove the arm64 image runs. See docs/development/ci.md.
 
 on:
   pull_request:
@@ -22,9 +22,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
+  changes:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.select.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select Rust image inputs
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-path-filter.py rust-image
+
   image:
     name: rust image
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -49,7 +69,8 @@ jobs:
 
   image-arm64:
     name: rust image (arm64)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [changes]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:

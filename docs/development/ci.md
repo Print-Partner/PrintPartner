@@ -5,7 +5,7 @@ A pull request, a push to `main`, and a merge group run four parts (GRE-1649):
 1. `actionlint` and `zizmor` in `.github/workflows/actionlint.yml`, unchanged.
 2. `rust (linux)` in `.github/workflows/rust-cross-os.yml`: `cargo fmt`, `cargo clippy -D warnings`, and `cargo nextest run` on the default build. After GRE-1646 that default is the Rust-only build. The commands do not pass `--features desktop_rebuild` or `--no-default-features`. On `ubuntu-latest` (GRE-1664) nextest runs as four `hash` partitions, and fmt plus clippy run on a separate part. The required check is the aggregate, still named `rust (linux)`.
 3. `ui` in `.github/workflows/web-ci.yml`: tests and a build of the replacement UI and the generated Rust client, when those inputs change.
-4. `rust image` and `rust image (arm64)` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in. `rust image` runs on `ubuntu-latest` (amd64) and `rust image (arm64)` on the native `ubuntu-24.04-arm` runner, so each architecture is built and run on its own hardware (GRE-1295).
+4. `rust image` and `rust image (arm64)` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in, when image inputs change on a pull request (and on every push to `main` and merge group). `rust image` runs on `ubuntu-latest` (amd64) and `rust image (arm64)` on the native `ubuntu-24.04-arm` runner, so each architecture is built and run on its own hardware (GRE-1295).
 
 No pull-request job runs Node parity, the old UI's test or build jobs, or the Node desktop. The Linux Rust job still runs `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py`, because `pp-compat` embeds that manifest. That step is a compile input, not the old UI's test job. Desktop workflows (`desktop-contracts.yml`, `desktop-deny.yml`, `desktop-e2e.yml`, `desktop-webkit.yml`, `desktop-runtime.yml`, `desktop-fleet-rust.yml`, `desktop-packaged-smoke.yml`, `desktop-native-macos.yml`) stay in the tree and start only from `workflow_dispatch`. Desktop CI returns in M5.
 
@@ -13,15 +13,16 @@ The nightly schedule (`37 7 * * *`) and a manual dispatch of Rust cross-OS build
 
 #### Windows tests on pull requests
 
-`rust (windows tests)` in `rust-cross-os.yml` runs named Windows tests on `windows-latest` (GRE-1811). It is not a required check, so a red run does not block a merge. It runs on a manual dispatch of Rust cross-OS on any branch, and on a ready pull request when `scripts/ci-path-filter.py windows-tests` selects it. It does not run on pushes, merge groups or the nightly schedule. The job runs for every pull request except those that change only docs/, root Markdown, or other workflow files; it is optional and runs in parallel, so it cannot block or delay a merge, at the cost of Windows runner minutes on most PRs.
+`rust (windows tests)` in `rust-cross-os.yml` runs named Windows tests on `windows-latest` (GRE-1811). It is not a required check, so a red run does not block a merge. It runs on a manual dispatch of Rust cross-OS on any branch, and on a ready pull request when `scripts/ci-path-filter.py windows-tests` selects it. It does not run on pushes, merge groups or the nightly schedule. The job runs for every pull request except those that change only docs/, root Markdown, non-build governance/sync/evidence scripts, or other workflow files; it is optional and runs in parallel, so it cannot block or delay a merge, at the cost of Windows runner minutes on most PRs.
 
 The filter skips the job only when every changed path is on the skip list:
 
 - `docs/**`.
 - Markdown files at the repository root (`*.md` directly in the root, nothing deeper).
+- Non-build governance, sync and evidence scripts: `scripts/linear/**`, `scripts/evidence/**`, `scripts/merge_class.py`, `scripts/agent-guard.py`, `scripts/post_pp_score_status.py` and their tests.
 - Files under `.github/**`, except `.github/workflows/rust-cross-os.yml` and `.github/zizmor.yml`.
 
-Any other path selects it: everything under `rust/`, `web/` (including `web/apps/ui` and `web/packages/rust-client`), `fixtures/` and `scripts/`, any other root file, and any new top-level directory. Over-selection is intended, so a new input cannot be forgotten. A change that mixes skipped and other paths runs the job. So do an empty diff, a missing or malformed base or head SHA, a failed `git diff`, and every manual dispatch.
+Any other path selects it: everything under `rust/`, `web/` (including `web/apps/ui` and `web/packages/rust-client`), `fixtures/` and other `scripts/`, any other root file, and any new top-level directory. Over-selection is intended, so a new input cannot be forgotten. A change that mixes skipped and other paths runs the job. So do an empty diff, a missing or malformed base or head SHA, a failed `git diff`, and every manual dispatch.
 
 The job installs `web/` without `@print-partner/ui` and `@print-partner/rust-client`, builds the old UI and writes `rust/bundle-manifest.json`. Without `rust-client`, the manifest script does not build the replacement UI, and none of these tests read it. The replacement UI's Windows build is not proven here. Each line below is one `cargo nextest run --locked --no-fail-fast --no-tests=fail` call, and the job summary gets one result row per call:
 
@@ -60,7 +61,7 @@ The `changes` job runs `ci-path-filter.py ui`. The `ui` job needs that output.
 A failed selector or an unknown diff keeps the job selected. Draft PRs skip
 before runner allocation. The `ui` kind covers `web/apps/ui/`, shared packages
 including `rust-client`, web scripts and configuration, fixtures, manifests,
-scripts and CI inputs. The job runs on Node 22.23.3:
+scripts (other than the non-build governance, sync and evidence scripts) and CI inputs. The job runs on Node 24.21.0:
 
 ```sh
 npm ci
@@ -92,7 +93,7 @@ forbidden text, broken local links, the root `LICENSE`, `.gitignore` and
 1440×900 screenshots. It needs only checkout and pinned Node 22.23.3, with
 read-only contents permission and no npm install.
 
-Merge groups select `rust`, `actions`, `windows`, `macos` and `ui`, but not
+Merge groups select `rust`, `rust-image`, `actions`, `windows`, `macos` and `ui`, but not
 `web`. The `ui` job therefore runs in the queue when its inputs change, and on
 a merge group the selector returns true for `ui` without reading the diff.
 Other non-PR events select every kind. Required check names stay `actionlint`,
@@ -395,7 +396,7 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `fmt` | Step 4 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `rust-deps` | Scanner negative controls and `cargo machete rust`, pinned to 0.9.2 | `cargo-machete` in `rust-deps-weekly.yml` |
 | `web-assets` | Desktop web build and `rust/bundle-manifest.json` | `rust (linux)` (required) |
-| `ui-package` | `lint`, `test`, `build` and `test:browser` for `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. `test:browser` exits 77 for a missing browser engine, which the step reports as SKIP. The hosted `ui` job runs the test and the build on Node 22.23.3 and does not lint or open a browser. | `ui` in `web-ci.yml` for the test and the build |
+| `ui-package` | `lint`, `test`, `build` and `test:browser` for `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. `test:browser` exits 77 for a missing browser engine, which the step reports as SKIP. The hosted `ui` job runs the test and the build on Node 24.21.0 and does not lint or open a browser. | `ui` in `web-ci.yml` for the test and the build |
 | `workaround-ratchet` | `scripts/workaround-ratchet.mjs` and its tests, which cap `TODO`, `eslint-disable` and Rust `#[allow]` markers, on Node 22.23.3. It runs after `web-assets`, which installs its parser. | None. Local only. |
 | `duplication` | jscpd negative controls and the five-area duplicated-token baseline, on Node 22.23.3 | None. Local only; there is no hosted duplication job. |
 | `clippy`, `nextest` | Clippy and nextest on the default build, with the Linux `--workspace` scope | `rust (linux)` (required) |
@@ -548,7 +549,7 @@ failure, then 77, then 0. The step declares 77 as its
 `skip_status`, so the summary shows `SKIP ui-package` and `--fail-on-skip`
 fails.
 
-The hosted `ui` job runs the package tests and `npm run build --workspace @print-partner/ui` on Node 22.23.3, and `npm test -w @print-partner/rust-client`. It does not lint and does not run `test:browser`. The root `npm test` and `npm run build` scripts still list the old workspaces by name, so they do not run this package. Pull-request CI does not run those root scripts.
+The hosted `ui` job runs the package tests and `npm run build --workspace @print-partner/ui` on Node 24.21.0, and `npm test -w @print-partner/rust-client`. It does not lint and does not run `test:browser`. The root `npm test` and `npm run build` scripts still list the old workspaces by name, so they do not run this package. Pull-request CI does not run those root scripts.
 
 The desktop does not ship `apps/ui`, so `rust/bundle-manifest.json` does not
 measure it. You can run these commands after building the manifest; Vitest's

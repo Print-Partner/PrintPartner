@@ -125,10 +125,12 @@ def uncovered(entries, classes):
 # OpenAI score on the exact head (Chad, 2026-11-16 11:23 PM ET). The sensitive merge check refuses them.
 DUAL_AUTHOR_FAMILIES = frozenset({"cursor-auto", "unknown"})
 RECORD = "pp-score "
-# A record below PASS_AT fails its head for both evaluators: the pp/score status passes at PASS_AT,
-# and the sensitive merge check needs SENSITIVE_MIN.
+# A record below PASS_AT fails its head for both evaluators. The sensitive merge check needs
+# SENSITIVE_MIN on the exact head (Chad, 2026-11-20: merge at 8/10 or higher). A carry for an owner
+# or sensitive PR needs STRICT_CARRY_MIN on every carried record, in both evaluators.
 PASS_AT = 8
-SENSITIVE_MIN = 9
+SENSITIVE_MIN = 8
+STRICT_CARRY_MIN = 9
 NEED_TWO = "need two qualifying scorer seats from allowed authors"
 
 
@@ -269,10 +271,10 @@ def head_fault(reading, head):
     return None
 
 
-def sensitive_fault(reading, head, seats, vendors, uncounted=()):
+def sensitive_fault(reading, head, seats, vendors, uncounted=(), minimum=SENSITIVE_MIN):
     """Why head's records do not let a sensitive PR merge, or None. On top of head_fault: every
     author= on the PR is a seat vendor, every record on head is a seat in seats (scorer_seats) at
-    9 or more, and bare records from two vendors outside uncounted remain."""
+    minimum or more, and bare records from two vendors outside uncounted remain."""
     fault = head_fault(reading, head)
     if fault:
         return fault
@@ -283,7 +285,7 @@ def sensitive_fault(reading, head, seats, vendors, uncounted=()):
     for r in group:
         if seats.get(r.seat) != r.vendor:
             return f"{r.seat} is not a sensitive-merge seat"
-        if r.score < SENSITIVE_MIN:
+        if r.score < minimum:
             return f"{r.seat} scored {r.score}"
     if len({r.vendor for r in group if r.bare and r.vendor not in uncounted}) < 2:
         return NEED_TWO
@@ -642,7 +644,7 @@ def sensitive_scores(reading, head, seats, vendors, facts, classes):
     source, why = carry_source(reading, head, facts, classes, check_state(facts, head))
     if source is None:
         return None, why
-    fault = sensitive_fault(reading, source, seats, vendors, NO_CARRY_VENDORS)
+    fault = sensitive_fault(reading, source, seats, vendors, NO_CARRY_VENDORS, STRICT_CARRY_MIN)
     return (None, f"{source[:7]}: {fault}") if fault else (source, f"carried from {source[:7]}")
 
 

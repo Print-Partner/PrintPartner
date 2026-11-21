@@ -1029,6 +1029,11 @@ class CoordinatorMergeClassTests(unittest.TestCase):
     def test_sensitive_two_allowed_scores(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores()))
 
+    def test_sensitive_merges_at_eight_not_seven(self):
+        # Chad, 2026-11-20: a sensitive PR merges when its runs score 8/10 or higher.
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores(score=8)))
+        self.assertIn("scored 7", self.check(["rust/rules/a.yml"], ["trusted"], self.scores(score=7)))
+
     def test_comment_pages_are_read_whole(self):
         # Page 2 decides: its valid record counts, its low record refuses, a page that is not a list refuses.
         first, second = self.scores()
@@ -1062,7 +1067,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             self.scores(author_vendor="unknown"),
             missing_author, malformed,
             self.scores() + self.scores(seats=(("unknown", "xai"),)),
-            self.scores() + self.scores(score=8),
+            self.scores() + self.scores(score=7),
             self.scores() + self.scores(seats=(("gpt-6.1-sol", "openai"),)),
         ):
             with self.subTest(comments=comments):
@@ -1116,7 +1121,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_untrusted_stale_low_or_duplicate_scores_refused(self):
         for comments in (self.scores(author="outsider"),
-                         self.scores(score=8), self.scores(seats=(("grok-4.7", "xai"), ("grok-4.7", "xai"))), [[]]):
+                         self.scores(score=7), self.scores(seats=(("grok-4.7", "xai"), ("grok-4.7", "xai"))), [[]]):
             with self.subTest(comments=comments):
                 self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
 

@@ -11,6 +11,7 @@ import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
+import { resetCreateBuild } from "./createBuild";
 import { FIRST_BUILD_STEPS } from "./planCopy";
 
 // GRE-1401: a scripted core on disposable, in-memory data. It keeps Sources, Builds and layers
@@ -92,14 +93,15 @@ interface Seed {
   sources?: string[];
   builds?: string[];
   /**
-   * The create's answer in place of the core's. `stored` is the Build it wrote, or null when
-   * `store` is false and nothing was written: a reply lost before or after the write.
+   * The first create's answer in place of the core's, before its name and limit checks.
+   * `write` stores the Build as the core would; not calling it is a create that never landed.
    */
-  answer?: (stored: ProfileSummary | null) => Promise<Response>;
-  /** Whether a create with `answer` writes the Build first. Defaults to true. */
-  store?: boolean;
-  /** Fails every Builds list read after the first. */
-  listFailsAfterFirst?: boolean;
+  answer?: (write: () => ProfileSummary) => Promise<Response>;
+  /**
+   * Builds list read number `read`, from 1: a reply in place of the core's, or undefined for the
+   * core's. `snapshot` is the core's reply as of the moment the read arrived.
+   */
+  list?: (read: number, snapshot: Response) => Promise<Response> | Response | undefined;
 }
 
 function scriptedCore(seed: Seed = {}) {
@@ -131,6 +133,12 @@ function scriptedCore(seed: Seed = {}) {
   for (const name of seed.builds ?? []) addBuild(name, null);
   const createBuild = (request: CreateBuildRequest): Promise<Response> => {
     buildPosts.push(request);
+    const write = () => addBuild(request.name, request.base_project_id ?? null);
+    if (answer) {
+      const once = answer;
+      answer = undefined;
+      return once(write);
+    }
     if (builds.some((b) => b.name === request.name)) {
       return Promise.resolve(problem(400, `Profile already exists: ${request.name}`));
     }
@@ -139,14 +147,8 @@ function scriptedCore(seed: Seed = {}) {
         problem(409, "Build limit reached: an installation holds at most 64 Builds", "conflict"),
       );
     }
-    const store = !answer || seed.store !== false;
-    const build = store ? addBuild(request.name, request.base_project_id ?? null) : null;
-    if (answer) {
-      const once = answer;
-      answer = undefined;
-      return once(build);
-    }
-    return Promise.resolve(json({ ...build, layers: layers.get(build!.id) }));
+    const build = write();
+    return Promise.resolve(json({ ...build, layers: layers.get(build.id) }));
   };
   const sourceRoute = (path: string, method: string, body: unknown): Response | null => {
     if (path.startsWith("/api/v1/sources/activity")) return json({ events: [] });
@@ -167,8 +169,8 @@ function scriptedCore(seed: Seed = {}) {
     }
     if (path === "/api/v2/plans") {
       listReads += 1;
-      if (seed.listFailsAfterFirst && listReads > 1) return problem(503, "List unreadable");
-      return json({ profiles: builds });
+      const snapshot = json({ profiles: [...builds] });
+      return seed.list?.(listReads, snapshot) ?? snapshot;
     }
     const plan = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow|\/filament-shortfalls)?$/.exec(path);
     const build = builds.find((b) => b.id === Number(plan?.[1]));
@@ -188,7 +190,7 @@ function scriptedCore(seed: Seed = {}) {
     return sourceRoute(path, method, body) ?? planRoute(path, method, body);
   };
   const fetchMock = vi.fn((path: string, init?: RequestInit) => Promise.resolve(route(path, init)));
-  return { fetchMock, builds, sourcePosts, buildPosts };
+  return { fetchMock, builds, sourcePosts, buildPosts, listReads: () => listReads };
 }
 
 function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
@@ -204,6 +206,7 @@ function renderAt(path: string, core: ReturnType<typeof scriptedCore>) {
 
 afterEach(() => {
   cleanup();
+  resetCreateBuild();
   localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -345,7 +348,6 @@ describe("Create Build answers", () => {
     const core = scriptedCore({
       sources: ["Kit A"],
       answer: () => new Promise((resolve) => (reply = resolve)),
-      store: false,
     });
     renderAt("/builds", core);
     const create = await openWithName("Slow");
@@ -367,7 +369,10 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
   it("a lost answer after the write finds the Build in the list and offers to open it", async () => {
     const core = scriptedCore({
       sources: ["Kit A"],
-      answer: () => Promise.resolve(problem(502, "Bad Gateway", "unavailable")),
+      answer: (write) => {
+        write();
+        return Promise.resolve(problem(502, "Bad Gateway", "unavailable"));
+      },
     });
     const router = renderAt("/builds", core);
     fireEvent.click(await openWithName("Maybe"));
@@ -386,7 +391,6 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     const core = scriptedCore({
       sources: ["Kit A"],
       answer: () => Promise.reject(new TypeError("Failed to fetch")),
-      store: false,
     });
     renderAt("/builds", core);
     const create = await openWithName("Second try");
@@ -406,7 +410,7 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     const core = scriptedCore({
       sources: ["Kit A"],
       answer: () => Promise.resolve(new Response("upstream timeout", { status: 504 })),
-      listFailsAfterFirst: true,
+      list: (read) => (read > 1 ? problem(503, "List unreadable", "unavailable") : undefined),
     });
     renderAt("/builds", core);
     fireEvent.click(await openWithName("Unknown"));
@@ -415,5 +419,142 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     );
     await pause();
     expect(core.buildPosts).toHaveLength(1);
+  });
+
+  it("closing while the create is in flight keeps it: reopening shows it and cannot send again", async () => {
+    let reply: (response: Response) => void = () => {};
+    let write: () => ProfileSummary = () => storedBuild(0, "");
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: (store) => {
+        write = store;
+        return new Promise((resolve) => (reply = resolve));
+      },
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Held"));
+    await within(dialog()).findByText("Creating the Build.");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // Reopened: the same create, its name, and no way to send a second.
+    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    expect(within(dialog()).getByText("Creating the Build.")).toBeTruthy();
+    expect((within(dialog()).getByLabelText("Name") as HTMLInputElement).value).toBe("Held");
+    const create = within(dialog()).getByRole("button", { name: "Create" });
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(create);
+    await pause();
+    expect(core.buildPosts).toHaveLength(1);
+
+    // Closed again, the answer is lost after the write; the check still runs and is shown.
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    write();
+    reply(problem(502, "Bad Gateway", "unavailable"));
+    await pause();
+    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "The answer to Create was lost, but the Builds list now holds this Build, so it was created. Open Held",
+    );
+    expect(core.buildPosts).toHaveLength(1);
+  });
+
+  it("a reopened dialog opens the Build when the held create answers 200", async () => {
+    let reply: (response: Response) => void = () => {};
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      answer: (write) => {
+        const build = write();
+        return new Promise((resolve) => (reply = () => resolve(json({ ...build, layers: [] }))));
+      },
+    });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Later"));
+    await within(dialog()).findByText("Creating the Build.");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Build" }));
+    reply(json({}));
+    await heading("Later");
+    expect(router.state.location.pathname).toBe("/builds/1000");
+  });
+
+  it("checks with a list read started after the answer, not one started before the create", async () => {
+    let releaseFirst: () => void = () => {};
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      // The first list read is held with the empty list it saw, past the create's answer.
+      list: (read, snapshot) =>
+        read === 1 ? new Promise((resolve) => (releaseFirst = () => resolve(snapshot))) : undefined,
+      answer: (write) => {
+        write();
+        return Promise.resolve(problem(502, "Bad Gateway", "unavailable"));
+      },
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Fresh"));
+    // No list had loaded before the press, so the dialog cannot say this press created it.
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "Could not confirm the Build was created, and the Builds list holds a Build with this name that may be an earlier one. Open it, or choose another name. Open Fresh",
+    );
+    expect(core.listReads()).toBe(2);
+    releaseFirst();
+    await pause();
+    expect(within(dialog()).getByRole("alert").textContent).toContain("Open Fresh");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    const table = await screen.findByRole("table", { name: "Builds" });
+    expect(within(table).getByRole("link", { name: "Fresh" })).toBeTruthy();
+    expect(core.buildPosts).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      "an unloaded list before the press",
+      (read: number) => (read === 1 ? problem(503, "No", "unavailable") : undefined),
+    ],
+    ["a loaded list that already held it", () => undefined],
+  ])("a Build that may be older is not called created: %s", async (_case, list) => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      builds: ["Old"],
+      list,
+      answer: () => Promise.resolve(new Response("upstream timeout", { status: 504 })),
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Old"));
+    const alert = await within(dialog()).findByRole("alert");
+    expect(alert.textContent).not.toContain("so it was created");
+    expect(alert.textContent).toContain("may be an earlier one");
+    expect(within(alert).getByRole("link", { name: "Open Old" })).toBeTruthy();
+    expect(core.builds).toHaveLength(1);
+  });
+
+  it.each([
+    ["202 with a valid body", () => json(storedBuild(4242, "Ghost"), 202)],
+    ["200 that fails the contract", () => json({ id: "not a Build" })],
+    ["a proxy's 400 page", () => new Response("<h1>Bad Request</h1>", { status: 400 })],
+    ["a proxy's 403 page", () => new Response("<h1>Forbidden</h1>", { status: 403 })],
+  ])("%s is checked against the list, never trusted or resent", async (_case, reply) => {
+    const core = scriptedCore({ sources: ["Kit A"], answer: () => Promise.resolve(reply()) });
+    const router = renderAt("/builds", core);
+    fireEvent.click(await openWithName("Ghost"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toMatch(
+      /^Could not confirm the Build was created, and the Builds list holds no Build with this name\./,
+    );
+    await pause();
+    expect(router.state.location.pathname).toBe("/builds");
+    expect(core.buildPosts).toHaveLength(1);
+  });
+
+  it("a name the core refused as in use stays refused when the list cannot show it", async () => {
+    const core = scriptedCore({
+      sources: ["Kit A"],
+      builds: ["Taken"],
+      list: (read) => (read > 1 ? problem(503, "List unreadable", "unavailable") : undefined),
+    });
+    renderAt("/builds", core);
+    fireEvent.click(await openWithName("Taken"));
+    expect((await within(dialog()).findByRole("alert")).textContent).toBe(
+      "A Build with this name already exists. Choose another name.",
+    );
   });
 });

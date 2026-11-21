@@ -38,21 +38,33 @@ offers **Try again**, so Create never sends a "No base Source" the user did not
 choose. **Create** is also disabled without a name, with a name over the core's
 4,096-character limit, offline, and while a create or its check is running.
 
-Create sends `createBuild` once. A 200 opens the new Build's Overview. The
-core's own refusals keep the dialog open with the reason: a problem document
-with status 400, 401, 403, 409 or 413. A 400 `Profile name is ...` reads
-"Build name is ...", a 400 `Project not found` says the Source left the Library,
-and the 409 Build limit shows the core's detail. A 400 `Profile already exists`
-reads the Builds list again and links to the Build that holds the name.
+Create sends `createBuild` once. The create and its check live outside the
+dialog (`web/apps/ui/src/builds/createBuild.ts`), so closing the dialog keeps
+them. A reopened dialog shows the same name, says the create is running or
+being checked, and cannot send a second one. An answer that arrives while no
+dialog is open opens nothing; the next dialog shows the check's result.
+
+Only an exact HTTP 200, not redirected, with a body that matches the contract,
+opens the new Build's Overview. The core's own refusals keep the dialog open
+with the reason: a problem document with status 400, 401, 403, 409 or 413. A
+400 `Profile name is ...` reads "Build name is ...", a 400 `Project not found`
+says the Source left the Library, and the 409 Build limit shows the core's
+detail. A 400 `Profile already exists` reads the Builds list and links to the
+Build that holds the name; when the list does not load or does not show it, the
+dialog still says the name is in use.
 
 Every other answer may hide a created Build: a 5xx, a dropped connection, a
-proxy page, or a 200 that fails the contract. The dialog never resends. It
-reads the Builds list and looks for the exact name, as
+proxy page, another 2xx such as 202, or a 200 that fails the contract. The
+dialog never resends. As
 [the repeat rule](../../gre-792-builds-http.md#client-contract-createbuild-gre-1876)
-says:
+says, it reads the Builds list and looks for the exact name. It cancels any
+list read already in flight, because that read may have started before the
+create, and sends a new one:
 
-- The name is there and was not listed before the press: the Build was created,
-  and the dialog links to it.
+- The name is there, and the list loaded before the press did not hold it: the
+  Build was created, and the dialog links to it.
+- The name is there, but no list had loaded before the press, or that list
+  already held it: the dialog links to it and says it may be an earlier Build.
 - The name is not there: the dialog says pressing Create again is safe, because
   the core refuses a second Build with the same name.
 - The list did not load: the dialog says to check Builds before pressing Create

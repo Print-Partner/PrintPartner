@@ -53,6 +53,14 @@ type WriteBody<N extends WriteRoute> = [RouteRequest<N>] extends [never]
   ? []
   : [body: RouteRequest<N>];
 
+/** A write's answer with how it arrived, for a caller that trusts only an exact status. */
+export interface WriteAnswer<N extends WriteRoute> {
+  status: number;
+  /** True when `fetch` followed a redirect, so `status` is not the route's own answer. */
+  redirected: boolean;
+  data: RouteResponse<N>;
+}
+
 /**
  * One write through the generated Rust client: the body is checked against the
  * route's request schema before it is sent, and the answer against its response
@@ -65,6 +73,15 @@ export async function writeCore<N extends WriteRoute>(
   params: RouteParams<N>,
   ...args: [...WriteBody<N>, idempotencyKey?: string]
 ): Promise<RouteResponse<N>> {
+  return (await writeCoreAnswer(name, params, ...args)).data;
+}
+
+/** `writeCore`, also returning the HTTP status and whether a redirect was followed. */
+export async function writeCoreAnswer<N extends WriteRoute>(
+  name: N,
+  params: RouteParams<N>,
+  ...args: [...WriteBody<N>, idempotencyKey?: string]
+): Promise<WriteAnswer<N>> {
   const route = routes[name];
   const path = routePath(name, params);
   const bodyless = route.request === null;
@@ -86,5 +103,9 @@ export async function writeCore<N extends WriteRoute>(
   });
   const parsed = route.response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);
-  return parsed.data as RouteResponse<N>;
+  return {
+    status: response.status,
+    redirected: response.redirected,
+    data: parsed.data as RouteResponse<N>,
+  };
 }

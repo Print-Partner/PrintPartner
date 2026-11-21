@@ -1,19 +1,12 @@
-import {
-  createBuildRequestSchema,
-  type CreateBuildRequest,
-  type ProfileList,
-  type ProfileSummary,
-} from "@print-partner/rust-client";
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useId, useRef, useState, type FormEvent } from "react";
+import { createBuildRequestSchema, type CreateBuildRequest } from "@print-partner/rust-client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useId, useState, useSyncExternalStore, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
-import { buildsQuery } from "../core/builds";
-import { CoreError } from "../core/client";
-import { RequestContractError, writeCore } from "../core/rust";
 import { sourcesQuery } from "../core/sources";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
-import { refusalText, SourceSelect } from "../screen/SourceSelect";
+import { SourceSelect } from "../screen/SourceSelect";
+import { busy, createStore, startCreate, type CreateState } from "./createBuild";
 
 /** The `createBuild` body: the trimmed name, and the base Source when one is chosen. */
 export function buildRequest(name: string, sourceId: number | null): CreateBuildRequest {
@@ -33,31 +26,6 @@ export function nameProblem(name: string): string | null {
     : "The name has a character the core cannot store. Retype it.";
 }
 
-/**
- * Statuses the create handler refuses with before or inside its one write transaction, so
- * nothing of that request commits later. Any other answer may hide a created Build.
- */
-const REFUSALS = new Set([400, 401, 403, 409, 413]);
-
-function refused(error: Error): error is CoreError | RequestContractError {
-  if (error instanceof RequestContractError) return true;
-  return error instanceof CoreError && error.problem && REFUSALS.has(error.status);
-}
-
-/** What the dialog says after Create, when it stays open. */
-type Outcome =
-  | { kind: "refused"; text: string }
-  | { kind: "checking" }
-  | { kind: "found"; build: ProfileSummary; created: boolean }
-  | { kind: "absent" }
-  | { kind: "unread" };
-
-/** The list's Build with exactly this name; names compare exactly, as the core does. */
-async function readNamed(client: QueryClient, name: string): Promise<ProfileSummary | undefined> {
-  const list = await client.fetchQuery({ ...buildsQuery, staleTime: 0 });
-  return list.profiles.find((build) => build.name === name);
-}
-
 /** Builds' "Create Build" button and its dialog. */
 export function CreateBuild() {
   const [open, setOpen] = useState(false);
@@ -72,10 +40,10 @@ export function CreateBuild() {
 }
 
 /**
- * A name and a base Source. Create sends `createBuild` once and never again by itself. After an
- * answer that may hide a created Build, it reads the Builds list and looks for the name before
- * Create is offered again; the core also refuses a name already in use, so no press can add a
- * second Build. A created Build opens on its Overview.
+ * A name and a base Source. Create sends `createBuild` once and never again by itself; the
+ * create and its check live in `createBuild.ts`, so closing the dialog keeps them. After an
+ * answer that may hide a created Build, the Builds list is read and the name looked for before
+ * Create is offered again. A created Build opens on its Overview.
  */
 function CreateBuildDialog({ onClose }: { onClose: () => void }) {
   const client = useQueryClient();
@@ -83,31 +51,31 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
   const offline = useConnection() === "offline";
   const ids = useId();
   const sources = useQuery(sourcesQuery);
-  const [name, setName] = useState("");
+  const create = useSyncExternalStore(createStore.subscribe, createStore.get);
+  // Reopened while a create is busy or after it settled: show the name it sent.
+  const [name, setName] = useState(() => ("name" in create ? create.name : ""));
   // Undefined until the user picks, so the default follows the Sources as they load.
   const [picked, setPicked] = useState<number | null | undefined>(undefined);
   // The first Source is the default base, and `null` only once the list has loaded empty.
   // Undefined while the list loads or after it failed: Create waits rather than send `null`.
   const sourceId =
     picked === undefined ? sources.data && (sources.data.sources[0]?.id ?? null) : picked;
-  const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const sending = useRef(false);
-  const create = useMutation({
-    retry: false,
-    networkMode: "always",
-    mutationFn: (body: CreateBuildRequest) => writeCore("createBuild", {}, body),
-    // Runs even after the dialog closed: the list is read again whatever the answer.
-    onSettled: () => {
-      void client.invalidateQueries({ queryKey: buildsQuery.queryKey });
-      void client.invalidateQueries({ queryKey: ["core", "tasks"] });
-    },
-  });
-  const checking = outcome?.kind === "checking";
+  useEffect(() => createStore.mount(), []);
+  const close = () => {
+    createStore.clear();
+    onClose();
+  };
+  useEffect(() => {
+    if (create.kind !== "opened") return;
+    createStore.clear();
+    onClose();
+    void navigate(`/builds/${create.build.id}`);
+  }, [create, navigate, onClose]);
   const why = offline
     ? OFFLINE_REASON
-    : create.isPending
+    : create.kind === "sending"
       ? "Creating the Build."
-      : checking
+      : create.kind === "checking"
         ? "Checking the Builds list."
         : (nameProblem(name) ??
           (sourceId !== undefined
@@ -115,52 +83,13 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
             : sources.isError && !sources.isFetching
               ? "The Library's Sources did not load. Press Try again."
               : "Waiting for the Library's Sources."));
-  const blocked = why !== null;
-  // `before` holds the Build ids listed before the send; null when the core refused the name.
-  const settle = (sent: string, before: ReadonlySet<number> | null) => {
-    setOutcome({ kind: "checking" });
-    readNamed(client, sent)
-      .then(
-        (build) =>
-          setOutcome(
-            build
-              ? { kind: "found", build, created: before !== null && !before.has(build.id) }
-              : { kind: "absent" },
-          ),
-        () => setOutcome({ kind: "unread" }),
-      )
-      .finally(() => {
-        sending.current = false;
-      });
-  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (blocked || sourceId === undefined || sending.current) return;
-    sending.current = true;
-    setOutcome(null);
-    const body = buildRequest(name, sourceId);
-    const listed = client.getQueryData<ProfileList>(buildsQuery.queryKey)?.profiles ?? [];
-    const before = new Set(listed.map((build) => build.id));
-    // Per-call callbacks do not run once the dialog has closed, so a late answer never
-    // navigates away from a screen the user has moved on to.
-    create.mutate(body, {
-      onSuccess: (build) => {
-        sending.current = false;
-        onClose();
-        void navigate(`/builds/${build.id}`);
-      },
-      onError: (error: Error) => {
-        if (!refused(error)) return settle(body.name, before);
-        const detail = (error instanceof CoreError && error.detail) || error.message;
-        // A name in use may be the Build an earlier, unconfirmed press created: name it.
-        if (detail.startsWith("Profile already exists")) return settle(body.name, null);
-        sending.current = false;
-        setOutcome({ kind: "refused", text: createRefusalText(detail) });
-      },
-    });
+    if (why !== null || sourceId === undefined) return;
+    void startCreate(client, buildRequest(name, sourceId));
   };
   return (
-    <Dialog title="Create Build" onClose={onClose}>
+    <Dialog title="Create Build" onClose={close}>
       <form onSubmit={submit} noValidate>
         <div className="pp-fields">
           <div className="pp-field">
@@ -170,7 +99,7 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
               value={name}
               autoComplete="off"
               onChange={(event) => {
-                if (!checking) setOutcome(null);
+                createStore.clear();
                 setName(event.target.value);
               }}
             />
@@ -182,21 +111,21 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
               value={sourceId ?? null}
               allowNone
               onChange={(next) => {
-                if (!checking) setOutcome(null);
+                createStore.clear();
                 setPicked(next);
               }}
             />
           </div>
         </div>
-        {outcome && outcome.kind !== "checking" && <OutcomeText outcome={outcome} />}
+        <OutcomeText state={create} />
         <div className="pp-dialog-actions">
-          <button type="button" className="pp-button" onClick={onClose}>
-            {create.isPending ? "Close" : "Cancel"}
+          <button type="button" className="pp-button" onClick={close}>
+            {busy(create) ? "Close" : "Cancel"}
           </button>
           <button
             type="submit"
             className="pp-button pp-button-primary"
-            aria-disabled={blocked || undefined}
+            aria-disabled={why !== null || undefined}
             aria-describedby={why ? `${ids}-why` : undefined}
           >
             Create
@@ -211,37 +140,39 @@ function CreateBuildDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** The core's create refusals in the UI's words; the core still says "Profile" for a Build. */
-function createRefusalText(detail: string): string {
-  if (detail.startsWith("Profile name is")) return detail.replace("Profile", "Build");
-  return refusalText(detail);
-}
-
-/** The dialog's line about the last Create, once nothing is in flight. */
-function outcomeText(outcome: Exclude<Outcome, { kind: "checking" }>): string {
-  switch (outcome.kind) {
+/** The dialog's line about the last Create once it settled, or null while none has. */
+function outcomeText(state: CreateState): string | null {
+  switch (state.kind) {
     case "refused":
-      return outcome.text;
-    case "found":
-      return outcome.created
-        ? "The answer to Create was lost, but the Builds list now holds this Build, so it was created."
-        : "A Build with this name already exists. Open it, or choose another name.";
+      return state.text;
+    case "listed":
+      return {
+        created:
+          "The answer to Create was lost, but the Builds list now holds this Build, so it was created.",
+        unproven:
+          "Could not confirm the Build was created, and the Builds list holds a Build with this name that may be an earlier one. Open it, or choose another name.",
+        taken: "A Build with this name already exists. Open it, or choose another name.",
+      }[state.why];
     case "absent":
       return "Could not confirm the Build was created, and the Builds list holds no Build with this name. Pressing Create again is safe: the core refuses a second Build with the same name.";
     case "unread":
       return "Could not confirm the Build was created, and the Builds list did not load. Check Builds before you press Create again.";
+    default:
+      return null;
   }
 }
 
-function OutcomeText({ outcome }: { outcome: Exclude<Outcome, { kind: "checking" }> }) {
+function OutcomeText({ state }: { state: CreateState }) {
+  const text = outcomeText(state);
+  if (text === null) return null;
   return (
     <p role="alert" className="pp-field-error">
-      {outcomeText(outcome)}
-      {outcome.kind === "found" && (
+      {text}
+      {state.kind === "listed" && (
         <>
           {" "}
-          <Link to={`/builds/${outcome.build.id}`} className="pp-link">
-            Open {outcome.build.name}
+          <Link to={`/builds/${state.build.id}`} className="pp-link">
+            Open {state.build.name}
           </Link>
         </>
       )}

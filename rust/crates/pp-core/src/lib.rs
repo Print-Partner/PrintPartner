@@ -112,8 +112,9 @@ pub use pp_gateway::RustStatus;
 /// The one-time import of a Node installation: its dry run and inventory.
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_storage::import as node_import;
-/// The terminal refusal for a stored schema this runtime does not open.
-pub use pp_storage::versions::IncompatibleSchema;
+/// The terminal refusal for a stored schema this runtime does not open, and
+/// the schema range each runtime opens.
+pub use pp_storage::versions::{IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA};
 
 /// What [`CoreHandle::subscribe`] reports: the supervised Node child's status,
 /// or, for a Rust-only runtime, the Rust backend's own status.

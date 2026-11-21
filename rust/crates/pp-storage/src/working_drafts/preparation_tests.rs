@@ -504,6 +504,48 @@ fn naming_comparisons_are_cumulative_and_cancellable() {
     }
 }
 
+// GRE-1396: draft slugs and quantities follow the naming preview and Node's
+// `parseStlPath`, so a merge conflict follows the slug the user saw. A saved
+// quantity regex written for the `.3mf` name keeps its meaning.
+#[test]
+#[rustfmt::skip]
+fn parse_strips_markers_and_reads_quantity_like_the_preview() {
+    use crate::catalog::naming::NamingProfile;
+    let naming = |edit: &dyn Fn(&mut NamingProfile)| {
+        let mut profile = NamingProfile::default();
+        edit(&mut profile);
+        LayerNaming::new(Arc::new(profile))
+    };
+    let default = naming(&|_| {});
+    let letter = naming(&|p| { p.roles.truncate(2); p.roles[1].markers = vec!["A".into()]; });
+    let three_mf = naming(&|p| p.quantity.regex = r"_x([0-9]+)\.3mf$".into());
+    let any_name = naming(&|p| p.quantity.regex = r"_qty([0-9]+)".into());
+    let cancelled = AtomicBool::new(false);
+    for (path, naming, slug, quantity) in [
+        ("STLs/[a]_belt_clip.stl", &default, "belt_clip", 1.0),
+        ("FlowChamber_BPM[a].stl", &default, "FlowChamber_BPM", 1.0),
+        ("Duct_[c]_Left.stl", &default, "Duct_Left", 1.0),
+        ("[a]_[a]_belt_clip.stl", &default, "belt_clip", 1.0),
+        ("belt_clip_[a]_[a].stl", &default, "belt_clip", 1.0),
+        ("belt_[a]_[o]_clip.stl", &default, "belt_clip", 1.0),
+        ("STLs/Panel_[a[c]]_Clip.stl", &default, "Panel_Clip", 1.0),
+        ("[o[a[c]]]_Panel.stl", &default, "Panel", 1.0),
+        ("[a]_Bracket_x4.STL", &default, "Bracket", 4.0),
+        ("[a].stl", &default, "[a]", 1.0),
+        ("gear.stl", &letter, "gear", 1.0),
+        ("Bracket_A.stl", &letter, "Bracket_A", 1.0),
+        ("A_gear.stl", &letter, "gear", 1.0),
+        ("[a]_Skirt_Duct_x2.3mf", &default, "Skirt_Duct", 2.0),
+        ("Duct_x2.3mf", &three_mf, "Duct", 2.0),
+        ("Duct_x2.stl", &three_mf, "Duct_x2", 1.0),
+        ("Duct_qty3.3mf", &any_name, "Duct", 3.0),
+    ] {
+        let mut b = PreparationBudget::new(&cancelled, PreparationLimits::default()).unwrap();
+        let parsed = parse(path, naming, &mut b).unwrap();
+        assert_eq!((parsed.1.as_str(), parsed.3), (slug, quantity), "{path}");
+    }
+}
+
 #[test]
 fn capture_processes_global_naming_once_across_layers() {
     let case = cases()

@@ -13,19 +13,20 @@ import { LoadedAt, ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
 import { FilamentSection } from "./FilamentSection";
 import { dateText, freshnessText, progressText } from "./format";
 
-/** The Build workspace tabs from docs/product/ui-ux-target.md. The Machine tab is parked. */
+/**
+ * The Build workspace tabs from docs/product/ui-ux-target.md. The Machine tab is parked. Each
+ * tab with a path needs a screen in `routes.tsx`, so no tab shows a placeholder.
+ */
 export const BUILD_TABS = [
-  { label: "Overview", path: "", holds: "" },
-  { label: "Sources", path: "sources", holds: "the Sources this Build is built from" },
-  { label: "Plan", path: "plan", holds: "the accepted Plan and its drafts" },
-  { label: "Production", path: "production", holds: "plates and sends" },
-  { label: "Checkoff", path: "checkoff", holds: "what came off each printer" },
-  {
-    label: "History",
-    path: "history",
-    holds: "accepted revisions, snapshots, checkoff bursts, sends and decisions",
-  },
+  { label: "Overview", path: "" },
+  { label: "Sources", path: "sources" },
+  { label: "Plan", path: "plan" },
+  { label: "Production", path: "production" },
+  { label: "Checkoff", path: "checkoff" },
+  { label: "History", path: "history" },
 ] as const;
+
+export type BuildTabPath = Exclude<(typeof BUILD_TABS)[number]["path"], "">;
 
 export interface BuildData {
   build: ProfileSummary;
@@ -207,21 +208,6 @@ export function BuildOverview() {
       state={queryScreenState(query, connection)}
       renderData={(data) => <OverviewBody {...data} />}
       empty={{ message: "" }}
-    />
-  );
-}
-
-/** A tab whose slice has not landed: says what it will hold. */
-export function LaterTab({ label, holds }: { label: string; holds: string }) {
-  const { id } = useOutletContext<WorkspaceContext>();
-  const offline = useConnection() === "offline";
-  return (
-    <ScreenTemplate
-      title={label}
-      subnav={<BuildTabs id={id} />}
-      state={offline ? { kind: "offline" } : { kind: "empty" }}
-      renderData={() => null}
-      empty={{ message: `This tab arrives in a later slice. It will hold ${holds}.` }}
     />
   );
 }

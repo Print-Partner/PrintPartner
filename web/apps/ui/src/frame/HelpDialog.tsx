@@ -1,6 +1,6 @@
 import { useId } from "react";
 import { Link } from "react-router";
-import { PLAN_HELP } from "../builds/planCopy";
+import { FIRST_BUILD_STEPS, PLAN_HELP } from "../builds/planCopy";
 import { DESTINATIONS, shortcutLabel } from "./destinations";
 import { Dialog } from "./Dialog";
 
@@ -21,7 +21,7 @@ export function HelpDialog({
   characterKeys: boolean;
   setCharacterKeys: (on: boolean) => void;
 }) {
-  const ids = { destinations: useId(), plan: useId(), keys: useId() };
+  const ids = { destinations: useId(), first: useId(), plan: useId(), keys: useId() };
   return (
     <Dialog title="Help" onClose={onClose}>
       <section aria-labelledby={ids.destinations} className="pp-help-section">
@@ -38,6 +38,14 @@ export function HelpDialog({
             </div>
           ))}
         </dl>
+      </section>
+      <section aria-labelledby={ids.first} className="pp-help-section">
+        <h3 id={ids.first}>Your first Build</h3>
+        <ol>
+          {FIRST_BUILD_STEPS.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
       </section>
       <section aria-labelledby={ids.plan} className="pp-help-section">
         <h3 id={ids.plan}>Plan changes</h3>

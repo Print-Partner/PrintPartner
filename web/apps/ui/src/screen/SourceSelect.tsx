@@ -17,18 +17,20 @@ export function refusalText(detail: string): string {
 }
 
 /**
- * The Library's Sources as a select; `null` means nothing is chosen yet. While the Sources
- * load, says so instead; when they fail, says so and offers Try again; with none, links to
- * Library.
+ * The Library's Sources as a select. `null` is "No base Source" when `allowNone`, and otherwise
+ * means nothing is chosen yet. While the Sources load, says so instead; when they fail, says so
+ * and offers Try again; with none, links to Library.
  */
 export function SourceSelect({
   id,
   value,
   onChange,
+  allowNone = false,
 }: {
   id: string;
   value: number | null;
   onChange: (sourceId: number | null) => void;
+  allowNone?: boolean;
 }) {
   const sources = useQuery(sourcesQuery);
   if (!sources.data) {
@@ -58,7 +60,7 @@ export function SourceSelect({
         <Link to="/library" className="pp-link">
           Add a Source in Library
         </Link>{" "}
-        first.
+        first{allowNone ? ", or create the Build without one" : ""}.
       </p>
     );
   }
@@ -68,7 +70,9 @@ export function SourceSelect({
       value={value ?? ""}
       onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
     >
-      {value === null && <option value="">Choose a Source</option>}
+      {(allowNone || value === null) && (
+        <option value="">{allowNone ? "No base Source" : "Choose a Source"}</option>
+      )}
       {list.map((source) => (
         <option key={source.id} value={source.id}>
           {source.name}

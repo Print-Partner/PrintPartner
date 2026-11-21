@@ -88,7 +88,9 @@ export function BackupsSection() {
   // Mounted from the start, so a screen reader announces each change while focus stays put.
   const [status, setStatus] = useState("");
   const sending = useRef(false);
+  // The ref refuses a second press in the same tick; the state turns the button off while HEAD runs.
   const fetching = useRef(false);
+  const [downloading, setDownloading] = useState(false);
   const reasonId = useId();
   const off = offline || creating;
   const create = async () => {
@@ -126,6 +128,7 @@ export function BackupsSection() {
   const download = async (shown: Backup) => {
     if (offline || fetching.current) return;
     fetching.current = true;
+    setDownloading(true);
     setStatus("Checking the core still keeps this backup");
     setNote("");
     try {
@@ -152,6 +155,7 @@ export function BackupsSection() {
       }
     } finally {
       fetching.current = false;
+      setDownloading(false);
     }
   };
   return (
@@ -181,7 +185,7 @@ export function BackupsSection() {
               <button
                 type="button"
                 className="pp-button"
-                aria-disabled={offline || undefined}
+                aria-disabled={offline || downloading || undefined}
                 aria-describedby={offline ? reasonId : undefined}
                 onClick={() => void download(backup)}
               >

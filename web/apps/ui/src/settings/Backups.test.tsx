@@ -355,6 +355,26 @@ describe("Backups: download", () => {
     expect(within(region).getByText(SHA)).toBeTruthy();
   });
 
+  it("is off while its HEAD is pending, so a second press sends no HEAD and saves nothing", async () => {
+    const clicked = captureDownloads();
+    const first = deferred();
+    let heads = 0;
+    const fake = core(() => json(BACKUP), { head: () => (++heads === 1 ? first.promise : headOk()) });
+    const region = await created(fake);
+    const button = within(region).getByRole("button", { name: "Download" });
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute("aria-disabled")).toBe("true"));
+    fireEvent.click(button);
+    expect(fake.heads()).toHaveLength(1);
+    expect(clicked).toEqual([]);
+    await act(async () => first.resolve(headOk()));
+    await waitFor(() => expect(clicked).toEqual([{ href: ARCHIVE, download: BACKUP.name }]));
+    expect(button.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(button);
+    await waitFor(() => expect(clicked).toHaveLength(2));
+    expect(fake.heads()).toHaveLength(2);
+  });
+
   it.each([404, 409])("a %i on HEAD drops the shown backup, says to create again and saves nothing", async (status) => {
     const clicked = captureDownloads();
     const fake = core(() => json(BACKUP), { head: () => new Response(null, { status }) });

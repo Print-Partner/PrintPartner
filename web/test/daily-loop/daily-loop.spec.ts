@@ -1,8 +1,9 @@
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import process from "node:process";
-import { crc32 } from "node:zlib";
-import { expect, test, type Page } from "@playwright/test";
+import { crc32, inflateRawSync } from "node:zlib";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { STEPS } from "./steps.mjs";
 
 // The twelve steps of docs/product/daily-loop.md, in order, on one installation of the
@@ -410,6 +411,11 @@ step(4, null, async ({ page }) => {
   await expectKitFiles(page, KIT_V2);
 });
 
+// The one printable file of the Build Step 5 creates. Step 7 finds these bytes in the pack.
+const STL = "bracket.stl";
+const BRACKET =
+  "solid bracket\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid bracket\n";
+
 // The owner creates Builds through the assistant, so this step goes over MCP.
 step(5, null, async ({ page }) => {
   await signIn(page);
@@ -417,21 +423,18 @@ step(5, null, async ({ page }) => {
   // The kit's printable files, as a ZIP in a new Library Source. Step 4 tests the Library's
   // upload screen; this step uploads through the same routes so it does not depend on it.
   const KIT = "Daily loop kit parts";
-  const STL = "bracket.stl";
   const made = await page.request.post(`${origin}/api/v1/sources`, {
     data: { name: KIT, source_kind: "archive" },
     headers: { Origin: origin },
   });
   expect(made.ok(), `POST /api/v1/sources: ${made.status()} ${await made.text()}`).toBe(true);
   const kit = (await made.json()) as { id: number };
-  const facet =
-    "facet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet";
   const upload = await page.request.post(`${origin}/api/v1/sources/${kit.id}/upload-zip`, {
     multipart: {
       file: {
         name: "kit.zip",
         mimeType: "application/zip",
-        buffer: storedZip(STL, `solid bracket\n${facet}\nendsolid bracket\n`),
+        buffer: storedZip(STL, BRACKET),
       },
     },
     headers: { Origin: origin },
@@ -541,11 +544,109 @@ step(6, "GRE-1515", async ({ page }) => {
   unwritten("Required units keep their IDs across a second accepted revision");
 });
 
-step(7, "GRE-1886", async ({ page }) => {
-  await openBuild(page);
-  await expect(page.getByText(/STL pack/i)).toBeVisible();
-  await expect(page.getByText(/HTML checklist/i)).toBeVisible();
-  unwritten("both downloads match the accepted Plan");
+/** Clicks `button` and returns the file the browser saved, read back from disk. */
+async function downloaded(page: Page, button: Locator) {
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30_000 }),
+    button.click(),
+  ]);
+  expect(await download.failure(), "download failure").toBeNull();
+  const body = await readFile(await download.path());
+  expect(body.length, `${download.suggestedFilename()} size`).toBeGreaterThan(0);
+  return { name: download.suggestedFilename(), body };
+}
+
+/**
+ * The entries of a ZIP, read from its central directory: name and bytes, each checked
+ * against its CRC-32. The pack stores its entries; deflate is read too, in case it changes.
+ */
+function unzip(zip: Buffer): { name: string; data: Buffer }[] {
+  const end = zip.lastIndexOf(u32(0x06054b50));
+  expect(zip.readUInt32LE(0), "ZIP local header signature").toBe(0x04034b50);
+  expect(end, "ZIP end of central directory").toBeGreaterThan(0);
+  const count = zip.readUInt16LE(end + 10);
+  const entries = [];
+  for (let at = zip.readUInt32LE(end + 16), index = 0; index < count; index++) {
+    expect(zip.readUInt32LE(at), "ZIP central header signature").toBe(0x02014b50);
+    const [method, crc, packed, size] = [
+      zip.readUInt16LE(at + 10),
+      zip.readUInt32LE(at + 16),
+      zip.readUInt32LE(at + 20),
+      zip.readUInt32LE(at + 24),
+    ];
+    const nameLength = zip.readUInt16LE(at + 28);
+    const name = zip.toString("utf8", at + 46, at + 46 + nameLength);
+    const local = zip.readUInt32LE(at + 42);
+    const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const raw = zip.subarray(start, start + packed);
+    expect([0, 8], `${name} compression method`).toContain(method);
+    const data = method === 8 ? inflateRawSync(raw) : raw;
+    expect(data.length, `${name} size`).toBe(size);
+    expect(crc32(data), `${name} CRC-32`).toBe(crc);
+    entries.push({ name, data });
+    at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+  }
+  return entries;
+}
+
+step(7, null, async ({ page }) => {
+  await openBuild(page, "Production");
+  await expect(screen(page, "Production")).toBeVisible();
+  // What the Build says its accepted Plan is: Step 6 accepted bracket.stl at quantity 2.
+  const id = /\/builds\/(\d+)\//.exec(page.url())?.[1];
+  const workflow = await page.request.get(new URL(`/api/v2/plans/${id}/workflow`, page.url()).href);
+  expect(workflow.ok(), `GET workflow: ${workflow.status()}`).toBe(true);
+  const { accepted_plan: accepted } = (await workflow.json()) as {
+    accepted_plan: { kind: string; plan_version: number; total_units: number };
+  };
+  expect(accepted.kind, JSON.stringify(accepted)).toBe("ready");
+  expect(accepted.total_units, "accepted units").toBe(2);
+  const version = accepted.plan_version;
+  const slug = BUILD.toLowerCase().replaceAll(" ", "-");
+  const downloads = page.getByRole("region", { name: "Downloads" });
+
+  // The STL pack: one copy of bracket.stl per Required unit, byte for byte the Source file.
+  const pack = await downloaded(page, downloads.getByRole("button", { name: "Download STL pack" }));
+  expect(pack.name).toBe(`${slug}-v${version}-stl.zip`);
+  const entries = unzip(pack.body);
+  const stem = STL.replace(/\.stl$/, "");
+  const names = entries.map(({ name }) => name.split("/").pop()).sort();
+  expect(names).toEqual(
+    Array.from(
+      { length: accepted.total_units },
+      (_, unit) => `${stem}_${String(unit + 1).padStart(2, "0")}.stl`,
+    ),
+  );
+  for (const { name, data } of entries) {
+    expect(name, "entry path").toMatch(/^[^/]+\/_root\/[^/]+\.stl$/);
+    expect(data.toString("utf8"), `${name} bytes`).toBe(BRACKET);
+  }
+
+  // The checklist, opened as the owner opens the saved file: the Build, the accepted
+  // version, and bracket.stl at quantity 2 with none printed.
+  const checklist = await downloaded(
+    page,
+    downloads.getByRole("button", { name: "Download checklist" }),
+  );
+  expect(checklist.name).toBe(`${slug}-v${version}-checklist.html`);
+  const sheet = await page.context().newPage();
+  try {
+    await sheet.setContent(checklist.body.toString("utf8"));
+    await expect(sheet).toHaveTitle(`${BUILD} checklist, Plan version ${version}`);
+    await expect(sheet.getByRole("heading", { level: 1 })).toHaveText(BUILD);
+    // Each fact is a term and the definition after it; an Order number line is optional.
+    const fact = (term: string) => sheet.locator(`dt:text-is("${term}") + dd`);
+    await expect(fact("Plan version")).toHaveText(String(version));
+    await expect(fact("Printed")).toHaveText(`0 of ${accepted.total_units} units`);
+    const rows = sheet
+      .getByRole("table")
+      .getByRole("row")
+      .filter({ has: sheet.getByRole("cell") });
+    await expect(rows).toHaveCount(1);
+    await expect(rows.getByRole("cell")).toHaveText([STL, /.*/, /.*/, "2", "0 / 2", /.*/]);
+  } finally {
+    await sheet.close();
+  }
 });
 
 step(8, "GRE-1531", async ({ page }) => {

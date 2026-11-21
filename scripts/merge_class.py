@@ -8,7 +8,8 @@ records: read_comments, the one reader that turns raw PR comments into trusted s
 for both evaluators: the pp/score status (post_pp_score_status.py) and the coordinator's
 sensitive merge check (sensitive_scores, called from agent-guard.py).
 scores: whether two allowed seats from two different vendors, neither the PR author's vendor,
-posted a score of 9 or more on the exact head, or on the head a carry reaches.
+posted a score of SENSITIVE_MIN (8) or more on the exact head, or of STRICT_CARRY_MIN (9) or more
+on the head a carry reaches.
 carry: decide_carry and carry_source, the one score carry-forward decision both evaluators use.
 """
 

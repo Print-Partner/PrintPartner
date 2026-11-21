@@ -1213,8 +1213,9 @@ class CarryTests(unittest.TestCase):
 class GuardAgreementTests(unittest.TestCase):
     """The pp/score status and the coordinator's sensitive merge check on raw comment bodies, through
     carry_both: one read_comments Reading, one carry_source decision. The guard needs two non-Grok
-    vendors from scorer_seats at 9 or more where the status passes one seat at 8 or more, so one
-    seat, one vendor or Grok as the second seat passes the status but not the guard."""
+    vendors from scorer_seats where the status passes one seat, so one seat, one vendor or Grok as
+    the second seat passes the status but not the guard. A sensitive carry needs every record at 9
+    or more (STRICT_CARRY_MIN) in both."""
 
     @classmethod
     def setUpClass(cls):

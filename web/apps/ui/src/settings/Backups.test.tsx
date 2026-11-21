@@ -6,6 +6,8 @@ import { createMemoryRouter } from "react-router";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
+import { LOST_RESTORE } from "./BackupsSection";
+import { forgetRestore } from "./restoreOutcome";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -49,32 +51,30 @@ const RESTORE = "/api/v2/installation/restore";
 type Answer = (init?: RequestInit) => Response | Promise<Response>;
 
 /**
- * Every request any test in this file made to the restore route. This slice never calls it, so
- * `afterEach` fails the test that made one.
- */
-const restores: string[] = [];
-
-/**
  * A fake core: /health and empty Printers and Integrations; the create route, `HEAD` on the
- * shown backup's archive URL and the stage route as given.
+ * shown backup's archive URL, the stage route and the restore route as given.
  */
-function core(create?: Answer, more: { head?: Answer; stage?: Answer } = {}) {
+function core(create?: Answer, more: { head?: Answer; stage?: Answer; restore?: Answer } = {}) {
   let down = false;
+  const answers: Record<string, Answer | undefined> = {
+    "GET /health": () => json(HEALTH),
+    "GET /api/v2/printers": () => json({ printers: [] }),
+    "GET /api/v2/integrations": () => json({ integrations: [] }),
+    [`POST ${CREATE}`]: create,
+    [`HEAD ${ARCHIVE}`]: more.head,
+    [`POST ${STAGE}`]: more.stage,
+    [`POST ${RESTORE}`]: more.restore,
+  };
   const fetchMock = vi.fn((path: string, init?: RequestInit) =>
     Promise.resolve().then((): Response | Promise<Response> => {
-      if (new URL(path, "http://core").pathname === RESTORE) restores.push(`${init?.method ?? "GET"} ${path}`);
       if (down) throw new TypeError("Failed to fetch");
-      if (path === "/health") return json(HEALTH);
-      if (path === "/api/v2/printers") return json({ printers: [] });
-      if (path === "/api/v2/integrations") return json({ integrations: [] });
-      if (path === CREATE && init?.method === "POST" && create) return create(init);
-      if (path === ARCHIVE && init?.method === "HEAD" && more.head) return more.head(init);
-      if (path === STAGE && init?.method === "POST" && more.stage) return more.stage(init);
-      return problem(404, `unexpected ${path}`);
+      const answer = answers[`${init?.method ?? "GET"} ${path}`];
+      return answer ? answer(init) : problem(404, `unexpected ${path}`);
     }),
   );
   const calls = (path: string) => fetchMock.mock.calls.filter(([called]) => called === path);
-  return { fetchMock, creates: () => calls(CREATE), heads: () => calls(ARCHIVE), stages: () => calls(STAGE), goDown: () => (down = true) };
+  const restores = () => fetchMock.mock.calls.filter(([called]) => new URL(called, "http://core").pathname === RESTORE);
+  return { fetchMock, creates: () => calls(CREATE), heads: () => calls(ARCHIVE), stages: () => calls(STAGE), restores, goDown: () => (down = true) };
 }
 
 function renderSettings(fetchMock: ReturnType<typeof core>["fetchMock"], container?: HTMLElement) {
@@ -83,7 +83,7 @@ function renderSettings(fetchMock: ReturnType<typeof core>["fetchMock"], contain
   const queryClient = createQueryClient();
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } });
   render(<App router={router} queryClient={queryClient} />, container ? { container } : undefined);
-  return { queryClient };
+  return { queryClient, router };
 }
 
 const backups = async (root: HTMLElement = document.body) =>
@@ -121,8 +121,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  const made = restores.splice(0);
-  expect(made, "this slice must never call the restore route").toEqual([]);
+  forgetRestore();
 });
 
 describe("Backups: create", () => {
@@ -447,7 +446,7 @@ describe("Backups: check a backup file", () => {
     expect(fake.stages()).toHaveLength(0);
   });
 
-  it("posts the file once, says Checking backup, then shows the backup's time, app version and schema version and no Restore button", async () => {
+  it("posts the file once, says Checking backup, then shows the backup's time, app version and schema version and Restore this backup", async () => {
     const answer = deferred();
     const fake = core(undefined, { stage: () => answer.promise });
     const region = await opened(fake);
@@ -471,8 +470,9 @@ describe("Backups: check a backup file", () => {
     expect(init?.body).toBe(file);
     expect(init?.redirect).toBe("error");
     expect(new Headers(init?.headers).get("content-type")).toBe("application/gzip");
-    expect(within(region).queryByRole("button", { name: /restore|replace/i })).toBeNull();
+    expect(within(region).getByRole("button", { name: "Restore this backup" })).toBeTruthy();
     expect(document.querySelector("dialog, [role=dialog]")).toBeNull();
+    expect(fake.restores()).toEqual([]);
   });
 
   it("the core's refusal of a truncated file shows its reason, says this installation is unchanged and drops the earlier check", async () => {
@@ -541,7 +541,7 @@ describe("Backups: check a backup file", () => {
     await within(region).findByLabelText("Backup checked");
     fireEvent.click(checkButton(region));
     await within(region).findByText(/was not accepted/);
-    expect(fake.fetchMock.mock.calls.filter(([path]) => new URL(path, "http://core").pathname === RESTORE)).toEqual([]);
+    expect(fake.restores()).toEqual([]);
     expect(within(region).queryByRole("button", { name: /restore|replace/i })).toBeNull();
   });
 });
@@ -607,5 +607,198 @@ describe("Backups: a redirected download check or backup check", () => {
     expect((await within(region).findByRole("alert")).textContent).toBe(NOT_CONFIRMED);
     expect(within(region).queryByLabelText("Backup checked")).toBeNull();
     expect(received).toEqual([`POST ${STAGE}`]);
+  });
+});
+
+const page = () => within(document.body);
+const RESTORED = { restored_schema_version: 34, schema_version: 34 };
+const restoreProblem = (status: number, extra: Record<string, unknown> = {}) =>
+  new Response(
+    JSON.stringify({ type: "urn:print-partner:problem:conflict", title: "Refused", status, detail: "Refused here", ...extra }),
+    { status, headers: { "content-type": "application/problem+json" } },
+  );
+
+/** Opens Settings, checks a file and opens the confirmation dialog. */
+async function confirming(fake: ReturnType<typeof core>) {
+  const rendered = renderSettings(fake.fetchMock);
+  const region = await backups();
+  await online(region);
+  choose(region, fileOf());
+  fireEvent.click(checkButton(region));
+  fireEvent.click(await within(region).findByRole("button", { name: "Restore this backup" }));
+  const dialog = await page().findByRole("dialog", { name: "Replace this installation?" });
+  return { ...rendered, region, dialog };
+}
+
+/**
+ * Asserts the section is locked: no way to send a restore, a check or a create. `hidden` reaches
+ * the page behind an open dialog, which the dialog hides from assistive technology.
+ */
+function expectLocked(region: HTMLElement) {
+  const button = (name: string) => page().queryByRole("button", { name, hidden: true });
+  expect(button("Replace this installation")).toBeNull();
+  expect(button("Restore this backup")).toBeNull();
+  expect(button("Close")).toBeNull();
+  expect(button("Check backup")?.getAttribute("aria-disabled")).toBe("true");
+  expect(button("Create backup")?.getAttribute("aria-disabled")).toBe("true");
+  expect((within(region).getByLabelText("Backup file") as HTMLInputElement).disabled).toBe(true);
+}
+
+describe("Backups: restore", () => {
+  it("asks first: Cancel has focus and sends nothing; Replace sends one POST without following redirects", async () => {
+    const answer = deferred();
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: () => answer.promise });
+    const { region, dialog } = await confirming(fake);
+    expect(dialog.querySelector("[data-confirmation]")?.textContent).toBe(PREVIEW.confirmation);
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" })));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(page().queryByRole("dialog")).toBeNull();
+    expect(fake.restores()).toEqual([]);
+
+    fireEvent.click(within(region).getByRole("button", { name: "Restore this backup" }));
+    const again = await page().findByRole("dialog");
+    fireEvent.click(within(again).getByRole("button", { name: "Replace this installation" }));
+    fireEvent.click(within(again).queryByRole("button", { name: "Replace this installation" }) ?? again);
+    expect(await within(again).findByText("Restoring. Keep this page open.")).toBeTruthy();
+    expect(fake.restores()).toHaveLength(1);
+    const init = fake.restores()[0]?.[1];
+    expect(init?.redirect).toBe("error");
+    expect(JSON.parse(String(init?.body))).toEqual({ restore_id: PREVIEW.restore_id, confirmation: PREVIEW.confirmation });
+    await act(async () => answer.resolve(json(RESTORED)));
+    expect(await within(again).findByText(/^Restore complete/)).toBeTruthy();
+    expect(within(again).getByRole("button", { name: "Reload" })).toBeTruthy();
+    expectLocked(region);
+    expect(fake.restores()).toHaveLength(1);
+  });
+
+  it.each([
+    ["503 restore_busy", () => restoreProblem(503, { code: "restore_busy" })],
+    ["a code-less 409", () => restoreProblem(409)],
+  ])("%s says unchanged, offers Close, and a second confirmation sends a second POST", async (_, refusal) => {
+    let sent = 0;
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: () => (++sent === 1 ? refusal() : json(RESTORED)) });
+    const { region, dialog } = await confirming(fake);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("The restore was refused: Refused here. This installation is unchanged.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.click(within(region).getByRole("button", { name: "Restore this backup" }));
+    fireEvent.click(within(await page().findByRole("dialog")).getByRole("button", { name: "Replace this installation" }));
+    expect(await page().findByText(/^Restore complete/)).toBeTruthy();
+    expect(fake.restores()).toHaveLength(2);
+  });
+
+  it("404 restore_not_found empties the file field and asks to choose the file again", async () => {
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: () => restoreProblem(404, { code: "restore_not_found" }) });
+    const { region, dialog } = await confirming(fake);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(region).findByRole("alert")).textContent).toMatch(/^The core no longer holds this check/);
+    expect(page().queryByRole("dialog")).toBeNull();
+    expect(within(region).queryByRole("button", { name: "Restore this backup" })).toBeNull();
+    expect(checkButton(region).getAttribute("aria-disabled")).toBe("true");
+    expect((within(region).getByLabelText("Backup file") as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it.each([
+    ["code null", () => restoreProblem(409, { code: null })],
+    ["code 409", () => restoreProblem(409, { code: 409 })],
+    ["code as an object", () => restoreProblem(409, { code: { code: "restore_busy" } })],
+    ["an empty code", () => restoreProblem(503, { code: "" })],
+    ["an unknown code", () => restoreProblem(503, { code: "restore_maybe" })],
+    ["restore_busy on a 409", () => restoreProblem(409, { code: "restore_busy" })],
+    ["restart_required", () => restoreProblem(503, { code: "restart_required" })],
+    ["a code-less 503", () => restoreProblem(503)],
+    ["a status member that disagrees", () => restoreProblem(409, { status: 400 })],
+    ["a 409 that is not a problem", () => json({ status: 409 }, 409)],
+    ["a 502 proxy page", () => new Response("<html>Bad Gateway</html>", { status: 502, headers: { "content-type": "text/html" } })],
+    ["a 200 that fails the contract", () => json({ ok: true })],
+    ["a lost answer", () => Promise.reject(new TypeError("Failed to fetch"))],
+  ])("%s is an unknown outcome: Reload only, locked, one POST", async (_, answer: Answer) => {
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: answer });
+    const { region, dialog } = await confirming(fake);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(LOST_RESTORE);
+    expect(within(dialog).getByRole("button", { name: "Reload" })).toBeTruthy();
+    expectLocked(region);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    fireEvent.click(checkButton(region));
+    fireEvent.click(within(region).getByRole("button", { name: "Create backup" }));
+    expectLocked(region);
+    expect(fake.restores()).toHaveLength(1);
+    expect(fake.stages()).toHaveLength(1);
+    expect(fake.creates()).toHaveLength(0);
+  });
+
+  it("leaving Settings and coming back keeps a lost restore locked", async () => {
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: () => restoreProblem(409, { code: null }) });
+    const { router, dialog } = await confirming(fake);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    await within(dialog).findByText(LOST_RESTORE);
+    await act(() => router.navigate("/farm/log"));
+    await waitFor(() => expect(page().queryByRole("region", { name: "Backups" })).toBeNull());
+    await act(() => router.navigate("/settings"));
+    const region = await backups();
+    expect(within(region).getByText(LOST_RESTORE)).toBeTruthy();
+    expect(within(region).getByRole("button", { name: "Reload" })).toBeTruthy();
+    choose(region, fileOf());
+    expectLocked(region);
+    expect(fake.restores()).toHaveLength(1);
+  });
+
+  it("a restore still running when Settings closes shows its answer when Settings opens again", async () => {
+    const answer = deferred();
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: () => answer.promise });
+    const { router, dialog } = await confirming(fake);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    await waitFor(() => expect(fake.restores()).toHaveLength(1));
+    await act(() => router.navigate("/farm/log"));
+    await act(async () => answer.resolve(new Response("", { status: 504 })));
+    await act(() => router.navigate("/settings"));
+    const region = await backups();
+    expect(await within(region).findByText(LOST_RESTORE)).toBeTruthy();
+    expectLocked(region);
+  });
+});
+
+/** A real loopback server for the restore POST, so Node's own fetch decides whether to follow. */
+describe("Backups: a redirected restore", () => {
+  const received: string[] = [];
+  let redirect: { status: 307 | 308; to: "/ok" | "/problem" } = { status: 307, to: "/ok" };
+  let server: Server;
+  let origin = "";
+  const nodeFetch = globalThis.fetch;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      received.push(`${request.method} ${request.url}`);
+      request.resume();
+      const send = (status: number, type: string, body: unknown, headers: Record<string, string> = {}) => {
+        response.writeHead(status, { "content-type": type, ...headers });
+        response.end(JSON.stringify(body));
+      };
+      if (request.url === RESTORE) return send(redirect.status, "text/plain", "", { location: redirect.to });
+      if (request.url === "/ok") return send(200, "application/json", RESTORED);
+      if (request.url === "/problem")
+        return send(503, "application/problem+json", { type: "urn:print-partner:problem:overloaded", title: "Service Unavailable", status: 503, detail: "busy", code: "restore_busy" });
+      send(404, "text/plain", "");
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((done) => server.close(() => done())));
+
+  it.each([
+    [307, "/ok"],
+    [308, "/ok"],
+    [307, "/problem"],
+    [308, "/problem"],
+  ] as const)("a %i to %s sends one POST and is an unknown outcome", async (status, to) => {
+    received.length = 0;
+    redirect = { status, to };
+    const fake = core(undefined, { stage: () => json(PREVIEW), restore: (init) => nodeFetch(`${origin}${RESTORE}`, init) });
+    const { region, dialog } = await confirming(fake);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace this installation" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(LOST_RESTORE);
+    expectLocked(region);
+    expect(received).toEqual([`POST ${RESTORE}`]);
   });
 });

@@ -40,5 +40,15 @@ For the harness only. Run it on host loopback, or publish it only there.
 | `POST /_sim/state` `{state, progress?, filename?}` | Sets the state. `progress` is 0 to 1. |
 | `POST /_sim/fault` `{fault, path?, ms?}` | Arms one fault for the next matching request: `lose-upload` (stores the file, then closes without answering), `lose-start` (starts, then closes), `late` (answers after `ms`, default 70,000), `error-500` (answers 500 and changes nothing). `path` limits `late` and `error-500` to one path. |
 
+## In the daily-loop test
+
+`npm --prefix web run test:daily-loop` starts it beside the Rust-only container
+(`web/test/daily-loop/simulator.mjs`): a second container on the run's own Docker
+network, named `pp-sim` there, with a new API key file for each run. The product
+container reaches it at `http://pp-sim:7125`. Only the control port is published,
+on `127.0.0.1`. See [CI, Daily loop](../../../docs/development/ci.md#daily-loop).
+
+## Tests
+
 `npm --prefix web run test:moonraker-sim` runs its tests. They are part of
 `npm --prefix web test`.

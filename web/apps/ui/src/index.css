@@ -744,6 +744,13 @@ body {
   font: inherit;
 }
 
+/* A file field's native button and name otherwise set its width, wider than a zoomed phone. */
+.pp-field input[type="file"] {
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+}
+
 .pp-field input[aria-invalid="true"],
 .pp-quantity[aria-invalid="true"] {
   border-color: var(--status-danger);

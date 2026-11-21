@@ -4,7 +4,7 @@
 //! write whose reply has not come back yet, which is all a later Test
 //! connection can observe of it.
 use super::*;
-use pp_storage::{Limits, Setting, SettingCommand, WriterOwner};
+use pp_storage::{Limits, WriterOwner};
 use pp_testkit::bambu::{Identity, idle_printer};
 use std::sync::mpsc;
 
@@ -12,19 +12,10 @@ const ID: &str = "bambu-stalled";
 const CODE: &str = "synthetic-code";
 const SERIAL: &str = "FIXTURE01";
 
-fn seed(settings: &SettingsClient, key: &str, value: Value) {
-    let reply = settings
-        .submit(
-            SettingCommand::Set(Setting {
-                tenant: "default".into(),
-                key: key.into(),
-                value: value.to_string(),
-            }),
-            &AtomicBool::new(false),
-            WRITE_WAIT,
-        )
-        .unwrap();
-    assert!(reply.recv().unwrap().unwrap());
+/// Stores a `default` setting with raw SQL: the generic write refuses
+/// `integrations`.
+fn seed(data: &std::path::Path, key: &str, value: Value) {
+    pp_testkit::settings::seed_setting(data, key, &value.to_string()).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -36,9 +27,9 @@ async fn ticket_t_23_a_stalled_pin_write_keeps_later_tests_off_first_use() {
     // The printer the second Test connection reaches presents certificate Y.
     let (printer, _) = idle_printer(CODE, SERIAL).await.unwrap();
     let port = printer.addr.port();
-    seed(&settings, "feature_toggles", json!({"bambu": true}));
+    seed(root.path(), "feature_toggles", json!({"bambu": true}));
     seed(
-        &settings,
+        root.path(),
         "integrations",
         json!([{"id": ID, "type": "bambu", "config": {
             "host": "127.0.0.1", "port": port, "serial": SERIAL, "access_code": CODE,

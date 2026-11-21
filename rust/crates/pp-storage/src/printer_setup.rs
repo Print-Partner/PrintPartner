@@ -38,7 +38,7 @@ use std::{
     time::Duration,
 };
 
-const INTEGRATIONS_KEY: &str = "integrations";
+const INTEGRATIONS_KEY: &str = crate::INTEGRATIONS_SETTING;
 const SPOOLMAN_DEFAULT_KEY: &str = "default_spoolman_integration_id";
 /// Rows of every kind count. One person's farm stays far below this.
 pub const MAX_INTEGRATIONS: usize = 64;

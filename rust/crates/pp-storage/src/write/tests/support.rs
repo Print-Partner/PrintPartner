@@ -1,7 +1,7 @@
 //! Fixtures for the tests of families that write through the write seam.
 
 use crate::{
-    Limits, Setting, SettingCommand, WriterOwner,
+    Limits, PRINTER_SETUP_SETTINGS, Setting, SettingCommand, WriterOwner,
     auth::{
         AuthPolicy, FirstUserTenant, Outcome, RegistrationPolicy, Request, Secret,
         SessionTenantPolicy,
@@ -27,8 +27,14 @@ pub(crate) fn first_session(owner: &WriterOwner) -> String {
     }
 }
 
-/// Stores `value` under `key` for the `default` installation.
+/// Stores `value` under `key` for the `default` installation. The documents
+/// the generic write refuses go in with raw SQL.
 pub(crate) fn seed_setting(owner: &WriterOwner, key: &str, value: &str) {
+    if PRINTER_SETUP_SETTINGS.contains(&key) {
+        let lease = owner.lease.as_ref().expect("the owner is open");
+        pp_testkit::settings::seed_setting(lease.data_dir(), key, value).unwrap();
+        return;
+    }
     let setting = Setting {
         tenant: "default".into(),
         key: key.into(),

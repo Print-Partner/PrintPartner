@@ -17,17 +17,41 @@ the configured tenant).
 ## Create (`POST /plans`)
 
 Request body is the validated `CreateBuildRequest` DTO (`name`, optional
-`base_project_id`). Names trim like Node and refuse empty or over-long values.
+`base_project_id`). The core trims JavaScript whitespace from `name`
+(`BuildName::parse`), then requires 1 to 4096 Unicode scalars.
 
 Success is `200` with a Node-compatible `ProfileSummary` plus a `layers` array
-(empty when no base source). Refusals:
+(empty when no base source). Refusals write nothing:
 
 | Condition | Status | Detail |
 | --- | --- | --- |
 | Duplicate name | 400 | `Profile already exists: {name}` |
+| 64 Builds already exist | 409 | `Build limit reached: an installation holds at most 64 Builds` |
 | Unknown base source | 400 | `Project not found` |
 | Invalid / empty name body | 400 | `Profile name is required` / `Profile name is too long` / `Request is invalid` |
 | Unauthenticated | 401 | `Authentication required` |
+
+The duplicate-name check runs first, so a retried create at the limit still
+answers `Profile already exists`. The limit is `MAX_BUILDS` in
+`pp-storage/src/build_graph.rs`. The list reads at most that many Builds, so a
+create past it would make `GET /plans` fail.
+
+### Client contract (`createBuild`, GRE-1876)
+
+`web/packages/rust-client` exports the `/api/v2` route as `createBuild`:
+`CreateBuildRequest` in, `ProfileSummary` out. The client drops `layers`.
+`buildNameSchema` checks the same bound as the core. The Rust `BuildName`
+schema carries `x-trim-js`, so the generator counts `value.trim()`.
+`String.prototype.trim` strips the same characters as `trim_js`. The
+`CreateBuildRequest` fixtures in `pp-api/src/client_contract.rs` hold both sides
+to that, character by character.
+
+A repeat or retry never makes a second Build. Names are unique per
+installation (`uq_profiles_tenant_name`), and create checks the name in its
+write transaction. A repeat of the same trimmed name answers `400 Profile
+already exists: {name}`. Names compare exactly, so `rack` and `Rack` are two
+Builds. When a client cannot tell whether its create landed, it lists Builds
+and looks for the name, instead of sending the create again.
 
 ## Delete (`DELETE /plans/{id}`)
 

@@ -827,6 +827,10 @@ body {
   background: var(--surface-raised);
 }
 
+.pp-farm-deductions {
+  margin: 0 0 24px;
+}
+
 .pp-screen-actions {
   margin: 0 0 16px;
 }

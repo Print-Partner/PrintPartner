@@ -5,7 +5,7 @@ use pp_storage::{
     auth::{self, Secret},
     build_graph::{
         AcceptedProgress, AcceptedProgressUnavailable, BuildCommand, BuildGraphClient,
-        BuildOutcome, Failure, PlanFreshness, PlanStaleReason, ProfileSummary,
+        BuildOutcome, Failure, MAX_BUILDS, PlanFreshness, PlanStaleReason, ProfileSummary,
     },
     read_model::Credential,
 };
@@ -310,6 +310,46 @@ fn review_list_caps_builds_before_loading_graphs() {
     f.mutate("INSERT INTO build_profiles(id,tenant_id,name) VALUES(65,'default','Extra'); DROP TABLE plan_revision_parts;");
     let error = f.run(BuildCommand::List).unwrap_err();
     assert!(matches!(error.downcast_ref(), Some(Failure::TooManyBuilds)));
+}
+
+#[test]
+fn create_stops_at_the_build_limit_the_list_reads() {
+    let f = Fixture::new();
+    let BuildOutcome::Listed { profiles } = f.run(BuildCommand::List).unwrap() else {
+        panic!("list")
+    };
+    for n in profiles.len()..MAX_BUILDS {
+        create(&f, &format!("Build {n:02}"), None);
+    }
+    let count = |f: &Fixture| -> i64 {
+        f.raw()
+            .query_row(
+                "SELECT count(*) FROM build_profiles WHERE tenant_id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count(&f), MAX_BUILDS as i64);
+    let refused = f.run(BuildCommand::Create {
+        name: name("One too many"),
+        base_source: None,
+    });
+    assert!(matches!(refused.unwrap(), BuildOutcome::BuildLimitReached));
+    // A retried create of an existing name still says the name is taken.
+    let retried = f.run(BuildCommand::Create {
+        name: name(&format!("Build {:02}", MAX_BUILDS - 1)),
+        base_source: None,
+    });
+    assert!(matches!(
+        retried.unwrap(),
+        BuildOutcome::DuplicateName { .. }
+    ));
+    assert_eq!(count(&f), MAX_BUILDS as i64);
+    let BuildOutcome::Listed { profiles } = f.run(BuildCommand::List).unwrap() else {
+        panic!("list")
+    };
+    assert_eq!(profiles.len(), MAX_BUILDS);
 }
 
 #[test]

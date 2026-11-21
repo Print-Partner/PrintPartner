@@ -694,6 +694,13 @@ fn present(
             StatusCode::BAD_REQUEST,
             &format!("Profile already exists: {name}"),
         ),
+        BuildOutcome::BuildLimitReached => failure(
+            StatusCode::CONFLICT,
+            &format!(
+                "Build limit reached: an installation holds at most {} Builds",
+                pp_storage::build_graph::MAX_BUILDS
+            ),
+        ),
         BuildOutcome::DuplicateAttachment { source_name } => {
             let detail = format!("Source \"{source_name}\" is already attached to this build");
             let status = if path.ends_with("/layers") && *method == Method::POST {

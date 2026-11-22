@@ -1215,11 +1215,88 @@ step(10, null, async ({ page }) => {
   expect(await checkoffUnits(page, id)).toEqual(before);
 });
 
-step(11, "GRE-1887", async ({ page }) => {
-  await openBuild(page);
-  await expect(page.getByText(/\d+ of \d+ units printed/)).toBeVisible();
+// The Spoolman stand-in run.mjs starts beside the container (spoolman.mjs). No real
+// Spoolman server is contacted.
+const SPOOLMAN = "Daily loop Spoolman";
+
+/** What the stand-in's control port reports: its spools and every use the core sent. */
+async function spoolmanLog() {
+  const standIn = process.env.PP_DAILY_LOOP_SPOOLMAN ?? "";
+  const control = docker("port", standIn, "7913").stdout.trim().split("\n")[0];
+  expect(control, `docker port ${standIn} 7913`).toMatch(/^127\.0\.0\.1:\d+$/);
+  const answer = await fetch(`http://${control}/_stand-in/log`);
+  expect(answer.status, "GET /_stand-in/log").toBe(200);
+  return (await answer.json()) as {
+    spools: { id: number; remaining_weight: number }[];
+    uses: { spool_id: number; use_weight: number }[];
+  };
+}
+
+type NextAction = { label: string; reason: string };
+
+// Step 5's Build, as Step 6 accepted it: bracket.stl at quantity 2. Nothing has checked off
+// a unit of it.
+step(11, "GRE-1896", async ({ page }) => {
+  await signIn(page);
+  const origin = new URL(page.url()).origin;
+  // Spoolman is off on a new installation; the owner turns it on.
+  await go(page, "Settings");
+  await page.getByRole("button", { name: "Turn Spoolman on" }).click();
+  await page.getByRole("button", { name: "Confirm Module change" }).click();
+  await expect(page.getByRole("button", { name: "Turn Spoolman off" })).toBeVisible();
+  // The owner's import brings his Spoolman integration; the synthetic installation has
+  // none, and Settings cannot add one yet (GRE-1899), so the step adds the stand-in
+  // through the route Settings will call.
+  const added = await page.request.post(`${origin}/api/v2/integrations`, {
+    data: { kind: "spoolman", name: SPOOLMAN, base_url: process.env.PP_DAILY_LOOP_SPOOLMAN_URL ?? "" },
+    headers: { Origin: origin },
+  });
+  expect(added.ok(), `POST /api/v2/integrations: ${added.status()} ${await added.text()}`).toBe(true);
+  await page.reload();
+  const integration = page.locator(".pp-fact").filter({ has: page.locator("dt", { hasText: SPOOLMAN }) });
+  await expect(integration.locator("dd")).toContainText("Spoolman, on");
+
+  // What is left, as the core counts it: every unit of the accepted Plan not yet printed.
+  const { profiles } = await core<{ profiles: { id: number; name: string }[] }>(page, "/api/v2/plans");
+  const id = profiles.find(({ name }) => name === BUILD)?.id ?? 0;
+  const units = Object.values(await checkoffUnits(page, id));
+  const left = units.filter(({ printed }) => !printed).length;
+  expect(left, `${BUILD}'s units left`).toBe(2);
+  // Its next action: after Step 8's reconciled send, recovering that job comes first.
+  const { next_action: next } = await core<{ next_action: NextAction }>(page, `/api/v2/plans/${id}/workflow`);
+
+  // Today lists the Build with its next action: as its top task with the reason, or in
+  // the ranked list.
+  await go(page, "Today");
+  const link = page.getByRole("link", { name: BUILD, exact: true });
+  // The top task is a region named by its heading; the screen around it is a region too.
+  const top = page.getByRole("region", { name: next.label, exact: true }).filter({ has: link });
+  const ranked = page.getByRole("list", { name: "Ranked tasks" }).getByRole("listitem").filter({ has: link });
+  await expect(top.or(ranked)).toHaveCount(1);
+  await expect(top.or(ranked)).toContainText(next.label);
+  if ((await top.count()) > 0) await expect(top).toContainText(next.reason);
+
+  // The Build's Overview shows what is printed, the same next action, and in the Filament
+  // section each Part with its units left.
+  await go(page, "Builds");
+  await page.getByRole("table", { name: "Builds" }).getByRole("link", { name: BUILD, exact: true }).click();
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await expect(page.getByText(`${units.length - left} of ${units.length} units printed`)).toBeVisible();
+  const nextFact = page.locator(".pp-fact").filter({ has: page.locator("dt", { hasText: "Next action" }) });
+  await expect(nextFact.locator("dd")).toContainText(`${next.label}${next.reason}`);
+  const filament = page.getByRole("region", { name: "Filament" });
+  await filament.getByRole("button", { name: "Refresh" }).click();
+  await expect(filament.getByRole("status")).toHaveText(/^Read /);
+  const parts = filament.getByRole("list", { name: /^Parts on / });
+  await expect(parts.getByRole("listitem")).toHaveText([`${STL} ${left} units left`]);
+  // Nothing has a print with grams yet, so the need is not known and no shortfall shows.
+  await expect(filament.getByText("Not known yet")).toBeVisible();
+  await expect(filament.getByText(/^Short by /)).toHaveCount(0);
+  // Reading stock never deducts it.
+  expect((await spoolmanLog()).uses, "uses the core sent to Spoolman").toEqual([]);
+
   unwritten(
-    "Today shows what is left, Spoolman shortfalls are current, and a deduction is recorded once",
+    "Spoolman shortfalls are current and a deduction is recorded once: a Part of a Build made on Rust cannot name a Spoolman filament or pin a spool (GRE-1898), a send from Production records no grams (GRE-1896), and a finished print's link never becomes confirmable on Today (GRE-1897)",
   );
 });
 

@@ -4,11 +4,10 @@ import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import process from "node:process";
 import { test } from "node:test";
-import { setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
 import { DEAF, detached, groupWithMember } from "./teardown.fixture.mjs";
-import { drainGroup, groupAlive, processesNaming, removeUntilQuiet, stopProcessesNaming } from "./teardown.mjs";
+import { drainGroup, groupAlive, processesNaming, stopProcessesNaming } from "./teardown.mjs";
 
 // A test that fails must not hang the run, so each has a timeout and ends its fixtures
 // (teardown.fixture.mjs) when it ends.
@@ -93,47 +92,3 @@ for (const signal of ["SIGTERM", "SIGKILL"]) {
     assert.deepEqual(processesNaming(mark), [], `no fixture outlives a runner ended by ${signal}`);
   });
 }
-
-/**
- * An inventory where a container appears `after` ms after the first removal: a slow create.
- * @param {number} after
- */
-function inventory(after) {
-  const present = new Set(["container"]);
-  let removals = 0;
-  return {
-    remove: () => {
-      present.clear();
-      if (++removals === 1) setTimeout(() => present.add("late container"), after);
-    },
-    leftovers: () => [...present],
-    removals: () => removals,
-  };
-}
-
-test("removal catches what appears after the first quiet wait, before the second look", async () => {
-  // As a create the daemon carries out 3.2 s after the removal, with the 3 s default: the
-  // first look finds nothing, the second finds it.
-  const late = inventory(320);
-  const left = await removeUntilQuiet({ remove: late.remove, leftovers: late.leftovers, quiet: 300 });
-  assert.deepEqual(left, []);
-  assert.equal(late.removals(), 2, "the late container was removed by a second pass");
-});
-
-test("removal catches what appears within the first quiet wait", async () => {
-  const late = inventory(20);
-  assert.deepEqual(await removeUntilQuiet({ remove: late.remove, leftovers: late.leftovers, quiet: 100 }), []);
-  assert.equal(late.removals(), 2);
-});
-
-test("removal reports what is still there after its last pass", async () => {
-  let removals = 0;
-  const left = await removeUntilQuiet({
-    remove: () => removals++,
-    leftovers: () => ["docker ps -aq --filter name=pp-daily-loop-0a1b2c3d"],
-    quiet: 10,
-    passes: 3,
-  });
-  assert.deepEqual(left, ["docker ps -aq --filter name=pp-daily-loop-0a1b2c3d"]);
-  assert.equal(removals, 3);
-});

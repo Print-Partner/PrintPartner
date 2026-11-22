@@ -1,9 +1,9 @@
-// How run.mjs makes sure nothing of a stopped run is still working when it removes what the run
-// created (GRE-1888). A test blocked in a synchronous `docker run` keeps going after the
-// Playwright CLI exits, and Chromium, which Playwright starts in a process group of its own,
-// can still hold files in the run's folder. So run.mjs waits for the command's whole process
-// group and for every process that names the run's folder, then removes things until a look
-// taken a while after a removal finds nothing.
+// The processes a daily-loop run must see end before it removes what the run created
+// (GRE-1888). A test blocked in a synchronous `docker run` keeps going after the Playwright
+// CLI or `node --test` exits, and Chromium, which Playwright starts in a process group of its
+// own, can still hold files in the run's folder. runner.mjs waits for each command's whole
+// process group with `drainGroup`; run.mjs then stops every process that names the browser
+// folder with `stopProcessesNaming`, before runner.mjs's `teardown` removes Docker resources.
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -89,32 +89,4 @@ export async function stopProcessesNaming(text, { grace = 10_000, poll = 100 } =
   signal(processesNaming(text), "SIGKILL");
   await delay(poll);
   return processesNaming(text);
-}
-
-/**
- * Calls `remove`, then looks with `leftovers` every `quiet` ms. It is done when `looks` looks
- * in a row find nothing; anything a look finds starts the next pass with another `remove`, up
- * to `passes` passes. A docker request that a stopped command sent can still be carried out
- * after the command has gone, so an empty list taken straight after a removal proves nothing.
- * With the defaults it catches what appears up to 6 s after a removal; run.mjs calls it only
- * once no process of the run is left to send a request.
- * Resolves to what the last look found: empty when everything is gone.
- * @param {{ remove: () => void, leftovers: () => string[], quiet?: number, looks?: number, passes?: number }} options
- * @returns {Promise<string[]>}
- */
-export async function removeUntilQuiet({ remove, leftovers, quiet = 3000, looks = 2, passes = 5 }) {
-  /** @type {string[]} */
-  let left = [];
-  for (let pass = 0; pass < passes; pass++) {
-    remove();
-    let empty = 0;
-    while (empty < looks) {
-      await delay(quiet);
-      left = leftovers();
-      if (left.length > 0) break;
-      empty++;
-    }
-    if (empty === looks) return [];
-  }
-  return left;
 }

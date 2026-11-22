@@ -11,7 +11,7 @@ import process from "node:process";
  * Node source each fixture runs first: exit once process `starter` has gone, or after 60 s.
  * @param {number} starter
  */
-const tiedTo = (starter) =>
+export const tiedTo = (starter) =>
   `setInterval(() => { try { process.kill(${starter}, 0); } catch { process.exit(0); } }, 200);
    setTimeout(() => process.exit(0), 60_000);`;
 

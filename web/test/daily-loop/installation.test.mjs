@@ -19,6 +19,7 @@ test("every container, volume, network and tag of a run carries the run's name",
   assert.deepEqual(names, {
     container: RUN,
     simulator: `${RUN}-sim`,
+    spoolman: `${RUN}-spoolman`,
     importer: `${RUN}-import`,
     network: RUN,
     volume: RUN,
@@ -31,13 +32,13 @@ test("every container, volume, network and tag of a run carries the run's name",
   for (const value of Object.values(names)) assert.ok(value.startsWith(RUN), value);
   const volumes = [names.volume, names.importVolume, names.restoreVolume];
   assert.equal(new Set(volumes).size, 3, "three different volumes");
-  assert.equal(new Set([names.container, names.importer, names.restore, names.simulator]).size, 4);
+  assert.equal(new Set([names.container, names.importer, names.restore, names.simulator, names.spoolman]).size, 5);
 });
 
 test("the cleanup removes every container, the three volumes, the network and the image tag", () => {
   const names = runNames(RUN);
   assert.deepEqual(cleanupCommands(names), [
-    ["rm", "-f", RUN, `${RUN}-import`, `${RUN}-restore`, `${RUN}-sim`],
+    ["rm", "-f", RUN, `${RUN}-import`, `${RUN}-restore`, `${RUN}-sim`, `${RUN}-spoolman`],
     ["network", "rm", RUN],
     ["volume", "rm", "-f", RUN, `${RUN}-imported`, `${RUN}-restored`],
     ["rmi", `${RUN}:test`],

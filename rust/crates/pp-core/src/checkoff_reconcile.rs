@@ -71,8 +71,9 @@ impl Hosts {
     /// Queues `report` for host `id` unless it repeats the newest one. A
     /// progress report replaces the queued one before it for the same state
     /// and file, keeping the higher progress. Past [`KEPT`], the oldest
-    /// progress report with a newer one for its file goes, else the oldest
-    /// offline or unknown spell; nothing else is ever dropped.
+    /// progress report with a newer one for its file in the same run (before
+    /// any finish, idle or error) goes and hands on its progress, else the
+    /// oldest offline or unknown spell; nothing else is ever dropped.
     fn push(&mut self, id: &str, mut report: HostReport) {
         let newest = self.queued.get(id).and_then(VecDeque::back);
         if newest.or_else(|| self.written.get(id)) == Some(&report) {
@@ -83,27 +84,28 @@ impl Hosts {
             && running(back)
             && (&back.state, &back.filename) == (&report.state, &report.filename)
         {
-            report.progress = match (back.progress, report.progress) {
-                (Some(old), Some(new)) => Some(old.max(new)),
-                (old, new) => new.or(old),
-            };
+            report.progress = higher(back.progress, report.progress);
             queue.pop_back();
         }
         queue.push_back(report);
         if queue.len() > KEPT {
-            let superseded = |(i, old): (usize, &HostReport)| {
-                let newer = |new: &HostReport| running(new) && new.filename == old.filename;
-                running(old) && queue.iter().skip(i + 1).any(newer)
+            // The later progress report of the same run that supersedes `i`.
+            let successor = |i: usize| {
+                let old: &HostReport = &queue[i];
+                let same_run = |(_, new): &(usize, &HostReport)| running(new) || quiet(new);
+                let newer =
+                    |(_, new): &(usize, &HostReport)| running(new) && new.filename == old.filename;
+                let later = queue.iter().enumerate().skip(i + 1).take_while(same_run);
+                running(old)
+                    .then(|| later.filter(newer).map(|(j, _)| j).next())
+                    .flatten()
             };
-            let quiet =
-                |old: &HostReport| matches!(old.state, HostState::Offline | HostState::Unknown);
-            let evicted = (queue
-                .iter()
-                .enumerate()
-                .find(|&entry| superseded(entry))
-                .map(|(i, _)| i))
-            .or_else(|| queue.iter().position(quiet));
-            if let Some(index) = evicted {
+            let superseded = (0..queue.len()).find_map(|i| successor(i).map(|j| (i, Some(j))));
+            let evicted = superseded.or_else(|| queue.iter().position(quiet).map(|i| (i, None)));
+            if let Some((index, successor)) = evicted {
+                if let Some(j) = successor {
+                    queue[j].progress = higher(queue[index].progress, queue[j].progress);
+                }
                 queue.remove(index);
             }
         }
@@ -130,6 +132,18 @@ impl Hosts {
 /// A progress report: the host is printing or paused.
 fn running(report: &HostReport) -> bool {
     matches!(report.state, HostState::Printing | HostState::Paused)
+}
+
+/// An unanswered spell, which neither ends a run nor changes a link.
+fn quiet(report: &HostReport) -> bool {
+    matches!(report.state, HostState::Offline | HostState::Unknown)
+}
+
+fn higher(old: Option<f64>, new: Option<f64>) -> Option<f64> {
+    match (old, new) {
+        (Some(old), Some(new)) => Some(old.max(new)),
+        (old, new) => new.or(old),
+    }
 }
 
 pub(crate) async fn observe_statuses(

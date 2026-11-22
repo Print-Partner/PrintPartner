@@ -40,7 +40,7 @@ impl Statuses for Channel {
     }
 }
 
-/// Records each write as `host state file`, plus ` cancelled` and
+/// Records each write as `host state file`, plus the progress, ` cancelled` and
 /// ` failed` when they apply; the first `failures` writes fail, and write
 /// `cancel_at` cancels the observer.
 #[derive(Clone, Default)]
@@ -59,7 +59,9 @@ impl Reconcile for Log {
         let cancel = if report.cancelled { " cancelled" } else { "" };
         let failed = if landed { "" } else { " failed" };
         let mut calls = self.calls.lock().unwrap();
-        calls.push(format!("{id} {:?} {file}{cancel}{failed}", report.state));
+        let progress = report.progress.map(|p| format!(" {p}")).unwrap_or_default();
+        let state = report.state;
+        calls.push(format!("{id} {state:?} {file}{progress}{cancel}{failed}"));
         if let Some((at, token)) = &self.cancel_at
             && calls.len() == *at
         {
@@ -159,7 +161,7 @@ async fn gre_1897_a_lagged_reader_still_lands_the_retained_finish() {
     let calls = writes(at_rest(), events, 4, Log::default()).await;
     assert_eq!(
         calls,
-        "moon Printing a; moon Printing a; moon Complete a; moon Idle a"
+        "moon Printing a 20; moon Printing a 42; moon Complete a; moon Idle a"
     );
 }
 
@@ -222,6 +224,43 @@ async fn gre_1897_a_long_backlog_drops_progress_and_never_the_finish() {
     assert_eq!(calls[..2], ["moon Complete a failed", "moon Complete a"]);
     assert_eq!(calls.len(), 2 + KEPT - 1, "{calls:?}");
     assert_eq!(calls.last(), Some(&"moon Paused b"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn gre_1897_a_backlog_keeps_each_runs_evidence_and_its_highest_progress() {
+    // A run of `a` that finished behind a failed write, then a second run of
+    // `a` long enough to overflow the queue.
+    let seen = |state, progress| PrinterHostStatus {
+        progress,
+        ..status(state, "a")
+    };
+    let mut events = vec![
+        seen(Printing, Some(42.0)),
+        status(Complete, "a"),
+        status(Idle, "a"),
+    ];
+    events.push(seen(Printing, Some(90.0)));
+    for step in 0..40 {
+        events.push(seen(if step % 2 == 0 { Paused } else { Printing }, None));
+    }
+    let calls = writes(at_rest(), numbered(events), 64, failing(1)).await;
+    let calls: Vec<&str> = calls.split("; ").collect();
+    let first_run = [
+        "moon Printing a 42 failed",
+        "moon Printing a 42",
+        "moon Complete a",
+        "moon Idle a",
+    ];
+    assert_eq!(
+        calls[..4],
+        first_run,
+        "the first run's evidence is never evicted"
+    );
+    assert_eq!(calls.len(), 1 + KEPT, "{calls:?}");
+    assert!(
+        calls[4..].iter().any(|call| call.ends_with(" 90")),
+        "{calls:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]

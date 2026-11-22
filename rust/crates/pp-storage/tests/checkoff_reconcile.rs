@@ -303,6 +303,21 @@ fn gre_1897_a_cancel_near_the_end_fails_the_link_for_good() {
 }
 
 #[test]
+fn gre_1897_an_old_started_send_outlives_an_outage_and_still_finishes() {
+    let old = json!({ "created_at": "2020-01-01T00:00:00.000Z", "started": true });
+    let (fixture, owner) = watching(old);
+    assert_eq!(
+        reconcile(&owner, report(Offline, "")),
+        [],
+        "never dismissed as never run"
+    );
+    assert_eq!(link(&fixture, SENT)["state"], "watching");
+    let awaiting = changed(SENT, Change::AwaitingVerify);
+    assert_eq!(reconcile(&owner, report(Complete, FILE)), awaiting);
+    owner.shutdown().unwrap();
+}
+
+#[test]
 fn gre_1897_one_finish_moves_only_the_send_that_printed_it() {
     // `link-verify` was started by its send; `link-upload` is an upload of
     // the same file under another job, started only in the second case.

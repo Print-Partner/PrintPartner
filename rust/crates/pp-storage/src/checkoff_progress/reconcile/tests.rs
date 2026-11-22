@@ -127,6 +127,8 @@ fn gre_1897_a_link_is_stale_after_48_hours_unless_its_print_ran() {
     assert!(at("2026-11-19T11:59:59.000Z", false));
     assert!(!at("2026-11-19T12:00:00.000Z", false), "exactly 48 hours");
     assert!(!at("2026-11-19T11:00:00.000Z", true), "its print ran");
+    let started = link(json!({"created_at": "2026-11-19T11:00:00.000Z", "started": true}));
+    assert!(!stale(&started, now), "its send started the print");
     assert!(
         !at("not a time", false),
         "an unreadable time is never stale"

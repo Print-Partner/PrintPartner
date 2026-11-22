@@ -1,7 +1,8 @@
 //! Node's `reconcilePrinterCheckoff` (GRE-1897): a host status moves that
 //! host's `watching` Printer Checkoff links on, and nothing else. The rules,
-//! and the two places they differ from Node (an explicit cancel never counts
-//! as a finish; a status moves at most one send of a file), are in
+//! and the three places they differ from Node (an upload that never ran never
+//! finishes; an explicit cancel never counts as a finish; a status moves at
+//! most one send of a file), are in
 //! `docs/farm-reads.md#checkoff-reconcile`. A status that changes no link
 //! writes nothing, and no Required unit is checked off here.
 use super::links::{self, Link};
@@ -101,11 +102,14 @@ fn decide(link: &Link, report: &HostReport) -> Decision {
     }
 }
 
+/// A link over [`STALE`] old whose print never ran: never seen printing and
+/// not started by its send.
 fn stale(link: &Link, now: OffsetDateTime) -> bool {
     let created = link["created_at"]
         .as_str()
         .and_then(|at| OffsetDateTime::parse(at, &Rfc3339).ok());
-    link["saw_active"] != true && created.is_some_and(|at| now - at > STALE)
+    let ran = link["saw_active"] == true || link["started"] == true;
+    !ran && created.is_some_and(|at| now - at > STALE)
 }
 
 /// Ends the link's watch in `state` with the host's `outcome`.

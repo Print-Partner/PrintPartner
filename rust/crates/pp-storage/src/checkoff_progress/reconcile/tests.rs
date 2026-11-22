@@ -167,3 +167,66 @@ fn gre_1897_a_status_moves_one_send_of_a_shared_file_name() {
         "ambiguous"
     );
 }
+
+/// Reconciles each of `reports` in turn against `links` stored for host
+/// `moon-1`, and returns every stored link's `(id, state)`.
+fn replayed(links: Vec<Value>, reports: &[HostReport]) -> Vec<(String, String)> {
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE app_settings (tenant_id TEXT, key TEXT, value TEXT, PRIMARY KEY (tenant_id, key))",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO app_settings VALUES ('default', 'printer.checkoff_links', ?1)",
+            [Value::from(links).to_string()],
+        )
+        .unwrap();
+    let now = OffsetDateTime::parse(NOW, &Rfc3339).unwrap();
+    for (step, report) in reports.iter().enumerate() {
+        let tx = connection.transaction().unwrap();
+        reconcile(
+            &tx,
+            "default",
+            "moon-1",
+            report,
+            now + time::Duration::minutes(step as i64),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let mut states: Vec<(String, String)> = links::load(&tx, "default", NOW)
+        .unwrap()
+        .iter()
+        .map(|link| {
+            (
+                link["id"].as_str().unwrap().into(),
+                link["state"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    states.sort();
+    states
+}
+
+#[test]
+fn gre_1897_a_finish_replayed_after_offline_moves_no_second_started_link() {
+    let send = |id: &str, saw_active: bool| {
+        let mut raw = link(json!({"id": id, "started": true, "saw_active": saw_active}));
+        raw.insert("units".into(), json!([{"part_id": 1, "unit_index": 0}]));
+        Value::Object(raw)
+    };
+    let links = vec![send("older", false), send("current", true)];
+    let finish = report(Complete, "plate-a.gcode");
+    let states = replayed(links, &[finish.clone(), report(Offline, ""), finish]);
+    assert_eq!(
+        states,
+        [
+            ("current".to_owned(), "awaiting_verify".to_owned()),
+            ("older".to_owned(), "watching".to_owned()),
+        ],
+        "the replayed finish is the one `current` consumed"
+    );
+}

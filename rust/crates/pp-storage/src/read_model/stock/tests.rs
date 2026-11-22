@@ -298,6 +298,35 @@ fn an_estimated_part_makes_its_filament_estimated() {
     assert_eq!(group_need(&parts), both);
 }
 
+/// The Build's Plan override wins over the user's choice, as it does for
+/// Checkoff's deduction, and an unreadable override reads as unreadable.
+#[test]
+fn inputs_read_spoolman_for_the_build_with_its_plan_override() {
+    let store = Store::new();
+    let inputs = || read_inputs(&store.1, "default", 1).unwrap();
+    let set = |key: &str, value: &str| {
+        store.run(&format!(
+            "REPLACE INTO app_settings(tenant_id,key,value) VALUES('default','{key}','{value}')"
+        ))
+    };
+    set("feature_toggles", r#"{"spoolman":false}"#);
+    assert_eq!(inputs(), StockInputs::Off(ModuleOffReason::TurnedOff));
+    set("feature_toggles:plan:1", r#"{"spoolman":true}"#);
+    assert!(matches!(inputs(), StockInputs::On { .. }));
+    // Another Build's override does not apply to Build 1.
+    set("feature_toggles", r#"{"spoolman":true}"#);
+    set("feature_toggles:plan:1", "{}");
+    set("feature_toggles:plan:2", r#"{"spoolman":false}"#);
+    assert!(matches!(inputs(), StockInputs::On { .. }));
+    set("feature_toggles:plan:1", r#"{"spoolman":false}"#);
+    assert_eq!(inputs(), StockInputs::Off(ModuleOffReason::TurnedOff));
+    set("feature_toggles:plan:1", r#"{"spoolman":"yes"}"#);
+    assert_eq!(
+        inputs(),
+        StockInputs::Off(ModuleOffReason::SettingUnreadable)
+    );
+}
+
 #[test]
 fn inputs_read_module_state_integrations_and_measured_grams() {
     let store = Store::new();

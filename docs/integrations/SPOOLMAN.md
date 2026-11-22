@@ -54,7 +54,7 @@ Importing a color preset while Spoolman is disabled for the Plan removes its Spo
 
 ## Filament shortfalls
 
-The Rust core compares the grams a Build still needs with the grams Spoolman reports. It needs the Spoolman Module turned on; while it is off, the check reports the off reason and makes no Spoolman request.
+The Rust core compares the grams a Build still needs with the grams Spoolman reports. It needs Spoolman on for the Build: the Spoolman Module, or the Build's own feature override, which wins (GRE-1898). While it is off, the check reports the off reason and makes no Spoolman request.
 
 - **Grams needed come from past prints.** Each send records the slicer's estimate, and a finished print replaces it with the grams the printer measured (GRE-1165). Print Partner divides a send's grams by the units it printed and averages the five most recent sends with a checked-off unit of that Part. Measured sends win: a Part uses its estimated sends only when none is measured. Grams needed shows its basis: `measured`, or `estimated` while any Part relies on an estimate. A Part with no checked-off unit under a send with grams has unknown need (`grams_not_recorded` when no Part of the Build has grams, `part_not_printed` otherwise), and no shortfall is reported for its filament.
 - **Grams available come from Spoolman**, summed over the filament's unarchived spools. If Spoolman cannot be reached, does not know the filament, or a spool has no remaining weight, stock is unknown, not zero. The check reads plain `http://` Spoolman URLs only; an `https://` URL reads as unknown.

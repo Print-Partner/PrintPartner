@@ -237,15 +237,16 @@ pub enum Sufficiency {
     Unknown,
 }
 
-/// The Spoolman Module state, configured integrations and recorded grams for
-/// `profile_id`, read on the accepted-read transaction.
+/// Spoolman's state for the Build (the user's choice under its Plan
+/// override, as Checkoff's deduction reads it), configured integrations and
+/// recorded grams for `profile_id`, read on the accepted-read transaction.
 pub(super) fn read_inputs(
     connection: &Connection,
     tenant: &str,
     profile_id: i64,
 ) -> Result<StockInputs> {
     if let ModuleStatus::Off { reason, .. } =
-        modules::status_in(connection, tenant, Module::Spoolman)?
+        modules::plan_status_in(connection, tenant, Module::Spoolman, profile_id)?
     {
         return Ok(StockInputs::Off(reason));
     }

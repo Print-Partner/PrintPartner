@@ -512,7 +512,49 @@ type DeductionRow = (String, Option<String>, Option<i64>, Option<f64>, i64);
 /// one `pending` deduction for spool 7.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_spoolman_role_filament_reaches_the_shortfalls_and_a_pending_deduction() {
+    assign_read_and_burst(r#"{"spoolman":true}"#, None).await;
+}
+
+/// The same with Spoolman off for the user and on in Build 1's override:
+/// every step reads the Build's setting, as Checkoff's deduction does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_builds_spoolman_override_reaches_the_shortfalls_and_a_pending_deduction() {
+    assign_read_and_burst(r#"{"spoolman":false}"#, Some(r#"{"spoolman":true}"#)).await;
+}
+
+/// Spoolman on for the user and off in Build 1's override: the Filament
+/// section answers `module_off` and reads nothing from Spoolman.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_builds_spoolman_override_off_keeps_the_shortfalls_from_reading_spoolman() {
     let fixture = Fixture::new();
+    let served = Served::start(&fixture, None).await;
+    seed_spoolman(
+        &fixture,
+        r#"{"spoolman":true}"#,
+        Some(r#"{"spoolman":false}"#),
+    );
+    fixture
+        .sql()
+        .execute_batch(
+            "UPDATE parts SET filament_color_id='spoolman:sm-1:filament:3' WHERE profile_id=1",
+        )
+        .unwrap();
+    let (status, shortfalls) = served
+        .http(Method::GET, "/api/v2/plans/1/filament-shortfalls", None)
+        .await;
+    assert_eq!(status, 200, "{shortfalls}");
+    assert_eq!(
+        shortfalls,
+        json!({ "kind": "module_off", "module": "spoolman", "reason": "turned_off" })
+    );
+    assert_eq!(served.stock.0.load(Ordering::SeqCst), 0);
+    served.stop().await;
+}
+
+/// The user's toggles, Build 1's Plan override when `plan` is `Some`,
+/// Spoolman `sm-1`, Build 1's planning brief and 40 g over `link-verify`'s
+/// 4 units. Run after the owner opens, which migrates the fixture.
+fn seed_spoolman(fixture: &Fixture, user: &str, plan: Option<&str>) {
     let brief = json!({
         "version": 1, "build_id": 1, "special_request": "", "requirements": [],
         "evidence": [], "contributions": [], "compatibility_findings": null,
@@ -522,14 +564,16 @@ async fn a_spoolman_role_filament_reaches_the_shortfalls_and_a_pending_deduction
         "created_at": "2026-11-21T00:00:00.000Z", "updated_at": "2026-11-21T00:00:00.000Z",
     });
     let integrations = r#"[{"id":"sm-1","type":"spoolman","name":"Spoolman","config":{"base_url":"http://127.0.0.1:7912","enabled":true},"created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"}]"#;
-    // Opening the owner migrates the fixture, so seed after it.
-    let served = Served::start(&fixture, None).await;
     let sql = fixture.sql();
-    for (key, value) in [
-        ("feature_toggles", r#"{"spoolman":true}"#.to_owned()),
+    let mut settings = vec![
+        ("feature_toggles", user.to_owned()),
         ("integrations", integrations.to_owned()),
         ("build_planning.v1.1", brief.to_string()),
-    ] {
+    ];
+    if let Some(plan) = plan {
+        settings.push(("feature_toggles:plan:1", plan.to_owned()));
+    }
+    for (key, value) in settings {
         sql.execute(
             "REPLACE INTO app_settings (tenant_id,key,value) VALUES ('default',?1,?2)",
             [key, value.as_str()],
@@ -541,6 +585,13 @@ async fn a_spoolman_role_filament_reaches_the_shortfalls_and_a_pending_deduction
          VALUES ('default', 'link-verify', 40, 4, 'estimated', '2026-11-12T00:00:00.000Z');",
     )
     .unwrap();
+}
+
+async fn assign_read_and_burst(user: &str, plan: Option<&str>) {
+    let fixture = Fixture::new();
+    let served = Served::start(&fixture, None).await;
+    seed_spoolman(&fixture, user, plan);
+    let sql = fixture.sql();
     let mcp = served.mcp().await;
     let assignment = |spool: &str| {
         json!({ "plan_id": 1, "assignment": {

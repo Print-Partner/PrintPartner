@@ -223,6 +223,34 @@ pub fn checkoff(
         json!({"kind":if matches!(read,AcceptedRead::Empty{..}){"empty"}else{"ready"},"body":{"profile_id":profile_id,"summary":format!("{done}/{} parts fully printed · {printed}/{total} units",rows.len()),"parts":rows}}),
     )
 }
+/// The units each included Part of the Accepted Plan has still to print, in
+/// the Checkoff tab's order, for the units a send links (GRE-1896). A read
+/// that is not ready has none.
+#[cfg(feature = "desktop_rebuild")]
+pub fn remaining_parts(read: &AcceptedRead) -> Vec<pp_domain::sliced_objects::RemainingPart> {
+    let AcceptedRead::Ready { snapshot } = read else {
+        return Vec::new();
+    };
+    checkoff_parts(snapshot)
+        .into_iter()
+        .map(|p| pp_domain::sliced_objects::RemainingPart {
+            part_id: p.projection_part_id,
+            filename: p.filename.clone(),
+            units: p
+                .units
+                .iter()
+                .filter(|u| !u.completed)
+                .filter_map(|u| {
+                    Some(pp_domain::sliced_objects::RemainingUnit {
+                        index: u32::try_from(u.unit_index).ok()?,
+                        object_name: u.object_name.clone(),
+                    })
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// `GET /api/v2/plans/{id}/checkoff/units`, as `{ kind, body }` like
 /// [`checkoff`]: included Parts in the same order, with unit tokens and the
 /// basis a manual burst names.

@@ -381,7 +381,7 @@ impl StatusRoutes {
         )
         .merge(printer_host_router(
             self.config,
-            self.client,
+            self.client.clone(),
             Arc::new(hosts),
             snapshots,
         ))
@@ -394,6 +394,7 @@ impl StatusRoutes {
         .merge(send_queue_router(
             self.send_config,
             self.send_queue,
+            self.client,
             Arc::new(targets),
         ))
     }

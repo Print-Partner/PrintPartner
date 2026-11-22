@@ -7,8 +7,10 @@ import {
   fakeCore,
   item,
   json,
+  NO_UNITS,
   openSheet,
   printer,
+  problem,
   PRINTING,
   renderAt,
   UNREACHABLE,
@@ -248,4 +250,127 @@ describe("Production tab", () => {
       "true",
     );
   }, 15_000);
+});
+
+describe("Send a file links the Checkoff units the file prints (GRE-1896)", () => {
+  const MATCHED = {
+    file: "read",
+    unit_count: 3,
+    parts: [
+      { part_id: 11, filename: "bracket.stl", count: 2 },
+      { part_id: 12, filename: "gear.stl", count: 1 },
+    ],
+    unmatched: ["spoon.stl_id_2_copy_0"],
+    binding: "b".repeat(64),
+  } as const;
+  const addForm = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
+    writes(fetchMock)[0]![1]!.body as FormData;
+  const units = (sheet: HTMLElement) => within(sheet).getByRole("group", { name: "Checkoff units" });
+
+  it("shows the core's preview and asks Add to link the same units", async () => {
+    const previewed: string[] = [];
+    const { fetchMock } = fakeCore({
+      preview: (file) => {
+        previewed.push(file.name);
+        return json(MATCHED);
+      },
+    });
+    renderAt(fetchMock);
+    const sheet = await openSheet();
+    expect(within(units(sheet)).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "bracket.stl × 2",
+      "gear.stl × 1",
+    ]);
+    expect(units(sheet).textContent).toContain("Not matched to a unit: spoon.stl_id_2_copy_0");
+    expect(previewed).toEqual(["plate.gcode"]);
+    expect(writes(fetchMock)).toEqual([]);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
+    expect(addForm(fetchMock).get("link_checkoff")).toBe("true");
+    expect(addForm(fetchMock).get("checkoff_binding")).toBe("b".repeat(64));
+    expect(addForm(fetchMock).get("checkoff_units")).toBeNull();
+  });
+
+  it("when Add finds the units changed, reads the preview again and sends its new binding", async () => {
+    const fresh = {
+      ...MATCHED,
+      unit_count: 1,
+      parts: [{ part_id: 11, filename: "bracket.stl", count: 1 }],
+      binding: "c".repeat(64),
+    };
+    let previews = 0;
+    let refusals = 0;
+    const { fetchMock } = fakeCore({
+      preview: () => json(previews++ === 0 ? MATCHED : fresh),
+      add: () =>
+        refusals++ === 0
+          ? problem(409, "send_units_changed", "This Build's Checkoff units changed")
+          : undefined,
+    });
+    renderAt(fetchMock);
+    const sheet = await openSheet();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    expect((await within(sheet).findByRole("alert")).textContent).toMatch(/units changed/);
+    expect(await within(sheet).findByText("bracket.stl × 1")).toBeTruthy();
+    expect(previews).toBe(2);
+    expect(addForm(fetchMock).get("checkoff_binding")).toBe("b".repeat(64));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(3));
+    const second = writes(fetchMock)[1]![1]!.body as FormData;
+    expect(second.get("checkoff_binding")).toBe("c".repeat(64));
+  });
+
+  it.each([
+    [NO_UNITS, /No object in this file matches a unit still to print/],
+    [{ ...NO_UNITS, file: "unsupported" }, /uses a compression or encoding the core does not decode/],
+    [{ ...NO_UNITS, file: "unreadable" }, /This binary G-code file is damaged/],
+    [{ ...NO_UNITS, file: "too_many_objects" }, /names more than 10,000 objects/],
+    [{ ...NO_UNITS, file: "too_many_units" }, /more units than one send can link/],
+  ])("says when a file links no units (%o)", async (answer, text) => {
+    const { fetchMock } = fakeCore({ preview: () => json(answer) });
+    renderAt(fetchMock);
+    const sheet = await openSheet("plate.bgcode");
+    expect(units(sheet).textContent).toMatch(text);
+    expect(units(sheet).textContent).toContain("records no filament grams");
+  });
+
+  it("when the preview fails, says so and Add asks for no units", async () => {
+    const { fetchMock } = fakeCore({ preview: () => problem(503, "busy", "Storage is busy") });
+    renderAt(fetchMock);
+    const sheet = await openSheet();
+    expect(within(units(sheet)).getByRole("alert").textContent).toMatch(
+      /Could not match this file to the Build's Checkoff units: Storage is busy/,
+    );
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
+    expect(addForm(fetchMock).get("link_checkoff")).toBeNull();
+  });
+
+  it("aborts a preview still running when another file is chosen or the sheet closes", async () => {
+    const signals: AbortSignal[] = [];
+    const { fetchMock } = fakeCore({
+      preview: (file, signal) => {
+        signals.push(signal);
+        return file.name === "second.gcode" ? json(MATCHED) : new Promise<Response>(() => {});
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Send a file" }));
+    const sheet = await screen.findByRole("dialog", { name: "Send a file" });
+    const choose = (name: string) =>
+      fireEvent.change(within(sheet).getByLabelText("Sliced file"), {
+        target: { files: [new File(["G28\n"], name)] },
+      });
+    choose("first.gcode");
+    await waitFor(() => expect(signals).toHaveLength(1));
+    choose("second.gcode");
+    await waitFor(() => expect(signals[0]!.aborted).toBe(true));
+    expect(await within(sheet).findByText("bracket.stl × 2")).toBeTruthy();
+    choose("third.gcode");
+    await waitFor(() => expect(signals).toHaveLength(3));
+    expect(signals[2]!.aborted).toBe(false);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(signals[2]!.aborted).toBe(true));
+    expect(writes(fetchMock)).toEqual([]);
+  });
 });

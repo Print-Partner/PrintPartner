@@ -2,6 +2,7 @@
 //! `enqueuePrinterSend`. Adding only writes a `queued` row for a file the
 //! route already staged; nothing is sent until Send now or Send ready.
 
+use super::super::units::{LinkedUnits, SendUnits, StaleUnits, still_current};
 use super::{Reply, farm_refusal, item};
 use crate::read_model::{farm::iso_time, views::js_trim};
 use anyhow::{Result, anyhow};
@@ -21,10 +22,22 @@ pub struct NewItem {
     start: bool,
     /// Normalized `checkoff_units` as JSON text.
     units: String,
+    /// The preview binding the form sent with `link_checkoff` and no
+    /// `checkoff_units` of its own: the route links the units the file
+    /// prints, and only while they are still the units that preview named.
+    link_checkoff: Option<String>,
+    /// The units [`NewItem::link`] linked, checked again inside Add's write.
+    linked: Option<Box<SendUnits>>,
 }
 
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
 const NO_PLAN: &str = "Pick a plan to bind this send (profile_id required)";
+pub const BAD_UNITS: &str = "checkoff_units must be a JSON array of at most 64 KiB";
+const TOO_MANY_UNITS: &str =
+    "checkoff_units links more units than one send can carry (1,000 units in 48 KiB)";
+/// The route's text for the same refusal before its write.
+pub const UNITS_CHANGED: &str = "This Build's Checkoff units changed since the file was read. Check the units, then send again.";
+const NO_BINDING: &str = "link_checkoff needs the checkoff_binding its preview answered";
 
 impl NewItem {
     /// Node's `parsePrinterUploadMultipart` with the queue fields, then the
@@ -34,7 +47,8 @@ impl NewItem {
         fields: &[(String, String)],
         file: Option<Option<&str>>,
     ) -> Result<Self, &'static str> {
-        let (mut printer_id, mut plan, mut units) = ("", None, "");
+        let (mut printer_id, mut plan, mut units) = ("", None, None);
+        let (mut link_checkoff, mut binding) = (false, "");
         let (mut start, mut wait_for_idle, mut matched) = (false, true, "pinned");
         for (name, value) in fields {
             let lower = value.to_lowercase();
@@ -48,7 +62,9 @@ impl NewItem {
                     _ => {}
                 },
                 "profile_id" | "plan_id" => plan = positive(value).or(plan),
-                "checkoff_units" => units = value,
+                "checkoff_units" => units = Some(value.as_str()),
+                "link_checkoff" => link_checkoff = matches!(lower.as_str(), "1" | "true" | "yes"),
+                "checkoff_binding" => binding = js_trim(value),
                 _ => {}
             }
         }
@@ -70,6 +86,24 @@ impl NewItem {
         if filename.is_empty() {
             return Err("Could not enqueue item");
         }
+        // Only an omitted field means no units. A blank or broken one is refused rather
+        // than stored as none; the route refuses a field cut at the form's limit first.
+        let explicit = units.is_some();
+        let units = match units.map(str::trim) {
+            Some(raw) => match serde_json::from_str::<Value>(raw) {
+                Ok(Value::Array(units)) => checkoff_units(&units),
+                _ => return Err(BAD_UNITS),
+            },
+            None => checkoff_units(&[]),
+        };
+        if !units.fits() {
+            return Err(TOO_MANY_UNITS);
+        }
+        let link_checkoff = match (link_checkoff && !explicit, binding) {
+            (false, _) => None,
+            (true, "") => return Err(NO_BINDING),
+            (true, binding) => Some(binding.to_owned()),
+        };
         Ok(Self {
             printer_id: printer_id.to_owned(),
             filename,
@@ -77,8 +111,32 @@ impl NewItem {
             matched,
             wait_for_idle,
             start,
-            units: checkoff_units(units),
+            link_checkoff,
+            linked: None,
+            units: units.json,
         })
+    }
+
+    /// The Build this send is bound to.
+    pub fn plan(&self) -> i64 {
+        self.plan
+    }
+
+    /// Whether the route should link the units the file prints, read from the
+    /// staged file by [`super::super::units::send_units`].
+    pub fn links_checkoff(&self) -> bool {
+        self.link_checkoff.is_some()
+    }
+
+    /// Links the units `linked` names, when they are still the units the
+    /// preview named: `linked` was read now, from the bytes being queued.
+    pub fn link(&mut self, linked: &SendUnits) -> Result<(), StaleUnits> {
+        if self.link_checkoff.as_deref() != Some(linked.binding.as_str()) {
+            return Err(StaleUnits);
+        }
+        self.units = linked.json.clone();
+        self.linked = Some(Box::new(linked.clone()));
+        Ok(())
     }
 
     /// The name the staged file gets on disk, Node's
@@ -120,19 +178,19 @@ fn positive(value: &str) -> Option<i64> {
 }
 
 /// Node's `parseCheckoffUnits`: the valid units of a JSON array, each
-/// `part_id:unit_index` once; anything else is no units.
-fn checkoff_units(raw: &str) -> String {
-    let units: Vec<Value> = match serde_json::from_str(raw) {
-        Ok(Value::Array(units)) => units,
-        _ => Vec::new(),
-    };
+/// `part_id:unit_index` once, with object names trimmed and cut at 200
+/// UTF-16 units on a whole character.
+pub(crate) fn checkoff_units(units: &[Value]) -> LinkedUnits {
     let mut seen = HashSet::new();
     let units: Vec<Value> = units
         .iter()
         .filter_map(super::super::unit)
         .filter(|unit| seen.insert((unit["part_id"].clone(), unit["unit_index"].clone())))
         .collect();
-    Value::Array(units).to_string()
+    LinkedUnits {
+        count: units.len(),
+        json: Value::Array(units).to_string(),
+    }
 }
 
 /// Writes `new` as the queue's last `queued` item, after the Plan exists and
@@ -154,6 +212,15 @@ pub(super) fn add(
     }
     if let Some(refusal) = farm_refusal(tx, tenant, Some(new.plan))? {
         return Ok(refusal);
+    }
+    if let Some(linked) = &new.linked
+        && !still_current(tx, tenant, new.plan, linked)?
+    {
+        return Ok(Reply::Refused {
+            status: 409,
+            detail: UNITS_CHANGED,
+            code: Some("send_units_changed"),
+        });
     }
     let id = crate::checkoff_progress::links::uuid();
     let now = iso_time(SystemTime::now());
@@ -280,5 +347,68 @@ mod tests {
             units,
             serde_json::json!([{ "part_id": 4, "unit_index": 0, "object_name": "A" }])
         );
+    }
+
+    #[test]
+    fn gre_1896_units_that_are_blank_or_not_a_json_array_are_refused() {
+        let cut = format!(
+            r#"[{{"part_id":4,"unit_index":0,"object_name":"{}"#,
+            "x".repeat(64)
+        );
+        for raw in ["{}", "nope", cut.as_str(), "", "   "] {
+            let form = fields(&[
+                ("printer_id", "p"),
+                ("profile_id", "2"),
+                ("checkoff_units", raw),
+            ]);
+            assert_eq!(
+                NewItem::parse(&form, Some(Some("a.gcode"))),
+                Err(super::BAD_UNITS),
+                "{raw:?}"
+            );
+        }
+        let form = fields(&[("printer_id", "p"), ("profile_id", "2")]);
+        assert_eq!(
+            NewItem::parse(&form, Some(Some("a.gcode"))).unwrap().units,
+            "[]"
+        );
+    }
+
+    #[test]
+    fn gre_1896_explicit_units_one_send_cannot_carry_are_refused() {
+        let units: Vec<String> = (0..1001)
+            .map(|i| format!(r#"{{"part_id":4,"unit_index":{i}}}"#))
+            .collect();
+        let raw = format!("[{}]", units.join(","));
+        let form = fields(&[
+            ("printer_id", "p"),
+            ("profile_id", "2"),
+            ("checkoff_units", &raw),
+        ]);
+        assert_eq!(
+            NewItem::parse(&form, Some(Some("a.gcode"))),
+            Err(super::TOO_MANY_UNITS)
+        );
+    }
+
+    #[test]
+    fn gre_1896_link_checkoff_needs_its_binding_and_no_explicit_units() {
+        let parse = |pairs: &[(&str, &str)]| {
+            let mut form = vec![("printer_id", "p"), ("profile_id", "2")];
+            form.extend_from_slice(pairs);
+            NewItem::parse(&fields(&form), Some(Some("a.gcode"))).map(|item| item.links_checkoff())
+        };
+        assert_eq!(
+            parse(&[("link_checkoff", "1"), ("checkoff_binding", "b")]),
+            Ok(true)
+        );
+        assert_eq!(parse(&[("link_checkoff", "1")]), Err(super::NO_BINDING));
+        assert_eq!(
+            parse(&[("link_checkoff", "0"), ("checkoff_binding", "b")]),
+            Ok(false)
+        );
+        assert_eq!(parse(&[]), Ok(false));
+        let explicit = [("link_checkoff", "1"), ("checkoff_units", "[]")];
+        assert_eq!(parse(&explicit), Ok(false));
     }
 }

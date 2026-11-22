@@ -1,7 +1,12 @@
-import type { FarmPrinterList, Health, SendQueue } from "@print-partner/rust-client";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import type {
+  FarmPrinterList,
+  Health,
+  SendQueue,
+  SendUnitsPreview,
+} from "@print-partner/rust-client";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 
@@ -86,6 +91,17 @@ export const item = (id: string, overrides: Partial<Item> = {}): Item => ({
   ...overrides,
 });
 
+/** The core's preview for a file with no labels. */
+export const NO_UNITS: SendUnitsPreview = {
+  file: "read",
+  unit_count: 0,
+  parts: [],
+  unmatched: [],
+  binding: "0".repeat(64),
+};
+
+export const PREVIEW_PATH = "/api/v2/printer-send-queue/checkoff-preview";
+
 type Answer = Response | Promise<Response>;
 type Route = (path: string, init: RequestInit | undefined) => Answer | undefined;
 
@@ -95,10 +111,12 @@ const itemId = (path: string, suffix: string) =>
 
 /** Add: queues the form's file as a `queued` item. */
 const addRoute =
-  (queue: Item[], next: () => string): Route =>
+  (queue: Item[], next: () => string, add?: (form: FormData) => Answer | undefined): Route =>
   (path, init) => {
     if (path !== "/api/v2/printer-send-queue" || init?.method !== "POST") return undefined;
     const form = init.body as FormData;
+    const refused = add?.(form);
+    if (refused) return refused;
     const added = item(next(), {
       printer_id: String(form.get("printer_id")),
       start: form.get("start") === "true",
@@ -156,19 +174,25 @@ export function fakeCore({
   farm = "on",
   printers = [printer("p1", "Micron", READY)],
   items = [] as Item[],
+  preview = () => json(NO_UNITS),
+  add,
   dispatch,
   reconcile,
 }: {
   farm?: "on" | "off";
   printers?: Printer[];
   items?: Item[];
+  /** Answers each preview, given the chosen file and the request's abort signal. */
+  preview?: (file: File, signal: AbortSignal) => Answer;
+  /** Answers Add instead of queuing, when it returns an answer. */
+  add?: (form: FormData) => Answer | undefined;
   dispatch?: (id: string) => Answer;
   reconcile?: (id: string) => Answer;
 } = {}) {
   const queue = items.map((i) => ({ ...i }));
   let next = 1;
   const writeRoutes = [
-    addRoute(queue, () => `q${next++}`),
+    addRoute(queue, () => `q${next++}`, add),
     sendNowRoute(queue, dispatch),
     removeRoute(queue),
     reconcileRoute(queue, reconcile),
@@ -176,6 +200,11 @@ export function fakeCore({
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === "/health") return json(health(farm));
     if (path === "/api/v2/printers") return json({ printers });
+    if (path === PREVIEW_PATH && init?.method === "POST") {
+      const form = init.body as FormData;
+      if (form.get("profile_id") !== "2") return problem(400, "bad_preview");
+      return preview(form.get("file") as File, init.signal!);
+    }
     if (path === "/api/v2/printer-send-queue" && !init?.method) {
       const answer = { items: queue.map((i) => ({ ...i })) };
       for (const i of queue) if (i.state === "sending") i.state = "done";
@@ -203,18 +232,23 @@ export function renderAt(fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) {
   render(<App router={router} queryClient={queryClient} />);
 }
 
+/** Requests that write: the preview is a POST but writes nothing. */
 export const writes = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
-  fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== "GET");
+  fetchMock.mock.calls.filter(
+    ([path, init]) => init?.method && init.method !== "GET" && path !== PREVIEW_PATH,
+  );
 
-export async function openSheet(file = "plate.gcode", printerName = "Micron") {
+export async function openSheet(file = "plate.gcode", printerName = "Micron", gcode = "G28\n") {
   fireEvent.click(await screen.findByRole("button", { name: "Send a file" }));
   const sheet = await screen.findByRole("dialog", { name: "Send a file" });
   fireEvent.change(within(sheet).getByLabelText("Sliced file"), {
-    target: { files: [new File(["G28\n"], file)] },
+    target: { files: [new File([gcode], file)] },
   });
   const select = within(sheet).getByLabelText<HTMLSelectElement>("Printer");
   await within(sheet).findByRole("option", { name: printerName });
   const option = within(sheet).getByRole<HTMLOptionElement>("option", { name: printerName });
   fireEvent.change(select, { target: { value: option.value } });
+  // Send waits until the core's preview of the file's Checkoff units answers.
+  await waitFor(() => expect(within(sheet).queryByText(/Reading the objects/)).toBeNull());
   return sheet;
 }

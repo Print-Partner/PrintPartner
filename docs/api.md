@@ -252,6 +252,7 @@ PATCH  /integrations/:id
 POST   /integrations/:id/test
 GET    /integrations/:id/status
 POST   /printer-send-queue
+POST   /printer-send-queue/checkoff-preview
 ```
 
 Printer fleet entries describe planning geometry. Integration records hold the host connection and capability configuration. Link the two instead of placing secrets on a fleet entry.

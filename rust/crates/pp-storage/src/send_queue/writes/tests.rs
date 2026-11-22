@@ -938,3 +938,163 @@ fn ticket_t_26_dispatch_accepts_object_names_node_bounds_in_utf16_units() {
 }
 
 mod upload_only;
+
+/// Add with `link_checkoff` for `gcode` against Build 7's `parts`, then
+/// Send now: the units Add stored and the printer-upload job's units.
+fn link_add_dispatch(
+    queue: &Harness,
+    printer: &str,
+    parts: &[pp_domain::sliced_objects::RemainingPart],
+    gcode: &str,
+) -> (crate::send_queue::units::SendUnits, Value) {
+    let linked = crate::send_queue::units::link_parts(7, None, parts, gcode.as_bytes());
+    let form: Vec<(String, String)> = [
+        ("printer_id", printer),
+        ("profile_id", "7"),
+        ("link_checkoff", "true"),
+        ("checkoff_binding", linked.binding.as_str()),
+    ]
+    .iter()
+    .map(|(k, v)| ((*k).into(), (*v).into()))
+    .collect();
+    let mut item = NewItem::parse(&form, Some(Some("plate.gcode"))).unwrap();
+    item.link(&linked).unwrap();
+    let Reply::Item(added) = queue.apply(Request::Add {
+        item,
+        artifact_path: "/data/exports/printer-uploads/a/plate.gcode".into(),
+        host_name: "Micron".into(),
+    }) else {
+        panic!("Add refused")
+    };
+    let job = queue.dispatch(added["id"].as_str().unwrap());
+    let (state, document) = queue.job(&job);
+    assert_eq!(state, "queued");
+    (
+        linked,
+        document["payload"]["payload"]["checkoff_units"].clone(),
+    )
+}
+
+fn bracket_units(
+    count: u32,
+    name: impl Fn(u32) -> String,
+) -> Vec<pp_domain::sliced_objects::RemainingPart> {
+    vec![pp_domain::sliced_objects::RemainingPart {
+        part_id: 11,
+        filename: "bracket.stl".into(),
+        units: (0..count)
+            .map(|index| pp_domain::sliced_objects::RemainingUnit {
+                index,
+                object_name: name(index),
+            })
+            .collect(),
+    }]
+}
+
+#[test]
+fn gre_1896_linked_units_reach_a_valid_printer_upload_job() {
+    let queue = Harness::open();
+    queue.seed(&[]);
+    queue
+        .database()
+        .execute(
+            "INSERT INTO build_profiles(id,tenant_id,name) VALUES(7,?1,'Linked')",
+            [&queue.tenant],
+        )
+        .unwrap();
+    // 300 Required-unit names: at 100 characters they fit one send; at 199
+    // they would pass 64 KiB, so the send links none and still dispatches.
+    for (length, linked_count) in [(100, 300), (199, 0)] {
+        let name = |index: u32| format!("{}{index:03}", "b".repeat(length - 3));
+        let gcode: String = (0..300)
+            .map(|i| format!("EXCLUDE_OBJECT_DEFINE NAME={}\n", name(i)))
+            .collect();
+        let printer = format!("p-{length}");
+        let (linked, job_units) =
+            link_add_dispatch(&queue, &printer, &bracket_units(300, name), &gcode);
+        assert_eq!(linked.count, linked_count, "{length}");
+        assert_eq!(
+            job_units.as_array().unwrap().len(),
+            linked_count,
+            "{length}"
+        );
+        if linked_count == 0 {
+            assert_eq!(
+                linked.file,
+                crate::send_queue::units::FileRead::TooManyUnits
+            );
+        }
+    }
+    // A control character in a label is dropped from the stored name, which
+    // the job would refuse.
+    let (linked, job_units) = link_add_dispatch(
+        &queue,
+        "p-tab",
+        &bracket_units(1, |_| String::new()),
+        ";MESH:bracket\t.stl\n",
+    );
+    assert_eq!(linked.count, 1);
+    assert_eq!(
+        job_units,
+        json!([{"part_id": 11, "unit_index": 0, "object_name": "bracket.stl"}])
+    );
+}
+
+#[test]
+fn gre_1896_add_rechecks_linked_units_inside_its_write() {
+    let queue = Harness::open();
+    queue.seed(&[]);
+    let sql = queue.database();
+    sql.execute(
+        "INSERT INTO build_profiles(id,tenant_id,name) VALUES(7,?1,'Linked')",
+        [&queue.tenant],
+    )
+    .unwrap();
+    let parts = bracket_units(2, |_| String::new());
+    let linked = crate::send_queue::units::link_parts(7, None, &parts, b";MESH:bracket.stl\n");
+    let form: Vec<(String, String)> = [
+        ("printer_id", "p1"),
+        ("profile_id", "7"),
+        ("link_checkoff", "true"),
+        ("checkoff_binding", linked.binding.as_str()),
+    ]
+    .iter()
+    .map(|(k, v)| ((*k).into(), (*v).into()))
+    .collect();
+    let mut item = NewItem::parse(&form, Some(Some("plate.gcode"))).unwrap();
+    item.link(&linked).unwrap();
+    // bracket.stl unit 1 is checked off after the route read the units.
+    sql.execute(
+        "INSERT INTO parts(id,tenant_id,profile_id,match_key) VALUES(11,?1,7,'bracket.stl')",
+        [&queue.tenant],
+    )
+    .unwrap();
+    sql.execute(
+        "INSERT INTO print_progress(tenant_id,part_id,unit_index,completed) VALUES(?1,11,0,1)",
+        [&queue.tenant],
+    )
+    .unwrap();
+    let before: i64 = sql
+        .query_row("SELECT count(*) FROM printer_send_queue", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        queue.apply(Request::Add {
+            item,
+            artifact_path: "/data/exports/printer-uploads/a/plate.gcode".into(),
+            host_name: "Micron".into(),
+        }),
+        Reply::Refused {
+            status: 409,
+            detail: UNITS_CHANGED,
+            code: Some("send_units_changed"),
+        }
+    );
+    let after: i64 = sql
+        .query_row("SELECT count(*) FROM printer_send_queue", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, before);
+}

@@ -122,6 +122,37 @@ fn gre_1896_a_name_several_readers_match_counts_once() {
 }
 
 #[test]
+fn gre_1912_a_quoted_m486_label_with_a_space_is_one_name() {
+    let proposal = propose_units(
+        &names("M486 S0 A\"Knob Blue.stl\""),
+        &[part(11, "Knob Blue.stl", &[0]), part(12, "Knob.stl", &[0])],
+    );
+    assert_eq!(coordinates(&proposal), [(11, 0, "Knob Blue.stl")]);
+    assert!(proposal.unmatched.is_empty());
+    assert_eq!(names("M486 S0 A\"Knob Blue.stl\"\n"), ["Knob Blue.stl"]);
+    assert_eq!(names("M486 S0 A\"Knob A Blue.stl\"\n"), ["Knob A Blue.stl"]);
+    let text = [
+        "M486 S0 A\"Knob Blue.stl\"",
+        "M486 S1 Aspacer.stl",
+        "M486 A2",
+    ]
+    .join("\n");
+    assert_eq!(names(&text), ["Knob Blue.stl", "spacer.stl"]);
+}
+
+#[test]
+fn gre_1912_5001_quoted_m486_labels_with_spaces_are_read_in_order() {
+    let text: String = (0..5_001)
+        .map(|i| format!("M486 S{i} A\"part{i} blue.stl\"\n"))
+        .collect();
+    let expected: Vec<String> = (0..5_001).map(|i| format!("part{i} blue.stl")).collect();
+    assert!(
+        names(&text) == expected,
+        "not the 5,001 labels in file order"
+    );
+}
+
+#[test]
 fn gre_1896_more_distinct_objects_than_the_cap_is_reported() {
     let labels: String = (0..=MAX_NAMES)
         .map(|i| format!(";MESH:part_{i}.stl\n"))

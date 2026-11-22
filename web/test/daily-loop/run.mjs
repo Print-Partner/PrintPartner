@@ -7,23 +7,27 @@
 // It checks the test titles against the steps table and writes the synthetic Node
 // installation (`npm run fixture:synthetic`, seed 1138) into a new temporary folder. It
 // builds the Rust-only image from Dockerfile.rust at HEAD and creates a Docker network for
-// the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs)
-// and the image on a new volume with the run command from docs/docker.md. It creates a
-// second, empty volume for Step 2's import (installation.mjs). It checks that the container
-// reaches the simulator and that both publish ports on host loopback only, then runs the
-// twelve Playwright tests. Whether the run passed, failed or was stopped, it removes the
-// containers (product, importer and simulator), both volumes, the image tag, the network,
-// the Node installation's folder and the simulator's API key folder it created.
+// the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs),
+// the Spoolman stand-in as `pp-spoolman` (spoolman.mjs) and the image on a new volume with
+// the run command from docs/docker.md. It creates a second, empty volume for Step 2's
+// import (installation.mjs). It checks that the container reaches the simulator and the
+// stand-in and that all three publish ports on host loopback only, then runs the twelve
+// Playwright tests. Whether the run passed, failed or was stopped, it removes the
+// containers (product, importer, simulator and stand-in), both volumes, the image tag, the
+// network, the Node installation's folder and the simulator's API key folder it created.
 //
 // The tests read the simulator from these variables:
 //   PP_DAILY_LOOP_SIMULATOR        its container; `docker port` names its control port
 //   PP_DAILY_LOOP_PRINTER_URL      the printer's address inside the product container
 //   PP_DAILY_LOOP_PRINTER_KEY_FILE a host file holding the printer's API key
+// Step 11 reads the Spoolman stand-in from these:
+//   PP_DAILY_LOOP_SPOOLMAN         its container; `docker port` names its control port
+//   PP_DAILY_LOOP_SPOOLMAN_URL     its address inside the product container
 // and Step 2's import from these:
 //   PP_DAILY_LOOP_NODE_INSTALLATION the synthetic Node installation's host folder
 //   PP_DAILY_LOOP_IMAGE, PP_DAILY_LOOP_NETWORK, PP_DAILY_LOOP_IMPORTER and
 //   PP_DAILY_LOOP_IMPORT_VOLUME     what Step 2 starts the importer and the new container from
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -43,9 +47,9 @@ import {
   simulatorRunArgs,
   withKeyFile,
 } from "./simulator.mjs";
+import { createRunner, teardown } from "./runner.mjs";
+import { SPOOLMAN_ALIAS, SPOOLMAN_PORT, SPOOLMAN_URL, spoolmanRunArgs } from "./spoolman.mjs";
 import {
-  cleanupCommands,
-  leftoverLists,
   productRunArgs,
   runNames,
   SYNTHETIC_SEED,
@@ -57,41 +61,18 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding:
 // Unique per run: another run on this machine keeps its own containers, volume, network and tag.
 const name = `pp-daily-loop-${randomBytes(4).toString("hex")}`;
 const names = runNames(name);
-const { image, simulator } = names;
+const { image, simulator, spoolman } = names;
 
 // A stop ends the running command, starts no other, and still runs the cleanup below.
-let child;
-let stopped = false;
-const stop = (signal) => {
-  stopped = true;
-  if (!child?.group) child?.kill(signal);
-  else {
-    try {
-      process.kill(-child.pid, signal);
-    } catch {
-      // The group has already exited.
-    }
-  }
-};
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
+// runner.mjs says how: a command that asks Docker to create something is left to finish.
+const runner = createRunner({ cwd: root });
+const { run } = runner;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => runner.stop(signal));
 // npm runs this with `exec`, so a signal sent to npm reaches this process. If the parent
 // dies without passing one on (killed with SIGKILL, say), this process is reparented:
 // stop as if it sent SIGTERM.
 const parent = process.ppid;
-setInterval(() => process.ppid !== parent && !stopped && stop("SIGTERM"), 1000).unref();
-
-/**
- * Runs a command with this terminal's output; resolves to its exit code. With `group`, the
- * command leads a new process group and a stop signals the whole group: `npm run` does not
- * pass a signal on to the script it started.
- */
-const run = (command, args, { group = false, ...options } = {}) =>
-  new Promise((done) => {
-    child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
-    child.group = group;
-    child.on("error", () => done(1));
-    child.on("close", (code) => done(code ?? 1));
-  });
+setInterval(() => process.ppid !== parent && !runner.stopped && runner.stop("SIGTERM"), 1000).unref();
 
 const docker = (args, options = {}) =>
   spawnSync("docker", args, { encoding: "utf8", timeout: 30_000, ...options });
@@ -104,7 +85,7 @@ const inspect = (container, format) => docker(["inspect", "--format", format, co
  */
 async function checkSimulator(keyFile) {
   let ready = false;
-  for (let tries = 0; tries < 60 && !ready && !stopped; tries++) {
+  for (let tries = 0; tries < 60 && !ready && !runner.stopped; tries++) {
     if (inspect(simulator, "{{.State.Running}}") !== "true") return "the simulator stopped";
     ready = /"control_port":\d+/.test(docker(["logs", simulator]).stdout);
     if (!ready) await delay(500);
@@ -138,6 +119,35 @@ async function checkSimulator(keyFile) {
 }
 
 /**
+ * The same checks for the Spoolman stand-in: it is up, it publishes on host loopback only,
+ * and the product container reaches SPOOLMAN_URL. Returns the first problem, or null.
+ */
+async function checkSpoolman() {
+  let ready = false;
+  for (let tries = 0; tries < 60 && !ready && !runner.stopped; tries++) {
+    if (inspect(spoolman, "{{.State.Running}}") !== "true") return "the Spoolman stand-in stopped";
+    ready = /"control_port":\d+/.test(docker(["logs", spoolman]).stdout);
+    if (!ready) await delay(500);
+  }
+  if (!ready) return "the Spoolman stand-in did not start in 30 s";
+  const off = publishedOffLoopback(JSON.parse(inspect(spoolman, "{{json .NetworkSettings.Ports}}")));
+  if (off.length > 0) return `${spoolman} publishes off host loopback: ${off.join(", ")}`;
+  const address = inspect(spoolman, `{{(index .NetworkSettings.Networks "${name}").IPAddress}}`);
+  if (!isPrivateIPv4(address)) return `${SPOOLMAN_ALIAS} has ${address || "no"} address, not RFC 1918`;
+  const probe = docker(["exec", name, "bash", "-c", [
+    `exec 3<>/dev/tcp/${SPOOLMAN_ALIAS}/${SPOOLMAN_PORT}`,
+    String.raw`printf 'GET /api/v1/info HTTP/1.0\r\nHost: ${SPOOLMAN_ALIAS}\r\n\r\n' >&3`,
+    "cat <&3",
+  ].join("\n")]);
+  const answer = parseAnswer(probe.stdout);
+  if (answer.status !== 200) {
+    return `the container did not reach ${SPOOLMAN_URL}/api/v1/info: ${answer.status ?? probe.stderr.trim()}`;
+  }
+  console.log(`The container reached ${SPOOLMAN_URL} (${address}); its port is published on 127.0.0.1 only.`);
+  return null;
+}
+
+/**
  * The Node generator opens its database with better-sqlite3. `npm ci --ignore-scripts`, as
  * daily-loop.yml runs it, installs no binding the package does not ship prebuilt, so build
  * one here when it is missing. The package's own build script runs where `npm rebuild`
@@ -150,7 +160,7 @@ async function ensureBetterSqlite() {
   console.log("better-sqlite3 has no native binding; building it.");
   const build = ["run", "build-release", "--prefix", "node_modules/better-sqlite3"];
   const code = await run("npm", build, { cwd: web, group: true });
-  if (code !== 0 || stopped) return code || 1;
+  if (code !== 0 || runner.stopped) return code || 1;
   return spawnSync(process.execPath, probe, { cwd: web, stdio: "inherit" }).status ?? 1;
 }
 
@@ -161,10 +171,10 @@ async function ensureBetterSqlite() {
  */
 async function writeNodeInstallation(dir) {
   const code = await ensureBetterSqlite();
-  if (code !== 0 || stopped) return code || 1;
+  if (code !== 0 || runner.stopped) return code || 1;
   const args = ["run", "fixture:synthetic", "--", "--seed", String(SYNTHETIC_SEED), dir];
   const written = await run("npm", args, { cwd: resolve(root, "web"), group: true });
-  if (written !== 0 || stopped) return written || 1;
+  if (written !== 0 || runner.stopped) return written || 1;
   const open = (path) => {
     const stat = statSync(path);
     chmodSync(path, stat.mode | (stat.isDirectory() ? 0o055 : 0o044));
@@ -175,9 +185,10 @@ async function writeNodeInstallation(dir) {
 }
 
 async function suite(keyFile, nodeDir) {
-  const tests = ["steps", "simulator", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
+  const tests = ["steps", "simulator", "spoolman", "runner", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
   const steps = [
-    [process.execPath, ["--test", ...tests]],
+    // Exits when the tests end, so a listener a test leaves open fails the test, not the run.
+    [process.execPath, ["--test", "--test-force-exit", ...tests]],
     [null, () => writeNodeInstallation(nodeDir)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],
@@ -191,17 +202,28 @@ async function suite(keyFile, nodeDir) {
         user: `${process.getuid()}:${process.getgid()}`,
       }),
     ],
+    [
+      "docker",
+      spoolmanRunArgs({
+        container: spoolman,
+        network: name,
+        image: nodeImage(),
+        user: `${process.getuid()}:${process.getgid()}`,
+      }),
+    ],
     ["docker", ["volume", "create", names.volume]],
     // Step 2 imports into this one; the import accepts only an empty folder.
     ["docker", ["volume", "create", names.importVolume]],
     ["docker", productRunArgs(names)],
   ];
   for (const [command, args] of steps) {
-    const code = command ? await run(command, args) : await args();
-    if (code !== 0 || stopped) return code || 1;
+    // Each `docker` command here except the build asks Docker to create something.
+    const settle = command === "docker" && args[0] !== "build";
+    const code = command ? await run(command, args, { settle }) : await args();
+    if (code !== 0 || runner.stopped) return code || 1;
   }
-  const problem = await checkSimulator(keyFile);
-  if (problem || stopped) {
+  const problem = (await checkSimulator(keyFile)) ?? (runner.stopped ? null : await checkSpoolman());
+  if (problem || runner.stopped) {
     if (problem) console.error(`Harness: ${problem}.`);
     return 1;
   }
@@ -217,6 +239,8 @@ async function suite(keyFile, nodeDir) {
       PP_DAILY_LOOP_SIMULATOR: simulator,
       PP_DAILY_LOOP_PRINTER_URL: PRINTER_URL,
       PP_DAILY_LOOP_PRINTER_KEY_FILE: keyFile,
+      PP_DAILY_LOOP_SPOOLMAN: spoolman,
+      PP_DAILY_LOOP_SPOOLMAN_URL: SPOOLMAN_URL,
       PP_DAILY_LOOP_NODE_INSTALLATION: nodeDir,
       PP_DAILY_LOOP_IMAGE: image,
       PP_DAILY_LOOP_NETWORK: names.network,
@@ -234,31 +258,23 @@ try {
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
   code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(nodeRoot, "node")));
-  if (stopped) code ||= 1;
+  if (runner.stopped) code ||= 1;
 } finally {
-  // Only what this run created, by its unique name. A docker command the tests started just
-  // before a stop can still create its container after the first pass, so look again.
-  let left = [];
-  for (let pass = 0; pass < 3; pass++) {
-    if (pass > 0) await delay(2000);
-    for (const args of cleanupCommands(names)) spawnSync("docker", args, { stdio: "ignore" });
-    rmSync(nodeRoot, { recursive: true, force: true });
-    left = leftoverLists(name)
-      .filter((list) => {
-        const listed = spawnSync("docker", list, { encoding: "utf8" });
-        return listed.status !== 0 || listed.stdout.trim() !== "";
-      })
-      .map((list) => `docker ${list.join(" ")}`);
-    if (existsSync(nodeRoot)) left.push(`ls ${nodeRoot}`);
-    if (left.length === 0) break;
-  }
+  // Only what this run created, by its unique name. After a stop, a `docker` command the
+  // tests started can still create its container after an empty listing (runner.mjs).
+  const left = await teardown(names, {
+    folder: nodeRoot,
+    removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
+    exists: existsSync,
+    confirm: runner.stopped,
+  });
   if (left.length > 0) {
     console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;
   } else {
     const { importer, importVolume } = names;
     console.log(
-      `Removed containers ${name}, ${importer} and ${simulator}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
+      `Removed containers ${name}, ${importer}, ${simulator} and ${spoolman}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
     );
   }
 }

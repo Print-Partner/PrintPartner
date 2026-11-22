@@ -3,10 +3,12 @@
 //! and `confirm_apply`, served over loopback TCP with the HTTP Checkoff routes
 //! from one storage owner, on a disposable copy of a real SQLite fixture.
 //! Covers replay and reconciliation by action id across a restart, the
-//! operation lookup route, and an undo refused after a later burst.
+//! operation lookup route, and an undo refused after a later burst. GRE-1898:
+//! a Spoolman filament and spool assigned through MCP reach the Filament
+//! shortfalls read and a confirmed burst's deduction.
 use checkoff_http::Fixture;
 use pp_api::{
-    accepted::AcceptedHttpConfig,
+    accepted::{AcceptedHttpConfig, InventoryReader, accepted_router},
     checkoff::checkoff_router,
     mcp::{McpClients, McpHttpConfig, mcp_router},
     serving::Serving,
@@ -14,12 +16,20 @@ use pp_api::{
 use pp_storage::{
     Limits, WriterOwner,
     auth::{self, Secret},
-    read_model::build_workflow::PendingInputs,
+    read_model::{
+        build_workflow::PendingInputs,
+        stock::{Inventory, InventoryFilament, InventorySpool, SpoolmanIntegration},
+    },
 };
 use reqwest::{Client, Method};
 use serde_json::{Value, json};
 use std::{
-    sync::{Arc, atomic::AtomicBool},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -32,18 +42,51 @@ mod mcp_rpc;
 
 const UNKNOWN_ACTION: &str = "Unknown, in-flight, or already applied/dismissed action_id";
 
-/// The Checkoff routes and MCP from one owner on a loopback listener.
+/// Spoolman `sm-1` as these tests see it: filament 3 (`#112233`) with
+/// spool 7 holding 500 g. Counts reads; nothing is contacted.
+#[derive(Default)]
+struct Stock(AtomicUsize);
+
+impl InventoryReader for Stock {
+    fn read(
+        &self,
+        integration: SpoolmanIntegration,
+    ) -> Pin<Box<dyn Future<Output = Option<Inventory>> + Send>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        let inventory = (integration.id == "sm-1").then(|| Inventory {
+            filaments: [(
+                3,
+                InventoryFilament {
+                    label: "Acme PLA · Night".into(),
+                    hex: Some("#112233".into()),
+                },
+            )]
+            .into(),
+            spools: vec![InventorySpool {
+                id: 7,
+                filament_id: 3,
+                remaining_g: Some(500.0),
+            }],
+        });
+        Box::pin(std::future::ready(inventory))
+    }
+}
+
+/// The Checkoff and accepted routes and MCP from one owner on a loopback
+/// listener, all reading Spoolman through `stock`.
 struct Served {
     origin: String,
     client: Client,
     bearer: String,
     serving: Serving,
     owner: WriterOwner,
+    stock: Arc<Stock>,
 }
 
 impl Served {
     async fn start(fixture: &Fixture, bearer: Option<String>) -> Self {
         let owner = WriterOwner::open(&fixture.0, Limits::default()).unwrap().0;
+        let stock = Arc::new(Stock::default());
         let (listener, origin) = mcp_rpc::listen().await;
         let progress = owner.checkoff_progress().unwrap();
         let auth = owner
@@ -53,6 +96,12 @@ impl Served {
             AcceptedHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             progress.clone(),
         )
+        .merge(accepted_router(
+            AcceptedHttpConfig::from_startup(&origin, "default", Some("1"))
+                .unwrap()
+                .with_stock(stock.clone()),
+            owner.accepted_reads_with_policy(mcp_rpc::policy()).unwrap(),
+        ))
         .merge(mcp_router(
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             auth.clone(),
@@ -84,6 +133,7 @@ impl Served {
                     observations: Arc::new(pp_api::farm::Unwatched),
                     modules: owner.client(),
                     activity: owner.print_activity(mcp_rpc::policy()).unwrap(),
+                    inventory: Some(stock.clone()),
                 },
             },
         ));
@@ -117,6 +167,7 @@ impl Served {
             bearer,
             serving: Serving::start(listener, router),
             owner,
+            stock,
         }
     }
 
@@ -449,5 +500,161 @@ async fn verify_batch_lookup_reports_expired_and_unknown_keys() {
     let (overlong, is_error) = mcp.confirm(&"x".repeat(200)).await;
     assert!(is_error);
     assert_eq!(overlong["error"], UNKNOWN_ACTION);
+    served.stop().await;
+}
+
+/// GRE-1898: the assistant gives role `primary` Spoolman filament 3 and pins
+/// spool 7. The Build's included accepted Parts carry both, the Filament
+/// section reads that filament from Spoolman, and a confirmed burst records
+/// one `pending` deduction for spool 7.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_spoolman_role_filament_reaches_the_shortfalls_and_a_pending_deduction() {
+    let fixture = Fixture::new();
+    let brief = json!({
+        "version": 1, "build_id": 1, "special_request": "", "requirements": [],
+        "evidence": [], "contributions": [], "compatibility_findings": null,
+        "differences": [], "resolutions": {}, "role_filaments": [],
+        "checklist_items": null, "managed_source_ids": null,
+        "draft_source_revisions": null, "draft_id": null, "draft_review_blockers": [],
+        "created_at": "2026-11-21T00:00:00.000Z", "updated_at": "2026-11-21T00:00:00.000Z",
+    });
+    let integrations = r#"[{"id":"sm-1","type":"spoolman","name":"Spoolman","config":{"base_url":"http://127.0.0.1:7912","enabled":true},"created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"}]"#;
+    // Opening the owner migrates the fixture, so seed after it.
+    let served = Served::start(&fixture, None).await;
+    let sql = fixture.sql();
+    for (key, value) in [
+        ("feature_toggles", r#"{"spoolman":true}"#.to_owned()),
+        ("integrations", integrations.to_owned()),
+        ("build_planning.v1.1", brief.to_string()),
+    ] {
+        sql.execute(
+            "REPLACE INTO app_settings (tenant_id,key,value) VALUES ('default',?1,?2)",
+            [key, value.as_str()],
+        )
+        .unwrap();
+    }
+    sql.execute_batch(
+        "INSERT INTO print_link_grams (tenant_id, link_id, grams, units, basis, updated_at)
+         VALUES ('default', 'link-verify', 40, 4, 'estimated', '2026-11-12T00:00:00.000Z');",
+    )
+    .unwrap();
+    let mcp = served.mcp().await;
+    let assignment = |spool: &str| {
+        json!({ "plan_id": 1, "assignment": {
+            "role": "Primary", "inventory_kind": "spoolman",
+            "inventory_id": "spoolman:sm-1:filament:3", "color_hex": "#112233",
+            "spoolman_spool_id": spool,
+        } })
+    };
+
+    // A spool of another filament is refused at confirm and writes nothing.
+    let (proposal, error) = mcp
+        .call(
+            "propose_assign_role_filament",
+            assignment("spoolman:sm-1:spool:8"),
+        )
+        .await;
+    assert!(!error, "{proposal}");
+    let (refused, error) = mcp
+        .confirm(proposal["action"]["id"].as_str().unwrap())
+        .await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["code"], "spoolman_spool_not_found");
+
+    let (proposal, error) = mcp
+        .call(
+            "propose_assign_role_filament",
+            assignment("spoolman:sm-1:spool:7"),
+        )
+        .await;
+    assert!(!error, "{proposal}");
+    let (applied, error) = mcp
+        .confirm(proposal["action"]["id"].as_str().unwrap())
+        .await;
+    assert!(!error && applied["ok"] == true, "{applied}");
+    assert_eq!(
+        applied["result"],
+        json!({ "role": "Primary", "updated_parts": 2 })
+    );
+    let parts: Vec<(i64, Option<String>, Option<String>)> = {
+        let mut statement = sql
+            .prepare("SELECT id, filament_color_id, spoolman_spool_id FROM parts WHERE profile_id=1 ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let pinned = |id| {
+        (
+            id,
+            Some("spoolman:sm-1:filament:3".to_owned()),
+            Some("spoolman:sm-1:spool:7".to_owned()),
+        )
+    };
+    // Part 2 is excluded from the accepted Plan, so it keeps no filament.
+    assert_eq!(parts, [pinned(1), (2, None, None), pinned(3)]);
+    let reads = served.stock.0.load(Ordering::SeqCst);
+
+    // The Filament section reads filament 3 from Spoolman.
+    let (status, shortfalls) = served
+        .http(Method::GET, "/api/v2/plans/1/filament-shortfalls", None)
+        .await;
+    assert_eq!(status, 200, "{shortfalls}");
+    assert_eq!(served.stock.0.load(Ordering::SeqCst), reads + 1);
+    let row = &shortfalls["filaments"][0];
+    assert_eq!(
+        row["filament_color_id"], "spoolman:sm-1:filament:3",
+        "{shortfalls}"
+    );
+    assert_eq!(row["label"], "Acme PLA · Night");
+    assert_eq!(row["grams_available"]["grams"], 500, "{shortfalls}");
+
+    // A confirmed burst for Part 1 records one pending deduction for spool 7.
+    let (proposal, error) = mcp
+        .call(
+            "propose_verify_printer_checkoff",
+            json!({ "link_id": "link-verify", "decisions": [
+                { "part_id": 1, "unit_index": 1, "result": "confirmed" },
+                { "part_id": 1, "unit_index": 2, "result": "confirmed" },
+            ] }),
+        )
+        .await;
+    assert!(!error, "{proposal}");
+    let (burst, _) = mcp
+        .confirm(proposal["action"]["id"].as_str().unwrap())
+        .await;
+    assert_eq!(burst["ok"], true, "{burst}");
+    let deductions: Vec<(String, Option<String>, Option<i64>, Option<f64>, i64)> = {
+        let mut statement = sql
+            .prepare(
+                "SELECT state, integration_id, spool_id, grams, units FROM spoolman_deductions",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        deductions,
+        [(
+            "pending".into(),
+            Some("sm-1".into()),
+            Some(7),
+            Some(20.0),
+            2
+        )]
+    );
     served.stop().await;
 }

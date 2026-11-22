@@ -4,9 +4,12 @@
 //! [`BuildGraphClient::assign_role_filament`] runs in one write transaction:
 //! prove the credential, replace that role's entry on the brief, mark its
 //! `color_<role>` requirement satisfied when the brief has one, clear the
-//! selected draft, and merge `role_filaments_<build>`. The catalog and
-//! Spoolman checks happen in `pp-api` before this write, so the transaction
-//! never waits on a network call.
+//! selected draft, merge `role_filaments_<build>`, and give the Build's
+//! included accepted Parts of that role the same filament and spool pin
+//! (GRE-1898). An accepted Part's filament is live: it changes without a new
+//! revision, and Accept publishes it. The catalog and Spoolman checks happen
+//! in `pp-api` before this write, so the transaction never waits on a
+//! network call.
 //!
 //! Errors are [`RoleFilamentError`]. This module holds no status codes and
 //! no response text.
@@ -33,6 +36,40 @@ use std::{sync::atomic::AtomicBool, time::Duration};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssignedRole {
     pub role: String,
+    /// Included accepted Parts of the role that now carry the assignment.
+    pub updated_parts: usize,
+}
+
+/// A Spoolman spool pin, `spoolman:{integration}:spool:{n}`: one integration
+/// segment without `:` and a positive spool number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpoolPin {
+    text: String,
+    integration: String,
+    spool: i64,
+}
+
+impl SpoolPin {
+    pub fn parse(text: &str) -> Option<Self> {
+        let (integration, spool) = crate::read_model::stock::spoolman_ref(text, ":spool:")?;
+        Some(Self {
+            text: text.to_owned(),
+            integration: integration.to_owned(),
+            spool,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub fn integration(&self) -> &str {
+        &self.integration
+    }
+
+    pub fn spool(&self) -> i64 {
+        self.spool
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,12 +117,14 @@ impl BuildGraphClient {
     }
 
     /// Replaces `assignment`'s role on the brief and in
-    /// `role_filaments_<build>`, in one transaction.
+    /// `role_filaments_<build>`, and gives the role's included accepted Parts
+    /// the assignment and `spool`, in one transaction.
     pub fn assign_role_filament(
         &self,
         credential: Credential,
         build: pp_domain::PositiveId,
         assignment: RoleFilamentAssignment,
+        spool: Option<SpoolPin>,
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<AssignedRole, RoleFilamentError> {
@@ -97,8 +136,13 @@ impl BuildGraphClient {
             let role = assignment.role.clone();
             apply(&mut brief, &assignment);
             store_changed_brief(tx, &tenant, build, brief)?;
-            save_default(tx, &tenant, build, &assignment)?;
-            Ok(AssignedRole { role })
+            let columns = Columns::of(&assignment, spool.as_ref());
+            save_default(tx, &tenant, build, &role_key(&role), &columns)?;
+            let updated_parts = assign_accepted_parts(tx, &tenant, build, &role, &columns)?;
+            Ok(AssignedRole {
+                role,
+                updated_parts,
+            })
         })?
     }
 }
@@ -153,11 +197,49 @@ fn js_non_alnum_slug(text: &str) -> String {
     slug
 }
 
+/// The key draft preparation looks a role's default up by: the role
+/// JS-trimmed and lowercased, `primary` when blank, as Node's
+/// `normalizePartRole` gives it.
+fn role_key(role: &str) -> String {
+    let key = pp_domain::build_identity::trim_js(role).to_lowercase();
+    if key.is_empty() {
+        "primary".into()
+    } else {
+        key
+    }
+}
+
+/// The three filament columns a role default and an accepted Part store.
+/// A catalog or Spoolman item keeps its inventory id; a custom or substitute
+/// color keeps its hex. Only a Spoolman item may pin a spool.
+struct Columns {
+    color_id: Option<String>,
+    custom_hex: Option<String>,
+    spool: Option<String>,
+}
+
+impl Columns {
+    fn of(assignment: &RoleFilamentAssignment, spool: Option<&SpoolPin>) -> Self {
+        let inventory = matches!(
+            assignment.inventory_kind,
+            FilamentInventoryKind::Catalog | FilamentInventoryKind::Spoolman
+        );
+        Self {
+            color_id: inventory.then(|| assignment.inventory_id.clone()).flatten(),
+            custom_hex: (!inventory).then(|| assignment.color_hex.clone()),
+            spool: (assignment.inventory_kind == FilamentInventoryKind::Spoolman)
+                .then(|| spool.map(|pin| pin.as_str().to_owned()))
+                .flatten(),
+        }
+    }
+}
+
 fn save_default(
     tx: &rusqlite::Transaction<'_>,
     tenant: &str,
     build: pp_domain::PositiveId,
-    assignment: &RoleFilamentAssignment,
+    role: &str,
+    columns: &Columns,
 ) -> Result<(), RoleFilamentError> {
     let key = format!("role_filaments_{}", build.get());
     let stored: Option<String> = tx
@@ -171,34 +253,58 @@ fn save_default(
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
-    defaults.insert(assignment.role.clone(), default_row(assignment));
+    defaults.insert(
+        role.to_owned(),
+        serde_json::json!({
+            "filament_color_id": columns.color_id,
+            "filament_custom_hex": columns.custom_hex,
+            "spoolman_spool_id": columns.spool,
+        }),
+    );
     let text =
         serde_json::to_string(&defaults).map_err(|error| WriterFailure::Internal(error.into()))?;
     save(tx, tenant, &key, &text)?;
     Ok(())
 }
 
-/// Node's `saveRoleFilamentDefault` writes these three fields. A catalog or
-/// Spoolman item keeps its inventory id; a custom or substitute color keeps
-/// its hex. `spoolman_spool_id` stays null: this operation pins no spool.
-fn default_row(assignment: &RoleFilamentAssignment) -> Value {
-    let color_id = match assignment.inventory_kind {
-        FilamentInventoryKind::Catalog | FilamentInventoryKind::Spoolman => {
-            assignment.inventory_id.clone()
-        }
-        FilamentInventoryKind::Custom | FilamentInventoryKind::Substitute => None,
-    };
-    let custom_hex = match assignment.inventory_kind {
-        FilamentInventoryKind::Custom | FilamentInventoryKind::Substitute => {
-            Some(assignment.color_hex.clone())
-        }
-        FilamentInventoryKind::Catalog | FilamentInventoryKind::Spoolman => None,
-    };
-    serde_json::json!({
-        "filament_color_id": color_id,
-        "filament_custom_hex": custom_hex,
-        "spoolman_spool_id": Value::Null,
-    })
+/// Writes `columns` on the Build's included accepted Parts whose role has
+/// `role`'s key, as Node's `PUT /plans/:id/role-filament` does. A Build with
+/// no accepted Plan has no Parts, so only its default changes.
+fn assign_accepted_parts(
+    tx: &rusqlite::Transaction<'_>,
+    tenant: &str,
+    build: pp_domain::PositiveId,
+    role: &str,
+    columns: &Columns,
+) -> Result<usize, RoleFilamentError> {
+    let key = role_key(role);
+    let build =
+        i64::try_from(build.get()).map_err(|error| WriterFailure::Internal(error.into()))?;
+    let mut statement =
+        tx.prepare("SELECT id, role FROM parts WHERE tenant_id=?1 AND profile_id=?2 AND included")?;
+    let parts = statement
+        .query_map(params![tenant, build], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut updated = 0;
+    for (id, _) in parts
+        .iter()
+        .filter(|(_, part_role)| role_key(part_role) == key)
+    {
+        updated += tx.execute(
+            "UPDATE parts SET filament_color_id=?1, filament_custom_hex=?2, spoolman_spool_id=?3
+             WHERE tenant_id=?4 AND id=?5",
+            params![
+                columns.color_id,
+                columns.custom_hex,
+                columns.spool,
+                tenant,
+                id
+            ],
+        )?;
+    }
+    Ok(updated)
 }
 
 #[cfg(test)]
@@ -255,13 +361,55 @@ pub(super) mod tests {
             &self,
             assignment: RoleFilamentAssignment,
         ) -> Result<AssignedRole, RoleFilamentError> {
+            self.assign_pinned(assignment, None)
+        }
+
+        fn assign_pinned(
+            &self,
+            assignment: RoleFilamentAssignment,
+            spool: Option<&str>,
+        ) -> Result<AssignedRole, RoleFilamentError> {
             self.created.client.assign_role_filament(
                 self.created.session(),
                 self.build,
                 assignment,
+                spool.map(|text| SpoolPin::parse(text).unwrap()),
                 &IDLE,
                 WAIT,
             )
+        }
+
+        /// Accepted Parts of the Build: `(filename, role, included)`.
+        fn seed_parts(&self, parts: &[(&str, &str, bool)]) {
+            let database = self.created.database();
+            for (filename, role, included) in parts {
+                database
+                    .execute(
+                        "INSERT INTO parts (tenant_id, profile_id, match_key, filename, role, included)
+                         VALUES ('default', ?1, ?2, ?2, ?3, ?4)",
+                        params![self.build.get() as i64, filename, role, included],
+                    )
+                    .unwrap();
+            }
+        }
+
+        /// Each Part's `(filename, filament_color_id, filament_custom_hex,
+        /// spoolman_spool_id)`, by id.
+        fn parts(&self) -> Vec<(String, Option<String>, Option<String>, Option<String>)> {
+            let database = self.created.database();
+            let mut statement = database
+                .prepare(
+                    "SELECT filename, filament_color_id, filament_custom_hex, spoolman_spool_id
+                     FROM parts WHERE profile_id=?1 ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map([self.build.get() as i64], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
         }
 
         fn defaults(&self) -> Value {
@@ -297,6 +445,7 @@ pub(super) mod tests {
             .assign(catalog("Accent", "abs-matte::black-pantone-7c"))
             .unwrap();
         assert_eq!(saved.role, "Accent");
+        assert_eq!(saved.updated_parts, 0);
         let brief = fixture.brief();
         assert!(brief["draft_id"].is_null());
         assert_eq!(brief["requirements"][0]["status"], "satisfied");
@@ -308,12 +457,14 @@ pub(super) mod tests {
         assert_eq!(brief["role_filaments"][0]["role"], "Accent");
         let defaults = fixture.defaults();
         assert_eq!(defaults["primary"]["filament_color_id"], "keep");
+        // Stored under the key draft preparation reads: the role lowercased.
+        assert!(defaults.get("Accent").is_none());
         assert_eq!(
-            defaults["Accent"]["filament_color_id"],
+            defaults["accent"]["filament_color_id"],
             "abs-matte::black-pantone-7c"
         );
-        assert!(defaults["Accent"]["filament_custom_hex"].is_null());
-        assert!(defaults["Accent"]["spoolman_spool_id"].is_null());
+        assert!(defaults["accent"]["filament_custom_hex"].is_null());
+        assert!(defaults["accent"]["spoolman_spool_id"].is_null());
 
         let mut replacement = catalog("Accent", "abs-matte::hot-pink");
         replacement.color_hex = "#ff3eb5".into();
@@ -325,9 +476,100 @@ pub(super) mod tests {
             "abs-matte::hot-pink"
         );
         assert_eq!(
-            fixture.defaults()["Accent"]["filament_color_id"],
+            fixture.defaults()["accent"]["filament_color_id"],
             "abs-matte::hot-pink"
         );
+    }
+
+    fn spoolman(role: &str, id: &str) -> RoleFilamentAssignment {
+        RoleFilamentAssignment {
+            role: role.into(),
+            requested_brand: None,
+            requested_name: None,
+            inventory_kind: FilamentInventoryKind::Spoolman,
+            inventory_id: Some(id.into()),
+            color_hex: "#112233".into(),
+            substitution_confirmed: false,
+        }
+    }
+
+    #[test]
+    fn a_spoolman_assignment_pins_the_spool_on_the_role_default_and_its_included_parts() {
+        let fixture = Fixture::new();
+        fixture.seed_parts(&[
+            ("bracket.stl", "accent", true),
+            ("gear.stl", " Accent", true),
+            ("excluded.stl", "accent", false),
+            ("panel.stl", "primary", true),
+        ]);
+        let saved = fixture
+            .assign_pinned(
+                spoolman("Accent", "spoolman:sm-1:filament:3"),
+                Some("spoolman:sm-1:spool:7"),
+            )
+            .unwrap();
+        assert_eq!(saved.updated_parts, 2);
+        let defaults = fixture.defaults();
+        assert_eq!(
+            defaults["accent"],
+            json!({
+                "filament_color_id": "spoolman:sm-1:filament:3",
+                "filament_custom_hex": null,
+                "spoolman_spool_id": "spoolman:sm-1:spool:7",
+            })
+        );
+        let pinned = |name: &str| {
+            (
+                name.to_owned(),
+                Some("spoolman:sm-1:filament:3".to_owned()),
+                None,
+                Some("spoolman:sm-1:spool:7".to_owned()),
+            )
+        };
+        let untouched = |name: &str| (name.to_owned(), None, None, None);
+        assert_eq!(
+            fixture.parts(),
+            [
+                pinned("bracket.stl"),
+                pinned("gear.stl"),
+                untouched("excluded.stl"),
+                untouched("panel.stl"),
+            ]
+        );
+
+        // A custom color clears the filament id and the pin, on both.
+        fixture
+            .assign_pinned(
+                RoleFilamentAssignment {
+                    inventory_kind: FilamentInventoryKind::Custom,
+                    inventory_id: None,
+                    substitution_confirmed: true,
+                    ..spoolman("accent", "")
+                },
+                Some("spoolman:sm-1:spool:7"),
+            )
+            .unwrap();
+        assert!(fixture.defaults()["accent"]["spoolman_spool_id"].is_null());
+        assert_eq!(
+            fixture.parts()[0],
+            ("bracket.stl".into(), None, Some("#112233".into()), None)
+        );
+    }
+
+    #[test]
+    fn a_spool_pin_names_one_integration_and_a_positive_spool() {
+        let pin = SpoolPin::parse("spoolman:sm-1:spool:7").unwrap();
+        assert_eq!((pin.integration(), pin.spool()), ("sm-1", 7));
+        assert_eq!(pin.as_str(), "spoolman:sm-1:spool:7");
+        for bad in [
+            "7",
+            "spoolman:sm-1:filament:7",
+            "spoolman:sm-1:spool:0",
+            "spoolman::spool:7",
+            "spoolman:a:b:spool:7",
+        ] {
+            assert!(SpoolPin::parse(bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

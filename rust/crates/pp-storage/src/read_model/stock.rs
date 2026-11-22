@@ -275,6 +275,27 @@ pub(crate) fn spoolman_integration(
     }
 }
 
+impl crate::SettingsClient {
+    /// The stored Spoolman integration `id`, read on the reader pool, for a
+    /// caller that checks an item against Spoolman before a write (MCP
+    /// `propose_assign_role_filament`). `Ok(None)` when no integration has
+    /// that id.
+    pub fn spoolman_integration(
+        &self,
+        tenant: &str,
+        id: &str,
+        wait: std::time::Duration,
+    ) -> Result<Option<SpoolmanIntegration>> {
+        let reader = self.reader(wait)?;
+        Ok(match reader.snapshot(tenant, INTEGRATIONS_KEY)? {
+            crate::SettingSnapshot::Stored { value } => parse_integrations(&value)
+                .into_iter()
+                .find(|row| row.id == id),
+            crate::SettingSnapshot::Missing => None,
+        })
+    }
+}
+
 /// Spoolman entries of Node's integration list. Corrupt entries are skipped,
 /// as Node's `loadRaw` skips them.
 fn parse_integrations(value: &str) -> Vec<SpoolmanIntegration> {
@@ -362,7 +383,7 @@ fn read_grams(
 }
 
 /// `(integration ID, filament ID)` when `id` names a Spoolman filament.
-fn spoolman_filament(id: &str) -> Option<(&str, i64)> {
+pub fn spoolman_filament(id: &str) -> Option<(&str, i64)> {
     spoolman_ref(id, ":filament:")
 }
 

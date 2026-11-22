@@ -216,7 +216,8 @@ const REFUSAL_CODES: &str = "unauthorized unavailable outcome_unknown internal b
     invalid_source_role evidence_not_found multiple_structural_bases farm_module_off \
     invalid_filament_assignment substitution_unconfirmed catalog_filament_not_found \
     catalog_color_mismatch catalog_name_mismatch catalog_brand_mismatch spoolman_module_off \
-    spoolman_unavailable invalid_inputs invalid_input invalid_evidence_kind invalid_url \
+    spoolman_unavailable spoolman_filament_not_found spoolman_color_mismatch \
+    spoolman_spool_not_found invalid_inputs invalid_input invalid_evidence_kind invalid_url \
     source_not_found derived_evidence_not_found invalid_hours no_structural_base \
     unresolved_source_choices layer_conflict no_stls would_wipe idempotency_conflict";
 

@@ -192,6 +192,10 @@ pub struct McpFarm {
     pub modules: pp_storage::SettingsClient,
     /// `get_print_stats` counts the plates sent in its window here.
     pub activity: pp_storage::print_activity::PrintActivityClient,
+    /// Spoolman inventory, which `propose_assign_role_filament` checks a
+    /// Spoolman filament and spool against at confirm. `None` reads as
+    /// unreachable, so a Spoolman assignment is refused.
+    pub inventory: Option<Arc<dyn crate::accepted::InventoryReader>>,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
@@ -273,6 +277,45 @@ pub(crate) fn test_router(
     test_router_watching(owner, config, policy, Arc::new(crate::farm::Unwatched))
 }
 
+/// The Spoolman stock every test router reads: integration `sm-1` holds
+/// filament 3 (`#112233`) with spool 7, and spool 8 of filament 4. Any other
+/// integration is unreachable. Nothing is contacted.
+#[cfg(test)]
+struct TestInventory;
+
+#[cfg(test)]
+impl crate::accepted::InventoryReader for TestInventory {
+    fn read(
+        &self,
+        integration: pp_storage::read_model::stock::SpoolmanIntegration,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Option<pp_storage::read_model::stock::Inventory>>
+                + Send,
+        >,
+    > {
+        use pp_storage::read_model::stock::{Inventory, InventoryFilament, InventorySpool};
+        let stock = (integration.id == "sm-1").then(|| Inventory {
+            filaments: [(
+                3,
+                InventoryFilament {
+                    label: "Acme PLA · Night".into(),
+                    hex: Some("#112233".into()),
+                },
+            )]
+            .into(),
+            spools: [(7, 3), (8, 4)]
+                .map(|(id, filament_id)| InventorySpool {
+                    id,
+                    filament_id,
+                    remaining_g: Some(500.0),
+                })
+                .into(),
+        });
+        Box::pin(std::future::ready(stock))
+    }
+}
+
 /// [`test_router`] with the printer watchers' `observations`.
 #[cfg(test)]
 pub(crate) fn test_router_watching(
@@ -281,6 +324,8 @@ pub(crate) fn test_router_watching(
     policy: auth::AuthPolicy,
     observations: Arc<dyn crate::farm::FarmObservations>,
 ) -> (Router, RebuildAuthClient) {
+    let inventory: Option<Arc<dyn crate::accepted::InventoryReader>> =
+        Some(Arc::new(TestInventory));
     let auth = owner
         .rebuild_auth_with_policy(policy, Default::default())
         .unwrap();
@@ -321,6 +366,7 @@ pub(crate) fn test_router_watching(
                 observations,
                 modules: owner.client(),
                 activity: owner.print_activity(policy).unwrap(),
+                inventory,
             },
         },
     );

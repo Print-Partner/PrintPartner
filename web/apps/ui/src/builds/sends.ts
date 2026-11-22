@@ -8,6 +8,7 @@ import {
 import { CoreError, fetchCore } from "../core/client";
 import { ContractError, readCore } from "../core/rust";
 import { lostSend } from "../core/writes";
+import type { SendUnit } from "./slicedObjects";
 
 export type QueuedSend = SendQueue["items"][number];
 export type SendPrinter = FarmPrinterList["printers"][number];
@@ -101,14 +102,16 @@ const STATE_WORDS: Readonly<Record<SendPrinter["state"]["execution"], string>> =
 };
 
 /**
- * Add to queue: one multipart form for `printer`, bound to Build `build`. Nothing is sent
- * to the printer; Send now does that. The answer is checked against the generated schema.
+ * Add to queue: one multipart form for `printer`, bound to Build `build`, linking `units`
+ * when there are any. Nothing is sent to the printer; Send now does that. The answer is
+ * checked against the generated schema.
  */
 export async function addSend(
   build: number,
   printer: string,
   file: File,
   start: boolean,
+  units: readonly SendUnit[],
 ): Promise<QueuedSendReceipt> {
   const path = routePath("addQueuedSend", {});
   const form = new FormData();
@@ -116,6 +119,7 @@ export async function addSend(
   form.set("profile_id", String(build));
   form.set("start", String(start));
   form.set("wait_for_idle", String(start));
+  if (units.length > 0) form.set("checkoff_units", JSON.stringify(units));
   form.set("file", file, file.name);
   const response = await fetchCore(path, {
     method: "POST",

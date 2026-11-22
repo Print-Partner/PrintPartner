@@ -7,7 +7,9 @@ import {
   fakeCore,
   item,
   json,
+  NO_UNITS,
   openSheet,
+  part,
   printer,
   PRINTING,
   renderAt,
@@ -248,4 +250,59 @@ describe("Production tab", () => {
       "true",
     );
   }, 15_000);
+});
+
+describe("Send a file links the Checkoff units the file prints (GRE-1896)", () => {
+  const ORCA = [
+    "EXCLUDE_OBJECT_DEFINE NAME=bracket.stl_id_0_copy_0 CENTER=10,10",
+    "EXCLUDE_OBJECT_DEFINE NAME=bracket.stl_id_0_copy_1 CENTER=30,10",
+    "G28",
+  ].join("\n");
+  const sentUnits = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
+    (writes(fetchMock)[0]![1]!.body as FormData).get("checkoff_units");
+
+  it("matches the file's objects to units still to print and sends them with Add", async () => {
+    const { fetchMock } = fakeCore({
+      checkoff: { ...NO_UNITS, parts: [part(11, "bracket.stl", 3, 1), part(12, "lid.stl", 1)] },
+    });
+    renderAt(fetchMock);
+    const sheet = await openSheet("plate.gcode", "Micron", ORCA);
+    const units = within(sheet).getByRole("group", { name: "Checkoff units" });
+    expect(within(units).getByRole("listitem").textContent).toBe("bracket.stl × 2");
+    expect(writes(fetchMock)).toEqual([]);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
+    expect(JSON.parse(String(sentUnits(fetchMock)))).toEqual([
+      { part_id: 11, unit_index: 1, object_name: "bracket.stl_id_0_copy_0" },
+      { part_id: 11, unit_index: 2, object_name: "bracket.stl_id_0_copy_1" },
+    ]);
+  });
+
+  it("says a file without matching objects links no units, and sends without them", async () => {
+    const { fetchMock } = fakeCore({ checkoff: { ...NO_UNITS, parts: [part(12, "lid.stl", 1)] } });
+    renderAt(fetchMock);
+    const sheet = await openSheet("plate.gcode", "Micron", ORCA);
+    const units = within(sheet).getByRole("group", { name: "Checkoff units" });
+    expect(units.textContent).toContain("records no filament grams");
+    expect(units.textContent).toContain(
+      "Not matched to a unit: bracket.stl_id_0_copy_0, bracket.stl_id_0_copy_1",
+    );
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
+    expect(sentUnits(fetchMock)).toBeNull();
+  });
+
+  it("when the Build's units cannot be read, says so and still sends, without units", async () => {
+    const { fetchMock } = fakeCore({ checkoff: json({ status: 500, title: "Down" }, 500) });
+    renderAt(fetchMock);
+    const sheet = await openSheet("plate.gcode", "Micron", ORCA);
+    await waitFor(() =>
+      expect(within(sheet).getByRole("alert").textContent).toMatch(
+        /Could not read this Build's Checkoff units/,
+      ),
+    );
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
+    expect(sentUnits(fetchMock)).toBeNull();
+  });
 });

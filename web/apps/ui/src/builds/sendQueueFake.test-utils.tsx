@@ -1,7 +1,12 @@
-import type { FarmPrinterList, Health, SendQueue } from "@print-partner/rust-client";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import type {
+  CheckoffUnits,
+  FarmPrinterList,
+  Health,
+  SendQueue,
+} from "@print-partner/rust-client";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 
@@ -86,6 +91,34 @@ export const item = (id: string, overrides: Partial<Item> = {}): Item => ({
   ...overrides,
 });
 
+/** Build 2's Accepted Plan units: none unless a test gives some. */
+export const NO_UNITS: CheckoffUnits = {
+  basis: null,
+  parts: [],
+  plate_revision_id: null,
+  profile_id: 2,
+};
+export type Part = CheckoffUnits["parts"][number];
+/** A Part with `quantity` units, the first `printed` of them printed. */
+export const part = (partId: number, filename: string, quantity: number, printed = 0): Part => ({
+  part_id: partId,
+  filename,
+  relative_path: filename,
+  role: "part",
+  source_layer: "_root",
+  quantity,
+  printed_count: printed,
+  assembled_count: 0,
+  units: Array.from({ length: quantity }, (_, index) => ({
+    token: `${partId}:${index}`,
+    unit_index: index,
+    object_name: `${filename.replace(/\.stl$/, "")}_ppu_${index + 1}`,
+    printed: index < printed,
+    assembled: false,
+    plate: null,
+  })),
+});
+
 type Answer = Response | Promise<Response>;
 type Route = (path: string, init: RequestInit | undefined) => Answer | undefined;
 
@@ -156,12 +189,14 @@ export function fakeCore({
   farm = "on",
   printers = [printer("p1", "Micron", READY)],
   items = [] as Item[],
+  checkoff = NO_UNITS,
   dispatch,
   reconcile,
 }: {
   farm?: "on" | "off";
   printers?: Printer[];
   items?: Item[];
+  checkoff?: CheckoffUnits | Response;
   dispatch?: (id: string) => Answer;
   reconcile?: (id: string) => Answer;
 } = {}) {
@@ -176,6 +211,8 @@ export function fakeCore({
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === "/health") return json(health(farm));
     if (path === "/api/v2/printers") return json({ printers });
+    if (path === "/api/v2/plans/2/checkoff/units")
+      return checkoff instanceof Response ? checkoff.clone() : json(checkoff);
     if (path === "/api/v2/printer-send-queue" && !init?.method) {
       const answer = { items: queue.map((i) => ({ ...i })) };
       for (const i of queue) if (i.state === "sending") i.state = "done";
@@ -206,15 +243,17 @@ export function renderAt(fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) {
 export const writes = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
   fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== "GET");
 
-export async function openSheet(file = "plate.gcode", printerName = "Micron") {
+export async function openSheet(file = "plate.gcode", printerName = "Micron", gcode = "G28\n") {
   fireEvent.click(await screen.findByRole("button", { name: "Send a file" }));
   const sheet = await screen.findByRole("dialog", { name: "Send a file" });
   fireEvent.change(within(sheet).getByLabelText("Sliced file"), {
-    target: { files: [new File(["G28\n"], file)] },
+    target: { files: [new File([gcode], file)] },
   });
   const select = within(sheet).getByLabelText<HTMLSelectElement>("Printer");
   await within(sheet).findByRole("option", { name: printerName });
   const option = within(sheet).getByRole<HTMLOptionElement>("option", { name: printerName });
   fireEvent.change(select, { target: { value: option.value } });
+  // Send waits until the file's objects are read and matched to the Build's units.
+  await waitFor(() => expect(within(sheet).queryByText(/Reading the objects/)).toBeNull());
   return sheet;
 }

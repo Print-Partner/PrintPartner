@@ -105,7 +105,7 @@ fn gre_1896_a_name_several_readers_match_counts_once() {
     let parts = |count: usize, line: &dyn Fn(usize) -> String| -> FileObjects {
         object_names((0..count).map(line).collect::<String>().as_bytes())
     };
-    // Quoted M486 labels match both M486 readers.
+    // Each quoted M486 label is one name, up to the cap.
     for count in [5_001, MAX_NAMES] {
         let found = parts(count, &|i| format!("M486 S{i} A\"part_{i}.stl\"\n"));
         assert!(

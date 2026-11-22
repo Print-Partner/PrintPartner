@@ -1399,6 +1399,7 @@ step(11, null, async ({ page }) => {
   await expect(bed).not.toContainText("confirm by hand");
   const marks = bed.getByRole("list", { name: `What confirming ${PRINTER} marks` });
   await expect(marks.getByRole("listitem")).toHaveText([`${STL}: +1 printed (unit 1)`]);
+  expect((await spoolman("log")).uses, "uses after finish and before Confirm").toEqual([]);
 
   const confirmBed = bed.getByRole("button", { name: `Confirm ${PRINTER} bed` });
   const tally = page.getByRole("status", { name: "Checkoff tally" });
@@ -1419,6 +1420,15 @@ step(11, null, async ({ page }) => {
   await reconfirmAfterUndoSettled();
   await expect(hero).toHaveCount(0);
 
+  await go(page, "Farm");
+  await page.getByRole("link", { name: "Farm log", exact: true }).click();
+  const deductionRows = page
+    .getByRole("table", { name: "Filament deductions" })
+    .getByRole("row")
+    .filter({ has: page.getByRole("link", { name: `Build ${id}`, exact: true }) });
+  await expect(deductionRows).toHaveCount(1);
+  await expect(deductionRows.getByRole("cell", { name: "applied", exact: true })).toBeVisible();
+
   await overview();
   await expect(page.getByText(`1 of ${units.length} units printed`)).toBeVisible();
   const afterDeduction = {
@@ -1432,7 +1442,6 @@ step(11, null, async ({ page }) => {
     status: "Enough",
   });
   const log = await spoolman("log");
-  expect(log.uses, "uses after Undo and a second confirm").toEqual(deducted);
   expect(log.spools.find((spool) => spool.id === UNPINNED_SPOOL_ID)?.remaining_weight, "spool 1's grams").toBe(750);
   expect(log.spools.find((spool) => spool.id === PINNED_SPOOL_ID)?.remaining_weight, "spool 2's grams").toBe(108);
 
@@ -1448,6 +1457,7 @@ step(11, null, async ({ page }) => {
     await spoolman("stock", { spool_id: UNPINNED_SPOOL_ID, remaining_weight: 750 });
     await spoolman("stock", { spool_id: PINNED_SPOOL_ID, remaining_weight: 108 });
   }
+  expect((await spoolman("log")).uses, "uses after Undo and a second confirm").toEqual(deducted);
 });
 
 /** What run.mjs made for Step 12: the second container's name and its new, empty volume. */

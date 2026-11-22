@@ -7,7 +7,9 @@
 //! selected draft, merge `role_filaments_<build>`, and give the Build's
 //! included accepted Parts of that role the same filament and spool pin
 //! (GRE-1898). An accepted Part's filament is live: it changes without a new
-//! revision, and Accept publishes it. The catalog and Spoolman checks happen
+//! revision, and Accept publishes it. A Spoolman assignment also needs
+//! Spoolman on for the Build, with its Plan override, as Checkoff reads it;
+//! both the check and the write test that in their own transaction. The catalog and Spoolman checks happen
 //! in `pp-api` before this write, so the transaction never waits on a
 //! network call.
 //!
@@ -79,6 +81,12 @@ pub enum RoleFilamentError {
     /// The stored brief does not parse or names another Build.
     #[error("the stored planning brief is invalid")]
     BriefInvalid,
+    /// A Spoolman assignment, and Spoolman is off for the Build.
+    #[error("Spoolman is off for the Build")]
+    SpoolmanOff,
+    /// A Spoolman assignment, and a stored feature layer does not parse.
+    #[error("a stored feature setting is invalid")]
+    FeatureSettingInvalid,
     #[error(transparent)]
     Writer(#[from] WriterFailure),
 }
@@ -99,12 +107,14 @@ impl BriefError for RoleFilamentError {
 }
 
 impl BuildGraphClient {
-    /// Proves the credential and finds `build`'s brief in a read
-    /// transaction. `Ok` is no promise: confirm reads the brief again.
+    /// Proves the credential, checks Spoolman is on for `build` when
+    /// `spoolman`, and finds `build`'s brief, in one read transaction. `Ok` is
+    /// no promise: the write checks both again.
     pub fn check_role_filament(
         &self,
         credential: Credential,
         build: pp_domain::PositiveId,
+        spoolman: bool,
         wait: Duration,
     ) -> Result<(), RoleFilamentError> {
         let policy = self.policy;
@@ -112,6 +122,9 @@ impl BuildGraphClient {
         self.settings
             .read(name, &AtomicBool::new(false), wait, move |tx| {
                 let installation = authorize(tx, &credential, policy)?;
+                if spoolman {
+                    spoolman_on(tx, installation.id(), build)?;
+                }
                 stored_brief::<RoleFilamentError>(tx, installation.id(), build).map(drop)
             })?
     }
@@ -133,6 +146,9 @@ impl BuildGraphClient {
         self.shared.write(name, cancelled, wait, move |tx, _| {
             let (tenant, mut brief) =
                 authorized_brief::<RoleFilamentError>(tx, &credential, policy, build)?;
+            if assignment.inventory_kind == FilamentInventoryKind::Spoolman {
+                spoolman_on(tx, &tenant, build)?;
+            }
             let role = assignment.role.clone();
             apply(&mut brief, &assignment);
             store_changed_brief(tx, &tenant, build, brief)?;
@@ -147,8 +163,36 @@ impl BuildGraphClient {
     }
 }
 
-/// Replaces the role's assignment and marks `color_<role>` satisfied when
-/// that requirement is already on the brief. Other requirements stay.
+/// Spoolman's effective setting for `build`: the user's choice under the
+/// Build's Plan override, as Checkoff's deduction reads it.
+fn spoolman_on(
+    tx: &rusqlite::Transaction<'_>,
+    tenant: &str,
+    build: pp_domain::PositiveId,
+) -> Result<(), RoleFilamentError> {
+    match crate::features::resolve_for_tenant(tx, tenant, Some(build)) {
+        Ok(view)
+            if view
+                .effective()
+                .enabled(pp_domain::features::Feature::Spoolman) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(RoleFilamentError::SpoolmanOff),
+        Err(error)
+            if error
+                .downcast_ref::<crate::features::InvalidLayer>()
+                .is_some() =>
+        {
+            Err(RoleFilamentError::FeatureSettingInvalid)
+        }
+        Err(error) => Err(WriterFailure::from(error).into()),
+    }
+}
+
+/// Replaces every assignment with the role's key, whatever its case or
+/// spacing, and marks `color_<role>` satisfied when that requirement is
+/// already on the brief. Other requirements stay.
 fn apply(brief: &mut BuildPlanningBrief, assignment: &RoleFilamentAssignment) {
     let key = color_requirement_key(&assignment.role);
     let detail = format!(
@@ -166,9 +210,10 @@ fn apply(brief: &mut BuildPlanningBrief, assignment: &RoleFilamentAssignment) {
             requirement.detail = Some(detail.clone());
         }
     }
+    let role = role_key(&assignment.role);
     brief
         .role_filaments
-        .retain(|item| item.role != assignment.role);
+        .retain(|item| role_key(&item.role) != role);
     brief.role_filaments.push(assignment.clone());
 }
 
@@ -253,6 +298,8 @@ fn save_default(
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
+    // An older writer kept the role as typed; drop those aliases.
+    defaults.retain(|stored, _| role_key(stored) != role);
     defaults.insert(
         role.to_owned(),
         serde_json::json!({
@@ -350,6 +397,33 @@ pub(super) mod tests {
 
         fn key(&self) -> String {
             format!("build_planning.v1.{}", self.build.get())
+        }
+
+        /// The user's Spoolman choice, and the Build's Plan override when
+        /// `plan` is `Some`.
+        fn spoolman(&self, user: bool, plan: Option<&str>) {
+            let owner = &self.created.owner;
+            seed_setting(
+                owner,
+                "feature_toggles",
+                &json!({ "orders": true, "spoolman": user }).to_string(),
+            );
+            if let Some(plan) = plan {
+                seed_setting(
+                    owner,
+                    &format!("feature_toggles:plan:{}", self.build.get()),
+                    plan,
+                );
+            }
+        }
+
+        fn check(&self, spoolman: bool) -> Result<(), RoleFilamentError> {
+            self.created.client.check_role_filament(
+                self.created.session(),
+                self.build,
+                spoolman,
+                WAIT,
+            )
         }
 
         fn brief(&self) -> Value {
@@ -499,6 +573,7 @@ pub(super) mod tests {
     #[test]
     fn a_spoolman_assignment_pins_the_spool_on_the_role_default_and_its_included_parts() {
         let fixture = Fixture::new();
+        fixture.spoolman(true, None);
         fixture.seed_parts(&[
             ("bracket.stl", "accent", true),
             ("gear.stl", " Accent", true),
@@ -556,6 +631,105 @@ pub(super) mod tests {
         assert_eq!(
             fixture.parts()[0],
             ("bracket.stl".into(), None, Some("#112233".into()), None)
+        );
+    }
+
+    #[test]
+    fn a_spoolman_assignment_needs_spoolman_on_for_the_build_and_writes_nothing_otherwise() {
+        let fixture = Fixture::new();
+        fixture.seed_parts(&[("bracket.stl", "accent", true)]);
+        let assign = || {
+            fixture.assign_pinned(
+                spoolman("Accent", "spoolman:sm-1:filament:3"),
+                Some("spoolman:sm-1:spool:7"),
+            )
+        };
+        let before = (fixture.brief(), fixture.defaults(), fixture.parts());
+        // On for the user, off for this Build: the check and the write refuse.
+        fixture.spoolman(true, Some(r#"{"spoolman":false}"#));
+        assert!(matches!(
+            fixture.check(true),
+            Err(RoleFilamentError::SpoolmanOff)
+        ));
+        assert!(matches!(assign(), Err(RoleFilamentError::SpoolmanOff)));
+        // Other kinds never read the Spoolman setting.
+        fixture.check(false).unwrap();
+        // Off for the user with no Build override, or an unreadable layer.
+        fixture.spoolman(false, Some("{}"));
+        assert!(matches!(assign(), Err(RoleFilamentError::SpoolmanOff)));
+        fixture.spoolman(true, Some(r#"{"spoolman":"yes"}"#));
+        assert!(matches!(
+            fixture.check(true),
+            Err(RoleFilamentError::FeatureSettingInvalid)
+        ));
+        assert!(matches!(
+            assign(),
+            Err(RoleFilamentError::FeatureSettingInvalid)
+        ));
+        assert_eq!(
+            before,
+            (fixture.brief(), fixture.defaults(), fixture.parts())
+        );
+        // Off for the user, on for this Build: the Build's override wins.
+        fixture.spoolman(false, Some(r#"{"spoolman":true}"#));
+        fixture.check(true).unwrap();
+        assert_eq!(assign().unwrap().updated_parts, 1);
+    }
+
+    #[test]
+    fn reassigning_a_role_replaces_its_entries_whatever_their_case_or_spacing() {
+        let fixture = Fixture::new();
+        fixture.spoolman(true, None);
+        let mut brief = fixture.brief();
+        brief["role_filaments"] = json!([{
+            "role": "primary", "requested_brand": null, "requested_name": null,
+            "inventory_kind": "custom", "inventory_id": null, "color_hex": "#aabbcc",
+            "substitution_confirmed": true,
+        }, {
+            "role": "accent", "requested_brand": null, "requested_name": null,
+            "inventory_kind": "custom", "inventory_id": null, "color_hex": "#ddeeff",
+            "substitution_confirmed": true,
+        }]);
+        fixture.store_brief(&brief);
+        seed_setting(
+            &fixture.created.owner,
+            &format!("role_filaments_{}", fixture.build.get()),
+            r#"{" Primary ":{"filament_color_id":"spoolman:sm-1:filament:2","filament_custom_hex":null,"spoolman_spool_id":"spoolman:sm-1:spool:5"},"PRIMARY":{"filament_color_id":"old","filament_custom_hex":null,"spoolman_spool_id":null},"accent":{"filament_color_id":"keep","filament_custom_hex":null,"spoolman_spool_id":null}}"#,
+        );
+        fixture
+            .assign_pinned(
+                spoolman("Primary", "spoolman:sm-1:filament:3"),
+                Some("spoolman:sm-1:spool:7"),
+            )
+            .unwrap();
+        let roles: Vec<(String, String)> = fixture.brief()["role_filaments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["role"].as_str().unwrap().to_owned(),
+                    item["inventory_kind"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("accent".to_owned(), "custom".to_owned()),
+                ("Primary".to_owned(), "spoolman".to_owned()),
+            ]
+        );
+        assert_eq!(
+            fixture.defaults(),
+            json!({
+                "accent": {"filament_color_id": "keep", "filament_custom_hex": null, "spoolman_spool_id": null},
+                "primary": {
+                    "filament_color_id": "spoolman:sm-1:filament:3",
+                    "filament_custom_hex": null,
+                    "spoolman_spool_id": "spoolman:sm-1:spool:7",
+                },
+            })
         );
     }
 

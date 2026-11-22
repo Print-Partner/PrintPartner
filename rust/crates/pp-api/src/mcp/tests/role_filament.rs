@@ -308,6 +308,56 @@ async fn mcp_assign_role_filament_checks_a_spoolman_filament_and_spool_against_s
     );
 }
 
+/// Spoolman on for the user and off in the Build's Plan override, as
+/// Checkoff reads it: no Spoolman assignment proposes or confirms.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_assign_role_filament_honours_the_builds_spoolman_override() {
+    let seeded = spoolman_on().await;
+    let plan_off = |seeded: &Seeded| {
+        execute(
+            &seeded.server,
+            &format!(
+                "REPLACE INTO app_settings (tenant_id, key, value) \
+                 VALUES ('default', 'feature_toggles:plan:{}', '{{\"spoolman\":false}}');",
+                seeded.build
+            ),
+        )
+    };
+    let args = json!({
+        "plan_id": seeded.build,
+        "assignment": spoolman("spoolman:sm-1:filament:3", "#112233", Some("spoolman:sm-1:spool:7")),
+    });
+    plan_off(&seeded);
+    seeded
+        .refuses_propose(TOOL, vec![(args.clone(), "spoolman_module_off")])
+        .await;
+
+    // Proposed while on, then the Build turns Spoolman off: confirm refuses,
+    // writes nothing and keeps the proposal pending.
+    execute(
+        &seeded.server,
+        &format!(
+            "DELETE FROM app_settings WHERE key='feature_toggles:plan:{}';",
+            seeded.build
+        ),
+    );
+    let (proposal, error) = json_call(&seeded.server, &seeded.headers, TOOL, args).await;
+    assert!(!error, "{proposal}");
+    let id = proposal["action"]["id"].as_str().unwrap().to_owned();
+    plan_off(&seeded);
+    let before = seeded.state();
+    let (refused, error) = confirm(&seeded.server, &seeded.headers, &id).await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["code"], "spoolman_module_off");
+    assert_eq!(before, seeded.state());
+    assert!(
+        pending(&seeded.server, &seeded.headers)
+            .await
+            .iter()
+            .any(|action| action["id"] == id)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_assign_role_filament_refuses_a_malformed_or_misplaced_spool_pin_at_propose() {
     let seeded = spoolman_on().await;

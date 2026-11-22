@@ -2,7 +2,8 @@
 //! storage (GRE-1435).
 //!
 //! Propose checks the assignment's shape and that the Build has a planning
-//! brief. A Spoolman assignment also requires the Spoolman Module. It writes
+//! brief. A Spoolman assignment also requires Spoolman on for the Build, its
+//! Plan override included, as Checkoff reads it. It writes
 //! nothing and makes no network call. Confirm checks the assignment again.
 //! A catalog assignment is matched against the built-in catalog before the
 //! write. A Spoolman assignment, and the spool it may pin (GRE-1898), are
@@ -19,8 +20,8 @@ use super::{
 use crate::loopback::PresentedCredential;
 use pp_services::mcp_domain::ToolInvocation;
 use pp_storage::{
+    build_graph::PositiveId,
     build_graph::{RoleFilamentError, SpoolPin},
-    features::modules::{Module, ModuleOffReason, ModuleStatus},
     read_model::{
         planning::{FilamentInventoryKind, RoleFilamentAssignment},
         stock::{Inventory, spoolman_filament},
@@ -96,17 +97,9 @@ impl CheckoffDomain {
             Ok(None) => return Ok(INVALID.invocation()),
             Err(refusal) => return Ok(refusal.invocation()),
         };
-        if assignment.inventory_kind == FilamentInventoryKind::Spoolman
-            && let Err(refusal) = self.spoolman_gate()
-        {
+        let spoolman = assignment.inventory_kind == FilamentInventoryKind::Spoolman;
+        if let Err(refusal) = self.check(build, spoolman) {
             return Ok(refusal.invocation());
-        }
-        let credential = self.caller()?.into_credential();
-        if let Err(error) = self
-            .builds
-            .check_role_filament(credential, build, self.wait)
-        {
-            return Ok(storage_refusal(&error).invocation());
         }
         let mut stored = serde_json::to_value(&assignment).map_err(|error| error.to_string())?;
         if let Some(spool) = &spool {
@@ -134,7 +127,7 @@ impl CheckoffDomain {
             Ok(None) => return Ok(INVALID.confirmation()),
             Err(refusal) => return Ok(refusal.confirmation()),
         };
-        if let Err(refusal) = self.ready(&assignment, spool.as_ref()) {
+        if let Err(refusal) = self.ready(build, &assignment, spool.as_ref()) {
             return Ok(refusal.confirmation());
         }
         let credential = self.caller()?.into_credential();
@@ -156,26 +149,36 @@ impl CheckoffDomain {
         )
     }
 
-    /// Catalog match, or the Spoolman check: the Module, then the filament
-    /// and the pinned spool against one inventory read, then the Module
-    /// again, as the read may outlast a change. An integration this process
-    /// cannot find or read is `spoolman_unavailable` and nothing is written.
+    /// Catalog match, or the Spoolman check: Spoolman on for the Build,
+    /// then the filament and the pinned spool against one inventory read.
+    /// The write checks Spoolman for the Build again in its own transaction,
+    /// as the read may outlast a change. An integration this process cannot
+    /// find or read is `spoolman_unavailable` and nothing is written.
     fn ready(
         &self,
+        build: PositiveId,
         assignment: &RoleFilamentAssignment,
         spool: Option<&SpoolPin>,
     ) -> Result<(), Refusal> {
         match assignment.inventory_kind {
             FilamentInventoryKind::Catalog => check_catalog(assignment),
             FilamentInventoryKind::Spoolman => {
-                self.spoolman_gate()?;
+                self.check(build, true)?;
                 let (integration, filament) = spoolman_item(assignment)?;
                 let inventory = self.inventory(integration)?;
-                check_spoolman(&inventory, assignment, filament, spool)?;
-                self.spoolman_gate()
+                check_spoolman(&inventory, assignment, filament, spool)
             }
             FilamentInventoryKind::Custom | FilamentInventoryKind::Substitute => Ok(()),
         }
+    }
+
+    /// The Build's brief, and Spoolman on for it when `spoolman`, read with
+    /// the caller's key.
+    fn check(&self, build: PositiveId, spoolman: bool) -> Result<(), Refusal> {
+        let credential = self.caller().map_err(|_| INTERNAL)?.into_credential();
+        self.builds
+            .check_role_filament(credential, build, spoolman, self.wait)
+            .map_err(|error| storage_refusal(&error))
     }
 
     /// One read of `integration`'s inventory. A missing or disabled
@@ -206,25 +209,6 @@ impl CheckoffDomain {
         match self.caller() {
             Ok(PresentedCredential::ApiKey { tenant, .. }) => Ok(tenant),
             _ => Err(INTERNAL),
-        }
-    }
-
-    fn spoolman_gate(&self) -> Result<(), Refusal> {
-        let tenant = self.tenant()?;
-        let Ok(statuses) = self.farm.modules.modules(&tenant, self.wait) else {
-            return Err(UNAVAILABLE);
-        };
-        match statuses
-            .into_iter()
-            .find(|status| status.module() == Module::Spoolman)
-        {
-            Some(ModuleStatus::On { .. }) => Ok(()),
-            Some(ModuleStatus::Off {
-                reason: ModuleOffReason::SettingUnreadable,
-                ..
-            }) => Err(MODULES_INVALID),
-            Some(ModuleStatus::Off { .. }) => Err(SPOOLMAN_OFF),
-            None => Err(INTERNAL),
         }
     }
 }
@@ -380,6 +364,8 @@ fn storage_refusal(error: &RoleFilamentError) -> Refusal {
     match error {
         RoleFilamentError::NoBrief => source_roles::NO_BRIEF,
         RoleFilamentError::BriefInvalid => source_roles::BRIEF_INVALID,
+        RoleFilamentError::SpoolmanOff => SPOOLMAN_OFF,
+        RoleFilamentError::FeatureSettingInvalid => MODULES_INVALID,
         RoleFilamentError::Writer(failure) => writer_failure(failure),
     }
 }

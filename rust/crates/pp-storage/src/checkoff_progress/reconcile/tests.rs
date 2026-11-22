@@ -241,7 +241,7 @@ fn a_completed_link_filters_only_plausible_replays() {
 
     let send = |id: &str, fields: Value| {
         let mut raw = json!({
-            "id": id, "profile_id": 1, "integration_id": "moon-1",
+            "id": id, "profile_id": 1, "integration_id": "moon-1", "printer_id": "p1",
             "filename": FILE, "state": WATCHING, "started": true,
             "created_at": "2026-11-21T10:00:00.000Z",
             "units": [{"part_id": 1, "unit_index": 0}],

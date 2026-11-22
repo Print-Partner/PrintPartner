@@ -59,7 +59,7 @@ struct Names {
     seen: [HashSet<String>; 6],
     /// Every distinct name so far, in lower case, whatever its kind. Only a
     /// name new to the file counts against [`MAX_NAMES`], so one label two
-    /// readers both match (quoted and bare M486) counts once.
+    /// readers both match (`;MESH:` and `; printing object`) counts once.
     distinct: HashSet<String>,
     /// A distinct name past [`MAX_NAMES`] was found.
     overflow: bool,
@@ -244,7 +244,9 @@ fn exclude_name(line: &str) -> Option<&str> {
 }
 
 /// `\bM486\b[^\n]*?\bA\s*"([^"]+)"` (`quoted`) or `\bM486\b[^\n]*?\bA\s*([^\s;]+)`,
-/// any case. A bare number is an object index, not a label.
+/// any case. A bare number is an object index, not a label. The bare form
+/// skips a quoted argument, which the quoted form reads; Node's bare form also
+/// reads its first word as a second name (docs/adr/0016-rust-owns-its-data-formats.md).
 fn m486(line: &str, quoted_only: bool) -> Option<&str> {
     let start = words(line, "M486", true).next()? + 4;
     let rest = &line[start..];
@@ -266,7 +268,10 @@ fn m486(line: &str, quoted_only: bool) -> Option<&str> {
     if quoted_only {
         return Some(label);
     }
-    let label = label.trim_matches('"');
+    if label.starts_with('"') {
+        return None;
+    }
+    let label = label.trim_end_matches('"');
     (!label.chars().all(|c| c.is_ascii_digit())).then_some(label)
 }
 

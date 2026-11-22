@@ -41,14 +41,6 @@ function step(number: number, ticket: `GRE-${number}` | null, body: Body) {
   else test(title, walk);
 }
 
-/**
- * Ends a marked step at the point its ticket has to write the rest. The step keeps
- * failing until that ticket finishes the test, so a half-built screen never scores.
- */
-function unwritten(rest: string): never {
-  throw new Error(`This step's test is not written past here. Still to check: ${rest}.`);
-}
-
 const docker = (...args: string[]) =>
   spawnSync("docker", args, { encoding: "utf8", timeout: 30_000 });
 const inContainer = (...command: string[]) => docker("exec", CONTAINER, ...command);
@@ -170,12 +162,18 @@ async function connectAssistant(page: Page) {
     clientInfo: { name: "daily-loop", version: "0" },
   });
   await send("notifications/initialized");
+  const call = async (name: string, args: object) => {
+    const { content, isError } = await send("tools/call", { name, arguments: args });
+    if (isError) throw new Error(`${name}: ${content[0].text}`);
+    return JSON.parse(content[0].text);
+  };
   return {
-    /** Calls a tool and returns the JSON it answers with; a tool error throws its text. */
-    call: async (name: string, args: object) => {
-      const { content, isError } = await send("tools/call", { name, arguments: args });
-      if (isError) throw new Error(`${name}: ${content[0].text}`);
-      return JSON.parse(content[0].text);
+    apply: async (tool: string, args: object) => {
+      const proposed = await call(tool, args);
+      expect(proposed.status, JSON.stringify(proposed)).toBe("proposed");
+      const applied = await call("confirm_apply", { action_id: proposed.action.id });
+      expect(applied.ok, JSON.stringify(applied)).toBe(true);
+      return applied.result;
     },
   };
 }
@@ -748,15 +746,7 @@ step(5, null, async ({ page }) => {
   await page.getByRole("button", { name: "Turn Orders on" }).click();
   await page.getByRole("button", { name: "Confirm Module change" }).click();
   await expect(page.getByRole("button", { name: "Turn Orders off" })).toBeVisible();
-  const assistant = await connectAssistant(page);
-  /** Proposes a write and confirms it, as the owner does when the assistant asks. */
-  const apply = async (tool: string, args: object) => {
-    const proposed = await assistant.call(tool, args);
-    expect(proposed.status, JSON.stringify(proposed)).toBe("proposed");
-    const applied = await assistant.call("confirm_apply", { action_id: proposed.action.id });
-    expect(applied.ok, JSON.stringify(applied)).toBe(true);
-    return applied.result;
-  };
+  const { apply } = await connectAssistant(page);
   const request = "One kit for the daily-loop test.";
   const { plan_id } = await apply("propose_create_build", { name: BUILD, request });
   await go(page, "Builds");
@@ -1033,15 +1023,22 @@ const sendRow = (page: Page, file: string) =>
     .getByRole("row")
     .filter({ has: page.getByRole("cell", { name: file, exact: true }) });
 
-/** Sends `file` to the simulator from the Production tab's sheet: upload, then start. */
-async function uploadAndStart(page: Page, file: string) {
+async function uploadAndStart(
+  page: Page,
+  file: string,
+  { gcode = GCODE, units }: { gcode?: string; units?: string[] } = {},
+) {
   await page.getByRole("button", { name: "Send a file" }).click();
   const sheet = page.getByRole("dialog", { name: "Send a file" });
   await sheet
     .getByLabel("Sliced file")
-    .setInputFiles({ name: file, mimeType: "text/x-gcode", buffer: Buffer.from(GCODE) });
+    .setInputFiles({ name: file, mimeType: "text/x-gcode", buffer: Buffer.from(gcode) });
   await sheet.getByLabel("Printer", { exact: true }).selectOption({ label: PRINTER });
   await sheet.getByRole("radio", { name: "Upload and start print" }).check();
+  if (units) {
+    const linked = sheet.getByRole("group", { name: "Checkoff units" }).getByRole("listitem");
+    await expect(linked).toHaveText(units);
+  }
   const send = sheet.getByRole("button", { name: "Send", exact: true });
   await expect(send).toBeEnabled();
   await send.click();
@@ -1220,23 +1217,88 @@ step(10, null, async ({ page }) => {
 const SPOOLMAN = "Daily loop Spoolman";
 
 /** What the stand-in's control port reports: its spools and every use the core sent. */
-async function spoolmanLog() {
+type SpoolmanLog = {
+  spools: { id: number; remaining_weight: number }[];
+  uses: { spool_id: number; use_weight: number }[];
+};
+
+async function spoolman(path: "log"): Promise<SpoolmanLog>;
+async function spoolman(
+  path: "stock",
+  body: { spool_id: number; remaining_weight: number },
+): Promise<SpoolmanLog>;
+async function spoolman(path: "log" | "stock", body?: { spool_id: number; remaining_weight: number }) {
   const standIn = process.env.PP_DAILY_LOOP_SPOOLMAN ?? "";
   const control = docker("port", standIn, "7913").stdout.trim().split("\n")[0];
   expect(control, `docker port ${standIn} 7913`).toMatch(/^127\.0\.0\.1:\d+$/);
-  const answer = await fetch(`http://${control}/_stand-in/log`);
-  expect(answer.status, "GET /_stand-in/log").toBe(200);
-  return (await answer.json()) as {
-    spools: { id: number; remaining_weight: number }[];
-    uses: { spool_id: number; use_weight: number }[];
-  };
+  const answer = await fetch(
+    `http://${control}/_stand-in/${path}`,
+    body && {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  expect(answer.status, `/_stand-in/${path}: ${body ? JSON.stringify(body) : ""}`).toBe(200);
+  return (await answer.json()) as SpoolmanLog;
 }
+
+const FILAMENT = "Stand-in PLA · Daily loop black";
+const STAND_IN_FILAMENT_ID = 1;
+const UNPINNED_SPOOL_ID = 1;
+const PINNED_SPOOL_ID = 2;
+const TODAY_REREAD_TIMEOUT_MS = 45_000;
+
+type FilamentFact = { value: string; basis: string };
+
+type FilamentRow = {
+  parts: string[];
+  needed: FilamentFact;
+  stock: FilamentFact;
+  status: string;
+  deduction?: RegExp;
+};
+
+async function refreshFilamentUntil(page: Page, row: FilamentRow) {
+  const section = page.getByRole("region", { name: "Filament" });
+  const item = section.getByRole("listitem", { name: FILAMENT, exact: true });
+  const parts = item.getByRole("list", { name: `Parts on ${FILAMENT}` }).getByRole("listitem");
+  const fact = (term: string) =>
+    item
+      .locator(".pp-fact")
+      .filter({ has: page.locator("dt", { hasText: new RegExp(`^${term}$`) }) })
+      .locator("dd");
+  await expect(async () => {
+    await section.getByRole("button", { name: "Refresh" }).click();
+    await expect(section.getByRole("status")).toHaveText(/^Read /);
+    await expect(parts).toHaveText(row.parts);
+    await expect(fact("Needed")).toHaveText(`${row.needed.value}${row.needed.basis}`);
+    await expect(fact("In Spoolman")).toHaveText(`${row.stock.value}${row.stock.basis}`);
+    await expect(fact("Status")).toHaveText(row.status);
+    if (row.deduction) await expect(fact("Last deduction")).toHaveText(row.deduction);
+    else await expect(fact("Last deduction")).toHaveCount(0);
+  }).toPass({ timeout: 40_000 });
+}
+
+const LINKED = "bracket-unit-1.gcode";
+const LINKED_GCODE = [
+  "; Daily loop bracket, sliced",
+  "EXCLUDE_OBJECT_DEFINE NAME=bracket.stl_id_0_copy_0 CENTER=10,10",
+  "G28",
+  "G1 Z0.2 F3000",
+  "G1 X10 Y10 E1 F1500",
+  "M84",
+  "; filament used [mm] = 4000",
+  "; filament used [g] = 12",
+  "",
+].join("\n");
 
 type NextAction = { label: string; reason: string };
 
 // Step 5's Build, as Step 6 accepted it: bracket.stl at quantity 2. Nothing has checked off
 // a unit of it.
-step(11, "GRE-1896", async ({ page }) => {
+step(11, null, async ({ page }) => {
+  test.setTimeout(420_000);
   await signIn(page);
   const origin = new URL(page.url()).origin;
   // Spoolman is off on a new installation; the owner turns it on.
@@ -1252,6 +1314,7 @@ step(11, "GRE-1896", async ({ page }) => {
     headers: { Origin: origin },
   });
   expect(added.ok(), `POST /api/v2/integrations: ${added.status()} ${await added.text()}`).toBe(true);
+  const { id: integrationId } = (await added.json()) as { id: string };
   await page.reload();
   const integration = page.locator(".pp-fact").filter({ has: page.locator("dt", { hasText: SPOOLMAN }) });
   await expect(integration.locator("dd")).toContainText("Spoolman, on");
@@ -1278,9 +1341,12 @@ step(11, "GRE-1896", async ({ page }) => {
 
   // The Build's Overview shows what is printed, the same next action, and in the Filament
   // section each Part with its units left.
-  await go(page, "Builds");
-  await page.getByRole("table", { name: "Builds" }).getByRole("link", { name: BUILD, exact: true }).click();
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  const overview = async () => {
+    await go(page, "Builds");
+    await page.getByRole("table", { name: "Builds" }).getByRole("link", { name: BUILD, exact: true }).click();
+    await page.getByRole("link", { name: "Overview", exact: true }).click();
+  };
+  await overview();
   await expect(page.getByText(`${units.length - left} of ${units.length} units printed`)).toBeVisible();
   const nextFact = page.locator(".pp-fact").filter({ has: page.locator("dt", { hasText: "Next action" }) });
   await expect(nextFact.locator("dd")).toContainText(`${next.label}${next.reason}`);
@@ -1293,11 +1359,95 @@ step(11, "GRE-1896", async ({ page }) => {
   await expect(filament.getByText("Not known yet")).toBeVisible();
   await expect(filament.getByText(/^Short by /)).toHaveCount(0);
   // Reading stock never deducts it.
-  expect((await spoolmanLog()).uses, "uses the core sent to Spoolman").toEqual([]);
+  expect((await spoolman("log")).uses, "uses the core sent to Spoolman").toEqual([]);
 
-  unwritten(
-    "Spoolman shortfalls are current and a deduction is recorded once: a Part of a Build made on Rust cannot name a Spoolman filament or pin a spool (GRE-1898), a send from Production records no grams (GRE-1896), and a finished print's link never becomes confirmable on Today (GRE-1897)",
-  );
+  const { apply } = await connectAssistant(page);
+  const assignment = {
+    role: "primary",
+    inventory_kind: "spoolman",
+    inventory_id: `spoolman:${integrationId}:filament:${STAND_IN_FILAMENT_ID}`,
+    color_hex: "#1a1a1a",
+    spoolman_spool_id: `spoolman:${integrationId}:spool:${PINNED_SPOOL_ID}`,
+  };
+  expect(await apply("propose_assign_role_filament", { plan_id: id, assignment })).toEqual({
+    role: "primary",
+    updated_parts: 1,
+  });
+  await refreshFilamentUntil(page, {
+    parts: [`${STL} 2 units left`],
+    needed: { value: "Not known yet", basis: "no print of this Build has recorded its grams" },
+    stock: { value: "870 g", basis: "on 2 spools" },
+    status: "Not known",
+  });
+
+  await page.getByRole("link", { name: "Production", exact: true }).click();
+  await expect(screen(page, "Production")).toBeVisible();
+  await uploadAndStart(page, LINKED, { gcode: LINKED_GCODE, units: [`${STL} × 1`] });
+  await expect(sendRow(page, LINKED).getByRole("cell").nth(4)).toHaveText("Sent", { timeout: 60_000 });
+  expect((await simulator("log")).filename, "the file printing").toBe(LINKED);
+
+  await go(page, "Today");
+  const hero = page.getByRole("region", { name: "Clear 1 bed and confirm what came off" });
+  await expect(hero).toHaveCount(0);
+  expect((await spoolman("log")).uses, "uses while the print runs").toEqual([]);
+  await simulator("state", { state: "complete", progress: 1, filename: LINKED });
+  await expect(hero).toBeVisible({ timeout: TODAY_REREAD_TIMEOUT_MS });
+  const bed = hero
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("heading", { name: PRINTER, level: 3 }) });
+  await expect(bed).toContainText(LINKED);
+  await expect(bed).not.toContainText("confirm by hand");
+  const marks = bed.getByRole("list", { name: `What confirming ${PRINTER} marks` });
+  await expect(marks.getByRole("listitem")).toHaveText([`${STL}: +1 printed (unit 1)`]);
+
+  const confirmBed = bed.getByRole("button", { name: `Confirm ${PRINTER} bed` });
+  const tally = page.getByRole("status", { name: "Checkoff tally" });
+  await confirmBed.click();
+  await expect(tally).toContainText(`Confirmed 1 unit from ${PRINTER}.`);
+  await expect(hero).toHaveCount(0);
+  const deducted = [{ spool_id: PINNED_SPOOL_ID, use_weight: 12 }];
+  await expect.poll(async () => (await spoolman("log")).uses, { timeout: 45_000 }).toEqual(deducted);
+
+  await tally.getByRole("button", { name: "Undo" }).click();
+  await expect(tally).toContainText(`Undid the ${PRINTER} confirmation. 1 unit is waiting again.`);
+  const reconfirmAfterUndoSettled = async () => {
+    await expect(async () => {
+      if (await confirmBed.isVisible()) await confirmBed.click();
+      await expect(tally).toContainText(`Confirmed 1 unit from ${PRINTER}.`, { timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+  };
+  await reconfirmAfterUndoSettled();
+  await expect(hero).toHaveCount(0);
+
+  await overview();
+  await expect(page.getByText(`1 of ${units.length} units printed`)).toBeVisible();
+  const afterDeduction = {
+    parts: [`${STL} 1 unit left`],
+    needed: { value: "12 g", basis: "slicer estimate" },
+    deduction: new RegExp(`^12 g from spool ${PINNED_SPOOL_ID}applied, `),
+  };
+  await refreshFilamentUntil(page, {
+    ...afterDeduction,
+    stock: { value: "858 g", basis: "on 2 spools" },
+    status: "Enough",
+  });
+  const log = await spoolman("log");
+  expect(log.uses, "uses after Undo and a second confirm").toEqual(deducted);
+  expect(log.spools.find((spool) => spool.id === UNPINNED_SPOOL_ID)?.remaining_weight, "spool 1's grams").toBe(750);
+  expect(log.spools.find((spool) => spool.id === PINNED_SPOOL_ID)?.remaining_weight, "spool 2's grams").toBe(108);
+
+  try {
+    await spoolman("stock", { spool_id: UNPINNED_SPOOL_ID, remaining_weight: 4 });
+    await spoolman("stock", { spool_id: PINNED_SPOOL_ID, remaining_weight: 1 });
+    await refreshFilamentUntil(page, {
+      ...afterDeduction,
+      stock: { value: "5 g", basis: "on 2 spools" },
+      status: "Short by 7 g",
+    });
+  } finally {
+    await spoolman("stock", { spool_id: UNPINNED_SPOOL_ID, remaining_weight: 750 });
+    await spoolman("stock", { spool_id: PINNED_SPOOL_ID, remaining_weight: 108 });
+  }
 });
 
 /** What run.mjs made for Step 12: the second container's name and its new, empty volume. */

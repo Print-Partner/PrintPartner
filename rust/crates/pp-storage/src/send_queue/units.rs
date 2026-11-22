@@ -168,6 +168,8 @@ pub(crate) fn still_current(
     plan: i64,
     linked: &SendUnits,
 ) -> anyhow::Result<bool> {
+    // A send that links no unit stores nothing a Checkoff could make wrong. Its revision is
+    // not compared: a Plan read that was not ready (being repaired, say) has none to compare.
     if linked.coordinates.is_empty() {
         return Ok(true);
     }

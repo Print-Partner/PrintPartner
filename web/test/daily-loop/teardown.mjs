@@ -8,13 +8,16 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
-/** True while any process, a zombie included, is in process group `pgid`. */
+/**
+ * True while any process, a zombie included, is in process group `pgid`.
+ * @param {number} pgid
+ */
 export function groupAlive(pgid) {
   try {
     process.kill(-pgid, 0);
     return true;
   } catch (error) {
-    return error.code === "EPERM";
+    return error instanceof Error && "code" in error && error.code === "EPERM";
   }
 }
 
@@ -22,6 +25,8 @@ export function groupAlive(pgid) {
  * Waits until process group `pgid` is empty. After `grace` ms it sends SIGKILL to what is
  * left; if the group is still there `grace` ms after that, it stops waiting. Resolves to
  * `{ killed, stuck }`: whether it had to kill, and whether the group outlived the kill.
+ * @param {number} pgid
+ * @param {{ grace?: number, poll?: number }} [options]
  */
 export async function drainGroup(pgid, { grace = 30_000, poll = 100 } = {}) {
   const start = Date.now();
@@ -45,6 +50,8 @@ export async function drainGroup(pgid, { grace = 30_000, poll = 100 } = {}) {
 /**
  * The IDs of the processes, other than this one, whose command line contains `text`. A
  * listing that failed or was cut short throws: it must not read as "none left".
+ * @param {string} text
+ * @returns {number[]}
  */
 export function processesNaming(text) {
   const listed = spawnSync("ps", ["-eww", "-o", "pid=,args="], { encoding: "utf8", maxBuffer: 64 * 1024 ** 2 });
@@ -61,8 +68,11 @@ export function processesNaming(text) {
  * Sends SIGTERM to every process whose command line contains `text`, then SIGKILL to those
  * still there after `grace` ms. Resolves to the IDs still there after both; rejects when the
  * processes cannot be listed.
+ * @param {string} text
+ * @param {{ grace?: number, poll?: number }} [options]
  */
 export async function stopProcessesNaming(text, { grace = 10_000, poll = 100 } = {}) {
+  /** @type {(pids: number[], name: NodeJS.Signals) => void} */
   const signal = (pids, name) => {
     for (const pid of pids) {
       try {
@@ -82,18 +92,29 @@ export async function stopProcessesNaming(text, { grace = 10_000, poll = 100 } =
 }
 
 /**
- * Calls `remove`, waits `quiet` ms and calls `leftovers`, up to `passes` times, until a look
- * finds nothing. A docker request that a stopped command sent can still be carried out after
- * the command has gone, so an empty list taken straight after a removal proves nothing.
+ * Calls `remove`, then looks with `leftovers` every `quiet` ms. It is done when `looks` looks
+ * in a row find nothing; anything a look finds starts the next pass with another `remove`, up
+ * to `passes` passes. A docker request that a stopped command sent can still be carried out
+ * after the command has gone, so an empty list taken straight after a removal proves nothing.
+ * With the defaults it catches what appears up to 6 s after a removal; run.mjs calls it only
+ * once no process of the run is left to send a request.
  * Resolves to what the last look found: empty when everything is gone.
+ * @param {{ remove: () => void, leftovers: () => string[], quiet?: number, looks?: number, passes?: number }} options
+ * @returns {Promise<string[]>}
  */
-export async function removeUntilQuiet({ remove, leftovers, quiet = 3000, passes = 4 }) {
+export async function removeUntilQuiet({ remove, leftovers, quiet = 3000, looks = 2, passes = 5 }) {
+  /** @type {string[]} */
   let left = [];
   for (let pass = 0; pass < passes; pass++) {
     remove();
-    await delay(quiet);
-    left = leftovers();
-    if (left.length === 0) break;
+    let empty = 0;
+    while (empty < looks) {
+      await delay(quiet);
+      left = leftovers();
+      if (left.length > 0) break;
+      empty++;
+    }
+    if (empty === looks) return [];
   }
   return left;
 }

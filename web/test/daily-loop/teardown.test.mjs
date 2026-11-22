@@ -6,109 +6,124 @@ import process from "node:process";
 import { test } from "node:test";
 import { setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
+import { URL } from "node:url";
+import { DEAF, detached, groupWithMember } from "./teardown.fixture.mjs";
 import { drainGroup, groupAlive, processesNaming, removeUntilQuiet, stopProcessesNaming } from "./teardown.mjs";
 
-// A test that fails must not leave its processes running: they would keep this file's test
-// process alive, so the run would hang instead of reporting the failure.
+// A test that fails must not hang the run, so each has a timeout and ends its fixtures
+// (teardown.fixture.mjs) when it ends.
 const PROCESS_TEST = { timeout: 20_000 };
-const killGroupAfter = (t, pgid) =>
-  t.after(() => {
-    try {
-      process.kill(-pgid, "SIGKILL");
-    } catch {
-      // The group has already gone.
-    }
-  });
-
-/**
- * Starts a process group whose leader starts `member` (Node source) in the same group and
- * exits at once, as the Playwright CLI exits while its worker still runs. Resolves to the
- * group's ID once the leader has exited and the member has started.
- */
-async function groupWithMember(member) {
-  const leader = spawn(
-    process.execPath,
-    [
-      "-e",
-      `require("node:child_process")
-         .spawn(process.execPath, ["-e", ${JSON.stringify(member)}], { stdio: ["ignore", "inherit", "ignore"] })
-         .unref();`,
-    ],
-    { detached: true, stdio: ["ignore", "pipe", "ignore"] },
-  );
-  // The leader exits without waiting for the member. The member shares the leader's stdout
-  // and writes one line once it runs.
-  const exited = once(leader, "exit");
-  const [line] = await once(leader.stdout, "data");
-  assert.match(String(line), /running/);
-  await exited;
-  leader.stdout.destroy();
-  return leader.pid;
-}
+const markOf = () => `pp-daily-loop-teardown-${randomBytes(4).toString("hex")}`;
+/** @type {(t: import("node:test").TestContext, fixture: { end: () => void }) => void} */
+const endAfter = (t, fixture) => t.after(fixture.end);
 
 test("draining a group waits for a member that outlives the leader", PROCESS_TEST, async (t) => {
-  const pgid = await groupWithMember(`console.log("running"); setTimeout(() => {}, 800);`);
-  killGroupAfter(t, pgid);
-  assert.equal(groupAlive(pgid), true, "the member is still in the group after the leader exited");
+  const fixture = await groupWithMember(`setTimeout(() => process.exit(0), 800);`, markOf());
+  endAfter(t, fixture);
+  assert.equal(groupAlive(fixture.pgid), true, "the member is still in the group after the leader exited");
   const started = Date.now();
-  const result = await drainGroup(pgid, { grace: 10_000 });
+  const result = await drainGroup(fixture.pgid, { grace: 10_000 });
   assert.deepEqual(result, { killed: false, stuck: false });
   assert.ok(Date.now() - started >= 500, "it waited for the member");
-  assert.equal(groupAlive(pgid), false);
+  assert.equal(groupAlive(fixture.pgid), false);
 });
 
 test("draining a group kills a member that ignores SIGTERM once the grace period is over", PROCESS_TEST, async (t) => {
-  const pgid = await groupWithMember(
-    `process.on("SIGTERM", () => {}); console.log("running"); setInterval(() => {}, 1000);`,
-  );
-  killGroupAfter(t, pgid);
-  process.kill(-pgid, "SIGTERM");
+  const fixture = await groupWithMember(DEAF, markOf());
+  endAfter(t, fixture);
+  process.kill(-fixture.pgid, "SIGTERM");
   await delay(100);
-  assert.equal(groupAlive(pgid), true, "SIGTERM alone does not end it");
-  assert.deepEqual(await drainGroup(pgid, { grace: 300 }), { killed: true, stuck: false });
-  assert.equal(groupAlive(pgid), false);
+  assert.equal(groupAlive(fixture.pgid), true, "SIGTERM alone does not end it");
+  assert.deepEqual(await drainGroup(fixture.pgid, { grace: 300 }), { killed: true, stuck: false });
+  assert.equal(groupAlive(fixture.pgid), false);
 });
 
 test("processes that name a folder are found, asked to stop, then killed", PROCESS_TEST, async (t) => {
-  const folder = `/tmp/pp-daily-loop-teardown-${randomBytes(4).toString("hex")}`;
+  const folder = `/tmp/${markOf()}`;
   // Like Chromium under Playwright: its own group, the run's folder on its command line.
-  const deaf = spawn(
-    process.execPath,
-    [
-      "-e",
-      `process.on("SIGTERM", () => {}); console.log("running"); setInterval(() => {}, 1000);`,
-      "--",
-      `--user-data-dir=${folder}/profile`,
-    ],
-    { detached: true, stdio: ["ignore", "pipe", "ignore"] },
-  );
-  killGroupAfter(t, deaf.pid);
-  // Once it runs, so its SIGTERM handler is in place.
-  await once(deaf.stdout, "data");
-  assert.deepEqual(processesNaming(folder), [deaf.pid]);
+  const fixture = await detached(DEAF, [`--user-data-dir=${folder}/profile`]);
+  endAfter(t, fixture);
+  assert.deepEqual(processesNaming(folder), [fixture.pid]);
   assert.deepEqual(processesNaming(`${folder}-other`), []);
-  const closed = once(deaf, "close");
+  const closed = once(fixture.child, "exit");
   assert.deepEqual(await stopProcessesNaming(folder, { grace: 300 }), []);
   const [, signal] = await closed;
   assert.equal(signal, "SIGKILL");
   assert.deepEqual(processesNaming(folder), []);
 });
 
-test("removal goes on until a look taken after a quiet wait finds nothing", async () => {
-  // A launch that was in flight when the run stopped creates its container after the first
-  // removal. A look straight after that removal finds nothing; the next one does.
+// The fixtures above ignore SIGTERM and leave their starter's process group, so a stop that
+// ends the test runner before a test's cleanup runs must still not leave them behind.
+for (const signal of ["SIGTERM", "SIGKILL"]) {
+  test(`fixtures exit when the process that started them ends by ${signal}`, PROCESS_TEST, async (t) => {
+    const mark = markOf();
+    const module = new URL("./teardown.fixture.mjs", import.meta.url).href;
+    // A stand-in for a test file's process: it starts both kinds of fixture, then waits.
+    const runner = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { DEAF, detached, groupWithMember } = await import(${JSON.stringify(module)});
+         await groupWithMember(DEAF, ${JSON.stringify(mark)});
+         await detached(DEAF, [${JSON.stringify(mark)}]);
+         console.log("ready");
+         setInterval(() => {}, 1000);`,
+      ],
+      { detached: true, stdio: ["ignore", "pipe", "inherit"] },
+    );
+    const { pid } = runner;
+    assert.ok(pid, "the runner started");
+    t.after(() => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // It has already gone.
+      }
+    });
+    const [line] = await once(runner.stdout, "data");
+    assert.match(String(line), /ready/);
+    // The runner's own source names the mark too.
+    const fixtures = () => processesNaming(mark).filter((other) => other !== pid);
+    assert.equal(fixtures().length, 2, "the group member and the detached process run");
+    const exited = once(runner, "exit");
+    process.kill(-pid, signal);
+    await exited;
+    for (let tries = 0; tries < 50 && fixtures().length > 0; tries++) await delay(100);
+    assert.deepEqual(processesNaming(mark), [], `no fixture outlives a runner ended by ${signal}`);
+  });
+}
+
+/**
+ * An inventory where a container appears `after` ms after the first removal: a slow create.
+ * @param {number} after
+ */
+function inventory(after) {
   const present = new Set(["container"]);
   let removals = 0;
-  const left = await removeUntilQuiet({
+  return {
     remove: () => {
       present.clear();
-      if (++removals === 1) setTimeout(() => present.add("late container"), 20);
+      if (++removals === 1) setTimeout(() => present.add("late container"), after);
     },
     leftovers: () => [...present],
-    quiet: 100,
-  });
+    removals: () => removals,
+  };
+}
+
+test("removal catches what appears after the first quiet wait, before the second look", async () => {
+  // As a create the daemon carries out 3.2 s after the removal, with the 3 s default: the
+  // first look finds nothing, the second finds it.
+  const late = inventory(320);
+  const left = await removeUntilQuiet({ remove: late.remove, leftovers: late.leftovers, quiet: 300 });
   assert.deepEqual(left, []);
-  assert.equal(removals, 2, "the late container was removed by a second pass");
+  assert.equal(late.removals(), 2, "the late container was removed by a second pass");
+});
+
+test("removal catches what appears within the first quiet wait", async () => {
+  const late = inventory(20);
+  assert.deepEqual(await removeUntilQuiet({ remove: late.remove, leftovers: late.leftovers, quiet: 100 }), []);
+  assert.equal(late.removals(), 2);
 });
 
 test("removal reports what is still there after its last pass", async () => {

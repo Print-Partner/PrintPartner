@@ -67,11 +67,17 @@ const names = runNames(name);
 const { image, simulator } = names;
 
 // A stop ends the running command, starts no other, and still runs the cleanup below.
-let child;
+/**
+ * The running command, and whether it leads a process group of its own.
+ * @type {{ child: import("node:child_process").ChildProcess, group: boolean } | null}
+ */
+let current = null;
 let stopped = false;
 const stop = (signal) => {
   stopped = true;
-  if (!child?.group) child?.kill(signal);
+  if (!current) return;
+  const { child, group } = current;
+  if (!group || child.pid === undefined) child.kill(signal);
   else {
     try {
       process.kill(-child.pid, signal);
@@ -95,15 +101,19 @@ const stuck = [];
  * command leads a new process group and a stop signals the whole group: `npm run` does not
  * pass a signal on to the script it started, and Playwright's CLI can exit while a worker
  * still runs a test. It resolves only once every process of the group has exited.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {import("node:child_process").SpawnOptions & { group?: boolean }} [options]
+ * @returns {Promise<number>}
  */
 const run = (command, args, { group = false, ...options } = {}) =>
   new Promise((done) => {
-    child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
-    child.group = group;
+    const child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
+    current = { child, group };
     const { pid } = child;
     child.on("error", () => done(1));
     child.on("close", async (code) => {
-      if (group && (await drainGroup(pid)).stuck) stuck.push(`process group ${pid}`);
+      if (group && pid !== undefined && (await drainGroup(pid)).stuck) stuck.push(`process group ${pid}`);
       done(code ?? 1);
     });
   });
@@ -192,7 +202,8 @@ async function writeNodeInstallation(dir) {
 async function suite(keyFile, nodeDir, browserDir) {
   const tests = ["steps", "simulator", "installation", "teardown"].map((test) => resolve(here, `${test}.test.mjs`));
   const steps = [
-    [process.execPath, ["--test", ...tests]],
+    // In its own group, like the browser tests: a stop reaches each test file's process.
+    [null, () => run(process.execPath, ["--test", ...tests], { group: true })],
     [null, () => writeNodeInstallation(nodeDir)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],

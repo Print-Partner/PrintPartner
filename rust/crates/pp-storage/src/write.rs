@@ -53,6 +53,23 @@ pub(crate) fn single_account(tx: &Transaction<'_>) -> Result<Installation, Write
     Ok(Installation("default".into()))
 }
 
+/// The single-account installation for a runtime worker that acts with no
+/// user session, such as the deduction sender and the Checkoff reconcile.
+/// Only the desktop's single-account policy has one.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn runtime_installation(
+    tx: &Transaction<'_>,
+    policy: AuthPolicy,
+) -> Result<Installation, WriterFailure> {
+    if !matches!(
+        policy.session_tenant,
+        auth::SessionTenantPolicy::SingleAccountDefault
+    ) {
+        return Err(WriterFailure::Auth(AuthFailure::SessionRequired));
+    }
+    single_account(tx)
+}
+
 pub(crate) fn authorize(
     tx: &Transaction<'_>,
     credential: &Credential,

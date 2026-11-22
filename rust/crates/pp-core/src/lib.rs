@@ -41,6 +41,8 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 pub mod layout;
 
 #[cfg(feature = "desktop_rebuild")]
+mod checkoff_reconcile;
+#[cfg(feature = "desktop_rebuild")]
 #[cfg(feature = "desktop_rebuild")]
 pub mod github;
 #[cfg(feature = "desktop_rebuild")]

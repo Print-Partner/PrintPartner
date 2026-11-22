@@ -43,7 +43,46 @@ Printer state comes from the Moonraker and PrusaLink status watchers' read-only 
 (`PrinterObservations`, GRE-449), never from a request to a printer. Monitoring
 never sends, checks off or dispatches. The launcher test checks that the only
 printer requests are status GETs and that every production table and setting
-is value-identical after the reads.
+is value-identical after the reads. Two watcher observers do write: the
+measured grams of a finished print
+([Filament grams per send](records/filament-grams-per-send.md)) and the
+[Checkoff reconcile](#checkoff-reconcile).
+
+## Checkoff reconcile
+
+GRE-1897 ports Node's `reconcilePrinterCheckoff` to the Rust-only runtime.
+Node ran it when the old UI polled `POST /printer-checkoff/reconcile`. Rust
+runs it from the status watchers, so no page has to be open. The route stays
+unported.
+
+`pp_core::checkoff_reconcile` reconciles every answered host status that
+differs from the last one it reconciled for that host. The comparison uses the
+state, file name and whole-percent progress, so a temperature change alone
+writes nothing. It also reconciles each host's first status after a start, so a
+print that finished while the app was closed still becomes confirmable. Hosts
+the watchers never reach are skipped: the "Awaiting status" placeholder, HTTPS
+and redirecting hosts, and Bambu while its feature is off. A failed write is
+retried on that host's next status change.
+
+`pp_storage::checkoff_progress::reconcile` applies Node's rules to the host's
+`watching` links. No other state changes:
+
+| Host status | Link change |
+| --- | --- |
+| `printing` or `paused` with the link's file | `saw_active`, and `last_progress` rises to the rounded percent |
+| `complete` with the link's file, or with no file name when the link saw its print run or was started by the send | `awaiting_verify`, `host_outcome` `success`, `completed_at` now |
+| `error` with the link's file, or after the link saw its print run | `host_failed`, `host_outcome` `failed` |
+| `idle` after the link saw its print run, at 99% or more | `awaiting_verify` (a missed brief `complete`) |
+| `idle` after the link saw its print run, below 99% | `host_failed`, `host_outcome` `cancelled` |
+| `idle`, `offline` or `unknown`, for a link more than 48 hours old that never saw its print run | `dismissed`, `host_outcome` `unknown` |
+
+File names match as in Node: the trimmed base name, in any case, against the
+link's `filename` or `remote_path`. Each changed link moves to the end of the
+stored list, as `updatePrinterCheckoffLink` does. A status that changes no link
+writes nothing. Nothing is checked off: Today offers the `awaiting_verify` bed,
+and `POST /printer-checkoff/verify-batch` records the confirmation and its
+Spoolman deduction ([Spoolman](integrations/SPOOLMAN.md)). Unattributed
+finishes and provider file drift are not ported here.
 
 ## Printers
 
@@ -205,6 +244,9 @@ cargo test --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebu
 cargo test --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test match_suggestions
 cargo test --manifest-path rust/Cargo.toml -p pp-drivers --lib farm_reads
 cargo test --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --test runtime_m0 farm_reads
+cargo test --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib checkoff_progress::reconcile
+cargo test --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_reconcile
+cargo test --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --test runtime_m0 checkoff_reconcile
 cargo test --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --lib client_routes_match_registrations
 npm --prefix web run check --workspace @print-partner/rust-client
 ```

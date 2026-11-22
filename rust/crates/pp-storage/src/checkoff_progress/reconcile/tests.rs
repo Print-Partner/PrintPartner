@@ -30,7 +30,7 @@ fn report(state: HostState, file: &str) -> HostReport {
 }
 
 fn decided(link: &Link, state: HostState, file: &str) -> Decision {
-    decide(link, &report(state, file))
+    decide(link, &report(state, file), &Taken::default())
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn gre_1897_errors_and_cancels_fail_the_link_and_other_states_wait() {
         ..report(Idle, "")
     };
     assert_eq!(
-        decide(&near_done, &cancel),
+        decide(&near_done, &cancel, &Taken::default()),
         HostFailed("cancelled"),
         "explicit"
     );
@@ -104,7 +104,7 @@ fn gre_1897_errors_and_cancels_fail_the_link_and_other_states_wait() {
         progress: Some(f64::NAN),
         ..report(Paused, "plate-a.gcode")
     };
-    assert_eq!(decide(&fresh, &paused), MarkActive(None));
+    assert_eq!(decide(&fresh, &paused, &Taken::default()), MarkActive(None));
 }
 
 #[test]
@@ -228,5 +228,179 @@ fn gre_1897_a_finish_replayed_after_offline_moves_no_second_started_link() {
             ("older".to_owned(), "watching".to_owned()),
         ],
         "the replayed finish is the one `current` consumed"
+    );
+}
+
+#[test]
+fn a_completed_link_filters_only_plausible_replays() {
+    const FILE: &str = "plate-a.gcode";
+    const COMPLETED: &str = "2026-11-21T11:00:00.000Z";
+    const LATER: &str = "2026-11-21T11:30:00.000Z";
+    const AWAITING: &str = "awaiting_verify";
+    const WATCHING: &str = "watching";
+
+    let send = |id: &str, fields: Value| {
+        let mut raw = json!({
+            "id": id, "profile_id": 1, "integration_id": "moon-1",
+            "filename": FILE, "state": WATCHING, "started": true,
+            "created_at": "2026-11-21T10:00:00.000Z",
+            "units": [{"part_id": 1, "unit_index": 0}],
+        });
+        for (key, value) in fields.as_object().unwrap() {
+            raw[key] = value.clone();
+        }
+        raw
+    };
+    let took = |fields: Value| {
+        let mut raw = json!({
+            "state": AWAITING, "host_outcome": "success", "completed_at": COMPLETED,
+        });
+        for (key, value) in fields.as_object().unwrap() {
+            raw[key] = value.clone();
+        }
+        send("taken", raw)
+    };
+    let finish = report(Complete, FILE);
+    let blank = report(Complete, " ");
+    let print = report(Printing, FILE);
+    let cases = [
+        (
+            "restart",
+            json!({}),
+            json!({}),
+            vec![finish.clone(), finish.clone()],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "reconnect with blank filename",
+            json!({}),
+            json!({}),
+            vec![report(Offline, ""), blank.clone()],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "already verified",
+            json!({"state": "verified"}),
+            json!({}),
+            vec![finish.clone()],
+            WATCHING,
+            "verified",
+        ),
+        (
+            "new send",
+            json!({}),
+            json!({"created_at": LATER}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "later printing observed",
+            json!({}),
+            json!({}),
+            vec![print, finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "missing completion time",
+            json!({"completed_at": null}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "different host",
+            json!({"integration_id": "moon-2"}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "different file",
+            json!({"filename": "other.gcode"}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "blank filename on the same host",
+            json!({"filename": "other.gcode"}),
+            json!({}),
+            vec![blank],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "remote path matches",
+            json!({"filename": "other.gcode", "remote_path": "PP/Plate-A.GCODE"}),
+            json!({}),
+            vec![finish.clone()],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "failed print",
+            json!({"state": "host_failed", "host_outcome": "failed"}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            "host_failed",
+        ),
+        (
+            "equal timestamps",
+            json!({}),
+            json!({"created_at": COMPLETED}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "unreadable timestamp",
+            json!({}),
+            json!({"created_at": "not a time"}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "idle after near-done progress",
+            json!({}),
+            json!({"saw_active": true, "last_progress": 99}),
+            vec![report(Idle, "")],
+            AWAITING,
+            AWAITING,
+        ),
+    ];
+    for (case, taken, candidate, reports, candidate_state, taken_state) in cases {
+        assert_eq!(
+            replayed(vec![took(taken), send("candidate", candidate)], &reports),
+            [
+                ("candidate".into(), candidate_state.into()),
+                ("taken".into(), taken_state.into()),
+            ],
+            "{case}"
+        );
+    }
+    assert_eq!(
+        replayed(
+            vec![
+                took(json!({})),
+                send("older", json!({})),
+                send("newer", json!({"created_at": LATER})),
+            ],
+            &[finish],
+        ),
+        [
+            ("newer".into(), AWAITING.into()),
+            ("older".into(), WATCHING.into()),
+            ("taken".into(), AWAITING.into()),
+        ],
+        "a replay candidate cannot make a new send ambiguous"
     );
 }

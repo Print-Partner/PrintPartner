@@ -55,9 +55,12 @@ struct Names {
     /// bare M486, `; printing object` and Cura `;MESH:` labels.
     by_kind: [Vec<String>; 6],
     /// Each kind's names so far, in lower case. A label a slicer repeats on
-    /// every layer is kept once and counts once against [`MAX_NAMES`].
+    /// every layer is kept once per kind.
     seen: [HashSet<String>; 6],
-    count: usize,
+    /// Every distinct name so far, in lower case, whatever its kind. Only a
+    /// name new to the file counts against [`MAX_NAMES`], so one label two
+    /// readers both match (quoted and bare M486) counts once.
+    distinct: HashSet<String>,
     /// A distinct name past [`MAX_NAMES`] was found.
     overflow: bool,
     /// The unfinished last line of the previous binary G-code block.
@@ -108,15 +111,20 @@ impl Names {
             let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
                 continue;
             };
-            if !self.seen[kind].insert(name.to_lowercase()) {
+            let key = name.to_lowercase();
+            if self.seen[kind].contains(&key) {
                 continue;
             }
-            if self.count == MAX_NAMES {
-                self.overflow = true;
-                continue;
+            if !self.distinct.contains(&key) {
+                if self.distinct.len() == MAX_NAMES {
+                    self.overflow = true;
+                    continue;
+                }
+                self.distinct.insert(key.clone());
             }
+            // Each kind keeps its own order, so the file's order stays Node's.
+            self.seen[kind].insert(key);
             self.by_kind[kind].push(name.to_owned());
-            self.count += 1;
         }
     }
 

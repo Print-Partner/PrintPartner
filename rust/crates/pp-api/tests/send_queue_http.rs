@@ -46,6 +46,9 @@ struct Targets {
     staged: Mutex<Vec<(String, Vec<u8>)>>,
     /// Wakes sent to the worker.
     dispatches: Mutex<usize>,
+    /// Runs once when the next file is staged: after Add read its units,
+    /// before its write.
+    on_stage: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl SendTargets for Targets {
@@ -78,6 +81,9 @@ impl SendTargets for Targets {
     }
 
     fn stage(&self, name: &str, file: &[u8]) -> std::io::Result<String> {
+        if let Some(hook) = self.on_stage.lock().unwrap().take() {
+            hook();
+        }
         let mut staged = self.staged.lock().unwrap();
         staged.push((name.to_owned(), file.to_vec()));
         Ok(format!(
@@ -956,6 +962,35 @@ async fn gre_1896_add_refuses_a_preview_whose_units_changed() {
 
     let (status, body) = queue.add_linked("").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn gre_1896_a_checkoff_during_add_refuses_it_inside_the_write() {
+    let queue = Queue::open("1", Targets::default(), &[]);
+    let (_, binding) = queue.preview().await;
+    let database = queue.root.join("print-partner.db");
+    // Add reads the units and checks the binding first; this lands after that.
+    *queue.targets.on_stage.lock().unwrap() = Some(Box::new(move || {
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .execute(
+                "UPDATE print_progress SET completed=1 WHERE part_id=1 AND unit_index=0",
+                [],
+            )
+            .unwrap();
+    }));
+    let before = queue.counts();
+    let (status, body) = queue.add_linked(&binding).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "send_units_changed");
+    assert_eq!(queue.counts(), before, "no item and no job");
+    let staged = queue.targets.staged.lock().unwrap().len();
+    assert_eq!(staged, 1, "the hook ran after staging began");
+    assert_eq!(
+        *queue.targets.discarded.lock().unwrap(),
+        ["/data/exports/printer-uploads/1/plate.gcode"],
+        "the staged file is removed again"
+    );
 }
 
 #[tokio::test]

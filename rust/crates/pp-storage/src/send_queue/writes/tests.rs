@@ -947,7 +947,7 @@ fn link_add_dispatch(
     parts: &[pp_domain::sliced_objects::RemainingPart],
     gcode: &str,
 ) -> (crate::send_queue::units::SendUnits, Value) {
-    let linked = crate::send_queue::units::link_parts(7, &json!(null), parts, gcode.as_bytes());
+    let linked = crate::send_queue::units::link_parts(7, None, parts, gcode.as_bytes());
     let form: Vec<(String, String)> = [
         ("printer_id", printer),
         ("profile_id", "7"),
@@ -1038,4 +1038,63 @@ fn gre_1896_linked_units_reach_a_valid_printer_upload_job() {
         job_units,
         json!([{"part_id": 11, "unit_index": 0, "object_name": "bracket.stl"}])
     );
+}
+
+#[test]
+fn gre_1896_add_rechecks_linked_units_inside_its_write() {
+    let queue = Harness::open();
+    queue.seed(&[]);
+    let sql = queue.database();
+    sql.execute(
+        "INSERT INTO build_profiles(id,tenant_id,name) VALUES(7,?1,'Linked')",
+        [&queue.tenant],
+    )
+    .unwrap();
+    let parts = bracket_units(2, |_| String::new());
+    let linked = crate::send_queue::units::link_parts(7, None, &parts, b";MESH:bracket.stl\n");
+    let form: Vec<(String, String)> = [
+        ("printer_id", "p1"),
+        ("profile_id", "7"),
+        ("link_checkoff", "true"),
+        ("checkoff_binding", linked.binding.as_str()),
+    ]
+    .iter()
+    .map(|(k, v)| ((*k).into(), (*v).into()))
+    .collect();
+    let mut item = NewItem::parse(&form, Some(Some("plate.gcode"))).unwrap();
+    item.link(&linked).unwrap();
+    // bracket.stl unit 1 is checked off after the route read the units.
+    sql.execute(
+        "INSERT INTO parts(id,tenant_id,profile_id,match_key) VALUES(11,?1,7,'bracket.stl')",
+        [&queue.tenant],
+    )
+    .unwrap();
+    sql.execute(
+        "INSERT INTO print_progress(tenant_id,part_id,unit_index,completed) VALUES(?1,11,0,1)",
+        [&queue.tenant],
+    )
+    .unwrap();
+    let before: i64 = sql
+        .query_row("SELECT count(*) FROM printer_send_queue", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        queue.apply(Request::Add {
+            item,
+            artifact_path: "/data/exports/printer-uploads/a/plate.gcode".into(),
+            host_name: "Micron".into(),
+        }),
+        Reply::Refused {
+            status: 409,
+            detail: UNITS_CHANGED,
+            code: Some("send_units_changed"),
+        }
+    );
+    let after: i64 = sql
+        .query_row("SELECT count(*) FROM printer_send_queue", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, before);
 }

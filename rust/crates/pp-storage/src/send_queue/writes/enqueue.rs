@@ -2,7 +2,7 @@
 //! `enqueuePrinterSend`. Adding only writes a `queued` row for a file the
 //! route already staged; nothing is sent until Send now or Send ready.
 
-use super::super::units::{LinkedUnits, SendUnits, StaleUnits};
+use super::super::units::{LinkedUnits, SendUnits, StaleUnits, still_current};
 use super::{Reply, farm_refusal, item};
 use crate::read_model::{farm::iso_time, views::js_trim};
 use anyhow::{Result, anyhow};
@@ -26,6 +26,8 @@ pub struct NewItem {
     /// `checkoff_units` of its own: the route links the units the file
     /// prints, and only while they are still the units that preview named.
     link_checkoff: Option<String>,
+    /// The units [`NewItem::link`] linked, checked again inside Add's write.
+    linked: Option<Box<SendUnits>>,
 }
 
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
@@ -33,6 +35,8 @@ const NO_PLAN: &str = "Pick a plan to bind this send (profile_id required)";
 pub const BAD_UNITS: &str = "checkoff_units must be a JSON array of at most 64 KiB";
 const TOO_MANY_UNITS: &str =
     "checkoff_units links more units than one send can carry (1,000 units in 48 KiB)";
+/// The route's text for the same refusal before its write.
+pub const UNITS_CHANGED: &str = "This Build's Checkoff units changed since the file was read. Check the units, then send again.";
 const NO_BINDING: &str = "link_checkoff needs the checkoff_binding its preview answered";
 
 impl NewItem {
@@ -108,6 +112,7 @@ impl NewItem {
             wait_for_idle,
             start,
             link_checkoff,
+            linked: None,
             units: units.json,
         })
     }
@@ -130,6 +135,7 @@ impl NewItem {
             return Err(StaleUnits);
         }
         self.units = linked.json.clone();
+        self.linked = Some(Box::new(linked.clone()));
         Ok(())
     }
 
@@ -206,6 +212,15 @@ pub(super) fn add(
     }
     if let Some(refusal) = farm_refusal(tx, tenant, Some(new.plan))? {
         return Ok(refusal);
+    }
+    if let Some(linked) = &new.linked
+        && !still_current(tx, tenant, new.plan, linked)?
+    {
+        return Ok(Reply::Refused {
+            status: 409,
+            detail: UNITS_CHANGED,
+            code: Some("send_units_changed"),
+        });
     }
     let id = crate::checkoff_progress::links::uuid();
     let now = iso_time(SystemTime::now());

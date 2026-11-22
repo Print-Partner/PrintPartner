@@ -101,6 +101,27 @@ fn gre_1896_a_label_repeated_on_every_layer_counts_once() {
 }
 
 #[test]
+fn gre_1896_a_name_several_readers_match_counts_once() {
+    let parts = |count: usize, line: &dyn Fn(usize) -> String| -> FileObjects {
+        object_names((0..count).map(line).collect::<String>().as_bytes())
+    };
+    // Quoted M486 labels match both M486 readers.
+    for count in [5_001, MAX_NAMES] {
+        let found = parts(count, &|i| format!("M486 S{i} A\"part_{i}.stl\"\n"));
+        assert!(
+            matches!(&found, FileObjects::Read(n) if n.len() == count),
+            "{count}"
+        );
+    }
+    let both = parts(5_001, &|i| {
+        format!(";MESH:part_{i}.stl\n; printing object part_{i}.stl id:{i}\n")
+    });
+    assert!(matches!(&both, FileObjects::Read(n) if n.len() == 5_001));
+    let over = parts(MAX_NAMES + 1, &|i| format!("M486 S{i} A\"part_{i}.stl\"\n"));
+    assert_eq!(over, FileObjects::TooMany);
+}
+
+#[test]
 fn gre_1896_more_distinct_objects_than_the_cap_is_reported() {
     let labels: String = (0..=MAX_NAMES)
         .map(|i| format!(";MESH:part_{i}.stl\n"))

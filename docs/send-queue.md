@@ -279,7 +279,10 @@ no `checkoff_units` runs the same read and match on the bytes it stages and
 stores those units only when their binding is the same. Otherwise, because a
 unit was printed or the Accepted Plan changed since the preview, it answers
 409 `send_units_changed` and stages nothing, and the sheet reads the preview
-again. `link_checkoff` without `checkoff_binding` is 400. When the Accepted
+again. The queue write checks once more, in its own transaction, that the
+Accepted Plan revision is unchanged and that no linked unit is printed; a
+Checkoff that lands between the route's read and that write gets the same 409,
+and the staged file is deleted again. `link_checkoff` without `checkoff_binding` is 400. When the Accepted
 Plan cannot be read, Add answers 503 `Could not read this Build's Checkoff
 units, so nothing was queued` and stages nothing.
 

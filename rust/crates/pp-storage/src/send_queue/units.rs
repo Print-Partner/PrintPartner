@@ -8,6 +8,7 @@
 use super::writes::checkoff_units;
 use crate::read_model::{AcceptedRead, views::remaining_parts};
 use pp_domain::sliced_objects::{FileObjects, RemainingPart, object_names, propose_units};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -60,6 +61,19 @@ pub struct SendUnits {
     /// A digest of the Build, its Accepted Plan revision and the units
     /// linked. Add with `link_checkoff` must send the preview's.
     pub binding: String,
+    /// The Accepted Plan revision the units were read against, and the
+    /// linked `(part_id, unit_index)`s, which Add checks again inside its
+    /// write ([`still_current`]).
+    pub(crate) revision: Option<Revision>,
+    pub(crate) coordinates: Vec<(i64, u32)>,
+}
+
+/// The Accepted Plan revision a link was read against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Revision {
+    pub id: i64,
+    pub plan_version: i64,
+    pub digests: [String; 2],
 }
 
 /// Add with `link_checkoff` named a preview whose units are no longer the
@@ -71,20 +85,24 @@ pub struct StaleUnits;
 /// Plan read.
 pub fn send_units(plan: i64, read: &AcceptedRead, file: &[u8]) -> SendUnits {
     let revision = match read {
-        AcceptedRead::Ready { snapshot } => json!([
-            snapshot.revision_digest,
-            snapshot.required_unit_mapping_digest
-        ]),
-        _ => json!(null),
+        AcceptedRead::Ready { snapshot } => Some(Revision {
+            id: snapshot.revision_id,
+            plan_version: snapshot.plan_version,
+            digests: [
+                snapshot.revision_digest.clone(),
+                snapshot.required_unit_mapping_digest.clone(),
+            ],
+        }),
+        _ => None,
     };
-    link_parts(plan, &revision, &remaining_parts(read), file)
+    link_parts(plan, revision, &remaining_parts(read), file)
 }
 
 /// [`send_units`] over the Build's units still to print, `remaining`, and
 /// its Accepted Plan `revision`.
 pub(crate) fn link_parts(
     plan: i64,
-    revision: &serde_json::Value,
+    revision: Option<Revision>,
     remaining: &[RemainingPart],
     file: &[u8],
 ) -> SendUnits {
@@ -120,9 +138,15 @@ pub(crate) fn link_parts(
             }
         }
     }
-    let binding = hex::encode(Sha256::digest(
-        json!([plan, revision, linked.json]).to_string(),
-    ));
+    let read = revision
+        .as_ref()
+        .map(|r| json!([r.id, r.plan_version, r.digests]));
+    let binding = hex::encode(Sha256::digest(json!([plan, read, linked.json]).to_string()));
+    let coordinates = proposal
+        .units
+        .iter()
+        .map(|u| (u.part_id, u.unit_index))
+        .collect();
     SendUnits {
         file,
         json: linked.json,
@@ -130,5 +154,46 @@ pub(crate) fn link_parts(
         parts,
         unmatched: proposal.unmatched,
         binding,
+        revision,
+        coordinates,
     }
+}
+
+/// Inside Add's write: whether the units `linked` names are still the
+/// Accepted Plan revision's and still unprinted. A Checkoff that landed
+/// after the route read them makes this false, and Add writes nothing.
+pub(crate) fn still_current(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    plan: i64,
+    linked: &SendUnits,
+) -> anyhow::Result<bool> {
+    if linked.coordinates.is_empty() {
+        return Ok(true);
+    }
+    let current: Option<(Option<i64>, i64)> = tx
+        .query_row(
+            "SELECT accepted_plan_revision_id,accepted_plan_version FROM build_profiles WHERE id=?1 AND tenant_id=?2",
+            params![plan, tenant],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    // No revision read means the Build had none; it must still have none.
+    let same = match (&linked.revision, current) {
+        (Some(read), Some((Some(id), version))) => id == read.id && version == read.plan_version,
+        (None, Some((None, _))) => true,
+        _ => false,
+    };
+    if !same {
+        return Ok(false);
+    }
+    let mut printed = tx.prepare(
+        "SELECT EXISTS(SELECT 1 FROM print_progress WHERE tenant_id=?1 AND part_id=?2 AND unit_index=?3 AND completed=1)",
+    )?;
+    for (part, index) in &linked.coordinates {
+        if printed.query_row(params![tenant, part, index], |row| row.get::<_, bool>(0))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

@@ -319,6 +319,9 @@ pub(super) mod tests {
     };
     use serde_json::json;
 
+    /// `(filename, filament_color_id, filament_custom_hex, spoolman_spool_id)`.
+    type PartFilament = (String, Option<String>, Option<String>, Option<String>);
+
     struct Fixture {
         created: Created,
         build: pp_domain::PositiveId,
@@ -395,7 +398,7 @@ pub(super) mod tests {
 
         /// Each Part's `(filename, filament_color_id, filament_custom_hex,
         /// spoolman_spool_id)`, by id.
-        fn parts(&self) -> Vec<(String, Option<String>, Option<String>, Option<String>)> {
+        fn parts(&self) -> Vec<PartFilament> {
             let database = self.created.database();
             let mut statement = database
                 .prepare(

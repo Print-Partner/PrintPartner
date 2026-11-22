@@ -503,6 +503,9 @@ async fn verify_batch_lookup_reports_expired_and_unknown_keys() {
     served.stop().await;
 }
 
+/// `(state, integration_id, spool_id, grams, units)` of a deduction row.
+type DeductionRow = (String, Option<String>, Option<i64>, Option<f64>, i64);
+
 /// GRE-1898: the assistant gives role `primary` Spoolman filament 3 and pins
 /// spool 7. The Build's included accepted Parts carry both, the Filament
 /// section reads that filament from Spoolman, and a confirmed burst records
@@ -626,7 +629,7 @@ async fn a_spoolman_role_filament_reaches_the_shortfalls_and_a_pending_deduction
         .confirm(proposal["action"]["id"].as_str().unwrap())
         .await;
     assert_eq!(burst["ok"], true, "{burst}");
-    let deductions: Vec<(String, Option<String>, Option<i64>, Option<f64>, i64)> = {
+    let deductions: Vec<DeductionRow> = {
         let mut statement = sql
             .prepare(
                 "SELECT state, integration_id, spool_id, grams, units FROM spoolman_deductions",

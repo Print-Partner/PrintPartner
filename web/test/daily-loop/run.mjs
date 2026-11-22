@@ -191,14 +191,22 @@ async function writeNodeInstallation(dir) {
   return 0;
 }
 
-async function suite(keyFile, nodeDir, browserDir) {
+async function suite(keyFile, nodeDir, browserDir, testsDir) {
   const tests = ["steps", "simulator", "spoolman", "runner", "installation", "teardown"].map((test) =>
     resolve(here, `${test}.test.mjs`),
   );
   const steps = [
     // Exits when the tests end, so a listener a test leaves open fails the test, not the run.
-    // In its own group, like the browser tests: a stop reaches each test file's process.
-    [null, () => run(process.execPath, ["--test", "--test-force-exit", ...tests], { group: true })],
+    // In its own group, like the browser tests: a stop reaches each test file's process. Its
+    // temporary files go in the run's folder, so a test stopped before its cleanup leaves none.
+    [
+      null,
+      () =>
+        run(process.execPath, ["--test", "--test-force-exit", ...tests], {
+          group: true,
+          env: { ...process.env, TMPDIR: testsDir },
+        }),
+    ],
     [null, () => writeNodeInstallation(nodeDir)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],
@@ -271,16 +279,19 @@ async function suite(keyFile, nodeDir, browserDir) {
 }
 
 let code = 1;
-// The run's folder, new and 0700: the synthetic Node installation, which Step 2 imports, and
-// the browser's files and Playwright's output, downloads included.
+// The run's folder, new and 0700: the synthetic Node installation, which Step 2 imports, the
+// preflight tests' temporary files, and the browser's files and Playwright's output, downloads
+// included.
 const runRoot = mkdtempSync(join(tmpdir(), `${name}-`));
 const browserDir = join(runRoot, "browser");
+const testsDir = join(runRoot, "tests");
 try {
   mkdirSync(browserDir);
+  mkdirSync(testsDir);
   // A run that stops before the tests must not leave an older run's score in place.
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
-  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(runRoot, "node"), browserDir));
+  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(runRoot, "node"), browserDir, testsDir));
   if (runner.stopped) code ||= 1;
 } finally {
   // Every process the tests started has exited: runner.mjs waits for each command's whole

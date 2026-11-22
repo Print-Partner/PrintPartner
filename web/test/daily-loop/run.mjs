@@ -300,13 +300,13 @@ try {
     (pids) => pids.map((pid) => `process ${pid}`),
     (error) => [error.message],
   );
-  // Only what this run created, by its unique name. After a stop, a `docker` command the
-  // tests started can still create its container after an empty listing (runner.mjs).
+  // Only what this run created, by its unique name. Whether the run passed, failed or was
+  // stopped, a `docker` command the tests started can have died or timed out while the daemon
+  // still creates its container, so teardown confirms with three listings (runner.mjs).
   const left = await teardown(names, {
     folder: runRoot,
     removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
     exists: existsSync,
-    confirm: runner.stopped,
   });
   left.push(...runner.stuck, ...running);
   if (left.length > 0) {

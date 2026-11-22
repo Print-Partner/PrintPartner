@@ -95,12 +95,11 @@ function fakeDocker(t) {
   };
 }
 
-const removeRun = (fake, confirm, wait = () => delay(50)) =>
+const removeRun = (fake, wait = () => delay(50)) =>
   teardown(runNames(RUN), {
     folder: fake.folder,
     removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
     exists: existsSync,
-    confirm,
     docker: fake.docker,
     wait,
   });
@@ -122,18 +121,20 @@ test("a stop during a docker create lets it finish, so the cleanup removes the c
   await fake.release();
   assert.equal(await creating, 0);
   assert.deepEqual(fake.containers(), [STAND_IN]);
-  assert.deepEqual(await removeRun(fake, true), []);
+  assert.deepEqual(await removeRun(fake), []);
   assert.deepEqual(fake.containers(), []);
 });
 
-test("a create killed by a stop still makes its container; one empty listing would miss it", async (t) => {
-  // The bug this guards against: signal the `docker run` client and trust the first empty
-  // listing. The daemon makes the container after the cleanup said it was done.
+test("a create killed by a stop still makes its container after its client has gone", async (t) => {
+  // Why the cleanup never trusts one empty listing: the daemon makes the container after
+  // its `docker run` client was killed.
   const fake = fakeDocker(t);
   assert.notEqual(await stopDuringCreate(fake, STAND_IN), 0);
-  assert.deepEqual(await removeRun(fake, false), []);
+  assert.deepEqual(fake.containers(), [], "nothing yet when the client has gone");
   await fake.release();
-  assert.deepEqual(fake.containers(), [STAND_IN], "the orphan");
+  assert.deepEqual(fake.containers(), [STAND_IN], "the daemon made it anyway");
+  assert.deepEqual(await removeRun(fake), []);
+  assert.deepEqual(fake.containers(), []);
 });
 
 test("after a stop, the cleanup removes a container that appears after an empty listing", async (t) => {
@@ -149,7 +150,7 @@ test("after a stop, the cleanup removes a container that appears after an empty 
     released = true;
     await fake.release();
   };
-  assert.deepEqual(await removeRun(fake, true, releaseOnce), []);
+  assert.deepEqual(await removeRun(fake, releaseOnce), []);
   assert.deepEqual(fake.containers(), []);
 });
 
@@ -160,22 +161,54 @@ test("a create that never ends is killed once the settle time after a stop runs 
   assert.ok(Date.now() - started < 9000, "it did not wait for the create");
 });
 
-test("without a stop, one empty listing is enough", async (t) => {
-  const fake = fakeDocker(t);
-  let waits = 0;
-  const left = await teardown(runNames(RUN), {
-    folder: fake.folder,
-    removeFolder: () => {},
-    exists: () => false,
-    confirm: false,
-    docker: fake.docker,
-    wait: async () => void waits++,
-  });
-  assert.deepEqual(left, []);
-  assert.equal(waits, 0);
+/**
+ * A Docker that keeps containers and volumes in memory: `rm -f` and `volume rm -f` remove
+ * what they name, and `ps` and `volume ls` list what is there. `listings` records how many
+ * containers each `ps` found.
+ */
+function memoryDocker() {
+  const containers = new Set();
+  const volumes = new Set();
+  const listings = [];
+  const docker = (args) => {
+    if (args[0] === "rm") for (const name of args.slice(2)) containers.delete(name);
+    if (args[0] === "volume" && args[1] === "rm") for (const name of args.slice(3)) volumes.delete(name);
+    if (args[0] === "ps") {
+      listings.push(containers.size);
+      return { status: 0, stdout: [...containers].join("\n") };
+    }
+    if (args[0] === "volume" && args[1] === "ls") return { status: 0, stdout: [...volumes].join("\n") };
+    return { status: 0, stdout: "" };
+  };
+  return { containers, volumes, listings, docker };
+}
+
+test("a failed run, with no stop, removes a restore container and volume that appear after two empty listings", async () => {
+  // Step 12's `docker run` times out in a failed test: its client is killed, the test
+  // fails, and nothing stops the run. The daemon finishes the create, container and volume,
+  // 3.2 s after the cleanup's first empty listing, during its second wait.
+  const runner = createRunner({ cwd: tmpdir() });
+  assert.equal(await runner.run(process.execPath, ["-e", "process.exit(1)"], { stdio: "ignore" }), 1);
+  assert.equal(runner.stopped, false, "a failed run, not a stopped one");
+  const fake = memoryDocker();
+  const waits = [];
+  const wait = async (ms) => {
+    waits.push(ms);
+    if (waits.length !== 2) return;
+    fake.containers.add(`${RUN}-restore`);
+    fake.volumes.add(`${RUN}-restored`);
+  };
+  const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker: fake.docker, wait };
+  assert.deepEqual(await teardown(runNames(RUN), options), []);
+  assert.deepEqual([...fake.containers], [], "the late restore container was removed");
+  assert.deepEqual([...fake.volumes], [], "the late restore volume was removed");
+  // It appeared after two empty listings, where a cleanup that trusts its first empty
+  // listing, or two, would already have stopped.
+  assert.deepEqual(fake.listings, [0, 0, 0]);
+  assert.deepEqual(waits, [PASS_WAIT_MS, PASS_WAIT_MS]);
 });
 
-test("after a stop, an empty listing only at the last pass is reported as not confirmed", async () => {
+test("an empty listing only at the last pass is reported as not confirmed", async () => {
   // The run's container shows on every pass but the last: one empty listing, no second.
   const pass = { n: 0 };
   const docker = (args) => {
@@ -184,17 +217,14 @@ test("after a stop, an empty listing only at the last pass is reported as not co
     return { status: 0, stdout: present ? `${RUN}\n` : "" };
   };
   const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker, wait: async () => {} };
-  const left = await teardown(runNames(RUN), { ...options, confirm: true });
+  const left = await teardown(runNames(RUN), options);
   assert.equal(pass.n, TEARDOWN_PASSES);
   assert.notDeepEqual(left, []);
   assert.ok(left.every((check) => check.endsWith("so not confirmed)")), left.join("\n"));
   assert.ok(left.some((check) => check.startsWith(`docker ps -aq --filter name=${RUN} `)));
-  // Without a stop the same last empty listing is enough.
-  pass.n = 0;
-  assert.deepEqual(await teardown(runNames(RUN), { ...options, confirm: false }), []);
 });
 
-test("after a stop, the cleanup removes a container that appears after two empty listings", async () => {
+test("the cleanup removes a container that appears after two empty listings", async () => {
   // A create the daemon finishes 3.2 s after the removal: the listings at 0 and 3 s are
   // empty. Two empty listings in a row would have called it clean there; the third pass, at
   // 6 s, removes it before its listing.
@@ -212,7 +242,7 @@ test("after a stop, the cleanup removes a container that appears after two empty
     if (waits.length === 2) present.add(`${RUN}-restore`);
   };
   const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker, wait };
-  assert.deepEqual(await teardown(runNames(RUN), { ...options, confirm: true }), []);
+  assert.deepEqual(await teardown(runNames(RUN), options), []);
   assert.equal(present.size, 0, "the late restore container was removed");
   assert.deepEqual(listings, [0, 0, 0], "it appeared after the second empty listing");
   assert.equal(CONFIRM_LISTINGS, 3);
@@ -254,6 +284,26 @@ test("a stop reaches a group member after its leader has exited, and kills one t
   runner.stop("SIGTERM");
   await running;
   assert.equal(groupAlive(pgid), false, "the member was killed once the grace period ran out");
+  assert.deepEqual(processesNaming(mark), []);
+  assert.deepEqual(runner.stuck, []);
+});
+
+test("a stop kills a group leader that ignores SIGTERM once the grace period is over", { timeout: 20_000 }, async () => {
+  const mark = markOf();
+  const runner = createRunner({ cwd: tmpdir(), grace: 300 });
+  // The leader itself ignores SIGTERM and never exits on its own; its member does the same.
+  const leader = `${leaderOf(DEAF, mark)} ${tiedTo(process.pid)} ${DEAF}`;
+  const running = runner.run(process.execPath, ["-e", leader, "--", mark], { group: true, stdio: "ignore" });
+  await until(() => processesNaming(mark).length === 2, "the leader and its member to start");
+  const [pgid] = processesNaming(mark).map(
+    (pid) => Number(spawnSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()),
+  );
+  const stoppedAt = Date.now();
+  runner.stop("SIGTERM");
+  assert.equal(await running, 1, "it ended by SIGKILL, so with no exit code");
+  const took = Date.now() - stoppedAt;
+  assert.ok(took < 3000, `SIGKILL came ${took} ms after the stop, not after the leader's close`);
+  assert.equal(groupAlive(pgid), false);
   assert.deepEqual(processesNaming(mark), []);
   assert.deepEqual(runner.stuck, []);
 });

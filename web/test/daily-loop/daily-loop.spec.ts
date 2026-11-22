@@ -1380,9 +1380,13 @@ step(12, null, async ({ page }) => {
   const backup = await downloaded(page, facts.getByRole("button", { name: "Download" }));
   expect(createHash("sha256").update(backup.body).digest("hex"), `${backup.name} SHA-256`).toBe(sha256);
 
-  // The second container: the same image and run command, on its own new volume.
-  const started = docker(
-    ...productRunArgs({ container: RESTORE.container, network: IMPORT.network, volume: RESTORE.volume, image: IMPORT.image }),
+  // The second container: the same image and run command, on its own new volume. A killed
+  // `docker run` does not stop the daemon creating the container, so this one gets far more
+  // than the 30 s of `docker`; run.mjs's cleanup confirms with three listings either way.
+  const started = spawnSync(
+    "docker",
+    productRunArgs({ container: RESTORE.container, network: IMPORT.network, volume: RESTORE.volume, image: IMPORT.image }),
+    { encoding: "utf8", timeout: 120_000 },
   );
   expect(started.status, started.stderr).toBe(0);
   const ports = docker("port", RESTORE.container).stdout.trim().split("\n");

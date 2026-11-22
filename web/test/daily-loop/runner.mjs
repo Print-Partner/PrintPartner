@@ -8,12 +8,15 @@
 //   process group of its own, so a terminal's Ctrl-C does not reach it either. If it has
 //   not finished 60 s after a stop, it is killed.
 // - Any other command is signalled; with `group`, its whole process group, because
-//   `npm run` does not pass a signal on to the script it started.
+//   `npm run` does not pass a signal on to the script it started. If it, or any process of
+//   its group, is still there GROUP_GRACE_MS after the stop, the group gets SIGKILL, whether
+//   or not its leader has exited.
 // - A command with a process group of its own counts as finished only once every process
 //   in the group has exited (teardown.mjs): the Playwright CLI and `node --test` can exit
 //   while a test file's process, or a `docker run` it started, still runs.
-// - After a stop, cleanup also waits for three empty listings in a row, 3 s apart, because
-//   a `docker` command the tests started dies with them and its container can still appear.
+// - Cleanup, whether the run passed, failed or was stopped, waits for three empty listings
+//   in a row, 3 s apart. A `docker` command a test started can die with a stop, or time out
+//   in a failed test, and the daemon can still create its container after an empty listing.
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
@@ -23,6 +26,8 @@ import { drainGroup } from "./teardown.mjs";
 
 /** How long a settling command may run after a stop before it is killed. */
 export const SETTLE_MS = 60_000;
+/** How long any other command, and its whole group, may run after a stop before SIGKILL. */
+export const GROUP_GRACE_MS = 30_000;
 
 /**
  * @typedef {object} Running
@@ -39,7 +44,7 @@ export const SETTLE_MS = 60_000;
  * that were still there after SIGKILL.
  * @param {{ cwd: string, settleMs?: number, grace?: number }} options
  */
-export function createRunner({ cwd, settleMs = SETTLE_MS, grace }) {
+export function createRunner({ cwd, settleMs = SETTLE_MS, grace = GROUP_GRACE_MS }) {
   /** @type {Running | null} */
   let current = null;
   let stopped = false;
@@ -60,8 +65,10 @@ export function createRunner({ cwd, settleMs = SETTLE_MS, grace }) {
     const running = current;
     // A group outlives its leader, so it is signalled until every process in it has exited.
     if (!running || running.done) return;
-    if (!running.settle) return signal(running, name);
-    running.watchdog ??= setTimeout(() => signal(running, "SIGKILL"), settleMs);
+    if (!running.settle) signal(running, name);
+    // The SIGKILL deadline starts now, not when the leader exits: a leader that ignores the
+    // signal would otherwise hold cleanup off for ever.
+    running.watchdog ??= setTimeout(() => signal(running, "SIGKILL"), running.settle ? settleMs : grace);
   };
   /**
    * Resolves to the command's exit code, once every process of its group has exited.
@@ -112,30 +119,30 @@ const dockerSync = (args, options) => spawnSync("docker", args, options);
 export const TEARDOWN_PASSES = 6;
 /** The wait between two passes of teardown. */
 export const PASS_WAIT_MS = 3000;
-/** After a stop, how many empty listings in a row teardown needs: 0, 3 and 6 s after removal. */
+/** How many empty listings in a row teardown needs: 0, 3 and 6 s after a removal. */
 export const CONFIRM_LISTINGS = 3;
 
 /**
  * Removes what the run named `names.container` created, and `folder`, then lists what is
- * left, up to TEARDOWN_PASSES times, PASS_WAIT_MS apart. It stops at an empty listing; with
- * `confirm`, only at the CONFIRM_LISTINGS-th empty listing in a row, so it catches what a
- * create finishes up to 6 s after an empty listing. Resolves to what is left to check by
- * hand; empty means clean. With `confirm`, empty listings that run out of passes before
- * CONFIRM_LISTINGS are not clean: each list is returned, marked as not confirmed.
+ * left, up to TEARDOWN_PASSES times, PASS_WAIT_MS apart, until CONFIRM_LISTINGS listings in
+ * a row are empty. So it catches what a create finishes up to 6 s after an empty listing,
+ * whether the run passed, failed or was stopped: a failed test's `docker run` can time out
+ * while the daemon is still creating its container. Resolves to what is left to check by
+ * hand; empty means clean. Empty listings that run out of passes before CONFIRM_LISTINGS are
+ * not clean: each list is returned, marked as not confirmed.
  * @param {ReturnType<typeof import("./installation.mjs").runNames>} names
  * @param {{
  *   folder: string,
  *   removeFolder: (folder: string) => void,
  *   exists: (folder: string) => boolean,
- *   confirm: boolean,
  *   docker?: (args: string[], options: object) => { status: number | null, stdout: string | Buffer },
  *   wait?: (ms: number) => Promise<unknown>,
  * }} options
  * @returns {Promise<string[]>}
  */
-export async function teardown(names, { folder, removeFolder, exists, confirm, docker = dockerSync, wait = delay }) {
+export async function teardown(names, { folder, removeFolder, exists, docker = dockerSync, wait = delay }) {
   const lists = leftoverLists(names.container);
-  const needed = confirm ? CONFIRM_LISTINGS : 1;
+  const needed = CONFIRM_LISTINGS;
   /** @type {string[]} */
   let left = [];
   let clean = 0;
@@ -153,7 +160,7 @@ export async function teardown(names, { folder, removeFolder, exists, confirm, d
     clean = left.length === 0 ? clean + 1 : 0;
   }
   if (clean >= needed || left.length > 0) return left;
-  // After a stop, one empty listing proves nothing: a create can still finish after it.
+  // One empty listing proves nothing: a create can still finish after it.
   return [...lists.map((list) => `docker ${list.join(" ")}`), `ls ${folder}`].map(
     (check) => `${check} (empty only at the last ${clean} of ${TEARDOWN_PASSES} passes, so not confirmed)`,
   );

@@ -5,7 +5,7 @@ use serde_json::json;
 
 const NOW: &str = "2026-11-21T12:00:00.000Z";
 
-fn link(fields: Value) -> Link {
+fn raw_link(fields: Value) -> Value {
     let mut raw = json!({
         "id": "l1", "profile_id": 1, "integration_id": "moon-1", "printer_id": "p1",
         "filename": "plate-a.gcode", "remote_path": "pp/plate-a.gcode",
@@ -14,7 +14,11 @@ fn link(fields: Value) -> Link {
     for (key, value) in fields.as_object().unwrap() {
         raw[key] = value.clone();
     }
-    links::parse(&raw, NOW).unwrap()
+    raw
+}
+
+fn link(fields: Value) -> Link {
+    links::parse(&raw_link(fields), NOW).unwrap()
 }
 
 /// Host `state` at 5% reporting `file` (blank for none).
@@ -30,7 +34,7 @@ fn report(state: HostState, file: &str) -> HostReport {
 }
 
 fn decided(link: &Link, state: HostState, file: &str) -> Decision {
-    decide(link, &report(state, file))
+    decide(link, &report(state, file), &Taken::default())
 }
 
 #[test]
@@ -96,7 +100,7 @@ fn gre_1897_errors_and_cancels_fail_the_link_and_other_states_wait() {
         ..report(Idle, "")
     };
     assert_eq!(
-        decide(&near_done, &cancel),
+        decide(&near_done, &cancel, &Taken::default()),
         HostFailed("cancelled"),
         "explicit"
     );
@@ -104,7 +108,7 @@ fn gre_1897_errors_and_cancels_fail_the_link_and_other_states_wait() {
         progress: Some(f64::NAN),
         ..report(Paused, "plate-a.gcode")
     };
-    assert_eq!(decide(&fresh, &paused), MarkActive(None));
+    assert_eq!(decide(&fresh, &paused, &Taken::default()), MarkActive(None));
 }
 
 #[test]
@@ -165,5 +169,265 @@ fn gre_1897_a_status_moves_one_send_of_a_shared_file_name() {
     assert!(
         picked(vec![uploaded.clone(), uploaded]).is_empty(),
         "ambiguous"
+    );
+}
+
+/// Reconciles each of `reports` in turn against `links` stored for host
+/// `moon-1`, and returns every stored link's `(id, state)`.
+fn replayed(links: Vec<Value>, reports: &[HostReport]) -> Vec<(String, String)> {
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE app_settings (tenant_id TEXT, key TEXT, value TEXT, PRIMARY KEY (tenant_id, key))",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO app_settings VALUES ('default', 'printer.checkoff_links', ?1)",
+            [Value::from(links).to_string()],
+        )
+        .unwrap();
+    let now = OffsetDateTime::parse(NOW, &Rfc3339).unwrap();
+    for (step, report) in reports.iter().enumerate() {
+        let tx = connection.transaction().unwrap();
+        reconcile(
+            &tx,
+            "default",
+            "moon-1",
+            report,
+            now + time::Duration::minutes(step as i64),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let mut stored = links::load(&tx, "default", NOW).unwrap();
+    stored.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    stored
+        .into_iter()
+        .map(|link| {
+            let text = |key: &str| link[key].as_str().unwrap().to_owned();
+            (text("id"), text("state"))
+        })
+        .collect()
+}
+
+#[test]
+fn gre_1897_a_finish_replayed_after_offline_moves_no_second_started_link() {
+    let send = |id: &str, saw_active: bool| {
+        let mut raw = link(json!({"id": id, "started": true, "saw_active": saw_active}));
+        raw.insert("units".into(), json!([{"part_id": 1, "unit_index": 0}]));
+        Value::Object(raw)
+    };
+    let links = vec![send("older", false), send("current", true)];
+    let finish = report(Complete, "plate-a.gcode");
+    let states = replayed(links, &[finish.clone(), report(Offline, ""), finish]);
+    assert_eq!(
+        states,
+        [
+            ("current".to_owned(), "awaiting_verify".to_owned()),
+            ("older".to_owned(), "watching".to_owned()),
+        ],
+        "the replayed finish is the one `current` consumed"
+    );
+}
+
+const REPLAY_FILE: &str = "plate-a.gcode";
+const COMPLETED: &str = "2026-11-21T11:00:00.000Z";
+const LATER: &str = "2026-11-21T11:30:00.000Z";
+const AWAITING: &str = "awaiting_verify";
+const WATCHING: &str = "watching";
+
+fn replay_send(id: &str, fields: Value) -> Value {
+    let mut raw = raw_link(fields);
+    raw["id"] = json!(id);
+    raw["started"] = json!(true);
+    raw["units"] = json!([{"part_id": 1, "unit_index": 0}]);
+    raw
+}
+
+fn recorded_finish(fields: Value) -> Value {
+    let mut raw = json!({
+        "state": AWAITING, "host_outcome": "success", "completed_at": COMPLETED,
+        "remote_path": null,
+    });
+    for (key, value) in fields.as_object().unwrap() {
+        raw[key] = value.clone();
+    }
+    replay_send("taken", raw)
+}
+
+type ReplayCase = (
+    &'static str,
+    Value,
+    Value,
+    Vec<HostReport>,
+    &'static str,
+    &'static str,
+);
+
+fn assert_replay_cases(cases: impl IntoIterator<Item = ReplayCase>) {
+    for (case, taken, candidate, reports, candidate_state, taken_state) in cases {
+        assert_eq!(
+            replayed(
+                vec![recorded_finish(taken), replay_send("candidate", candidate)],
+                &reports
+            ),
+            [
+                ("candidate".into(), candidate_state.into()),
+                ("taken".into(), taken_state.into()),
+            ],
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_completed_link_filters_replays_after_restart_and_reconnect() {
+    let finish = report(Complete, REPLAY_FILE);
+    let blank = report(Complete, " ");
+    let print = report(Printing, REPLAY_FILE);
+    assert_replay_cases([
+        (
+            "restart",
+            json!({}),
+            json!({}),
+            vec![finish.clone(), finish.clone()],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "reconnect with blank filename",
+            json!({}),
+            json!({}),
+            vec![report(Offline, ""), blank.clone()],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "already verified",
+            json!({"state": "verified"}),
+            json!({}),
+            vec![finish.clone()],
+            WATCHING,
+            "verified",
+        ),
+        (
+            "new send",
+            json!({}),
+            json!({"created_at": LATER}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "later printing observed",
+            json!({}),
+            json!({}),
+            vec![print, finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "missing completion time",
+            json!({"completed_at": null}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+    ]);
+}
+
+#[test]
+fn a_completed_link_filters_only_plausible_replays() {
+    let finish = report(Complete, REPLAY_FILE);
+    let blank = report(Complete, " ");
+    assert_replay_cases([
+        (
+            "different host",
+            json!({"integration_id": "moon-2"}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "different file",
+            json!({"filename": "other.gcode"}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "blank filename on the same host",
+            json!({"filename": "other.gcode"}),
+            json!({}),
+            vec![blank],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "remote path matches",
+            json!({"filename": "other.gcode", "remote_path": "PP/Plate-A.GCODE"}),
+            json!({}),
+            vec![finish.clone()],
+            WATCHING,
+            AWAITING,
+        ),
+        (
+            "failed print",
+            json!({"state": "host_failed", "host_outcome": "failed"}),
+            json!({}),
+            vec![finish.clone()],
+            AWAITING,
+            "host_failed",
+        ),
+        (
+            "equal timestamps",
+            json!({}),
+            json!({"created_at": COMPLETED}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "unreadable timestamp",
+            json!({}),
+            json!({"created_at": "not a time"}),
+            vec![finish.clone()],
+            AWAITING,
+            AWAITING,
+        ),
+        (
+            "idle after near-done progress",
+            json!({}),
+            json!({"saw_active": true, "last_progress": 99}),
+            vec![report(Idle, "")],
+            AWAITING,
+            AWAITING,
+        ),
+    ]);
+}
+
+#[test]
+fn a_replay_candidate_does_not_make_a_new_send_ambiguous() {
+    let finish = report(Complete, REPLAY_FILE);
+    assert_eq!(
+        replayed(
+            vec![
+                recorded_finish(json!({})),
+                replay_send("older", json!({})),
+                replay_send("newer", json!({"created_at": LATER})),
+            ],
+            &[finish],
+        ),
+        [
+            ("newer".into(), AWAITING.into()),
+            ("older".into(), WATCHING.into()),
+            ("taken".into(), AWAITING.into()),
+        ],
+        "a replay candidate cannot make a new send ambiguous"
     );
 }

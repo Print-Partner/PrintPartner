@@ -1,8 +1,8 @@
 //! Node's `reconcilePrinterCheckoff` (GRE-1897): a host status moves that
 //! host's `watching` Printer Checkoff links on, and nothing else. The rules,
-//! and the three places they differ from Node (an upload that never ran never
+//! and the four places they differ from Node (an upload that never ran never
 //! finishes; an explicit cancel never counts as a finish; a status moves at
-//! most one send of a file), are in
+//! most one send of a file; a recorded finish can block a replay), are in
 //! `docs/farm-reads.md#checkoff-reconcile`. A status that changes no link
 //! writes nothing, and no Required unit is checked off here.
 use super::links::{self, Link};
@@ -61,19 +61,56 @@ fn same_file(host: Option<&str>, link: &Value) -> bool {
     !host.is_empty() && link.as_str().map(links::normalized_filename) == Some(host)
 }
 
+fn names_file(filename: Option<&str>, link: &Link) -> bool {
+    same_file(filename, &link["filename"]) || same_file(filename, &link["remote_path"])
+}
+
+fn link_time(link: &Link, key: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(link[key].as_str()?, &Rfc3339).ok()
+}
+
+#[derive(Default)]
+struct Taken<'a>(Vec<(&'a Link, OffsetDateTime)>);
+
+impl<'a> Taken<'a> {
+    fn on(links: &'a [Link], integration_id: &str) -> Self {
+        Self(
+            links
+                .iter()
+                .filter(|link| link["integration_id"] == integration_id)
+                .filter(|link| {
+                    matches!(link["state"].as_str(), Some("awaiting_verify" | "verified"))
+                        && link["host_outcome"] == "success"
+                })
+                .filter_map(|link| Some((link, link_time(link, "completed_at")?)))
+                .collect(),
+        )
+    }
+
+    /// Moonraker can repeat a finish after reconnecting without a job ID.
+    /// Treat it as a replay for older sends unless they were seen printing.
+    fn replays(&self, link: &Link, filename: Option<&str>, cleared: bool) -> bool {
+        link["saw_active"] != true
+            && link_time(link, "created_at").is_some_and(|created| {
+                self.0.iter().any(|(finished, completed)| {
+                    created < *completed && (cleared || names_file(filename, finished))
+                })
+            })
+    }
+}
+
 /// `decideCheckoffReconcile`. A link finishes or fails only once it ran: it
 /// was seen printing, or its send started the print. So a finish the printer
 /// keeps showing never moves an upload that never ran, after a missed poll or
 /// a restart alike. Idle and error never await verify, unless the print was
 /// seen past 99% and its brief `complete` was missed; an explicit cancel
 /// never does.
-fn decide(link: &Link, report: &HostReport) -> Decision {
+fn decide(link: &Link, report: &HostReport, taken: &Taken<'_>) -> Decision {
     if link["state"] != "watching" {
         return Decision::Noop;
     }
     let filename = report.filename.as_deref();
-    let matches =
-        same_file(filename, &link["filename"]) || same_file(filename, &link["remote_path"]);
+    let matches = names_file(filename, link);
     let saw_active = link["saw_active"] == true;
     let ran = saw_active || link["started"] == true;
     match report.state {
@@ -83,7 +120,7 @@ fn decide(link: &Link, report: &HostReport) -> Decision {
         HostState::Complete if ran => {
             // A host may clear its file name after the finish.
             let cleared = links::normalized_filename(filename.unwrap_or_default()).is_empty();
-            if matches || cleared {
+            if (matches || cleared) && !taken.replays(link, filename, cleared) {
                 Decision::AwaitVerify
             } else {
                 Decision::Noop
@@ -105,9 +142,7 @@ fn decide(link: &Link, report: &HostReport) -> Decision {
 /// A link over [`STALE`] old whose print never ran: never seen printing and
 /// not started by its send.
 fn stale(link: &Link, now: OffsetDateTime) -> bool {
-    let created = link["created_at"]
-        .as_str()
-        .and_then(|at| OffsetDateTime::parse(at, &Rfc3339).ok());
+    let created = link_time(link, "created_at");
     let ran = link["saw_active"] == true || link["started"] == true;
     !ran && created.is_some_and(|at| now - at > STALE)
 }
@@ -182,6 +217,11 @@ pub(crate) fn reconcile(
 ) -> Result<Vec<(String, Change)>> {
     let at = crate::auth::timestamp_at(now);
     let mut all = links::load(tx, tenant, &at)?;
+    let taken = if report.state == HostState::Complete {
+        Taken::on(&all, integration_id)
+    } else {
+        Taken::default()
+    };
     let quiet = matches!(
         report.state,
         HostState::Idle | HostState::Offline | HostState::Unknown
@@ -194,7 +234,7 @@ pub(crate) fn reconcile(
         if quiet && stale(link, now) {
             stale_links.push(index);
         } else {
-            match decide(link, report) {
+            match decide(link, report, &taken) {
                 Decision::Noop => {}
                 decision => moving.push((index, decision)),
             }

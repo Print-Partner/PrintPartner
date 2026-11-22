@@ -6,7 +6,8 @@
 //! holds. After falling behind it keeps reading from the oldest change still
 //! buffered, so retained changes land in order. A failed write keeps that host's statuses in order and
 //! retries them with a capped backoff, because a printer that keeps reporting
-//! the same `complete` sends no new transition. See
+//! the same `complete` sends no new transition. Storage checks recorded
+//! finishes when a `complete` is forwarded after a reconnect or restart. See
 //! `docs/farm-reads.md#checkoff-reconcile`. Nothing here checks a unit off,
 //! dispatches a send, or polls a printer.
 use crate::printer_status::observe;

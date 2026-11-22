@@ -7,18 +7,22 @@
 // It checks the test titles against the steps table and writes the synthetic Node
 // installation (`npm run fixture:synthetic`, seed 1138) into a new temporary folder. It
 // builds the Rust-only image from Dockerfile.rust at HEAD and creates a Docker network for
-// the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs)
-// and the image on a new volume with the run command from docs/docker.md. It creates a
-// second, empty volume for Step 2's import (installation.mjs). It checks that the container
-// reaches the simulator and that both publish ports on host loopback only, then runs the
-// twelve Playwright tests. Whether the run passed, failed or was stopped, it removes the
-// containers (product, importer and simulator), both volumes, the image tag, the network,
-// the Node installation's folder and the simulator's API key folder it created.
+// the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs),
+// the Spoolman stand-in as `pp-spoolman` (spoolman.mjs) and the image on a new volume with
+// the run command from docs/docker.md. It creates a second, empty volume for Step 2's
+// import (installation.mjs). It checks that the container reaches the simulator and the
+// stand-in and that all three publish ports on host loopback only, then runs the twelve
+// Playwright tests. Whether the run passed, failed or was stopped, it removes the
+// containers (product, importer, simulator and stand-in), both volumes, the image tag, the
+// network, the Node installation's folder and the simulator's API key folder it created.
 //
 // The tests read the simulator from these variables:
 //   PP_DAILY_LOOP_SIMULATOR        its container; `docker port` names its control port
 //   PP_DAILY_LOOP_PRINTER_URL      the printer's address inside the product container
 //   PP_DAILY_LOOP_PRINTER_KEY_FILE a host file holding the printer's API key
+// Step 11 reads the Spoolman stand-in from these:
+//   PP_DAILY_LOOP_SPOOLMAN         its container; `docker port` names its control port
+//   PP_DAILY_LOOP_SPOOLMAN_URL     its address inside the product container
 // and Step 2's import from these:
 //   PP_DAILY_LOOP_NODE_INSTALLATION the synthetic Node installation's host folder
 //   PP_DAILY_LOOP_IMAGE, PP_DAILY_LOOP_NETWORK, PP_DAILY_LOOP_IMPORTER and
@@ -43,6 +47,7 @@ import {
   simulatorRunArgs,
   withKeyFile,
 } from "./simulator.mjs";
+import { SPOOLMAN_ALIAS, SPOOLMAN_PORT, SPOOLMAN_URL, spoolmanRunArgs } from "./spoolman.mjs";
 import {
   cleanupCommands,
   leftoverLists,
@@ -57,7 +62,7 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding:
 // Unique per run: another run on this machine keeps its own containers, volume, network and tag.
 const name = `pp-daily-loop-${randomBytes(4).toString("hex")}`;
 const names = runNames(name);
-const { image, simulator } = names;
+const { image, simulator, spoolman } = names;
 
 // A stop ends the running command, starts no other, and still runs the cleanup below.
 let child;
@@ -138,6 +143,35 @@ async function checkSimulator(keyFile) {
 }
 
 /**
+ * The same checks for the Spoolman stand-in: it is up, it publishes on host loopback only,
+ * and the product container reaches SPOOLMAN_URL. Returns the first problem, or null.
+ */
+async function checkSpoolman() {
+  let ready = false;
+  for (let tries = 0; tries < 60 && !ready && !stopped; tries++) {
+    if (inspect(spoolman, "{{.State.Running}}") !== "true") return "the Spoolman stand-in stopped";
+    ready = /"control_port":\d+/.test(docker(["logs", spoolman]).stdout);
+    if (!ready) await delay(500);
+  }
+  if (!ready) return "the Spoolman stand-in did not start in 30 s";
+  const off = publishedOffLoopback(JSON.parse(inspect(spoolman, "{{json .NetworkSettings.Ports}}")));
+  if (off.length > 0) return `${spoolman} publishes off host loopback: ${off.join(", ")}`;
+  const address = inspect(spoolman, `{{(index .NetworkSettings.Networks "${name}").IPAddress}}`);
+  if (!isPrivateIPv4(address)) return `${SPOOLMAN_ALIAS} has ${address || "no"} address, not RFC 1918`;
+  const probe = docker(["exec", name, "bash", "-c", [
+    `exec 3<>/dev/tcp/${SPOOLMAN_ALIAS}/${SPOOLMAN_PORT}`,
+    String.raw`printf 'GET /api/v1/info HTTP/1.0\r\nHost: ${SPOOLMAN_ALIAS}\r\n\r\n' >&3`,
+    "cat <&3",
+  ].join("\n")]);
+  const answer = parseAnswer(probe.stdout);
+  if (answer.status !== 200) {
+    return `the container did not reach ${SPOOLMAN_URL}/api/v1/info: ${answer.status ?? probe.stderr.trim()}`;
+  }
+  console.log(`The container reached ${SPOOLMAN_URL} (${address}); its port is published on 127.0.0.1 only.`);
+  return null;
+}
+
+/**
  * The Node generator opens its database with better-sqlite3. `npm ci --ignore-scripts`, as
  * daily-loop.yml runs it, installs no binding the package does not ship prebuilt, so build
  * one here when it is missing. The package's own build script runs where `npm rebuild`
@@ -175,7 +209,7 @@ async function writeNodeInstallation(dir) {
 }
 
 async function suite(keyFile, nodeDir) {
-  const tests = ["steps", "simulator", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
+  const tests = ["steps", "simulator", "spoolman", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
   const steps = [
     [process.execPath, ["--test", ...tests]],
     [null, () => writeNodeInstallation(nodeDir)],
@@ -191,6 +225,15 @@ async function suite(keyFile, nodeDir) {
         user: `${process.getuid()}:${process.getgid()}`,
       }),
     ],
+    [
+      "docker",
+      spoolmanRunArgs({
+        container: spoolman,
+        network: name,
+        image: nodeImage(),
+        user: `${process.getuid()}:${process.getgid()}`,
+      }),
+    ],
     ["docker", ["volume", "create", names.volume]],
     // Step 2 imports into this one; the import accepts only an empty folder.
     ["docker", ["volume", "create", names.importVolume]],
@@ -200,7 +243,7 @@ async function suite(keyFile, nodeDir) {
     const code = command ? await run(command, args) : await args();
     if (code !== 0 || stopped) return code || 1;
   }
-  const problem = await checkSimulator(keyFile);
+  const problem = (await checkSimulator(keyFile)) ?? (stopped ? null : await checkSpoolman());
   if (problem || stopped) {
     if (problem) console.error(`Harness: ${problem}.`);
     return 1;
@@ -217,6 +260,8 @@ async function suite(keyFile, nodeDir) {
       PP_DAILY_LOOP_SIMULATOR: simulator,
       PP_DAILY_LOOP_PRINTER_URL: PRINTER_URL,
       PP_DAILY_LOOP_PRINTER_KEY_FILE: keyFile,
+      PP_DAILY_LOOP_SPOOLMAN: spoolman,
+      PP_DAILY_LOOP_SPOOLMAN_URL: SPOOLMAN_URL,
       PP_DAILY_LOOP_NODE_INSTALLATION: nodeDir,
       PP_DAILY_LOOP_IMAGE: image,
       PP_DAILY_LOOP_NETWORK: names.network,
@@ -258,7 +303,7 @@ try {
   } else {
     const { importer, importVolume } = names;
     console.log(
-      `Removed containers ${name}, ${importer} and ${simulator}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
+      `Removed containers ${name}, ${importer}, ${simulator} and ${spoolman}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
     );
   }
 }

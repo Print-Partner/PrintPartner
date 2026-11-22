@@ -15,6 +15,7 @@ export function runNames(name) {
   return {
     container: name,
     simulator: `${name}-sim`,
+    spoolman: `${name}-spoolman`,
     importer: `${name}-import`,
     network: name,
     volume: name,
@@ -81,9 +82,9 @@ export function treeDigest(dir) {
  * The `docker` commands that remove what a run created, in order: containers before the
  * network and the volumes they use. Each names only this run's things.
  */
-export function cleanupCommands({ container, simulator, importer, network, volume, importVolume, image }) {
+export function cleanupCommands({ container, simulator, spoolman, importer, network, volume, importVolume, image }) {
   return [
-    ["rm", "-f", container, importer, simulator],
+    ["rm", "-f", container, importer, simulator, spoolman],
     ["network", "rm", network],
     ["volume", "rm", "-f", volume, importVolume],
     ["rmi", image],
@@ -92,7 +93,8 @@ export function cleanupCommands({ container, simulator, importer, network, volum
 
 /**
  * The `docker` list commands that find what is left of a run. A name filter matches part
- * of a name, so `name=<run>` also finds the simulator, the importer and the second volume.
+ * of a name, so `name=<run>` also finds the simulator, the Spoolman stand-in, the importer and
+ * the second volume.
  */
 export function leftoverLists(name) {
   return ["ps -aq", "volume ls -q", "network ls -q", "images -q"].map((list) =>

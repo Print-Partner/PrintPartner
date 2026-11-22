@@ -330,9 +330,14 @@ struct Shared {
     restoration: restore::activation::Context,
     /// Called on the writer thread after a verify burst commits. It must not
     /// use storage: the writer is still in this turn.
-    #[cfg(feature = "desktop_rebuild")]
-    deduction_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    deduction_wake: DeductionWake,
 }
+#[cfg(feature = "desktop_rebuild")]
+type DeductionWake = Mutex<Option<Arc<dyn Fn() + Send + Sync>>>;
+/// No send worker exists to wake. `PhantomData`, unlike `()`, is not reported
+/// as a never-read field.
+#[cfg(not(feature = "desktop_rebuild"))]
+type DeductionWake = std::marker::PhantomData<()>;
 #[derive(Clone)]
 pub struct SettingsClient {
     shared: Arc<Shared>,
@@ -862,8 +867,7 @@ impl WriterOwner {
                 directory: lease.data_dir().to_owned(),
                 seed: seed_timestamp.to_owned(),
             },
-            #[cfg(feature = "desktop_rebuild")]
-            deduction_wake: Mutex::new(None),
+            deduction_wake: Default::default(),
             job_admission: Mutex::new(None),
             #[cfg(feature = "desktop_rebuild")]
             orphaned_source_leases: Mutex::new(Vec::new()),

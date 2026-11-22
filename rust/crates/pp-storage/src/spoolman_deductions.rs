@@ -766,7 +766,6 @@ impl SpoolmanDeductionsClient {
                 apply_answer(tx, installation.id(), id, answer)
             },
         )?;
-        #[cfg(feature = "desktop_rebuild")]
         if answer == Answer::Retry && changed.is_ok() {
             self.shared.notify_deduction_wake();
         }

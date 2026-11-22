@@ -9,8 +9,8 @@ import {
   json,
   NO_UNITS,
   openSheet,
-  part,
   printer,
+  problem,
   PRINTING,
   renderAt,
   UNREACHABLE,
@@ -253,56 +253,91 @@ describe("Production tab", () => {
 });
 
 describe("Send a file links the Checkoff units the file prints (GRE-1896)", () => {
-  const ORCA = [
-    "EXCLUDE_OBJECT_DEFINE NAME=bracket.stl_id_0_copy_0 CENTER=10,10",
-    "EXCLUDE_OBJECT_DEFINE NAME=bracket.stl_id_0_copy_1 CENTER=30,10",
-    "G28",
-  ].join("\n");
-  const sentUnits = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
-    (writes(fetchMock)[0]![1]!.body as FormData).get("checkoff_units");
+  const MATCHED = {
+    file: "read",
+    unit_count: 3,
+    parts: [
+      { part_id: 11, filename: "bracket.stl", count: 2 },
+      { part_id: 12, filename: "gear.stl", count: 1 },
+    ],
+    unmatched: ["spoon.stl_id_2_copy_0"],
+  } as const;
+  const addForm = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
+    writes(fetchMock)[0]![1]!.body as FormData;
+  const units = (sheet: HTMLElement) => within(sheet).getByRole("group", { name: "Checkoff units" });
 
-  it("matches the file's objects to units still to print and sends them with Add", async () => {
+  it("shows the core's preview and asks Add to link the same units", async () => {
+    const previewed: string[] = [];
     const { fetchMock } = fakeCore({
-      checkoff: { ...NO_UNITS, parts: [part(11, "bracket.stl", 3, 1), part(12, "lid.stl", 1)] },
+      preview: (file) => {
+        previewed.push(file.name);
+        return json(MATCHED);
+      },
     });
     renderAt(fetchMock);
-    const sheet = await openSheet("plate.gcode", "Micron", ORCA);
-    const units = within(sheet).getByRole("group", { name: "Checkoff units" });
-    expect(within(units).getByRole("listitem").textContent).toBe("bracket.stl × 2");
+    const sheet = await openSheet();
+    expect(within(units(sheet)).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "bracket.stl × 2",
+      "gear.stl × 1",
+    ]);
+    expect(units(sheet).textContent).toContain("Not matched to a unit: spoon.stl_id_2_copy_0");
+    expect(previewed).toEqual(["plate.gcode"]);
     expect(writes(fetchMock)).toEqual([]);
     fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
-    expect(JSON.parse(String(sentUnits(fetchMock)))).toEqual([
-      { part_id: 11, unit_index: 1, object_name: "bracket.stl_id_0_copy_0" },
-      { part_id: 11, unit_index: 2, object_name: "bracket.stl_id_0_copy_1" },
-    ]);
+    expect(addForm(fetchMock).get("link_checkoff")).toBe("true");
+    expect(addForm(fetchMock).get("checkoff_units")).toBeNull();
   });
 
-  it("says a file without matching objects links no units, and sends without them", async () => {
-    const { fetchMock } = fakeCore({ checkoff: { ...NO_UNITS, parts: [part(12, "lid.stl", 1)] } });
+  it.each([
+    [NO_UNITS, /No object in this file matches a unit still to print/],
+    [{ ...NO_UNITS, file: "unsupported" }, /uses a compression or encoding the core does not decode/],
+    [{ ...NO_UNITS, file: "unreadable" }, /This binary G-code file is damaged/],
+  ])("says when a file links no units (%o)", async (answer, text) => {
+    const { fetchMock } = fakeCore({ preview: () => json(answer) });
     renderAt(fetchMock);
-    const sheet = await openSheet("plate.gcode", "Micron", ORCA);
-    const units = within(sheet).getByRole("group", { name: "Checkoff units" });
-    expect(units.textContent).toContain("records no filament grams");
-    expect(units.textContent).toContain(
-      "Not matched to a unit: bracket.stl_id_0_copy_0, bracket.stl_id_0_copy_1",
+    const sheet = await openSheet("plate.bgcode");
+    expect(units(sheet).textContent).toMatch(text);
+    expect(units(sheet).textContent).toContain("records no filament grams");
+  });
+
+  it("when the preview fails, says so and Add asks for no units", async () => {
+    const { fetchMock } = fakeCore({ preview: () => problem(503, "busy", "Storage is busy") });
+    renderAt(fetchMock);
+    const sheet = await openSheet();
+    expect(within(units(sheet)).getByRole("alert").textContent).toMatch(
+      /Could not match this file to the Build's Checkoff units: Storage is busy/,
     );
     fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
-    expect(sentUnits(fetchMock)).toBeNull();
+    expect(addForm(fetchMock).get("link_checkoff")).toBeNull();
   });
 
-  it("when the Build's units cannot be read, says so and still sends, without units", async () => {
-    const { fetchMock } = fakeCore({ checkoff: json({ status: 500, title: "Down" }, 500) });
+  it("aborts a preview still running when another file is chosen or the sheet closes", async () => {
+    const signals: AbortSignal[] = [];
+    const { fetchMock } = fakeCore({
+      preview: (file, signal) => {
+        signals.push(signal);
+        return file.name === "second.gcode" ? json(MATCHED) : new Promise<Response>(() => {});
+      },
+    });
     renderAt(fetchMock);
-    const sheet = await openSheet("plate.gcode", "Micron", ORCA);
-    await waitFor(() =>
-      expect(within(sheet).getByRole("alert").textContent).toMatch(
-        /Could not read this Build's Checkoff units/,
-      ),
-    );
-    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
-    expect(sentUnits(fetchMock)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Send a file" }));
+    const sheet = await screen.findByRole("dialog", { name: "Send a file" });
+    const choose = (name: string) =>
+      fireEvent.change(within(sheet).getByLabelText("Sliced file"), {
+        target: { files: [new File(["G28\n"], name)] },
+      });
+    choose("first.gcode");
+    await waitFor(() => expect(signals).toHaveLength(1));
+    choose("second.gcode");
+    await waitFor(() => expect(signals[0]!.aborted).toBe(true));
+    expect(await within(sheet).findByText("bracket.stl × 2")).toBeTruthy();
+    choose("third.gcode");
+    await waitFor(() => expect(signals).toHaveLength(3));
+    expect(signals[2]!.aborted).toBe(false);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(signals[2]!.aborted).toBe(true));
+    expect(writes(fetchMock)).toEqual([]);
   });
 });

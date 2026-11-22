@@ -8,6 +8,8 @@ pub mod print_file;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
+pub mod sliced_objects;
+#[cfg(feature = "desktop_rebuild")]
 pub mod slicer_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod step_assembly;

@@ -190,6 +190,7 @@ status routes.
 | `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`, or one 403 `FEATURE_DISABLED` / 500 `FEATURE_TOGGLES_INVALID` when Farm refuses a ready item. Optional `printer_id` must be a non-empty string. |
 | `POST /printer-send-queue/{id}/reconcile` | 200 `QueuedSendReceipt`. Body `ReconcileSendRequest`, `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a body that is not that shape is 400. |
 | `DELETE /printer-send-queue/{id}` (Remove) | 200 `QueuedSendReceipt`, and the item's staged directory is deleted. |
+| `POST /printer-send-queue/checkoff-preview` | 200 `SendUnitsPreview`. A form with `profile_id` and the file; see [Checkoff units a send links](#checkoff-units-a-send-links-gre-1896). It writes nothing. |
 
 `QueuedSendReceipt` is `{item}` and `SendNowReceipt` is `{item, job_id}`,
 where `item` is the `QueuedSend` the queue read lists
@@ -227,6 +228,45 @@ most one per printer, and skips an item refused with 409. That item stays as
 it is, except an item whose staged file is gone, which becomes `error` as in
 Send now. Any other refusal is listed as `{item_id, error}`.
 
+## Checkoff units a send links (GRE-1896)
+
+A send links the Required units it prints, so its Printer Checkoff link
+covers them and the upload records the slicer's grams estimate
+([Spoolman](integrations/SPOOLMAN.md)). The core reads the units from the
+file itself (`pp_domain::sliced_objects`), by Node's send-flow rule
+(`parseSlicedObjects.ts` and `proposeCheckoffFromObjects.ts`):
+
+- **Object names.** Text G-code is read one line at a time, each in time
+  linear in its length: PrusaSlicer's `objects_info` (every placed copy) when
+  present, otherwise EXCLUDE_OBJECT_DEFINE, M486, `; printing object` and
+  Cura `;MESH:` labels, each name once. Binary G-code is walked block by block
+  (libbgcode's specification): the CRC32 of each block must match, Deflate
+  blocks must inflate to exactly their stated size (at most 64 MiB a block,
+  512 MiB in all), and thumbnails are skipped. A metadata or G-code block in
+  Heatshrink or MeatPack makes the file `unsupported` unless readable
+  metadata held `objects_info`; a structural or checksum error makes it
+  `unreadable`. Neither links a unit.
+- **Units.** Only units of included Parts not yet printed are candidates,
+  in the Checkoff tab's order. A name that is a Required unit's object name
+  (Print Partner's 3MF export, `bracket__ppu_<token>`) takes that unit, as
+  Node's accepted attribution does. Then a unique export-style name
+  (`bracket_02`) takes that unit, and every other name the next free unit of
+  the one Part whose file name it matches by path, file name, unit suffix or
+  a close spelling. A name that matches nothing, or two Parts, takes none.
+
+`POST /api/v2/printer-send-queue/checkoff-preview` takes the same form's
+`profile_id` and file and answers `SendUnitsPreview`: `file` (`read`,
+`unsupported` or `unreadable`), `unit_count`, `parts` (`part_id`, `filename`
+and `count`, in the order matched) and the `unmatched` names. It is limited to
+30 requests a minute, answers 404 `Profile not found` for a Build the caller
+does not have, and writes nothing. Add with `link_checkoff` and no
+`checkoff_units` runs the same read and match on the bytes it stages, so the
+item stores the units the preview named; a Build changed in between links
+what is current. Object names are stored trimmed and cut at 200 UTF-16 units
+on a whole character, and there is no limit on the number of units. When the
+Accepted Plan cannot be read, Add answers 503 `Could not read this Build's
+Checkoff units, so nothing was queued` and stages nothing.
+
 ## Add to queue (GRE-1227)
 
 `POST /api/v2/printer-send-queue` is Node's `POST /printer-send-queue`. It only
@@ -237,7 +277,11 @@ file part named `file` or `gcode` of up to 64 MiB (413 `Print file exceeds the
 minute. The fields are Node's: `printer_id`, `profile_id` or `plan_id`,
 `start` (`1`, `true` or `yes`), `wait_for_idle` (off for `0`, `false` or `no`),
 `match` (`pinned` or `compatible`) and `checkoff_units` (a JSON array; invalid
-or repeated units are dropped). The route answers in this order:
+or repeated units are dropped), and Rust's `link_checkoff` (`1`, `true` or
+`yes`; see [Checkoff units a send links](#checkoff-units-a-send-links-gre-1896)).
+A `checkoff_units` value that is not a JSON array, including one cut at the
+64 KiB field limit, is 400 `checkoff_units must be a JSON array of at most 64
+KiB`; Node stored no units for it. The route answers in this order:
 
 1. 401 before it reads the body when the credential is not valid;
 2. 415 for a body that is not `multipart/form-data`; 400 `Only one G-code

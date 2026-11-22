@@ -1,6 +1,6 @@
-import type { CheckoffUnits } from "@print-partner/rust-client";
+import type { SendUnitsPreview } from "@print-partner/rust-client";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useId, useState } from "react";
 import { CoreError } from "../core/client";
 import { writeCore } from "../core/rust";
 import { reason } from "../core/writes";
@@ -8,9 +8,9 @@ import { useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
 import { MutationButton } from "../screen/ScreenTemplate";
 import { PrinterStatus } from "../status/PrinterStatus";
-import { checkoffUnitsQuery } from "./checkoff";
 import {
   addSend,
+  previewSendUnits,
   sendable,
   sendPrintersQuery,
   sendQueueQuery,
@@ -19,7 +19,6 @@ import {
   uncertain,
   type SendPrinter,
 } from "./sends";
-import { proposeUnits, readObjectNames, type Proposal, type SendUnit } from "./slicedObjects";
 
 /** What one Send did, for the tab to say once the sheet has closed. */
 export type SendOutcome =
@@ -36,11 +35,11 @@ async function send(
   printer: string,
   file: File,
   start: boolean,
-  units: readonly SendUnit[],
+  link: boolean,
 ): Promise<SendOutcome> {
   let id: string;
   try {
-    id = (await addSend(build, printer, file, start, units)).item.id;
+    id = (await addSend(build, printer, file, start, link)).item.id;
   } catch (error) {
     if (uncertain(error)) return { kind: "lost" };
     throw error;
@@ -183,65 +182,76 @@ function ModeField({
   );
 }
 
-/** The object names in `file`, or null until they are read. A file that cannot be read has none. */
-function useObjectNames(file: File | null): string[] | null {
-  const [read, setRead] = useState<{ file: File; names: string[] } | null>(null);
-  useEffect(() => {
-    if (!file) return;
-    let current = true;
-    readObjectNames(file).then(
-      (names) => current && setRead({ file, names }),
-      () => current && setRead({ file, names: [] }),
-    );
-    return () => {
-      current = false;
-    };
-  }, [file]);
-  return read?.file === file ? read.names : null;
-}
+/** A stable key per chosen File object, so choosing another file starts a new preview. */
+const fileKeys = new WeakMap<File, number>();
+let nextFileKey = 0;
+const fileKey = (file: File) => {
+  if (!fileKeys.has(file)) fileKeys.set(file, nextFileKey++);
+  return fileKeys.get(file)!;
+};
 
 /**
- * The units a send of `file` links, or null until they are known. A Build whose units
- * cannot be read links none, so the send still goes.
+ * The core's preview of the Checkoff units a send of `file` links. It never refetches, and
+ * switching files or closing the sheet aborts a preview still in flight.
+ *
+ * `linked` is the one decision for what the sheet shows and what Add sends: the send links
+ * units only while the latest preview succeeded. `settled` is false until the preview
+ * answers, so Send waits for it.
  */
-function useSendUnits(build: number, file: File | null) {
-  const checkoff = useQuery(checkoffUnitsQuery(build));
-  const names = useObjectNames(file);
-  const parts = checkoff.data?.parts;
-  const proposal = useMemo(
-    () => (names && parts ? proposeUnits(names, parts) : null),
-    [names, parts],
-  );
-  const units = names && (proposal?.units ?? (checkoff.isError ? [] : null));
-  return { checkoff, proposal, units };
+function useSendUnitsPreview(build: number, file: File | null) {
+  const preview = useQuery({
+    queryKey: ["core", "send-units-preview", build, file ? fileKey(file) : null],
+    queryFn: ({ signal }: { signal: AbortSignal }) => previewSendUnits(build, file!, signal),
+    enabled: file !== null,
+    retry: false,
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const linked = preview.status === "success" ? preview.data : null;
+  return { preview, linked, settled: file !== null && (linked !== null || preview.isError) };
 }
 
 const NO_GRAMS = "This send links no Checkoff units, so it records no filament grams.";
 
-/** The Checkoff units the send links: the file's objects matched to the remaining units. */
+const FILE_NOTICE: Record<Exclude<SendUnitsPreview["file"], "read">, string> = {
+  unsupported:
+    "Print Partner cannot read the object names in this binary G-code file: it uses a compression or encoding the core does not decode.",
+  unreadable: "This binary G-code file is damaged, so Print Partner cannot read its object names.",
+};
+
+/** The Checkoff units the send links, as `linked` (the latest successful preview) says. */
 function UnitsField({
-  units,
-  proposal,
+  preview,
+  linked,
 }: {
-  units: UseQueryResult<CheckoffUnits>;
-  proposal: Proposal | null;
+  preview: UseQueryResult<SendUnitsPreview>;
+  linked: SendUnitsPreview | null;
 }) {
   let body;
-  if (units.isError) {
+  if (preview.isError) {
     body = (
       <p role="alert">
-        Could not read this Build's Checkoff units: {units.error.message}. {NO_GRAMS}
+        Could not match this file to the Build's Checkoff units: {reason(preview.error)}.{" "}
+        {NO_GRAMS}
       </p>
     );
-  } else if (!proposal) {
+  } else if (!linked) {
     body = <p className="pp-muted">Reading the objects in this file.</p>;
-  } else if (proposal.units.length === 0) {
+  } else if (linked.file !== "read") {
+    body = (
+      <p role="note">
+        {FILE_NOTICE[linked.file]} {NO_GRAMS}
+      </p>
+    );
+  } else if (linked.unit_count === 0) {
     body = <p>No object in this file matches a unit still to print. {NO_GRAMS}</p>;
   } else {
     body = (
       <ul>
-        {proposal.perPart.map(({ filename, count }) => (
-          <li key={filename}>
+        {linked.parts.map(({ part_id: id, filename, count }) => (
+          <li key={id}>
             {filename} × {count}
           </li>
         ))}
@@ -252,8 +262,8 @@ function UnitsField({
     <fieldset className="pp-field">
       <legend>Checkoff units</legend>
       {body}
-      {proposal && proposal.unmatched.length > 0 && (
-        <p className="pp-muted">Not matched to a unit: {proposal.unmatched.join(", ")}</p>
+      {linked && linked.unmatched.length > 0 && (
+        <p className="pp-muted">Not matched to a unit: {linked.unmatched.join(", ")}</p>
       )}
     </fieldset>
   );
@@ -285,20 +295,18 @@ export function SendSheet({
       ? "Only .gcode, .gco and .bgcode files can be sent to a printer."
       : null;
   const sliced = fileProblem ? null : file;
-  // Send waits for the units, so a send never links fewer than the file prints. Units are
-  // known only for a sliced file.
-  const { checkoff, proposal, units } = useSendUnits(build, sliced);
+  const { preview, linked, settled } = useSendUnitsPreview(build, sliced);
   const refusal = printer ? startRefusal(printer) : null;
   // A printer that cannot start a print gets Upload only, whatever was chosen before.
   const chosen: Mode = refusal ? "upload" : mode;
-  const ready = Boolean(printer && units) && !busy;
+  const ready = Boolean(printer) && settled && !busy;
 
   const run = async (start: boolean) => {
-    if (!file || !printer || !units || busy) return;
+    if (!file || !printer || busy) return;
     setBusy(true);
     setProblem(null);
     try {
-      onClose(await send(build, printer.id, file, start, units));
+      onClose(await send(build, printer.id, file, start, linked !== null));
     } catch (error) {
       // Add was refused: nothing is queued, so the sheet stays open with the reason.
       setProblem(error instanceof Error ? reason(error) : String(error));
@@ -332,7 +340,7 @@ export function SendSheet({
         />
         {fileProblem && <p role="alert">{fileProblem}</p>}
       </div>
-      {sliced && <UnitsField units={checkoff} proposal={proposal} />}
+      {sliced && <UnitsField preview={preview} linked={linked} />}
       <PrinterField
         id={ids.printer}
         printers={printers}

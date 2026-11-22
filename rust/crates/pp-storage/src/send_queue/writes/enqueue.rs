@@ -21,10 +21,14 @@ pub struct NewItem {
     start: bool,
     /// Normalized `checkoff_units` as JSON text.
     units: String,
+    /// The form asked the core to link the units the file prints
+    /// (`link_checkoff`) and sent no `checkoff_units` of its own.
+    link_checkoff: bool,
 }
 
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
 const NO_PLAN: &str = "Pick a plan to bind this send (profile_id required)";
+const BAD_UNITS: &str = "checkoff_units must be a JSON array of at most 64 KiB";
 
 impl NewItem {
     /// Node's `parsePrinterUploadMultipart` with the queue fields, then the
@@ -34,7 +38,8 @@ impl NewItem {
         fields: &[(String, String)],
         file: Option<Option<&str>>,
     ) -> Result<Self, &'static str> {
-        let (mut printer_id, mut plan, mut units) = ("", None, "");
+        let (mut printer_id, mut plan, mut units) = ("", None, None);
+        let mut link_checkoff = false;
         let (mut start, mut wait_for_idle, mut matched) = (false, true, "pinned");
         for (name, value) in fields {
             let lower = value.to_lowercase();
@@ -48,7 +53,8 @@ impl NewItem {
                     _ => {}
                 },
                 "profile_id" | "plan_id" => plan = positive(value).or(plan),
-                "checkoff_units" => units = value,
+                "checkoff_units" => units = Some(value.as_str()),
+                "link_checkoff" => link_checkoff = matches!(lower.as_str(), "1" | "true" | "yes"),
                 _ => {}
             }
         }
@@ -70,6 +76,16 @@ impl NewItem {
         if filename.is_empty() {
             return Err("Could not enqueue item");
         }
+        // A field cut at the form's 64 KiB limit is no longer valid JSON; refuse it rather
+        // than store no units.
+        let explicit = units.map(str::trim).filter(|raw| !raw.is_empty());
+        let units = match explicit {
+            Some(raw) => match serde_json::from_str::<Value>(raw) {
+                Ok(Value::Array(units)) => checkoff_units(&units),
+                _ => return Err(BAD_UNITS),
+            },
+            None => checkoff_units(&[]),
+        };
         Ok(Self {
             printer_id: printer_id.to_owned(),
             filename,
@@ -77,8 +93,36 @@ impl NewItem {
             matched,
             wait_for_idle,
             start,
-            units: checkoff_units(units),
+            link_checkoff: link_checkoff && explicit.is_none(),
+            units,
         })
+    }
+
+    /// The Build this send is bound to.
+    pub fn plan(&self) -> i64 {
+        self.plan
+    }
+
+    /// Whether the route should link the units the file prints, read from the
+    /// staged file by [`pp_domain::sliced_objects`].
+    pub fn links_checkoff(&self) -> bool {
+        self.link_checkoff
+    }
+
+    /// Links `units`, normalized as a form's `checkoff_units` are: object
+    /// names trimmed and cut at 200 UTF-16 units on a whole character.
+    pub fn set_units(&mut self, units: &[pp_domain::sliced_objects::ProposedUnit]) {
+        let units: Vec<Value> = units
+            .iter()
+            .map(|unit| {
+                serde_json::json!({
+                    "part_id": unit.part_id,
+                    "unit_index": unit.unit_index,
+                    "object_name": unit.object_name,
+                })
+            })
+            .collect();
+        self.units = checkoff_units(&units);
     }
 
     /// The name the staged file gets on disk, Node's
@@ -120,12 +164,8 @@ fn positive(value: &str) -> Option<i64> {
 }
 
 /// Node's `parseCheckoffUnits`: the valid units of a JSON array, each
-/// `part_id:unit_index` once; anything else is no units.
-fn checkoff_units(raw: &str) -> String {
-    let units: Vec<Value> = match serde_json::from_str(raw) {
-        Ok(Value::Array(units)) => units,
-        _ => Vec::new(),
-    };
+/// `part_id:unit_index` once.
+fn checkoff_units(units: &[Value]) -> String {
     let mut seen = HashSet::new();
     let units: Vec<Value> = units
         .iter()
@@ -280,5 +320,70 @@ mod tests {
             units,
             serde_json::json!([{ "part_id": 4, "unit_index": 0, "object_name": "A" }])
         );
+    }
+
+    #[test]
+    fn gre_1896_units_that_are_not_a_json_array_are_refused() {
+        let cut = format!(
+            r#"[{{"part_id":4,"unit_index":0,"object_name":"{}"#,
+            "x".repeat(64)
+        );
+        for raw in ["{}", "nope", cut.as_str()] {
+            let form = fields(&[
+                ("printer_id", "p"),
+                ("profile_id", "2"),
+                ("checkoff_units", raw),
+            ]);
+            assert_eq!(
+                NewItem::parse(&form, Some(Some("a.gcode"))),
+                Err(super::BAD_UNITS),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn gre_1896_link_checkoff_applies_only_without_explicit_units() {
+        let links = |pairs: &[(&str, &str)]| {
+            let mut form = vec![("printer_id", "p"), ("profile_id", "2")];
+            form.extend_from_slice(pairs);
+            NewItem::parse(&fields(&form), Some(Some("a.gcode")))
+                .unwrap()
+                .links_checkoff()
+        };
+        assert!(links(&[("link_checkoff", "1")]));
+        assert!(links(&[("link_checkoff", "TRUE"), ("checkoff_units", " ")]));
+        assert!(!links(&[]));
+        assert!(!links(&[("link_checkoff", "0")]));
+        assert!(!links(&[("link_checkoff", "1"), ("checkoff_units", "[]")]));
+    }
+
+    #[test]
+    fn gre_1896_linked_units_keep_every_unit_and_whole_characters() {
+        use pp_domain::sliced_objects::ProposedUnit;
+        let form = fields(&[
+            ("printer_id", "p"),
+            ("profile_id", "2"),
+            ("link_checkoff", "1"),
+        ]);
+        let mut item = NewItem::parse(&form, Some(Some("a.gcode"))).unwrap();
+        // 199 UTF-16 units, then a character that needs two: the cut keeps it out whole.
+        let name = format!("  {}\u{1F600}tail  ", "b".repeat(199));
+        let units: Vec<ProposedUnit> = (0..300)
+            .map(|unit_index| ProposedUnit {
+                part_id: 7,
+                unit_index,
+                object_name: name.trim().to_owned(),
+            })
+            .collect();
+        item.set_units(&units);
+        assert!(
+            item.units.len() > 64 * 1024,
+            "larger than a form field could carry"
+        );
+        let stored: Vec<serde_json::Value> = serde_json::from_str(&item.units).unwrap();
+        assert_eq!(stored.len(), 300);
+        assert_eq!(stored[299]["unit_index"], 299);
+        assert_eq!(stored[0]["object_name"], "b".repeat(199));
     }
 }

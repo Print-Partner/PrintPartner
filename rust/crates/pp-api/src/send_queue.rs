@@ -18,6 +18,9 @@
 //!   send with an unknown outcome, [`ReconcileSendRequest`], where `job_id`
 //!   is the item's `upload_job_id` the user answered about.
 //! - `DELETE /api/v2/printer-send-queue/{id}` (Remove).
+//! - `POST /api/v2/printer-send-queue/checkoff-preview` (GRE-1896): the same
+//!   form's `profile_id` and file, answered with the Checkoff units Add with
+//!   `link_checkoff` would link, [`SendUnitsPreview`]. It writes nothing.
 //!
 //! Add, Reconcile and Remove answer [`QueuedSendReceipt`]; Send now answers
 //! [`SendNowReceipt`]. Both carry the item as the queue read shows it,
@@ -46,7 +49,7 @@ use axum::{
 };
 use pp_storage::{
     checkoff_progress::print_file::MAX_UPLOAD_BYTES,
-    read_model::farm::QueuedSend,
+    read_model::{ReadClient, farm::QueuedSend},
     send_queue::writes::{NewItem, Reply, Request, SendQueueClient, may_have_written},
 };
 use serde::{Deserialize, Serialize};
@@ -56,6 +59,9 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+
+mod units;
+pub use units::{SendUnitsPart, SendUnitsPreview, SlicedFileRead};
 
 /// Add, Reconcile and Remove: the item as it now is.
 #[derive(Debug, Serialize)]
@@ -126,6 +132,8 @@ pub enum Prepared {
 struct App {
     gate: Gate,
     client: SendQueueClient,
+    /// Accepted Plan reads for the units a send links.
+    reads: ReadClient,
     targets: Arc<dyn SendTargets>,
     windows: Arc<Windows>,
 }
@@ -143,11 +151,22 @@ const ADD_FORM: Limits = Limits {
     unreadable: "That upload could not be read",
 };
 
+/// The preview reads the same file part and `profile_id`, and is limited
+/// like Add since each one uploads the file.
+const PREVIEW_LIMIT: u32 = 30;
+const PREVIEW_FORM: Limits = Limits {
+    fields: 8,
+    field_bytes: 1024,
+    ..ADD_FORM
+};
+const UNITS_UNREAD: &str = "Could not read this Build's Checkoff units, so nothing was queued";
+
 /// Mounts the send queue writes under `/api/v2` when `PP_DESKTOP_REBUILD`
 /// was exactly `1` or `true`; otherwise nothing.
 pub fn send_queue_router(
     config: AcceptedHttpConfig,
     client: SendQueueClient,
+    reads: ReadClient,
     targets: Arc<dyn SendTargets>,
 ) -> Router {
     let Some(gate) = Gate::open(config) else {
@@ -157,6 +176,10 @@ pub fn send_queue_router(
         .route(
             "/printer-send-queue",
             post(add).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024)),
+        )
+        .route(
+            "/printer-send-queue/checkoff-preview",
+            post(preview).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024)),
         )
         .route(
             "/printer-send-queue/settings/upload-only",
@@ -170,6 +193,7 @@ pub fn send_queue_router(
         .with_state(App {
             gate,
             client,
+            reads,
             targets,
             windows: Arc::default(),
         })
@@ -328,11 +352,34 @@ async fn add(
         Err(response) => return *response,
     };
     let name = form.file.as_ref().map(|(name, _)| name.as_deref());
-    let item = match NewItem::parse(&form.fields, name) {
+    let mut item = match NewItem::parse(&form.fields, name) {
         Ok(item) => item,
         Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
     };
     let file = form.file.map(|(_, bytes)| bytes).unwrap_or_default();
+    let (item, file) = if item.links_checkoff() {
+        // The same read and match the preview made, on the bytes being queued.
+        let (reads, plan) = (app.reads.clone(), item.plan());
+        let linked = app
+            .gate
+            .read(presented.clone(), move |credential, cancelled, wait| {
+                let linked = units::link(&reads, credential, plan, &file, &cancelled, wait);
+                linked.map(|units| (units, file))
+            })
+            .await;
+        match linked {
+            Some(Ok((units, file))) => {
+                if let Some(units) = units {
+                    item.set_units(&units.units);
+                }
+                (item, file)
+            }
+            Some(Err(error)) if is_auth(&error) => return read_error(&error),
+            _ => return failure(StatusCode::SERVICE_UNAVAILABLE, UNITS_UNREAD),
+        }
+    } else {
+        (item, file)
+    };
     let added = writes(&app, presented, move |writes, targets| {
         let host_name = targets
             .host(&item.printer_id)
@@ -354,6 +401,53 @@ async fn add(
     })
     .await;
     present(added)
+}
+
+/// Whether a read failed on the credential, which answers as it does for any read.
+fn is_auth(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<pp_storage::auth::AuthFailure>()
+        .is_some()
+}
+
+/// The units Add with `link_checkoff` would link for this file and Build.
+async fn preview(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    request: axum::extract::Request,
+) -> Response {
+    if let Some(after) = app.windows.consume("checkoff-preview", PREVIEW_LIMIT) {
+        return throttled(after);
+    }
+    let form = match multipart_form::read(request, &PREVIEW_FORM).await {
+        Ok(form) => form,
+        Err(response) => return *response,
+    };
+    let plan = form
+        .fields
+        .iter()
+        .find(|(name, _)| name == "profile_id")
+        .and_then(|(_, value)| value.trim().parse::<i64>().ok())
+        .filter(|plan| *plan > 0);
+    let (Some(plan), Some((_, file))) = (plan, form.file) else {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "A sliced file and a profile_id are required",
+        );
+    };
+    let reads = app.reads.clone();
+    let linked = app
+        .gate
+        .read(presented, move |credential, cancelled, wait| {
+            units::link(&reads, credential, plan, &file, &cancelled, wait)
+        })
+        .await;
+    match linked {
+        Some(Ok(Some(linked))) => ok_json(&units::preview(linked)),
+        Some(Ok(None)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Some(Err(error)) => read_error(&error),
+        None => internal(),
+    }
 }
 
 fn present_mode(reply: Option<anyhow::Result<Reply>>) -> Response {
@@ -544,13 +638,20 @@ fn unsettled(error: &anyhow::Error) -> &'static str {
 /// and checked by `pp-core`'s mounted-route contract test. Add to queue takes
 /// a `multipart/form-data` body, so it lists no request DTO; Send now sends no
 /// body, since the replacement UI never sends `force`.
-pub const CLIENT_ROUTES: [ClientRoute; 4] = [
+pub const CLIENT_ROUTES: [ClientRoute; 5] = [
     route(
         "addQueuedSend",
         "POST",
         "/api/v2/printer-send-queue",
         None,
         "QueuedSendReceipt",
+    ),
+    route(
+        "previewSendUnits",
+        "POST",
+        "/api/v2/printer-send-queue/checkoff-preview",
+        None,
+        "SendUnitsPreview",
     ),
     ClientRoute {
         text_params: &["id"],
@@ -593,6 +694,8 @@ pub fn client_document(document: &mut Value) -> Result<(), serde_json::Error> {
         serde_json::to_value(schemars::schema_for!(QueuedSendReceipt))?;
     document["dtos"]["SendNowReceipt"] =
         serde_json::to_value(schemars::schema_for!(SendNowReceipt))?;
+    document["dtos"]["SendUnitsPreview"] =
+        serde_json::to_value(schemars::schema_for!(SendUnitsPreview))?;
     // The client always sends `job_id`, null included; the route also
     // takes it omitted.
     let mut reconcile = schemars::schema_for!(ReconcileSendRequest);

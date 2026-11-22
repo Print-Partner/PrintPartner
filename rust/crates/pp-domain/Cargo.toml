@@ -7,7 +7,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+flate2 = { version = "=1.1.10", optional = true }
 serde.workspace = true
+serde_json = { workspace = true, optional = true }
 schemars = { version = "=0.8.22", optional = true }
 sha2 = { workspace = true, optional = true }
 
@@ -19,4 +21,4 @@ zip = { version = "=9.0.4", default-features = false }
 [features]
 default = ["desktop_rebuild"]
 codegen = ["dep:schemars"]
-desktop_rebuild = ["dep:sha2"]
+desktop_rebuild = ["dep:flate2", "dep:serde_json", "dep:sha2"]

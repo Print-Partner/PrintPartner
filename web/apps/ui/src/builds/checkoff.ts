@@ -1,19 +1,8 @@
 import type { CheckoffUnits } from "@print-partner/rust-client";
-import { CoreError } from "../core/client";
-import { readCore } from "../core/rust";
 import { listWords } from "../today/beds";
 
 export type CheckoffPart = CheckoffUnits["parts"][number];
 export type CheckoffUnit = CheckoffPart["units"][number];
-
-/** The Build's Accepted Plan units, for the Checkoff tab and the send sheet. */
-export const checkoffUnitsQuery = (id: number) => ({
-  queryKey: ["core", "checkoff-units", id],
-  queryFn: ({ signal }: { signal: AbortSignal }) =>
-    readCore("readBuildCheckoffUnits", { id }, signal),
-  retry: (failures: number, error: Error) =>
-    !(error instanceof CoreError && error.status === 404) && failures < 3,
-});
 
 /** Which flag a burst sets: printed, or assembled on units already printed. */
 export type Field = "printed" | "assembled";

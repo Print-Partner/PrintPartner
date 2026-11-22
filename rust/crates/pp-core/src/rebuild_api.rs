@@ -1031,6 +1031,7 @@ mod tests {
         let sends = pp_api::send_queue::send_queue_router(
             AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap(),
             owner.send_queue(policy).unwrap(),
+            reads.clone(),
             Arc::new(NoTargets),
         );
         farm.merge(sends)

@@ -552,6 +552,8 @@ fn utf16_prefix(text: &str, units: usize) -> String {
 }
 
 #[cfg(feature = "desktop_rebuild")]
+pub mod units;
+#[cfg(feature = "desktop_rebuild")]
 pub mod writes;
 
 #[cfg(test)]

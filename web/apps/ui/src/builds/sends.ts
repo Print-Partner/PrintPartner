@@ -4,11 +4,11 @@ import {
   type FarmPrinterList,
   type QueuedSendReceipt,
   type SendQueue,
+  type SendUnitsPreview,
 } from "@print-partner/rust-client";
 import { CoreError, fetchCore } from "../core/client";
 import { ContractError, readCore } from "../core/rust";
 import { lostSend } from "../core/writes";
-import type { SendUnit } from "./slicedObjects";
 
 export type QueuedSend = SendQueue["items"][number];
 export type SendPrinter = FarmPrinterList["printers"][number];
@@ -102,16 +102,16 @@ const STATE_WORDS: Readonly<Record<SendPrinter["state"]["execution"], string>> =
 };
 
 /**
- * Add to queue: one multipart form for `printer`, bound to Build `build`, linking `units`
- * when there are any. Nothing is sent to the printer; Send now does that. The answer is
- * checked against the generated schema.
+ * Add to queue: one multipart form for `printer`, bound to Build `build`. With `link` the
+ * core links the Checkoff units the file prints, as the preview showed. Nothing is sent to
+ * the printer; Send now does that. The answer is checked against the generated schema.
  */
 export async function addSend(
   build: number,
   printer: string,
   file: File,
   start: boolean,
-  units: readonly SendUnit[],
+  link: boolean,
 ): Promise<QueuedSendReceipt> {
   const path = routePath("addQueuedSend", {});
   const form = new FormData();
@@ -119,7 +119,7 @@ export async function addSend(
   form.set("profile_id", String(build));
   form.set("start", String(start));
   form.set("wait_for_idle", String(start));
-  if (units.length > 0) form.set("checkoff_units", JSON.stringify(units));
+  if (link) form.set("link_checkoff", "true");
   form.set("file", file, file.name);
   const response = await fetchCore(path, {
     method: "POST",
@@ -127,6 +127,32 @@ export async function addSend(
     body: form,
   });
   const parsed = routes.addQueuedSend.response.safeParse(
+    await response.json().catch(() => undefined),
+  );
+  if (!parsed.success) throw new ContractError(path);
+  return parsed.data;
+}
+
+/**
+ * The Checkoff units Add with `link_checkoff` would link for `file` on Build `build`. The core
+ * reads the file's object names; nothing is queued or sent to a printer.
+ */
+export async function previewSendUnits(
+  build: number,
+  file: File,
+  signal: AbortSignal,
+): Promise<SendUnitsPreview> {
+  const path = routePath("previewSendUnits", {});
+  const form = new FormData();
+  form.set("profile_id", String(build));
+  form.set("file", file, file.name);
+  const response = await fetchCore(path, {
+    method: "POST",
+    headers: { accept: "application/json" },
+    body: form,
+    signal,
+  });
+  const parsed = routes.previewSendUnits.response.safeParse(
     await response.json().catch(() => undefined),
   );
   if (!parsed.success) throw new ContractError(path);

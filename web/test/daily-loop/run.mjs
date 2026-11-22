@@ -13,8 +13,10 @@
 // (installation.mjs). It checks that the container reaches the simulator and that both
 // publish ports on host loopback only, then runs the twelve Playwright tests. Whether the
 // run passed, failed or was stopped, it removes the containers (product, importer, restore
-// and simulator), the three volumes, the image tag, the network, the Node installation's
-// folder and the simulator's API key folder it created.
+// and simulator), the three volumes, the image tag, the network, the run's folder (the Node
+// installation and the browser's files and downloads) and the simulator's API key folder it
+// created. Before it removes them it waits for every process the tests started
+// (teardown.mjs), so a `docker run` still in flight cannot create a container afterwards.
 //
 // The tests read the simulator from these variables:
 //   PP_DAILY_LOOP_SIMULATOR        its container; `docker port` names its control port
@@ -30,7 +32,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -54,6 +56,7 @@ import {
   runNames,
   SYNTHETIC_SEED,
 } from "./installation.mjs";
+import { drainGroup, removeUntilQuiet, stopProcessesNaming } from "./teardown.mjs";
 
 const here = import.meta.dirname;
 const root = resolve(here, "../../..");
@@ -84,17 +87,25 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => s
 const parent = process.ppid;
 setInterval(() => process.ppid !== parent && !stopped && stop("SIGTERM"), 1000).unref();
 
+// Process groups that outlived SIGKILL; the cleanup reports them.
+const stuck = [];
+
 /**
  * Runs a command with this terminal's output; resolves to its exit code. With `group`, the
  * command leads a new process group and a stop signals the whole group: `npm run` does not
- * pass a signal on to the script it started.
+ * pass a signal on to the script it started, and Playwright's CLI can exit while a worker
+ * still runs a test. It resolves only once every process of the group has exited.
  */
 const run = (command, args, { group = false, ...options } = {}) =>
   new Promise((done) => {
     child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
     child.group = group;
+    const { pid } = child;
     child.on("error", () => done(1));
-    child.on("close", (code) => done(code ?? 1));
+    child.on("close", async (code) => {
+      if (group && (await drainGroup(pid)).stuck) stuck.push(`process group ${pid}`);
+      done(code ?? 1);
+    });
   });
 
 const docker = (args, options = {}) =>
@@ -178,8 +189,8 @@ async function writeNodeInstallation(dir) {
   return 0;
 }
 
-async function suite(keyFile, nodeDir) {
-  const tests = ["steps", "simulator", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
+async function suite(keyFile, nodeDir, browserDir) {
+  const tests = ["steps", "simulator", "installation", "teardown"].map((test) => resolve(here, `${test}.test.mjs`));
   const steps = [
     [process.execPath, ["--test", ...tests]],
     [null, () => writeNodeInstallation(nodeDir)],
@@ -212,12 +223,18 @@ async function suite(keyFile, nodeDir) {
     return 1;
   }
   // Playwright's own CLI, not `npx playwright`: npx runs it under a shell that does not
-  // pass a signal on, so a stopped run would leave the browser tests running.
+  // pass a signal on, so a stopped run would leave the browser tests running. In its own
+  // group, so a stop reaches its worker and the docker commands the tests run.
   const playwright = resolve(root, "web/node_modules/@playwright/test/cli.js");
   return run(process.execPath, [playwright, "test", "--config", "test/daily-loop/playwright.config.ts"], {
     cwd: resolve(root, "web"),
+    group: true,
     env: {
       ...process.env,
+      // Chromium's profile and Playwright's downloads and output go in the run's folder,
+      // which the cleanup removes, rather than the host's temporary folder or the checkout.
+      TMPDIR: browserDir,
+      PP_DAILY_LOOP_OUTPUT_DIR: join(browserDir, "results"),
       PP_DAILY_LOOP_CONTAINER: name,
       PP_DAILY_LOOP_COMMIT: commit,
       PP_DAILY_LOOP_SIMULATOR: simulator,
@@ -235,38 +252,50 @@ async function suite(keyFile, nodeDir) {
 }
 
 let code = 1;
-// The synthetic Node installation, in a new 0700 folder; Step 2 imports it.
-const nodeRoot = mkdtempSync(join(tmpdir(), `${name}-node-`));
+// The run's folder, new and 0700: the synthetic Node installation, which Step 2 imports, and
+// the browser's files and Playwright's output, downloads included.
+const runRoot = mkdtempSync(join(tmpdir(), `${name}-`));
+const browserDir = join(runRoot, "browser");
 try {
+  mkdirSync(browserDir);
   // A run that stops before the tests must not leave an older run's score in place.
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
-  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(nodeRoot, "node")));
+  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(runRoot, "node"), browserDir));
   if (stopped) code ||= 1;
 } finally {
-  // Only what this run created, by its unique name. A docker command the tests started just
-  // before a stop can still create its container after the first pass, so look again.
-  let left = [];
-  for (let pass = 0; pass < 3; pass++) {
-    if (pass > 0) await delay(2000);
-    for (const args of cleanupCommands(names)) spawnSync("docker", args, { stdio: "ignore" });
-    rmSync(nodeRoot, { recursive: true, force: true });
-    left = leftoverLists(name)
-      .filter((list) => {
-        const listed = spawnSync("docker", list, { encoding: "utf8" });
-        return listed.status !== 0 || listed.stdout.trim() !== "";
-      })
-      .map((list) => `docker ${list.join(" ")}`);
-    if (existsSync(nodeRoot)) left.push(`ls ${nodeRoot}`);
-    if (left.length === 0) break;
-  }
+  // Every process the tests started has exited (run waits for the Playwright group). Chromium
+  // has a process group of its own; its profile path names the browser folder.
+  const running = await stopProcessesNaming(browserDir).then(
+    (pids) => pids.map((pid) => `process ${pid}`),
+    (error) => [error.message],
+  );
+  // Only what this run created, by its unique name. A docker request a stopped command sent
+  // can still be carried out after it has gone, so a removal counts only once a later look
+  // finds nothing.
+  const left = await removeUntilQuiet({
+    remove: () => {
+      for (const args of cleanupCommands(names)) spawnSync("docker", args, { stdio: "ignore" });
+      rmSync(runRoot, { recursive: true, force: true });
+    },
+    leftovers: () => [
+      ...leftoverLists(name)
+        .filter((list) => {
+          const listed = spawnSync("docker", list, { encoding: "utf8" });
+          return listed.status !== 0 || listed.stdout.trim() !== "";
+        })
+        .map((list) => `docker ${list.join(" ")}`),
+      ...(existsSync(runRoot) ? [`ls ${runRoot}`] : []),
+    ],
+  });
+  left.push(...stuck, ...running);
   if (left.length > 0) {
     console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;
   } else {
     const { importer, restore, importVolume, restoreVolume } = names;
     console.log(
-      `Removed containers ${name}, ${importer}, ${restore} and ${simulator}, volumes ${name}, ${importVolume} and ${restoreVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
+      `Removed containers ${name}, ${importer}, ${restore} and ${simulator}, volumes ${name}, ${importVolume} and ${restoreVolume}, network ${name}, image tag ${image}, and the run's folder.`,
     );
   }
 }

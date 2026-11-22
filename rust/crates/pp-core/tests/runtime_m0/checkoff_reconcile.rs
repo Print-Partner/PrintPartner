@@ -13,19 +13,22 @@ use std::{path::Path, time::Duration};
 
 const COMPLETE: &[u8] = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"bracket.gcode"},"virtual_sdcard":{"progress":1.0}}}}"#;
 
-#[tokio::test]
-async fn gre_1897_a_finished_moonraker_print_awaits_verify_in_the_rust_only_runtime() {
-    let data = temporary("checkoff-reconcile");
-    run_in_child(
-        "checkoff_reconcile::gre_1897_finished_print_in_child",
-        &data,
-    )
-    .await;
+async fn run_checkoff_case(name: &str, test: &str) {
+    let data = temporary(name);
+    run_in_child(test, &data).await;
     let _ = std::fs::remove_dir_all(data);
 }
 
-/// The stored `link-sent`, read while the runtime runs.
-fn link(data: &Path) -> Value {
+#[tokio::test]
+async fn gre_1897_a_finished_moonraker_print_awaits_verify_in_the_rust_only_runtime() {
+    run_checkoff_case(
+        "checkoff-reconcile",
+        "checkoff_reconcile::gre_1897_finished_print_in_child",
+    )
+    .await;
+}
+
+fn stored_links(data: &Path) -> Vec<Value> {
     let connection = rusqlite::Connection::open_with_flags(
         data.join("print-partner.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -34,7 +37,32 @@ fn link(data: &Path) -> Value {
     let sql =
         "SELECT value FROM app_settings WHERE tenant_id='default' AND key='printer.checkoff_links'";
     let raw: String = connection.query_row(sql, [], |row| row.get(0)).unwrap();
-    serde_json::from_str::<Value>(&raw).unwrap()[0].clone()
+    serde_json::from_str(&raw).unwrap()
+}
+
+fn watching_link(id: &str, saw_active: bool, created: &str) -> Value {
+    let mut link = json!({
+        "id": id, "profile_id": 1, "integration_id": "moon-1", "printer_id": "p-moon",
+        "filename": "bracket.gcode", "state": "watching", "started": true,
+        "saw_active": saw_active, "created_at": created,
+    });
+    link["units"] = json!([{"part_id": 1, "unit_index": 0}]);
+    link
+}
+
+fn recorded_host(printer: &RecordedPrinter) -> Value {
+    json!({"id": "moon-1", "name": "Recorded", "type": "moonraker",
+           "config": {"base_url": printer.url(), "api_key": "recorded-key"}})
+}
+
+fn assert_only_status_reads(printer: &RecordedPrinter) {
+    let lines = printer.request_lines();
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.starts_with("GET /printer/objects/query?print_stats")),
+        "{lines:?}"
+    );
 }
 
 #[tokio::test]
@@ -44,23 +72,19 @@ async fn gre_1897_finished_print_in_child() {
     let printer =
         RecordedPrinter::start(vec![(200, SUCCESS), (200, SUCCESS), (200, COMPLETE)]).unwrap();
     let created = pp_storage::read_model::farm::iso_time(std::time::SystemTime::now());
-    let sent = json!({
-        "id": "link-sent", "profile_id": 1, "integration_id": "moon-1", "printer_id": "p-moon",
-        "filename": "bracket.gcode", "state": "watching", "started": true,
-        "created_at": created, "units": [{"part_id": 1, "unit_index": 0}],
-    });
-    let host = json!({"id": "moon-1", "name": "Recorded", "type": "moonraker",
-                      "config": {"base_url": printer.url(), "api_key": "recorded-key"}});
     let settings = [
-        ("integrations", json!([host])),
-        ("printer.checkoff_links", json!([sent])),
+        ("integrations", json!([recorded_host(&printer)])),
+        (
+            "printer.checkoff_links",
+            json!([watching_link("link-sent", false, &created)]),
+        ),
     ];
     seed_settings(&data, &settings);
 
     let (runtime, _, _) = start_rust_only(&data).await;
     let finished = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let link = link(&data);
+            let link = stored_links(&data).remove(0);
             if link["state"] != "watching" {
                 return link;
             }
@@ -80,44 +104,29 @@ async fn gre_1897_finished_print_in_child() {
         (&json!("awaiting_verify"), &json!("success"), &json!(43)),
         "{finished}"
     );
-    let lines = printer.request_lines();
-    let reads = |line: &String| line.starts_with("GET /printer/objects/query?print_stats");
-    assert!(lines.iter().all(reads), "{lines:?}");
+    assert_only_status_reads(&printer);
 }
 
 #[tokio::test]
 async fn gre_1897_a_finish_replayed_after_offline_moves_no_second_started_link() {
-    let data = temporary("checkoff-replay");
-    run_in_child(
+    run_checkoff_case(
+        "checkoff-replay",
         "checkoff_reconcile::gre_1897_replayed_finish_in_child",
-        &data,
     )
     .await;
-    let _ = std::fs::remove_dir_all(data);
 }
 
-/// Each stored link's state, by ID.
-fn states(data: &Path) -> Vec<(String, String)> {
-    let connection = rusqlite::Connection::open_with_flags(
-        data.join("print-partner.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let sql =
-        "SELECT value FROM app_settings WHERE tenant_id='default' AND key='printer.checkoff_links'";
-    let raw: String = connection.query_row(sql, [], |row| row.get(0)).unwrap();
-    let mut links: Vec<(String, String)> = serde_json::from_str::<Vec<Value>>(&raw)
-        .unwrap()
+fn states(links: &[Value]) -> Vec<(String, String)> {
+    let mut states: Vec<_> = links
         .iter()
         .map(|link| {
-            (
-                link["id"].as_str().unwrap().into(),
-                link["state"].as_str().unwrap().into(),
-            )
+            let id = link["id"].as_str().unwrap();
+            let state = link["state"].as_str().unwrap();
+            (id.to_owned(), state.to_owned())
         })
         .collect();
-    links.sort();
-    links
+    states.sort();
+    states
 }
 
 #[tokio::test]
@@ -130,18 +139,8 @@ async fn gre_1897_replayed_finish_in_child() {
     let printer =
         RecordedPrinter::start(vec![(200, COMPLETE), (503, offline), (200, COMPLETE)]).unwrap();
     let created = pp_storage::read_model::farm::iso_time(std::time::SystemTime::now());
-    let send = |id: &str, saw_active: bool| {
-        json!({
-            "id": id, "profile_id": 1, "integration_id": "moon-1", "printer_id": "p-moon",
-            "filename": "bracket.gcode", "state": "watching", "started": true,
-            "saw_active": saw_active, "created_at": created,
-            "units": [{"part_id": 1, "unit_index": 0}],
-        })
-    };
-    let host = json!({"id": "moon-1", "name": "Recorded", "type": "moonraker",
-                      "config": {"base_url": printer.url(), "api_key": "recorded-key"}});
     let settings = [
-        ("integrations", json!([host])),
+        ("integrations", json!([recorded_host(&printer)])),
         (
             "printer.fleet",
             json!([{"id": "p-moon", "name": "Micron", "integration_id": "moon-1"}]),
@@ -149,7 +148,10 @@ async fn gre_1897_replayed_finish_in_child() {
         ("feature_toggles", json!({"farm": true})),
         (
             "printer.checkoff_links",
-            json!([send("link-older", false), send("link-current", true)]),
+            json!([
+                watching_link("link-older", false, &created),
+                watching_link("link-current", true, &created),
+            ]),
         ),
     ];
     seed_settings(&data, &settings);
@@ -175,23 +177,12 @@ async fn gre_1897_replayed_finish_in_child() {
         None,
     )
     .await;
-    let stored = states(&data);
+    let stored = states(&stored_links(&data));
     shut_down(runtime).await;
 
     assert_eq!(farm.0, axum::http::StatusCode::OK);
     let farm: Value = serde_json::from_slice(&farm.2).unwrap();
-    let mut shown: Vec<(String, String)> = farm["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| {
-            (
-                r["id"].as_str().unwrap().into(),
-                r["state"].as_str().unwrap().into(),
-            )
-        })
-        .collect();
-    shown.sort();
+    let shown = states(farm["results"].as_array().unwrap());
     let expected = [
         ("link-current".to_owned(), "awaiting_verify".to_owned()),
         ("link-older".to_owned(), "watching".to_owned()),
@@ -201,7 +192,5 @@ async fn gre_1897_replayed_finish_in_child() {
         shown, expected,
         "the farm read that feeds Today offers one bed"
     );
-    let lines = printer.request_lines();
-    let reads = |line: &String| line.starts_with("GET /printer/objects/query?print_stats");
-    assert!(lines.iter().all(reads), "{lines:?}");
+    assert_only_status_reads(&printer);
 }

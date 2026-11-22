@@ -5,7 +5,7 @@ use serde_json::json;
 
 const NOW: &str = "2026-11-21T12:00:00.000Z";
 
-fn link(fields: Value) -> Link {
+fn raw_link(fields: Value) -> Value {
     let mut raw = json!({
         "id": "l1", "profile_id": 1, "integration_id": "moon-1", "printer_id": "p1",
         "filename": "plate-a.gcode", "remote_path": "pp/plate-a.gcode",
@@ -14,7 +14,11 @@ fn link(fields: Value) -> Link {
     for (key, value) in fields.as_object().unwrap() {
         raw[key] = value.clone();
     }
-    links::parse(&raw, NOW).unwrap()
+    raw
+}
+
+fn link(fields: Value) -> Link {
+    links::parse(&raw_link(fields), NOW).unwrap()
 }
 
 /// Host `state` at 5% reporting `file` (blank for none).
@@ -197,18 +201,16 @@ fn replayed(links: Vec<Value>, reports: &[HostReport]) -> Vec<(String, String)> 
         tx.commit().unwrap();
     }
     let tx = connection.transaction().unwrap();
-    let mut states: Vec<(String, String)> = links::load(&tx, "default", NOW)
-        .unwrap()
-        .iter()
+    let mut stored = links::load(&tx, "default", NOW).unwrap();
+    stored.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    stored
+        .into_iter()
         .map(|link| {
-            (
-                link["id"].as_str().unwrap().into(),
-                link["state"].as_str().unwrap().into(),
-            )
+            let id = link["id"].as_str().unwrap();
+            let state = link["state"].as_str().unwrap();
+            (id.to_owned(), state.to_owned())
         })
-        .collect();
-    states.sort();
-    states
+        .collect()
 }
 
 #[test]
@@ -231,39 +233,62 @@ fn gre_1897_a_finish_replayed_after_offline_moves_no_second_started_link() {
     );
 }
 
-#[test]
-fn a_completed_link_filters_only_plausible_replays() {
-    const FILE: &str = "plate-a.gcode";
-    const COMPLETED: &str = "2026-11-21T11:00:00.000Z";
-    const LATER: &str = "2026-11-21T11:30:00.000Z";
-    const AWAITING: &str = "awaiting_verify";
-    const WATCHING: &str = "watching";
+const REPLAY_FILE: &str = "plate-a.gcode";
+const COMPLETED: &str = "2026-11-21T11:00:00.000Z";
+const LATER: &str = "2026-11-21T11:30:00.000Z";
+const AWAITING: &str = "awaiting_verify";
+const WATCHING: &str = "watching";
 
-    let send = |id: &str, fields: Value| {
-        let mut raw = json!({
-            "id": id, "profile_id": 1, "integration_id": "moon-1", "printer_id": "p1",
-            "filename": FILE, "state": WATCHING, "started": true,
-            "created_at": "2026-11-21T10:00:00.000Z",
-            "units": [{"part_id": 1, "unit_index": 0}],
-        });
-        for (key, value) in fields.as_object().unwrap() {
-            raw[key] = value.clone();
-        }
-        raw
-    };
-    let took = |fields: Value| {
-        let mut raw = json!({
-            "state": AWAITING, "host_outcome": "success", "completed_at": COMPLETED,
-        });
-        for (key, value) in fields.as_object().unwrap() {
-            raw[key] = value.clone();
-        }
-        send("taken", raw)
-    };
-    let finish = report(Complete, FILE);
+fn replay_send(id: &str, fields: Value) -> Value {
+    let mut raw = raw_link(fields);
+    raw["id"] = json!(id);
+    raw["started"] = json!(true);
+    raw["units"] = json!([{"part_id": 1, "unit_index": 0}]);
+    raw
+}
+
+fn recorded_finish(fields: Value) -> Value {
+    let mut raw = json!({
+        "state": AWAITING, "host_outcome": "success", "completed_at": COMPLETED,
+        "remote_path": null,
+    });
+    for (key, value) in fields.as_object().unwrap() {
+        raw[key] = value.clone();
+    }
+    replay_send("taken", raw)
+}
+
+type ReplayCase = (
+    &'static str,
+    Value,
+    Value,
+    Vec<HostReport>,
+    &'static str,
+    &'static str,
+);
+
+fn assert_replay_cases(cases: impl IntoIterator<Item = ReplayCase>) {
+    for (case, taken, candidate, reports, candidate_state, taken_state) in cases {
+        assert_eq!(
+            replayed(
+                vec![recorded_finish(taken), replay_send("candidate", candidate)],
+                &reports
+            ),
+            [
+                ("candidate".into(), candidate_state.into()),
+                ("taken".into(), taken_state.into()),
+            ],
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_completed_link_filters_replays_after_restart_and_reconnect() {
+    let finish = report(Complete, REPLAY_FILE);
     let blank = report(Complete, " ");
-    let print = report(Printing, FILE);
-    let cases = [
+    let print = report(Printing, REPLAY_FILE);
+    assert_replay_cases([
         (
             "restart",
             json!({}),
@@ -312,6 +337,14 @@ fn a_completed_link_filters_only_plausible_replays() {
             AWAITING,
             AWAITING,
         ),
+    ]);
+}
+
+#[test]
+fn a_completed_link_filters_only_plausible_replays() {
+    let finish = report(Complete, REPLAY_FILE);
+    let blank = report(Complete, " ");
+    assert_replay_cases([
         (
             "different host",
             json!({"integration_id": "moon-2"}),
@@ -376,23 +409,18 @@ fn a_completed_link_filters_only_plausible_replays() {
             AWAITING,
             AWAITING,
         ),
-    ];
-    for (case, taken, candidate, reports, candidate_state, taken_state) in cases {
-        assert_eq!(
-            replayed(vec![took(taken), send("candidate", candidate)], &reports),
-            [
-                ("candidate".into(), candidate_state.into()),
-                ("taken".into(), taken_state.into()),
-            ],
-            "{case}"
-        );
-    }
+    ]);
+}
+
+#[test]
+fn a_replay_candidate_does_not_make_a_new_send_ambiguous() {
+    let finish = report(Complete, REPLAY_FILE);
     assert_eq!(
         replayed(
             vec![
-                took(json!({})),
-                send("older", json!({})),
-                send("newer", json!({"created_at": LATER})),
+                recorded_finish(json!({})),
+                replay_send("older", json!({})),
+                replay_send("newer", json!({"created_at": LATER})),
             ],
             &[finish],
         ),

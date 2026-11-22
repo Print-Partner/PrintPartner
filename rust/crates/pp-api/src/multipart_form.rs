@@ -44,6 +44,9 @@ pub(crate) struct Limits {
 #[derive(Default)]
 pub(crate) struct Form {
     pub fields: Vec<(String, String)>,
+    /// Fields cut at the field limit, so a route can refuse one it must
+    /// read whole.
+    pub truncated: Vec<String>,
     pub file: Option<(Option<String>, Vec<u8>)>,
 }
 
@@ -141,13 +144,19 @@ pub(crate) async fn read(
         let file_name = part.file_name().map(str::to_owned);
         if file_name.is_none() && !octets {
             fields += 1;
-            let value = part_bytes(&mut part, limits.field_bytes, true)
+            // One byte past the limit shows the field was cut.
+            let mut value = part_bytes(&mut part, limits.field_bytes + 1, true)
                 .await
                 .map_err(|_| bad(limits.unreadable))?;
             if fields > limits.fields {
                 return Err(bad(limits.unreadable));
             }
+            let cut = value.len() > limits.field_bytes;
+            value.truncate(limits.field_bytes);
             if let Some(name) = name {
+                if cut {
+                    form.truncated.push(name.clone());
+                }
                 form.fields
                     .push((name, String::from_utf8_lossy(&value).into_owned()));
             }

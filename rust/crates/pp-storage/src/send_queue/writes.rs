@@ -26,7 +26,8 @@
 
 mod enqueue;
 
-pub use enqueue::NewItem;
+pub(crate) use enqueue::checkoff_units;
+pub use enqueue::{BAD_UNITS, NewItem};
 
 use super::{legacy, rows};
 use crate::{

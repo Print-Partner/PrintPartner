@@ -92,7 +92,13 @@ export const item = (id: string, overrides: Partial<Item> = {}): Item => ({
 });
 
 /** The core's preview for a file with no labels. */
-export const NO_UNITS: SendUnitsPreview = { file: "read", unit_count: 0, parts: [], unmatched: [] };
+export const NO_UNITS: SendUnitsPreview = {
+  file: "read",
+  unit_count: 0,
+  parts: [],
+  unmatched: [],
+  binding: "0".repeat(64),
+};
 
 export const PREVIEW_PATH = "/api/v2/printer-send-queue/checkoff-preview";
 
@@ -105,10 +111,12 @@ const itemId = (path: string, suffix: string) =>
 
 /** Add: queues the form's file as a `queued` item. */
 const addRoute =
-  (queue: Item[], next: () => string): Route =>
+  (queue: Item[], next: () => string, add?: (form: FormData) => Answer | undefined): Route =>
   (path, init) => {
     if (path !== "/api/v2/printer-send-queue" || init?.method !== "POST") return undefined;
     const form = init.body as FormData;
+    const refused = add?.(form);
+    if (refused) return refused;
     const added = item(next(), {
       printer_id: String(form.get("printer_id")),
       start: form.get("start") === "true",
@@ -167,6 +175,7 @@ export function fakeCore({
   printers = [printer("p1", "Micron", READY)],
   items = [] as Item[],
   preview = () => json(NO_UNITS),
+  add,
   dispatch,
   reconcile,
 }: {
@@ -175,13 +184,15 @@ export function fakeCore({
   items?: Item[];
   /** Answers each preview, given the chosen file and the request's abort signal. */
   preview?: (file: File, signal: AbortSignal) => Answer;
+  /** Answers Add instead of queuing, when it returns an answer. */
+  add?: (form: FormData) => Answer | undefined;
   dispatch?: (id: string) => Answer;
   reconcile?: (id: string) => Answer;
 } = {}) {
   const queue = items.map((i) => ({ ...i }));
   let next = 1;
   const writeRoutes = [
-    addRoute(queue, () => `q${next++}`),
+    addRoute(queue, () => `q${next++}`, add),
     sendNowRoute(queue, dispatch),
     removeRoute(queue),
     reconcileRoute(queue, reconcile),

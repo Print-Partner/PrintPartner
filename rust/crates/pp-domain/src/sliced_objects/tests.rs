@@ -75,6 +75,50 @@ fn gre_1896_a_malformed_200_kib_file_is_scanned_in_linear_time() {
     }
 }
 
+#[test]
+fn gre_1896_non_ascii_after_a_printing_object_label_is_read_safely() {
+    let text = [
+        "; printing object bracket.stl clé",
+        "; printing object clé.stl id:3",
+        "; printing object ü.stl id:é",
+        "; printing object lid.stl id:4 copy é",
+        "; printing object ☃☃☃",
+    ]
+    .join("\n");
+    assert_eq!(names(&text), ["clé.stl", "☃☃☃"]);
+    // Bytes that are not UTF-8 read as U+FFFD and never split a character.
+    let bytes = b"; printing object bracket.stl a\xff\n; printing object lid\xe2\x98.stl\n";
+    assert_eq!(
+        object_names(bytes),
+        FileObjects::Read(vec!["lid\u{FFFD}.stl".into()])
+    );
+}
+
+#[test]
+fn gre_1896_a_label_repeated_on_every_layer_counts_once() {
+    let text = format!("{};MESH:lid.stl\n", ";MESH:bracket.stl\n".repeat(MAX_NAMES));
+    assert_eq!(names(&text), ["bracket.stl", "lid.stl"]);
+}
+
+#[test]
+fn gre_1896_more_distinct_objects_than_the_cap_is_reported() {
+    let labels: String = (0..=MAX_NAMES)
+        .map(|i| format!(";MESH:part_{i}.stl\n"))
+        .collect();
+    assert_eq!(object_names(labels.as_bytes()), FileObjects::TooMany);
+    let objects: Vec<String> = (0..=MAX_NAMES)
+        .map(|i| format!(r#"{{"name":"p{i}"}}"#))
+        .collect();
+    let info = format!("; objects_info = {{\"objects\":[{}]}}\n", objects.join(","));
+    assert_eq!(object_names(info.as_bytes()), FileObjects::TooMany);
+    let exactly: String = (0..MAX_NAMES)
+        .map(|i| format!(";MESH:part_{i}.stl\n"))
+        .collect();
+    assert!(
+        matches!(object_names(exactly.as_bytes()), FileObjects::Read(n) if n.len() == MAX_NAMES)
+    );
+}
+
 // ---- Binary G-code --------------------------------------------------------------------------
 
 /// A block: header, parameters, data and its CRC32 over all three.
@@ -177,6 +221,29 @@ fn gre_1896_binary_gcode_reports_blocks_it_cannot_decode() {
 }
 
 #[test]
+fn gre_1896_binary_gcode_metadata_gives_only_its_inventory() {
+    let labels = b";MESH:bracket.stl\nEXCLUDE_OBJECT_DEFINE NAME=lid.stl\nM486 A\"knob.stl\"\n";
+    let file = bgcode(&[
+        block(PRINTER_METADATA, 0, 0, labels),
+        block(GCODE_BLOCK, 0, 0, b"G28\n"),
+    ]);
+    assert_eq!(object_names(&file), FileObjects::Read(Vec::new()));
+}
+
+#[test]
+fn gre_1896_binary_gcode_inflation_stops_at_the_file_cap() {
+    let third = MAX_TEXT_BYTES / 3 + 1;
+    let blocks: Vec<Vec<u8>> = (0..3)
+        .map(|_| block(GCODE_BLOCK, 1, 0, &vec![b'G'; third]))
+        .collect();
+    assert_eq!(object_names(&bgcode(&blocks)), FileObjects::Unreadable);
+    assert_eq!(
+        object_names(&bgcode(&blocks[..2])),
+        FileObjects::Read(Vec::new())
+    );
+}
+
+#[test]
 fn gre_1896_binary_gcode_reads_no_labels_from_thumbnails() {
     let file = bgcode(&[
         block(
@@ -214,6 +281,12 @@ fn gre_1896_malformed_binary_gcode_is_unreadable() {
         ("declared size", bgcode(&[too_big])),
         ("block type", bgcode(&[unknown])),
         ("header", b"GCDE\x01\x00".to_vec()),
+        ("no blocks", bgcode(&[])),
+        ("version", {
+            let mut file = good.clone();
+            file[4] = 2;
+            file
+        }),
     ] {
         assert_eq!(object_names(&file), FileObjects::Unreadable, "{what}");
     }

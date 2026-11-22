@@ -261,6 +261,7 @@ describe("Send a file links the Checkoff units the file prints (GRE-1896)", () =
       { part_id: 12, filename: "gear.stl", count: 1 },
     ],
     unmatched: ["spoon.stl_id_2_copy_0"],
+    binding: "b".repeat(64),
   } as const;
   const addForm = (fetchMock: ReturnType<typeof fakeCore>["fetchMock"]) =>
     writes(fetchMock)[0]![1]!.body as FormData;
@@ -286,13 +287,45 @@ describe("Send a file links the Checkoff units the file prints (GRE-1896)", () =
     fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(writes(fetchMock)).toHaveLength(2));
     expect(addForm(fetchMock).get("link_checkoff")).toBe("true");
+    expect(addForm(fetchMock).get("checkoff_binding")).toBe("b".repeat(64));
     expect(addForm(fetchMock).get("checkoff_units")).toBeNull();
+  });
+
+  it("when Add finds the units changed, reads the preview again and sends its new binding", async () => {
+    const fresh = {
+      ...MATCHED,
+      unit_count: 1,
+      parts: [{ part_id: 11, filename: "bracket.stl", count: 1 }],
+      binding: "c".repeat(64),
+    };
+    let previews = 0;
+    let refusals = 0;
+    const { fetchMock } = fakeCore({
+      preview: () => json(previews++ === 0 ? MATCHED : fresh),
+      add: () =>
+        refusals++ === 0
+          ? problem(409, "send_units_changed", "This Build's Checkoff units changed")
+          : undefined,
+    });
+    renderAt(fetchMock);
+    const sheet = await openSheet();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    expect((await within(sheet).findByRole("alert")).textContent).toMatch(/units changed/);
+    expect(await within(sheet).findByText("bracket.stl × 1")).toBeTruthy();
+    expect(previews).toBe(2);
+    expect(addForm(fetchMock).get("checkoff_binding")).toBe("b".repeat(64));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(3));
+    const second = writes(fetchMock)[1]![1]!.body as FormData;
+    expect(second.get("checkoff_binding")).toBe("c".repeat(64));
   });
 
   it.each([
     [NO_UNITS, /No object in this file matches a unit still to print/],
     [{ ...NO_UNITS, file: "unsupported" }, /uses a compression or encoding the core does not decode/],
     [{ ...NO_UNITS, file: "unreadable" }, /This binary G-code file is damaged/],
+    [{ ...NO_UNITS, file: "too_many_objects" }, /names more than 10,000 objects/],
+    [{ ...NO_UNITS, file: "too_many_units" }, /more units than one send can link/],
   ])("says when a file links no units (%o)", async (answer, text) => {
     const { fetchMock } = fakeCore({ preview: () => json(answer) });
     renderAt(fetchMock);

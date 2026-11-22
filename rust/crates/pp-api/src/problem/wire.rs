@@ -158,6 +158,9 @@ problem_codes! {
     RestoreRolledBack = "restore_rolled_back";
     RestartRequired = "restart_required";
     RestoreBusy = "restore_busy";
+    // `POST /api/v2/printer-send-queue` with `link_checkoff`: the preview's
+    // units are no longer the units the file links. Preview again.
+    SendUnitsChanged = "send_units_changed";
 }
 
 impl ProblemType {
@@ -167,7 +170,9 @@ impl ProblemType {
         match code {
             Some("writer_queue_full" | "admission_full") => return Self::Overloaded,
             Some("outcome_unknown") => return Self::OutcomeUnknown,
-            Some("draft_changed" | "base_changed") => return Self::PreconditionFailed,
+            Some("draft_changed" | "base_changed" | "send_units_changed") => {
+                return Self::PreconditionFailed;
+            }
             Some("request_cancelled" | "writer_stopped" | "transaction_unavailable") => {
                 return Self::Unavailable;
             }

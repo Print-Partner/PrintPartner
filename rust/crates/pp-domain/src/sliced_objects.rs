@@ -25,10 +25,14 @@ pub enum FileObjects {
     Unsupported,
     /// A binary G-code file whose structure or checksum is wrong.
     Unreadable,
+    /// The file names more than [`MAX_NAMES`] distinct objects, so its list
+    /// would be incomplete.
+    TooMany,
 }
 
-/// Names kept per file, so a hostile file cannot grow the list without bound.
-const MAX_NAMES: usize = 10_000;
+/// Distinct object names a file may name, so a hostile file cannot grow the
+/// list without bound. A file over it is [`FileObjects::TooMany`].
+pub const MAX_NAMES: usize = 10_000;
 /// An `objects_info` line longer than this is not parsed as JSON.
 const MAX_INFO_LINE: usize = 4 * 1024 * 1024;
 
@@ -39,10 +43,10 @@ pub fn object_names(bytes: &[u8]) -> FileObjects {
     }
     let mut names = Names::default();
     names.text(bytes);
-    FileObjects::Read(names.finish())
+    names.finish()
 }
 
-/// Labels by kind, in the order Node collects them.
+/// Labels by kind, in the order Node collects them, each kind's names once.
 #[derive(Default)]
 struct Names {
     /// PrusaSlicer's `objects_info`: one entry per placed copy. It wins.
@@ -50,7 +54,12 @@ struct Names {
     /// EXCLUDE_OBJECT_DEFINE JSON, EXCLUDE_OBJECT_DEFINE NAME=, quoted M486,
     /// bare M486, `; printing object` and Cura `;MESH:` labels.
     by_kind: [Vec<String>; 6],
+    /// Each kind's names so far, in lower case. A label a slicer repeats on
+    /// every layer is kept once and counts once against [`MAX_NAMES`].
+    seen: [HashSet<String>; 6],
     count: usize,
+    /// A distinct name past [`MAX_NAMES`] was found.
+    overflow: bool,
     /// The unfinished last line of the previous binary G-code block.
     carry: Vec<u8>,
 }
@@ -68,15 +77,25 @@ impl Names {
         self.carry.extend_from_slice(rest);
     }
 
+    /// A binary G-code metadata block: only its `objects_info` key is read.
+    /// Toolpath labels count only in G-code.
+    fn metadata(&mut self, bytes: &[u8]) {
+        for line in bytes.split(|b| *b == b'\n') {
+            if self.info.is_none() {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                self.info = objects_info(&String::from_utf8_lossy(line));
+            }
+        }
+    }
+
     fn line(&mut self, bytes: &[u8]) {
         let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
-        if self.count >= MAX_NAMES && self.info.is_some() {
+        if self.info.is_some() {
+            // The inventory wins; labels after it do not matter.
             return;
         }
         let line = String::from_utf8_lossy(bytes);
-        if self.info.is_none() {
-            self.info = objects_info(&line);
-        }
+        self.info = objects_info(&line);
         let found = [
             exclude_json(&line),
             exclude_name(&line),
@@ -86,32 +105,43 @@ impl Names {
             cura_mesh(&line),
         ];
         for (kind, name) in found.into_iter().enumerate() {
-            if let Some(name) = name
-                && self.count < MAX_NAMES
-            {
-                self.by_kind[kind].push(name.to_owned());
-                self.count += 1;
+            let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            if !self.seen[kind].insert(name.to_lowercase()) {
+                continue;
             }
+            if self.count == MAX_NAMES {
+                self.overflow = true;
+                continue;
+            }
+            self.by_kind[kind].push(name.to_owned());
+            self.count += 1;
         }
     }
 
-    fn finish(mut self) -> Vec<String> {
+    fn finish(mut self) -> FileObjects {
         let carry = std::mem::take(&mut self.carry);
         if !carry.is_empty() {
             self.line(&carry);
         }
         if let Some(info) = self.info {
-            return info;
+            return match info.len() > MAX_NAMES {
+                true => FileObjects::TooMany,
+                false => FileObjects::Read(info),
+            };
+        }
+        if self.overflow {
+            return FileObjects::TooMany;
         }
         let mut seen = HashSet::new();
-        self.by_kind
-            .into_iter()
-            .flatten()
-            .filter_map(|name| {
-                let name = name.trim().to_owned();
-                (!name.is_empty() && seen.insert(name.to_lowercase())).then_some(name)
-            })
-            .collect()
+        FileObjects::Read(
+            self.by_kind
+                .into_iter()
+                .flatten()
+                .filter(|name| seen.insert(name.to_lowercase()))
+                .collect(),
+        )
     }
 }
 
@@ -168,7 +198,7 @@ fn objects_info(line: &str) -> Option<Vec<String>> {
         .filter_map(|item| item.get("name")?.as_str())
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .take(MAX_NAMES)
+        .take(MAX_NAMES + 1)
         .map(str::to_owned)
         .collect();
     (!names.is_empty()).then_some(names)
@@ -244,10 +274,12 @@ fn printing_object(line: &str) -> Option<&str> {
         let mut tokens = rest.split_whitespace();
         let name = tokens.next()?;
         let tail: Vec<&str> = tokens.take(4).collect();
+        // `t` may hold any UTF-8, so it is compared as bytes, never sliced as text.
         let id = |t: &str| {
+            let t = t.as_bytes();
             t.len() > 3
-                && t[..3].eq_ignore_ascii_case("id:")
-                && t[3..].bytes().all(|b| b.is_ascii_digit())
+                && t[..3].eq_ignore_ascii_case(b"id:")
+                && t[3..].iter().all(u8::is_ascii_digit)
         };
         let copy = |t: &[&str]| {
             t.len() == 2
@@ -274,12 +306,15 @@ fn cura_mesh(line: &str) -> Option<&str> {
 // ---- Binary G-code ------------------------------------------------------------------------
 
 const BGCODE_MAGIC: &[u8] = b"GCDE";
+/// The only version libbgcode's specification defines.
+const BGCODE_VERSION: u32 = 1;
 const GCODE_BLOCK: u16 = 1;
 const THUMBNAIL_BLOCK: u16 = 5;
 /// A block's declared size is refused above this, before anything is read.
 const MAX_BLOCK_BYTES: u32 = 64 * 1024 * 1024;
 /// All decompressed text together, so a file of small bombs is refused too.
-const MAX_TEXT_BYTES: usize = 512 * 1024 * 1024;
+/// Tests use 1 MiB so they can reach it.
+const MAX_TEXT_BYTES: usize = if cfg!(test) { 1 << 20 } else { 512 << 20 };
 
 /// Reads the metadata and G-code blocks of a binary G-code file.
 fn bgcode(bytes: &[u8]) -> FileObjects {
@@ -288,6 +323,9 @@ fn bgcode(bytes: &[u8]) -> FileObjects {
     let Some(checksum) = u16_at(8).filter(|kind| *kind <= 1) else {
         return FileObjects::Unreadable;
     };
+    if u32_at(4) != Some(BGCODE_VERSION) || bytes.len() == 10 {
+        return FileObjects::Unreadable;
+    }
     let mut names = Names::default();
     let (mut at, mut text_bytes, mut unsupported) = (10, 0, false);
     while at < bytes.len() {
@@ -323,6 +361,11 @@ fn bgcode(bytes: &[u8]) -> FileObjects {
             unsupported = true;
             continue;
         }
+        // The cap holds across blocks and is checked before anything is inflated.
+        if size as usize > MAX_TEXT_BYTES - text_bytes {
+            return FileObjects::Unreadable;
+        }
+        text_bytes += size as usize;
         let text = match compression {
             0 => Some(block.to_vec()),
             _ => inflate(block, size),
@@ -330,20 +373,15 @@ fn bgcode(bytes: &[u8]) -> FileObjects {
         let Some(text) = text else {
             return FileObjects::Unreadable;
         };
-        text_bytes += text.len();
-        if text_bytes > MAX_TEXT_BYTES {
-            return FileObjects::Unreadable;
-        }
-        names.text(&text);
-        if kind != GCODE_BLOCK {
-            // A metadata block ends its last line.
-            names.text(b"\n");
+        match kind {
+            GCODE_BLOCK => names.text(&text),
+            _ => names.metadata(&text),
         }
     }
     if unsupported && names.info.is_none() {
         return FileObjects::Unsupported;
     }
-    FileObjects::Read(names.finish())
+    names.finish()
 }
 
 fn crc_matches(covered: &[u8], stored: Option<u32>) -> bool {
@@ -352,7 +390,8 @@ fn crc_matches(covered: &[u8], stored: Option<u32>) -> bool {
     stored == Some(crc.sum())
 }
 
-/// A zlib (Deflate) block, which must inflate to exactly `size` bytes.
+/// A zlib (Deflate) block, which must inflate to exactly `size` bytes. It
+/// reads at most `size + 1`, so a block that inflates further stops there.
 fn inflate(block: &[u8], size: u32) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(size.min(1024 * 1024) as usize);
     let mut reader = flate2::read::ZlibDecoder::new(block).take(u64::from(size) + 1);

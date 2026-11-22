@@ -239,10 +239,15 @@ file itself (`pp_domain::sliced_objects`), by Node's send-flow rule
 - **Object names.** Text G-code is read one line at a time, each in time
   linear in its length: PrusaSlicer's `objects_info` (every placed copy) when
   present, otherwise EXCLUDE_OBJECT_DEFINE, M486, `; printing object` and
-  Cura `;MESH:` labels, each name once. Binary G-code is walked block by block
-  (libbgcode's specification): the CRC32 of each block must match, Deflate
-  blocks must inflate to exactly their stated size (at most 64 MiB a block,
-  512 MiB in all), and thumbnails are skipped. A metadata or G-code block in
+  Cura `;MESH:` labels, each distinct name once. A label repeated on every
+  layer counts once; a file with more than 10,000 distinct names is
+  `too_many_objects` and links nothing. Binary G-code is walked block by
+  block (libbgcode's specification): the header must be version 1 and be
+  followed by at least one block, the CRC32 of each block must match, and
+  Deflate blocks must inflate to exactly their stated size, at most 64 MiB a
+  block and 512 MiB in all, checked before each block is inflated.
+  Thumbnails are skipped, metadata blocks give only their `objects_info` key,
+  and only G-code blocks give toolpath labels. A metadata or G-code block in
   Heatshrink or MeatPack makes the file `unsupported` unless readable
   metadata held `objects_info`; a structural or checksum error makes it
   `unreadable`. Neither links a unit.
@@ -253,19 +258,30 @@ file itself (`pp_domain::sliced_objects`), by Node's send-flow rule
   (`bracket_02`) takes that unit, and every other name the next free unit of
   the one Part whose file name it matches by path, file name, unit suffix or
   a close spelling. A name that matches nothing, or two Parts, takes none.
+- **What one send carries.** Units are stored as `checkoff_units` stores
+  them: object names without control characters, trimmed and cut at 200
+  UTF-16 units on a whole character. One send links at most 1,000 units in
+  at most 48 KiB of that JSON, which keeps the printer-upload job under its
+  64 KiB payload limit. A file whose matched units are over that is
+  `too_many_units` and links none, so the preview, Add and Send now agree.
 
 `POST /api/v2/printer-send-queue/checkoff-preview` takes the same form's
 `profile_id` and file and answers `SendUnitsPreview`: `file` (`read`,
-`unsupported` or `unreadable`), `unit_count`, `parts` (`part_id`, `filename`
-and `count`, in the order matched) and the `unmatched` names. It is limited to
-30 requests a minute, answers 404 `Profile not found` for a Build the caller
-does not have, and writes nothing. Add with `link_checkoff` and no
-`checkoff_units` runs the same read and match on the bytes it stages, so the
-item stores the units the preview named; a Build changed in between links
-what is current. Object names are stored trimmed and cut at 200 UTF-16 units
-on a whole character, and there is no limit on the number of units. When the
-Accepted Plan cannot be read, Add answers 503 `Could not read this Build's
-Checkoff units, so nothing was queued` and stages nothing.
+`unsupported`, `unreadable`, `too_many_objects` or `too_many_units`),
+`unit_count`, `parts` (`part_id`, `filename` and `count`, in the order
+matched), the `unmatched` names and a `binding`: a SHA-256 over the Build,
+its Accepted Plan revision digests and the units linked. It is limited to 30
+requests a minute, answers 404 `Profile not found` for a Build the caller does
+not have, and writes nothing.
+
+Add with `link_checkoff`, the preview's `binding` as `checkoff_binding`, and
+no `checkoff_units` runs the same read and match on the bytes it stages and
+stores those units only when their binding is the same. Otherwise, because a
+unit was printed or the Accepted Plan changed since the preview, it answers
+409 `send_units_changed` and stages nothing, and the sheet reads the preview
+again. `link_checkoff` without `checkoff_binding` is 400. When the Accepted
+Plan cannot be read, Add answers 503 `Could not read this Build's Checkoff
+units, so nothing was queued` and stages nothing.
 
 ## Add to queue (GRE-1227)
 
@@ -279,9 +295,10 @@ minute. The fields are Node's: `printer_id`, `profile_id` or `plan_id`,
 `match` (`pinned` or `compatible`) and `checkoff_units` (a JSON array; invalid
 or repeated units are dropped), and Rust's `link_checkoff` (`1`, `true` or
 `yes`; see [Checkoff units a send links](#checkoff-units-a-send-links-gre-1896)).
-A `checkoff_units` value that is not a JSON array, including one cut at the
-64 KiB field limit, is 400 `checkoff_units must be a JSON array of at most 64
-KiB`; Node stored no units for it. The route answers in this order:
+A `checkoff_units` field that is blank, is not a JSON array, or was cut at
+the 64 KiB field limit is 400 `checkoff_units must be a JSON array of at most
+64 KiB`, and one with more units than one send carries is 400; Node stored no
+units for the first three. Only an omitted field means no units. The route answers in this order:
 
 1. 401 before it reads the body when the credential is not valid;
 2. 415 for a body that is not `multipart/form-data`; 400 `Only one G-code

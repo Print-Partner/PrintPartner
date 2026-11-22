@@ -2,6 +2,7 @@
 //! `enqueuePrinterSend`. Adding only writes a `queued` row for a file the
 //! route already staged; nothing is sent until Send now or Send ready.
 
+use super::super::units::{LinkedUnits, SendUnits, StaleUnits};
 use super::{Reply, farm_refusal, item};
 use crate::read_model::{farm::iso_time, views::js_trim};
 use anyhow::{Result, anyhow};
@@ -21,14 +22,18 @@ pub struct NewItem {
     start: bool,
     /// Normalized `checkoff_units` as JSON text.
     units: String,
-    /// The form asked the core to link the units the file prints
-    /// (`link_checkoff`) and sent no `checkoff_units` of its own.
-    link_checkoff: bool,
+    /// The preview binding the form sent with `link_checkoff` and no
+    /// `checkoff_units` of its own: the route links the units the file
+    /// prints, and only while they are still the units that preview named.
+    link_checkoff: Option<String>,
 }
 
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
 const NO_PLAN: &str = "Pick a plan to bind this send (profile_id required)";
-const BAD_UNITS: &str = "checkoff_units must be a JSON array of at most 64 KiB";
+pub const BAD_UNITS: &str = "checkoff_units must be a JSON array of at most 64 KiB";
+const TOO_MANY_UNITS: &str =
+    "checkoff_units links more units than one send can carry (1,000 units in 48 KiB)";
+const NO_BINDING: &str = "link_checkoff needs the checkoff_binding its preview answered";
 
 impl NewItem {
     /// Node's `parsePrinterUploadMultipart` with the queue fields, then the
@@ -39,7 +44,7 @@ impl NewItem {
         file: Option<Option<&str>>,
     ) -> Result<Self, &'static str> {
         let (mut printer_id, mut plan, mut units) = ("", None, None);
-        let mut link_checkoff = false;
+        let (mut link_checkoff, mut binding) = (false, "");
         let (mut start, mut wait_for_idle, mut matched) = (false, true, "pinned");
         for (name, value) in fields {
             let lower = value.to_lowercase();
@@ -55,6 +60,7 @@ impl NewItem {
                 "profile_id" | "plan_id" => plan = positive(value).or(plan),
                 "checkoff_units" => units = Some(value.as_str()),
                 "link_checkoff" => link_checkoff = matches!(lower.as_str(), "1" | "true" | "yes"),
+                "checkoff_binding" => binding = js_trim(value),
                 _ => {}
             }
         }
@@ -76,15 +82,23 @@ impl NewItem {
         if filename.is_empty() {
             return Err("Could not enqueue item");
         }
-        // A field cut at the form's 64 KiB limit is no longer valid JSON; refuse it rather
-        // than store no units.
-        let explicit = units.map(str::trim).filter(|raw| !raw.is_empty());
-        let units = match explicit {
+        // Only an omitted field means no units. A blank or broken one is refused rather
+        // than stored as none; the route refuses a field cut at the form's limit first.
+        let explicit = units.is_some();
+        let units = match units.map(str::trim) {
             Some(raw) => match serde_json::from_str::<Value>(raw) {
                 Ok(Value::Array(units)) => checkoff_units(&units),
                 _ => return Err(BAD_UNITS),
             },
             None => checkoff_units(&[]),
+        };
+        if !units.fits() {
+            return Err(TOO_MANY_UNITS);
+        }
+        let link_checkoff = match (link_checkoff && !explicit, binding) {
+            (false, _) => None,
+            (true, "") => return Err(NO_BINDING),
+            (true, binding) => Some(binding.to_owned()),
         };
         Ok(Self {
             printer_id: printer_id.to_owned(),
@@ -93,8 +107,8 @@ impl NewItem {
             matched,
             wait_for_idle,
             start,
-            link_checkoff: link_checkoff && explicit.is_none(),
-            units,
+            link_checkoff,
+            units: units.json,
         })
     }
 
@@ -104,25 +118,19 @@ impl NewItem {
     }
 
     /// Whether the route should link the units the file prints, read from the
-    /// staged file by [`pp_domain::sliced_objects`].
+    /// staged file by [`super::super::units::send_units`].
     pub fn links_checkoff(&self) -> bool {
-        self.link_checkoff
+        self.link_checkoff.is_some()
     }
 
-    /// Links `units`, normalized as a form's `checkoff_units` are: object
-    /// names trimmed and cut at 200 UTF-16 units on a whole character.
-    pub fn set_units(&mut self, units: &[pp_domain::sliced_objects::ProposedUnit]) {
-        let units: Vec<Value> = units
-            .iter()
-            .map(|unit| {
-                serde_json::json!({
-                    "part_id": unit.part_id,
-                    "unit_index": unit.unit_index,
-                    "object_name": unit.object_name,
-                })
-            })
-            .collect();
-        self.units = checkoff_units(&units);
+    /// Links the units `linked` names, when they are still the units the
+    /// preview named: `linked` was read now, from the bytes being queued.
+    pub fn link(&mut self, linked: &SendUnits) -> Result<(), StaleUnits> {
+        if self.link_checkoff.as_deref() != Some(linked.binding.as_str()) {
+            return Err(StaleUnits);
+        }
+        self.units = linked.json.clone();
+        Ok(())
     }
 
     /// The name the staged file gets on disk, Node's
@@ -164,15 +172,19 @@ fn positive(value: &str) -> Option<i64> {
 }
 
 /// Node's `parseCheckoffUnits`: the valid units of a JSON array, each
-/// `part_id:unit_index` once.
-fn checkoff_units(units: &[Value]) -> String {
+/// `part_id:unit_index` once, with object names trimmed and cut at 200
+/// UTF-16 units on a whole character.
+pub(crate) fn checkoff_units(units: &[Value]) -> LinkedUnits {
     let mut seen = HashSet::new();
     let units: Vec<Value> = units
         .iter()
         .filter_map(super::super::unit)
         .filter(|unit| seen.insert((unit["part_id"].clone(), unit["unit_index"].clone())))
         .collect();
-    Value::Array(units).to_string()
+    LinkedUnits {
+        count: units.len(),
+        json: Value::Array(units).to_string(),
+    }
 }
 
 /// Writes `new` as the queue's last `queued` item, after the Plan exists and
@@ -323,12 +335,12 @@ mod tests {
     }
 
     #[test]
-    fn gre_1896_units_that_are_not_a_json_array_are_refused() {
+    fn gre_1896_units_that_are_blank_or_not_a_json_array_are_refused() {
         let cut = format!(
             r#"[{{"part_id":4,"unit_index":0,"object_name":"{}"#,
             "x".repeat(64)
         );
-        for raw in ["{}", "nope", cut.as_str()] {
+        for raw in ["{}", "nope", cut.as_str(), "", "   "] {
             let form = fields(&[
                 ("printer_id", "p"),
                 ("profile_id", "2"),
@@ -337,53 +349,51 @@ mod tests {
             assert_eq!(
                 NewItem::parse(&form, Some(Some("a.gcode"))),
                 Err(super::BAD_UNITS),
-                "{raw}"
+                "{raw:?}"
             );
         }
+        let form = fields(&[("printer_id", "p"), ("profile_id", "2")]);
+        assert_eq!(
+            NewItem::parse(&form, Some(Some("a.gcode"))).unwrap().units,
+            "[]"
+        );
     }
 
     #[test]
-    fn gre_1896_link_checkoff_applies_only_without_explicit_units() {
-        let links = |pairs: &[(&str, &str)]| {
-            let mut form = vec![("printer_id", "p"), ("profile_id", "2")];
-            form.extend_from_slice(pairs);
-            NewItem::parse(&fields(&form), Some(Some("a.gcode")))
-                .unwrap()
-                .links_checkoff()
-        };
-        assert!(links(&[("link_checkoff", "1")]));
-        assert!(links(&[("link_checkoff", "TRUE"), ("checkoff_units", " ")]));
-        assert!(!links(&[]));
-        assert!(!links(&[("link_checkoff", "0")]));
-        assert!(!links(&[("link_checkoff", "1"), ("checkoff_units", "[]")]));
-    }
-
-    #[test]
-    fn gre_1896_linked_units_keep_every_unit_and_whole_characters() {
-        use pp_domain::sliced_objects::ProposedUnit;
+    fn gre_1896_explicit_units_one_send_cannot_carry_are_refused() {
+        let units: Vec<String> = (0..1001)
+            .map(|i| format!(r#"{{"part_id":4,"unit_index":{i}}}"#))
+            .collect();
+        let raw = format!("[{}]", units.join(","));
         let form = fields(&[
             ("printer_id", "p"),
             ("profile_id", "2"),
-            ("link_checkoff", "1"),
+            ("checkoff_units", &raw),
         ]);
-        let mut item = NewItem::parse(&form, Some(Some("a.gcode"))).unwrap();
-        // 199 UTF-16 units, then a character that needs two: the cut keeps it out whole.
-        let name = format!("  {}\u{1F600}tail  ", "b".repeat(199));
-        let units: Vec<ProposedUnit> = (0..300)
-            .map(|unit_index| ProposedUnit {
-                part_id: 7,
-                unit_index,
-                object_name: name.trim().to_owned(),
-            })
-            .collect();
-        item.set_units(&units);
-        assert!(
-            item.units.len() > 64 * 1024,
-            "larger than a form field could carry"
+        assert_eq!(
+            NewItem::parse(&form, Some(Some("a.gcode"))),
+            Err(super::TOO_MANY_UNITS)
         );
-        let stored: Vec<serde_json::Value> = serde_json::from_str(&item.units).unwrap();
-        assert_eq!(stored.len(), 300);
-        assert_eq!(stored[299]["unit_index"], 299);
-        assert_eq!(stored[0]["object_name"], "b".repeat(199));
+    }
+
+    #[test]
+    fn gre_1896_link_checkoff_needs_its_binding_and_no_explicit_units() {
+        let parse = |pairs: &[(&str, &str)]| {
+            let mut form = vec![("printer_id", "p"), ("profile_id", "2")];
+            form.extend_from_slice(pairs);
+            NewItem::parse(&fields(&form), Some(Some("a.gcode"))).map(|item| item.links_checkoff())
+        };
+        assert_eq!(
+            parse(&[("link_checkoff", "1"), ("checkoff_binding", "b")]),
+            Ok(true)
+        );
+        assert_eq!(parse(&[("link_checkoff", "1")]), Err(super::NO_BINDING));
+        assert_eq!(
+            parse(&[("link_checkoff", "0"), ("checkoff_binding", "b")]),
+            Ok(false)
+        );
+        assert_eq!(parse(&[]), Ok(false));
+        let explicit = [("link_checkoff", "1"), ("checkoff_units", "[]")];
+        assert_eq!(parse(&explicit), Ok(false));
     }
 }

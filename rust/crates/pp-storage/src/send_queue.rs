@@ -510,7 +510,9 @@ fn item(value: &Value, now: &str) -> Option<Item> {
     })
 }
 
-/// Node's `normalizeUnit` for a coordinate Accept also accepts.
+/// Node's `normalizeUnit` for a coordinate Accept also accepts. Control
+/// characters are dropped from the object name, since the printer-upload job
+/// refuses them (GRE-1896).
 fn unit(value: &Value) -> Option<Value> {
     let part = value.get("part_id")?.as_i64().filter(|part| *part > 0)?;
     let index = value
@@ -521,10 +523,10 @@ fn unit(value: &Value) -> Option<Value> {
     if let Some(name) = value
         .get("object_name")
         .and_then(Value::as_str)
-        .map(js_trim)
-        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|name| !js_trim(name).is_empty())
     {
-        unit["object_name"] = Value::String(utf16_prefix(name, 200));
+        unit["object_name"] = Value::String(utf16_prefix(js_trim(&name), 200));
     }
     Some(unit)
 }

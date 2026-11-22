@@ -38,6 +38,7 @@ use crate::{
     loopback::PresentedCredential,
     multipart_form::{self, Limits},
     printer_host::{Windows, throttled},
+    problem::ProblemCode,
 };
 use axum::{
     Extension, Router,
@@ -50,7 +51,7 @@ use axum::{
 use pp_storage::{
     checkoff_progress::print_file::MAX_UPLOAD_BYTES,
     read_model::{ReadClient, farm::QueuedSend},
-    send_queue::writes::{NewItem, Reply, Request, SendQueueClient, may_have_written},
+    send_queue::writes::{BAD_UNITS, NewItem, Reply, Request, SendQueueClient, may_have_written},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -160,6 +161,7 @@ const PREVIEW_FORM: Limits = Limits {
     ..ADD_FORM
 };
 const UNITS_UNREAD: &str = "Could not read this Build's Checkoff units, so nothing was queued";
+const UNITS_CHANGED: &str = "This Build's Checkoff units changed since the file was read. Check the units, then send again.";
 
 /// Mounts the send queue writes under `/api/v2` when `PP_DESKTOP_REBUILD`
 /// was exactly `1` or `true`; otherwise nothing.
@@ -351,6 +353,9 @@ async fn add(
         Ok(form) => form,
         Err(response) => return *response,
     };
+    if form.truncated.iter().any(|field| field == "checkoff_units") {
+        return failure(StatusCode::BAD_REQUEST, BAD_UNITS);
+    }
     let name = form.file.as_ref().map(|(name, _)| name.as_deref());
     let mut item = match NewItem::parse(&form.fields, name) {
         Ok(item) => item,
@@ -369,8 +374,15 @@ async fn add(
             .await;
         match linked {
             Some(Ok((units, file))) => {
-                if let Some(units) = units {
-                    item.set_units(&units.units);
+                // No such Build: storage's Add answers it.
+                if let Some(units) = units
+                    && item.link(&units).is_err()
+                {
+                    return crate::problem::coded(
+                        StatusCode::CONFLICT,
+                        UNITS_CHANGED,
+                        ProblemCode::SendUnitsChanged.as_str(),
+                    );
                 }
                 (item, file)
             }
@@ -752,6 +764,39 @@ pub fn client_document(document: &mut Value) -> Result<(), serde_json::Error> {
                     ..item(SendState::Sending, false)
                 },
                 job_id: "job-1".into(),
+            })?,
+        ),
+        served(
+            "SendUnitsPreview",
+            "matched",
+            serde_json::to_value(SendUnitsPreview {
+                file: SlicedFileRead::Read,
+                unit_count: 3,
+                parts: vec![
+                    SendUnitsPart {
+                        part_id: 9_007_199_254_740_991,
+                        filename: "Ünïcødé 🧵 層.stl".into(),
+                        count: 2,
+                    },
+                    SendUnitsPart {
+                        part_id: 2,
+                        filename: "gear.stl".into(),
+                        count: 1,
+                    },
+                ],
+                unmatched: vec!["spoon.stl_id_2_copy_0".into()],
+                binding: "0".repeat(64),
+            })?,
+        ),
+        served(
+            "SendUnitsPreview",
+            "too-many-units",
+            serde_json::to_value(SendUnitsPreview {
+                file: SlicedFileRead::TooManyUnits,
+                unit_count: 0,
+                parts: Vec::new(),
+                unmatched: Vec::new(),
+                binding: "f".repeat(64),
             })?,
         ),
         request("printed", json!({"printed": true, "job_id": "job-1"})),

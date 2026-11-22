@@ -35,11 +35,11 @@ async function send(
   printer: string,
   file: File,
   start: boolean,
-  link: boolean,
+  binding: string | null,
 ): Promise<SendOutcome> {
   let id: string;
   try {
-    id = (await addSend(build, printer, file, start, link)).item.id;
+    id = (await addSend(build, printer, file, start, binding)).item.id;
   } catch (error) {
     if (uncertain(error)) return { kind: "lost" };
     throw error;
@@ -191,12 +191,13 @@ const fileKey = (file: File) => {
 };
 
 /**
- * The core's preview of the Checkoff units a send of `file` links. It never refetches, and
- * switching files or closing the sheet aborts a preview still in flight.
+ * The core's preview of the Checkoff units a send of `file` links. It refetches only when
+ * Add finds its units changed, and switching files or closing the sheet aborts a preview
+ * still in flight.
  *
  * `linked` is the one decision for what the sheet shows and what Add sends: the send links
- * units only while the latest preview succeeded. `settled` is false until the preview
- * answers, so Send waits for it.
+ * units, bound to the preview's `binding`, only while the latest preview succeeded.
+ * `settled` is false while a preview is being read, so Send waits for it.
  */
 function useSendUnitsPreview(build: number, file: File | null) {
   const preview = useQuery({
@@ -210,8 +211,11 @@ function useSendUnitsPreview(build: number, file: File | null) {
     refetchOnReconnect: false,
   });
   const linked = preview.status === "success" ? preview.data : null;
-  return { preview, linked, settled: file !== null && (linked !== null || preview.isError) };
+  const settled = file !== null && !preview.isFetching && (linked !== null || preview.isError);
+  return { preview, linked, settled };
 }
+
+const UNITS_CHANGED = "send_units_changed";
 
 const NO_GRAMS = "This send links no Checkoff units, so it records no filament grams.";
 
@@ -219,6 +223,9 @@ const FILE_NOTICE: Record<Exclude<SendUnitsPreview["file"], "read">, string> = {
   unsupported:
     "Print Partner cannot read the object names in this binary G-code file: it uses a compression or encoding the core does not decode.",
   unreadable: "This binary G-code file is damaged, so Print Partner cannot read its object names.",
+  too_many_objects: "This file names more than 10,000 objects, so Print Partner does not match them.",
+  too_many_units:
+    "This file prints more units than one send can link (at most 1,000 units, with their names).",
 };
 
 /** The Checkoff units the send links, as `linked` (the latest successful preview) says. */
@@ -306,11 +313,13 @@ export function SendSheet({
     setBusy(true);
     setProblem(null);
     try {
-      onClose(await send(build, printer.id, file, start, linked !== null));
+      onClose(await send(build, printer.id, file, start, linked?.binding ?? null));
     } catch (error) {
       // Add was refused: nothing is queued, so the sheet stays open with the reason.
       setProblem(error instanceof Error ? reason(error) : String(error));
       setConfirming(false);
+      // The Build's units changed since the preview: read it again before another Send.
+      if (error instanceof CoreError && error.code === UNITS_CHANGED) void preview.refetch();
     } finally {
       setBusy(false);
       void queryClient.invalidateQueries({ queryKey: sendQueueQuery.queryKey });

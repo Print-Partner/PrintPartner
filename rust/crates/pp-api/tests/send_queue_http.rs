@@ -843,23 +843,44 @@ EXCLUDE_OBJECT_DEFINE NAME=spoon.stl_id_2_copy_0
 G28
 ";
 
+impl Queue {
+    /// The preview for `LABELLED` on Build 1, without its binding, and the binding.
+    async fn preview(&self) -> (Value, String) {
+        let (status, mut body) = self
+            .post_form(
+                "/api/v2/printer-send-queue/checkoff-preview",
+                &[
+                    ("profile_id", None, b"1"),
+                    ("file", Some("plate.gcode"), LABELLED),
+                ],
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let binding = body["binding"].as_str().unwrap().to_owned();
+        assert_eq!(binding.len(), 64);
+        body.as_object_mut().unwrap().remove("binding");
+        (body, binding)
+    }
+
+    async fn add_linked(&self, binding: &str) -> (StatusCode, Value) {
+        self.add(&[
+            ("printer_id", None, b"p-b"),
+            ("profile_id", None, b"1"),
+            ("link_checkoff", None, b"1"),
+            ("checkoff_binding", None, binding.as_bytes()),
+            ("file", Some("plate.gcode"), LABELLED),
+        ])
+        .await
+    }
+}
+
 #[tokio::test]
 async fn gre_1896_preview_and_add_link_the_same_units_from_the_file() {
     let queue = Queue::open("1", Targets::default(), &[]);
-    let preview = "/api/v2/printer-send-queue/checkoff-preview";
     let before = queue.counts();
-    let (status, body) = queue
-        .post_form(
-            preview,
-            &[
-                ("profile_id", None, b"1"),
-                ("file", Some("plate.gcode"), LABELLED),
-            ],
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    let (preview, binding) = queue.preview().await;
     assert_eq!(
-        body,
+        preview,
         json!({
             "file": "read",
             "unit_count": 3,
@@ -872,14 +893,7 @@ async fn gre_1896_preview_and_add_link_the_same_units_from_the_file() {
     );
     assert_eq!(queue.counts(), before, "the preview writes nothing");
 
-    let (status, body) = queue
-        .add(&[
-            ("printer_id", None, b"p-b"),
-            ("profile_id", None, b"1"),
-            ("link_checkoff", None, b"1"),
-            ("file", Some("plate.gcode"), LABELLED),
-        ])
-        .await;
+    let (status, body) = queue.add_linked(&binding).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["item"]["unit_count"], 3);
     let stored: Value =
@@ -903,6 +917,45 @@ async fn gre_1896_preview_and_add_link_the_same_units_from_the_file() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["item"]["unit_count"], 0);
+}
+
+#[tokio::test]
+async fn gre_1896_add_refuses_a_preview_whose_units_changed() {
+    let queue = Queue::open("1", Targets::default(), &[]);
+    let (_, binding) = queue.preview().await;
+    // bracket.stl unit 1 is printed after the preview.
+    rusqlite::Connection::open(queue.root.join("print-partner.db"))
+        .unwrap()
+        .execute(
+            "UPDATE print_progress SET completed=1 WHERE part_id=1 AND unit_index=0",
+            [],
+        )
+        .unwrap();
+    let before = queue.counts();
+    let (status, body) = queue.add_linked(&binding).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "send_units_changed");
+    assert_eq!(queue.counts(), before, "nothing queued");
+    assert!(
+        queue.targets.staged.lock().unwrap().is_empty(),
+        "nothing staged"
+    );
+
+    let (preview, fresh) = queue.preview().await;
+    assert_ne!(fresh, binding);
+    assert_eq!(
+        preview["parts"][0],
+        json!({"part_id": 1, "filename": "bracket.stl", "count": 2})
+    );
+    let (status, body) = queue.add_linked(&fresh).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored: Value =
+        serde_json::from_str(&queue.stored(body["item"]["id"].as_str().unwrap())[3]).unwrap();
+    assert_eq!(stored[0]["unit_index"], 1);
+    assert_eq!(stored[1]["unit_index"], 2);
+
+    let (status, body) = queue.add_linked("").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]
@@ -953,23 +1006,27 @@ async fn gre_1896_preview_says_when_the_file_cannot_be_read() {
 }
 
 #[tokio::test]
-async fn gre_1896_add_refuses_checkoff_units_cut_at_the_field_limit() {
+async fn gre_1896_add_refuses_checkoff_units_cut_blank_or_broken() {
     let queue = Queue::open("1", Targets::default(), &[]);
     let unit = r#"{"part_id":1,"unit_index":0,"object_name":"bracket"},"#;
-    let raw = format!("[{}", unit.repeat(70 * 1024 / unit.len()));
+    let cut = format!("[{}", unit.repeat(70 * 1024 / unit.len()));
+    // Valid JSON in its first 64 KiB; the field only goes past the limit.
+    let padded = format!("[]{}x", " ".repeat(64 * 1024));
     let before = queue.counts();
-    let (status, body) = queue
-        .add(&[
-            ("printer_id", None, b"p-b"),
-            ("profile_id", None, b"1"),
-            ("checkoff_units", None, raw.as_bytes()),
-            ("file", Some("plate.gcode"), GCODE),
-        ])
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(
-        detail(&body),
-        "checkoff_units must be a JSON array of at most 64 KiB"
-    );
+    for raw in [cut.as_str(), padded.as_str(), "", "  "] {
+        let (status, body) = queue
+            .add(&[
+                ("printer_id", None, b"p-b"),
+                ("profile_id", None, b"1"),
+                ("checkoff_units", None, raw.as_bytes()),
+                ("file", Some("plate.gcode"), GCODE),
+            ])
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            detail(&body),
+            "checkoff_units must be a JSON array of at most 64 KiB"
+        );
+    }
     assert_eq!(queue.counts(), before);
 }

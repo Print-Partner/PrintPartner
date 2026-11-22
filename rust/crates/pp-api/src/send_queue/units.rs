@@ -21,6 +21,11 @@ pub enum SlicedFileRead {
     Unsupported,
     /// The binary G-code structure or a block checksum is wrong.
     Unreadable,
+    /// The file names more than 10,000 distinct objects.
+    TooManyObjects,
+    /// The matched units are more than one send can carry: 1,000 units in
+    /// 48 KiB. The send links none.
+    TooManyUnits,
 }
 
 /// One Part and how many of its units the send links.
@@ -43,6 +48,9 @@ pub struct SendUnitsPreview {
     pub parts: Vec<SendUnitsPart>,
     /// Object names that matched no unit still to print, in file order.
     pub unmatched: Vec<String>,
+    /// Send this back as `checkoff_binding` with `link_checkoff`. Add
+    /// refuses it with 409 `send_units_changed` once the units differ.
+    pub binding: String,
 }
 
 /// The units a send of `file` to Build `plan` links. `None` when the
@@ -61,7 +69,7 @@ pub(super) fn link(
         None | Some(AcceptedRead::Missing) => Ok(None),
         Some(AcceptedRead::IntegrityFailure { message, .. }) => anyhow::bail!("{message}"),
         // A Build with no Accepted Plan, or one still being repaired, has no units to link.
-        Some(read) => Ok(Some(send_units(read, file))),
+        Some(read) => Ok(Some(send_units(plan, read, file))),
     }
 }
 
@@ -71,8 +79,10 @@ pub(super) fn preview(units: SendUnits) -> SendUnitsPreview {
             FileRead::Read => SlicedFileRead::Read,
             FileRead::Unsupported => SlicedFileRead::Unsupported,
             FileRead::Unreadable => SlicedFileRead::Unreadable,
+            FileRead::TooManyObjects => SlicedFileRead::TooManyObjects,
+            FileRead::TooManyUnits => SlicedFileRead::TooManyUnits,
         },
-        unit_count: units.units.len() as u64,
+        unit_count: units.count as u64,
         parts: units
             .parts
             .into_iter()
@@ -83,5 +93,6 @@ pub(super) fn preview(units: SendUnits) -> SendUnitsPreview {
             })
             .collect(),
         unmatched: units.unmatched,
+        binding: units.binding,
     }
 }

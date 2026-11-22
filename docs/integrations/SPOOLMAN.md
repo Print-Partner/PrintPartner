@@ -54,7 +54,7 @@ Importing a color preset while Spoolman is disabled for the Plan removes its Spo
 
 ## Filament shortfalls
 
-The Rust core compares the grams a Build still needs with the grams Spoolman reports. It needs the Spoolman Module turned on; while it is off, the check reports the off reason and makes no Spoolman request.
+The Rust core compares the grams a Build still needs with the grams Spoolman reports. It needs Spoolman on for the Build: the Spoolman Module, or the Build's own feature override, which wins (GRE-1898). While it is off, the check reports the off reason and makes no Spoolman request.
 
 - **Grams needed come from past prints.** Each send records the slicer's estimate, and a finished print replaces it with the grams the printer measured (GRE-1165). Print Partner divides a send's grams by the units it printed and averages the five most recent sends with a checked-off unit of that Part. Measured sends win: a Part uses its estimated sends only when none is measured. Grams needed shows its basis: `measured`, or `estimated` while any Part relies on an estimate. A Part with no checked-off unit under a send with grams has unknown need (`grams_not_recorded` when no Part of the Build has grams, `part_not_printed` otherwise), and no shortfall is reported for its filament.
 - **Grams available come from Spoolman**, summed over the filament's unarchived spools. If Spoolman cannot be reached, does not know the filament, or a spool has no remaining weight, stock is unknown, not zero. The check reads plain `http://` Spoolman URLs only; an `https://` URL reads as unknown.
@@ -78,6 +78,8 @@ Moonraker reports `print_stats.filament_used`. PrusaLink reports its consumed ma
 If Spoolman is unavailable or the required mapping is missing, Checkoff still completes and reports the deduction problem separately.
 
 ### On the Rust core
+
+On the Rust core, the assistant pins the spool: MCP `propose_assign_role_filament` gives a role a Spoolman filament and, with `spoolman_spool_id`, a spool. Confirm checks both against Spoolman, then sets them on the role default and on the Build's included accepted Parts of that role (GRE-1898). See [MCP](../mcp.md#propose_assign_role_filament). The replacement UI has no spool control yet.
 
 The Rust core records each deduction when you confirm a Checkoff burst, in the same transaction, and does not call Spoolman then. It records one `pending` row per pinned spool on each bed, with the grams to deduct: the link's grams (the slicer estimate, or the measured grams once the print finished) divided by the link's units, times the confirmed units whose Part pins that spool (`spoolman:{integration}:spool:{n}`). Units it cannot deduct give one `skipped` row with the reason: `no_grams`, `no_pinned_spool`, `integration_missing`, `integration_disabled`, `integrations_unreadable` or `module_setting_unreadable` (a stored Module setting is not the typed shape, so the burst still succeeds). With the Spoolman Module off for the Build, nothing is recorded. Repeating a burst records nothing new, and undoing it removes its `pending` and `skipped` rows. `GET /api/v2/spoolman/deductions` lists the rows, including `failure` and `failure_status`.
 

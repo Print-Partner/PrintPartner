@@ -108,21 +108,8 @@ impl SettingsClient {
         let toggles = reader.snapshot(tenant, USER_KEY)?;
         let assembly = reader.snapshot(tenant, ASSEMBLY_TRACKING_KEY)?;
         drop(reader);
-        Ok(statuses(&toggles, &assembly))
+        Ok(statuses(&toggles, None, &assembly))
     }
-}
-
-/// One module's effective state for `tenant`, read on `connection` so it
-/// shares the caller's transaction.
-pub(crate) fn status_in(
-    connection: &rusqlite::Connection,
-    tenant: &str,
-    module: Module,
-) -> Result<ModuleStatus> {
-    statuses_in(connection, tenant)?
-        .into_iter()
-        .find(|status| status.module() == module)
-        .ok_or_else(|| anyhow::anyhow!("Module status missing"))
 }
 
 /// Every module's effective state for `tenant`, read on `connection` so it
@@ -133,15 +120,47 @@ pub(crate) fn statuses_in(
 ) -> Result<Vec<ModuleStatus>> {
     let toggles = crate::snapshot(connection, tenant, USER_KEY)?;
     let assembly = crate::snapshot(connection, tenant, ASSEMBLY_TRACKING_KEY)?;
-    Ok(statuses(&toggles, &assembly))
+    Ok(statuses(&toggles, None, &assembly))
 }
 
-fn statuses(toggles: &SettingSnapshot, assembly: &SettingSnapshot) -> Vec<ModuleStatus> {
-    let user: Option<Toggles> = match toggles {
-        SettingSnapshot::Missing => Some(Toggles::default()),
-        SettingSnapshot::Stored { value } => serde_json::from_str(value).ok(),
+/// `module`'s effective state for Build `plan`: the user's choice under the
+/// Build's Plan override (`feature_toggles:plan:<id>`), as Checkoff's
+/// deduction resolves it. A Plan override that does not parse reads as
+/// `setting_unreadable`. Read on `connection`, in the caller's transaction.
+pub(crate) fn plan_status_in(
+    connection: &rusqlite::Connection,
+    tenant: &str,
+    module: Module,
+    plan: i64,
+) -> Result<ModuleStatus> {
+    let toggles = crate::snapshot(connection, tenant, USER_KEY)?;
+    let layer = crate::snapshot(connection, tenant, &format!("{USER_KEY}:plan:{plan}"))?;
+    let assembly = crate::snapshot(connection, tenant, ASSEMBLY_TRACKING_KEY)?;
+    statuses(&toggles, Some(&layer), &assembly)
+        .into_iter()
+        .find(|status| status.module() == module)
+        .ok_or_else(|| anyhow::anyhow!("Module status missing"))
+}
+
+/// Every module's state from the user layer and, for one Build, its Plan
+/// layer. Either layer that does not parse makes every feature unreadable.
+fn statuses(
+    toggles: &SettingSnapshot,
+    plan: Option<&SettingSnapshot>,
+    assembly: &SettingSnapshot,
+) -> Vec<ModuleStatus> {
+    let layer = |snapshot: &SettingSnapshot| -> Option<Toggles> {
+        match snapshot {
+            SettingSnapshot::Missing => Some(Toggles::default()),
+            SettingSnapshot::Stored { value } => serde_json::from_str(value).ok(),
+        }
     };
-    let effective = user.as_ref().map(|user| resolve(user, None));
+    let plan = plan.map(layer);
+    let effective = match (layer(toggles), plan) {
+        (Some(user), None) => Some(resolve(&user, None)),
+        (Some(user), Some(Some(plan))) => Some(resolve(&user, Some(&plan))),
+        (None, _) | (_, Some(None)) => None,
+    };
     Module::ALL
         .into_iter()
         .map(|module| {

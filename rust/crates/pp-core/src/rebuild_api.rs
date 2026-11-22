@@ -287,8 +287,8 @@ impl RuntimeInputs {
 }
 
 /// What MCP's farm tools read: the farm projection with the print activity
-/// `get_print_stats` counts, the printer watchers' observations and the
-/// Module settings.
+/// `get_print_stats` counts, the printer watchers' observations, the
+/// Module settings, and the Spoolman inventory role filament checks.
 fn mcp_farm(
     (reads, activity): (
         pp_storage::read_model::farm::FarmClient,
@@ -296,13 +296,14 @@ fn mcp_farm(
     ),
     observations: Arc<dyn pp_api::farm::FarmObservations>,
     modules: SettingsClient,
-) -> McpFarm {
-    McpFarm {
+) -> Result<McpFarm> {
+    Ok(McpFarm {
         reads,
         observations,
         modules,
         activity,
-    }
+        inventory: Some(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
+    })
 }
 
 /// The admin routes: admin files, the printer probe, filaments and
@@ -473,7 +474,7 @@ fn read_router_with_updates(
             planning: planning_client,
             progress: checkoff_client,
             accepted: accepted_client,
-            farm: mcp_farm(farm_clients, runtime.farm, settings),
+            farm: mcp_farm(farm_clients, runtime.farm, settings)?,
         },
     );
     Ok(Some(

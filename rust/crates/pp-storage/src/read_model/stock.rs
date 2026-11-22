@@ -237,15 +237,16 @@ pub enum Sufficiency {
     Unknown,
 }
 
-/// The Spoolman Module state, configured integrations and recorded grams for
-/// `profile_id`, read on the accepted-read transaction.
+/// Spoolman's state for the Build (the user's choice under its Plan
+/// override, as Checkoff's deduction reads it), configured integrations and
+/// recorded grams for `profile_id`, read on the accepted-read transaction.
 pub(super) fn read_inputs(
     connection: &Connection,
     tenant: &str,
     profile_id: i64,
 ) -> Result<StockInputs> {
     if let ModuleStatus::Off { reason, .. } =
-        modules::status_in(connection, tenant, Module::Spoolman)?
+        modules::plan_status_in(connection, tenant, Module::Spoolman, profile_id)?
     {
         return Ok(StockInputs::Off(reason));
     }
@@ -272,6 +273,27 @@ pub(crate) fn spoolman_integration(
             .into_iter()
             .find(|row| row.id == id)),
         crate::SettingSnapshot::Missing => Ok(None),
+    }
+}
+
+impl crate::SettingsClient {
+    /// The stored Spoolman integration `id`, read on the reader pool, for a
+    /// caller that checks an item against Spoolman before a write (MCP
+    /// `propose_assign_role_filament`). `Ok(None)` when no integration has
+    /// that id.
+    pub fn spoolman_integration(
+        &self,
+        tenant: &str,
+        id: &str,
+        wait: std::time::Duration,
+    ) -> Result<Option<SpoolmanIntegration>> {
+        let reader = self.reader(wait)?;
+        Ok(match reader.snapshot(tenant, INTEGRATIONS_KEY)? {
+            crate::SettingSnapshot::Stored { value } => parse_integrations(&value)
+                .into_iter()
+                .find(|row| row.id == id),
+            crate::SettingSnapshot::Missing => None,
+        })
     }
 }
 
@@ -362,7 +384,7 @@ fn read_grams(
 }
 
 /// `(integration ID, filament ID)` when `id` names a Spoolman filament.
-fn spoolman_filament(id: &str) -> Option<(&str, i64)> {
+pub fn spoolman_filament(id: &str) -> Option<(&str, i64)> {
     spoolman_ref(id, ":filament:")
 }
 

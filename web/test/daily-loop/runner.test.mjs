@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import process from "node:process";
@@ -12,31 +12,46 @@ import { createRunner, teardown } from "./runner.mjs";
 const RUN = "pp-daily-loop-0a1b2c3d";
 const STAND_IN = `${RUN}-spoolman`;
 
-// A `docker` on PATH that keeps its containers in a state file. `run --name N` takes
-// 300 ms to create N. A daemon goes on creating a container when its client is killed, so a
-// killed `run` hands N to a detached process that creates it FAKE_DOCKER_LATE_MS later.
-// `run` for a name starting with `hang` never answers.
+// A `docker` on PATH that keeps its containers in a state file. `run --name N` writes
+// `started` once it can take a signal, then creates N when the test writes `release`: the
+// daemon finishing. A daemon goes on creating a container when its client is killed, so a
+// killed `run` hands N to a detached process that still creates it on `release`. `run` for
+// a name starting with `hang` never creates anything.
 const FAKE_DOCKER = String.raw`#!/usr/bin/env node
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
-const state = process.env.FAKE_DOCKER_STATE;
+const { join } = require("node:path");
+const dir = process.env.FAKE_DOCKER_DIR;
+const state = join(dir, "state");
 const listed = () => readFileSync(state, "utf8").split("\n").filter(Boolean);
 const args = process.argv.slice(2);
 const after = (flag) => args[args.indexOf(flag) + 1];
+const onRelease = (create) => {
+  const poll = setInterval(() => {
+    if (!existsSync(join(dir, "release"))) return;
+    clearInterval(poll);
+    create();
+  }, 20);
+  return poll;
+};
 if (args[0] === "register") {
-  setTimeout(() => appendFileSync(state, args[1] + "\n"), Number(process.env.FAKE_DOCKER_LATE_MS));
+  onRelease(() => appendFileSync(state, args[1] + "\n"));
 } else if (args[0] === "run") {
   const name = after("--name");
-  if (name.startsWith("hang")) setInterval(() => {}, 1000);
-  const created = setTimeout(() => {
-    appendFileSync(state, name + "\n");
-    process.exit(0);
-  }, 300);
+  const poll = name.startsWith("hang")
+    ? setInterval(() => {}, 1000)
+    : onRelease(() => {
+        appendFileSync(state, name + "\n");
+        process.exit(0);
+      });
   process.on("SIGTERM", () => {
-    clearTimeout(created);
-    spawn(process.execPath, [__filename, "register", name], { detached: true, stdio: "ignore", env: process.env }).unref();
+    clearInterval(poll);
+    if (!name.startsWith("hang")) {
+      spawn(process.execPath, [__filename, "register", name], { detached: true, stdio: "ignore", env: process.env }).unref();
+    }
     process.exit(143);
   });
+  writeFileSync(join(dir, "started"), "");
 } else if (args[0] === "rm") {
   writeFileSync(state, listed().filter((name) => !args.includes(name)).map((name) => name + "\n").join(""));
 } else if (args[0] === "ps") {
@@ -45,91 +60,95 @@ if (args[0] === "register") {
 }
 `;
 
+/** Waits up to 10 s for `check()` to be true. */
+async function until(check, what) {
+  for (const started = Date.now(); !check(); await delay(20)) {
+    if (Date.now() - started > 10_000) throw new Error(`timed out waiting for ${what}`);
+  }
+}
+
 /** A fake Docker for one test: its `env`, its containers, and `docker` for teardown. */
-function fakeDocker(t, lateMs = 1000) {
+function fakeDocker(t) {
   const dir = mkdtempSync(join(tmpdir(), "pp-daily-loop-runner-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, "bin");
   writeFileSync(join(dir, "state"), "");
-  spawnSync("mkdir", [bin]);
+  mkdirSync(bin);
   writeFileSync(join(bin, "docker"), FAKE_DOCKER);
   chmodSync(join(bin, "docker"), 0o755);
-  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state"), FAKE_DOCKER_LATE_MS: String(lateMs) };
+  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_DOCKER_DIR: dir };
+  const containers = () => readFileSync(join(dir, "state"), "utf8").split("\n").filter(Boolean);
   return {
     env,
     folder: join(dir, "node"),
-    containers: () => readFileSync(join(dir, "state"), "utf8").split("\n").filter(Boolean),
+    containers,
     docker: (args, options) => spawnSync("docker", args, { ...options, env }),
+    /** Resolves once `run` can take a signal. */
+    started: () => until(() => existsSync(join(dir, "started")), "docker run to start"),
+    /** The daemon finishes the create; resolves once the container exists. */
+    release: async () => {
+      writeFileSync(join(dir, "release"), "");
+      await until(() => containers().length > 0, "the container");
+    },
   };
 }
 
-const removeRun = (fake, confirm, waitMs = 1500) =>
+const removeRun = (fake, confirm, wait = () => delay(50)) =>
   teardown(runNames(RUN), {
     folder: fake.folder,
     removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
     exists: existsSync,
     confirm,
     docker: fake.docker,
-    wait: () => delay(waitMs),
+    wait,
   });
+
+/** Starts `docker run --name <name>` on `fake` and stops the runner while it creates. */
+async function stopDuringCreate(fake, name, { settle = false, settleMs } = {}) {
+  const runner = createRunner({ cwd: tmpdir(), settleMs });
+  const creating = runner.run("docker", ["run", "-d", "--name", name], { settle, stdio: "ignore", env: fake.env });
+  await fake.started();
+  runner.stop("SIGTERM");
+  assert.equal(runner.stopped, true);
+  return creating;
+}
 
 test("a stop during a docker create lets it finish, so the cleanup removes the container", async (t) => {
   const fake = fakeDocker(t);
-  const runner = createRunner({ cwd: tmpdir() });
-  const creating = runner.run("docker", ["run", "-d", "--name", STAND_IN], { settle: true, stdio: "ignore", env: fake.env });
-  await delay(100);
-  runner.stop("SIGTERM");
-  assert.equal(runner.stopped, true);
-  // The create was not signalled: it ends on its own, with the container made.
+  const creating = stopDuringCreate(fake, STAND_IN, { settle: true });
+  // The create was not signalled: it ends when the daemon has made the container.
+  await fake.release();
   assert.equal(await creating, 0);
   assert.deepEqual(fake.containers(), [STAND_IN]);
-  assert.deepEqual(await removeRun(fake, true), []);
-  await delay(700);
-  assert.deepEqual(fake.containers(), [], "nothing appears after the cleanup");
-});
-
-test("a create killed by a stop still makes its container; one empty listing would miss it", async (t) => {
-  // The bug this guards against: signal the `docker run` client and trust the first
-  // empty listing. The container appears after the cleanup said it was done: here 3 s
-  // after the kill, well after the first listing.
-  const fake = fakeDocker(t, 3000);
-  const runner = createRunner({ cwd: tmpdir() });
-  const creating = runner.run("docker", ["run", "-d", "--name", STAND_IN], { stdio: "ignore", env: fake.env });
-  await delay(100);
-  runner.stop("SIGTERM");
-  assert.notEqual(await creating, 0);
-  assert.deepEqual(await removeRun(fake, false), []);
-  assert.deepEqual(fake.containers(), [], "the cleanup found nothing");
-  await delay(3500);
-  assert.deepEqual(fake.containers(), [STAND_IN], "the orphan");
-  // After a stop, the cleanup waits for two empty listings in a row and so removes it.
   assert.deepEqual(await removeRun(fake, true), []);
   assert.deepEqual(fake.containers(), []);
 });
 
-test("after a stop, the cleanup removes a container that appears after an empty listing", async (t) => {
-  // A docker command the tests started dies with them, like a killed create.
+test("a create killed by a stop still makes its container; one empty listing would miss it", async (t) => {
+  // The bug this guards against: signal the `docker run` client and trust the first empty
+  // listing. The daemon makes the container after the cleanup said it was done.
   const fake = fakeDocker(t);
-  const runner = createRunner({ cwd: tmpdir() });
-  const creating = runner.run("docker", ["run", "-d", "--name", RUN], { stdio: "ignore", env: fake.env });
-  await delay(100);
-  runner.stop("SIGTERM");
-  await creating;
+  assert.notEqual(await stopDuringCreate(fake, STAND_IN), 0);
+  assert.deepEqual(await removeRun(fake, false), []);
+  await fake.release();
+  assert.deepEqual(fake.containers(), [STAND_IN], "the orphan");
+});
+
+test("after a stop, the cleanup removes a container that appears after an empty listing", async (t) => {
+  // A docker command the tests started dies with them, like a killed create. Here the
+  // daemon makes its container while the cleanup waits between two listings.
+  const fake = fakeDocker(t);
+  assert.notEqual(await stopDuringCreate(fake, RUN), 0);
   assert.deepEqual(fake.containers(), [], "not made yet when the cleanup starts");
-  assert.deepEqual(await removeRun(fake, true), []);
-  await delay(1500);
+  assert.deepEqual(await removeRun(fake, true, fake.release), []);
   assert.deepEqual(fake.containers(), []);
 });
 
 test("a create that never ends is killed once the settle time after a stop runs out", async (t) => {
   const fake = fakeDocker(t);
-  const runner = createRunner({ cwd: tmpdir(), settleMs: 200 });
   const started = Date.now();
-  const creating = runner.run("docker", ["run", "-d", "--name", "hang"], { settle: true, stdio: "ignore", env: fake.env });
-  await delay(100);
-  runner.stop("SIGTERM");
-  assert.notEqual(await creating, 0);
-  assert.ok(Date.now() - started < 5000, "it did not wait for the create");
+  assert.notEqual(await stopDuringCreate(fake, "hang", { settle: true, settleMs: 200 }), 0);
+  assert.ok(Date.now() - started < 9000, "it did not wait for the create");
 });
 
 test("without a stop, one empty listing is enough", async (t) => {

@@ -60,9 +60,12 @@ fn same_file(host: Option<&str>, link: &Value) -> bool {
     !host.is_empty() && link.as_str().map(links::normalized_filename) == Some(host)
 }
 
-/// `decideCheckoffReconcile`. Idle and error never await verify, unless the
-/// print was seen past 99% and its brief `complete` was missed; an explicit
-/// cancel never does.
+/// `decideCheckoffReconcile`. A link finishes or fails only once it ran: it
+/// was seen printing, or its send started the print. So a finish the printer
+/// keeps showing never moves an upload that never ran, after a missed poll or
+/// a restart alike. Idle and error never await verify, unless the print was
+/// seen past 99% and its brief `complete` was missed; an explicit cancel
+/// never does.
 fn decide(link: &Link, report: &HostReport) -> Decision {
     if link["state"] != "watching" {
         return Decision::Noop;
@@ -71,21 +74,21 @@ fn decide(link: &Link, report: &HostReport) -> Decision {
     let matches =
         same_file(filename, &link["filename"]) || same_file(filename, &link["remote_path"]);
     let saw_active = link["saw_active"] == true;
+    let ran = saw_active || link["started"] == true;
     match report.state {
         HostState::Printing | HostState::Paused if matches => {
             Decision::MarkActive(report.progress.filter(|p| p.is_finite()))
         }
-        HostState::Complete => {
-            // A host that cleared its file name after the finish counts only
-            // for a print seen running or started by the send.
+        HostState::Complete if ran => {
+            // A host may clear its file name after the finish.
             let cleared = links::normalized_filename(filename.unwrap_or_default()).is_empty();
-            if matches || (cleared && (saw_active || link["started"] == true)) {
+            if matches || cleared {
                 Decision::AwaitVerify
             } else {
                 Decision::Noop
             }
         }
-        HostState::Error if saw_active || matches => Decision::HostFailed("failed"),
+        HostState::Error if saw_active || (ran && matches) => Decision::HostFailed("failed"),
         HostState::Idle if saw_active => {
             let near_done = link["last_progress"].as_f64().is_some_and(|p| p >= 99.0);
             if near_done && !report.cancelled {

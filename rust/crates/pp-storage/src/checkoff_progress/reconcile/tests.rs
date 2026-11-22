@@ -35,7 +35,7 @@ fn decided(link: &Link, state: HostState, file: &str) -> Decision {
 
 #[test]
 fn gre_1897_a_finish_of_the_sent_file_awaits_verify() {
-    let fresh = link(json!({}));
+    let fresh = link(json!({"started": true}));
     for name in [
         "plate-a.gcode",
         " PP/Plate-A.GCODE ",
@@ -48,11 +48,6 @@ fn gre_1897_a_finish_of_the_sent_file_awaits_verify() {
         Noop,
         "another file"
     );
-    assert_eq!(
-        decided(&fresh, Complete, ""),
-        Noop,
-        "a cleared name, never seen"
-    );
     for seen in [json!({"saw_active": true}), json!({"started": true})] {
         assert_eq!(
             decided(&link(seen.clone()), Complete, "  "),
@@ -60,11 +55,20 @@ fn gre_1897_a_finish_of_the_sent_file_awaits_verify() {
             "{seen}"
         );
     }
+    // An upload never seen printing and not started by its send never ran.
+    let upload = link(json!({}));
+    for (state, file) in [
+        (Complete, "plate-a.gcode"),
+        (Complete, ""),
+        (Error, "plate-a.gcode"),
+    ] {
+        assert_eq!(decided(&upload, state, file), Noop, "{state:?} {file}");
+    }
 }
 
 #[test]
 fn gre_1897_errors_and_cancels_fail_the_link_and_other_states_wait() {
-    let fresh = link(json!({}));
+    let fresh = link(json!({"started": true}));
     let seen = link(json!({"saw_active": true, "last_progress": 40}));
     let near_done = link(json!({"saw_active": true, "last_progress": 99}));
     assert_eq!(

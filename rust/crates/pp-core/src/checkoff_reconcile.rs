@@ -1,10 +1,10 @@
 //! Host status to Printer Checkoff (GRE-1897): the Rust-only runtime's port of
 //! Node's `POST /printer-checkoff/reconcile`, run by the watchers instead of a
 //! page poll. Each answered host status that differs from the last one written
-//! for that host goes to storage's [`ReconcileClient`]. At start and after
-//! falling behind, it resubscribes, reconciles one snapshot, and skips the
-//! buffered transitions that snapshot holds, so an older status never lands
-//! after a newer one. A failed write keeps that host's statuses in order and
+//! for that host goes to storage's [`ReconcileClient`]. At start it subscribes,
+//! reconciles one snapshot, and skips the buffered transitions that snapshot
+//! holds. After falling behind it keeps reading from the oldest change still
+//! buffered, so retained changes land in order. A failed write keeps that host's statuses in order and
 //! retries them with a capped backoff, because a printer that keeps reporting
 //! the same `complete` sends no new transition. See
 //! `docs/farm-reads.md#checkoff-reconcile`. Nothing here checks a unit off,
@@ -13,7 +13,7 @@ use crate::printer_status::observe;
 use pp_gateway::{PrinterHostStatus, PrinterObservations, Transition};
 use pp_storage::{
     checkoff_progress::reconcile::{HostReport, ReconcileClient},
-    read_model::farm::Observation,
+    read_model::farm::{HostState, Observation},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -25,14 +25,14 @@ use tokio_util::sync::CancellationToken;
 const WRITE_WAIT: Duration = Duration::from_secs(5);
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(30);
-/// Statuses kept per host while its writes fail. A run of one state and file
-/// keeps only its newest, so this holds many prints' worth of changes.
+/// Statuses kept per host while its writes fail, before older progress
+/// reports start to go. A finish, an error, an idle or a cancel never goes.
 const KEPT: usize = 32;
 
 /// Where the observer reads host statuses.
 pub(crate) trait Statuses {
-    /// Subscribes afresh, then returns every host's newest status and the
-    /// `seq` of the last transition that includes.
+    /// Every host's newest status and the `seq` of the last transition that
+    /// includes, read once at start after subscribing.
     fn resync(&mut self) -> (Vec<(String, PrinterHostStatus)>, u64);
     async fn next(&mut self) -> Result<Transition, RecvError>;
     /// The status as a reconcile reads it, or `None` for a host the
@@ -68,21 +68,44 @@ struct Hosts {
 }
 
 impl Hosts {
-    /// Queues `report` for host `id` unless it repeats the newest one.
-    fn push(&mut self, id: &str, report: HostReport) {
+    /// Queues `report` for host `id` unless it repeats the newest one. A
+    /// progress report replaces the queued one before it for the same state
+    /// and file, keeping the higher progress. Past [`KEPT`], the oldest
+    /// progress report with a newer one for its file goes, else the oldest
+    /// offline or unknown spell; nothing else is ever dropped.
+    fn push(&mut self, id: &str, mut report: HostReport) {
         let newest = self.queued.get(id).and_then(VecDeque::back);
         if newest.or_else(|| self.written.get(id)) == Some(&report) {
             return;
         }
         let queue = self.queued.entry(id.to_owned()).or_default();
-        let same =
-            |back: &HostReport| back.state == report.state && back.filename == report.filename;
-        if queue.back().is_some_and(same) {
+        if let Some(back) = queue.back()
+            && running(back)
+            && (&back.state, &back.filename) == (&report.state, &report.filename)
+        {
+            report.progress = match (back.progress, report.progress) {
+                (Some(old), Some(new)) => Some(old.max(new)),
+                (old, new) => new.or(old),
+            };
             queue.pop_back();
         }
         queue.push_back(report);
         if queue.len() > KEPT {
-            queue.pop_front();
+            let superseded = |(i, old): (usize, &HostReport)| {
+                let newer = |new: &HostReport| running(new) && new.filename == old.filename;
+                running(old) && queue.iter().skip(i + 1).any(newer)
+            };
+            let quiet =
+                |old: &HostReport| matches!(old.state, HostState::Offline | HostState::Unknown);
+            let evicted = (queue
+                .iter()
+                .enumerate()
+                .find(|&entry| superseded(entry))
+                .map(|(i, _)| i))
+            .or_else(|| queue.iter().position(quiet));
+            if let Some(index) = evicted {
+                queue.remove(index);
+            }
         }
     }
 
@@ -104,6 +127,11 @@ impl Hosts {
     }
 }
 
+/// A progress report: the host is printing or paused.
+fn running(report: &HostReport) -> bool {
+    matches!(report.state, HostState::Printing | HostState::Paused)
+}
+
 pub(crate) async fn observe_statuses(
     mut statuses: impl Statuses,
     writer: impl Reconcile,
@@ -112,23 +140,17 @@ pub(crate) async fn observe_statuses(
     let mut hosts = Hosts::default();
     let mut retry = FIRST_RETRY;
     let mut retry_at: Option<tokio::time::Instant> = None;
-    let mut resync = true;
-    let mut mark = 0;
-    loop {
-        if resync {
-            resync = false;
-            let (snapshot, seen) = statuses.resync();
-            mark = seen;
-            for (id, status) in snapshot {
-                if cancelled.is_cancelled() {
-                    return;
-                }
-                if let Some(report) = statuses.report(&id, &status) {
-                    hosts.push(&id, report);
-                    hosts.flush(&id, &writer).await;
-                }
-            }
+    let (snapshot, mut mark) = statuses.resync();
+    for (id, status) in snapshot {
+        if cancelled.is_cancelled() {
+            return;
         }
+        if let Some(report) = statuses.report(&id, &status) {
+            hosts.push(&id, report);
+            hosts.flush(&id, &writer).await;
+        }
+    }
+    loop {
         // A fixed deadline, so a stream of new statuses never postpones it.
         if hosts.queued.is_empty() {
             (retry, retry_at) = (FIRST_RETRY, None);
@@ -154,6 +176,7 @@ pub(crate) async fn observe_statuses(
                 retry_at = None;
             }
             Some(Ok(transition)) if transition.seq > mark => {
+                mark = transition.seq;
                 let id = transition.id;
                 if let Some(report) = statuses.report(&id, &transition.status) {
                     // A host still retrying waits for its turn, in order.
@@ -164,8 +187,10 @@ pub(crate) async fn observe_statuses(
                     }
                 }
             }
-            Some(Ok(_)) => {}
-            Some(Err(RecvError::Lagged(_))) => resync = true,
+            // A change the start snapshot holds, or a lag: the receiver goes
+            // on from the oldest change still buffered, so every retained
+            // change, a finish included, lands in order.
+            Some(Ok(_) | Err(RecvError::Lagged(_))) => {}
             Some(Err(RecvError::Closed)) => return,
         }
     }
@@ -178,7 +203,6 @@ struct Watched {
 
 impl Statuses for Watched {
     fn resync(&mut self) -> (Vec<(String, PrinterHostStatus)>, u64) {
-        self.transitions = self.observations.transitions();
         let (map, mark) = self.observations.snapshot();
         (
             map.iter().map(|(id, s)| (id.clone(), s.clone())).collect(),

@@ -60,31 +60,37 @@ reconciled for that host. It skips hosts the watchers never reach: the
 "Awaiting status" placeholder, HTTPS and redirecting hosts, and Bambu while its
 feature is off.
 
-- At start, and whenever it falls behind, it subscribes afresh, reconciles one
-  snapshot of every host, and skips each buffered transition whose `seq` the
-  snapshot holds, as the `/ws/printers` producer does. An older status never
-  lands after a newer one.
+- At start it subscribes, reconciles one snapshot of every host, and skips
+  each buffered transition whose `seq` the snapshot holds. When it falls
+  behind, it goes on from the oldest change still buffered, so a retained
+  finish lands before the newer idle behind it.
 - A failed write keeps that host's statuses in order and retries them from 1
   second, doubling to 30 seconds, so a printer that keeps reporting the same
-  `complete` cannot strand its link in `watching`.
+  `complete` cannot strand its link in `watching`. Consecutive progress
+  reports of one state and file merge. Past 32 kept statuses, an older
+  progress report or an offline spell goes; a finish, error, idle or cancel
+  never does.
 
 `pp_storage::checkoff_progress::reconcile` moves only the host's `watching`
 links. File names match as in Node: the trimmed base name, in any case, against
-`filename` or `remote_path`.
+`filename` or `remote_path`. A link "ran" once it was seen printing or its send
+started the print.
 
 | Host status | Link change |
 | --- | --- |
 | `printing` or `paused` with the link's file | `saw_active`; `last_progress` rises to the rounded percent |
-| `complete` with the link's file, or with no file name when the link saw its print run or was started by the send | `awaiting_verify`, `success`, `completed_at` now |
-| `error` with the link's file, or after the link saw its print run | `host_failed`, `failed` |
+| `complete` with the link's file or no file name, once the link ran | `awaiting_verify`, `success`, `completed_at` now |
+| `error` with the link's file once it ran, or after it was seen printing | `host_failed`, `failed` |
 | `idle` after the link saw its print run, at 99% or more, not cancelled | `awaiting_verify` (a missed brief `complete`) |
 | `idle` after the link saw its print run, below 99% or cancelled | `host_failed`, `cancelled` |
 | `idle`, `offline` or `unknown`, for a link over 48 hours old whose print never ran | `dismissed`, `unknown` |
 
-Two rules differ from Node. First, an explicit cancel never counts as a
+Three rules differ from Node. First, an upload that never ran never finishes,
+so a `complete` the printer keeps showing cannot offer a second bed for it
+after a missed poll or a restart. Second, an explicit cancel never counts as a
 finish: the drivers still report Moonraker `cancelled` and PrusaLink `STOPPED`
 as `idle`, but also set `PrinterHostStatus::cancelled`, which is never
-serialized. Second, a status moves at most one link. When several `watching`
+serialized. Third, a status moves at most one link. When several `watching`
 sends of one file on one host would move, only the one seen printing moves,
 else the one its send started, else none, so an upload that never ran is not
 offered on Today.

@@ -34,6 +34,8 @@ mod checkoff_fixture;
 mod js_json;
 
 const HOST: &str = "sim-moonraker";
+const SENT: &str = "link-verify";
+const FILE: &str = "plate-a.gcode";
 const WAIT: Duration = Duration::from_secs(5);
 const LINKS: &str =
     "SELECT value FROM app_settings WHERE tenant_id=?1 AND key='printer.checkoff_links'";
@@ -108,11 +110,7 @@ fn watching_with(fields: Value, extra: &[Value]) -> (Fixture, WriterOwner) {
             merge(link, &fields);
         }
     }
-    let sent = all
-        .iter()
-        .find(|link| link["id"] == "link-verify")
-        .unwrap()
-        .clone();
+    let sent = all.iter().find(|link| link["id"] == SENT).unwrap().clone();
     let other = json!({ "id": "link-other-host", "integration_id": "moon-2" });
     for patch in std::iter::once(&other).chain(extra) {
         let mut copy = sent.clone();
@@ -191,7 +189,7 @@ fn confirm_and_deduct(
         ))
         .unwrap();
     let confirm = |unit| json!({ "part_id": 1, "unit_index": unit, "result": "confirmed" });
-    let beds = json!([{ "link_id": "link-verify", "decisions": [confirm(1), confirm(2)] }]);
+    let beds = json!([{ "link_id": SENT, "decisions": [confirm(1), confirm(2)] }]);
     let body = json!({ "idempotency_key": "gre-1897", "beds": beds });
     let verified = apply(owner, Request::VerifyBatch { body: body.clone() });
     assert_eq!(verified["status"], 200, "{verified}");
@@ -211,15 +209,15 @@ fn confirm_and_deduct(
 #[test]
 fn gre_1897_a_finished_print_awaits_verify_once_and_verify_batch_deducts_once() {
     let (fixture, owner) = watching(json!({}));
-    assert_eq!(shown(&owner, "link-verify"), Shown::Watching);
+    assert_eq!(shown(&owner, SENT), Shown::Watching);
     let foreign = links(&fixture, "foreign");
     let running = |progress| HostReport {
         progress: Some(progress),
-        ..report(Printing, "plate-a.gcode")
+        ..report(Printing, FILE)
     };
     assert_eq!(
         reconcile(&owner, running(12.4)),
-        changed("link-verify", Change::Active)
+        changed(SENT, Change::Active)
     );
     assert_eq!(reconcile(&owner, running(12.0)), [], "same progress");
     assert_eq!(
@@ -227,27 +225,27 @@ fn gre_1897_a_finished_print_awaits_verify_once_and_verify_batch_deducts_once() 
         [],
         "progress never goes back"
     );
-    let seen = link(&fixture, "link-verify");
+    let seen = link(&fixture, SENT);
     assert_eq!(
         (&seen["saw_active"], &seen["last_progress"]),
         (&json!(true), &json!(12))
     );
 
-    let finished = report(Complete, "plate-a.gcode");
-    let awaiting = changed("link-verify", Change::AwaitingVerify);
+    let finished = report(Complete, FILE);
+    let awaiting = changed(SENT, Change::AwaitingVerify);
     assert_eq!(reconcile(&owner, finished.clone()), awaiting);
     assert_eq!(
-        outcome(&fixture, "link-verify"),
+        outcome(&fixture, SENT),
         (json!("awaiting_verify"), json!("success"))
     );
-    let completed_at = link(&fixture, "link-verify")["completed_at"].clone();
+    let completed_at = link(&fixture, SENT)["completed_at"].clone();
     assert!(completed_at.as_str().is_some_and(|at| !at.is_empty()));
     let stored = links(&fixture, "default");
     let active =
         |link: &&Value| ["watching", "awaiting_verify"].contains(&link["state"].as_str().unwrap());
     let last_active = stored.iter().rfind(active).unwrap();
     assert_eq!(
-        last_active["id"], "link-verify",
+        last_active["id"], SENT,
         "a patched link moves after the active links"
     );
     assert_eq!(reconcile(&owner, finished.clone()), [], "a repeated finish");
@@ -263,7 +261,7 @@ fn gre_1897_a_finished_print_awaits_verify_once_and_verify_batch_deducts_once() 
         "another host's send stays"
     );
     assert_eq!(
-        shown(&owner, "link-verify"),
+        shown(&owner, SENT),
         Shown::AwaitingVerify,
         "Today offers the bed"
     );
@@ -271,7 +269,7 @@ fn gre_1897_a_finished_print_awaits_verify_once_and_verify_batch_deducts_once() 
     let rows = confirm_and_deduct(&fixture, &owner, finished);
     assert_eq!(rows.len(), 1, "one deduction for the confirmed bed");
     let row = (rows[0].state, rows[0].link_id.as_str(), rows[0].units);
-    assert_eq!(row, (State::Pending, "link-verify", 2));
+    assert_eq!(row, (State::Pending, SENT, 2));
     assert_eq!(rows[0].target.as_ref().unwrap().grams, 20.0);
     owner.shutdown().unwrap();
 }
@@ -281,23 +279,23 @@ fn gre_1897_a_cancel_near_the_end_fails_the_link_for_good() {
     let (fixture, owner) = watching(json!({ "saw_active": true, "last_progress": 99 }));
     let cancelled = HostReport {
         cancelled: true,
-        ..report(Idle, "plate-a.gcode")
+        ..report(Idle, FILE)
     };
     assert_eq!(
         reconcile(&owner, cancelled),
-        changed("link-verify", Change::HostFailed)
+        changed(SENT, Change::HostFailed)
     );
     assert_eq!(
-        outcome(&fixture, "link-verify"),
+        outcome(&fixture, SENT),
         (json!("host_failed"), json!("cancelled"))
     );
     assert_eq!(
-        reconcile(&owner, report(Complete, "plate-a.gcode")),
+        reconcile(&owner, report(Complete, FILE)),
         [],
         "no later revival"
     );
     assert_eq!(
-        shown(&owner, "link-verify"),
+        shown(&owner, SENT),
         Shown::HostFailed,
         "Today offers no bed"
     );
@@ -313,15 +311,23 @@ fn gre_1897_one_finish_moves_only_the_send_that_printed_it() {
     let (fixture, owner) = watching_with(sent.clone(), &[upload(false)]);
     let printing = HostReport {
         progress: Some(40.0),
-        ..report(Printing, "plate-a.gcode")
+        ..report(Printing, FILE)
     };
-    assert_eq!(
-        reconcile(&owner, printing),
-        changed("link-verify", Change::Active)
-    );
-    let finished = report(Complete, "plate-a.gcode");
-    let awaiting = changed("link-verify", Change::AwaitingVerify);
+    assert_eq!(reconcile(&owner, printing), changed(SENT, Change::Active));
+    let finished = report(Complete, FILE);
+    let awaiting = changed(SENT, Change::AwaitingVerify);
     assert_eq!(reconcile(&owner, finished.clone()), awaiting);
+    // The printer keeps showing the finish: a missed poll, then a restart,
+    // report it again with `link-upload` the only send still watching.
+    assert_eq!(reconcile(&owner, report(Offline, "")), []);
+    assert_eq!(
+        reconcile(&owner, finished.clone()),
+        [],
+        "after a missed poll"
+    );
+    owner.shutdown().unwrap();
+    let owner = fixture.open();
+    assert_eq!(reconcile(&owner, finished.clone()), [], "after a restart");
     let never_ran = link(&fixture, "link-upload");
     let never_ran = (&never_ran["state"], &never_ran["saw_active"]);
     assert_eq!(never_ran, (&json!("watching"), &json!(false)));
@@ -338,7 +344,7 @@ fn gre_1897_one_finish_moves_only_the_send_that_printed_it() {
         [],
         "two started sends of one file: none is guessed"
     );
-    for id in ["link-verify", "link-upload"] {
+    for id in [SENT, "link-upload"] {
         assert_eq!(link(&fixture, id)["state"], "watching", "{id}");
     }
     owner.shutdown().unwrap();
@@ -348,11 +354,11 @@ fn gre_1897_one_finish_moves_only_the_send_that_printed_it() {
 fn gre_1897_only_the_desktop_single_account_policy_reconciles() {
     let (fixture, owner) = watching(json!({}));
     let client = owner.checkoff_reconcile(sessions()).unwrap();
-    let refused = client.reconcile(HOST, report(Complete, "plate-a.gcode"), WAIT);
+    let refused = client.reconcile(HOST, report(Complete, FILE), WAIT);
     assert!(
         matches!(refused, Err(WriterFailure::Auth(_))),
         "{refused:?}"
     );
-    assert_eq!(link(&fixture, "link-verify")["state"], "watching");
+    assert_eq!(link(&fixture, SENT)["state"], "watching");
     owner.shutdown().unwrap();
 }

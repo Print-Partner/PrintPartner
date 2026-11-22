@@ -233,6 +233,7 @@ pub fn status_from_print(print: &Value) -> Status {
         bed_target_c: finite(print.get("bed_target_temper")),
         ip_address: None,
         uptime_seconds: None,
+        cancelled: false,
         state,
     }
 }

@@ -78,3 +78,27 @@ fn ticket_t_4_watcher_proof_status_parity_corpus() {
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     println!("{} Moonraker status parity cases", corpus.cases.len());
 }
+
+/// GRE-1897: a cancel still reads `idle` with Node's fields, and is flagged
+/// apart from a host back at rest, so no cancel can pass for a finish.
+#[test]
+fn gre_1897_a_cancelled_print_reads_idle_and_flags_the_cancel() {
+    let read = |state: &str| {
+        let stats = format!(r#"{{"state":"{state}","filename":"part.gcode"}}"#);
+        let body = format!(r#"{{"result":{{"status":{{"print_stats":{stats}}}}}}}"#);
+        recorded_status(body.as_bytes(), "http://printer.test").unwrap()
+    };
+    let cancelled = read("cancelled");
+    let json = serde_json::to_value(&cancelled).unwrap();
+    assert_eq!(
+        (json["state"].as_str(), json["message"].as_str()),
+        (Some("idle"), Some("Idle"))
+    );
+    assert!(
+        cancelled.cancelled && json.get("cancelled").is_none(),
+        "{json}"
+    );
+    for state in ["standby", "complete", "printing"] {
+        assert!(!read(state).cancelled, "{state}");
+    }
+}

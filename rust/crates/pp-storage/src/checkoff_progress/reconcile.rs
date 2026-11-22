@@ -1,13 +1,9 @@
-//! Node's `reconcilePrinterCheckoff` (GRE-1897): the host status the watchers
-//! report moves a host's `watching` Printer Checkoff links on. A print seen
-//! running records `saw_active` and its progress; a finish makes the link
-//! `awaiting_verify`, so Today offers to confirm the bed; an error or a cancel
-//! makes it `host_failed`; and a link older than 48 hours that never saw its
-//! print run is dismissed while the host is idle or unreachable. Only
-//! `watching` links change, so a repeated status changes nothing, and a status
-//! that changes nothing writes nothing. No Required unit is checked off here:
-//! the operator still verifies the bed. Unattributed finishes and file drift
-//! stay out (GRE-1897).
+//! Node's `reconcilePrinterCheckoff` (GRE-1897): a host status moves that
+//! host's `watching` Printer Checkoff links on, and nothing else. The rules,
+//! and the two places they differ from Node (an explicit cancel never counts
+//! as a finish; a status moves at most one send of a file), are in
+//! `docs/farm-reads.md#checkoff-reconcile`. A status that changes no link
+//! writes nothing, and no Required unit is checked off here.
 use super::links::{self, Link};
 use crate::{
     Shared, WriterFailure, auth::AuthPolicy, read_model::farm::HostState,
@@ -33,6 +29,8 @@ pub struct HostReport {
     pub filename: Option<String>,
     /// Percent done, 0 to 100.
     pub progress: Option<f64>,
+    /// An idle host whose print was stopped on request.
+    pub cancelled: bool,
 }
 
 /// What a reconcile did to one link.
@@ -62,8 +60,9 @@ fn same_file(host: Option<&str>, link: &Value) -> bool {
     !host.is_empty() && link.as_str().map(links::normalized_filename) == Some(host)
 }
 
-/// `decideCheckoffReconcile`. Idle, cancel and error never await verify,
-/// unless the print was seen past 99% and its brief `complete` was missed.
+/// `decideCheckoffReconcile`. Idle and error never await verify, unless the
+/// print was seen past 99% and its brief `complete` was missed; an explicit
+/// cancel never does.
 fn decide(link: &Link, report: &HostReport) -> Decision {
     if link["state"] != "watching" {
         return Decision::Noop;
@@ -88,7 +87,8 @@ fn decide(link: &Link, report: &HostReport) -> Decision {
         }
         HostState::Error if saw_active || matches => Decision::HostFailed("failed"),
         HostState::Idle if saw_active => {
-            if link["last_progress"].as_f64().is_some_and(|p| p >= 99.0) {
+            let near_done = link["last_progress"].as_f64().is_some_and(|p| p >= 99.0);
+            if near_done && !report.cancelled {
                 Decision::AwaitVerify
             } else {
                 Decision::HostFailed("cancelled")
@@ -105,30 +105,15 @@ fn stale(link: &Link, now: OffsetDateTime) -> bool {
     link["saw_active"] != true && created.is_some_and(|at| now - at > STALE)
 }
 
-fn patch(link: &mut Link, fields: impl IntoIterator<Item = (&'static str, Value)>) {
-    for (key, value) in fields {
-        link.insert(key.into(), value);
-    }
+/// Ends the link's watch in `state` with the host's `outcome`.
+fn settle(link: &mut Link, state: &str, outcome: &str) {
+    link.insert("state".into(), state.into());
+    link.insert("host_outcome".into(), outcome.into());
 }
 
-/// One `watching` link's move for `report` at `now` (`at` in link form), or
-/// `None` when it stays as it is.
-fn step(link: &mut Link, report: &HostReport, now: OffsetDateTime, at: &str) -> Option<Change> {
-    let quiet = matches!(
-        report.state,
-        HostState::Idle | HostState::Offline | HostState::Unknown
-    );
-    if quiet && stale(link, now) {
-        patch(
-            link,
-            [
-                ("state", "dismissed".into()),
-                ("host_outcome", "unknown".into()),
-            ],
-        );
-        return Some(Change::Dismissed);
-    }
-    match decide(link, report) {
+/// Applies `decision` to `link` at `at`, or `None` when it changes nothing.
+fn apply(link: &mut Link, decision: Decision, at: &str) -> Option<Change> {
+    match decision {
         Decision::Noop => None,
         Decision::MarkActive(progress) => {
             let before = link["last_progress"].as_f64();
@@ -147,28 +132,35 @@ fn step(link: &mut Link, report: &HostReport, now: OffsetDateTime, at: &str) -> 
             Some(Change::Active)
         }
         Decision::HostFailed(outcome) => {
-            patch(
-                link,
-                [
-                    ("state", "host_failed".into()),
-                    ("host_outcome", outcome.into()),
-                ],
-            );
+            settle(link, "host_failed", outcome);
             Some(Change::HostFailed)
         }
         Decision::AwaitVerify => {
-            patch(
-                link,
-                [
-                    ("state", "awaiting_verify".into()),
-                    ("host_outcome", "success".into()),
-                    ("completed_at", at.into()),
-                    ("saw_active", true.into()),
-                ],
-            );
+            settle(link, "awaiting_verify", "success");
+            link.insert("completed_at".into(), at.into());
+            link.insert("saw_active".into(), true.into());
             Some(Change::AwaitingVerify)
         }
     }
+}
+
+/// The one send of `moving` that `report` is about: all of them when there
+/// is one, else the only one seen printing, else the only one the send
+/// started, else none.
+fn one_send(all: &[Link], moving: Vec<(usize, Decision)>) -> Vec<(usize, Decision)> {
+    if moving.len() < 2 {
+        return moving;
+    }
+    for flag in ["saw_active", "started"] {
+        let count = moving.iter().filter(|(i, _)| all[*i][flag] == true).count();
+        if count == 1 {
+            return moving
+                .into_iter()
+                .filter(|(i, _)| all[*i][flag] == true)
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 /// Reconciles host `integration_id`'s `watching` links against `report`
@@ -183,16 +175,42 @@ pub(crate) fn reconcile(
 ) -> Result<Vec<(String, Change)>> {
     let at = crate::auth::timestamp_at(now);
     let mut all = links::load(tx, tenant, &at)?;
-    let mut changed = Vec::new();
-    for (index, link) in all.iter_mut().enumerate() {
+    let quiet = matches!(
+        report.state,
+        HostState::Idle | HostState::Offline | HostState::Unknown
+    );
+    let (mut stale_links, mut moving) = (Vec::new(), Vec::new());
+    for (index, link) in all.iter().enumerate() {
         if link["integration_id"] != integration_id || link["state"] != "watching" {
             continue;
         }
-        if let Some(change) = step(link, report, now, &at) {
-            let id = link["id"].as_str().unwrap_or_default().to_owned();
-            changed.push((index, id, change));
+        if quiet && stale(link, now) {
+            stale_links.push(index);
+        } else {
+            match decide(link, report) {
+                Decision::Noop => {}
+                decision => moving.push((index, decision)),
+            }
         }
     }
+    let mut changed = Vec::new();
+    for index in stale_links {
+        settle(&mut all[index], "dismissed", "unknown");
+        changed.push((index, Change::Dismissed));
+    }
+    for (index, decision) in one_send(&all, moving) {
+        if let Some(change) = apply(&mut all[index], decision, &at) {
+            changed.push((index, change));
+        }
+    }
+    changed.sort_by_key(|(index, _)| *index);
+    let changed: Vec<(usize, String, Change)> = changed
+        .into_iter()
+        .map(|(index, change)| {
+            let id = all[index]["id"].as_str().unwrap_or_default().to_owned();
+            (index, id, change)
+        })
+        .collect();
     if changed.is_empty() {
         return Ok(Vec::new());
     }

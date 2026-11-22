@@ -130,3 +130,25 @@ fn ticket_t_22_prusalink_hosts_poll_at_the_web_clients_cadence() {
         Duration::from_secs(5)
     );
 }
+
+#[tokio::test]
+async fn gre_1897_a_stopped_print_reads_idle_and_flags_the_cancel() {
+    for (state, cancelled) in [("STOPPED", true), ("READY", false), ("IDLE", false)] {
+        let body = format!(r#"{{"printer":{{"state":"{state}"}}}}"#).into_bytes();
+        let printer = RoutedPrinter::start(vec![("/api/v1/status".into(), 200, body)]).unwrap();
+        let status = prusalink::Driver::new(
+            guard(),
+            printer.url(),
+            "maker",
+            Some("synthetic-fixture-password"),
+            None,
+        )
+        .status()
+        .await;
+        assert_eq!(
+            (status.state, status.message.as_deref(), status.cancelled),
+            (PrinterHostState::Idle, Some("Idle"), cancelled),
+            "{state}"
+        );
+    }
+}

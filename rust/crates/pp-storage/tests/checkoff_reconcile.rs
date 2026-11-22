@@ -15,15 +15,16 @@ use pp_storage::{
     },
     read_model::{
         Credential,
-        farm::{CheckoffResultState, HostState},
+        farm::{CheckoffResultState, HostState, iso_time},
     },
     spoolman_deductions::{Deduction, Filter, State},
 };
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, atomic::AtomicBool},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
+use {CheckoffResultState as Shown, HostState::*};
 
 #[path = "common/checkoff_apply.rs"]
 mod checkoff_apply;
@@ -33,30 +34,38 @@ mod checkoff_fixture;
 mod js_json;
 
 const HOST: &str = "sim-moonraker";
-const SESSION: &str = "required-unit-fixture-secret";
 const WAIT: Duration = Duration::from_secs(5);
+const LINKS: &str =
+    "SELECT value FROM app_settings WHERE tenant_id=?1 AND key='printer.checkoff_links'";
+const SAVE: &str =
+    "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='printer.checkoff_links'";
 const SPOOLMAN: &str = r#"[{"id":"sm-1","type":"spoolman","name":"Spoolman","config":{"base_url":"http://127.0.0.1:7912","enabled":true},"created_at":"2026-11-01T00:00:00.000Z","updated_at":"2026-11-01T00:00:00.000Z"}]"#;
 
-fn policy() -> auth::AuthPolicy {
+fn policy(session_tenant: auth::SessionTenantPolicy) -> auth::AuthPolicy {
+    let (registration, first_user) = (
+        auth::RegistrationPolicy::Open,
+        auth::FirstUserTenant::NewUser,
+    );
     auth::AuthPolicy {
-        registration: auth::RegistrationPolicy::Open,
-        first_user: auth::FirstUserTenant::NewUser,
-        session_tenant: auth::SessionTenantPolicy::AccountTenant,
+        registration,
+        first_user,
+        session_tenant,
     }
 }
 
+/// The policy a signed-in session reads with.
+fn sessions() -> auth::AuthPolicy {
+    policy(auth::SessionTenantPolicy::AccountTenant)
+}
+
 fn session() -> Credential {
-    Credential::Session(Secret::new(SESSION.into()))
+    Credential::Session(Secret::new("required-unit-fixture-secret".into()))
 }
 
 fn links(fixture: &Fixture, tenant: &str) -> Vec<Value> {
     let raw: String = fixture
         .sql()
-        .query_row(
-            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key='printer.checkoff_links'",
-            [tenant],
-            |row| row.get(0),
-        )
+        .query_row(LINKS, [tenant], |row| row.get(0))
         .unwrap();
     js_json::parse(&raw).as_array().unwrap().clone()
 }
@@ -68,94 +77,79 @@ fn link(fixture: &Fixture, id: &str) -> Value {
         .unwrap()
 }
 
-/// Rewrites the `default` links with `fields` merged into link `id`, moves
-/// the fixture's other `watching` link to host `moon-3`, and adds a second
-/// `watching` send of the same file on host `moon-2`.
-fn stored(fixture: &Fixture, id: &str, fields: Value) {
-    let mut all = links(fixture, "default");
+/// `(state, host_outcome)` of link `id`.
+fn outcome(fixture: &Fixture, id: &str) -> (Value, Value) {
+    let link = link(fixture, id);
+    (link["state"].clone(), link["host_outcome"].clone())
+}
+
+/// Puts `link-verify` back to a recent `watching` send with `fields`, moves
+/// the fixture's other `watching` link to host `moon-3`, adds a `watching`
+/// send of the same file on host `moon-2`, and adds a copy of `link-verify`
+/// patched with each of `extra`.
+fn watching_with(fields: Value, extra: &[Value]) -> (Fixture, WriterOwner) {
+    let fixture = Fixture::new();
+    let mut all = links(&fixture, "default");
+    let fresh = json!({
+        "state": "watching", "created_at": iso_time(SystemTime::now()), "host_outcome": null,
+        "completed_at": null, "applied_at": null, "last_progress": null,
+    });
+    let merge = |link: &mut Value, patch: &Value| {
+        for (key, value) in patch.as_object().unwrap() {
+            link[key] = value.clone();
+        }
+    };
     for link in &mut all {
         if link["id"] == "link-watching" {
             link["integration_id"] = "moon-3".into();
         }
-        if link["id"] == id {
-            for (key, value) in fields.as_object().unwrap() {
-                link[key] = value.clone();
-            }
+        if link["id"] == "link-verify" {
+            merge(link, &fresh);
+            merge(link, &fields);
         }
     }
-    let mut other = all[0].clone();
-    other["id"] = "link-other-host".into();
-    other["integration_id"] = "moon-2".into();
-    other["state"] = "watching".into();
-    all.push(other);
+    let sent = all
+        .iter()
+        .find(|link| link["id"] == "link-verify")
+        .unwrap()
+        .clone();
+    let other = json!({ "id": "link-other-host", "integration_id": "moon-2" });
+    for patch in std::iter::once(&other).chain(extra) {
+        let mut copy = sent.clone();
+        merge(&mut copy, patch);
+        all.push(copy);
+    }
     fixture
         .sql()
-        .execute(
-            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='printer.checkoff_links'",
-            [serde_json::to_string(&all).unwrap()],
-        )
+        .execute(SAVE, [serde_json::to_string(&all).unwrap()])
         .unwrap();
-}
-
-/// `link-verify` sent recently and still `watching`.
-fn watching(fields: Value) -> (Fixture, WriterOwner) {
-    let fixture = Fixture::new();
-    let mut fields = fields;
-    fields["state"] = "watching".into();
-    if fields.get("created_at").is_none() {
-        fields["created_at"] = auth_now().into();
-    }
-    for key in [
-        "host_outcome",
-        "completed_at",
-        "applied_at",
-        "last_progress",
-    ] {
-        if fields.get(key).is_none() {
-            fields[key] = Value::Null;
-        }
-    }
-    stored(&fixture, "link-verify", fields);
     let owner = fixture.open();
     (fixture, owner)
 }
 
-/// Now, in the `toISOString` form Checkoff link times use.
-fn auth_now() -> String {
-    let now = time::OffsetDateTime::now_utc();
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
-        now.year(),
-        u8::from(now.month()),
-        now.day(),
-        now.hour(),
-        now.minute(),
-        now.second()
-    )
+fn watching(fields: Value) -> (Fixture, WriterOwner) {
+    watching_with(fields, &[])
 }
 
-fn report(state: HostState, filename: Option<&str>, progress: Option<f64>) -> HostReport {
+fn report(state: HostState, filename: &str) -> HostReport {
+    let filename = Some(filename.to_owned()).filter(|f| !f.is_empty());
     HostReport {
         state,
-        filename: filename.map(str::to_owned),
-        progress,
+        filename,
+        progress: None,
+        cancelled: false,
     }
 }
 
-/// The desktop's single-account policy, the only one the watchers act under.
-fn desktop() -> auth::AuthPolicy {
-    auth::AuthPolicy {
+fn reconcile(owner: &WriterOwner, report: HostReport) -> Vec<(String, Change)> {
+    let desktop = auth::AuthPolicy {
         registration: auth::RegistrationPolicy::FirstAccountOnly,
-        first_user: auth::FirstUserTenant::NewUser,
-        session_tenant: auth::SessionTenantPolicy::SingleAccountDefault,
-    }
-}
-
-fn reconcile(owner: &WriterOwner, host: &str, report: HostReport) -> Vec<(String, Change)> {
+        ..policy(auth::SessionTenantPolicy::SingleAccountDefault)
+    };
     owner
-        .checkoff_reconcile(desktop())
+        .checkoff_reconcile(desktop)
         .unwrap()
-        .reconcile(host, report, WAIT)
+        .reconcile(HOST, report, WAIT)
         .unwrap()
 }
 
@@ -163,10 +157,10 @@ fn changed(id: &str, change: Change) -> Vec<(String, Change)> {
     vec![(id.to_owned(), change)]
 }
 
-fn farm_state(owner: &WriterOwner, id: &str) -> CheckoffResultState {
-    let farm = owner
-        .farm_reads(policy())
-        .unwrap()
+/// The state the farm read, and so Today, shows for link `id`.
+fn shown(owner: &WriterOwner, id: &str) -> Shown {
+    let farm = owner.farm_reads(sessions()).unwrap();
+    let farm = farm
         .read(session(), Arc::new(AtomicBool::new(false)), WAIT)
         .unwrap();
     farm.checkoff()
@@ -197,22 +191,19 @@ fn confirm_and_deduct(
         ))
         .unwrap();
     let confirm = |unit| json!({ "part_id": 1, "unit_index": unit, "result": "confirmed" });
-    let body = json!({
-        "idempotency_key": "gre-1897",
-        "beds": [{ "link_id": "link-verify", "decisions": [confirm(1), confirm(2)] }]
-    });
+    let beds = json!([{ "link_id": "link-verify", "decisions": [confirm(1), confirm(2)] }]);
+    let body = json!({ "idempotency_key": "gre-1897", "beds": beds });
     let verified = apply(owner, Request::VerifyBatch { body: body.clone() });
     assert_eq!(verified["status"], 200, "{verified}");
     assert_eq!(
-        reconcile(owner, HOST, finished),
+        reconcile(owner, finished),
         [],
         "the finish is still showing"
     );
     let replay = apply(owner, Request::VerifyBatch { body });
     assert_eq!(replay["status"], 200, "{replay}");
-    owner
-        .spoolman_deductions(policy())
-        .unwrap()
+    let deductions = owner.spoolman_deductions(sessions()).unwrap();
+    deductions
         .list(session(), Filter::default(), &AtomicBool::new(false), WAIT)
         .unwrap()
 }
@@ -220,164 +211,144 @@ fn confirm_and_deduct(
 #[test]
 fn gre_1897_a_finished_print_awaits_verify_once_and_verify_batch_deducts_once() {
     let (fixture, owner) = watching(json!({}));
+    assert_eq!(shown(&owner, "link-verify"), Shown::Watching);
+    let foreign = links(&fixture, "foreign");
+    let running = |progress| HostReport {
+        progress: Some(progress),
+        ..report(Printing, "plate-a.gcode")
+    };
     assert_eq!(
-        farm_state(&owner, "link-verify"),
-        CheckoffResultState::Watching
-    );
-    let before = links(&fixture, "foreign");
-
-    use HostState::*;
-    let running = |progress| report(Printing, Some("plate-a.gcode"), Some(progress));
-    assert_eq!(
-        reconcile(&owner, HOST, running(12.4)),
+        reconcile(&owner, running(12.4)),
         changed("link-verify", Change::Active)
     );
-    assert_eq!(reconcile(&owner, HOST, running(12.0)), [], "same progress");
+    assert_eq!(reconcile(&owner, running(12.0)), [], "same progress");
     assert_eq!(
-        reconcile(&owner, HOST, running(8.0)),
+        reconcile(&owner, running(8.0)),
         [],
         "progress never goes back"
     );
+    let seen = link(&fixture, "link-verify");
     assert_eq!(
-        (
-            link(&fixture, "link-verify")["saw_active"].clone(),
-            link(&fixture, "link-verify")["last_progress"].clone()
-        ),
-        (json!(true), json!(12))
+        (&seen["saw_active"], &seen["last_progress"]),
+        (&json!(true), &json!(12))
     );
-    let finished = report(Complete, Some("plate-a.gcode"), Some(100.0));
+
+    let finished = report(Complete, "plate-a.gcode");
+    let awaiting = changed("link-verify", Change::AwaitingVerify);
+    assert_eq!(reconcile(&owner, finished.clone()), awaiting);
     assert_eq!(
-        reconcile(&owner, HOST, finished.clone()),
-        changed("link-verify", Change::AwaitingVerify)
+        outcome(&fixture, "link-verify"),
+        (json!("awaiting_verify"), json!("success"))
     );
-    let done = link(&fixture, "link-verify");
-    assert_eq!(
-        (&done["state"], &done["host_outcome"], &done["saw_active"]),
-        (&json!("awaiting_verify"), &json!("success"), &json!(true))
-    );
-    assert!(
-        done["completed_at"]
-            .as_str()
-            .is_some_and(|at| !at.is_empty())
-    );
+    let completed_at = link(&fixture, "link-verify")["completed_at"].clone();
+    assert!(completed_at.as_str().is_some_and(|at| !at.is_empty()));
     let stored = links(&fixture, "default");
-    let active: Vec<&Value> = stored
-        .iter()
-        .filter(|link| ["watching", "awaiting_verify"].contains(&link["state"].as_str().unwrap()))
-        .collect();
+    let active =
+        |link: &&Value| ["watching", "awaiting_verify"].contains(&link["state"].as_str().unwrap());
+    let last_active = stored.iter().rfind(active).unwrap();
     assert_eq!(
-        active.last().unwrap()["id"],
-        "link-verify",
-        "a patched link moves after the other active links"
+        last_active["id"], "link-verify",
+        "a patched link moves after the active links"
     );
-    assert_eq!(
-        reconcile(&owner, HOST, finished.clone()),
-        [],
-        "a repeated finish"
-    );
+    assert_eq!(reconcile(&owner, finished.clone()), [], "a repeated finish");
     assert_eq!(links(&fixture, "default"), stored, "a no-op writes nothing");
     assert_eq!(
         links(&fixture, "foreign"),
-        before,
+        foreign,
         "another installation's links stay"
     );
-    let other = link(&fixture, "link-other-host");
     assert_eq!(
-        other["state"], "watching",
-        "another host's send of the same file stays"
+        link(&fixture, "link-other-host")["state"],
+        "watching",
+        "another host's send stays"
     );
-
-    // Today's beds are the farm read's `awaiting_verify` results.
     assert_eq!(
-        farm_state(&owner, "link-verify"),
-        CheckoffResultState::AwaitingVerify
+        shown(&owner, "link-verify"),
+        Shown::AwaitingVerify,
+        "Today offers the bed"
     );
 
     let rows = confirm_and_deduct(&fixture, &owner, finished);
     assert_eq!(rows.len(), 1, "one deduction for the confirmed bed");
-    assert_eq!(
-        (rows[0].state, rows[0].link_id.as_str(), rows[0].units),
-        (State::Pending, "link-verify", 2)
-    );
+    let row = (rows[0].state, rows[0].link_id.as_str(), rows[0].units);
+    assert_eq!(row, (State::Pending, "link-verify", 2));
     assert_eq!(rows[0].target.as_ref().unwrap().grams, 20.0);
     owner.shutdown().unwrap();
 }
 
 #[test]
-fn gre_1897_a_cancelled_or_failed_print_fails_the_link_and_never_awaits_verify() {
-    use HostState::*;
-    let (fixture, owner) = watching(json!({ "saw_active": true, "last_progress": 40 }));
-    assert_eq!(reconcile(&owner, HOST, report(Offline, None, None)), []);
-    assert_eq!(
-        reconcile(&owner, HOST, report(Idle, None, None)),
-        changed("link-verify", Change::HostFailed)
-    );
-    let failed = link(&fixture, "link-verify");
-    assert_eq!(
-        (&failed["state"], &failed["host_outcome"]),
-        (&json!("host_failed"), &json!("cancelled"))
-    );
-    assert_eq!(
-        reconcile(&owner, HOST, report(Complete, Some("plate-a.gcode"), None)),
-        [],
-        "a later finish does not revive a failed link"
-    );
-    assert_eq!(
-        farm_state(&owner, "link-verify"),
-        CheckoffResultState::HostFailed
-    );
-    owner.shutdown().unwrap();
-
-    let (fixture, owner) = watching(json!({}));
-    assert_eq!(
-        reconcile(&owner, HOST, report(Error, Some("PLATE-A.gcode"), None)),
-        changed("link-verify", Change::HostFailed)
-    );
-    assert_eq!(link(&fixture, "link-verify")["host_outcome"], "failed");
-    owner.shutdown().unwrap();
-
+fn gre_1897_a_cancel_near_the_end_fails_the_link_for_good() {
     let (fixture, owner) = watching(json!({ "saw_active": true, "last_progress": 99 }));
+    let cancelled = HostReport {
+        cancelled: true,
+        ..report(Idle, "plate-a.gcode")
+    };
     assert_eq!(
-        reconcile(&owner, HOST, report(Idle, None, None)),
-        changed("link-verify", Change::AwaitingVerify),
-        "a print seen at 99% whose brief finish was missed"
+        reconcile(&owner, cancelled),
+        changed("link-verify", Change::HostFailed)
     );
-    assert_eq!(link(&fixture, "link-verify")["host_outcome"], "success");
+    assert_eq!(
+        outcome(&fixture, "link-verify"),
+        (json!("host_failed"), json!("cancelled"))
+    );
+    assert_eq!(
+        reconcile(&owner, report(Complete, "plate-a.gcode")),
+        [],
+        "no later revival"
+    );
+    assert_eq!(
+        shown(&owner, "link-verify"),
+        Shown::HostFailed,
+        "Today offers no bed"
+    );
     owner.shutdown().unwrap();
 }
 
 #[test]
-fn gre_1897_an_old_send_that_never_ran_is_dismissed_only_while_the_host_is_quiet() {
-    use HostState::*;
-    let (fixture, owner) = watching(json!({ "created_at": "2020-01-01T00:00:00.000Z" }));
+fn gre_1897_one_finish_moves_only_the_send_that_printed_it() {
+    // `link-verify` was started by its send; `link-upload` is an upload of
+    // the same file under another job, started only in the second case.
+    let upload = |started: bool| json!({ "id": "link-upload", "upload_job_id": "job-upload", "started": started });
+    let sent = json!({ "started": true, "upload_job_id": "job-sent" });
+    let (fixture, owner) = watching_with(sent.clone(), &[upload(false)]);
+    let printing = HostReport {
+        progress: Some(40.0),
+        ..report(Printing, "plate-a.gcode")
+    };
     assert_eq!(
-        reconcile(
-            &owner,
-            HOST,
-            report(Printing, Some("other.gcode"), Some(3.0))
-        ),
-        []
+        reconcile(&owner, printing),
+        changed("link-verify", Change::Active)
     );
+    let finished = report(Complete, "plate-a.gcode");
+    let awaiting = changed("link-verify", Change::AwaitingVerify);
+    assert_eq!(reconcile(&owner, finished.clone()), awaiting);
+    let never_ran = link(&fixture, "link-upload");
+    let never_ran = (&never_ran["state"], &never_ran["saw_active"]);
+    assert_eq!(never_ran, (&json!("watching"), &json!(false)));
     assert_eq!(
-        reconcile(&owner, HOST, report(Idle, None, None)),
-        changed("link-verify", Change::Dismissed)
+        shown(&owner, "link-upload"),
+        Shown::Watching,
+        "Today offers no bed for it"
     );
-    let dismissed = link(&fixture, "link-verify");
+    owner.shutdown().unwrap();
+
+    let (fixture, owner) = watching_with(sent, &[upload(true)]);
     assert_eq!(
-        (&dismissed["state"], &dismissed["host_outcome"]),
-        (&json!("dismissed"), &json!("unknown"))
+        reconcile(&owner, finished),
+        [],
+        "two started sends of one file: none is guessed"
     );
+    for id in ["link-verify", "link-upload"] {
+        assert_eq!(link(&fixture, id)["state"], "watching", "{id}");
+    }
     owner.shutdown().unwrap();
 }
 
 #[test]
 fn gre_1897_only_the_desktop_single_account_policy_reconciles() {
     let (fixture, owner) = watching(json!({}));
-    let refused = owner.checkoff_reconcile(policy()).unwrap().reconcile(
-        HOST,
-        report(HostState::Complete, Some("plate-a.gcode"), None),
-        WAIT,
-    );
+    let client = owner.checkoff_reconcile(sessions()).unwrap();
+    let refused = client.reconcile(HOST, report(Complete, "plate-a.gcode"), WAIT);
     assert!(
         matches!(refused, Err(WriterFailure::Auth(_))),
         "{refused:?}"

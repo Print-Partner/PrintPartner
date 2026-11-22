@@ -636,6 +636,7 @@ impl Driver {
             nozzle_target_c: number("target_nozzle"),
             bed_temperature_c: number("temp_bed"),
             bed_target_c: number("target_bed"),
+            cancelled: raw_state.is_some_and(|raw| raw.eq_ignore_ascii_case("STOPPED")),
             state,
         })
     }

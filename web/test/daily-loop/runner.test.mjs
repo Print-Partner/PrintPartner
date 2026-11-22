@@ -7,7 +7,7 @@ import process from "node:process";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { runNames } from "./installation.mjs";
-import { createRunner, teardown } from "./runner.mjs";
+import { createRunner, TEARDOWN_PASSES, teardown } from "./runner.mjs";
 
 const RUN = "pp-daily-loop-0a1b2c3d";
 const STAND_IN = `${RUN}-spoolman`;
@@ -164,4 +164,23 @@ test("without a stop, one empty listing is enough", async (t) => {
   });
   assert.deepEqual(left, []);
   assert.equal(waits, 0);
+});
+
+test("after a stop, an empty listing only at the last pass is reported as not confirmed", async () => {
+  // The run's container shows on every pass but the last: one empty listing, no second.
+  const pass = { n: 0 };
+  const docker = (args) => {
+    if (args[0] === "rm") pass.n += 1;
+    const present = args[0] === "ps" && pass.n < TEARDOWN_PASSES;
+    return { status: 0, stdout: present ? `${RUN}\n` : "" };
+  };
+  const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker, wait: async () => {} };
+  const left = await teardown(runNames(RUN), { ...options, confirm: true });
+  assert.equal(pass.n, TEARDOWN_PASSES);
+  assert.notDeepEqual(left, []);
+  assert.ok(left.every((check) => check.endsWith("so not confirmed)")), left.join("\n"));
+  assert.ok(left.some((check) => check.startsWith(`docker ps -aq --filter name=${RUN} `)));
+  // Without a stop the same last empty listing is enough.
+  pass.n = 0;
+  assert.deepEqual(await teardown(runNames(RUN), { ...options, confirm: false }), []);
 });

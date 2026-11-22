@@ -65,19 +65,26 @@ export function createRunner({ cwd, settleMs = SETTLE_MS }) {
 
 const dockerSync = (args, options) => spawnSync("docker", args, options);
 
+/** How many times teardown removes and lists again, 2 s apart. */
+export const TEARDOWN_PASSES = 4;
+
 /**
  * Removes what the run named `names.container` created, and `folder`, then lists what is
- * left. It looks again up to four times, 2 s apart. With `confirm`, it stops only after
- * two empty listings in a row. Resolves to the leftover list commands; empty means clean.
+ * left, up to TEARDOWN_PASSES times, 2 s apart. It stops at an empty listing; with
+ * `confirm`, only at the second empty listing in a row. Resolves to what is left to check
+ * by hand; empty means clean. With `confirm`, a single empty listing at the last pass is
+ * not clean: each list is returned, marked as not confirmed.
  */
 export async function teardown(names, { folder, removeFolder, exists, confirm, docker = dockerSync, wait = delay }) {
+  const lists = leftoverLists(names.container);
+  const needed = confirm ? 2 : 1;
   let left = [];
   let clean = 0;
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < TEARDOWN_PASSES && clean < needed; pass++) {
     if (pass > 0) await wait(2000);
     for (const args of cleanupCommands(names)) docker(args, { stdio: "ignore" });
     removeFolder(folder);
-    left = leftoverLists(names.container)
+    left = lists
       .filter((list) => {
         const listed = docker(list, { encoding: "utf8" });
         return listed.status !== 0 || listed.stdout.trim() !== "";
@@ -85,7 +92,10 @@ export async function teardown(names, { folder, removeFolder, exists, confirm, d
       .map((list) => `docker ${list.join(" ")}`);
     if (exists(folder)) left.push(`ls ${folder}`);
     clean = left.length === 0 ? clean + 1 : 0;
-    if (clean >= (confirm ? 2 : 1)) break;
   }
-  return left;
+  if (clean >= needed || left.length > 0) return left;
+  // After a stop, one empty listing proves nothing: a create can still finish after it.
+  return [...lists.map((list) => `docker ${list.join(" ")}`), `ls ${folder}`].map(
+    (check) => `${check} (empty only at the last of ${TEARDOWN_PASSES} passes, so not confirmed)`,
+  );
 }

@@ -40,6 +40,8 @@ mod manual;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_file;
 #[cfg(feature = "desktop_rebuild")]
+pub mod reconcile;
+#[cfg(feature = "desktop_rebuild")]
 mod unattributed;
 #[cfg(feature = "desktop_rebuild")]
 pub use unattributed::{DismissUndo, UndoDismissError};
@@ -710,7 +712,7 @@ fn unit_op(target: Target, change: Change) -> std::result::Result<Op, Response> 
 /// trimmed base name, case-insensitively. Each comes as `(created_at, id)`, in
 /// no particular order: list position is not creation order, because a save
 /// moves a patched link to the end and writes terminal links after active
-/// ones. The later two states count because Node's checkoff reconcile, and
+/// ones. The later two states count because the Checkoff reconcile, and
 /// then a fast verify, can move a link on between the finish and the
 /// measured write. Nothing here changes a link.
 #[cfg(feature = "desktop_rebuild")]

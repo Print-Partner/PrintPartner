@@ -34,6 +34,11 @@ pub struct PrinterHostStatus {
     pub bed_temperature_c: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bed_target_c: Option<f64>,
+    /// The host reported the print stopped on request (Moonraker `cancelled`,
+    /// PrusaLink `STOPPED`). `state` still reads `idle`, as in Node; this
+    /// keeps a cancel apart from a host back at rest. Never serialized.
+    #[serde(skip)]
+    pub cancelled: bool,
 }
 impl PrinterHostStatus {
     pub fn offline(message: &str) -> Self {
@@ -55,6 +60,7 @@ impl PrinterHostStatus {
             nozzle_target_c: None,
             bed_temperature_c: None,
             bed_target_c: None,
+            cancelled: false,
         }
     }
 }

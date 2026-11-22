@@ -33,17 +33,14 @@
 //! Errors are [`DeductionError`]. This module holds no status codes and no
 //! response text; `pp-api` maps the variants.
 
+#[cfg(feature = "desktop_rebuild")]
+use crate::write::runtime_installation;
 use crate::{
     SettingsClient, Shared, WriterFailure, WriterOwner,
     auth::AuthPolicy,
     printer_setup::{ServiceKind, integrations},
     read_model::{Credential, stock::SpoolmanIntegration},
     write::authorize,
-};
-#[cfg(feature = "desktop_rebuild")]
-use crate::{
-    auth::{AuthFailure, SessionTenantPolicy},
-    write::single_account,
 };
 use pp_domain::{PositiveId, features::Feature};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -848,7 +845,7 @@ impl SpoolmanDeductionsClient {
             cancelled,
             wait,
             move |tx| {
-                let installation = runtime_tenant(tx, policy)?;
+                let installation = runtime_installation(tx, policy)?;
                 next_pending(tx, installation.id())
             },
         )?
@@ -877,7 +874,7 @@ impl SpoolmanDeductionsClient {
             cancelled,
             wait,
             move |tx, _| {
-                let installation = runtime_tenant(tx, policy)?;
+                let installation = runtime_installation(tx, policy)?;
                 claim_for_module(tx, installation.id(), id, admitted.as_ref(), grams_before)
             },
         )?
@@ -900,25 +897,11 @@ impl SpoolmanDeductionsClient {
             cancelled,
             wait,
             move |tx, _| {
-                let installation = runtime_tenant(tx, policy)?;
+                let installation = runtime_installation(tx, policy)?;
                 finish_sending(tx, installation.id(), id, state, failure, status)
             },
         )?
     }
-}
-
-#[cfg(feature = "desktop_rebuild")]
-fn runtime_tenant(
-    tx: &Transaction<'_>,
-    policy: AuthPolicy,
-) -> Result<crate::write::Installation, WriterFailure> {
-    if !matches!(
-        policy.session_tenant,
-        SessionTenantPolicy::SingleAccountDefault
-    ) {
-        return Err(WriterFailure::Auth(AuthFailure::SessionRequired));
-    }
-    single_account(tx)
 }
 
 #[cfg(feature = "desktop_rebuild")]

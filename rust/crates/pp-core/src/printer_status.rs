@@ -1,9 +1,10 @@
 //! Moonraker and PrusaLink status in the Rust-only runtime. `pp-gateway` owns
 //! the watchers; these adapters feed them the hosts in storage's `integrations` setting and
 //! expose their cached statuses to the authenticated `pp-api` status route and
-//! farm reads. No adapter writes: monitoring never changes Checkoff or
-//! dispatches a send. The one observer that writes, `measured_grams`,
-//! records only the filament a finished print measured.
+//! farm reads. No adapter writes, and monitoring never dispatches a send. Two
+//! observers write: `measured_grams` records the filament a finished print
+//! measured, and `checkoff_reconcile` moves a send's `watching` Checkoff link
+//! on when its print finishes, fails or is cancelled.
 use crate::{printer_host::StoredPrinterHosts, send_worker::QueueTargets};
 use anyhow::{Context, Result};
 use axum::Router;
@@ -207,7 +208,7 @@ fn watched(kind: &IntegrationKind) -> bool {
 
 /// One watched integration's observation, from `status` (the latest map
 /// entry for farm reads, the stream's own ordered copy for `/ws/printers`).
-fn observe(
+pub(crate) fn observe(
     observations: &PrinterObservations,
     id: &str,
     status: Option<PrinterHostStatus>,
@@ -326,6 +327,7 @@ pub struct StatusRoutes {
     send_config: AcceptedHttpConfig,
     send_queue: SendQueueClient,
     grams: pp_storage::print_grams::PrintGramsClient,
+    checkoff: pp_storage::checkoff_progress::reconcile::ReconcileClient,
     exports: std::path::PathBuf,
     wake: Arc<tokio::sync::Notify>,
 }
@@ -346,6 +348,7 @@ impl StatusRoutes {
             send_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
             send_queue: owner.send_queue(policy)?,
             grams: owner.print_grams(tenant),
+            checkoff: owner.checkoff_reconcile(policy)?,
             exports: owner
                 .lease()
                 .context("Storage lease unavailable")?
@@ -362,6 +365,10 @@ impl StatusRoutes {
         let (measuring, reads, grams) = (settings.clone(), self.reads.clone(), self.grams);
         status.spawn_observer(move |observations, cancelled| {
             crate::measured_grams::observe(measuring, reads, grams, observations, cancelled)
+        });
+        let checkoff = self.checkoff;
+        status.spawn_observer(move |observations, cancelled| {
+            crate::checkoff_reconcile::run(checkoff, observations, cancelled)
         });
         let hosts = StoredPrinterHosts::new(settings.clone(), self.reads);
         let snapshots = settings.print_file_snapshots();

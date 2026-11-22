@@ -42,6 +42,10 @@ mod send_queue;
 mod printer_stream;
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/checkoff_reconcile.rs"]
+mod checkoff_reconcile;
+
+#[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/printer_host.rs"]
 mod printer_host;
 

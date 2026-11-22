@@ -65,14 +65,13 @@ never dispatches a send, and it does not port Node's guess that a print near
 100% that turns idle has finished.
 
 `awaiting_verify` and `verified` links count because the link can move on between the finish
-and the measured write. Node owns the host-completion transition: its
-`POST /printer-checkoff/reconcile` (`reconcilePrinterCheckoff`, polled by the
-old UI) moves a finished `watching` link to `awaiting_verify`, and a fast verify
-then makes it `verified`. That route is still unresolved in the Rust gateway's
-ownership manifest, and the Rust-only runtime has no reconcile of its own: its
-only move out of `watching` is `manual-complete`, which is for `manual:`
-printers that no watcher observes. The observer writes only the grams row and
-never the link's state.
+and the measured write. In Node, `POST /printer-checkoff/reconcile`
+(`reconcilePrinterCheckoff`, polled by the old UI) moves a finished `watching`
+link to `awaiting_verify`. In the Rust-only runtime, a second watcher observer
+does the same (GRE-1897, [Checkoff reconcile](../farm-reads.md#checkoff-reconcile)).
+A fast verify then makes the link `verified`. The two observers run
+independently, so the measured write can land on either state. The grams
+observer writes only the grams row and never the link's state.
 
 The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
 grams from this table instead of `print_jobs.filament_consumed_g`, which

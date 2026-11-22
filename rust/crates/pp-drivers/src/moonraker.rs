@@ -702,6 +702,7 @@ pub fn recorded_status(body: &[u8], base: &str) -> Result<Status> {
     };
     let mut result = Status::offline("");
     result.state = state;
+    result.cancelled = raw.is_some_and(|raw| raw.eq_ignore_ascii_case("cancelled"));
     result.filename = stats
         .and_then(|v| v.get("filename"))
         .and_then(Value::as_str)

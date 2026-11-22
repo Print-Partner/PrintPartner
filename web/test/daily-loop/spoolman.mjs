@@ -165,15 +165,22 @@ export async function startSpoolman({ host = "127.0.0.1", port = 0, controlHost 
   };
   const api = createServer(handle(answer));
   const controller = createServer(handle(control));
-  const bound = await listen(api, port, host);
-  const boundControl = await listen(controller, controlPort, controlHost);
-  const close = async () => {
-    for (const server of [api, controller]) {
+  const closeAll = async (servers) => {
+    for (const server of servers) {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
   };
-  return { port: bound, controlPort: boundControl, close };
+  const bound = await listen(api, port, host);
+  let boundControl;
+  try {
+    boundControl = await listen(controller, controlPort, controlHost);
+  } catch (error) {
+    // The API port is already open: close it, so a failed start leaves nothing listening.
+    await closeAll([api]);
+    throw error;
+  }
+  return { port: bound, controlPort: boundControl, close: () => closeAll([api, controller]) };
 }
 
 /**

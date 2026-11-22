@@ -27,7 +27,7 @@
 //   PP_DAILY_LOOP_NODE_INSTALLATION the synthetic Node installation's host folder
 //   PP_DAILY_LOOP_IMAGE, PP_DAILY_LOOP_NETWORK, PP_DAILY_LOOP_IMPORTER and
 //   PP_DAILY_LOOP_IMPORT_VOLUME     what Step 2 starts the importer and the new container from
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -47,10 +47,9 @@ import {
   simulatorRunArgs,
   withKeyFile,
 } from "./simulator.mjs";
+import { createRunner, teardown } from "./runner.mjs";
 import { SPOOLMAN_ALIAS, SPOOLMAN_PORT, SPOOLMAN_URL, spoolmanRunArgs } from "./spoolman.mjs";
 import {
-  cleanupCommands,
-  leftoverLists,
   productRunArgs,
   runNames,
   SYNTHETIC_SEED,
@@ -65,38 +64,15 @@ const names = runNames(name);
 const { image, simulator, spoolman } = names;
 
 // A stop ends the running command, starts no other, and still runs the cleanup below.
-let child;
-let stopped = false;
-const stop = (signal) => {
-  stopped = true;
-  if (!child?.group) child?.kill(signal);
-  else {
-    try {
-      process.kill(-child.pid, signal);
-    } catch {
-      // The group has already exited.
-    }
-  }
-};
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
+// runner.mjs says how: a command that asks Docker to create something is left to finish.
+const runner = createRunner({ cwd: root });
+const { run } = runner;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => runner.stop(signal));
 // npm runs this with `exec`, so a signal sent to npm reaches this process. If the parent
 // dies without passing one on (killed with SIGKILL, say), this process is reparented:
 // stop as if it sent SIGTERM.
 const parent = process.ppid;
-setInterval(() => process.ppid !== parent && !stopped && stop("SIGTERM"), 1000).unref();
-
-/**
- * Runs a command with this terminal's output; resolves to its exit code. With `group`, the
- * command leads a new process group and a stop signals the whole group: `npm run` does not
- * pass a signal on to the script it started.
- */
-const run = (command, args, { group = false, ...options } = {}) =>
-  new Promise((done) => {
-    child = spawn(command, args, { stdio: "inherit", cwd: root, detached: group, ...options });
-    child.group = group;
-    child.on("error", () => done(1));
-    child.on("close", (code) => done(code ?? 1));
-  });
+setInterval(() => process.ppid !== parent && !runner.stopped && runner.stop("SIGTERM"), 1000).unref();
 
 const docker = (args, options = {}) =>
   spawnSync("docker", args, { encoding: "utf8", timeout: 30_000, ...options });
@@ -109,7 +85,7 @@ const inspect = (container, format) => docker(["inspect", "--format", format, co
  */
 async function checkSimulator(keyFile) {
   let ready = false;
-  for (let tries = 0; tries < 60 && !ready && !stopped; tries++) {
+  for (let tries = 0; tries < 60 && !ready && !runner.stopped; tries++) {
     if (inspect(simulator, "{{.State.Running}}") !== "true") return "the simulator stopped";
     ready = /"control_port":\d+/.test(docker(["logs", simulator]).stdout);
     if (!ready) await delay(500);
@@ -148,7 +124,7 @@ async function checkSimulator(keyFile) {
  */
 async function checkSpoolman() {
   let ready = false;
-  for (let tries = 0; tries < 60 && !ready && !stopped; tries++) {
+  for (let tries = 0; tries < 60 && !ready && !runner.stopped; tries++) {
     if (inspect(spoolman, "{{.State.Running}}") !== "true") return "the Spoolman stand-in stopped";
     ready = /"control_port":\d+/.test(docker(["logs", spoolman]).stdout);
     if (!ready) await delay(500);
@@ -184,7 +160,7 @@ async function ensureBetterSqlite() {
   console.log("better-sqlite3 has no native binding; building it.");
   const build = ["run", "build-release", "--prefix", "node_modules/better-sqlite3"];
   const code = await run("npm", build, { cwd: web, group: true });
-  if (code !== 0 || stopped) return code || 1;
+  if (code !== 0 || runner.stopped) return code || 1;
   return spawnSync(process.execPath, probe, { cwd: web, stdio: "inherit" }).status ?? 1;
 }
 
@@ -195,10 +171,10 @@ async function ensureBetterSqlite() {
  */
 async function writeNodeInstallation(dir) {
   const code = await ensureBetterSqlite();
-  if (code !== 0 || stopped) return code || 1;
+  if (code !== 0 || runner.stopped) return code || 1;
   const args = ["run", "fixture:synthetic", "--", "--seed", String(SYNTHETIC_SEED), dir];
   const written = await run("npm", args, { cwd: resolve(root, "web"), group: true });
-  if (written !== 0 || stopped) return written || 1;
+  if (written !== 0 || runner.stopped) return written || 1;
   const open = (path) => {
     const stat = statSync(path);
     chmodSync(path, stat.mode | (stat.isDirectory() ? 0o055 : 0o044));
@@ -209,9 +185,10 @@ async function writeNodeInstallation(dir) {
 }
 
 async function suite(keyFile, nodeDir) {
-  const tests = ["steps", "simulator", "spoolman", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
+  const tests = ["steps", "simulator", "spoolman", "runner", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
   const steps = [
-    [process.execPath, ["--test", ...tests]],
+    // Exits when the tests end, so a listener a test leaves open fails the test, not the run.
+    [process.execPath, ["--test", "--test-force-exit", ...tests]],
     [null, () => writeNodeInstallation(nodeDir)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],
@@ -240,11 +217,13 @@ async function suite(keyFile, nodeDir) {
     ["docker", productRunArgs(names)],
   ];
   for (const [command, args] of steps) {
-    const code = command ? await run(command, args) : await args();
-    if (code !== 0 || stopped) return code || 1;
+    // Each `docker` command here except the build asks Docker to create something.
+    const settle = command === "docker" && args[0] !== "build";
+    const code = command ? await run(command, args, { settle }) : await args();
+    if (code !== 0 || runner.stopped) return code || 1;
   }
-  const problem = (await checkSimulator(keyFile)) ?? (stopped ? null : await checkSpoolman());
-  if (problem || stopped) {
+  const problem = (await checkSimulator(keyFile)) ?? (runner.stopped ? null : await checkSpoolman());
+  if (problem || runner.stopped) {
     if (problem) console.error(`Harness: ${problem}.`);
     return 1;
   }
@@ -279,24 +258,16 @@ try {
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
   code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(nodeRoot, "node")));
-  if (stopped) code ||= 1;
+  if (runner.stopped) code ||= 1;
 } finally {
-  // Only what this run created, by its unique name. A docker command the tests started just
-  // before a stop can still create its container after the first pass, so look again.
-  let left = [];
-  for (let pass = 0; pass < 3; pass++) {
-    if (pass > 0) await delay(2000);
-    for (const args of cleanupCommands(names)) spawnSync("docker", args, { stdio: "ignore" });
-    rmSync(nodeRoot, { recursive: true, force: true });
-    left = leftoverLists(name)
-      .filter((list) => {
-        const listed = spawnSync("docker", list, { encoding: "utf8" });
-        return listed.status !== 0 || listed.stdout.trim() !== "";
-      })
-      .map((list) => `docker ${list.join(" ")}`);
-    if (existsSync(nodeRoot)) left.push(`ls ${nodeRoot}`);
-    if (left.length === 0) break;
-  }
+  // Only what this run created, by its unique name. After a stop, a `docker` command the
+  // tests started can still create its container after an empty listing (runner.mjs).
+  const left = await teardown(names, {
+    folder: nodeRoot,
+    removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
+    exists: existsSync,
+    confirm: runner.stopped,
+  });
   if (left.length > 0) {
     console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;

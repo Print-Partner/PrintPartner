@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import test from "node:test";
 import {
   SPOOLMAN_CONTROL_PORT,
@@ -121,4 +122,29 @@ test("each stand-in starts from the same stock", async () => {
   await withStandIn(async (api) => {
     assert.equal((await api("/api/v1/spool/1")).body.remaining_weight, 750);
   });
+});
+
+/** A free loopback port: bound, then released. */
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+test("a start whose control port is taken rejects and leaves its API port closed", async () => {
+  const taken = createServer();
+  await new Promise((resolve) => taken.listen(0, "127.0.0.1", resolve));
+  const port = await freePort();
+  try {
+    await assert.rejects(startSpoolman({ port, controlPort: taken.address().port }), { code: "EADDRINUSE" });
+    // Nothing answers on the API port the failed start had bound.
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/api/v1/info`), (error) => {
+      assert.equal(error.cause?.code, "ECONNREFUSED");
+      return true;
+    });
+  } finally {
+    await new Promise((resolve) => taken.close(resolve));
+  }
 });

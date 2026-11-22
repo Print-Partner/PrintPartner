@@ -10,11 +10,14 @@
 // the run. On that network it starts the Moonraker simulator as `pp-sim` (simulator.mjs),
 // the Spoolman stand-in as `pp-spoolman` (spoolman.mjs) and the image on a new volume with
 // the run command from docs/docker.md. It creates a second, empty volume for Step 2's
-// import (installation.mjs). It checks that the container reaches the simulator and the
-// stand-in and that all three publish ports on host loopback only, then runs the twelve
-// Playwright tests. Whether the run passed, failed or was stopped, it removes the
-// containers (product, importer, simulator and stand-in), both volumes, the image tag, the
-// network, the Node installation's folder and the simulator's API key folder it created.
+// import and a third for Step 12's restore (installation.mjs). It checks that the container
+// reaches the simulator and the stand-in and that all three publish ports on host loopback
+// only, then runs the twelve Playwright tests. Whether the run passed, failed or was
+// stopped, it removes the containers (product, importer, restore, simulator and stand-in),
+// the three volumes, the image tag, the network, the run's folder (the Node installation and
+// the browser's files and downloads) and the simulator's API key folder it created. Before it
+// removes them it waits for every process the tests started (runner.mjs, teardown.mjs), so a
+// `docker run` still in flight cannot create a container afterwards.
 //
 // The tests read the simulator from these variables:
 //   PP_DAILY_LOOP_SIMULATOR        its container; `docker port` names its control port
@@ -27,10 +30,13 @@
 //   PP_DAILY_LOOP_NODE_INSTALLATION the synthetic Node installation's host folder
 //   PP_DAILY_LOOP_IMAGE, PP_DAILY_LOOP_NETWORK, PP_DAILY_LOOP_IMPORTER and
 //   PP_DAILY_LOOP_IMPORT_VOLUME     what Step 2 starts the importer and the new container from
+// and Step 12's restore from these:
+//   PP_DAILY_LOOP_RESTORE           the second product container Step 12 starts
+//   PP_DAILY_LOOP_RESTORE_VOLUME    the empty volume it restores the backup into
 import { execFileSync, spawnSync } from "node:child_process";
 import console from "node:console";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -49,6 +55,7 @@ import {
 } from "./simulator.mjs";
 import { createRunner, teardown } from "./runner.mjs";
 import { SPOOLMAN_ALIAS, SPOOLMAN_PORT, SPOOLMAN_URL, spoolmanRunArgs } from "./spoolman.mjs";
+import { stopProcessesNaming } from "./teardown.mjs";
 import {
   productRunArgs,
   runNames,
@@ -184,11 +191,22 @@ async function writeNodeInstallation(dir) {
   return 0;
 }
 
-async function suite(keyFile, nodeDir) {
-  const tests = ["steps", "simulator", "spoolman", "runner", "installation"].map((test) => resolve(here, `${test}.test.mjs`));
+async function suite(keyFile, nodeDir, browserDir, testsDir) {
+  const tests = ["steps", "simulator", "spoolman", "runner", "installation", "teardown"].map((test) =>
+    resolve(here, `${test}.test.mjs`),
+  );
   const steps = [
     // Exits when the tests end, so a listener a test leaves open fails the test, not the run.
-    [process.execPath, ["--test", "--test-force-exit", ...tests]],
+    // In its own group, like the browser tests: a stop reaches each test file's process. Its
+    // temporary files go in the run's folder, so a test stopped before its cleanup leaves none.
+    [
+      null,
+      () =>
+        run(process.execPath, ["--test", "--test-force-exit", ...tests], {
+          group: true,
+          env: { ...process.env, TMPDIR: testsDir },
+        }),
+    ],
     [null, () => writeNodeInstallation(nodeDir)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],
@@ -214,6 +232,8 @@ async function suite(keyFile, nodeDir) {
     ["docker", ["volume", "create", names.volume]],
     // Step 2 imports into this one; the import accepts only an empty folder.
     ["docker", ["volume", "create", names.importVolume]],
+    // Step 12 restores the backup on a second container on this one.
+    ["docker", ["volume", "create", names.restoreVolume]],
     ["docker", productRunArgs(names)],
   ];
   for (const [command, args] of steps) {
@@ -228,12 +248,18 @@ async function suite(keyFile, nodeDir) {
     return 1;
   }
   // Playwright's own CLI, not `npx playwright`: npx runs it under a shell that does not
-  // pass a signal on, so a stopped run would leave the browser tests running.
+  // pass a signal on, so a stopped run would leave the browser tests running. In its own
+  // group, so a stop reaches its worker and the docker commands the tests run.
   const playwright = resolve(root, "web/node_modules/@playwright/test/cli.js");
   return run(process.execPath, [playwright, "test", "--config", "test/daily-loop/playwright.config.ts"], {
     cwd: resolve(root, "web"),
+    group: true,
     env: {
       ...process.env,
+      // Chromium's profile and Playwright's downloads and output go in the run's folder,
+      // which the cleanup removes, rather than the host's temporary folder or the checkout.
+      TMPDIR: browserDir,
+      PP_DAILY_LOOP_OUTPUT_DIR: join(browserDir, "results"),
       PP_DAILY_LOOP_CONTAINER: name,
       PP_DAILY_LOOP_COMMIT: commit,
       PP_DAILY_LOOP_SIMULATOR: simulator,
@@ -246,35 +272,50 @@ async function suite(keyFile, nodeDir) {
       PP_DAILY_LOOP_NETWORK: names.network,
       PP_DAILY_LOOP_IMPORTER: names.importer,
       PP_DAILY_LOOP_IMPORT_VOLUME: names.importVolume,
+      PP_DAILY_LOOP_RESTORE: names.restore,
+      PP_DAILY_LOOP_RESTORE_VOLUME: names.restoreVolume,
     },
   });
 }
 
 let code = 1;
-// The synthetic Node installation, in a new 0700 folder; Step 2 imports it.
-const nodeRoot = mkdtempSync(join(tmpdir(), `${name}-node-`));
+// The run's folder, new and 0700: the synthetic Node installation, which Step 2 imports, the
+// preflight tests' temporary files, and the browser's files and Playwright's output, downloads
+// included.
+const runRoot = mkdtempSync(join(tmpdir(), `${name}-`));
+const browserDir = join(runRoot, "browser");
+const testsDir = join(runRoot, "tests");
 try {
+  mkdirSync(browserDir);
+  mkdirSync(testsDir);
   // A run that stops before the tests must not leave an older run's score in place.
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
-  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(nodeRoot, "node")));
+  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(runRoot, "node"), browserDir, testsDir));
   if (runner.stopped) code ||= 1;
 } finally {
-  // Only what this run created, by its unique name. After a stop, a `docker` command the
-  // tests started can still create its container after an empty listing (runner.mjs).
+  // Every process the tests started has exited: runner.mjs waits for each command's whole
+  // group. Chromium has a process group of its own; its profile path names the browser folder.
+  const running = await stopProcessesNaming(browserDir).then(
+    (pids) => pids.map((pid) => `process ${pid}`),
+    (error) => [error.message],
+  );
+  // Only what this run created, by its unique name. Whether the run passed, failed or was
+  // stopped, a `docker` command the tests started can have died or timed out while the daemon
+  // still creates its container, so teardown confirms with three listings (runner.mjs).
   const left = await teardown(names, {
-    folder: nodeRoot,
+    folder: runRoot,
     removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
     exists: existsSync,
-    confirm: runner.stopped,
   });
+  left.push(...runner.stuck, ...running);
   if (left.length > 0) {
     console.error(`Not removed, check by hand: ${left.join("; ")}`);
     code ||= 1;
   } else {
-    const { importer, importVolume } = names;
+    const { importer, restore, importVolume, restoreVolume } = names;
     console.log(
-      `Removed containers ${name}, ${importer}, ${simulator} and ${spoolman}, volumes ${name} and ${importVolume}, network ${name}, image tag ${image}, and the Node installation's folder.`,
+      `Removed containers ${name}, ${importer}, ${restore}, ${simulator} and ${spoolman}, volumes ${name}, ${importVolume} and ${restoreVolume}, network ${name}, image tag ${image}, and the run's folder.`,
     );
   }
 }

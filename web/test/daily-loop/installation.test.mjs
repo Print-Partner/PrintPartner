@@ -24,19 +24,23 @@ test("every container, volume, network and tag of a run carries the run's name",
     network: RUN,
     volume: RUN,
     importVolume: `${RUN}-imported`,
+    restore: `${RUN}-restore`,
+    restoreVolume: `${RUN}-restored`,
     image: `${RUN}:test`,
   });
   // The leftover lists filter on the run's name, so each one must contain it.
   for (const value of Object.values(names)) assert.ok(value.startsWith(RUN), value);
-  assert.notEqual(names.volume, names.importVolume);
+  const volumes = [names.volume, names.importVolume, names.restoreVolume];
+  assert.equal(new Set(volumes).size, 3, "three different volumes");
+  assert.equal(new Set([names.container, names.importer, names.restore, names.simulator, names.spoolman]).size, 5);
 });
 
-test("the cleanup removes every container, both volumes, the network and the image tag", () => {
+test("the cleanup removes every container, the three volumes, the network and the image tag", () => {
   const names = runNames(RUN);
   assert.deepEqual(cleanupCommands(names), [
-    ["rm", "-f", RUN, `${RUN}-import`, `${RUN}-sim`, `${RUN}-spoolman`],
+    ["rm", "-f", RUN, `${RUN}-import`, `${RUN}-restore`, `${RUN}-sim`, `${RUN}-spoolman`],
     ["network", "rm", RUN],
-    ["volume", "rm", "-f", RUN, `${RUN}-imported`],
+    ["volume", "rm", "-f", RUN, `${RUN}-imported`, `${RUN}-restored`],
     ["rmi", `${RUN}:test`],
   ]);
   assert.deepEqual(leftoverLists(RUN), [
@@ -56,6 +60,16 @@ test("the product container runs as docs/docker.md says, on the volume it is giv
   assert.equal(args[args.indexOf("-v") + 1], `${RUN}-imported:/data`);
   for (const flag of ["--read-only", "no-new-privileges", "ALL"]) assert.ok(args.includes(flag), flag);
   assert.equal(args.at(-1), `${RUN}:test`);
+});
+
+test("the restore container runs as the product container does, on loopback only, on its own volume", () => {
+  const names = runNames(RUN);
+  const args = productRunArgs({ ...names, container: names.restore, volume: names.restoreVolume });
+  assert.equal(args[args.indexOf("--name") + 1], `${RUN}-restore`);
+  assert.equal(args[args.indexOf("-v") + 1], `${RUN}-restored:/data`);
+  // Every published port is bound to host loopback.
+  const published = args.flatMap((arg, at) => (args[at - 1] === "-p" ? [arg] : []));
+  assert.deepEqual(published, ["127.0.0.1::8080"]);
 });
 
 test("the importer reads the Node installation read-only at its own path and writes the new volume at /data", () => {

@@ -206,9 +206,8 @@ fn replayed(links: Vec<Value>, reports: &[HostReport]) -> Vec<(String, String)> 
     stored
         .into_iter()
         .map(|link| {
-            let id = link["id"].as_str().unwrap();
-            let state = link["state"].as_str().unwrap();
-            (id.to_owned(), state.to_owned())
+            let text = |key: &str| link[key].as_str().unwrap().to_owned();
+            (text("id"), text("state"))
         })
         .collect()
 }

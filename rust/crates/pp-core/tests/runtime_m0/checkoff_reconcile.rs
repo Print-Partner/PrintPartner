@@ -50,9 +50,22 @@ fn watching_link(id: &str, saw_active: bool, created: &str) -> Value {
     link
 }
 
-fn recorded_host(printer: &RecordedPrinter) -> Value {
-    json!({"id": "moon-1", "name": "Recorded", "type": "moonraker",
-           "config": {"base_url": printer.url(), "api_key": "recorded-key"}})
+fn seed_recorded_printer(
+    data: &Path,
+    replies: Vec<(u16, &'static [u8])>,
+    mut settings: Vec<(&str, Value)>,
+    links: impl FnOnce(&str) -> Vec<Value>,
+) -> RecordedPrinter {
+    let printer = RecordedPrinter::start(replies).unwrap();
+    let created = pp_storage::read_model::farm::iso_time(std::time::SystemTime::now());
+    settings.push((
+        "integrations",
+        json!([{"id": "moon-1", "name": "Recorded", "type": "moonraker",
+                "config": {"base_url": printer.url(), "api_key": "recorded-key"}}]),
+    ));
+    settings.push(("printer.checkoff_links", Value::Array(links(&created))));
+    seed_settings(data, &settings);
+    printer
 }
 
 fn assert_only_status_reads(printer: &RecordedPrinter) {
@@ -69,17 +82,12 @@ fn assert_only_status_reads(printer: &RecordedPrinter) {
 #[ignore = "runs in an isolated subprocess with explicit environment"]
 async fn gre_1897_finished_print_in_child() {
     let data = proof_data();
-    let printer =
-        RecordedPrinter::start(vec![(200, SUCCESS), (200, SUCCESS), (200, COMPLETE)]).unwrap();
-    let created = pp_storage::read_model::farm::iso_time(std::time::SystemTime::now());
-    let settings = [
-        ("integrations", json!([recorded_host(&printer)])),
-        (
-            "printer.checkoff_links",
-            json!([watching_link("link-sent", false, &created)]),
-        ),
-    ];
-    seed_settings(&data, &settings);
+    let printer = seed_recorded_printer(
+        &data,
+        vec![(200, SUCCESS), (200, SUCCESS), (200, COMPLETE)],
+        vec![],
+        |created| vec![watching_link("link-sent", false, created)],
+    );
 
     let (runtime, _, _) = start_rust_only(&data).await;
     let finished = tokio::time::timeout(Duration::from_secs(20), async {
@@ -136,25 +144,23 @@ async fn gre_1897_replayed_finish_in_child() {
     let offline: &[u8] = br#"{"error":{"code":503,"message":"Klippy not connected"}}"#;
     // The printer shows one finish, drops one poll, then shows the same finish
     // again until the test ends.
-    let printer =
-        RecordedPrinter::start(vec![(200, COMPLETE), (503, offline), (200, COMPLETE)]).unwrap();
-    let created = pp_storage::read_model::farm::iso_time(std::time::SystemTime::now());
-    let settings = [
-        ("integrations", json!([recorded_host(&printer)])),
-        (
-            "printer.fleet",
-            json!([{"id": "p-moon", "name": "Micron", "integration_id": "moon-1"}]),
-        ),
-        ("feature_toggles", json!({"farm": true})),
-        (
-            "printer.checkoff_links",
-            json!([
-                watching_link("link-older", false, &created),
-                watching_link("link-current", true, &created),
-            ]),
-        ),
-    ];
-    seed_settings(&data, &settings);
+    let printer = seed_recorded_printer(
+        &data,
+        vec![(200, COMPLETE), (503, offline), (200, COMPLETE)],
+        vec![
+            (
+                "printer.fleet",
+                json!([{"id": "p-moon", "name": "Micron", "integration_id": "moon-1"}]),
+            ),
+            ("feature_toggles", json!({"farm": true})),
+        ],
+        |created| {
+            vec![
+                watching_link("link-older", false, created),
+                watching_link("link-current", true, created),
+            ]
+        },
+    );
 
     let (runtime, origin, desktop) = start_rust_only(&data).await;
     tokio::time::timeout(Duration::from_secs(60), async {

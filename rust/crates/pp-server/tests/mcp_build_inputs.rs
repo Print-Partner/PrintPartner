@@ -48,10 +48,8 @@ fn first_cookie(response: &reqwest::Response) -> String {
 }
 
 impl Gateway {
-    /// Signs in with `pp-server bootstrap-url`, lowers the import reserve to
-    /// 1 MiB because the data directory sits on /tmp, which may have less
-    /// than the 5 GiB default free, turns the Orders Module on so an
-    /// assistant may propose a Build, and creates an API key.
+    /// Signs in with `pp-server bootstrap-url`, turns the Orders Module on
+    /// so an assistant may propose a Build, and creates an API key.
     async fn open(server: rust_only::Server) -> Self {
         let origin = server.origin().to_owned();
         let http = reqwest::Client::builder()
@@ -81,6 +79,8 @@ impl Gateway {
             .await;
         assert_eq!(response.status(), 200);
         gateway.cookies = format!("{}; {}", gateway.cookies, first_cookie(&response));
+        // The data directory is on /tmp, which may have less free space than
+        // the 5 GiB default import reserve.
         let reserve = json!({ "reserve_bytes": 1_048_576 });
         let (status, body) = gateway
             .rest(

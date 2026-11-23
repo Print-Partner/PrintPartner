@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Read, Seek, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 use tar::{EntryType, Header, HeaderMode};
@@ -682,6 +682,7 @@ fn open_archive(archive: &Path) -> Result<File> {
 /// `archive` is read from its start; its offset is shared with clones.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn declared_bytes(archive: &File, limits: Limits) -> Result<u64> {
+    use std::io::Seek;
     let mut archive = archive.try_clone()?;
     archive.rewind()?;
     let compressed = archive.metadata()?.len();
@@ -760,6 +761,7 @@ pub(crate) fn extract_into(
     limits: Limits,
     destination: (&pp_os::Dir, &Path),
 ) -> Result<Metadata> {
+    use std::io::Seek;
     archive.rewind()?;
     Ok(validate_into(archive, limits, destination, |_| true)?.0)
 }

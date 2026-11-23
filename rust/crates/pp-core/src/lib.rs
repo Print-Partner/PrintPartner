@@ -43,6 +43,8 @@ pub mod layout;
 #[cfg(feature = "desktop_rebuild")]
 mod checkoff_reconcile;
 #[cfg(feature = "desktop_rebuild")]
+pub mod first_run;
+#[cfg(feature = "desktop_rebuild")]
 #[cfg(feature = "desktop_rebuild")]
 pub mod github;
 #[cfg(feature = "desktop_rebuild")]

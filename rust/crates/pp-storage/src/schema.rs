@@ -476,8 +476,6 @@ pub(crate) fn initialize_with(
         // crash becomes `unknown` and is not sent again.
         crate::spoolman_deductions::interrupt_sending(&mut conn)
             .context("spoolman deduction startup")?;
-        // A crash between claim and settle leaves `applying`; it becomes
-        // `unknown` and is never applied again.
         crate::pending_actions::interrupt_applying(&mut conn).context("pending action startup")?;
     }
     // Node's fixture builder connects once to create the input and again to

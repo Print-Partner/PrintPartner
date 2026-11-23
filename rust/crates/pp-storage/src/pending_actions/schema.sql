@@ -9,12 +9,15 @@ CREATE TABLE IF NOT EXISTS pending_actions (
   params_json TEXT NOT NULL CHECK (json_valid(params_json) AND json_type(params_json) = 'object'),
   depends_on_json TEXT NOT NULL CHECK (json_valid(depends_on_json) AND json_type(depends_on_json) = 'array'),
   staged_by TEXT NOT NULL CHECK (length(staged_by) BETWEEN 1 AND 120),
-  state TEXT NOT NULL CHECK (state IN ('pending', 'applying', 'applied', 'dismissed', 'unknown')),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'applying', 'applied', 'dismissed', 'unknown', 'invalidated_by_restore')),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 1),
   expires_at TEXT NOT NULL CHECK (expires_at >= created_at),
   claimed_at TEXT,
+  claim_digest BLOB,
   settled_at TEXT,
   CHECK ((state IN ('pending', 'applying')) = (settled_at IS NULL)),
-  CHECK (state <> 'applying' OR claimed_at IS NOT NULL)
+  CHECK (state <> 'applying' OR claimed_at IS NOT NULL),
+  CHECK ((state = 'applying') = (claim_digest IS NOT NULL)),
+  CHECK (claim_digest IS NULL OR (typeof(claim_digest) = 'blob' AND length(claim_digest) = 32))
 );
 CREATE INDEX IF NOT EXISTS pending_actions_open ON pending_actions (tenant_id, state, seq);

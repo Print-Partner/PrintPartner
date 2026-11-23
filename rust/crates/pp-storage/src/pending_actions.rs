@@ -1,25 +1,17 @@
-//! Pending actions that every MCP session shares (GRE-475).
-//!
-//! One table. A row is staged `pending`, claimed `applying` for one apply,
-//! then settled `applied`, released to `pending` (the domain refused and
-//! wrote nothing) or `unknown`. A pending row past `expires_at` reads as
-//! [`State::Expired`]; that state is derived, never stored. Each transition
-//! is one conditional UPDATE in one write transaction, so two claims of one
-//! row are serialized by the writer and the second sees `applying`.
+//! Storage queue for pending MCP actions.
 //!
 //! Opening the database turns `applying` into `unknown`
 //! ([`interrupt_applying`]), and nothing returns `unknown` to `pending`.
 //! Rows are never deleted. Staging accepts only dependencies that exist and
-//! can still apply, and `depends_on` never changes afterwards, so the
+//! can still apply, and `depends_on` never changes afterwards, so
 //! dependencies form a DAG and staging order is an apply order. `staged_by`
-//! is a display label; no query filters on it.
-//!
-//! Errors are [`ActionError`]. This module holds no MCP text.
+//! is a display label, and no query filters on it.
 
 use crate::{SettingsClient, WriterFailure, auth::AuthPolicy, read_model::Credential, write};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde_json::{Map, Value};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{fmt, sync::atomic::AtomicBool, time::Duration};
 
 pub(crate) const SCHEMA_STEP: u64 = 51;
 /// How long a staged action stays confirmable.
@@ -89,7 +81,7 @@ pub struct NewAction {
     pub plan_id: i64,
     pub label: String,
     pub summary: String,
-    /// Stored as given and never read here.
+    /// Opaque to storage. Stored and returned as given.
     pub params: Map<String, Value>,
     pub depends_on: Vec<String>,
     pub staged_by: StagedBy,
@@ -127,11 +119,55 @@ pub struct Blocker {
     pub state: State,
 }
 
+#[must_use = "settle the claim, or the action stays applying until restart"]
+pub struct Claim {
+    action: PendingAction,
+    token: ClaimToken,
+}
+
+impl Claim {
+    pub fn action(&self) -> &PendingAction {
+        &self.action
+    }
+
+    pub fn token(&self) -> &ClaimToken {
+        &self.token
+    }
+
+    pub fn into_parts(self) -> (PendingAction, ClaimToken) {
+        (self.action, self.token)
+    }
+}
+
+impl fmt::Debug for Claim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Claim")
+            .field("id", &self.action.id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Proof of holding one claim attempt on one action. Only [`PendingActionsClient::claim`]
+/// creates one.
+pub struct ClaimToken {
+    id: String,
+    secret: [u8; 32],
+}
+
+impl fmt::Debug for ClaimToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClaimToken")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// How a claimed apply ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
     Applied,
-    /// The domain refused and wrote nothing: the action is pending again.
+    /// Only for a failure positively known to have written nothing. The action
+    /// is pending again. Settle an ambiguous outcome as [`End::Unknown`].
     Released,
     /// The write may have committed. Never applied again.
     Unknown,
@@ -153,7 +189,9 @@ pub enum ActionError {
     AlreadyDismissed { at: String },
     #[error("the action's outcome is unknown")]
     OutcomeUnknown,
-    /// Stage only: `id` names no action (`None`) or one that cannot apply.
+    #[error("could not allocate a pending action claim token")]
+    ClaimTokenUnavailable,
+    /// Stage only. `id` names no action (`None`) or one that cannot apply.
     #[error("a dependency names no action or cannot apply")]
     Dependency { id: String, state: Option<State> },
     #[error("an action lists more than {MAX_DEPENDENCIES} dependencies")]
@@ -172,8 +210,6 @@ impl From<rusqlite::Error> for ActionError {
     }
 }
 
-/// The queue's storage, with the same writer, readers and auth policy as the
-/// [`crate::read_model::ReadClient`] it came from.
 #[derive(Clone)]
 pub struct PendingActionsClient {
     storage: SettingsClient,
@@ -190,7 +226,6 @@ impl crate::read_model::ReadClient {
 }
 
 impl PendingActionsClient {
-    /// Stores `action` as `pending` until [`TTL`] from now.
     pub fn stage(
         &self,
         credential: Credential,
@@ -247,17 +282,17 @@ impl PendingActionsClient {
             })?
     }
 
-    /// Moves `id` from `pending` to `applying` for one apply. The write
-    /// commits before this returns. Refused when it expired or a dependency
-    /// is not applied yet; [`ActionError::Blocked`] names the action to
-    /// apply first.
+    /// Moves `id` from `pending` to `applying` for one apply. The write commits
+    /// before this returns, and the returned [`Claim`] carries the attempt token
+    /// required to settle it. Refused when it expired or a dependency is not
+    /// applied yet; [`ActionError::Blocked`] names the action to apply first.
     pub fn claim(
         &self,
         credential: Credential,
         id: &str,
         cancelled: &AtomicBool,
         wait: Duration,
-    ) -> Result<PendingAction, ActionError> {
+    ) -> Result<Claim, ActionError> {
         let (policy, id) = (self.policy, id.to_owned());
         self.storage
             .shared
@@ -271,31 +306,38 @@ impl PendingActionsClient {
                 if let Some(first) = must_go_first(tx, tenant.id(), &row, &now)? {
                     return Err(ActionError::Blocked(first));
                 }
+                let mut secret = [0u8; 32];
+                getrandom::fill(&mut secret).map_err(|_| ActionError::ClaimTokenUnavailable)?;
+                let digest: [u8; 32] = Sha256::digest(secret).into();
                 let claimed = tx.execute(
-                    "UPDATE pending_actions SET state='applying', claimed_at=?1
+                    "UPDATE pending_actions SET state='applying', claimed_at=?1, claim_digest=?4
                      WHERE tenant_id=?2 AND id=?3 AND state='pending' AND expires_at > ?1",
-                    params![now, tenant.id(), id],
+                    params![now, tenant.id(), id, digest.as_slice()],
                 )?;
                 if claimed != 1 {
                     return Err(ActionError::InFlight);
                 }
                 row.state = State::Applying;
-                Ok(row)
+                Ok(Claim {
+                    action: row,
+                    token: ClaimToken { id, secret },
+                })
             })?
     }
 
-    /// Ends the apply a claim started. It acts on the claim, not on a
-    /// credential: a key revoked during the apply must not leave the row
-    /// `applying`. Changes only an `applying` row; `Ok(false)` when `id` was
-    /// not applying, and nothing changed.
+    /// Ends the apply a claim started. It acts on the claim token, not on a
+    /// credential, so a key revoked during the apply cannot leave the row
+    /// `applying`. Changes the row only when id, token digest, and `applying`
+    /// all match. Returns `Ok(false)` and changes nothing otherwise.
     pub fn settle(
         &self,
-        id: &str,
+        token: &ClaimToken,
         end: End,
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<bool, ActionError> {
-        let id = id.to_owned();
+        let id = token.id.clone();
+        let digest: [u8; 32] = Sha256::digest(token.secret).into();
         self.storage
             .shared
             .write("pending_actions.settle", cancelled, wait, move |tx, _| {
@@ -306,15 +348,14 @@ impl PendingActionsClient {
                     End::Unknown => ("unknown", Some(now)),
                 };
                 let changed = tx.execute(
-                    "UPDATE pending_actions SET state=?1, settled_at=?2
-                     WHERE id=?3 AND state='applying'",
-                    params![state, settled_at, id],
+                    "UPDATE pending_actions SET state=?1, settled_at=?2, claim_digest=NULL
+                     WHERE id=?3 AND state='applying' AND claim_digest=?4",
+                    params![state, settled_at, id, digest.as_slice()],
                 )?;
                 Ok(changed == 1)
             })?
     }
 
-    /// Moves a pending, expired or unknown action to `dismissed`.
     pub fn dismiss(
         &self,
         credential: Credential,
@@ -343,12 +384,12 @@ impl PendingActionsClient {
 }
 
 /// Every `applying` row becomes `unknown`. Called once from schema open,
-/// after validation: an apply a crash interrupted may have committed.
+/// after validation, because an apply a crash interrupted may have committed.
 pub(crate) fn interrupt_applying(connection: &mut Connection) -> anyhow::Result<()> {
     let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let now = now(&tx)?;
     tx.execute(
-        "UPDATE pending_actions SET state='unknown', settled_at=?1 WHERE state='applying'",
+        "UPDATE pending_actions SET state='unknown', settled_at=?1, claim_digest=NULL WHERE state='applying'",
         [now],
     )?;
     tx.commit()?;
@@ -425,7 +466,6 @@ fn dependency(id: &str, state: Option<State>) -> ActionError {
     }
 }
 
-/// The refusal for a row that is not `pending`.
 fn refusal(row: PendingAction) -> ActionError {
     let at = row.settled_at.unwrap_or_default();
     match row.state {

@@ -60,14 +60,14 @@ impl Queue {
             .collect()
     }
 
-    fn claim(&self, id: &str) -> Result<PendingAction, ActionError> {
+    fn claim(&self, id: &str) -> Result<Claim, ActionError> {
         self.actions
             .claim(self.key(), id, &AtomicBool::new(false), WAIT)
     }
 
-    fn settle(&self, id: &str, end: End) -> bool {
+    fn settle(&self, token: &ClaimToken, end: End) -> bool {
         self.actions
-            .settle(id, end, &AtomicBool::new(false), WAIT)
+            .settle(token, end, &AtomicBool::new(false), WAIT)
             .unwrap()
     }
 
@@ -135,16 +135,17 @@ fn chrono_seconds(stamp: &str) -> i64 {
 }
 
 #[test]
-fn claim_applies_once_and_a_second_settle_changes_nothing() {
+fn queue_transitions_without_a_domain_write() {
     let (_directory, owner) = opened(Limits::default());
     let queue = Queue::on(&owner);
     queue.stage("a", &[]).unwrap();
-    assert_eq!(queue.claim("a").unwrap().state, State::Applying);
+    let (claimed, token) = queue.claim("a").unwrap().into_parts();
+    assert_eq!(claimed.state, State::Applying);
     assert!(matches!(queue.claim("a"), Err(ActionError::InFlight)));
     assert!(matches!(queue.dismiss("a"), Err(ActionError::InFlight)));
     assert_eq!(queue.states(), [("a".into(), State::Applying)]);
-    assert!(queue.settle("a", End::Applied));
-    assert!(!queue.settle("a", End::Released));
+    assert!(queue.settle(&token, End::Applied));
+    assert!(!queue.settle(&token, End::Released));
     assert!(matches!(queue.claim("a"), Err(ActionError::AlreadyApplied { at }) if !at.is_empty()));
     assert!(matches!(
         queue.dismiss("a"),
@@ -157,11 +158,27 @@ fn claim_applies_once_and_a_second_settle_changes_nothing() {
 #[test]
 fn a_released_action_is_pending_again_in_its_place() {
     let (_directory, _owner, queue) = staged(&[("a", &[]), ("b", &[])]);
-    queue.claim("a").unwrap();
-    assert!(queue.settle("a", End::Released));
+    let claim = queue.claim("a").unwrap();
+    assert!(queue.settle(claim.token(), End::Released));
     let pending = [("a".into(), State::Pending), ("b".into(), State::Pending)];
     assert_eq!(queue.states(), pending);
-    assert_eq!(queue.claim("a").unwrap().state, State::Applying);
+    assert_eq!(queue.claim("a").unwrap().action().state, State::Applying);
+}
+
+#[test]
+fn stale_settle_from_earlier_claim_does_not_affect_later_claim() {
+    let (_directory, _owner, queue) = staged(&[("a", &[])]);
+    let first = queue.claim("a").unwrap();
+    assert!(queue.settle(first.token(), End::Released));
+    let second = queue.claim("a").unwrap();
+    assert_eq!(second.action().state, State::Applying);
+    for end in [End::Released, End::Applied, End::Unknown] {
+        assert!(!queue.settle(first.token(), end));
+        assert_eq!(queue.states(), [("a".into(), State::Applying)]);
+        assert!(matches!(queue.claim("a"), Err(ActionError::InFlight)));
+    }
+    assert!(queue.settle(second.token(), End::Applied));
+    assert!(!queue.settle(second.token(), End::Released));
 }
 
 #[test]
@@ -203,15 +220,15 @@ fn claim_names_the_root_dependency_that_must_go_first() {
             state: State::Pending
         }
     );
-    queue.claim("a").unwrap();
+    let first_claim = queue.claim("a").unwrap();
     let Err(ActionError::Blocked(first)) = queue.claim("b") else {
         panic!("b was claimed while a applies")
     };
     assert_eq!((first.id.as_str(), first.state), ("a", State::Applying));
-    queue.settle("a", End::Applied);
-    queue.claim("b").unwrap();
-    queue.settle("b", End::Applied);
-    assert_eq!(queue.claim("c").unwrap().state, State::Applying);
+    assert!(queue.settle(first_claim.token(), End::Applied));
+    let second_claim = queue.claim("b").unwrap();
+    assert!(queue.settle(second_claim.token(), End::Applied));
+    assert_eq!(queue.claim("c").unwrap().action().state, State::Applying);
 }
 
 #[test]
@@ -219,8 +236,8 @@ fn dismiss_accepts_an_unknown_action_once_and_it_can_no_longer_be_a_dependency()
     let (_directory, owner) = opened(Limits::default());
     let queue = Queue::on(&owner);
     queue.stage("a", &[]).unwrap();
-    queue.claim("a").unwrap();
-    assert!(queue.settle("a", End::Unknown));
+    let claim = queue.claim("a").unwrap();
+    assert!(queue.settle(claim.token(), End::Unknown));
     assert_eq!(queue.states(), [("a".into(), State::Unknown)]);
     assert!(matches!(queue.claim("a"), Err(ActionError::OutcomeUnknown)));
     queue.dismiss("a").unwrap();
@@ -247,7 +264,7 @@ fn dismiss_accepts_an_unknown_action_once_and_it_can_no_longer_be_a_dependency()
 #[test]
 fn an_apply_interrupted_by_a_crash_reads_as_unknown_after_reopen() {
     let (directory, owner, queue) = staged(&[("a", &[]), ("b", &[])]);
-    queue.claim("a").unwrap();
+    let claim = queue.claim("a").unwrap();
     let session = queue.session.clone();
     owner.shutdown().unwrap();
     let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
@@ -255,7 +272,7 @@ fn an_apply_interrupted_by_a_crash_reads_as_unknown_after_reopen() {
     let after = [("a".into(), State::Unknown), ("b".into(), State::Pending)];
     assert_eq!(queue.states(), after);
     assert!(matches!(queue.claim("a"), Err(ActionError::OutcomeUnknown)));
-    assert!(!queue.settle("a", End::Applied));
+    assert!(!queue.settle(claim.token(), End::Applied));
 }
 
 #[test]
@@ -268,7 +285,7 @@ fn restore_is_refused_while_an_action_applies() {
     queue.stage("a", &[]).unwrap();
     let installation = owner.installation().unwrap();
     let archive = std::fs::read(&installation.export_backup("test").unwrap().path).unwrap();
-    queue.claim("a").unwrap();
+    let claim = queue.claim("a").unwrap();
     let mut upload = installation.begin_upload(1 << 30).unwrap();
     upload.write(&archive).unwrap();
     let staged = installation.stage(upload).unwrap();
@@ -278,7 +295,7 @@ fn restore_is_refused_while_an_action_applies() {
         Err(RestoreError::Refused(Refusal::Busy))
     ));
     assert_eq!(queue.states(), [("a".into(), State::Applying)]);
-    assert!(queue.settle("a", End::Applied));
+    assert!(queue.settle(claim.token(), End::Applied));
     activate().unwrap();
 }
 

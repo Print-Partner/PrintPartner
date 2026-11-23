@@ -159,34 +159,27 @@ describe("first run", () => {
     try {
       servers.redirectWith(307);
       let reads = 0;
-      const fetchMock = core({
-        "/auth/status": (init) =>
-          ++reads === 1 ? json({ setup_required: true }) : servers.forward("/auth/status", init),
+      renderAt(["/setup"], core({
+        "/auth/status": (init) => (++reads === 1 ? json({ setup_required: true }) : servers.forward("/auth/status", init)),
         "/auth/register": () => problem(403, "refused"),
-      });
-      renderAt(["/setup"], fetchMock);
-      await fill("Email", "owner@example.com");
-      await fill("Password", "password-1234");
-      await fill("Password again", "password-1234");
+      }));
+      for (const [k, v] of [["Email", "owner@example.com"], ["Password", "password-1234"], ["Password again", "password-1234"]]) await fill(k, v);
       fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
       expect((await screen.findByRole("alert")).textContent).toBe(REFUSED);
       expect(screen.queryByRole("link", { name: "Go to sign-in" })).toBeNull();
       expect(servers.first).toEqual(["GET /auth/status"]);
       expect(servers.destination).toEqual([]);
-    } finally {
-      await servers.close();
-    }
+    } finally { await servers.close(); }
   });
 
   it("shows unreachable and stays on sign-in when POST /auth/login is redirected", async () => {
     const servers = await redirectServers({ user });
     try {
       servers.redirectWith(307);
-      const fetchMock = core({
+      const { path } = renderAt(["/login"], core({
         "/auth/status": () => json({ setup_required: false }),
         "/auth/login": (init) => servers.forward("/auth/login", init),
-      });
-      const { path } = renderAt(["/login"], fetchMock);
+      }));
       await fill("Email", "owner@example.com");
       await fill("Password", "password-1234");
       fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
@@ -194,9 +187,7 @@ describe("first run", () => {
       expect(path()).toBe("/login");
       expect(servers.first).toEqual(["POST /auth/login"]);
       expect(servers.destination).toEqual([]);
-    } finally {
-      await servers.close();
-    }
+    } finally { await servers.close(); }
   });
 
   it("sends an owner who already set up to sign-in", async () => {

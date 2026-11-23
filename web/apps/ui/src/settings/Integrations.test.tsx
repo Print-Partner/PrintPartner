@@ -284,29 +284,20 @@ describe("Bambu certificate pin", () => {
     try {
       servers.redirectWith(307);
       let pinReads = 0;
-      const fake = core({
-        pin: (init) =>
-          ++pinReads === 1 ? json(PINNED) : servers.forward("/api/v1/integrations/b1/tls-pin", init),
+      renderSettings(core({
+        pin: (init) => (++pinReads === 1 ? json(PINNED) : servers.forward("/api/v1/integrations/b1/tls-pin", init)),
         reset: (init) => servers.forward("/api/v1/integrations/b1/tls-pin/reset", init),
-      });
-      renderSettings(fake.fetchMock);
+      }).fetchMock);
       await screen.findByText(/^Certificate pinned/);
       fireEvent.click(within(row("X1C")).getByRole("button", { name: "Reset certificate" }));
       const dialog = await screen.findByRole("dialog");
       fireEvent.click(within(dialog).getByRole("button", { name: "Reset certificate" }));
-      expect((await within(dialog).findByRole("alert")).textContent).toBe(
-        "The core didn't confirm the reset. Checking the current pin.",
-      );
+      expect((await within(dialog).findByRole("alert")).textContent).toBe("The core didn't confirm the reset. Checking the current pin.");
       expect(await within(row("X1C")).findByText(/^Certificate state unavailable: /)).toBeTruthy();
       expect(dialog.textContent).not.toContain("no longer pinned");
-      expect(servers.first).toEqual([
-        "POST /api/v1/integrations/b1/tls-pin/reset",
-        "GET /api/v1/integrations/b1/tls-pin",
-      ]);
+      expect(servers.first).toEqual(["POST /api/v1/integrations/b1/tls-pin/reset", "GET /api/v1/integrations/b1/tls-pin"]);
       expect(servers.destination).toEqual([]);
-    } finally {
-      await servers.close();
-    }
+    } finally { await servers.close(); }
   });
 });
 

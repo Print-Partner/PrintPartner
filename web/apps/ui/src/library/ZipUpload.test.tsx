@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { createMemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { routes as appRoutes } from "../routes";
 import { IMPORT_POLL_MS, JOBS_KEY, importWarnings, readJobs } from "./ZipUpload";
 
@@ -421,5 +422,25 @@ describe("PR 3 upload a ZIP and follow the job", () => {
     await drain();
     expect(within(row("Rack")).getByText("Choose a .zip file.")).toBeTruthy();
     expect(core.uploads).toEqual([]);
+  });
+
+  it("says the job status cannot be read instead of staying Importing on a redirected poll", async () => {
+    vi.useRealTimers();
+    const servers = await redirectServers(snapshot("job-1", { kind: "done", revision: 10 }));
+    try {
+      servers.redirectWith(307);
+      localStorage.setItem(JOBS_KEY, JSON.stringify({ "1": "job-1" }));
+      const core = new Core([source(1, "Rack")]);
+      const original = core.fetch;
+      core.fetch = vi.fn((p: string, init?: RequestInit) => (p.startsWith("/api/v1/jobs/") ? servers.forward(p, init) : original(p, init)));
+      renderLibrary(core);
+      const tr = (await screen.findByRole("rowheader", { name: /Rack/ })).closest("tr") as HTMLElement;
+      expect(await within(tr).findByText("Job status cannot be read")).toBeTruthy();
+      expect(within(tr).getByText(/GET \/api\/v1\/jobs\/job-1 was answered with a redirect/)).toBeTruthy();
+      expect(within(tr).queryByText("Importing")).toBeNull();
+      expect(within(tr).queryByText("Revision 10")).toBeNull();
+      expect(servers.first).toEqual(["GET /api/v1/jobs/job-1"]);
+      expect(servers.destination).toEqual([]);
+    } finally { await servers.close(); }
   });
 });

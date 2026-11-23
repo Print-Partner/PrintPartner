@@ -737,28 +737,14 @@ describe("Create Build with real loopback redirect servers", () => {
       const core = scriptedCore();
       let listReads = 0;
       const page = vi.fn((path: string, init?: RequestInit) => {
-        if (path === "/api/v2/plans" && init?.method === "POST") {
-          return servers.forward(path, init);
-        }
-        if (path === "/api/v2/plans" && (!init?.method || init.method === "GET")) {
-          listReads += 1;
-          if (listReads > 1) return servers.forward(path, init);
-        }
+        if (path === "/api/v2/plans" && init?.method === "POST") return servers.forward(path, init);
+        if (path === "/api/v2/plans" && (!init?.method || init.method === "GET") && ++listReads > 1) return servers.forward(path, init);
         return core.fetchMock(path, init);
       });
-      vi.stubGlobal("fetch", page);
-      const router = createMemoryRouter(routes, { initialEntries: ["/builds"] });
-      const queryClient = createQueryClient();
-      queryClient.setDefaultOptions({
-        queries: { ...queryClient.getDefaultOptions().queries, retry: false },
-      });
-      render(<App router={router} queryClient={queryClient} />);
-
+      renderAt("/builds", { ...core, fetchMock: page });
       fireEvent.click(await openWithName("Ghost"));
       const alert = await within(dialog()).findByRole("alert");
-      expect(alert.textContent).toBe(
-        "Could not confirm the Build was created, and the Builds list did not load. Check Builds before you press Create again.",
-      );
+      expect(alert.textContent).toBe("Could not confirm the Build was created, and the Builds list did not load. Check Builds before you press Create again.");
       expect(alert.textContent).not.toContain("so it was created");
       expect(servers.first).toEqual(["POST /api/v2/plans", "GET /api/v2/plans"]);
       expect(servers.destination).toEqual([]);
@@ -772,28 +758,15 @@ describe("Create Build with real loopback redirect servers", () => {
     let listReads = 0;
     const core = scriptedCore();
     const page = vi.fn((path: string, init?: RequestInit) => {
-      if (path === "/api/v2/plans" && init?.method === "POST") {
-        return servers.forward(path, init);
-      }
+      if (path === "/api/v2/plans" && init?.method === "POST") return servers.forward(path, init);
       if (path === "/api/v2/plans" && (!init?.method || init.method === "GET")) {
         listReads += 1;
-        if (listReads === 2) {
-          return new Promise<Response>((resolve) => {
-            releaseCheck = () => void servers.forward(path, init).then(resolve);
-          });
-        }
+        if (listReads === 2) return new Promise<Response>((r) => (releaseCheck = () => void servers.forward(path, init).then(r)));
         if (listReads >= 3) return servers.forward(path, init);
       }
       return core.fetchMock(path, init);
     });
-    vi.stubGlobal("fetch", page);
-    const router = createMemoryRouter(routes, { initialEntries: ["/builds"] });
-    const queryClient = createQueryClient();
-    queryClient.setDefaultOptions({
-      queries: { ...queryClient.getDefaultOptions().queries, retry: false },
-    });
-    render(<App router={router} queryClient={queryClient} />);
-
+    renderAt("/builds", { ...core, fetchMock: page });
     fireEvent.click(await openWithName("Ghost"));
     await within(dialog()).findByText("Checking the Builds list.");
     fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));

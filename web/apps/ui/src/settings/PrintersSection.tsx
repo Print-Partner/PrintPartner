@@ -31,7 +31,7 @@ const freshIntegrations = () =>
 
 const refused = (failure: unknown) =>
   failure instanceof RequestContractError ||
-  (failure instanceof CoreError && failure.status >= 400 && failure.status < 500);
+  (failure instanceof CoreError && failure.problem && failure.status >= 400 && failure.status < 500);
 
 /** The forms' names for request fields, by the JSON Pointer the core answers. */
 const FIELD_NAMES: Record<string, string> = {
@@ -362,16 +362,19 @@ function EditPrinter({ printer, onClose, onDone }: { printer: Printer; onClose: 
     const name = String(form.get("name") ?? "").trim();
     const patch = stored && !connectionSaved ? connectionPatch(form, stored) : {};
     void write.run(async () => {
+      let savedConnection = connectionSaved;
       if (stored && Object.keys(patch).length > 0) {
         await writeCore("updateIntegration", { id: stored.id }, patch);
         setConnectionSaved(true);
+        savedConnection = true;
       }
       if (name !== printer.name) {
         await writeCore("updatePrinter", { id: printer.id }, { name }).catch((failure: unknown) => {
+          const note = savedConnection ? " The connection change was saved." : "";
           throw new Said(
             refused(failure)
-              ? `The name was not saved: ${why(failure)}. Any change to the connection was saved.`
-              : `Whether the name was saved is not confirmed: ${why(failure)}. Any change to the connection was saved.`,
+              ? `The name was not saved: ${why(failure)}.${note}`
+              : `Whether the name was saved is not confirmed: ${why(failure)}.${note}`,
           );
         });
       }
@@ -407,6 +410,7 @@ function EditPrinter({ printer, onClose, onDone }: { printer: Printer; onClose: 
  */
 function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Printer; shared: boolean; onClose: () => void; onRemoved: (text: string) => void }) {
   const [printerGone, setPrinterGone] = useState(false);
+  const [connectionUncertain, setConnectionUncertain] = useState(false);
   const write = useWrite();
   const link = shared ? null : printer.integration;
   const remove = () =>
@@ -416,16 +420,32 @@ function RemovePrinter({ printer, shared, onClose, onRemoved }: { printer: Print
       const done = (kept = "") => onRemoved(`Deleted ${printer.name}.${kept}`);
       const connection = printer.integration;
       if (!connection) return done();
-      const fresh = await freshPrinters().catch(() => null);
-      if (!fresh) return done(" Its connection was kept, because the printers could not be read to check that no other printer uses it.");
+      let fresh: Printer[];
+      if (connectionUncertain) {
+        const [connections, printers] = await Promise.all([freshIntegrations(), freshPrinters()]).catch((failure: unknown) => {
+          throw new Said(`The printer was deleted, and whether its connection was deleted is still not confirmed: ${why(failure)}.`);
+        });
+        if (!connections.integrations.some((one) => one.id === connection.id)) {
+          return done(" Its connection was deleted after all.");
+        }
+        fresh = printers;
+      } else {
+        const read = await freshPrinters().catch(() => null);
+        if (!read) return done(" Its connection was kept, because the printers could not be read to check that no other printer uses it.");
+        fresh = read;
+      }
       if (fresh.some((other) => other.id !== printer.id && other.integration?.id === connection.id)) {
         return done(" Its connection is used by another printer and was kept.");
       }
       try {
         await writeCore("deleteIntegration", { id: connection.id });
       } catch (failure) {
+        const definite =
+          refused(failure) &&
+          !(connectionUncertain && failure instanceof CoreError && failure.status === 404);
+        setConnectionUncertain(!definite);
         throw new Said(
-          refused(failure)
+          definite
             ? `The printer was deleted, but its connection was not: ${why(failure)}.`
             : `The printer was deleted, but whether its connection was deleted is not confirmed: ${why(failure)}.`,
         );

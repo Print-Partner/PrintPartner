@@ -29,8 +29,7 @@ export const sendQueueQuery = {
 /** The farm read, fresh each time the sheet opens, for each printer's current state. */
 export const sendPrintersQuery = {
   queryKey: ["core", "printers", "send-sheet"],
-  queryFn: ({ signal }: { signal: AbortSignal }) =>
-    readCore("listPrinters", {}, signal, undefined, { rejectRedirect: true }),
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinters", {}, signal),
   staleTime: 0,
 } as const;
 

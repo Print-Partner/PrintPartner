@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
 import { missing, sourceRequest } from "./AddSourceDialog";
@@ -261,6 +262,29 @@ describe("GRE-1365 PR 2: Add Source in Library", () => {
     fireEvent.click(create());
     await settle();
     expect(core.posts).toEqual([]);
+  });
+
+  it("refuses a redirected Sources readback after an unconfirmed create", async () => {
+    const servers = await redirectServers({ sources: [created(99, { name: "Forged", source_kind: "archive" })] });
+    try {
+      servers.redirectWith(307);
+      let reads = 0;
+      renderLibrary(vi.fn((path: string, init?: RequestInit) => {
+        if (path === "/health") return Promise.resolve(json(health));
+        if (path === "/api/v1/sources/activity?limit=100") return Promise.resolve(json({ events: [] }));
+        if (path === "/api/v1/sources" && init?.method === "POST") return servers.forward(path, init);
+        if (path === "/api/v1/sources") return ++reads === 1 ? Promise.resolve(json({ sources: [] })) : servers.forward(path, init);
+        return Promise.resolve(json({}, 404));
+      }));
+      await openDialog();
+      type("Name", "Forged");
+      fireEvent.click(create());
+      expect((await within(dialog()).findByRole("alert")).textContent).toContain("Could not confirm the Source was added:");
+      await waitFor(() => expect(screen.getByText(/GET \/api\/v1\/sources was answered with a redirect/)).toBeTruthy());
+      expect(screen.queryByRole("rowheader", { name: /Forged/, hidden: true })).toBeNull();
+      expect(servers.first).toEqual(["POST /api/v1/sources", "GET /api/v1/sources"]);
+      expect(servers.destination).toEqual([]);
+    } finally { await servers.close(); }
   });
 });
 

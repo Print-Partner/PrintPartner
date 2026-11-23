@@ -42,26 +42,21 @@ export class CoreError extends Error {
   }
 }
 
+const redirectDetail = (method: string, path: string, status: number, followed: boolean) =>
+  followed
+    ? `${method} ${path} followed a redirect; its answer was not trusted`
+    : `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; it was not followed`;
+
 export class RedirectedWrite extends Error {
   constructor(method: string, path: string, status: number, followed = false) {
-    super(
-      followed
-        ? `${method} ${path} followed a redirect; its answer was not trusted, so whether it applied is unknown`
-        : `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; ` +
-            "it was not followed, so whether it applied is unknown",
-    );
+    super(`${redirectDetail(method, path, status, followed)}, so whether it applied is unknown`);
     this.name = "RedirectedWrite";
   }
 }
 
 export class RedirectedRead extends Error {
   constructor(method: string, path: string, status: number, followed = false) {
-    super(
-      followed
-        ? `${method} ${path} followed a redirect; its answer was not trusted`
-        : `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; ` +
-            "it was not followed",
-    );
+    super(redirectDetail(method, path, status, followed));
     this.name = "RedirectedRead";
   }
 }

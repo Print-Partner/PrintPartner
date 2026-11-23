@@ -607,9 +607,7 @@ describe("a send the UI never saw confirmed", () => {
     beforeAll(async () => {
       servers = await redirectServers({
         profile_id: 1000,
-        layers: [
-          { id: 10000, layer_order: 0, layer_type: "base", project_id: 1, project_name: "Kit A" },
-        ],
+        layers: [{ id: 10000, layer_order: 0, layer_type: "base", project_id: 1, project_name: "Kit A" }],
       });
     });
     afterAll(() => servers.close());
@@ -625,9 +623,7 @@ describe("a send the UI never saw confirmed", () => {
             redirectReads = true;
             return servers.forward(path, init);
           }
-          if (redirectReads && path === "/api/v2/plans/1000/layers") {
-            return servers.forward(path, init);
-          }
+          if (redirectReads && path === "/api/v2/plans/1000/layers") return servers.forward(path, init);
           return core.fetchMock(path, init);
         });
         renderAt("/builds/1000/sources", page);
@@ -635,19 +631,10 @@ describe("a send the UI never saw confirmed", () => {
         fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "1" } });
         fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
         const panel = await unconfirmedPanel();
-        expect(
-          await within(panel).findByText(
-            "Could not read the Build again. Press Read again to see whether the base Source was set.",
-          ),
-        ).toBeTruthy();
-        expect(
-          within(panel).getByRole("button", { name: "Set a base anyway" }).getAttribute("aria-disabled"),
-        ).toBe("true");
+        expect(await within(panel).findByText("Could not read the Build again. Press Read again to see whether the base Source was set.")).toBeTruthy();
+        expect(within(panel).getByRole("button", { name: "Set a base anyway" }).getAttribute("aria-disabled")).toBe("true");
         expect(screen.queryByRole("table", { name: "Build Sources" })).toBeNull();
-        expect(servers.first).toEqual([
-          "PUT /api/v2/plans/1000/layers/base",
-          "GET /api/v2/plans/1000/layers",
-        ]);
+        expect(servers.first).toEqual(["PUT /api/v2/plans/1000/layers/base", "GET /api/v2/plans/1000/layers"]);
         expect(servers.destination).toEqual([]);
       },
     );

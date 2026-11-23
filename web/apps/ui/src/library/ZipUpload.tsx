@@ -2,7 +2,7 @@ import { routePath, routes } from "@print-partner/rust-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { CoreError, fetchCore } from "../core/client";
+import { CoreError, fetchCore, RedirectedRead } from "../core/client";
 import { ContractError, readCore, writeCore } from "../core/rust";
 import { syncFailure, syncStartFailure } from "./GithubSync";
 import { revisionText, syncText, type Line, type Source } from "./sources";
@@ -166,6 +166,7 @@ type Phase =
   | { kind: "idle" }
   | { kind: "uploading" }
   | { kind: "importing"; progress: number | null }
+  | { kind: "unread"; message: string }
   | { kind: "failed"; message: string }
   | { kind: "refused"; message: string }
   | { kind: "done"; warnings: string[] };
@@ -180,6 +181,8 @@ function syncLine(source: Source, phase: Phase): Line {
         label: github ? "Syncing" : "Importing",
         detail: phase.progress == null ? null : `${phase.progress}%`,
       };
+    case "unread":
+      return { label: "Job status cannot be read", detail: phase.message };
     case "failed":
       return {
         label: github ? "Sync failed" : "Import failed",
@@ -240,7 +243,9 @@ export function SourceRows({
     const previous = followed.current;
     followed.current = jobId;
     if (previous && !jobId) {
-      setPhase((current) => (current.kind === "importing" ? { kind: "idle" } : current));
+      setPhase((current) =>
+        current.kind === "importing" || current.kind === "unread" ? { kind: "idle" } : current,
+      );
       void client.invalidateQueries({ queryKey: ["core", "sources"] });
     } else if (jobId && jobId !== previous) {
       // A job started or replaced by another tab: show it as running.
@@ -297,6 +302,9 @@ export function SourceRows({
             forget(source.id, jobId);
             void client.invalidateQueries({ queryKey: ["core", "sources"] });
             return;
+          }
+          if (error instanceof RedirectedRead) {
+            setPhase({ kind: "unread", message: error.message });
           }
           schedule();
         },

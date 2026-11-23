@@ -266,28 +266,17 @@ describe("Production row actions: a redirected Send now", () => {
       queueServers.redirectWith(307);
       const { fetchMock } = fakeCore({ items: [waiting] });
       let afterDispatch = false;
-      const page = vi.fn(async (path: string, init?: RequestInit) => {
-        if (path.endsWith("/dispatch")) {
-          afterDispatch = true;
-          return queueServers.forward(path, init);
-        }
-        if (afterDispatch && path === "/api/v2/printer-send-queue") {
-          return queueServers.forward(path, init);
-        }
+      renderAt(vi.fn(async (path: string, init?: RequestInit) => {
+        if (path.endsWith("/dispatch")) { afterDispatch = true; return queueServers.forward(path, init); }
+        if (afterDispatch && path === "/api/v2/printer-send-queue") return queueServers.forward(path, init);
         return fetchMock(path, init);
-      });
-      renderAt(page);
+      }));
       fireEvent.click((await row("redirect.gcode")).getByRole("button", { name: "Send now" }));
       expect(await screen.findByText(/could not confirm what the core did/)).toBeTruthy();
       expect(await screen.findByText(/Could not refresh Production\./)).toBeTruthy();
       expect(stateOf("redirect.gcode")).toBe("Not sent");
-      expect(queueServers.first).toEqual([
-        "POST /api/v2/printer-send-queue/q/dispatch",
-        "GET /api/v2/printer-send-queue",
-      ]);
+      expect(queueServers.first).toEqual(["POST /api/v2/printer-send-queue/q/dispatch", "GET /api/v2/printer-send-queue"]);
       expect(queueServers.destination).toEqual([]);
-    } finally {
-      await queueServers.close();
-    }
+    } finally { await queueServers.close(); }
   });
 });

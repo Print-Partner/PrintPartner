@@ -3,8 +3,8 @@
 
 Usage: webkitgtk-frame.py JOBS_JSON, a file holding {"axe": <axe-core source>, "jobs": [...]}.
 Each job has "url", "body" (an async JavaScript function body that returns a JSON string
-with "scrollHeight" and "innerWidth"; it may call runAxe()), "zoom", "text_only" and "png"
-(a screenshot path, or null). Prints the parsed results as a JSON list. Exits 3 when
+with "scrollHeight" and "innerWidth"; it may call runAxe()), "zoom", "text_only", "png"
+(a screenshot path, or null) and an optional "webgl" (false turns WebGL off for that load). Prints the parsed results as a JSON list. Exits 3 when
 PyGObject or WebKit2GTK 4.1 is missing, so the caller can report SKIP.
 """
 
@@ -66,6 +66,8 @@ def main() -> int:
         job = jobs[state["index"]]
         settings.set_zoom_text_only(bool(job.get("text_only")))
         view.set_zoom_level(float(job.get("zoom", 1)))
+        if "webgl" in job:
+            settings.set_enable_webgl(bool(job["webgl"]))
         view.load_uri(job["url"])
         return False
 

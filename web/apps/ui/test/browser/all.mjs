@@ -9,6 +9,7 @@ const checks = [
   "frame.browser.mjs",
   "builds.browser.mjs",
   "csp.browser.mjs",
+  "plate-preview.browser.mjs",
 ];
 const statuses = checks.map((check) => {
   const script = fileURLToPath(new URL(check, import.meta.url));

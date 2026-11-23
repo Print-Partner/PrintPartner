@@ -5,7 +5,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
@@ -15,6 +15,8 @@ use std::{
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PHASE_ACCEPTING: u8 = 1;
+const PHASE_READING: u8 = 2;
 
 #[derive(Debug)]
 pub struct Request {
@@ -40,6 +42,8 @@ pub struct FaultPrinter {
     accepted: Arc<AtomicUsize>,
     received: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
+    #[cfg(test)]
+    phase: Arc<AtomicU8>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -51,6 +55,7 @@ struct FaultLoop {
     effects: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
+    phase: Arc<AtomicU8>,
 }
 
 impl FaultLoop {
@@ -61,7 +66,7 @@ impl FaultLoop {
                     if socket.set_nonblocking(false).is_err() {
                         continue;
                     }
-                    let Some(request) = read_request(&mut socket, &self.stopped) else {
+                    let Some(request) = self.read_request(&mut socket) else {
                         continue;
                     };
                     if self.stopped.load(Ordering::SeqCst) {
@@ -76,6 +81,7 @@ impl FaultLoop {
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.phase.store(PHASE_ACCEPTING, Ordering::SeqCst);
                     thread::sleep(POLL_INTERVAL);
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -115,6 +121,82 @@ impl FaultLoop {
             }
         }
     }
+
+    fn read_request(&self, socket: &mut TcpStream) -> Option<Request> {
+        let deadline = Instant::now() + REQUEST_IO_TIMEOUT;
+        socket.set_write_timeout(Some(REQUEST_IO_TIMEOUT)).ok()?;
+        let mut bytes = Vec::new();
+        let end = loop {
+            if let Some(end) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
+                break end + 4;
+            }
+            if bytes.len() > 16 * 1024 {
+                return None;
+            }
+            self.read_more(socket, &mut bytes, deadline)?;
+        };
+        let head = std::str::from_utf8(&bytes[..end]).ok()?;
+        let line = head.lines().next()?.to_owned();
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        if length > 1024 * 1024 {
+            return None;
+        }
+        while bytes.len() < end + length {
+            self.read_more(socket, &mut bytes, deadline)?;
+        }
+        Some(Request {
+            line,
+            body: bytes[end..end + length].to_vec(),
+        })
+    }
+
+    fn read_more(
+        &self,
+        socket: &mut TcpStream,
+        bytes: &mut Vec<u8>,
+        deadline: Instant,
+    ) -> Option<()> {
+        let mut buffer = [0; 4096];
+        loop {
+            if self.stopped.load(Ordering::SeqCst) {
+                return None;
+            }
+            let remaining = deadline.checked_duration_since(Instant::now())?;
+            if remaining.is_zero() {
+                return None;
+            }
+            let slice = remaining.min(POLL_INTERVAL).max(Duration::from_millis(1));
+            socket.set_read_timeout(Some(slice)).ok()?;
+            match socket.read(&mut buffer) {
+                Ok(0) => return None,
+                Ok(size) => {
+                    bytes.extend_from_slice(&buffer[..size]);
+                    return Some(());
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    if !bytes.is_empty() {
+                        self.phase.store(PHASE_READING, Ordering::SeqCst);
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+    }
 }
 
 impl FaultPrinter {
@@ -128,6 +210,9 @@ impl FaultPrinter {
         let accepted = Arc::new(AtomicUsize::new(0));
         let received = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
+        let phase = Arc::new(AtomicU8::new(0));
+        #[cfg(test)]
+        let observed = phase.clone();
         let server = FaultLoop {
             listener,
             requests,
@@ -136,6 +221,7 @@ impl FaultPrinter {
             effects: accepted.clone(),
             calls: received.clone(),
             stopped: stopped.clone(),
+            phase,
         };
         let thread = thread::spawn(move || server.run());
         Ok(Self {
@@ -146,6 +232,8 @@ impl FaultPrinter {
             accepted,
             received,
             stopped,
+            #[cfg(test)]
+            phase: observed,
             thread: Some(thread),
         })
     }
@@ -188,89 +276,36 @@ impl Drop for FaultPrinter {
     }
 }
 
-fn read_request(socket: &mut TcpStream, stopped: &AtomicBool) -> Option<Request> {
-    let deadline = Instant::now() + REQUEST_IO_TIMEOUT;
-    socket.set_write_timeout(Some(REQUEST_IO_TIMEOUT)).ok()?;
-    let mut bytes = Vec::new();
-    let end = loop {
-        if let Some(end) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
-            break end + 4;
-        }
-        if bytes.len() > 16 * 1024 {
-            return None;
-        }
-        read_more(socket, &mut bytes, deadline, stopped)?;
-    };
-    let head = std::str::from_utf8(&bytes[..end]).ok()?;
-    let line = head.lines().next()?.to_owned();
-    let length = head
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-    if length > 1024 * 1024 {
-        return None;
-    }
-    while bytes.len() < end + length {
-        read_more(socket, &mut bytes, deadline, stopped)?;
-    }
-    Some(Request {
-        line,
-        body: bytes[end..end + length].to_vec(),
-    })
-}
-
-fn read_more(
-    socket: &mut TcpStream,
-    bytes: &mut Vec<u8>,
-    deadline: Instant,
-    stopped: &AtomicBool,
-) -> Option<()> {
-    let mut buffer = [0; 4096];
-    loop {
-        if stopped.load(Ordering::SeqCst) {
-            return None;
-        }
-        let remaining = deadline.checked_duration_since(Instant::now())?;
-        if remaining.is_zero() {
-            return None;
-        }
-        let slice = remaining.min(POLL_INTERVAL).max(Duration::from_millis(1));
-        socket.set_read_timeout(Some(slice)).ok()?;
-        match socket.read(&mut buffer) {
-            Ok(0) => return None,
-            Ok(size) => {
-                bytes.extend_from_slice(&buffer[..size]);
-                return Some(());
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                ) => {}
-            Err(_) => return None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const DROP_WAIT: Duration = Duration::from_secs(3);
+
+    fn wait_for_phase(printer: &FaultPrinter, target: u8) {
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        while printer.phase.load(Ordering::SeqCst) != target {
+            assert!(Instant::now() < deadline, "timed out waiting for phase");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn drop_within(printer: FaultPrinter) {
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            drop(printer);
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(DROP_WAIT).expect("drop timed out");
+    }
+
     #[test]
     fn dropping_idle_fault_printer_returns_promptly() {
         let printer = FaultPrinter::start().unwrap();
+        wait_for_phase(&printer, PHASE_ACCEPTING);
         assert_eq!(printer.received(), 0);
         assert_eq!(printer.accepted(), 0);
-        let started = Instant::now();
-        drop(printer);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        drop_within(printer);
     }
 
     #[test]
@@ -296,6 +331,7 @@ mod tests {
         client.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 201 Created\r\n"));
         assert_eq!(printer.accepted(), 1);
+        drop_within(printer);
     }
 
     #[test]
@@ -303,9 +339,8 @@ mod tests {
         let printer = FaultPrinter::start().unwrap();
         let mut stalled = TcpStream::connect(printer.address).unwrap();
         stalled.write_all(b"POST /stalled HTTP/1.1\r\n").unwrap();
-        let started = Instant::now();
-        drop(printer);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        wait_for_phase(&printer, PHASE_READING);
+        drop_within(printer);
         drop(stalled);
 
         let printer = FaultPrinter::start().unwrap();
@@ -314,9 +349,7 @@ mod tests {
             .unwrap();
         assert_eq!(printer.request().unwrap().line, "POST /held HTTP/1.1");
         printer.accept(Reply::Hold).unwrap();
-        let started = Instant::now();
-        drop(printer);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        drop_within(printer);
         drop(held);
     }
 }

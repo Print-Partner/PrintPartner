@@ -3,7 +3,6 @@ import { plateName, type CheckoffPart, type CheckoffUnit } from "./checkoff";
 
 type Plate = NonNullable<CheckoffUnit["plate"]>;
 
-/** A Plate of the accepted layout, or the units on none. Exists only because a unit names it. */
 interface PlateBox {
   key: string;
   name: string;
@@ -17,7 +16,6 @@ const tally = (box: PlateBox, unit: CheckoffUnit) => {
   if (unit.printed) box.printed += 1;
 };
 
-/** One box per Plate in ordinal order, then one "On no Plate" box when any unit is on none. */
 function boxesOf(parts: readonly CheckoffPart[]): PlateBox[] {
   const plates = new Map<string, { plate: Plate; box: PlateBox }>();
   const none: PlateBox = { key: "none", name: "On no Plate", units: 0, printed: 0, onPlate: false };
@@ -57,10 +55,6 @@ const sentence = (b: PlateBox) =>
 
 const share = (n: number, of: number) => String(+((100 * n) / of).toFixed(2));
 
-/**
- * The text beside it says everything this shows, so it is hidden from assistive tech and
- * holds no text. Lengths are relative to the busiest Plate; nothing here stands for bed size.
- */
 function BoxDrawing({ box, maxUnits }: { box: PlateBox; maxUnits: number }) {
   return (
     <svg
@@ -84,7 +78,6 @@ function BoxDrawing({ box, maxUnits }: { box: PlateBox; maxUnits: number }) {
   );
 }
 
-/** Each Plate's units and how many are printed, drawn as SVG bars with a sentence for each. */
 export function PlatePreview({ parts }: { parts: readonly CheckoffPart[] }) {
   const heading = useId();
   const boxes = boxesOf(parts);

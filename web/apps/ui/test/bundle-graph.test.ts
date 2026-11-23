@@ -1,7 +1,4 @@
 // @vitest-environment node
-// GTK-04: Three.js stays out of the initial import graph. The graph comes from Vite's own
-// build, read in moduleParsed (before tree-shaking), so it uses the real resolver and tells
-// static imports from import().
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -11,17 +8,16 @@ import { describe, expect, it } from "vitest";
 const UI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIX = "Load three with import() behind a WebGL check (GTK-04)";
 
-/** three or @react-three/<name>, as a bare id (externals have no parsed module) or a path. */
-const WEBGL = /(?:^|[\\/]node_modules[\\/])(?:three|@react-three[\\/][^\\/]+)(?:[\\/]|$)/;
+const THREE_MODULE_ID = /(?:^|[\\/]node_modules[\\/])(?:three|@react-three[\\/][^\\/]+)(?:[\\/]|$)/;
 
-type Modules = ReadonlyMap<string, { imports: readonly string[]; entry: boolean }>;
+type Modules = ReadonlyMap<string, { staticImports: readonly string[]; entry: boolean }>;
 
 async function parseGraph(config: InlineConfig): Promise<Modules> {
-  const modules = new Map<string, { imports: readonly string[]; entry: boolean }>();
+  const modules = new Map<string, { staticImports: readonly string[]; entry: boolean }>();
   const recorder: Plugin = {
     name: "record-import-graph",
     moduleParsed(info) {
-      modules.set(info.id, { imports: info.importedIds, entry: info.isEntry });
+      modules.set(info.id, { staticImports: info.importedIds, entry: info.isEntry });
     },
   };
   await build({
@@ -34,12 +30,11 @@ async function parseGraph(config: InlineConfig): Promise<Modules> {
   return modules;
 }
 
-/** Every module reached from `entry` over static imports only, with the chain that reached it. */
 function reachFrom(modules: Modules, entry: string) {
   const reach = new Map<string, readonly string[]>([[entry, [entry]]]);
   const queue = [entry];
   for (const id of queue) {
-    for (const next of modules.get(id)?.imports ?? []) {
+    for (const next of modules.get(id)?.staticImports ?? []) {
       if (reach.has(next)) continue;
       reach.set(next, [...reach.get(id)!, next]);
       queue.push(next);
@@ -51,11 +46,11 @@ function reachFrom(modules: Modules, entry: string) {
 const short = (id: string) =>
   path.relative(UI_ROOT, id.replace("\0", "")).replaceAll("\\", "/") || id;
 
-/** "a -> b -> three" for each WebGL module reached first on its chain. */
+const endsAtFirstThreeModule = (chain: readonly string[]) =>
+  chain.findIndex((id) => THREE_MODULE_ID.test(id)) === chain.length - 1;
+
 const offenders = (reach: ReadonlyMap<string, readonly string[]>) =>
-  [...reach.values()]
-    .filter((chain) => chain.findIndex((id) => WEBGL.test(id)) === chain.length - 1)
-    .map((chain) => chain.map(short).join(" -> "));
+  [...reach.values()].filter(endsAtFirstThreeModule).map((chain) => chain.map(short).join(" -> "));
 
 const FIXTURES: Record<string, string> = {
   "\0fx:static": 'import "fx:hop";',
@@ -81,7 +76,7 @@ describe("GTK-04 Three.js is not in the initial import graph", { timeout: 120_00
     ["/w/node_modules/three-stdlib/index.js", false],
     ["/w/apps/ui/src/three/scene.tsx", false],
   ])("treats %s as WebGL: %s", (id, webgl) => {
-    expect(WEBGL.test(id)).toBe(webgl);
+    expect(THREE_MODULE_ID.test(id)).toBe(webgl);
   });
 
   it("finds the chain when a module the entry imports statically imports three", async () => {
@@ -97,7 +92,7 @@ describe("GTK-04 Three.js is not in the initial import graph", { timeout: 120_00
       [],
     );
     expect(
-      [...modules.keys()].some((id) => WEBGL.test(id)),
+      [...modules.keys()].some((id) => THREE_MODULE_ID.test(id)),
       "three was parsed, so the dynamic edge was seen and told apart",
     ).toBe(true);
   });

@@ -1,9 +1,3 @@
-// GTK-02: the Checkoff tab's Plate preview renders with WebGL forced off. Serves the built
-// UI with the fake core, turns WebGL off in WebKitGTK (the Linux release webview) and in
-// Chromium (Blink, as in WebView2), and fails unless WebGL is really off, each Plate has its
-// sentence and a hidden, visible SVG bar, the page holds no canvas, and axe at WCAG 2.2 AA
-// finds nothing in the preview. A missing engine prints SKIP and the run exits 77; a SKIP is
-// not a pass. Run `npm run build` first.
 import axe from "axe-core";
 import { log } from "node:console";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -21,8 +15,7 @@ const EXPECTED = [
 ];
 const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22a", "wcag22aa"];
 
-/** An async function body run in the page, after axe is loaded. Returns a JSON string. */
-const PROBE = `
+const PROBE_BODY = `
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const deadline = Date.now() + 15000;
   const section = () => document.querySelector(".pp-plate-preview");
@@ -49,7 +42,7 @@ const ENGINES = [
       const dir = mkdtempSync(path.join(tmpdir(), "pp-ui-plate-"));
       try {
         const spec = path.join(dir, "jobs.json");
-        const job = { url, body: PROBE, png: null, webgl: false };
+        const job = { url, body: PROBE_BODY, png: null, webgl: false };
         writeFileSync(spec, JSON.stringify({ axe: axe.source, jobs: [job] }));
         const outcome = await runWebKitGtk("webkitgtk-frame.py", [spec], 120_000);
         return "skip" in outcome ? outcome : { result: JSON.parse(outcome.stdout)[0].result };
@@ -69,7 +62,7 @@ const ENGINES = [
         const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
         await page.goto(url);
         await page.addScriptTag({ content: axe.source });
-        return { result: JSON.parse(await page.evaluate(`(async () => {${PROBE}})()`)) };
+        return { result: JSON.parse(await page.evaluate(`(async () => {${PROBE_BODY}})()`)) };
       } finally {
         await browser.close();
       }

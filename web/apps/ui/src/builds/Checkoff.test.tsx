@@ -490,7 +490,6 @@ const plateItems = () =>
     .getAllByRole("listitem")
     .map((li) => li.textContent);
 
-/** Records every way a page could reach for a canvas or a GPU context. */
 function watchGraphics() {
   const asked: string[] = [];
   const createElement = document.createElement.bind(document);

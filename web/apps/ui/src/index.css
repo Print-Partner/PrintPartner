@@ -671,7 +671,6 @@ body {
   font-weight: var(--font-weight-semibold);
 }
 
-/* Plate preview (GRE-1112): SVG only, never WebGL. */
 .pp-plate-preview ul {
   margin: 8px 0 0;
   padding: 0;

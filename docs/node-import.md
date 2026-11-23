@@ -197,7 +197,20 @@ It leaves out only what the import or the upgrade changes on purpose:
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
 
-An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
+An import that fails removes its stage and leaves the destination without a marker. A refused import can leave the new destination folder behind, empty. One that is killed leaves `.pp-import/` behind, or the copy and `import-report.json` without a marker. The next import refuses that folder until it is emptied. A Rust-only start (`PP_DESKTOP_REBUILD=1`) of `pp-server --data` on it exits 1 with `This data folder holds an import that did not finish or is still running.` before it locks, marks or writes anything there. It refuses a folder that another import is writing into now for the same reason. It looks through a link at the `--data` path, as the import does. A Node-backed start does not run this check.
+
+An import that fails while moving its copy into place leaves the database, and any roots already moved. It leaves no stage, no report and no marker. First-run setup cannot tell that folder from a stopped Node installation. Only the import that left it can, because it saw the folder empty before it started. A build without the `test-unmarked-writer` feature, which includes every release build, refuses it at the writer's marker check, because it has no `.pp-rust-owned.json`. A test build with that feature, such as a workspace test build, opens it. Only a change inside the importer can make this folder detectable: durable evidence written before the first move.
+
+Every import ends with a last line that says what the destination now holds: on stdout after the report, or on stderr after `import refused:` or `import failed:`. The exit codes stay 0 and 1.
+
+| Last line | Next step |
+| --- | --- |
+| `destination: an imported installation, ready to start with --data` | Start `pp-server --data` on it. |
+| `destination: absent or empty; import again into it or into another empty folder` | The import accepts this folder as it is. Fix the reason, then import again. |
+| `destination: an import that did not finish or is still running; Rust-only startup refuses it; import again into a new, empty folder` | Import into a new, empty folder. Nothing empties this one for you. |
+| `destination: this import's partial copy, without an ownership marker; not an import destination; import again into a new, empty folder` | The folder was empty, and this import failed after it moved the database in. This happens after `import failed:` or `import refused:`. Import into a new, empty folder. |
+| `destination: a database without an ownership marker: a Node installation, or an import that failed while moving its copy into place; not an import destination` | The folder held this database before the import started: a Node installation, or the partial copy of an earlier import. The import did not write to it. |
+| Any other `destination: ... not an import destination` | The folder held a Rust installation, a Node installation that is running or did not shut down, or other data. The import did not write to it. |
 
 The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: true` when every inventory row is `converted` or `checked` and every Source path leads into the copy. It says `complete: false` while any row is `pending`, or while a Source path is outside the installation or missing in the copy. A copy that says `complete: false` is disposable.
 

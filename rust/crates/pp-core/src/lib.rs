@@ -43,6 +43,7 @@ pub mod layout;
 #[cfg(feature = "desktop_rebuild")]
 mod checkoff_reconcile;
 #[cfg(feature = "desktop_rebuild")]
+pub mod first_run;
 #[cfg(feature = "desktop_rebuild")]
 pub mod github;
 #[cfg(feature = "desktop_rebuild")]
@@ -549,9 +550,11 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 }
 
 /// Start without a Node child: the Rust writer owns the data directory and the
-/// gateway answers admitted requests from the `pp-api` routers. The marker
-/// decision runs first; release verification, cutover recovery and source-sync
-/// admission run only on an accepted directory (`rust_startup::admit`).
+/// gateway answers admitted requests from the `pp-api` routers. A stopped
+/// import that holds the import's stage or report is refused before anything
+/// touches the folder (`first_run::admit_folder`). The marker decision runs
+/// next; release verification, cutover recovery and source-sync admission run
+/// only on an accepted directory (`rust_startup::admit`).
 /// `server_updates` is set only for the headless `pp-server`: it checks for
 /// server updates, and sign-out keeps it serving. The desktop launcher does
 /// neither.
@@ -562,6 +565,7 @@ async fn start_rust_resources(
     listen: Option<std::net::SocketAddr>,
     server_updates: bool,
 ) -> Result<Resources> {
+    first_run::admit_folder(&input.data_dir)?;
     let (assets, replacement_present) = rust_startup::select_frontend(&input.bundle, input.assets)?;
     let data_dir = prepare_data_dir(&input.data_dir)?;
     let verified_assets = assets.clone();

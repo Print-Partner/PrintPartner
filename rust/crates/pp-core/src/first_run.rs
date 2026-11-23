@@ -26,12 +26,15 @@ pub enum DataFolder {
     /// A valid ownership marker. `imported` is true when the folder holds
     /// the import's report.
     Installed { imported: bool },
-    /// No marker, a Node database, no lease: a stopped Node installation.
-    Node,
+    /// No marker, a database, no Node lease. It is a stopped Node
+    /// installation, or an import that failed while moving its copy into
+    /// place: the importer removes its stage on that error and has not yet
+    /// written its report. Nothing on disk tells the two apart.
+    UnmarkedDatabase,
     /// No marker, a Node database and a lease: Node runs there or stopped
     /// without releasing it.
     NodeLeased,
-    /// No marker and the import's own leftovers.
+    /// No marker, and the import's stage or its report.
     Unfinished(Unfinished),
     /// Anything else, including a folder that could not be read. The writer
     /// accepts or refuses it with its own reason.
@@ -80,7 +83,7 @@ pub fn survey(folder: &Path) -> DataFolder {
     } else if has(DATABASE) && has(NODE_LEASE) {
         DataFolder::NodeLeased
     } else if has(DATABASE) {
-        DataFolder::Node
+        DataFolder::UnmarkedDatabase
     } else if names
         .iter()
         .all(|name| ownership_marker::allowed_in_empty(name))
@@ -100,7 +103,10 @@ impl fmt::Display for DataFolder {
                 "an imported installation, ready to start with --data"
             }
             Self::Installed { imported: false } => "a Rust installation, not an import destination",
-            Self::Node => "a Node installation, not an import destination",
+            Self::UnmarkedDatabase => {
+                "a database without an ownership marker: a Node installation, or an import \
+                 that failed while moving its copy into place; not an import destination"
+            }
             Self::NodeLeased => {
                 "a Node installation that is running or did not shut down, not an import destination"
             }
@@ -180,16 +186,18 @@ impl fmt::Display for StartRefusal {
 
 impl std::error::Error for StartRefusal {}
 
-/// Refuses a stopped import before startup touches the folder. Every other
-/// folder goes on to the writer, which keeps its own marker decision. Test
-/// builds skip that decision, so this is what keeps them off a stopped
-/// import too.
+/// Refuses, in every build, a stopped import that holds the stage or the
+/// report, before startup touches the folder. Every other folder goes on to
+/// the writer's marker decision. An import that failed while moving its copy
+/// into place is an [`DataFolder::UnmarkedDatabase`] and goes on too: release
+/// builds refuse it at the marker check, and builds with
+/// `test-unmarked-writer` open it, as they open Node folders on purpose.
 pub fn admit_folder(folder: &Path) -> Result<(), StartRefusal> {
     match survey(folder) {
         DataFolder::Unfinished(stage) => Err(StartRefusal(stage)),
         DataFolder::Empty
         | DataFolder::Installed { .. }
-        | DataFolder::Node
+        | DataFolder::UnmarkedDatabase
         | DataFolder::NodeLeased
         | DataFolder::Other => Ok(()),
     }

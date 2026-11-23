@@ -30,6 +30,7 @@ import {
   type Picks,
   type Slot,
 } from "./checkoff";
+import { PlatePreview } from "./PlatePreview";
 
 const checkoffUnitsQuery = (id: number) => ({
   queryKey: ["core", "checkoff-units", id],
@@ -299,8 +300,10 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
           </button>
         ))}
       </div>
-      {data.plate_revision_id === null && (
+      {data.plate_revision_id === null ? (
         <p className="pp-muted">No accepted Plate layout for this Plan, so P is unavailable.</p>
+      ) : (
+        <PlatePreview parts={data.parts} />
       )}
       <UnitPicker parts={data.parts} field={field} picks={picks} setPicks={setPicks} />
       <div className="pp-burst">

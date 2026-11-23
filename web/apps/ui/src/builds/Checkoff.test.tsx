@@ -1,5 +1,7 @@
 import type { CheckoffUnits, Health } from "@print-partner/rust-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import axe from "axe-core";
+import { useEffect } from "react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -146,7 +148,7 @@ describe("CHK-01 Checkoff tab", () => {
     );
     expect(box("bracket.stl", 1).checked).toBe(true);
     expect(box("bracket.stl", 2).checked).toBe(false);
-    expect(screen.getByText(/Plate 2 on Trident/)).toBeTruthy();
+    expect(within(bracket).getByText(/Plate 2 on Trident/)).toBeTruthy();
     const paths = fetchMock.mock.calls.map(([p]) => p);
     expect(paths.every((p) => p === "/health" || p.startsWith("/api/v2/plans/2"))).toBe(true);
   });
@@ -473,5 +475,101 @@ describe("CHK-05 offline", () => {
     expect(screen.getAllByText(OFFLINE_REASON).length).toBeGreaterThan(0);
     fireEvent.click(record);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    expect(plateItems()).toEqual(PLATE_SENTENCES);
+  });
+});
+
+const PLATE_SENTENCES = [
+  "Plate 1 on Voron 2.4: 3 units, 1 printed",
+  "Plate 2 on Trident: 1 unit, 0 printed",
+  "On no Plate: 1 unit, 0 printed",
+];
+const plateList = () => screen.getByRole("list", { name: "Plate preview" });
+const plateItems = () =>
+  within(plateList())
+    .getAllByRole("listitem")
+    .map((li) => li.textContent);
+
+/** Records every way a page could reach for a canvas or a GPU context. */
+function watchGraphics() {
+  const asked: string[] = [];
+  const createElement = document.createElement.bind(document);
+  const createElementNS = document.createElementNS.bind(document);
+  vi.spyOn(document, "createElement").mockImplementation(((tag: string, options?: object) => {
+    if (tag.toLowerCase() === "canvas") asked.push("createElement canvas");
+    return createElement(tag, options);
+  }) as typeof document.createElement);
+  vi.spyOn(document, "createElementNS").mockImplementation(((ns: string, tag: string) => {
+    if (tag.toLowerCase() === "canvas") asked.push("createElementNS canvas");
+    return createElementNS(ns, tag);
+  }) as typeof document.createElementNS);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(((kind: string) => {
+    asked.push(`getContext ${kind}`);
+    return null;
+  }) as typeof HTMLCanvasElement.prototype.getContext);
+  vi.stubGlobal(
+    "OffscreenCanvas",
+    class {
+      constructor() {
+        asked.push("OffscreenCanvas");
+      }
+    },
+  );
+  return asked;
+}
+
+function WantsWebGL() {
+  useEffect(() => {
+    document.createElement("canvas").getContext("webgl");
+    new OffscreenCanvas(1, 1);
+  }, []);
+  return null;
+}
+
+describe("GTK-02 Plate preview without WebGL", () => {
+  it("the graphics watcher sees a component that asks for WebGL", () => {
+    const asked = watchGraphics();
+    render(<WantsWebGL />);
+    expect(asked).toEqual(["createElement canvas", "getContext webgl", "OffscreenCanvas"]);
+  });
+
+  it("draws each Plate as hidden SVG bars beside its sentence, with no canvas", async () => {
+    const asked = watchGraphics();
+    renderAt(core(reads(units)));
+    await screen.findByRole("list", { name: "Plate preview" });
+    expect(plateItems(), "one sentence per Plate, unplaced units last").toEqual(PLATE_SENTENCES);
+    const bars = within(plateList())
+      .getAllByRole("listitem")
+      .map((li) => li.querySelector("svg")!);
+    expect(
+      bars.map((svg) => [svg.getAttribute("aria-hidden"), svg.textContent]),
+      "each bar is hidden and holds no text",
+    ).toEqual([
+      ["true", ""],
+      ["true", ""],
+      ["true", ""],
+    ]);
+    expect(
+      bars.map((svg) => [
+        svg.querySelector("[data-units]")!.getAttribute("width"),
+        svg.querySelector("[data-printed]")!.getAttribute("width"),
+      ]),
+      "outline widths 3:1:1, printed fills 1:0:0",
+    ).toEqual([
+      ["100", "33.33"],
+      ["33.33", "0"],
+      ["33.33", "0"],
+    ]);
+    expect(asked, "no canvas or GPU context was asked for").toEqual([]);
+    expect(document.querySelector("canvas")).toBeNull();
+    const section = screen.getByRole("region", { name: "Plate preview" });
+    const result = await axe.run(section, { rules: { "color-contrast": { enabled: false } } });
+    expect(result.violations.map((v) => v.id)).toEqual([]);
+  });
+
+  it("shows no preview when the Plan has no accepted Plate layout", async () => {
+    renderAt(core(reads(() => ({ ...units(), plate_revision_id: null }))));
+    expect(await screen.findByText(/No accepted Plate layout for this Plan/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Plate preview" })).toBeNull();
   });
 });

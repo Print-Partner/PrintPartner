@@ -671,6 +671,28 @@ body {
   font-weight: var(--font-weight-semibold);
 }
 
+/* Plate preview (GRE-1112): SVG only, never WebGL. */
+.pp-plate-preview ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-plate-preview li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 32px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-plate-bar {
+  width: min(16rem, 100%);
+  height: 12px;
+  overflow: visible;
+}
+
 .pp-segmented {
   display: flex;
   gap: 8px;

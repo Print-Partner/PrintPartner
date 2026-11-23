@@ -321,8 +321,8 @@ fn ticket_t_35_stopped_import_is_refused_by_startup_and_by_a_retry() {
     );
     assert_eq!(
         StartRefusal(Unfinished::StagePresent).to_string(),
-        "This data folder holds an import that stopped before it finished. Print Partner does \
-         not open it, and the Node folder it came from is unchanged. Import again into a new, \
+        "This data folder holds an import that did not finish or is still running. Print \
+         Partner does not open it, and the Node folder it came from is unchanged. Import again into a new, \
          empty folder."
     );
     let retry = import_node(node.path(), stopped.path());
@@ -338,6 +338,11 @@ fn ticket_t_35_stopped_import_is_refused_by_startup_and_by_a_retry() {
     assert_eq!(
         retry.destination,
         LeftBehind::Surveyed(DataFolder::Unfinished(Unfinished::StagePresent))
+    );
+    assert_eq!(
+        retry.destination.to_string(),
+        "an import that did not finish or is still running; Rust-only startup refuses it; \
+         import again into a new, empty folder"
     );
     assert_eq!(
         snapshot(stopped.path()).unwrap(),

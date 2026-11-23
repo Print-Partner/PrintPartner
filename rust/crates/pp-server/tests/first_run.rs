@@ -85,7 +85,7 @@ fn assert_imported(output: &Output) {
     );
 }
 
-/// Starts the server on a stopped import, directly or through a link, and
+/// Starts the server on an unfinished import, directly or through a link, and
 /// checks it refuses before writing anything there.
 fn assert_start_refuses_a_stopped_import(through_a_link: bool) {
     let stopped = Installation::create(Fixture::Empty).unwrap();
@@ -109,8 +109,8 @@ fn assert_start_refuses_a_stopped_import(through_a_link: bool) {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(
         stderr.contains(
-            "This data folder holds an import that stopped before it finished. Print Partner \
-             does not open it, and the Node folder it came from is unchanged. Import again \
+            "This data folder holds an import that did not finish or is still running. Print \
+             Partner does not open it, and the Node folder it came from is unchanged. Import again \
              into a new, empty folder."
         ),
         "{stderr}"

@@ -40,7 +40,7 @@ pub enum DataFolder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unfinished {
     StagePresent,
-    /// The import moved its copy into place and stopped before the marker.
+    /// The import moved its copy into place and has not written the marker.
     Unmarked,
 }
 
@@ -109,7 +109,8 @@ impl fmt::Display for DataFolder {
                 "a Node installation that is running or did not shut down, not an import destination"
             }
             Self::Unfinished(_) => {
-                "a stopped import; no Print Partner runtime opens it; import again into a new, empty folder"
+                "an import that did not finish or is still running; Rust-only startup refuses \
+                 it; import again into a new, empty folder"
             }
             Self::Other => "not an import destination",
         })
@@ -201,7 +202,8 @@ fn attempt_with(
     }
 }
 
-/// Why startup did not open a data folder: it holds a stopped import.
+/// Why startup did not open a data folder: it holds an import that did not
+/// finish or is still running.
 /// Holds no path, so a dialog can show it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartRefusal(pub Unfinished);
@@ -209,8 +211,8 @@ pub struct StartRefusal(pub Unfinished);
 impl fmt::Display for StartRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(
-            "This data folder holds an import that stopped before it finished. Print Partner \
-             does not open it, and the Node folder it came from is unchanged. Import again \
+            "This data folder holds an import that did not finish or is still running. Print \
+             Partner does not open it, and the Node folder it came from is unchanged. Import again \
              into a new, empty folder.",
         )
     }
@@ -218,12 +220,14 @@ impl fmt::Display for StartRefusal {
 
 impl std::error::Error for StartRefusal {}
 
-/// Refuses, in every build, a stopped import that holds the stage or the
-/// report, before startup touches the folder. Every other folder goes on to
-/// the writer's marker decision. An import that failed while moving its copy
-/// into place is a [`DataFolder::UnmarkedDatabase`] and goes on too: release
-/// builds refuse it at the marker check, and builds with
-/// `test-unmarked-writer` open it, as they open Node folders on purpose.
+/// Refuses a folder that holds the import's stage or its report, before
+/// startup touches the folder. Only Rust-only startup (`desktop_rebuild` and
+/// `PP_DESKTOP_REBUILD=1`) calls this; a Node-backed start does not. Every
+/// other folder goes on to the writer's marker decision. An import that
+/// failed while moving its copy into place is a
+/// [`DataFolder::UnmarkedDatabase`] and goes on too: release builds refuse it
+/// at the marker check, and builds with `test-unmarked-writer` open it, as
+/// they open Node folders on purpose.
 pub fn admit_folder(folder: &Path) -> Result<(), StartRefusal> {
     match survey(folder) {
         DataFolder::Unfinished(stage) => Err(StartRefusal(stage)),

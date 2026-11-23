@@ -1,7 +1,8 @@
-//! `pp-server import`: the one-time import of a Node installation. Today it
-//! runs only the dry run, which reads the source and writes nothing.
+//! `pp-server import`: the one-time import of a Node installation, or with
+//! `--dry-run` the check that reads the source and writes nothing.
 
 use anyhow::{Context, Result, bail, ensure};
+use pp_core::first_run::{self, AttemptResult};
 use pp_core::{DesktopRebuild, node_import};
 use std::path::PathBuf;
 
@@ -14,7 +15,8 @@ The report is printed and saved as import-report.json in the destination.
 With --dry-run nothing is written: the report says what an import would
 convert and, when --data is given, whether the import would accept that
 folder. Needs PP_DESKTOP_REBUILD=1. Exits 0 with the report, or 1 with the
-reason the import is refused or failed.";
+reason the import is refused or failed. An import ends with a line that says
+what the destination now holds.";
 
 /// What the arguments ask for.
 enum Command {
@@ -54,30 +56,26 @@ pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         DesktopRebuild::from_env().enabled(),
         "pp-server import needs PP_DESKTOP_REBUILD=1"
     );
-    let report = match &command {
-        Command::DryRun(from, data) => {
-            node_import::dry_run(from, data.as_deref()).map(|report| report.to_string())
-        }
+    match command {
+        Command::DryRun(from, data) => match node_import::dry_run(&from, data.as_deref()) {
+            Ok(report) => print!("{report}"),
+            Err(error) => {
+                eprintln!("{}", AttemptResult::from(error));
+                std::process::exit(1);
+            }
+        },
         Command::Import(from, data) => {
-            node_import::import(from, data).map(|report| report.to_string())
+            let attempt = first_run::import_node(&from, &data);
+            if let AttemptResult::Imported(_) = attempt.result {
+                print!("{}", attempt.result);
+                println!("destination: {}", attempt.destination);
+            } else {
+                eprintln!("{}", attempt.result);
+                eprintln!("destination: {}", attempt.destination);
+                std::process::exit(1);
+            }
         }
-        Command::Help => Ok(String::new()),
-    };
-    match report {
-        Ok(report) => {
-            print!("{report}");
-            Ok(())
-        }
-        Err(error) => {
-            let outcome = match error {
-                node_import::ImportError::Io { .. }
-                | node_import::ImportError::Sqlite(_)
-                | node_import::ImportError::CopyMismatch(_)
-                | node_import::ImportError::Flush { .. } => "failed",
-                _ => "refused",
-            };
-            eprintln!("import {outcome}: {error}");
-            std::process::exit(1);
-        }
+        Command::Help => {}
     }
+    Ok(())
 }

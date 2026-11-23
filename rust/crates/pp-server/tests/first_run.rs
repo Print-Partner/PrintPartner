@@ -9,7 +9,7 @@ mod child_process;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
 
-use pp_testkit::{Fixture, Installation, snapshot};
+use pp_testkit::{Fixture, Installation, node_installation, snapshot};
 use std::{
     path::{Path, PathBuf},
     process::{Output, Stdio},
@@ -46,6 +46,21 @@ fn start(data: &Path) -> Output {
     child.wait_with_output().unwrap()
 }
 
+/// `pp-server import --from <from> --data <data>`.
+fn import(from: &Path, data: &Path) -> Output {
+    child_process::command(binary())
+        .env("PP_DESKTOP_REBUILD", "1")
+        .args(["import".as_ref(), "--from".as_ref(), from.as_os_str()])
+        .args(["--data".as_ref(), data.as_os_str()])
+        .output()
+        .unwrap()
+}
+
+fn last_line(bytes: &[u8]) -> String {
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    text.lines().last().unwrap_or_default().to_owned()
+}
+
 #[test]
 fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
     let stopped = Installation::create(Fixture::Empty).unwrap();
@@ -77,5 +92,45 @@ fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
         snapshot(stopped.path()).unwrap(),
         before,
         "the stopped import changed"
+    );
+}
+
+#[test]
+fn ticket_t_35_cli_prints_the_destination_after_a_refused_import() {
+    let source = Installation::create(Fixture::Empty).unwrap();
+    let parent = Installation::create(Fixture::Empty).unwrap();
+
+    let output = import(source.path(), &parent.path().join("new"));
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        last_line(&output.stderr),
+        "destination: absent or empty; import again into it or into another empty folder"
+    );
+}
+
+#[test]
+fn ticket_t_35_cli_prints_the_destination_after_an_import() {
+    let node = Installation::create(Fixture::NodeSchema34).unwrap();
+    node_installation::populate(node.path()).unwrap();
+    let before = snapshot(node.path()).unwrap();
+    let parent = Installation::create(Fixture::Empty).unwrap();
+
+    let output = import(node.path(), &parent.path().join("new"));
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        last_line(&output.stdout),
+        "destination: an imported installation, ready to start with --data"
+    );
+    assert_eq!(
+        snapshot(node.path()).unwrap(),
+        before,
+        "the Node folder changed"
     );
 }

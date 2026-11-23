@@ -43,7 +43,7 @@ fn ticket_t_35_survey_names_each_folder_state_without_writing() {
         (
             "node",
             holding(Fixture::NodeSchema34, &[]),
-            DataFolder::Node,
+            DataFolder::UnmarkedDatabase,
         ),
         (
             "node leased",
@@ -128,9 +128,40 @@ fn ticket_t_35_survey_names_each_folder_state_without_writing() {
 fn ticket_t_35_survey_and_admit_accept_node_folders() {
     let node = holding(Fixture::NodeSchema34, &[]);
     let before = snapshot(node.path()).unwrap();
-    assert_eq!(survey(node.path()), DataFolder::Node);
+    assert_eq!(survey(node.path()), DataFolder::UnmarkedDatabase);
     assert_eq!(admit_folder(node.path()), Ok(()));
     assert_eq!(snapshot(node.path()).unwrap(), before);
+}
+
+#[test]
+fn ticket_t_35_survey_cannot_tell_a_failed_publish_from_node() {
+    // A publish that fails after every root has moved leaves exactly this:
+    // the copy, no stage, no report and no marker.
+    let node = node_source();
+    let parent = Installation::create(Fixture::Empty).unwrap();
+    let destination = parent.path().join("new");
+    let attempt = import_node(node.path(), &destination);
+    assert!(
+        matches!(attempt.result, AttemptResult::Imported(_)),
+        "{}",
+        attempt.result
+    );
+    std::fs::remove_file(destination.join(REPORT_FILE)).unwrap();
+    std::fs::remove_file(destination.join(ownership_marker::MARKER_FILE)).unwrap();
+
+    assert!(absent(&destination.join(STAGE)), "the stage is present");
+    assert_eq!(survey(&destination), DataFolder::UnmarkedDatabase);
+    assert_eq!(
+        survey(&destination).to_string(),
+        "a database without an ownership marker: a Node installation, or an import that \
+         failed while moving its copy into place; not an import destination"
+    );
+    assert_eq!(
+        admit_folder(&destination),
+        Ok(()),
+        "first-run cannot tell this folder from a stopped Node installation, which test \
+         builds open on purpose; release builds refuse it at the writer's marker check"
+    );
 }
 
 #[test]

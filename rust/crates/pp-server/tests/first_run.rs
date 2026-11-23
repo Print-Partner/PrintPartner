@@ -134,3 +134,41 @@ fn ticket_t_35_cli_prints_the_destination_after_an_import() {
         "the Node folder changed"
     );
 }
+
+#[test]
+fn ticket_t_35_cli_does_not_call_a_failed_publish_a_node_installation() {
+    let node = Installation::create(Fixture::NodeSchema34).unwrap();
+    node_installation::populate(node.path()).unwrap();
+    let parent = Installation::create(Fixture::Empty).unwrap();
+    let destination = parent.path().join("new");
+    let first = import(node.path(), &destination);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    // What a publish that failed after moving every root leaves behind.
+    std::fs::remove_file(destination.join("import-report.json")).unwrap();
+    std::fs::remove_file(destination.join(".pp-rust-owned.json")).unwrap();
+    let before = snapshot(&destination).unwrap();
+
+    let retry = import(node.path(), &destination);
+
+    assert_eq!(
+        retry.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert_eq!(
+        last_line(&retry.stderr),
+        "destination: a database without an ownership marker: a Node installation, or an \
+         import that failed while moving its copy into place; not an import destination"
+    );
+    assert_eq!(
+        snapshot(&destination).unwrap(),
+        before,
+        "the refused retry changed the folder"
+    );
+}

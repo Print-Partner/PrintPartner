@@ -65,8 +65,11 @@ Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --n
 against `pp-testkit`'s loopback fault printer. The fake reads the complete upload,
 then waits while the test verifies committed effect intent before accepting it.
 Lost upload/start replies and a worker aborted before local confirmation retain
-uncertainty across storage reopen. Tests check exact request counts, retained
-staged bytes, no Checkoff completion and refused redispatch. An aborted future
+uncertainty across storage reopen. A lost reply is recorded by the worker and
+keeps its `generation`; only the aborted attempt gets a new `generation` at
+reopen. A second reopen changes nothing. Tests check exact request counts, the
+whole staged file in the upload body, retained staged bytes, no Checkoff
+completion and refused redispatch. An aborted future
 and reopened writer model an interrupted attempt; this is not a whole-process
 power-loss test. Other job kinds, route/worker cutover and final parent receipts
 remain in the GRE-409 follow-ups.

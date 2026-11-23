@@ -39,6 +39,8 @@ pub mod native_secrets;
 pub mod order_authority;
 pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
+pub mod pending_actions;
+#[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plates;

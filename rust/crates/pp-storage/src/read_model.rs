@@ -98,9 +98,9 @@ pub type HeadPlates = (
 pub struct ReadClient {
     /// The writer queue reads submit to, and the reader pool
     /// [`ReadClient::read_plan`] reads on.
-    storage: crate::SettingsClient,
+    pub(crate) storage: crate::SettingsClient,
     repos: PathBuf,
-    policy: auth::AuthPolicy,
+    pub(crate) policy: auth::AuthPolicy,
 }
 pub(super) struct Command {
     credential: Credential,

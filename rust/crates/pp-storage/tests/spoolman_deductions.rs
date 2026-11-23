@@ -698,6 +698,7 @@ fn schema_50_keeps_a_step_49_database_and_a_failed_step_leaves_it_there() {
              {schema}
              INSERT INTO spoolman_deductions ({columns}) SELECT {columns} FROM spoolman_deductions_kept;
              DROP TABLE spoolman_deductions_kept;
+             DROP TABLE pending_actions;
              UPDATE app_settings SET value='49' WHERE tenant_id='default' AND key='schema_version';
              CREATE TRIGGER reject_schema50 BEFORE UPDATE OF value ON app_settings
              WHEN NEW.tenant_id = 'default' AND NEW.key = 'schema_version' AND NEW.value = '50'
@@ -727,9 +728,9 @@ fn schema_50_keeps_a_step_49_database_and_a_failed_step_leaves_it_there() {
         .execute_batch("DROP TRIGGER reject_schema50")
         .unwrap();
     let (owner, ready) = WriterOwner::open(&fixture.path, Limits::default()).unwrap();
-    assert_eq!((ready.version, ready.previous_version), (50, 49));
+    assert_eq!((ready.version, ready.previous_version), (51, 49));
     drop(owner);
-    assert_eq!(version(&fixture), "50");
+    assert_eq!(version(&fixture), "51");
     assert!(column_present(&fixture, "failure"));
     assert!(column_present(&fixture, "failure_status"));
     assert!(column_present(&fixture, "spool_grams_before"));

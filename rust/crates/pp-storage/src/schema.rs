@@ -12,7 +12,7 @@ pub use working_copy::InsufficientSpace;
 pub(crate) use working_copy::sweep as sweep_preflight_leftovers;
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 50;
+pub(crate) const CURRENT_VERSION: u64 = 51;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Every step
 /// from 38 does.
 ///
@@ -23,7 +23,7 @@ pub(crate) const CURRENT_VERSION: u64 = 50;
 /// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
 /// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 50;
+pub(crate) const LAST_COPIED_STEP: u64 = 51;
 #[cfg(feature = "desktop_rebuild")]
 const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
 /// The last step a release without the run marker installs. Its interrupted
@@ -476,6 +476,9 @@ pub(crate) fn initialize_with(
         // crash becomes `unknown` and is not sent again.
         crate::spoolman_deductions::interrupt_sending(&mut conn)
             .context("spoolman deduction startup")?;
+        // A crash between claim and settle leaves `applying`; it becomes
+        // `unknown` and is never applied again.
+        crate::pending_actions::interrupt_applying(&mut conn).context("pending action startup")?;
     }
     // Node's fixture builder connects once to create the input and again to
     // create the expected database. The first Rust open must repeat that
@@ -599,6 +602,8 @@ fn install_steps(
         |connection| Ok(connection.execute_batch(include_str!("spoolman_deductions/schema.sql"))?);
     let install_send_states: fn(&Connection) -> Result<()> =
         crate::spoolman_deductions::install_send_states;
+    let install_pending_actions: fn(&Connection) -> Result<()> =
+        |connection| Ok(connection.execute_batch(include_str!("pending_actions/schema.sql"))?);
     for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
         (40, install_scan),
         (41, install_sync),
@@ -614,6 +619,7 @@ fn install_steps(
             crate::spoolman_deductions::SEND_STATE_STEP,
             install_send_states,
         ),
+        (crate::pending_actions::SCHEMA_STEP, install_pending_actions),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -644,7 +650,7 @@ fn install_steps(
 /// Rust-only side tables: each step's objects must match its reference SQL
 /// from that step on and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
-const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 8] = [
+const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 9] = [
     (
         crate::domain_events::SCHEMA_STEP,
         "name LIKE 'domain_event%'",
@@ -700,6 +706,13 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 8] = [
         include_str!("spoolman_deductions/schema.sql"),
         "Unexpected Spoolman deduction schema",
         "Spoolman deduction schema mismatch",
+    ),
+    (
+        crate::pending_actions::SCHEMA_STEP,
+        "tbl_name = 'pending_actions'",
+        include_str!("pending_actions/schema.sql"),
+        "Unexpected pending action schema",
+        "Pending action schema mismatch",
     ),
 ];
 

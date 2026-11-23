@@ -1,7 +1,8 @@
 //! Tray status model: menu text and icon badge color per core status.
 use crate::autostart::LaunchAgent;
 use anyhow::Result;
-use pp_core::{CoreStatus, RuntimeStatus, RustStatus};
+use pp_core::{BackupFailure, CoreStatus, RuntimeStatus, RustStatus};
+use std::path::PathBuf;
 
 /// Menu id of the macOS "Open at login" check item (T-31).
 pub const OPEN_AT_LOGIN: &str = "open_at_login";
@@ -49,25 +50,49 @@ pub fn runtime_status(state: &RuntimeStatus) -> (&'static str, Tone) {
     }
 }
 
-/// Menu item ids in display order.
-pub fn menu_ids() -> &'static [&'static str] {
-    &[
-        "show",
-        "browser",
-        "status",
-        "logs",
-        "log_folder",
-        "recover",
-        "data",
-        "quit",
-    ]
+/// Menu id of Back up now (GRE-1036), shown when the Rust writer owns the data.
+pub const BACKUP: &str = "backup";
+
+/// The items a tray shows on top of the defaults.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MenuExtras {
+    pub backup: bool,
+    pub open_at_login: bool,
 }
 
-/// The macOS menu order: "Open at login" sits just before Quit.
-pub fn menu_ids_with_open_at_login() -> Vec<&'static str> {
-    let mut ids = menu_ids().to_vec();
-    ids.insert(ids.len() - 1, OPEN_AT_LOGIN);
-    ids
+/// Every tray item id, in display order.
+#[rustfmt::skip]
+const ORDER: [&str; 10] = [
+    "show", "browser", "status", "logs", "log_folder", "recover", "data", BACKUP, OPEN_AT_LOGIN, "quit",
+];
+
+/// Menu item ids in display order: the defaults, plus each extra that is on.
+pub fn menu_ids(extras: MenuExtras) -> Vec<&'static str> {
+    ORDER
+        .into_iter()
+        .filter(|id| match *id {
+            BACKUP => extras.backup,
+            OPEN_AT_LOGIN => extras.open_at_login,
+            _ => true,
+        })
+        .collect()
+}
+
+/// The dialog for a finished tray backup: the saved path, or fixed text.
+pub fn backup_message(saved: &Result<PathBuf, BackupFailure>) -> (&'static str, String) {
+    let reason = match saved {
+        Ok(path) => {
+            return (
+                "Backup saved",
+                format!("Saved {}", pp_os::display_path(path).display()),
+            );
+        }
+        Err(BackupFailure::NoSpace) => "Not enough free space on the data folder's drive.",
+        Err(BackupFailure::RestoreRunning) => "A restore is running. Try again after it.",
+        Err(BackupFailure::Stopping) => "Print Partner is shutting down.",
+        Err(BackupFailure::Failed) => "It could not be made or saved in Downloads.",
+    };
+    ("Backup failed", format!("{reason} No backup was saved."))
 }
 
 /// Turns open-at-login off when this app's agent is installed, otherwise on,

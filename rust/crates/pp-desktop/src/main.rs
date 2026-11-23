@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, ensure};
 use pp_core::{CoreHandle, CoreRuntime, RuntimeStatus};
-use pp_desktop::{AllowedOrigin, ResourceLayout, desktop_data_dir, startup_diagnostic};
-use std::path::PathBuf;
+use pp_desktop::{
+    AllowedOrigin, ResourceLayout, desktop_data_dir, startup_diagnostic, tray::BACKUP,
+};
+use std::path::{Path, PathBuf};
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
     image::Image,
@@ -9,6 +11,7 @@ use tauri::{
     tray::TrayIconBuilder,
     webview::{DownloadEvent, NewWindowResponse},
 };
+mod backup;
 mod recovery;
 
 #[cfg(all(not(debug_assertions), feature = "desktop-e2e"))]
@@ -337,6 +340,7 @@ const TRAY_ID: &str = "printpartner";
 struct TrayStatusItems {
     status: MenuItem<tauri::Wry>,
     recover: MenuItem<tauri::Wry>,
+    backup: MenuItem<tauri::Wry>,
 }
 
 /// Taken on RunEvent::Exit so the items drop on the main thread even if a
@@ -357,6 +361,13 @@ fn build_tray(
     let folder = MenuItem::with_id(app, "data", "Open data folder", true, None::<&str>)?;
     let log_folder = MenuItem::with_id(app, "log_folder", "Reveal log folder", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Print Partner", true, None::<&str>)?;
+    let backup_item = MenuItem::with_id(app, BACKUP, backup::LABEL, true, None::<&str>)?;
+    let tray_backup = backup::TrayBackup::new(
+        handle.offline_backup().map(|offline| -> backup::Effect {
+            std::sync::Arc::new(move |folder: &Path| offline.create_in(folder))
+        }),
+        app.path().download_dir().ok(),
+    );
     let login_agent = if pp_desktop::platform::LOGIN_AGENT {
         app.path()
             .home_dir()
@@ -374,7 +385,7 @@ fn build_tray(
         login_agent.as_ref().is_some_and(|agent| agent.is_enabled()),
         None::<&str>,
     )?;
-    let all: [&dyn IsMenuItem<tauri::Wry>; 9] = [
+    let all: [&dyn IsMenuItem<tauri::Wry>; 10] = [
         &show,
         &browser,
         &status,
@@ -382,14 +393,14 @@ fn build_tray(
         &log_folder,
         &recover,
         &folder,
+        &backup_item,
         &open_at_login,
         &quit,
     ];
-    let ids = if login_agent.is_some() {
-        pp_desktop::tray::menu_ids_with_open_at_login()
-    } else {
-        pp_desktop::tray::menu_ids().to_vec()
-    };
+    let ids = pp_desktop::tray::menu_ids(pp_desktop::tray::MenuExtras {
+        backup: tray_backup.is_available(),
+        open_at_login: login_agent.is_some(),
+    });
     let items = ids
         .iter()
         .map(|id| {
@@ -429,6 +440,11 @@ fn build_tray(
             "logs" => diagnostics.view_logs(app),
             "data" => diagnostics.open_data(app),
             "log_folder" => diagnostics.reveal_logs(app),
+            "quit" if tray_backup.is_running() => pp_desktop::platform::message(
+                "Backup in progress",
+                "Print Partner is still saving a backup. Choose Quit again after it finishes.",
+                || {},
+            ),
             "quit" => app.exit(0),
             id if id == pp_desktop::tray::OPEN_AT_LOGIN => {
                 if let Some(agent) = &login_agent {
@@ -440,13 +456,21 @@ fn build_tray(
                     let _ = open_at_login.set_checked(on);
                 }
             }
-            _ => {}
+            id => {
+                if let Some(run) = tray_backup.begin(id) {
+                    backup::start(app, run);
+                }
+            }
         })
         .build(app)?;
     // AppKit objects must be dropped on the main thread. The watch task runs
     // on a tokio worker, so it holds only the app handle and looks the tray
     // and its status items up inside run_on_main_thread (GRE-1254).
-    app.manage(TrayStatus::new(Some(TrayStatusItems { status, recover })));
+    app.manage(TrayStatus::new(Some(TrayStatusItems {
+        status,
+        recover,
+        backup: backup_item,
+    })));
     let app_handle = app.handle().clone();
     let watch = tauri::async_runtime::spawn(async move {
         let mut receiver = status_receiver;

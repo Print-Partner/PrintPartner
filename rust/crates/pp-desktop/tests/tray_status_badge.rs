@@ -1,6 +1,10 @@
 //! T-29: tray status text, colour and badge.
+use pp_core::BackupFailure;
 use pp_core::{CoreStatus, RuntimeStatus, RustStatus};
-use pp_desktop::tray::{Tone, badge, menu_ids, runtime_status, status};
+use pp_desktop::tray::{
+    BACKUP, MenuExtras, Tone, backup_message, badge, menu_ids, runtime_status, status,
+};
+use std::path::PathBuf;
 
 fn every_status() -> Vec<CoreStatus> {
     vec![
@@ -112,7 +116,7 @@ fn ticket_t_29_tray_badge_handles_tiny_icons_without_panicking() {
 #[test]
 fn ticket_t_29_tray_menu_offers_status_logs_restart_data_and_quit_by_default() {
     assert_eq!(
-        menu_ids(),
+        menu_ids(MenuExtras::default()),
         [
             "show",
             "browser",
@@ -122,6 +126,46 @@ fn ticket_t_29_tray_menu_offers_status_logs_restart_data_and_quit_by_default() {
             "recover",
             "data",
             "quit"
+        ]
+    );
+}
+
+#[test]
+fn ticket_t_29_tray_menu_puts_backup_between_open_data_folder_and_quit() {
+    let extras = |open_at_login| MenuExtras {
+        backup: true,
+        open_at_login,
+    };
+    let ids = menu_ids(extras(false));
+    assert_eq!(&ids[ids.len() - 3..], ["data", BACKUP, "quit"]);
+    let both = menu_ids(extras(true));
+    assert_eq!(&both[both.len() - 3..], ["backup", "open_at_login", "quit"]);
+    assert_eq!(both.len(), 10);
+}
+
+#[test]
+fn ticket_t_29_tray_backup_reports_the_saved_path_or_a_fixed_failure() {
+    let path = PathBuf::from("/home/user/Downloads/print-partner-backup.tar.gz");
+    let saved = backup_message(&Ok(path));
+    let expected = "Saved /home/user/Downloads/print-partner-backup.tar.gz";
+    assert_eq!(saved, ("Backup saved", expected.to_owned()));
+
+    let rows: Vec<_> = [
+        BackupFailure::NoSpace,
+        BackupFailure::RestoreRunning,
+        BackupFailure::Stopping,
+        BackupFailure::Failed,
+    ]
+    .map(|failure| backup_message(&Err(failure)))
+    .into();
+    let failed = |reason: &str| ("Backup failed", format!("{reason} No backup was saved."));
+    assert_eq!(
+        rows,
+        [
+            failed("Not enough free space on the data folder's drive."),
+            failed("A restore is running. Try again after it."),
+            failed("Print Partner is shutting down."),
+            failed("It could not be made or saved in Downloads."),
         ]
     );
 }

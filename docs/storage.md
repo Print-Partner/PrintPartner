@@ -491,6 +491,14 @@ With `PP_DESKTOP_REBUILD` exactly `1` or `true`, the product router mounts two r
 
 Tests: `pp-storage/src/restore/tests/export.rs` and `pp-core/tests/installation_backup_http.rs`.
 
+### Tray backup
+
+The desktop tray's **Back up now** (GRE-1036) calls `CoreHandle::offline_backup()`, which is `Some` only when the Rust writer owns the data folder, then `OfflineBackup::create_in(folder)` with the user's Downloads folder. `create_in` takes tracked shutdown work and calls `export_backup` once. It sets the archive to mode 0600 on Unix and moves it with `pp_os::rename_new`, which never replaces a file, under the first free name: `print-partner-backup.tar.gz`, then `print-partner-backup (1).tar.gz` up to `(999)`. If the move fails for any reason other than every name being taken (most often a data folder on another drive), it copies the archive to a hidden private `.print-partner-backup-<32 hex>.partial` in the folder, syncs it, reads it back, refuses it if its SHA-256 differs from the export's, and publishes it with the same no-replace rename. Every early return removes the copy. It then syncs the folder (a failed sync is logged, not a failure) and drops the export, which removes `export-<id>`.
+
+Success means the archive sits under its final name. A failure is a fieldless `BackupFailure` (`NoSpace`, `RestoreRunning`, `Stopping` or `Failed`), so no path or error text leaves pp-core through it. Nothing in the folder is replaced or removed except the action's own copy. A killed process can leave `export-*`, which the next open sweeps, and, only during a cross-drive copy, a hidden `.partial`, which nothing removes. The tracked work holds off shutdown for the 5 s drain; a backup still running after that leaves storage owned until the process exits, as the HTTP route does.
+
+Tests: `pp-core/src/backup/tests.rs` and `pp-core/src/rust_startup/backup_source/tests.rs` (`ticket_t_29_tray_backup_*`).
+
 ## To be written
 
 The storage milestone fills in these sections:

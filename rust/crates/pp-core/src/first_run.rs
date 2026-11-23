@@ -10,9 +10,6 @@ use std::{fmt, path::Path};
 #[cfg(test)]
 mod tests;
 
-/// The import's staging folder. pp-storage keeps its constant private;
-/// `ticket_t_35_stage_name_matches_the_importer` pins this literal against
-/// the importer's own view of a destination.
 const STAGE: &str = ".pp-import";
 const DATABASE: &str = "print-partner.db";
 const NODE_LEASE: &str = ".desktop-lease";
@@ -43,8 +40,7 @@ pub enum DataFolder {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unfinished {
-    /// The import stopped while staging: `.pp-import` is present.
-    Staging,
+    StagePresent,
     /// The import moved its copy into place and stopped before the marker.
     Unmarked,
 }
@@ -77,7 +73,7 @@ pub fn survey(folder: &Path) -> DataFolder {
     };
     let has = |wanted: &str| names.iter().any(|name| name == wanted);
     if has(STAGE) {
-        DataFolder::Unfinished(Unfinished::Staging)
+        DataFolder::Unfinished(Unfinished::StagePresent)
     } else if has(REPORT_FILE) {
         DataFolder::Unfinished(Unfinished::Unmarked)
     } else if has(DATABASE) && has(NODE_LEASE) {
@@ -94,7 +90,6 @@ pub fn survey(folder: &Path) -> DataFolder {
     }
 }
 
-/// The CLI's recovery line: what the folder now holds and what to do next.
 impl fmt::Display for DataFolder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

@@ -1,6 +1,3 @@
-//! `pp-server import`: the one-time import of a Node installation, or with
-//! `--dry-run` the check that reads the source and writes nothing.
-
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::first_run::{self, AttemptResult};
 use pp_core::{DesktopRebuild, node_import};

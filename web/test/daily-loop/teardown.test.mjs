@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,8 +14,8 @@ import { drainGroup, groupAlive, processesNaming, stopProcessesNaming } from "./
 // A test that fails must not hang the run, so each has a timeout and ends its fixtures
 // (teardown.fixture.mjs) when it ends.
 const PROCESS_TEST = { timeout: 20_000 };
-const markOf = () => `pp-daily-loop-teardown-${randomBytes(4).toString("hex")}`;
-/** @type {(t: import("node:test").TestContext, fixture: { end: () => void }) => void} */
+const markOf = () => join(tmpdir(), `pp-daily-loop-teardown-${randomBytes(4).toString("hex")}`);
+/** @type {(t: import("node:test").TestContext, fixture: { end: () => void | Promise<void> }) => void} */
 const endAfter = (t, fixture) => t.after(fixture.end);
 
 test("draining a group waits for a member that outlives the leader", PROCESS_TEST, async (t) => {
@@ -38,7 +40,7 @@ test("draining a group kills a member that ignores SIGTERM once the grace period
 });
 
 test("processes that name a folder are found, asked to stop, then killed", PROCESS_TEST, async (t) => {
-  const folder = `/tmp/${markOf()}`;
+  const folder = markOf();
   // Like Chromium under Playwright: its own group, the run's folder on its command line.
   const fixture = await detached(DEAF, [`--user-data-dir=${folder}/profile`]);
   endAfter(t, fixture);
@@ -73,12 +75,14 @@ for (const signal of ["SIGTERM", "SIGKILL"]) {
     );
     const { pid } = runner;
     assert.ok(pid, "the runner started");
-    t.after(() => {
+    const closed = once(runner, "close");
+    t.after(async () => {
       try {
         process.kill(-pid, "SIGKILL");
       } catch {
         // It has already gone.
       }
+      await closed;
     });
     const [line] = await once(runner.stdout, "data");
     assert.match(String(line), /ready/);

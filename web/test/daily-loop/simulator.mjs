@@ -20,8 +20,8 @@ const root = resolve(import.meta.dirname, "../../..");
  * new temporary folder named from `prefix`. The folder is removed when `use` settles,
  * whether it resolved or threw.
  */
-export async function withKeyFile(prefix, use) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+export async function withKeyFile(prefix, use, parent = tmpdir()) {
+  const dir = mkdtempSync(join(parent, prefix));
   try {
     const file = join(dir, "api-key");
     writeFileSync(file, `${randomBytes(24).toString("hex")}\n`, { mode: 0o600 });

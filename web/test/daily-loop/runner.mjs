@@ -2,11 +2,10 @@
 // removes what the run created (GRE-1887 review, GRE-1888). A stop must never let cleanup
 // report success while Docker is still creating something:
 //
-// - A `settle` command, one that asks Docker to create something, is left to finish. A
-//   killed `docker run` client does not stop the daemon from creating the container, so
-//   killing it would let cleanup list nothing and then the container appear. It runs in a
-//   process group of its own, so a terminal's Ctrl-C does not reach it either. If it has
-//   not finished 60 s after a stop, it is killed.
+// - A `settle` command is left to finish. Preflight tests can reap their fixtures, and a
+//   Docker create can finish before cleanup starts: killing its client does not stop the
+//   daemon. The command runs in its own group so terminal Ctrl-C does not reach it.
+//   If it has not finished 60 s after a stop, its group is killed.
 // - Any other command is signalled; with `group`, its whole process group, because
 //   `npm run` does not pass a signal on to the script it started. If it, or any process of
 //   its group, is still there GROUP_GRACE_MS after the stop, the group gets SIGKILL, whether
@@ -123,7 +122,7 @@ export const PASS_WAIT_MS = 3000;
 export const CONFIRM_LISTINGS = 3;
 
 /**
- * Removes what the run named `names.container` created, and `folder`, then lists what is
+ * Removes what the run named `names.container` created, and its temporary folders, then lists what is
  * left, up to TEARDOWN_PASSES times, PASS_WAIT_MS apart, until CONFIRM_LISTINGS listings in
  * a row are empty. So it catches what a create finishes up to 6 s after an empty listing,
  * whether the run passed, failed or was stopped: a failed test's `docker run` can time out
@@ -132,7 +131,7 @@ export const CONFIRM_LISTINGS = 3;
  * not clean: each list is returned, marked as not confirmed.
  * @param {ReturnType<typeof import("./installation.mjs").runNames>} names
  * @param {{
- *   folder: string,
+ *   folders: string[],
  *   removeFolder: (folder: string) => void,
  *   exists: (folder: string) => boolean,
  *   docker?: (args: string[], options: object) => { status: number | null, stdout: string | Buffer },
@@ -140,7 +139,7 @@ export const CONFIRM_LISTINGS = 3;
  * }} options
  * @returns {Promise<string[]>}
  */
-export async function teardown(names, { folder, removeFolder, exists, docker = dockerSync, wait = delay }) {
+export async function teardown(names, { folders, removeFolder, exists, docker = dockerSync, wait = delay }) {
   const lists = leftoverLists(names.container);
   const needed = CONFIRM_LISTINGS;
   /** @type {string[]} */
@@ -149,19 +148,26 @@ export async function teardown(names, { folder, removeFolder, exists, docker = d
   for (let pass = 0; pass < TEARDOWN_PASSES && clean < needed; pass++) {
     if (pass > 0) await wait(PASS_WAIT_MS);
     for (const args of cleanupCommands(names)) docker(args, { stdio: "ignore" });
-    removeFolder(folder);
+    for (const folder of folders) {
+      try {
+        removeFolder(folder);
+      } catch {
+        // The listing reports any folder still present. Keep removing and checking the
+        // other resources even if a folder needs another pass.
+      }
+    }
     left = lists
       .filter((list) => {
         const listed = docker(list, { encoding: "utf8" });
         return listed.status !== 0 || String(listed.stdout).trim() !== "";
       })
       .map((list) => `docker ${list.join(" ")}`);
-    if (exists(folder)) left.push(`ls ${folder}`);
+    left.push(...folders.filter(exists).map((folder) => `ls ${folder}`));
     clean = left.length === 0 ? clean + 1 : 0;
   }
   if (clean >= needed || left.length > 0) return left;
   // One empty listing proves nothing: a create can still finish after it.
-  return [...lists.map((list) => `docker ${list.join(" ")}`), `ls ${folder}`].map(
+  return [...lists.map((list) => `docker ${list.join(" ")}`), ...folders.map((folder) => `ls ${folder}`)].map(
     (check) => `${check} (empty only at the last ${clean} of ${TEARDOWN_PASSES} passes, so not confirmed)`,
   );
 }

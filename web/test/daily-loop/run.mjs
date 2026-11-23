@@ -14,8 +14,8 @@
 // reaches the simulator and the stand-in and that all three publish ports on host loopback
 // only, then runs the twelve Playwright tests. Whether the run passed, failed or was
 // stopped, it removes the containers (product, importer, restore, simulator and stand-in),
-// the three volumes, the image tag, the network, the run's folder (the Node installation and
-// the browser's files and downloads) and the simulator's API key folder it created. Before it
+// the three volumes, the image tag, the network, and the run's folders (the Node installation,
+// the simulator's API key, and the browser's files and downloads). Before it
 // removes them it waits for every process the tests started (runner.mjs, teardown.mjs), so a
 // `docker run` still in flight cannot create a container afterwards.
 //
@@ -70,8 +70,8 @@ const name = `pp-daily-loop-${randomBytes(4).toString("hex")}`;
 const names = runNames(name);
 const { image, simulator, spoolman } = names;
 
-// A stop ends the running command, starts no other, and still runs the cleanup below.
-// runner.mjs says how: a command that asks Docker to create something is left to finish.
+// A stop starts no further commands and still runs cleanup. Preflight and Docker creates
+// are given time to finish so they can clean up their fixtures or settle daemon work.
 const runner = createRunner({ cwd: root });
 const { run } = runner;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => runner.stop(signal));
@@ -160,15 +160,15 @@ async function checkSpoolman() {
  * one here when it is missing. The package's own build script runs where `npm rebuild`
  * would skip its install script under npm's `allowScripts`.
  */
-async function ensureBetterSqlite() {
+async function ensureBetterSqlite(env) {
   const web = resolve(root, "web");
   const probe = ["-e", "new (require('better-sqlite3'))(':memory:').close()"];
-  if (spawnSync(process.execPath, probe, { cwd: web, stdio: "ignore" }).status === 0) return 0;
+  if (spawnSync(process.execPath, probe, { cwd: web, stdio: "ignore", env }).status === 0) return 0;
   console.log("better-sqlite3 has no native binding; building it.");
   const build = ["run", "build-release", "--prefix", "node_modules/better-sqlite3"];
-  const code = await run("npm", build, { cwd: web, group: true });
+  const code = await run("npm", build, { cwd: web, group: true, env });
   if (code !== 0 || runner.stopped) return code || 1;
-  return spawnSync(process.execPath, probe, { cwd: web, stdio: "inherit" }).status ?? 1;
+  return spawnSync(process.execPath, probe, { cwd: web, stdio: "inherit", env }).status ?? 1;
 }
 
 /**
@@ -176,11 +176,11 @@ async function ensureBetterSqlite() {
  * readable to the image's user (uid 1000), which may not be the host's: the folder above
  * stays mode 0700, so no other host user reaches them.
  */
-async function writeNodeInstallation(dir) {
-  const code = await ensureBetterSqlite();
+async function writeNodeInstallation(dir, env) {
+  const code = await ensureBetterSqlite(env);
   if (code !== 0 || runner.stopped) return code || 1;
   const args = ["run", "fixture:synthetic", "--", "--seed", String(SYNTHETIC_SEED), dir];
-  const written = await run("npm", args, { cwd: resolve(root, "web"), group: true });
+  const written = await run("npm", args, { cwd: resolve(root, "web"), group: true, env });
   if (written !== 0 || runner.stopped) return written || 1;
   const open = (path) => {
     const stat = statSync(path);
@@ -192,22 +192,24 @@ async function writeNodeInstallation(dir) {
 }
 
 async function suite(keyFile, nodeDir, browserDir, testsDir) {
+  // Keep the synthetic generator's tsx cache with the preflight's temporary files.
+  const fixtureEnv = { ...process.env, TMPDIR: testsDir };
   const tests = ["steps", "simulator", "spoolman", "runner", "installation", "teardown"].map((test) =>
     resolve(here, `${test}.test.mjs`),
   );
   const steps = [
     // Exits when the tests end, so a listener a test leaves open fails the test, not the run.
-    // In its own group, like the browser tests: a stop reaches each test file's process. Its
-    // temporary files go in the run's folder, so a test stopped before its cleanup leaves none.
+    // Let preflight finish after a stop so test processes can reap their children. If it
+    // hangs, the settle deadline kills its group. Its files stay under the run's folder.
     [
       null,
       () =>
         run(process.execPath, ["--test", "--test-force-exit", ...tests], {
-          group: true,
-          env: { ...process.env, TMPDIR: testsDir },
+          settle: true,
+          env: fixtureEnv,
         }),
     ],
-    [null, () => writeNodeInstallation(nodeDir)],
+    [null, () => writeNodeInstallation(nodeDir, fixtureEnv)],
     ["docker", ["build", "-f", "Dockerfile.rust", "--build-arg", `PP_COMMIT=${commit}`, "-t", image, "."]],
     ["docker", ["network", "create", name]],
     [
@@ -256,8 +258,8 @@ async function suite(keyFile, nodeDir, browserDir, testsDir) {
     group: true,
     env: {
       ...process.env,
-      // Chromium's profile and Playwright's downloads and output go in the run's folder,
-      // which the cleanup removes, rather than the host's temporary folder or the checkout.
+      // Chromium's profile and Playwright's output and downloads go in the private
+      // browser folder, which cleanup removes.
       TMPDIR: browserDir,
       PP_DAILY_LOOP_OUTPUT_DIR: join(browserDir, "results"),
       PP_DAILY_LOOP_CONTAINER: name,
@@ -279,32 +281,35 @@ async function suite(keyFile, nodeDir, browserDir, testsDir) {
 }
 
 let code = 1;
-// The run's folder, new and 0700: the synthetic Node installation, which Step 2 imports, the
-// preflight tests' temporary files, and the browser's files and Playwright's output, downloads
-// included.
+// The synthetic Node installation, preflight files and printer key stay under the host's
+// temporary directory. Chromium needs a shorter path: Linux limits Unix socket addresses
+// to 108 bytes, including the terminating NUL.
 const runRoot = mkdtempSync(join(tmpdir(), `${name}-`));
-const browserDir = join(runRoot, "browser");
 const testsDir = join(runRoot, "tests");
+const folders = [runRoot];
+let browserDir;
 try {
-  mkdirSync(browserDir);
+  browserDir = mkdtempSync(join("/tmp", `${name}-browser-`));
+  folders.push(browserDir);
   mkdirSync(testsDir);
   // A run that stops before the tests must not leave an older run's score in place.
   rmSync(resolve(root, "web/test-results/daily-loop/daily-loop-score.json"), { force: true });
   // The printer's API key, new for each run; only the simulator and the tests read it.
-  code = await withKeyFile(`${name}-`, (keyFile) => suite(keyFile, join(runRoot, "node"), browserDir, testsDir));
+  code = await withKeyFile("key-", (keyFile) => suite(keyFile, join(runRoot, "node"), browserDir, testsDir), runRoot);
   if (runner.stopped) code ||= 1;
 } finally {
-  // Every process the tests started has exited: runner.mjs waits for each command's whole
-  // group. Chromium has a process group of its own; its profile path names the browser folder.
-  const running = await stopProcessesNaming(browserDir).then(
+  // Chromium runs in its own group, and the preflight fixtures that test detached
+  // processes can escape their test's group. Both name their private paths.
+  const processPaths = browserDir ? [testsDir, browserDir] : [testsDir];
+  const running = (await Promise.all(processPaths.map((path) => stopProcessesNaming(path).then(
     (pids) => pids.map((pid) => `process ${pid}`),
     (error) => [error.message],
-  );
+  )))).flat();
   // Only what this run created, by its unique name. Whether the run passed, failed or was
   // stopped, a `docker` command the tests started can have died or timed out while the daemon
   // still creates its container, so teardown confirms with three listings (runner.mjs).
   const left = await teardown(names, {
-    folder: runRoot,
+    folders,
     removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
     exists: existsSync,
   });
@@ -315,7 +320,7 @@ try {
   } else {
     const { importer, restore, importVolume, restoreVolume } = names;
     console.log(
-      `Removed containers ${name}, ${importer}, ${restore}, ${simulator} and ${spoolman}, volumes ${name}, ${importVolume} and ${restoreVolume}, network ${name}, image tag ${image}, and the run's folder.`,
+      `Removed containers ${name}, ${importer}, ${restore}, ${simulator} and ${spoolman}, volumes ${name}, ${importVolume} and ${restoreVolume}, network ${name}, image tag ${image}, and the run's temporary folders.`,
     );
   }
 }

@@ -75,9 +75,18 @@ export async function detached(body, args) {
     detached: true,
     stdio: ["ignore", "pipe", "ignore"],
   });
+  const closed = once(child, "close");
   await once(child.stdout, "data");
   child.stdout.destroy();
   const { pid } = child;
   if (pid === undefined) throw new Error("the fixture did not start");
-  return { child, pid, end: killGroup(pid) };
+  const kill = killGroup(pid);
+  return {
+    child,
+    pid,
+    end: async () => {
+      kill();
+      await closed;
+    },
+  };
 }

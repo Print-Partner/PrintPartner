@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -17,11 +18,10 @@ const STAND_IN = `${RUN}-spoolman`;
 // A `docker` on PATH that keeps its containers in a state file. `run --name N` writes
 // `started` once it can take a signal, then creates N when the test writes `release`: the
 // daemon finishing. A daemon goes on creating a container when its client is killed, so a
-// killed `run` hands N to a detached process that still creates it on `release`. `run` for
-// a name starting with `hang` never creates anything.
+// killed `run` hands N to a separate daemon that still creates it on `release`. The test
+// owns and reaps that daemon. `run` for a name starting with `hang` never creates anything.
 const FAKE_DOCKER = String.raw`#!/usr/bin/env node
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
-const { spawn } = require("node:child_process");
 const { join } = require("node:path");
 const dir = process.env.FAKE_DOCKER_DIR;
 const state = join(dir, "state");
@@ -37,7 +37,14 @@ const onRelease = (create) => {
   return poll;
 };
 if (args[0] === "register") {
-  onRelease(() => appendFileSync(state, args[1] + "\n"));
+  const owner = Number(args[1]);
+  const request = join(dir, "register");
+  const poll = setInterval(() => {
+    if (process.ppid !== owner) process.exit(0);
+    if (!existsSync(request) || !existsSync(join(dir, "release"))) return;
+    appendFileSync(state, readFileSync(request));
+    clearInterval(poll);
+  }, 20);
 } else if (args[0] === "run") {
   const name = after("--name");
   const poll = name.startsWith("hang")
@@ -49,7 +56,7 @@ if (args[0] === "register") {
   process.on("SIGTERM", () => {
     clearInterval(poll);
     if (!name.startsWith("hang")) {
-      spawn(process.execPath, [__filename, "register", name], { detached: true, stdio: "ignore", env: process.env }).unref();
+      writeFileSync(join(dir, "register"), name + "\n");
     }
     process.exit(143);
   });
@@ -72,13 +79,25 @@ async function until(check, what) {
 /** A fake Docker for one test: its `env`, its containers, and `docker` for teardown. */
 function fakeDocker(t) {
   const dir = mkdtempSync(join(tmpdir(), "pp-daily-loop-runner-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, "bin");
+  const cli = join(bin, "docker");
+  let daemon;
+  let reaped;
+  t.after(async () => {
+    try {
+      daemon?.kill();
+      await reaped;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   writeFileSync(join(dir, "state"), "");
   mkdirSync(bin);
-  writeFileSync(join(bin, "docker"), FAKE_DOCKER);
-  chmodSync(join(bin, "docker"), 0o755);
+  writeFileSync(cli, FAKE_DOCKER);
+  chmodSync(cli, 0o755);
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_DOCKER_DIR: dir };
+  daemon = spawn(process.execPath, [cli, "register", String(process.pid)], { stdio: "ignore", env });
+  reaped = once(daemon, "close");
   const containers = () => readFileSync(join(dir, "state"), "utf8").split("\n").filter(Boolean);
   return {
     env,
@@ -97,7 +116,7 @@ function fakeDocker(t) {
 
 const removeRun = (fake, wait = () => delay(50)) =>
   teardown(runNames(RUN), {
-    folder: fake.folder,
+    folders: [fake.folder],
     removeFolder: (dir) => rmSync(dir, { recursive: true, force: true }),
     exists: existsSync,
     docker: fake.docker,
@@ -198,7 +217,7 @@ test("a failed run, with no stop, removes a restore container and volume that ap
     fake.containers.add(`${RUN}-restore`);
     fake.volumes.add(`${RUN}-restored`);
   };
-  const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker: fake.docker, wait };
+  const options = { folders: [], removeFolder: () => {}, exists: () => false, docker: fake.docker, wait };
   assert.deepEqual(await teardown(runNames(RUN), options), []);
   assert.deepEqual([...fake.containers], [], "the late restore container was removed");
   assert.deepEqual([...fake.volumes], [], "the late restore volume was removed");
@@ -216,12 +235,40 @@ test("an empty listing only at the last pass is reported as not confirmed", asyn
     const present = args[0] === "ps" && pass.n < TEARDOWN_PASSES;
     return { status: 0, stdout: present ? `${RUN}\n` : "" };
   };
-  const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker, wait: async () => {} };
+  const options = { folders: [], removeFolder: () => {}, exists: () => false, docker, wait: async () => {} };
   const left = await teardown(runNames(RUN), options);
   assert.equal(pass.n, TEARDOWN_PASSES);
   assert.notDeepEqual(left, []);
   assert.ok(left.every((check) => check.endsWith("so not confirmed)")), left.join("\n"));
   assert.ok(left.some((check) => check.startsWith(`docker ps -aq --filter name=${RUN} `)));
+});
+
+test("a folder removal failure leaves the other folder and Docker cleanup running", async () => {
+  const fake = memoryDocker();
+  fake.containers.add(RUN);
+  const folders = ["/tmp/data", "/tmp/browser"];
+  const present = new Set(folders);
+  let first = true;
+  const removeFolder = (folder) => {
+    if (folder === folders[0] && first) {
+      first = false;
+      throw new Error("folder was busy");
+    }
+    present.delete(folder);
+  };
+  const wait = async () => {
+    assert.equal(fake.containers.size, 0);
+    assert.equal(present.has(folders[1]), false);
+  };
+  assert.deepEqual(await teardown(runNames(RUN), {
+    folders,
+    removeFolder,
+    exists: (folder) => present.has(folder),
+    docker: fake.docker,
+    wait,
+  }), []);
+  assert.equal(present.size, 0);
+  assert.deepEqual(fake.listings, [0, 0, 0, 0]);
 });
 
 test("the cleanup removes a container that appears after two empty listings", async () => {
@@ -241,7 +288,7 @@ test("the cleanup removes a container that appears after two empty listings", as
     waits.push(ms);
     if (waits.length === 2) present.add(`${RUN}-restore`);
   };
-  const options = { folder: "/nonexistent", removeFolder: () => {}, exists: () => false, docker, wait };
+  const options = { folders: [], removeFolder: () => {}, exists: () => false, docker, wait };
   assert.deepEqual(await teardown(runNames(RUN), options), []);
   assert.equal(present.size, 0, "the late restore container was removed");
   assert.deepEqual(listings, [0, 0, 0], "it appeared after the second empty listing");
@@ -258,7 +305,7 @@ const leaderOf = (member, mark) =>
   `require("node:child_process")
      .spawn(process.execPath, ["-e", ${JSON.stringify(`${tiedTo(process.pid)} ${member}`)}, "--", ${JSON.stringify(mark)}], { stdio: "ignore" })
      .unref();`;
-const markOf = () => `pp-daily-loop-runner-test-${process.pid}-${Date.now()}`;
+const markOf = () => join(tmpdir(), `pp-daily-loop-runner-test-${process.pid}-${Date.now()}`);
 
 test("a command with a group of its own counts as done only once its whole group has exited", { timeout: 20_000 }, async () => {
   const mark = markOf();

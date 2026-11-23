@@ -15,8 +15,10 @@ use std::{
 };
 
 fn run_startup_until_exit_or_timeout(data: &Path) -> Output {
-    let mut child = rust_only::command(data)
+    let mut child = child_process::command(rust_only::server_binary())
+        .env("PP_DESKTOP_REBUILD", "1")
         .env("PP_LISTEN_ADDR", "127.0.0.1:0")
+        .args(rust_only::start_args(data))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

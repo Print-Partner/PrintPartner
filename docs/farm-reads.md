@@ -79,21 +79,38 @@ started the print.
 | Host status | Link change |
 | --- | --- |
 | `printing` or `paused` with the link's file | `saw_active`; `last_progress` rises to the rounded percent |
-| `complete` with the link's file or no file name, once the link ran | `awaiting_verify`, `success`, `completed_at` now |
+| `complete` with the link's file or no file name, once the link ran, unless it replays a recorded finish (the fourth rule below) | `awaiting_verify`, `success`, `completed_at` now |
 | `error` with the link's file once it ran, or after it was seen printing | `host_failed`, `failed` |
 | `idle` after the link saw its print run, at 99% or more, not cancelled | `awaiting_verify` (a missed brief `complete`) |
 | `idle` after the link saw its print run, below 99% or cancelled | `host_failed`, `cancelled` |
 | `idle`, `offline` or `unknown`, for a link over 48 hours old whose print never ran | `dismissed`, `unknown` |
 
-Three rules differ from Node. First, an upload that never ran never finishes,
+Four rules differ from Node. First, an upload that never ran never finishes,
 so a `complete` the printer keeps showing cannot offer a second bed for it
 after a missed poll or a restart. Second, an explicit cancel never counts as a
 finish: the drivers still report Moonraker `cancelled` and PrusaLink `STOPPED`
 as `idle`, but also set `PrinterHostStatus::cancelled`, which is never
-serialized. Third, a status moves at most one link. When several `watching`
-sends of one file on one host would move, only the one seen printing moves,
-else the one its send started, else none, so an upload that never ran is not
-offered on Today.
+serialized. Third, apart from dismissing stale links, a status moves at most
+one link. When several `watching` sends of one file on one host would move,
+only the one seen printing moves, else the one its send started, else none, so
+an upload that never ran is not offered on Today.
+
+Fourth, a recorded finish blocks its replay. Moonraker can repeat a `complete`
+after it reconnects, and its status carries no job ID. A recorded finish is a
+link in `awaiting_verify` or `verified` with host outcome `success` and a
+readable `completed_at`. A `complete` does not move a `watching` link that was
+never seen printing when the same host already holds a recorded finish of the
+reported file whose `completed_at` is after the link's `created_at`. A
+`complete` with no file name matches any recorded finish on that host. So a
+finish one link took stays with that link, and a replay moves no other link.
+
+The rule uses timestamps and observed printing, so it has limits. Equal or
+unreadable timestamps, printing seen earlier from an older run, or a trimmed
+completion record can leave a replay free to move a second link. A send
+created before a recorded finish and never seen printing is treated as a
+replay. So a real print of the same file from that send stays `watching` if
+every `printing` and `paused` poll was missed. A send created after the
+recorded finish can still take a replay it cannot tell from a new finish.
 
 A status that changes no link writes nothing, and each changed link moves to
 the end of the stored list, as `updatePrinterCheckoffLink` does. Nothing is

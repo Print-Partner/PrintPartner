@@ -143,6 +143,8 @@ pub enum PrinterSetupError {
     /// The integration is a kind Rust keeps but cannot edit.
     #[error("the stored integration is a kind that cannot be edited")]
     NotEditable,
+    #[error("the integration changed since it was read")]
+    IntegrationChanged,
     /// A filament slot the edit would remove still holds filament.
     #[error("a filament slot the edit removes holds filament")]
     SlotHoldsFilament,
@@ -224,7 +226,13 @@ impl PrinterSetupClient {
             let Entry::Host(row) = entry.ok_or(PrinterSetupError::NotFound)? else {
                 return Err(PrinterSetupError::NotEditable);
             };
-            row.apply(patch, now(tx)?)
+            if let Some(expected) = &patch.expected_revision
+                && expected != row.revision()
+            {
+                return Err(PrinterSetupError::IntegrationChanged);
+            }
+            let updated_at = row.next_update(time::OffsetDateTime::now_utc())?;
+            row.apply(patch, updated_at)
                 .map_err(PrinterSetupError::Invalid)?;
             let summary = row.summary();
             save(tx, &installation, &entries)?;

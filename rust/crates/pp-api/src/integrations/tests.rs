@@ -44,6 +44,11 @@ async fn each_error_variant_has_one_status_and_code() {
             json!(code::INTEGRATION_NOT_EDITABLE),
         ),
         (
+            PrinterSetupError::IntegrationChanged,
+            409,
+            json!(code::INTEGRATION_CHANGED),
+        ),
+        (
             PrinterSetupError::StoredDocumentInvalid(fault(SetupDocument::Integrations)),
             500,
             json!(code::INTEGRATIONS_UNREADABLE),
@@ -206,6 +211,8 @@ async fn each_error_answers_one_whole_body() {
             conflict("The integration limit is reached. Delete one first.", "integration_limit")),
         (PrinterSetupError::NotEditable,
             conflict("This kind of integration cannot be edited here", "integration_not_editable")),
+        (PrinterSetupError::IntegrationChanged,
+            conflict("This integration changed since it was read. Reload it before saving.", "integration_changed")),
         (PrinterSetupError::SlotHoldsFilament,
             conflict("A filament slot this removes still holds filament. Unload it first.", "filament_slot_in_use")),
         (unreadable(SetupDocument::Integrations),

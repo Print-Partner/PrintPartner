@@ -16,9 +16,13 @@
 //! kind does not use; the readers ignore it.
 
 use super::{DocumentFault, Field, InvalidDocument, InvalidField, Reason, SetupDocument, Unread};
-use crate::auth::Secret;
+use crate::{
+    WriterFailure,
+    auth::{Secret, timestamp_at},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const MAX_NAME_BYTES: usize = 200;
 pub const MAX_BASE_URL_BYTES: usize = 2048;
@@ -150,6 +154,8 @@ pub struct IntegrationSummary {
     pub username: Option<String>,
     pub has_api_key: bool,
     pub has_password: bool,
+    /// Present for editable integrations.
+    pub revision: Option<String>,
 }
 
 /// A new integration, before validation. No `Debug`: an unchecked `base_url`
@@ -168,6 +174,7 @@ pub struct NewIntegration {
 /// credential, `Some(None)` clears it. No `Debug`, as for [`NewIntegration`].
 #[derive(Default)]
 pub struct IntegrationPatch {
+    pub expected_revision: Option<String>,
     pub name: Option<String>,
     pub base_url: Option<String>,
     pub enabled: Option<bool>,
@@ -239,6 +246,7 @@ impl Entry {
             username: None,
             has_api_key: row.config["api_key"].is_string(),
             has_password: row.config["password"].is_string(),
+            revision: None,
         };
         Ok(Self::Kept { summary, raw })
     }
@@ -367,6 +375,7 @@ impl Integration {
             unread: Unread::default(),
         };
         let values = IntegrationPatch {
+            expected_revision: None,
             name: Some(new.name),
             base_url: Some(new.base_url),
             enabled: None,
@@ -385,6 +394,32 @@ impl Integration {
                 .chain(checked.err().unwrap_or_default())
                 .collect()),
         }
+    }
+
+    /// Only expose timestamps in the format written by Rust and Node. An
+    /// older row with a malformed timestamp uses a fixed initial revision.
+    fn revision_time(&self) -> Option<OffsetDateTime> {
+        let stamp = &self.updated_at;
+        let parsed = OffsetDateTime::parse(stamp, &Rfc3339).ok()?;
+        (parsed.offset().is_utc() && timestamp_at(parsed) == *stamp).then_some(parsed)
+    }
+
+    pub(crate) fn revision(&self) -> &str {
+        self.revision_time().map_or("legacy", |_| &self.updated_at)
+    }
+
+    /// An edit always advances the stored timestamp, even if the clock stays
+    /// in the same millisecond or moves backward.
+    pub(crate) fn next_update(&self, now: OffsetDateTime) -> Result<String, WriterFailure> {
+        let Some(previous) = self.revision_time() else {
+            return Ok(timestamp_at(now));
+        };
+        let next = previous
+            .checked_add(Duration::milliseconds(1))
+            .ok_or_else(|| {
+                WriterFailure::Internal(anyhow::anyhow!("integration update time is out of range"))
+            })?;
+        Ok(timestamp_at(now.max(next)))
     }
 
     /// Sets what `patch` sends, at `now`. Only those values are checked, and
@@ -447,6 +482,7 @@ impl Integration {
             username: self.config.username.clone(),
             has_api_key: self.config.api_key.is_some(),
             has_password: self.config.password.is_some(),
+            revision: Some(self.revision().to_owned()),
         }
     }
 }

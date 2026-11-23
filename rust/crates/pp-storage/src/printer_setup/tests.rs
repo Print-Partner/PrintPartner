@@ -120,6 +120,7 @@ fn create_stores_rows_the_readers_accept_and_answers_without_secrets() {
         username: None,
         has_api_key: true,
         has_password: false,
+        revision: moon.revision.clone(),
     };
     assert_eq!(moon, expected);
     assert_eq!(moon.id.len(), 32);
@@ -136,6 +137,7 @@ fn create_stores_rows_the_readers_accept_and_answers_without_secrets() {
     let rows: Value = serde_json::from_str(&text).unwrap();
     let stamp = rows[0]["created_at"].as_str().unwrap();
     assert!(stamp.len() == 24 && stamp.ends_with('Z'), "{stamp}");
+    assert_eq!(moon.revision.as_deref(), Some(stamp));
     assert_eq!(
         rows[0],
         json!({"id": moon.id, "type": "moonraker", "name": "Voron",

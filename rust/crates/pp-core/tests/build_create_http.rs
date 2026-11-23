@@ -10,9 +10,10 @@
 //! refused with 400 and writes nothing. A client unsure whether its create
 //! landed lists Builds and finds the name instead of creating again.
 
-#[allow(dead_code)]
-#[path = "support/installation.rs"]
+#[path = "support/installation_server.rs"]
 mod support_installation;
+#[path = "support/installation_response.rs"]
+mod support_installation_response;
 
 use pp_storage::{Limits, WriterOwner, ownership_marker::WriterGate};
 use pp_testkit::{Fixture, Installation};
@@ -20,6 +21,19 @@ use reqwest::Method;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use support_installation::Server;
+
+impl Server {
+    /// Stops serving and shuts the owner down, then opens the same data
+    /// directory as the Rust-only runtime does and serves the product routes
+    /// on a new loopback port with the same session.
+    async fn restart(self) -> Self {
+        let (data, root, cookie) = self.shutdown().await;
+        let opened = WriterOwner::open_with_gate(&data, Limits::default(), WriterGate::SwitchOn);
+        let mut server = Self::serve(opened.unwrap().0, data, root, Some("1")).await;
+        server.cookie = cookie;
+        server
+    }
+}
 
 const PLANS: &str = "/api/v2/plans";
 

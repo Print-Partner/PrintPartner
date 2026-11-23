@@ -3,8 +3,7 @@
 //! the gateway's checked driver classifying a recorded loopback Moonraker.
 //! The recorded printer only answers; nothing contacts a real printer.
 
-#[allow(dead_code)]
-#[path = "support/installation.rs"]
+#[path = "support/installation_server.rs"]
 mod support_installation;
 
 use pp_storage::{Limits, WriterOwner};

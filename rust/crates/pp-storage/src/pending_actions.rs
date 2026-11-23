@@ -34,6 +34,8 @@ pub enum State {
     Applied,
     Dismissed,
     Unknown,
+    /// Invalidated by a restore while open. Must be staged again.
+    InvalidatedByRestore,
 }
 
 impl State {
@@ -44,6 +46,7 @@ impl State {
             "applied" => Self::Applied,
             "dismissed" => Self::Dismissed,
             "unknown" => Self::Unknown,
+            "invalidated_by_restore" => Self::InvalidatedByRestore,
             _ => return None,
         })
     }
@@ -100,7 +103,7 @@ pub struct PendingAction {
     pub state: State,
     pub created_at: String,
     pub expires_at: String,
-    /// When it was applied, dismissed or became unknown.
+    /// When it was applied, dismissed, invalidated by restore, or became unknown.
     pub settled_at: Option<String>,
 }
 
@@ -189,6 +192,8 @@ pub enum ActionError {
     AlreadyDismissed { at: String },
     #[error("the action's outcome is unknown")]
     OutcomeUnknown,
+    #[error("the action was invalidated by a restore and must be staged again")]
+    InvalidatedByRestore { at: String },
     #[error("could not allocate a pending action claim token")]
     ClaimTokenUnavailable,
     /// Stage only. `id` names no action (`None`) or one that cannot apply.
@@ -260,7 +265,7 @@ impl PendingActionsClient {
             .read("pending_actions.list", cancelled, wait, move |tx| {
                 let tenant = write::authorize(tx, &credential, policy)?;
                 let now = now(tx)?;
-                let open = "tenant_id=?1 AND state IN ('pending','applying','unknown')";
+                let open = "tenant_id=?1 AND state IN ('pending','applying','unknown','invalidated_by_restore')";
                 let mut statement = tx.prepare(&format!(
                     "SELECT {COLUMNS} FROM (SELECT * FROM pending_actions WHERE {open}
                      ORDER BY seq DESC LIMIT ?2) ORDER BY seq"
@@ -370,12 +375,15 @@ impl PendingActionsClient {
                 let tenant = write::authorize(tx, &credential, policy)?;
                 let now = now(tx)?;
                 let row = load(tx, tenant.id(), &id, &now)?.ok_or(ActionError::NotFound)?;
-                if !matches!(row.state, State::Pending | State::Expired | State::Unknown) {
+                if !matches!(
+                    row.state,
+                    State::Pending | State::Expired | State::Unknown | State::InvalidatedByRestore
+                ) {
                     return Err(refusal(row));
                 }
                 tx.execute(
                     "UPDATE pending_actions SET state='dismissed', settled_at=?1
-                     WHERE tenant_id=?2 AND id=?3 AND state IN ('pending','unknown')",
+                     WHERE tenant_id=?2 AND id=?3 AND state IN ('pending','unknown','invalidated_by_restore')",
                     params![now, tenant.id(), id],
                 )?;
                 Ok(())
@@ -390,6 +398,21 @@ pub(crate) fn interrupt_applying(connection: &mut Connection) -> anyhow::Result<
     let now = now(&tx)?;
     tx.execute(
         "UPDATE pending_actions SET state='unknown', settled_at=?1, claim_digest=NULL WHERE state='applying'",
+        [now],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Moves every open row in a restored database to `invalidated_by_restore`
+/// so restoring a backup never makes a previously settled or uncertain action
+/// claimable again. Single place encoding the restore rule.
+pub(crate) fn invalidate_after_restore(connection: &mut Connection) -> anyhow::Result<()> {
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let now = now(&tx)?;
+    tx.execute(
+        "UPDATE pending_actions SET state='invalidated_by_restore', settled_at=?1, claim_digest=NULL
+         WHERE state IN ('pending','applying','unknown')",
         [now],
     )?;
     tx.commit()?;
@@ -473,6 +496,7 @@ fn refusal(row: PendingAction) -> ActionError {
         State::Dismissed => ActionError::AlreadyDismissed { at },
         State::Applying => ActionError::InFlight,
         State::Unknown => ActionError::OutcomeUnknown,
+        State::InvalidatedByRestore => ActionError::InvalidatedByRestore { at },
         State::Expired | State::Pending => ActionError::Expired {
             expires_at: row.expires_at,
         },

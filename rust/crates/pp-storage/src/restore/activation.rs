@@ -117,6 +117,10 @@ fn activate(
         journal.swap(work)?;
         work.forward_step()?;
         let (mut restored, ready) = open_database(data_dir, seed)?;
+        // Invalidate open rows in the restored database before committing the
+        // journal. Keeping this out of `open_database` and `refresh` ensures
+        // normal opens and restore rollbacks leave live pending rows intact.
+        crate::pending_actions::invalidate_after_restore(&mut restored)?;
         work.forward_step()?;
         refresh(&mut restored)?;
         work.forward_step()?;

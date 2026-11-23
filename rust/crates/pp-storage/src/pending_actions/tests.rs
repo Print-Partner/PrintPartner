@@ -275,21 +275,30 @@ fn an_apply_interrupted_by_a_crash_reads_as_unknown_after_reopen() {
     assert!(!queue.settle(claim.token(), End::Applied));
 }
 
-#[test]
-fn restore_is_refused_while_an_action_applies() {
+fn restore_fixture() -> (tempfile::TempDir, WriterOwner, Queue) {
     let directory = tempfile::tempdir().unwrap();
     let gate = crate::ownership_marker::WriterGate::SwitchOn;
     let (owner, _) =
         WriterOwner::open_with_gate(directory.path(), Limits::default(), gate).unwrap();
     let queue = Queue::on(&owner);
+    (directory, owner, queue)
+}
+
+fn stage_backup(installation: &crate::restore::InstallationClient, archive: &[u8]) -> String {
+    let mut upload = installation.begin_upload(1 << 30).unwrap();
+    upload.write(archive).unwrap();
+    installation.stage(upload).unwrap().restore_id
+}
+
+#[test]
+fn restore_is_refused_while_an_action_applies() {
+    let (_directory, owner, queue) = restore_fixture();
     queue.stage("a", &[]).unwrap();
     let installation = owner.installation().unwrap();
     let archive = std::fs::read(&installation.export_backup("test").unwrap().path).unwrap();
     let claim = queue.claim("a").unwrap();
-    let mut upload = installation.begin_upload(1 << 30).unwrap();
-    upload.write(&archive).unwrap();
-    let staged = installation.stage(upload).unwrap();
-    let activate = || installation.activate(&staged.restore_id, CONFIRMATION);
+    let restore_id = stage_backup(&installation, &archive);
+    let activate = || installation.activate(&restore_id, CONFIRMATION);
     assert!(matches!(
         activate(),
         Err(RestoreError::Refused(Refusal::Busy))
@@ -297,6 +306,93 @@ fn restore_is_refused_while_an_action_applies() {
     assert_eq!(queue.states(), [("a".into(), State::Applying)]);
     assert!(queue.settle(claim.token(), End::Applied));
     activate().unwrap();
+    assert_eq!(queue.states(), [("a".into(), State::InvalidatedByRestore)]);
+}
+
+#[test]
+fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
+    let (_directory, owner, queue) = restore_fixture();
+    for id in [
+        "applied_after",
+        "dismissed_after",
+        "in_flight_at_backup",
+        "unknown_at_backup",
+        "applied_at_backup",
+        "dismissed_at_backup",
+    ] {
+        queue.stage(id, &[]).unwrap();
+    }
+    let in_flight = queue.claim("in_flight_at_backup").unwrap();
+    let unknown = queue.claim("unknown_at_backup").unwrap();
+    assert!(queue.settle(unknown.token(), End::Unknown));
+    let applied = queue.claim("applied_at_backup").unwrap();
+    assert!(queue.settle(applied.token(), End::Applied));
+    queue.dismiss("dismissed_at_backup").unwrap();
+
+    let installation = owner.installation().unwrap();
+    let archive = std::fs::read(&installation.export_backup("test").unwrap().path).unwrap();
+
+    let applied_after = queue.claim("applied_after").unwrap();
+    assert!(queue.settle(applied_after.token(), End::Applied));
+    assert!(queue.settle(in_flight.token(), End::Applied));
+    queue.dismiss("dismissed_after").unwrap();
+    queue.stage("live_pending", &[]).unwrap();
+
+    let restore_id = stage_backup(&installation, &archive);
+    assert!(matches!(
+        installation.activate(&restore_id, "wrong confirmation"),
+        Err(RestoreError::Refused(Refusal::Confirmation))
+    ));
+    assert!(
+        queue
+            .states()
+            .contains(&("live_pending".into(), State::Pending))
+    );
+
+    installation.activate(&restore_id, CONFIRMATION).unwrap();
+    let invalidated = [
+        "applied_after",
+        "dismissed_after",
+        "in_flight_at_backup",
+        "unknown_at_backup",
+    ];
+    assert_eq!(
+        queue.states(),
+        invalidated.map(|id| (id.into(), State::InvalidatedByRestore))
+    );
+    for id in invalidated {
+        assert!(matches!(
+            queue.claim(id),
+            Err(ActionError::InvalidatedByRestore { at }) if !at.is_empty()
+        ));
+    }
+    assert!(!queue.settle(in_flight.token(), End::Applied));
+    assert!(matches!(
+        queue.claim("applied_at_backup"),
+        Err(ActionError::AlreadyApplied { at }) if !at.is_empty()
+    ));
+    assert!(matches!(
+        queue.claim("dismissed_at_backup"),
+        Err(ActionError::AlreadyDismissed { at }) if !at.is_empty()
+    ));
+    assert!(matches!(
+        queue.stage("dependent", &["applied_after"]),
+        Err(ActionError::Dependency {
+            id,
+            state: Some(State::InvalidatedByRestore),
+        }) if id == "applied_after"
+    ));
+    queue.dismiss("applied_after").unwrap();
+    assert_eq!(
+        queue.states(),
+        [
+            ("dismissed_after".into(), State::InvalidatedByRestore),
+            ("in_flight_at_backup".into(), State::InvalidatedByRestore),
+            ("unknown_at_backup".into(), State::InvalidatedByRestore),
+        ]
+    );
+    let replacement = queue.stage("replacement", &[]).unwrap();
+    assert_eq!(replacement.state, State::Pending);
 }
 
 fn version(database: &Path) -> String {

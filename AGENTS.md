@@ -16,7 +16,7 @@ Print Partner plans and tracks layered STL kit builds for one user. The backend 
 
 ## Setup and checks
 
-Toolchains: Rust from `rust-toolchain.toml` (1.99), Node 24.21 for native assets and runtime, and Node 22.23.3 only for the schema-parity oracle (`PP_SCHEMA_PARITY_NODE`). Keep both Node versions; reinstall npm dependencies after switching.
+Toolchains: Rust from `rust-toolchain.toml` (1.100), Node 24.21 for native assets and runtime, and Node 22.23.3 only for the schema-parity oracle (`PP_SCHEMA_PARITY_NODE`). Keep both Node versions; reinstall npm dependencies after switching.
 
 ```sh
 npm --prefix web ci

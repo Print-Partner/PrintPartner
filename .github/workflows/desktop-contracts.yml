@@ -75,7 +75,7 @@ jobs:
           node ../rust/scripts/inspect-node-routes.mjs "${RUNNER_TEMP}/routes-inventory.json"
           diff -u ../fixtures/http/routes-inventory.json "${RUNNER_TEMP}/routes-inventory.json"
       - name: Install pinned Rust checks
-        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
       # PR CI skips the desktop_rebuild nextest on self-hosted Linux, so the
       # GRE-451 replay of these goldens runs here, once per run.
       - name: Replay GRE-451 parity fixtures against Rust

@@ -28,7 +28,7 @@ jobs:
           # --all-features matches [graph].all-features. Advisory exceptions are
           # limited to the two documented GTK3 IDs in rust/deny.toml.
           arguments: --all-features
-          rust-version: '1.99.0'
+          rust-version: '1.100.0'
       # The fuzz crate is excluded from the workspace and keeps its own
       # Cargo.lock. --locked fails when that lock no longer satisfies the
       # workspace's exact pins (it sat on tokio 1.53.2 after #1144, GRE-989).
@@ -40,4 +40,4 @@ jobs:
           manifest-path: rust/fuzz/Cargo.toml
           command: check
           arguments: --all-features --locked
-          rust-version: '1.99.0'
+          rust-version: '1.100.0'

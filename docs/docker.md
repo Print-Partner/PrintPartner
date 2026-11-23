@@ -24,7 +24,7 @@ Without `PP_COMMIT`, the build records the all-zero commit. That is an unversion
 The build has three stages:
 
 1. `web` (Node 24.21.0): `npm ci`, then the desktop web build (`VITE_PRINT_PARTNER_DESKTOP=1 npm run build`). `rust/scripts/build-desktop-manifest.py` then builds the replacement UI (`@print-partner/ui`) and writes the measured release manifest, which lists `apps/ui/dist` as `replacement_frontend`. The stage fails if `web/apps/ui/dist/index.html` is missing.
-2. `rust` (Rust 1.99.0): `cargo build --release -p pp-server`. That crate's default features include `desktop_rebuild`. The manifest is embedded through `PP_DESKTOP_RELEASE_MANIFEST`. The process still reads `PP_DESKTOP_REBUILD`, and the runtime stage sets it to `1`.
+2. `rust` (Rust 1.100.0): `cargo build --release -p pp-server`. That crate's default features include `desktop_rebuild`. The manifest is embedded through `PP_DESKTOP_RELEASE_MANIFEST`. The process still reads `PP_DESKTOP_REBUILD`, and the runtime stage sets it to `1`.
 3. `runtime` (Debian bookworm-slim): the `pp-server` binary, the measured replacement UI (`apps/ui/dist`, which it serves), the measured old frontend (`apps/web/dist`, still shipped), the community manifests (`apps/server/dist/current/data/manifests`), `web/package.json` for the version, `ca-certificates`, `tini`, and the license and notice files in `/usr/share/doc/print-partner/`.
 
 The runtime stage has no Node, npm, npx, Python, GUI or slicer. `scripts/docker-rust-smoke.py` checks this. Every base image is pinned by tag and digest. Release builds of the Node image pass `PP_APP_VERSION` and `PP_BUILD_DATE` the same way, and the Rust-only image takes the same build arguments for its OCI labels.

@@ -138,7 +138,7 @@ jobs:
         if: runner.os == 'Linux' && env.PP_RUNNER_KIND == 'pp-local'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
-          toolchain: '1.99.0'
+          toolchain: '1.100.0'
           components: rustfmt, clippy
       - name: Use the pp-local sccache
         if: env.PP_RUNNER_KIND == 'pp-local'

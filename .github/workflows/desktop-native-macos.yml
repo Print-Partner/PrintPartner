@@ -122,7 +122,7 @@ jobs:
           sw_vers > "$PP_EVIDENCE/runner.txt"
           uname -a >> "$PP_EVIDENCE/runner.txt"
           test "$(uname -m)" = arm64
-          rustup toolchain install 1.99.0 --profile minimal
+          rustup toolchain install 1.100.0 --profile minimal
           rustc --version --verbose > "$PP_EVIDENCE/rust-version.txt"
           test "$(node -p process.version)" = v24.21.0
           npm --prefix web ci 2>&1 | tee "$PP_EVIDENCE/npm-ci.log"
@@ -202,7 +202,7 @@ jobs:
           key: tauri-cli-2.12.1-${{ env.RUST_HOST }}-${{ env.TAURI_CLI_SHA256 }}
       - name: Install pinned Rust and Tauri CLI
         run: |
-          rustup toolchain install 1.99.0 --profile minimal
+          rustup toolchain install 1.100.0 --profile minimal
           rustc --version --verbose | tee "$PP_EVIDENCE/rust-version.txt"
           test "$(rustc --version --verbose | sed -n 's/^host: //p')" = '${{ env.RUST_HOST }}'
           mkdir -p "$RUNNER_TEMP/tauri-cli-cache"

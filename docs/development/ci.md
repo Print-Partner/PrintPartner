@@ -582,6 +582,12 @@ cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets 
 cargo nextest run --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
 ```
 
+`just ci` prepares these three things itself. A direct `cargo nextest` run needs all three first:
+
+- `rust/bundle-manifest.json`. Git ignores it, so a fresh worktree has none, and the `pp-compat` build script stops the build with `Generate the measured desktop manifest before building Rust`. Run the three commands above, or `just ci --only web-assets`. `PP_DESKTOP_RELEASE_MANIFEST` can name a manifest in another place.
+- `web/node_modules`, from `npm --prefix web ci`. Tests that start Node with `--import tsx` from the `web` directory, such as `pp-storage`'s `advisory_lock`, fail with `ERR_MODULE_NOT_FOUND` without it.
+- `PP_TEST_NODE`, set to the Node that the manifest measured: `export PP_TEST_NODE="$(command -v node)"`, the same path as `--node` above. Without it, the `pp-core` tests `runtime_m0` and `incompatible_storage` use `/usr/bin/node`. If that file is not the measured Node, they fail with `Node executable content mismatch`.
+
 A plain workspace command compiles `desktop_rebuild` for the image crates. `--features desktop_rebuild` still turns that feature on for `pp-desktop` and `pp-drivers`. Those two stay off by default. `--no-default-features` builds the old path. Hosted CI runs the plain command only. Doctests are not a CI step. `just ci` still runs the Clippy limits scan, which builds both feature modes, on Linux.
 
 On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before you run the tests. The workflow step `Mount a short case-sensitive TMPDIR` has the commands. Also set `PP_TEST_NODE` to the Node executable, as CI does. Without it the runtime tests fall back to `/usr/bin/node`, which macOS does not have. To skip the same tests as CI, add `-E` with the `NEXTEST_FILTER` value of the macOS job. On Windows, the same `--workspace` commands apply. On Linux, the Tauri shell also needs the GTK and WebKit packages that the workflow installs with `apt-get`.

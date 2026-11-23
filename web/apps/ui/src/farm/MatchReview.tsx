@@ -22,7 +22,8 @@ const suggestionsQuery = {
 /** The unmatched prints, for each print's integration: a claim's scope in the core. */
 const unmatchedQuery = {
   queryKey: ["core", "unmatched-prints"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listUnmatchedPrints", {}, signal),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    readCore("listUnmatchedPrints", {}, signal, undefined, { rejectRedirect: true }),
 } as const;
 
 const printersQuery = {

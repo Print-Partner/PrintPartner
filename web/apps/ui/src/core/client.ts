@@ -43,12 +43,26 @@ export class CoreError extends Error {
 }
 
 export class RedirectedWrite extends Error {
-  constructor(method: string, path: string, status: number) {
+  constructor(method: string, path: string, status: number, followed = false) {
     super(
-      `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; ` +
-        "it was not followed, so whether it applied is unknown",
+      followed
+        ? `${method} ${path} followed a redirect; its answer was not trusted, so whether it applied is unknown`
+        : `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; ` +
+            "it was not followed, so whether it applied is unknown",
     );
     this.name = "RedirectedWrite";
+  }
+}
+
+export class RedirectedRead extends Error {
+  constructor(method: string, path: string, status: number, followed = false) {
+    super(
+      followed
+        ? `${method} ${path} followed a redirect; its answer was not trusted`
+        : `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; ` +
+            "it was not followed",
+    );
+    this.name = "RedirectedRead";
   }
 }
 
@@ -154,7 +168,7 @@ export function notifyUnauthorized(write: boolean): void {
 export async function fetchCore(
   path: string,
   init?: RequestInit,
-  options?: { notifyUnauthorized?: boolean },
+  options?: { notifyUnauthorized?: boolean; rejectRedirect?: boolean },
 ): Promise<Response> {
   if (!SAME_ORIGIN_PATH.test(path)) {
     throw new TypeError(
@@ -163,13 +177,18 @@ export async function fetchCore(
   }
   const method = (init?.method ?? "GET").toUpperCase();
   const write = method !== "GET" && method !== "HEAD";
-  // A followed 307 or 308 sends the write again to the Location. Set last, so no caller undoes it.
+  const manual = write || options?.rejectRedirect === true;
+  // A followed 307 or 308 sends the write again to the Location.
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    ...(write ? { redirect: "manual" as const } : {}),
+    ...(manual ? { redirect: "manual" as const } : {}),
   });
-  if (write && redirectAnswer(response)) throw new RedirectedWrite(method, path, response.status);
+  if (manual && redirectAnswer(response)) {
+    throw write
+      ? new RedirectedWrite(method, path, response.status, response.redirected)
+      : new RedirectedRead(method, path, response.status, response.redirected);
+  }
   if (!response.ok) {
     if (response.status === 401 && options?.notifyUnauthorized !== false) {
       notifyUnauthorized(write);

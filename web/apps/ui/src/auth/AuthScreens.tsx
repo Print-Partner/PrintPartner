@@ -207,7 +207,9 @@ export function SetupScreen() {
         // The register handler and the auth guard both answer 403. Only a status read that
         // now finds the owner account says the handler refused because it exists.
         if (!(error instanceof CoreError) || error.status !== 403) throw error;
-        const status = await readCore("readAuthStatus", {}).catch(() => null);
+        const status = await readCore("readAuthStatus", {}, undefined, undefined, {
+          rejectRedirect: true,
+        }).catch(() => null);
         throw status?.setup_required === false ? new OwnerExists() : error;
       },
     );

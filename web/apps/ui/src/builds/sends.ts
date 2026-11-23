@@ -6,7 +6,7 @@ import {
   type SendQueue,
   type SendUnitsPreview,
 } from "@print-partner/rust-client";
-import { CoreError, fetchCore } from "../core/client";
+import { CoreError, fetchCore, RedirectedRead } from "../core/client";
 import { ContractError, readCore } from "../core/rust";
 import { lostSend } from "../core/writes";
 
@@ -21,13 +21,16 @@ export const SLICED = /\.(gcode|gco|bgcode)$/i;
 
 export const sendQueueQuery = {
   queryKey: ["core", "send-queue"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("readSendQueue", {}, signal),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    readCore("readSendQueue", {}, signal, undefined, { rejectRedirect: true }),
+  retry: (failures: number, error: Error) => !(error instanceof RedirectedRead) && failures < 3,
 } as const;
 
 /** The farm read, fresh each time the sheet opens, for each printer's current state. */
 export const sendPrintersQuery = {
   queryKey: ["core", "printers", "send-sheet"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinters", {}, signal),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    readCore("listPrinters", {}, signal, undefined, { rejectRedirect: true }),
   staleTime: 0,
 } as const;
 

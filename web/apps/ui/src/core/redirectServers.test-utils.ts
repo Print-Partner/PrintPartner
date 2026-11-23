@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 export async function redirectServers(landed: unknown) {
   const first: string[] = [];
   const destination: string[] = [];
-  let status: 307 | 308 = 307;
+  let status: 302 | 307 | 308 = 307;
   const listen = async (server: Server) => {
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -27,7 +27,7 @@ export async function redirectServers(landed: unknown) {
   return {
     first,
     destination,
-    redirectWith(next: 307 | 308) {
+    redirectWith(next: 302 | 307 | 308) {
       status = next;
       first.length = 0;
       destination.length = 0;

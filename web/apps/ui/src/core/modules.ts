@@ -24,7 +24,7 @@ export function useModule(name: ModuleName): ModuleStatus | undefined {
  */
 export const healthQuery = queryOptions({
   queryKey: ["core", "modules"],
-  queryFn: ({ signal }) => readCore("readHealth", {}, signal),
+  queryFn: ({ signal }) => readCore("readHealth", {}, signal, undefined, { rejectRedirect: true }),
   staleTime: 30_000,
   refetchInterval: (query) =>
     query.state.status === "error" ||

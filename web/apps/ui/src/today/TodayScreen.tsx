@@ -37,7 +37,8 @@ const nothingMarked = (printer: string) =>
 
 const checkoffQuery = {
   queryKey: ["core", "checkoff"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinterCheckoff", {}, signal),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    readCore("listPrinterCheckoff", {}, signal, undefined, { rejectRedirect: true }),
   refetchInterval: REFRESH_MS,
 } as const;
 

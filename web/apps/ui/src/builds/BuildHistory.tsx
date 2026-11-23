@@ -2,7 +2,7 @@ import type { BuildHistoryPage, RestoreSnapshotRequest } from "@print-partner/ru
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { Link, useNavigate, useOutletContext } from "react-router";
-import { CoreError } from "../core/client";
+import { CoreError, RedirectedRead } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
 import { lostSend, newKey } from "../core/writes";
 import { useConnection } from "../frame/connection";
@@ -88,12 +88,16 @@ interface PendingRestore {
 const historyQuery = (id: number) => ({
   queryKey: ["core", "history", id],
   queryFn: ({ pageParam, signal }: { pageParam: string | null; signal: AbortSignal }) =>
-    readCore("readBuildHistory", { id }, signal, pageParam ? { cursor: pageParam } : undefined),
+    readCore("readBuildHistory", { id }, signal, pageParam ? { cursor: pageParam } : undefined, {
+      rejectRedirect: true,
+    }),
   initialPageParam: null as string | null,
   getNextPageParam: (page: BuildHistoryPage) => page.next_cursor,
   // A missing Build answers 404 for good, so it is not retried.
   retry: (failures: number, error: Error) =>
-    !(error instanceof CoreError && error.status === 404) && failures < 3,
+    !(error instanceof RedirectedRead) &&
+    !(error instanceof CoreError && error.status === 404) &&
+    failures < 3,
 });
 
 function UndoCell({

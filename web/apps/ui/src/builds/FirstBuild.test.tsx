@@ -7,8 +7,9 @@ import type {
 } from "@print-partner/rust-client";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { routes } from "../routes";
 import { createStore, resetCreateBuild } from "./createBuild";
 import { health } from "./sendQueueFake.test-utils";
@@ -719,5 +720,90 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     // Only this session's 401 opens sign-in.
     const path = status === 401 && !back ? "/login" : back ? "/builds" : "/library";
     expect(router.state.location.pathname).toBe(path);
+  });
+});
+
+describe("Create Build with real loopback redirect servers", () => {
+  let servers: Awaited<ReturnType<typeof redirectServers>>;
+  beforeAll(async () => {
+    servers = await redirectServers({ profiles: [storedBuild(4242, "Ghost")] });
+  });
+  afterAll(() => servers.close());
+
+  it.each([307, 308] as const)(
+    "a %i on Create and on the reconciliation list read stays unknown and never confirms a Build",
+    async (status) => {
+      servers.redirectWith(status);
+      const core = scriptedCore();
+      let listReads = 0;
+      const page = vi.fn((path: string, init?: RequestInit) => {
+        if (path === "/api/v2/plans" && init?.method === "POST") {
+          return servers.forward(path, init);
+        }
+        if (path === "/api/v2/plans" && (!init?.method || init.method === "GET")) {
+          listReads += 1;
+          if (listReads > 1) return servers.forward(path, init);
+        }
+        return core.fetchMock(path, init);
+      });
+      vi.stubGlobal("fetch", page);
+      const router = createMemoryRouter(routes, { initialEntries: ["/builds"] });
+      const queryClient = createQueryClient();
+      queryClient.setDefaultOptions({
+        queries: { ...queryClient.getDefaultOptions().queries, retry: false },
+      });
+      render(<App router={router} queryClient={queryClient} />);
+
+      fireEvent.click(await openWithName("Ghost"));
+      const alert = await within(dialog()).findByRole("alert");
+      expect(alert.textContent).toBe(
+        "Could not confirm the Build was created, and the Builds list did not load. Check Builds before you press Create again.",
+      );
+      expect(alert.textContent).not.toContain("so it was created");
+      expect(servers.first).toEqual(["POST /api/v2/plans", "GET /api/v2/plans"]);
+      expect(servers.destination).toEqual([]);
+      expect(core.builds).toHaveLength(0);
+    },
+  );
+
+  it("a redirected Builds cache refresh while checking never confirms a Build via cache fallback", async () => {
+    servers.redirectWith(307);
+    let releaseCheck: () => void = () => {};
+    let listReads = 0;
+    const core = scriptedCore();
+    const page = vi.fn((path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans" && init?.method === "POST") {
+        return servers.forward(path, init);
+      }
+      if (path === "/api/v2/plans" && (!init?.method || init.method === "GET")) {
+        listReads += 1;
+        if (listReads === 2) {
+          return new Promise<Response>((resolve) => {
+            releaseCheck = () => void servers.forward(path, init).then(resolve);
+          });
+        }
+        if (listReads >= 3) return servers.forward(path, init);
+      }
+      return core.fetchMock(path, init);
+    });
+    vi.stubGlobal("fetch", page);
+    const router = createMemoryRouter(routes, { initialEntries: ["/builds"] });
+    const queryClient = createQueryClient();
+    queryClient.setDefaultOptions({
+      queries: { ...queryClient.getDefaultOptions().queries, retry: false },
+    });
+    render(<App router={router} queryClient={queryClient} />);
+
+    fireEvent.click(await openWithName("Ghost"));
+    await within(dialog()).findByText("Checking the Builds list.");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("link", { name: "Library" }));
+    await heading("Library");
+    fireEvent.click(screen.getByRole("link", { name: "Builds" }));
+    await screen.findByText(/Could not refresh Builds/);
+    releaseCheck();
+    await waitFor(() => expect(createStore.get().kind).toBe("unread"));
+    expect(servers.destination).toEqual([]);
+    expect(core.builds).toHaveLength(0);
   });
 });

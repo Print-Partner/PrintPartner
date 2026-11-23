@@ -8,7 +8,8 @@ import { readCore } from "./rust";
  */
 export const deductionsQuery = {
   queryKey: ["core", "spoolman-deductions"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listSpoolmanDeductions", {}, signal),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    readCore("listSpoolmanDeductions", {}, signal, undefined, { rejectRedirect: true }),
   refetchOnReconnect: false,
 };
 

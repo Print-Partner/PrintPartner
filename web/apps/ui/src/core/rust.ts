@@ -40,7 +40,7 @@ export async function readCore<N extends ReadRoute>(
   params: RouteParams<N>,
   signal?: AbortSignal,
   query?: Record<string, string>,
-  options?: { notifyUnauthorized?: boolean },
+  options?: { notifyUnauthorized?: boolean; rejectRedirect?: boolean },
 ): Promise<RouteResponse<N>> {
   const path = routePath(name, params) + (query ? `?${new URLSearchParams(query)}` : "");
   const init = { headers: { accept: "application/json" }, signal };

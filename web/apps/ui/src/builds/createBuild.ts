@@ -153,7 +153,7 @@ async function freshList(client: QueryClient): Promise<ProfileList | null> {
   let list: ProfileList | undefined;
   let failure: unknown;
   try {
-    const quiet = { notifyUnauthorized: false };
+    const quiet = { notifyUnauthorized: false, rejectRedirect: true };
     list = await readCore("listBuilds", {}, abort.signal, undefined, quiet);
   } catch (error: unknown) {
     failure = error;

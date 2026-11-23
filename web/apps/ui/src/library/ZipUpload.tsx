@@ -264,7 +264,9 @@ export function SourceRows({
       if (!stopped) timer = window.setTimeout(read, IMPORT_POLL_MS);
     };
     const read = () => {
-      void readCore("readJob", { id: jobId }, controller.signal).then(
+      void readCore("readJob", { id: jobId }, controller.signal, undefined, {
+        rejectRedirect: true,
+      }).then(
         (job) => {
           if (stopped) return;
           if (job.status === "pending" || job.status === "running") {

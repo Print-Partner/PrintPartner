@@ -1,6 +1,30 @@
 //! The production worker, driver and checked HTTP transport, with a fake peer.
 use super::*;
+use pp_storage::send_queue::{INTERRUPTED_ERROR, UNKNOWN_OUTCOME_ERROR};
 use pp_testkit::moonraker::fault::{FaultPrinter, Reply as FaultReply};
+
+/// What a reopened job holds on each path to an uncertain send.
+struct Recovery {
+    generation: i64,
+    text: &'static str,
+    error: &'static str,
+}
+
+/// The worker saw the reply go missing and recorded it. Restart skips the
+/// job, so `generation` stays at the admitted attempt's.
+const UNKNOWN: Recovery = Recovery {
+    generation: 1,
+    text: "Effect outcome unknown",
+    error: UNKNOWN_OUTCOME_ERROR,
+};
+
+/// The process died mid-attempt. Restart fences the attempt with a new
+/// `generation`.
+const INTERRUPTED: Recovery = Recovery {
+    generation: 2,
+    text: "The send may have reached the printer; it is never resent automatically. Inspect and reconcile",
+    error: INTERRUPTED_ERROR,
+};
 
 impl Farm {
     fn reopen(self) -> Self {
@@ -31,7 +55,38 @@ impl Farm {
         document
     }
 
-    async fn assert_not_resent(&self, printer: &FaultPrinter, effects: usize) {
+    fn staged(&self) -> Vec<u8> {
+        std::fs::read(self.exports().join("printer-uploads/q1/a.gcode")).unwrap()
+    }
+
+    /// Reopens twice with no work between and returns the first reopened
+    /// document.
+    async fn assert_stable_reopen(
+        self,
+        printer: &FaultPrinter,
+        admitted: &Value,
+        effects: usize,
+        expected: &Recovery,
+    ) -> Value {
+        let farm = self.reopen();
+        let reopened = farm.document();
+        assert_eq!(reopened["effects"], admitted["effects"]);
+        assert_eq!(reopened["generation"], expected.generation);
+        assert_eq!(reopened["recovery"], expected.text);
+        farm.assert_not_resent(printer, effects, expected.error)
+            .await;
+        let farm = farm.reopen();
+        assert_eq!(
+            farm.document(),
+            reopened,
+            "a repeated reopen must not touch the job"
+        );
+        farm.assert_not_resent(printer, effects, expected.error)
+            .await;
+        reopened
+    }
+
+    async fn assert_not_resent(&self, printer: &FaultPrinter, effects: usize, error: &str) {
         let before = self.document();
         let worker = self.worker();
         for _ in 0..3 {
@@ -57,17 +112,18 @@ impl Farm {
         );
         assert_eq!(printer.accepted(), effects);
         assert_eq!(printer.received(), effects, "no repeated HTTP request");
-        assert_eq!(self.outcome("q1").0, "error");
+        let (state, recorded, ..) = self.outcome("q1");
+        assert_eq!(state, "error");
+        assert_eq!(recorded.as_deref(), Some(error));
         assert_eq!(before["state"], "reconciliation_required");
         assert!(before["public_result"].is_null());
         assert!(
             self.links().is_null(),
             "uncertainty must not create a Checkoff link"
         );
-        let retained = std::fs::read(self.exports().join("printer-uploads/q1/a.gcode")).unwrap();
         assert_eq!(
             before["effects"][0]["intent"]["content_hash"],
-            hex::encode(Sha256::digest(retained))
+            hex::encode(Sha256::digest(self.staged()))
         );
     }
 }
@@ -88,27 +144,37 @@ fn begin_send(printer: &FaultPrinter, start: bool) -> (Farm, RunningSend, Value)
     assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
     let worker = farm.worker();
     let task = tokio::spawn(async move { worker.run_next().await });
-    assert_upload(&printer.request().unwrap());
+    assert_upload(&printer.request().unwrap(), &farm.staged());
     let operation = if start {
         "printer_upload_and_start"
     } else {
         "printer_upload"
     };
     let admitted = farm.assert_intent(operation);
+    assert_eq!(admitted["generation"], 1);
+    assert_eq!(
+        printer.accepted(),
+        0,
+        "no fake effect before committed intent"
+    );
     (farm, task, admitted)
 }
 
-fn assert_upload(request: &pp_testkit::moonraker::fault::Request) {
+fn assert_upload(request: &pp_testkit::moonraker::fault::Request, staged: &[u8]) {
     assert!(
         request.line.starts_with("POST /server/files/upload "),
         "{}",
         request.line
     );
-    assert!(
+    assert!(staged.starts_with(b"G28\nG1 X10"));
+    assert_eq!(
         request
             .body
-            .windows(b"G28\nG1 X10".len())
-            .any(|bytes| bytes == b"G28\nG1 X10")
+            .windows(staged.len())
+            .filter(|bytes| *bytes == staged)
+            .count(),
+        1,
+        "the whole staged file, sent once"
     );
     assert!(
         request.body.ends_with(b"--\r\n"),
@@ -119,27 +185,21 @@ fn assert_upload(request: &pp_testkit::moonraker::fault::Request) {
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_28_recovery_lost_upload_reply_survives_repeated_restart() {
     let printer = FaultPrinter::start().unwrap();
-    let (mut farm, task, admitted) = begin_send(&printer, false);
-    assert_eq!(
-        printer.accepted(),
-        0,
-        "no fake effect before committed intent"
-    );
+    let (farm, task, admitted) = begin_send(&printer, false);
     printer.accept(FaultReply::Lost).unwrap();
     assert!(matches!(settled(task).await, Sent::Unknown(_)));
-    let effect = farm.document()["effects"][0].clone();
-    assert_eq!(effect, admitted["effects"][0]);
-    for _ in 0..2 {
-        farm = farm.reopen();
-        assert_eq!(farm.document()["effects"][0], effect);
-        farm.assert_not_resent(&printer, 1).await;
-    }
+    let settled = farm.document();
+    assert_eq!(settled["effects"], admitted["effects"]);
+    let reopened = farm
+        .assert_stable_reopen(&printer, &admitted, 1, &UNKNOWN)
+        .await;
+    assert_eq!(reopened, settled, "restart leaves a recorded unknown alone");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
     let printer = FaultPrinter::start().unwrap();
-    let (mut farm, task, _) = begin_send(&printer, true);
+    let (farm, task, _) = begin_send(&printer, true);
     printer.accept(FaultReply::Accepted).unwrap();
     let start = printer.request().unwrap();
     assert!(
@@ -152,9 +212,11 @@ async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
     assert_eq!(printer.accepted(), 1);
     printer.accept(FaultReply::Lost).unwrap();
     assert!(matches!(settled(task).await, Sent::Unknown(_)));
-    farm = farm.reopen();
-    assert_eq!(farm.document()["effects"], admitted["effects"]);
-    farm.assert_not_resent(&printer, 2).await;
+    let settled = farm.document();
+    let reopened = farm
+        .assert_stable_reopen(&printer, &admitted, 2, &UNKNOWN)
+        .await;
+    assert_eq!(reopened, settled, "restart leaves a recorded unknown alone");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -171,17 +233,6 @@ async fn ticket_t_28_recovery_interruption_after_remote_acceptance_keeps_intent(
         "no completion checkpoint was written"
     );
     printer.accept(FaultReply::Lost).unwrap();
-    let farm = farm.reopen();
-    let recovered = farm.document();
-    assert_eq!(recovered["effects"], admitted["effects"]);
-    assert!(recovered["generation"].as_i64().unwrap() > admitted["generation"].as_i64().unwrap());
-    assert!(
-        recovered["recovery"]
-            .as_str()
-            .unwrap()
-            .contains("never resent automatically")
-    );
-    farm.assert_not_resent(&printer, 1).await;
-    let farm = farm.reopen();
-    farm.assert_not_resent(&printer, 1).await;
+    farm.assert_stable_reopen(&printer, &admitted, 1, &INTERRUPTED)
+        .await;
 }

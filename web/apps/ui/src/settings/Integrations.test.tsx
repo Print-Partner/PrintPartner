@@ -39,6 +39,7 @@ const view = (id: string, kind: string, name: string, more: Record<string, unkno
   username: null,
   has_api_key: false,
   has_password: false,
+  revision: kind === "bambu" ? null : "fixture-revision",
   ...more,
 });
 const LIST = {

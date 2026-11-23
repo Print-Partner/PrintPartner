@@ -61,6 +61,7 @@ const INTEGRATIONS = PRINTERS.filter((p) => p.integration).map((p) => ({
   username: null,
   has_api_key: p.integration.kind !== "bambu",
   has_password: false,
+  revision: p.integration.kind === "bambu" ? null : "fixture-revision",
 }));
 const SETUP_LISTS = {
   "/api/v2/printers": { printers: PRINTERS },

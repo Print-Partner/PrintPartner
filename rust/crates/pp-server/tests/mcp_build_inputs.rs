@@ -79,6 +79,18 @@ impl Gateway {
             .await;
         assert_eq!(response.status(), 200);
         gateway.cookies = format!("{}; {}", gateway.cookies, first_cookie(&response));
+        // The data directory is on /tmp, which may have less free space than
+        // the 5 GiB default import reserve.
+        let reserve = json!({ "reserve_bytes": 1_048_576 });
+        let (status, body) = gateway
+            .rest(
+                Method::PUT,
+                "/api/v1/settings/import-free-space-reserve",
+                Some(reserve),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["reserve_bytes"].as_u64(), Some(1_048_576));
         let on = json!({ "on": true });
         let (status, body) = gateway
             .rest(Method::PUT, "/api/v2/modules/orders", Some(on))

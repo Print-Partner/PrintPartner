@@ -553,9 +553,8 @@ fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
 /// gateway answers admitted requests from the `pp-api` routers. A stopped
 /// import that holds the import's stage or report is refused before anything
 /// touches the folder (`first_run::admit_folder`). The marker decision runs
-/// next; release
-/// verification, cutover recovery and source-sync admission run only on an
-/// accepted directory (`rust_startup::admit`).
+/// next; release verification, cutover recovery and source-sync admission run
+/// only on an accepted directory (`rust_startup::admit`).
 /// `server_updates` is set only for the headless `pp-server`: it checks for
 /// server updates, and sign-out keeps it serving. The desktop launcher does
 /// neither.

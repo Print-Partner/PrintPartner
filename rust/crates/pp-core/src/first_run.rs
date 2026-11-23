@@ -189,7 +189,7 @@ impl std::error::Error for StartRefusal {}
 /// Refuses, in every build, a stopped import that holds the stage or the
 /// report, before startup touches the folder. Every other folder goes on to
 /// the writer's marker decision. An import that failed while moving its copy
-/// into place is an [`DataFolder::UnmarkedDatabase`] and goes on too: release
+/// into place is a [`DataFolder::UnmarkedDatabase`] and goes on too: release
 /// builds refuse it at the marker check, and builds with
 /// `test-unmarked-writer` open it, as they open Node folders on purpose.
 pub fn admit_folder(folder: &Path) -> Result<(), StartRefusal> {

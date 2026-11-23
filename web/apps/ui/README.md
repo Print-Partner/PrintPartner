@@ -25,7 +25,7 @@ npm --prefix web run test --workspace @print-partner/ui
 ```
 
 `just ci --only ui-package` runs typecheck, lint, test, build and the
-`test:browser` font request check. The legacy root
+`test:browser` checks in `test/browser/all.mjs`. The legacy root
 `build`, `typecheck` and `test` scripts do not include this package.
 
 ## App frame
@@ -71,6 +71,12 @@ Content-Security-Policy in Chromium and WebKitGTK and checks that the UI, the
 printer stream and the palette work while planted scripts and an external fetch are
 blocked. `src/csp.ts`, imported first by `src/main.tsx`, makes the bundle fit that
 policy; see [Content security policy](../../../docs/network-sharing.md#content-security-policy).
+
+`test/browser/plate-preview.browser.mjs` opens a Build's Checkoff tab in
+WebKitGTK and Chromium with WebGL turned off and checks the Plate preview: each
+sentence, a hidden SVG bar of nonzero width, no canvas, and axe at WCAG 2.2 AA.
+`test/bundle-graph.test.ts` fails when `three` or `@react-three/*` is reachable
+from `index.html` through static imports.
 
 ## Talking to the Rust core
 
@@ -195,6 +201,11 @@ Spoolman route, so it works with those Modules off.
 - **Printed or assembled.** "Mark printed" and "Mark assembled" choose which flag
   a burst sets, and switching clears the picks. In assembled mode only printed
   units can be picked.
+- **Plate preview.** With an accepted Plate layout, `src/builds/PlatePreview.tsx`
+  draws one SVG bar per Plate, plus "On no Plate", beside a sentence with its unit
+  and printed counts. The sentence is the text equivalent; the SVG is hidden from
+  assistive tech. It uses no canvas or WebGL
+  ([Plate preview](../../../docs/product/ui-ux-target/checkoff.md#plate-preview-gre-1112)).
 - **Preview.** Before anything is sent, the preview lists what each Part gains or
   loses, computed as the core computes it. Printed units fill from the left, so
   printing a unit prints every lower one, and clearing one clears every higher

@@ -99,7 +99,7 @@ Graphite and cyan, IBM Plex, as decided. Dark is the default; light and a shop-f
 - **Density.** Comfortable (40 px rows) and compact (32 px). Checkoff and phone targets are 44 to 48 px.
 - **Motion.** 120 to 200 ms, ease-out, showing where a thing went. Reduced motion keeps the same information as text.
 - **Accessibility.** WCAG 2.2 AA, focus appearance, 200% text, 400% reflow, forced colors, live regions for tallies and printer events. Drag has a menu and a keyboard equivalent. Every disabled control explains itself.
-- **Platforms.** WKWebView, WebView2 and WebKitGTK are release targets. On WebKitGTK set `WEBKIT_DISABLE_DMABUF_RENDERER=1` (the repo's value, not `WEBKIT_DMABUF_RENDERER_FORCE_SHM`), and the plate preview must have a non-WebGL fallback. Nothing in the first release needs WebGL.
+- **Platforms.** WKWebView, WebView2 and WebKitGTK are release targets. On WebKitGTK set `WEBKIT_DISABLE_DMABUF_RENDERER=1` (the repo's value, not `WEBKIT_DMABUF_RENDERER_FORCE_SHM`), and the plate preview must have a non-WebGL fallback. Nothing in the first release needs WebGL: the Checkoff [Plate preview](ui-ux-target/checkoff.md#plate-preview-gre-1112) is SVG, and a test keeps Three.js out of the initial import graph.
 
 The tokens that implement this section, and the gate that checks them, are described in [Replacement UI tokens](ui-tokens.md).
 

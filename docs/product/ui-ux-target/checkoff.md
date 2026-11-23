@@ -28,6 +28,14 @@ The plate assumption must be validated against Build 22's accepted plates before
 
 Checkoff is not a Plan change, so it does not pass the Accept gate. It is undoable as a burst.
 
+## Plate preview (GRE-1112)
+
+The Checkoff tab shows a Plate preview above the units when the Plan has an accepted Plate layout. It reads only the Checkoff units it already loads. Each Plate is one list item: an SVG bar and a sentence such as "Plate 1 on Voron 2.4: 3 units, 1 printed". The bar's length is the Plate's unit count relative to the busiest Plate, and its filled part is the printed units. Units on no Plate get one more item, "On no Plate", last, with a dashed bar. Plates follow their ordinal.
+
+The sentence is the text equivalent. Both come from the same per-Plate count, so they cannot disagree. The SVG is `aria-hidden` and holds no text, so a screen reader reads each Plate once.
+
+The preview draws no bed and no part positions. Bed width, depth and margin, and each unit's position and size, are served only by `GET /plans/{id}/plates`, which is not a route of the generated client. The preview uses no WebGL and no canvas. `web/apps/ui/src/builds/Checkoff.test.tsx` checks that in jsdom, and `web/apps/ui/test/browser/plate-preview.browser.mjs` checks it in WebKitGTK and Chromium with WebGL turned off. `web/apps/ui/test/bundle-graph.test.ts` fails when `three` or `@react-three/*` is reachable from `index.html` through static imports, so a later 3D view must load it with `import()`.
+
 ## Handle prints the app could not match
 
 A Match prints review lists the backlog with confidence in words (Exact, Likely, No suggestion), bulk select, and one press per confident group. Low-confidence rows start unchecked. Nothing is ever ticked automatically: verify-first is a product rule, and 18 unresolved prints are the evidence that matching is not reliable enough to skip confirmation. After Apply dismisses prints, the result offers Undo for those dismissals only, until you leave the screen. A claim is not undone from here.

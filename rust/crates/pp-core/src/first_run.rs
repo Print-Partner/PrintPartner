@@ -3,7 +3,7 @@
 //! only through `node_import::import` into its destination. Nothing here
 //! opens a source for writing, and nothing here empties or deletes a folder.
 
-use crate::node_import::{self, ImportError, ImportReport, REPORT_FILE};
+use crate::node_import::{self, Destination, ImportError, ImportReport, REPORT_FILE};
 use pp_storage::ownership_marker::{self, MarkerState};
 use std::{fmt, path::Path};
 
@@ -17,8 +17,7 @@ const NODE_LEASE: &str = ".desktop-lease";
 /// What a data folder holds, as the runtime and the import see it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DataFolder {
-    /// Absent, or holding only names the marker rule allows in an empty
-    /// folder.
+    /// Absent, or a folder the importer accepts as its destination.
     Empty,
     /// A valid ownership marker. `imported` is true when the folder holds
     /// the import's report.
@@ -45,12 +44,19 @@ pub enum Unfinished {
     Unmarked,
 }
 
-/// Reads `folder` without writing, without creating it, and without
-/// following a link at the folder, its marker or its top-level names.
+/// Reads `folder` without writing and without creating it. Follows a link at
+/// `folder` itself, as startup and the importer do, but not a link at its
+/// marker or its top-level names. `Empty` is the importer's own rule.
 pub fn survey(folder: &Path) -> DataFolder {
-    match folder.symlink_metadata() {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return DataFolder::Empty,
+    match folder.metadata() {
         Ok(metadata) if metadata.is_dir() => {}
+        // A dangling link is not absent: the importer cannot create a folder there.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && folder.symlink_metadata().is_err() =>
+        {
+            return DataFolder::Empty;
+        }
         _ => return DataFolder::Other,
     }
     match ownership_marker::inspect(folder) {
@@ -80,10 +86,7 @@ pub fn survey(folder: &Path) -> DataFolder {
         DataFolder::NodeLeased
     } else if has(DATABASE) {
         DataFolder::UnmarkedDatabase
-    } else if names
-        .iter()
-        .all(|name| ownership_marker::allowed_in_empty(name))
-    {
+    } else if node_import::inspect_destination(folder) == Destination::Free {
         DataFolder::Empty
     } else {
         DataFolder::Other

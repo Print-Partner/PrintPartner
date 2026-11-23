@@ -36,12 +36,31 @@ fn ticket_t_35_survey_names_each_folder_state_without_writing() {
         lease_leftovers: Some(LeaseForm::NodeDirectory),
         ..Spec::default()
     };
+    let live_owner = format!("{{\"pid\": {}}}", std::process::id());
     let cases = [
         ("empty", holding(Fixture::Empty, &[]), DataFolder::Empty),
         (
             "lease leftovers only",
             holding(Fixture::EmptyWithLeaseLeftovers, &[]),
-            DataFolder::Empty,
+            DataFolder::Other,
+        ),
+        (
+            "an entry inside the lease",
+            holding(Fixture::Empty, &[(".desktop-lease/extra", b"x")]),
+            DataFolder::Other,
+        ),
+        (
+            "a live owner record",
+            holding(
+                Fixture::Empty,
+                &[(".desktop-owner.json", live_owner.as_bytes())],
+            ),
+            DataFolder::Other,
+        ),
+        (
+            "an unreadable owner record",
+            holding(Fixture::Empty, &[(".desktop-owner.json", b"not json")]),
+            DataFolder::Other,
         ),
         (
             "node",
@@ -91,6 +110,11 @@ fn ticket_t_35_survey_names_each_folder_state_without_writing() {
         let before = snapshot(installation.path()).unwrap();
         assert_eq!(survey(installation.path()), expected, "{case}");
         assert_eq!(
+            survey(installation.path()) == DataFolder::Empty,
+            node_import::inspect_destination(installation.path()) == Destination::Free,
+            "{case}: survey and the importer disagree on empty"
+        );
+        assert_eq!(
             snapshot(installation.path()).unwrap(),
             before,
             "{case}: folder changed"
@@ -107,10 +131,29 @@ fn ticket_t_35_survey_names_each_folder_state_without_writing() {
 
     #[cfg(unix)]
     {
+        let link_to = |target: &Path, name: &str| {
+            let link = parent.path().join(name);
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            link
+        };
         let node = holding(Fixture::NodeSchema34, &[]);
-        let link = parent.path().join("link");
-        std::os::unix::fs::symlink(node.path(), &link).unwrap();
-        assert_eq!(survey(&link), DataFolder::Other, "followed a linked folder");
+        assert_eq!(
+            survey(&link_to(node.path(), "node")),
+            DataFolder::UnmarkedDatabase
+        );
+        let stopped = holding(Fixture::Empty, &[(".pp-import/x", b"")]);
+        let linked_stopped = link_to(stopped.path(), "stopped");
+        assert_eq!(
+            admit_folder(&linked_stopped),
+            Err(StartRefusal(Unfinished::StagePresent))
+        );
+        let empty = holding(Fixture::Empty, &[]);
+        assert_eq!(survey(&link_to(empty.path(), "empty")), DataFolder::Empty);
+        assert_eq!(
+            survey(&link_to(&parent.path().join("nowhere"), "dangling")),
+            DataFolder::Other,
+            "a dangling link is not absent"
+        );
 
         let marked = holding(Fixture::RustMarked, &[]);
         let linked_marker = holding(Fixture::Empty, &[]);

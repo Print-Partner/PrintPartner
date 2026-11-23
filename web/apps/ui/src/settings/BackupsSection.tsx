@@ -1,7 +1,7 @@
 import { routePath, routes, type RouteResponse } from "@print-partner/rust-client";
 import { useId, useRef, useState } from "react";
 import { CoreError, fetchCore } from "../core/client";
-import { ContractError, RequestContractError } from "../core/rust";
+import { ContractError, RequestContractError, writeCore } from "../core/rust";
 import { reason } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
@@ -36,21 +36,6 @@ function timeText(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
-/**
- * Posts one create. `fetchCore` refuses a redirect on a write rather than following it, and the
- * section reads that as not confirmed.
- */
-async function createBackup(): Promise<Backup> {
-  const path = routePath("createInstallationBackup", {});
-  const response = await fetchCore(path, {
-    method: "POST",
-    headers: { accept: "application/json" },
-  });
-  const parsed = routes.createInstallationBackup.response.safeParse(await response.json().catch(() => undefined));
-  if (!parsed.success) throw new ContractError(path);
-  return parsed.data;
 }
 
 /**
@@ -140,7 +125,7 @@ export function BackupsSection() {
     setStatus("Creating backup");
     setNote("");
     try {
-      setBackup(await createBackup());
+      setBackup(await writeCore("createInstallationBackup", {}));
       setStatus("Backup made");
     } catch (failure) {
       setStatus("");

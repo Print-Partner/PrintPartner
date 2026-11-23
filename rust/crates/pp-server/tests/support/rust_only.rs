@@ -17,8 +17,6 @@ pub fn server_binary() -> PathBuf {
     }
 }
 
-/// A Rust-only start of `pp-server` on `data`, with the release bundle's web
-/// root and commit.
 pub fn command(data: &Path) -> Command {
     let bundle = release::launch(data.to_path_buf()).bundle;
     let mut command = child_process::command(server_binary());

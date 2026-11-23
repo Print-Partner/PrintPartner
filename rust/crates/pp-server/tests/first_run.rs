@@ -54,7 +54,6 @@ fn node_source() -> Installation {
     node
 }
 
-/// A link named `link` in `parent`, pointing at `target`.
 fn link_in(parent: &Installation, target: &Path) -> PathBuf {
     let link = parent.path().join("link");
     std::os::unix::fs::symlink(target, &link).unwrap();
@@ -74,8 +73,6 @@ fn assert_imported(output: &Output) {
     );
 }
 
-/// Starts the server on an unfinished import, directly or through a link, and
-/// checks it refuses before writing anything there.
 fn assert_start_refuses_a_stopped_import(through_a_link: bool) {
     let stopped = Installation::create(Fixture::Empty).unwrap();
     std::fs::create_dir(stopped.path().join(".pp-import")).unwrap();

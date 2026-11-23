@@ -187,7 +187,6 @@ pub fn import_node(source: &Path, destination: &Path) -> Attempt {
     attempt_with(destination, || node_import::import(source, destination))
 }
 
-/// Surveys `destination`, runs the import once, and surveys it again.
 fn attempt_with(
     destination: &Path,
     run: impl FnOnce() -> Result<ImportReport, ImportError>,

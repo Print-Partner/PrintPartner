@@ -319,9 +319,7 @@ fn restore_is_refused_while_an_action_applies() {
     assert_eq!(queue.states(), [("a".into(), State::InvalidatedByRestore)]);
 }
 
-#[test]
-fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
-    let (_directory, _owner, installation, queue) = restore_fixture();
+fn seed_restore_cases(queue: &Queue) -> Claim {
     for id in [
         "applied_after",
         "dismissed_after",
@@ -338,7 +336,38 @@ fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
     let applied = queue.claim("applied_at_backup").unwrap();
     assert!(queue.settle(applied.token(), End::Applied));
     queue.dismiss("dismissed_at_backup").unwrap();
+    in_flight
+}
 
+fn assert_restored_refusals(queue: &Queue, invalidated: [&str; 4], in_flight: &Claim) {
+    for id in invalidated {
+        assert!(matches!(
+            queue.claim(id),
+            Err(ActionError::InvalidatedByRestore { at }) if !at.is_empty()
+        ));
+    }
+    assert!(!queue.settle(in_flight.token(), End::Applied));
+    assert!(matches!(
+        queue.claim("applied_at_backup"),
+        Err(ActionError::AlreadyApplied { at }) if !at.is_empty()
+    ));
+    assert!(matches!(
+        queue.claim("dismissed_at_backup"),
+        Err(ActionError::AlreadyDismissed { at }) if !at.is_empty()
+    ));
+    assert!(matches!(
+        queue.stage("dependent", &["applied_after"]),
+        Err(ActionError::Dependency {
+            id,
+            state: Some(State::InvalidatedByRestore),
+        }) if id == "applied_after"
+    ));
+}
+
+#[test]
+fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
+    let (_directory, _owner, installation, queue) = restore_fixture();
+    let in_flight = seed_restore_cases(&queue);
     let archive = export_backup(&installation);
 
     let applied_after = queue.claim("applied_after").unwrap();
@@ -369,28 +398,7 @@ fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
         queue.states(),
         invalidated.map(|id| (id.into(), State::InvalidatedByRestore))
     );
-    for id in invalidated {
-        assert!(matches!(
-            queue.claim(id),
-            Err(ActionError::InvalidatedByRestore { at }) if !at.is_empty()
-        ));
-    }
-    assert!(!queue.settle(in_flight.token(), End::Applied));
-    assert!(matches!(
-        queue.claim("applied_at_backup"),
-        Err(ActionError::AlreadyApplied { at }) if !at.is_empty()
-    ));
-    assert!(matches!(
-        queue.claim("dismissed_at_backup"),
-        Err(ActionError::AlreadyDismissed { at }) if !at.is_empty()
-    ));
-    assert!(matches!(
-        queue.stage("dependent", &["applied_after"]),
-        Err(ActionError::Dependency {
-            id,
-            state: Some(State::InvalidatedByRestore),
-        }) if id == "applied_after"
-    ));
+    assert_restored_refusals(&queue, invalidated, &in_flight);
     queue.dismiss("applied_after").unwrap();
     assert_eq!(
         queue.states(),

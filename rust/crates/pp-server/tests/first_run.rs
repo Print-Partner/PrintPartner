@@ -1,7 +1,3 @@
-//! First-run setup on the headless server: a start on a stopped import
-//! leaves it as found, and `pp-server import` ends with what its destination
-//! now holds. The workspace test build skips the ownership marker gate, so
-//! the refusal here is first-run's own.
 #![cfg(all(unix, feature = "desktop_rebuild"))]
 
 #[path = "../../pp-storage/tests/common/process.rs"]
@@ -24,9 +20,7 @@ fn binary() -> PathBuf {
     }
 }
 
-/// A Rust-only start on `data` with a loopback listener. A start that is
-/// still running after 30 seconds is killed, and its output returned.
-fn start(data: &Path) -> Output {
+fn run_startup_until_exit_or_timeout(data: &Path) -> Output {
     let bundle = release::launch(data.to_path_buf()).bundle;
     let mut child = child_process::command(binary())
         .env("PP_DESKTOP_REBUILD", "1")
@@ -46,7 +40,6 @@ fn start(data: &Path) -> Output {
     child.wait_with_output().unwrap()
 }
 
-/// `pp-server import --from <from> --data <data>`.
 fn import(from: &Path, data: &Path) -> Output {
     child_process::command(binary())
         .env("PP_DESKTOP_REBUILD", "1")
@@ -54,6 +47,11 @@ fn import(from: &Path, data: &Path) -> Output {
         .args(["--data".as_ref(), data.as_os_str()])
         .output()
         .unwrap()
+}
+
+fn leave_as_a_publish_that_failed_after_moving_every_root(destination: &Path) {
+    std::fs::remove_file(destination.join("import-report.json")).unwrap();
+    std::fs::remove_file(destination.join(".pp-rust-owned.json")).unwrap();
 }
 
 fn last_line(bytes: &[u8]) -> String {
@@ -72,7 +70,7 @@ fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
     .unwrap();
     let before = snapshot(stopped.path()).unwrap();
 
-    let output = start(stopped.path());
+    let output = run_startup_until_exit_or_timeout(stopped.path());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -148,9 +146,7 @@ fn ticket_t_35_cli_does_not_call_a_failed_publish_a_node_installation() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    // What a publish that failed after moving every root leaves behind.
-    std::fs::remove_file(destination.join("import-report.json")).unwrap();
-    std::fs::remove_file(destination.join(".pp-rust-owned.json")).unwrap();
+    leave_as_a_publish_that_failed_after_moving_every_root(&destination);
     let before = snapshot(&destination).unwrap();
 
     let retry = import(node.path(), &destination);

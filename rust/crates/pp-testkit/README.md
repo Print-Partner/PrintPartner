@@ -46,9 +46,14 @@ Unit tests are in `src/tests.rs`; `src/lib.rs` has one doc test. `pp-storage` us
 
 The core send-worker recovery tests use the fault printer to inspect persisted
 intent before releasing the fake effect. It never initiates outbound traffic.
-Its channel and socket waits are bounded by five seconds; dropping it wakes the
-listener or held response and joins its thread. It supports Content-Length
-requests only, as emitted by the checked printer upload/start transport.
+Test-side waits (`request` and `accept`) and each in-progress HTTP request read
+or reply write are bounded by five seconds; the reply gate waits for an explicit
+`accept` call or stop signal rather than timing out on its own. An early close
+or incomplete request is ignored without stopping the accept loop. Dropping
+`FaultPrinter` sets its stop flag, sends a stop signal to the reply gate, and
+joins its thread without relying on a loopback self-connect. It supports
+Content-Length requests only, as emitted by the checked printer upload/start
+transport.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-testkit

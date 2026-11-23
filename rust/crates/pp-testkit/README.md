@@ -28,6 +28,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `allowed_in_empty`, `allowed_in_node_lease` | Entry names that still count as an empty data directory. |
 | `MARKER_FILE`, `MARKER_VERSION`, `MARKER_OWNER`, `FIXTURE_CREATED_AT`, `DATABASE_FILE` | Format constants. |
 | `moonraker` | Loopback Moonraker simulators on their own thread: `RecordedPrinter` replays replies in request order; `RoutedPrinter` answers by request target (unlisted targets get 404, `{ORIGIN}` becomes its origin). Both record request lines and never initiate a connection. `RoutedPrinter::request_heads` also exposes request headers (never upload bodies) for no-start assertions. |
+| `moonraker::fault` | `FaultPrinter` consumes a complete request (up to 1 MiB), then waits for an explicit effect/reply decision. `Reply::Accepted` answers 201, `Lost` closes without a reply, and `Hold` accepts the fake effect while withholding its reply. Counts distinguish received requests from accepted effects; `accept` waits for acknowledgement. |
 | `node_installation` | `populate(directory)` fills a `Fixture::NodeSchema34` directory with synthetic Sources, Builds, settings in Node's stored shapes, a Source snapshot under `repos/` and `custom_filaments.json`. `BUILDS`, `SOURCES`, `PRINTERS`, `UNMATCHED_PRINTS` and `INTEGRATION_SECRET` say what it wrote. |
 | `node_schema` | `write_schema_34_database`, `schema_34_statements`, `parse_schema_migrations`, `execute`, `stamp_schema_version`, `SCHEMA_34_COMMIT`, `SCHEMA_34_SHA256`. |
 
@@ -42,6 +43,17 @@ No binaries.
 ## Tests
 
 Unit tests are in `src/tests.rs`; `src/lib.rs` has one doc test. `pp-storage` uses the crate in `rust/crates/pp-storage/tests/testkit_installations.rs`.
+
+The core send-worker recovery tests use the fault printer to inspect persisted
+intent before releasing the fake effect. It never initiates outbound traffic.
+Test-side waits (`request` and `accept`) and each in-progress HTTP request read
+or reply write are bounded by five seconds; the reply gate waits for an explicit
+`accept` call or stop signal rather than timing out on its own. An early close
+or incomplete request is ignored without stopping the accept loop. Dropping
+`FaultPrinter` sets its stop flag, sends a stop signal to the reply gate, and
+joins its thread without relying on a loopback self-connect. It supports
+Content-Length requests only, as emitted by the checked printer upload/start
+transport.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-testkit

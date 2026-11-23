@@ -8,11 +8,6 @@ import { onUnauthorized, RedirectedWrite } from "./core/client";
 type AppRouter = ReturnType<typeof createBrowserRouter>;
 type MutationOptionsAny = NonNullable<Parameters<QueryClient["defaultMutationOptions"]>[0]>;
 
-/**
- * Each mutation keeps its own `retry`, except that a RedirectedWrite is never retried: a write
- * must not reach anything twice on its own. Every Mutation's options pass through this method
- * (MutationObserver.setOptions and MutationCache.build), so a per-call `retry` cannot skip it.
- */
 class AppQueryClient extends QueryClient {
   override defaultMutationOptions<T extends MutationOptionsAny>(options?: T): T {
     const merged = super.defaultMutationOptions(options);

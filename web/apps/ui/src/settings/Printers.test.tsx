@@ -1,12 +1,13 @@
 import type { FarmPrinterList, Health } from "@print-partner/rust-client";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { routes } from "../routes";
 
 type Printer = FarmPrinterList["printers"][number];
-type Answer = (body: unknown) => Response | Promise<Response>;
+type Answer = (body: unknown, init?: RequestInit) => Response | Promise<Response>;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -59,7 +60,7 @@ function renderPrinters(answers: Record<string, Answer>) {
     if (key === "GET /health") return json(HEALTH);
     // Every save reads the stored connections first; a core without an answer lists none.
     if (key === CONNECTIONS && !answers[key]) return json({ integrations: [] });
-    return (answers[key] ?? (() => problem(500, `no answer for ${key}`)))(body);
+    return (answers[key] ?? (() => problem(500, `no answer for ${key}`)))(body, init);
   });
   vi.stubGlobal("fetch", fetchMock);
   const queryClient = createQueryClient();
@@ -473,21 +474,31 @@ describe("Editing a printer", () => {
     expect(writes).toEqual([["PATCH /api/v2/integrations/i-1", { username: null, password: "new-password-canary" }]]);
   });
 
-  it("says the connection was saved when the name write fails, and then sends only the name", async () => {
-    let refuse = true;
+  it("says the connection was saved and the name is not confirmed on 503, and says not saved on a 4xx refusal", async () => {
+    let reply: () => Response = () => problem(503, "Service unavailable");
     const { writes, dialog } = await openEdit({
       "PATCH /api/v2/integrations/i-1": patched,
-      "PATCH /api/v2/printers/p-1": () => (refuse ? problem(503, "Service unavailable") : json({ ...CONFIG, id: "p-1", name: "Big Voron" })),
+      "PATCH /api/v2/printers/p-1": () => reply(),
     });
     await within(dialog).findByLabelText("Address");
     type("Name", "Big Voron");
     type("New API key", "new-key-canary");
     press("Save changes");
-    expect((await within(dialog).findByRole("alert")).textContent).toBe("The name was not saved: Service unavailable. Any change to the connection was saved.");
-    refuse = false;
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Whether the name was saved is not confirmed: Service unavailable. Any change to the connection was saved.");
+    reply = () => problem(409, "A printer with that name already exists");
+    press("Save changes");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert").textContent).toBe("The name was not saved: A printer with that name already exists. Any change to the connection was saved."),
+    );
+    reply = () => json({ ...CONFIG, id: "p-1", name: "Big Voron" });
     press("Save changes");
     expect(await screen.findByText("Saved Big Voron.")).toBeTruthy();
-    expect(writes.map(([key]) => key)).toEqual(["PATCH /api/v2/integrations/i-1", "PATCH /api/v2/printers/p-1", "PATCH /api/v2/printers/p-1"]);
+    expect(writes.map(([key]) => key)).toEqual([
+      "PATCH /api/v2/integrations/i-1",
+      "PATCH /api/v2/printers/p-1",
+      "PATCH /api/v2/printers/p-1",
+      "PATCH /api/v2/printers/p-1",
+    ]);
   });
 
   it("works from the keyboard: the form submits, and Escape closes it and returns focus", async () => {
@@ -569,22 +580,119 @@ describe("Deleting a printer", () => {
     expect(writes.map(([key]) => key)).toEqual(["DELETE /api/v2/printers/p-1"]);
   });
 
-  it("says the printer is gone when its connection could not be deleted, and offers only that write again", async () => {
+  it("says the printer is gone and the connection deletion is not confirmed on 503, and says not deleted on 4xx refusal", async () => {
+    let reply: () => Response = () => problem(503, "Service unavailable");
     const writes = renderPrinters({
       [LIST]: () => json({ printers: [VORON] }),
       "DELETE /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1" }),
-      "DELETE /api/v2/integrations/i-1": () => problem(503, "Service unavailable"),
+      "DELETE /api/v2/integrations/i-1": () => reply(),
     });
     fireEvent.click(await screen.findByRole("button", { name: "Delete Voron" }));
     press("Delete printer");
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("The printer was deleted, but its connection was not: Service unavailable.");
+    expect(alert.textContent).toContain("The printer was deleted, but whether its connection was deleted is not confirmed: Service unavailable.");
+    reply = () => problem(409, "Connection still in use");
     press("Delete connection");
-    await waitFor(() => expect(writes).toHaveLength(3));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("The printer was deleted, but its connection was not: Connection still in use."),
+    );
     expect(writes.map(([key]) => key)).toEqual([
       "DELETE /api/v2/printers/p-1",
       "DELETE /api/v2/integrations/i-1",
       "DELETE /api/v2/integrations/i-1",
     ]);
   });
+});
+
+describe("Redirected writes and reconciliation reads in Printer Settings", () => {
+  let servers: Awaited<ReturnType<typeof redirectServers>>;
+  beforeAll(async () => {
+    servers = await redirectServers({ printers: [printer("p-9", "Micron", { id: "i-9", kind: "moonraker" })] });
+  });
+  afterAll(() => servers.close());
+
+  it.each([307, 308] as const)(
+    "create printer %i says outcome is not confirmed and a redirected list read does not claim saved after all",
+    async (status) => {
+      servers.redirectWith(status);
+      let redirectList = false;
+      const writes = renderPrinters({
+        [LIST]: (_body, init) => (redirectList ? servers.forward("/api/v2/printers", init) : json({ printers: [] })),
+        "POST /api/v2/printers/probe": () => json(PROBE),
+        "POST /api/v2/integrations": () => json(VIEW),
+        "POST /api/v2/printers": (_body, init) => servers.forward("/api/v2/printers", init),
+      });
+      await fillAdd("http://micron.test");
+      press("Check address");
+      await screen.findByText("The printer answered.");
+      press("Save printer");
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("The connection was saved, but whether the printer was saved is not confirmed:");
+      expect(alert.textContent).not.toContain("was not saved");
+      expect(alert.textContent).not.toContain("printer was not:");
+      expect(servers.first).toEqual(["POST /api/v2/printers"]);
+      expect(servers.destination).toEqual([]);
+
+      // A redirected reconciliation read must not claim "was saved after all" or resend.
+      redirectList = true;
+      press("Save printer");
+      await waitFor(() =>
+        expect(screen.getByRole("alert").textContent).toContain("Could not check whether the printer was saved"),
+      );
+      expect(screen.queryByText(/was saved after all/)).toBeNull();
+      expect(servers.first).toEqual(["POST /api/v2/printers", "GET /api/v2/printers"]);
+      expect(servers.destination).toEqual([]);
+      expect(writes.map(([key]) => key)).toEqual([
+        "POST /api/v2/printers/probe",
+        "POST /api/v2/integrations",
+        "POST /api/v2/printers",
+      ]);
+    },
+  );
+
+  it.each([307, 308] as const)(
+    "rename printer %i says whether the name was saved is not confirmed and preserves connection status",
+    async (status) => {
+      servers.redirectWith(status);
+      renderPrinters({
+        [LIST]: () => json({ printers: [VORON] }),
+        [CONNECTIONS]: () => json({ integrations: [STORED] }),
+        "PATCH /api/v2/integrations/i-1": (body) => json({ ...STORED, ...(body as object) }),
+        "PATCH /api/v2/printers/p-1": (_body, init) => servers.forward("/api/v2/printers/p-1", init),
+      });
+      const edit = await screen.findByRole("button", { name: "Edit Voron" });
+      await waitFor(() => expect(edit.getAttribute("aria-disabled")).toBeNull());
+      fireEvent.click(edit);
+      const dialog = screen.getByRole("dialog", { name: "Edit Voron" });
+      await within(dialog).findByLabelText("Address");
+      type("Name", "Big Voron");
+      type("New API key", "new-key-canary");
+      press("Save changes");
+      const alert = await within(dialog).findByRole("alert");
+      expect(alert.textContent).toContain("Whether the name was saved is not confirmed:");
+      expect(alert.textContent).toContain("Any change to the connection was saved.");
+      expect(alert.textContent).not.toContain("was not saved");
+      expect(servers.first).toEqual(["PATCH /api/v2/printers/p-1"]);
+      expect(servers.destination).toEqual([]);
+    },
+  );
+
+  it.each([307, 308] as const)(
+    "delete connection after delete printer %i says whether its connection was deleted is not confirmed",
+    async (status) => {
+      servers.redirectWith(status);
+      renderPrinters({
+        [LIST]: () => json({ printers: [VORON] }),
+        "DELETE /api/v2/printers/p-1": () => json({ ...CONFIG, id: "p-1" }),
+        "DELETE /api/v2/integrations/i-1": (_body, init) => servers.forward("/api/v2/integrations/i-1", init),
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Delete Voron" }));
+      press("Delete printer");
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("The printer was deleted, but whether its connection was deleted is not confirmed:");
+      expect(alert.textContent).not.toContain("connection was not:");
+      expect(servers.first).toEqual(["DELETE /api/v2/integrations/i-1"]);
+      expect(servers.destination).toEqual([]);
+    },
+  );
 });

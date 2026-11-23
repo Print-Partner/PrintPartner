@@ -38,7 +38,9 @@ load, offers **Try again** if they fail, and is disabled without a valid name
 The create lives outside the dialog (`createBuild.ts`), so a reopened dialog
 shows its name and state and cannot send a second one. Only an exact,
 unredirected HTTP 200 with a contract-valid body opens the new Build; the POST
-uses `redirect: "error"` so `fetch` never resends it. The core's own problem
+uses `redirect: "manual"` through `fetchCore` so `fetch` never resends it, and
+the post-create Builds list read refuses redirects so a redirected list never
+confirms the Build. The core's own problem
 (400, 401, 403, 409 or 413, not redirected) is shown in the UI's words, and a
 401 opens sign-in. `Profile already exists` links to the Build holding the name.
 

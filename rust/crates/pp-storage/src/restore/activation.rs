@@ -87,6 +87,11 @@ fn activate(
     (work, staged): (&Work, &str),
     mut refresh: impl FnMut(&mut Connection) -> Result<()>,
 ) -> Result<Activated, RestoreError> {
+    // A claimed MCP action applies in its own write after the claim. Restoring
+    // between the two would apply it to the restored database.
+    if crate::pending_actions::applying(connection).map_err(WriterFailure::from)? {
+        return Err(Refusal::Busy.into());
+    }
     pause_admission(shared)?;
     let database = data_dir.join(archive::DATABASE_FILE);
     let reader_count = match drain_readers(readers) {
@@ -112,6 +117,10 @@ fn activate(
         journal.swap(work)?;
         work.forward_step()?;
         let (mut restored, ready) = open_database(data_dir, seed)?;
+        // Invalidate open rows in the restored database before committing the
+        // journal. Keeping this out of `open_database` and `refresh` ensures
+        // normal opens and restore rollbacks leave live pending rows intact.
+        crate::pending_actions::invalidate_after_restore(&mut restored)?;
         work.forward_step()?;
         refresh(&mut restored)?;
         work.forward_step()?;

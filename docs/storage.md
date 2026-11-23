@@ -102,22 +102,22 @@ The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision
 | --- | --- |
 | No database, an empty file, or no `schema_version` row | `Fresh`: install the full schema. |
 | 31 to 34 (Node; 31 shipped in Print Partner v3.3.0) | `NodeUpgrade`: replay Node's migrations, then the Rust steps. |
-| 35 to 49, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
-| The build's newest: 35 without `desktop_rebuild`, 50 with it | `Current`: nothing to migrate. |
+| 35 to 50, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
+| The build's newest: 35 without `desktop_rebuild`, 51 with it | `Current`: nothing to migrate. |
 | 1 to 30, or above the newest (a value above `u64::MAX` counts as `u64::MAX`) | Refused with `IncompatibleSchema`. |
 
 `ticket_t_7_migrations` opens a fresh directory and Node-built schema 31, 32, 33 and 34 databases through the writer and checks each against its named path.
 
 The refusal is terminal. The version is read from the preflight copy, made in a private `.pp-preflight-<id>` folder inside the data folder, before the integrity check, so a refused database, its `-wal` and its `-journal` keep their bytes. The message names the version found, the supported range and the recovery step:
 
-- Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 50). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
-- Too new: `Incompatible storage: database schema version 51 is newer than supported version 50 (this release opens schema 31 to 50). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`
+- Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 51). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
+- Too new: `Incompatible storage: database schema version 52 is newer than supported version 51 (this release opens schema 31 to 51). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`
 
 Each runtime stops on it instead of reopening the database:
 
 - **Node-backed start.** Node opens 31 to 34. Right after `lease_unmarked`, and before cutover recovery or the Node child, `pp-core` runs the same preflight (`versions::node_refusal`) and refuses any other version against the range 31 to 34. Preflight reads and checks the version first and records it, before `PRAGMA integrity_check` and the Rust schema validations. So an unsupported version is refused here even when the file also fails its integrity check or does not match the Rust schema; those errors themselves are unchanged. The child never starts, so the supervisor never backs off and restarts it. A failure before the version is read, such as a file SQLite cannot open or a non-numeric version, logs `node_schema_preflight_unchecked` and leaves the decision to Node, as before. The check copies the database into a private `.pp-preflight-<id>` folder in the data folder. Too little free disk for that copy is a failure before the version is read, so it logs `node_schema_preflight_unchecked` and leaves the decision to Node; only the Rust-only start refuses it. For a version this build's Rust schema accepts, it runs `PRAGMA integrity_check` once per start, including versions 35 up to the Rust schema ceiling, which Node then refuses. A nonzero version below 31, or a version newer than the Rust schema ceiling, returns before that check.
 - **Rust-only start.** `WriterOwner::open` refuses during its preflight, and startup returns the error once; nothing retries it.
-- **Desktop.** The startup dialog is titled "Print Partner cannot open this data folder" and shows the message. Stderr gets `desktop_startup_failed: core_startup -> incompatible_storage: found=51 supported=31..=50 direction=newer`. `core.log` does not: it attaches only after core startup admits the data directory.
+- **Desktop.** The startup dialog is titled "Print Partner cannot open this data folder" and shows the message. Stderr gets `desktop_startup_failed: core_startup -> incompatible_storage: found=52 supported=31..=51 direction=newer`. `core.log` does not: it attaches only after core startup admits the data directory.
 - **Headless `pp-server`.** It writes `incompatible_storage: found=<n> supported=<oldest>..=<newest> direction=<older|newer>` and the message to stderr and exits with code 78 (`EX_CONFIG`). Other start failures exit with 1. Docker restart policies restart on any non-zero code, so a container with a restart policy starts again, and each start refuses again without writing. Stop the container before you recover the data folder.
 
 A downgrade refuses the live schema before restore cleanup. It preserves the database, all SQLite sidecars (`-wal`, `-shm`, `-journal`), saved backup archives, and pending restore uploads and stages. Repeated refused starts do not prune or replace these copies. This does not restore older data automatically; rollback after new writes still needs informed owner approval (ADR 0010).
@@ -320,12 +320,12 @@ Tests: `pp-storage/src/restore/tests.rs` (`ticket_t_8_restore_*`, on pp-testkit 
 
 Activation runs on the writer thread, so no write runs beside it:
 
-1. It pauses admission: new writer, authentication and restore work is refused from then on.
+1. It refuses with `Refusal::Busy`, and changes nothing, while a pending MCP action is `applying`: the action's apply is a separate write after its claim, and would otherwise land in the restored database. It then pauses admission: new writer, authentication and restore work is refused from then on.
 2. It closes idle readers and waits up to 5 s for reader checkouts to return. A reader still out refuses the activation with `Refusal::Busy` and changes nothing: the database and the archive keep their bytes, work queued behind the activation still runs, and job streams stay open.
 3. Once the readers have drained, it closes job streams and fails the work queued behind it. It checkpoints and closes the writer's connection.
 4. It syncs the stage and publishes `.pp-restore/journal.json` before the first rename: it writes and syncs `journal.json.tmp`, renames it over `journal.json`, and syncs `.pp-restore`. Then it creates `prior-<32 hex>`. The journal names the staged directory, the `prior-<id>` directory, and the managed names present on each side. The managed names are the four SQLite files (`print-partner.db`, `-wal`, `-shm`, `-journal`) and `archive::FULL_ROOTS`.
 5. It moves each live managed name into `prior-<id>`, then each staged one into the data directory, one rename at a time, syncing both directories after each. The ownership marker, the lease files, `backups/` and everything else stay where they are.
-6. It opens the restored database as startup does (schema admission, migrations, recovery of durable jobs and sends), and refreshes every consumer of the old database: Source work leases, publication tokens, the import epoch, event cursors, print-file previews and the reader connections.
+6. It opens the restored database as startup does (schema admission, migrations, recovery of durable jobs and sends), invalidates every open `pending_actions` row in the restored database before committing the journal, and refreshes every consumer of the old database: Source work leases, publication tokens, the import epoch, event cursors, print-file previews and the reader connections.
 7. It marks the journal `committed`, tries to remove the prior and staged copies and then the journal, installs the new readers and reopens admission. Those removals ignore errors. If one fails, the restore still succeeds and the journal stays with whatever copies remain. Until a restart, activating a stage that still exists answers `RestartRequired`; an id whose stage is gone answers `UnknownRestore`. The next open retries the cleanup; if it fails again, the open refuses with "Restore journal cleanup failed" and storage does not start. Work that a family queued while this ran fails then; it does not run against the restored database.
 
 The journal stays where the next open looks for it. The request opens `.pp-restore` when it admits the stage, and activation uses that handle later, so another process could move the directory in between. Before it publishes the journal (both times) and before each live rename, and at each step until the commit, activation checks that `<data>/.pp-restore` still names, without following a link, the directory it holds open. If not, it moves nothing more and rolls back through its handles, which works wherever the directory now is. The journal is removed only after the prior and staged copies are gone. So a crash leaves a journal outside `.pp-restore` only if another process moves the directory after one check and the process dies before the next one; that is the same as another process deleting the journal.
@@ -540,6 +540,50 @@ commit uses to wake it (with a 30 second recheck, as the printer send worker
 does), are GRE-411 part 2b. The migration takes `backups/pre-schema50.db` and
 validates the columns before stamping version 50. A failed step leaves the
 database at 49.
+
+## Pending MCP actions
+
+Schema 51, compiled only with `desktop_rebuild`, adds the `pending_actions` table
+and `PendingActionsClient` (GRE-475). Only the storage table and
+`PendingActionsClient` exist at this head. Nothing calls the queue yet, and MCP
+tools still keep proposals per session. Each row stores an action's id, type,
+Build id, label, summary, and opaque JSON parameters, along with `staged_by`
+(the display label passed by the caller of `stage`, normalized and never empty),
+`depends_on` (a JSON array of action ids), `created_at`, and `expires_at`
+(8 hours after creation).
+
+A stored row is in state `pending`, `applying`, `applied`, `dismissed`,
+`unknown`, or `invalidated_by_restore`. Calling `claim` moves a `pending` row to
+`applying` in its own write transaction before any domain write runs. It refuses
+a row whose `expires_at` has passed, reported as `expired` and never stored, and
+refuses a row with any dependency that is not `applied`, naming the first action
+to apply. A successful `claim` returns a `Claim` that carries the row and an
+opaque `ClaimToken` minted from 32 random bytes. Storage persists only the
+token's 32-byte SHA-256 digest in `claim_digest` while the row is `applying`.
+
+Calling `settle` requires that `ClaimToken` and needs no MCP key, so revoking a
+key during an apply cannot leave a row stuck in `applying`. Settlement updates
+the row only when `id`, `state='applying'`, and `claim_digest` all match, and
+clears `claim_digest` on exit. A stale or repeated settlement changes nothing
+and returns `false`. A caller settles as `End::Applied`, as `End::Released`
+(moving the row back to `pending` only for a failure positively known to have
+written nothing), or as `End::Unknown` (for any ambiguous outcome where a write
+may have committed).
+
+Opening the database moves every `applying` row to `unknown` and clears its
+`claim_digest` before seeding and job recovery. Nothing returns `unknown` to
+`pending`. Restoring a backup moves every open row in that backup (`pending`,
+`applying`, or `unknown`) to `invalidated_by_restore` and clears `claim_digest`
+before committing the restore journal. Invalidated rows stay in `list` until
+dismissed, cannot be claimed or used as dependencies, and must be staged again
+under a new id after checking whether earlier effects survived the restore.
+Rows that were `applied` or `dismissed` in the backup keep their state.
+
+A `pending`, `expired`, `unknown`, or `invalidated_by_restore` row can be
+dismissed. Staging accepts only dependencies that exist and can still apply, and
+`depends_on` never changes, so dependencies cannot form a cycle. Rows are never
+deleted. The migration writes `backups/pre-schema51.db` and validates the table
+and index before stamping version 51. A failed step leaves the database at 50.
 
 ## Experiment ancestry
 

@@ -170,7 +170,6 @@ pub struct CoreHandle {
     bootstrap: pp_gateway::BootstrapMinter,
     gate: ShutdownGate,
     preferences: preferences::Client,
-    /// Set only when the Rust writer owns the data folder.
     backup: Option<Arc<dyn backup::Export>>,
 }
 impl Clone for CoreHandle {
@@ -245,8 +244,7 @@ impl CoreHandle {
         self.gate.track()
     }
 
-    /// The tray's Back up now. `None` unless the Rust writer owns the data
-    /// folder, so a Node-backed runtime never offers it.
+    /// The tray's Back up now: `None` unless the Rust writer owns the data.
     pub fn offline_backup(&self) -> Option<OfflineBackup> {
         let export = self.backup.clone()?;
         Some(OfflineBackup::new(export, self.gate.clone()))

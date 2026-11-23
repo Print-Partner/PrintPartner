@@ -1,6 +1,5 @@
-//! The Rust-only runtime's [`Export`]: GRE-1371's
-//! `InstallationClient::export_backup`, which runs GRE-403's archive writer on
-//! the writer thread. It lives here because `rust_startup` is already gated.
+//! The Rust-only runtime's [`Export`]: GRE-1371's `export_backup`, which runs
+//! GRE-403's archive writer. Here because `rust_startup` is already gated.
 
 use crate::backup::{BackupFailure, Export, Exported};
 use pp_storage::{
@@ -9,9 +8,8 @@ use pp_storage::{
 };
 use std::{path::Path, sync::Arc};
 
-/// Called while startup still owns the writer. The client holds no
-/// `Arc<Mutex<WriterOwner>>`, and closing the writer does not wait for it;
-/// once closed, it answers [`BackupFailure::Stopping`].
+/// The client holds no `Arc<Mutex<WriterOwner>>`, and closing the writer does
+/// not wait for it; once closed, it answers [`BackupFailure::Stopping`].
 pub(crate) fn backup_source(writer: &WriterOwner) -> anyhow::Result<Arc<dyn Export>> {
     Ok(Arc::new(writer.installation()?))
 }

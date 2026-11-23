@@ -1,7 +1,7 @@
 use super::backup_source;
+use crate::backup::tests::names;
 use crate::{BackupFailure, OfflineBackup, ShutdownGate};
 use pp_storage::{Limits, WriterOwner, archive};
-use std::path::Path;
 use tempfile::TempDir;
 
 /// A data folder with one Source file, its open writer, the backup the tray
@@ -15,33 +15,27 @@ fn opened() -> (TempDir, WriterOwner, OfflineBackup, TempDir) {
     (data, owner, backup, tempfile::tempdir().unwrap())
 }
 
-fn entries(folder: &Path) -> Vec<String> {
-    std::fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn exports_left(data: &Path) -> Vec<String> {
-    let mut left = entries(&data.join("backups"));
-    left.retain(|name| name.starts_with("export-"));
-    left
-}
-
 #[test]
 fn ticket_t_29_tray_backup_saves_a_complete_native_archive_in_the_folder() {
     let (data, owner, backup, downloads) = opened();
+    let taken = downloads.path().join("print-partner-backup.tar.gz");
+    std::fs::write(&taken, b"keep").unwrap();
 
     let saved = backup.create_in(downloads.path()).unwrap();
 
-    assert_eq!(saved, downloads.path().join("print-partner-backup.tar.gz"));
+    assert_eq!(
+        saved,
+        downloads.path().join("print-partner-backup (1).tar.gz")
+    );
+    assert_eq!(std::fs::read(&taken).unwrap(), b"keep", "never replaced");
     let metadata = archive::validate(&saved, archive::Limits::backup()).unwrap();
     assert_eq!(metadata.scope, archive::MetadataScope::Full);
-    assert_eq!(entries(downloads.path()), ["print-partner-backup.tar.gz"]);
-    assert!(exports_left(data.path()).is_empty());
+    let kept = [
+        "print-partner-backup (1).tar.gz",
+        "print-partner-backup.tar.gz",
+    ];
+    assert_eq!(names(downloads.path(), ""), kept);
+    assert!(names(&data.path().join("backups"), "export-").is_empty());
     owner.shutdown().unwrap();
 }
 
@@ -51,12 +45,12 @@ fn ticket_t_29_tray_backup_failure_leaves_no_backup_file() {
 
     let missing = downloads.path().join("missing");
     assert_eq!(backup.create_in(&missing), Err(BackupFailure::Failed));
-    assert!(exports_left(data.path()).is_empty());
+    assert!(names(&data.path().join("backups"), "export-").is_empty());
 
     owner.shutdown().unwrap();
     assert_eq!(
         backup.create_in(downloads.path()),
         Err(BackupFailure::Stopping)
     );
-    assert!(entries(downloads.path()).is_empty());
+    assert!(names(downloads.path(), "").is_empty());
 }

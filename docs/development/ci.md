@@ -582,7 +582,7 @@ cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets 
 cargo nextest run --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
 ```
 
-A default `just ci` nextest run prepares these three things (unless `--skip web-assets` or an existing `PP_TEST_NODE` overrides them). A direct workspace `cargo nextest` run needs all three first:
+`just ci` builds the first two items below in its `web-assets` step unless that step is skipped, and sets `PP_TEST_NODE` to the resolved path of `node` on `PATH` unless `PP_TEST_NODE` is already set. When `node` on `PATH` is a shim script or wrapper, that resolved path is not the file `web-assets` measures and the release-artifact check stops before nextest, so export `PP_TEST_NODE` as shown below before running `just ci` too. A direct workspace `cargo nextest` run needs all three first:
 
 - `rust/bundle-manifest.json`. Git ignores it, so a fresh worktree has none, and the `pp-compat` build script stops the build with `Generate the measured desktop manifest before building Rust`. Run the three commands above, or `just ci --only web-assets`. `PP_DESKTOP_RELEASE_MANIFEST` can name a manifest in another place.
 - `web/node_modules`, from `npm --prefix web ci`. Tests that start Node with `--import tsx` from the `web` directory, such as `pp-storage`'s `advisory_lock`, fail with `ERR_MODULE_NOT_FOUND` without it.

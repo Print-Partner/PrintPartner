@@ -197,7 +197,16 @@ It leaves out only what the import or the upgrade changes on purpose:
 
 A column or a table the upgrade adds is not compared, because the source has no row for it.
 
-An import that fails removes its stage and leaves the destination without a marker. One that is killed leaves `.pp-import/` behind; no Rust runtime opens that folder, and the next import refuses it until it is emptied.
+An import that fails removes its stage and leaves the destination without a marker. A refused import can leave the new destination folder behind, empty. One that is killed leaves `.pp-import/` behind, or the copy and `import-report.json` without a marker. The next import refuses that folder until it is emptied. `pp-server --data` on it exits 1 with `This data folder holds an import that stopped before it finished.` before it locks, marks or writes anything there, in every build.
+
+Every import ends with a last line that says what the destination now holds: on stdout after the report, or on stderr after `import refused:` or `import failed:`. The exit codes stay 0 and 1.
+
+| Last line | Next step |
+| --- | --- |
+| `destination: an imported installation, ready to start with --data` | Start `pp-server --data` on it. |
+| `destination: absent or empty; import again into it or into another empty folder` | Fix the reason, then import again. |
+| `destination: a stopped import; no Print Partner runtime opens it; import again into a new, empty folder` | Import into a new, empty folder. Nothing empties this one for you. |
+| `destination: ... not an import destination` | The folder held a Node or Rust installation or other data. The import did not write to it. |
 
 The report holds keys, names and counts, plus the printer id and size changes described under [Printers and integrations](#printers-and-integrations). It says `complete: true` when every inventory row is `converted` or `checked` and every Source path leads into the copy. It says `complete: false` while any row is `pending`, or while a Source path is outside the installation or missing in the copy. A copy that says `complete: false` is disposable.
 

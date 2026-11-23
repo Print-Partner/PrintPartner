@@ -224,6 +224,8 @@ PP_DESKTOP_REBUILD=1 pp-server import --from <Node data folder or full backup> -
 
 The Rust-only image sets `PP_DESKTOP_REBUILD=1`. `--from` is a stopped Node data folder or a full backup, format 2 or the format 1 that v3.3.0 and earlier wrote. `--data` must be absent or empty. The dry run writes nothing to the source. The import copies into the new folder and writes `.pp-rust-owned.json` last. Start `pp-server` with `--data` pointed at that folder. The report says `complete: true` when every inventory row is converted or checked and every Source path leads into the copy. Refusals, the report and what each row becomes are in [Node import](node-import.md).
 
+The import's last line says what `--data` now holds, for example `destination: an imported installation, ready to start with --data`. After a refusal or failure it says `destination: absent or empty; ...`, so import again into it, or `destination: a stopped import; ...`, so import into a new, empty folder. `pp-server` refuses to start on a stopped import: it exits 1 and leaves the folder unchanged. The Node folder is never changed. The import and first-run setup write no network setting and turn no sharing on; the server listens where `PP_LISTEN_ADDR` says, as before.
+
 ## To be written
 
 - `docker compose` file for the Rust-only image.

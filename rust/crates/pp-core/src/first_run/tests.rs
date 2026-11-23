@@ -3,14 +3,17 @@ use crate::node_import::Destination;
 use pp_testkit::{Fixture, Installation, LeaseForm, Spec, node_installation, snapshot};
 use std::path::PathBuf;
 
-/// A schema 34 Node installation with Builds, Sources and printers.
 fn node_source() -> Installation {
     let node = Installation::create(Fixture::NodeSchema34).unwrap();
     node_installation::populate(node.path()).unwrap();
     node
 }
 
-/// An installation with `files` (path, bytes) written into it.
+fn leave_as_a_publish_that_failed_after_moving_every_root(destination: &std::path::Path) {
+    std::fs::remove_file(destination.join(REPORT_FILE)).unwrap();
+    std::fs::remove_file(destination.join(ownership_marker::MARKER_FILE)).unwrap();
+}
+
 fn holding(spec: impl Into<Spec>, files: &[(&str, &[u8])]) -> Installation {
     let installation = Installation::create(spec).unwrap();
     for (name, bytes) in files {
@@ -56,7 +59,7 @@ fn ticket_t_35_survey_names_each_folder_state_without_writing() {
                 Fixture::Empty,
                 &[(".pp-import/print-partner.db", b"partial")],
             ),
-            DataFolder::Unfinished(Unfinished::Staging),
+            DataFolder::Unfinished(Unfinished::StagePresent),
         ),
         (
             "stopped before the marker",
@@ -135,8 +138,6 @@ fn ticket_t_35_survey_and_admit_accept_node_folders() {
 
 #[test]
 fn ticket_t_35_survey_cannot_tell_a_failed_publish_from_node() {
-    // A publish that fails after every root has moved leaves exactly this:
-    // the copy, no stage, no report and no marker.
     let node = node_source();
     let parent = Installation::create(Fixture::Empty).unwrap();
     let destination = parent.path().join("new");
@@ -146,8 +147,7 @@ fn ticket_t_35_survey_cannot_tell_a_failed_publish_from_node() {
         "{}",
         attempt.result
     );
-    std::fs::remove_file(destination.join(REPORT_FILE)).unwrap();
-    std::fs::remove_file(destination.join(ownership_marker::MARKER_FILE)).unwrap();
+    leave_as_a_publish_that_failed_after_moving_every_root(&destination);
 
     assert!(absent(&destination.join(STAGE)), "the stage is present");
     assert_eq!(survey(&destination), DataFolder::UnmarkedDatabase);
@@ -237,10 +237,10 @@ fn ticket_t_35_stopped_import_is_refused_by_startup_and_by_a_retry() {
 
     assert_eq!(
         admit_folder(stopped.path()),
-        Err(StartRefusal(Unfinished::Staging))
+        Err(StartRefusal(Unfinished::StagePresent))
     );
     assert_eq!(
-        StartRefusal(Unfinished::Staging).to_string(),
+        StartRefusal(Unfinished::StagePresent).to_string(),
         "This data folder holds an import that stopped before it finished. Print Partner does \
          not open it, and the Node folder it came from is unchanged. Import again into a new, \
          empty folder."
@@ -257,7 +257,7 @@ fn ticket_t_35_stopped_import_is_refused_by_startup_and_by_a_retry() {
     );
     assert_eq!(
         retry.destination,
-        DataFolder::Unfinished(Unfinished::Staging)
+        DataFolder::Unfinished(Unfinished::StagePresent)
     );
     assert_eq!(
         snapshot(stopped.path()).unwrap(),
@@ -295,6 +295,6 @@ fn ticket_t_35_stage_name_matches_the_importer() {
     );
     assert_eq!(
         survey(destination.path()),
-        DataFolder::Unfinished(Unfinished::Staging)
+        DataFolder::Unfinished(Unfinished::StagePresent)
     );
 }

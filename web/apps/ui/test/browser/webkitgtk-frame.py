@@ -4,8 +4,9 @@
 Usage: webkitgtk-frame.py JOBS_JSON, a file holding {"axe": <axe-core source>, "jobs": [...]}.
 Each job has "url", "body" (an async JavaScript function body that returns a JSON string
 with "scrollHeight" and "innerWidth"; it may call runAxe()), "zoom", "text_only", "png"
-(a screenshot path, or null) and an optional "webgl" (false turns WebGL off for that load). Prints the parsed results as a JSON list. Exits 3 when
-PyGObject or WebKit2GTK 4.1 is missing, so the caller can report SKIP.
+(a screenshot path, or null) and an optional "webgl" (false turns WebGL off for that
+load). Prints the parsed results as a JSON list. Exits 3 when PyGObject or WebKit2GTK 4.1
+is missing, so the caller can report SKIP.
 """
 
 import json

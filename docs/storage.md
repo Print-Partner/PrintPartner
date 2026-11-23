@@ -325,7 +325,7 @@ Activation runs on the writer thread, so no write runs beside it:
 3. Once the readers have drained, it closes job streams and fails the work queued behind it. It checkpoints and closes the writer's connection.
 4. It syncs the stage and publishes `.pp-restore/journal.json` before the first rename: it writes and syncs `journal.json.tmp`, renames it over `journal.json`, and syncs `.pp-restore`. Then it creates `prior-<32 hex>`. The journal names the staged directory, the `prior-<id>` directory, and the managed names present on each side. The managed names are the four SQLite files (`print-partner.db`, `-wal`, `-shm`, `-journal`) and `archive::FULL_ROOTS`.
 5. It moves each live managed name into `prior-<id>`, then each staged one into the data directory, one rename at a time, syncing both directories after each. The ownership marker, the lease files, `backups/` and everything else stay where they are.
-6. It opens the restored database as startup does (schema admission, migrations, recovery of durable jobs and sends), and refreshes every consumer of the old database: Source work leases, publication tokens, the import epoch, event cursors, print-file previews and the reader connections.
+6. It opens the restored database as startup does (schema admission, migrations, recovery of durable jobs and sends), invalidates every open `pending_actions` row in the restored database before committing the journal, and refreshes every consumer of the old database: Source work leases, publication tokens, the import epoch, event cursors, print-file previews and the reader connections.
 7. It marks the journal `committed`, tries to remove the prior and staged copies and then the journal, installs the new readers and reopens admission. Those removals ignore errors. If one fails, the restore still succeeds and the journal stays with whatever copies remain. Until a restart, activating a stage that still exists answers `RestartRequired`; an id whose stage is gone answers `UnknownRestore`. The next open retries the cleanup; if it fails again, the open refuses with "Restore journal cleanup failed" and storage does not start. Work that a family queued while this ran fails then; it does not run against the restored database.
 
 The journal stays where the next open looks for it. The request opens `.pp-restore` when it admits the stage, and activation uses that handle later, so another process could move the directory in between. Before it publishes the journal (both times) and before each live rename, and at each step until the commit, activation checks that `<data>/.pp-restore` still names, without following a link, the directory it holds open. If not, it moves nothing more and rolls back through its handles, which works wherever the directory now is. The journal is removed only after the prior and staged copies are gone. So a crash leaves a journal outside `.pp-restore` only if another process moves the directory after one check and the process dies before the next one; that is the same as another process deleting the journal.
@@ -543,27 +543,47 @@ database at 49.
 
 ## Pending MCP actions
 
-Schema 51, compiled only with `desktop_rebuild`, adds `pending_actions`
-(GRE-475): the actions MCP write tools stage, shared by every MCP session.
-Each row keeps the action's id, type, Build id, label, summary and parameters,
-plus `staged_by` (the MCP client's name, a display label only), `depends_on`
-(a JSON array of action ids), `created_at` and `expires_at`, 8 hours later.
+Schema 51, compiled only with `desktop_rebuild`, adds the `pending_actions` table
+and `PendingActionsClient` (GRE-475). Only the storage table and
+`PendingActionsClient` exist at this head. Nothing calls the queue yet, and MCP
+tools still keep proposals per session. Each row stores an action's id, type,
+Build id, label, summary, and opaque JSON parameters, along with `staged_by`
+(the display label passed by the caller of `stage`, normalized and never empty),
+`depends_on` (a JSON array of action ids), `created_at`, and `expires_at`
+(8 hours after creation).
 
-A row is `pending`, `applying`, `applied`, `dismissed` or `unknown`. A claim
-moves a `pending` row to `applying` in its own write, before the apply. It
-refuses a row whose `expires_at` has passed, reported as `expired` but never
-stored as such, and a row with a dependency that is not `applied`, naming the
-first action to apply. A settle changes only an `applying` row: to `applied`,
-back to `pending` when the domain refused and wrote nothing, or to `unknown`
-when the write may have committed. It acts on the claim, not the caller's key,
-so a key revoked during the apply cannot leave the row `applying`. Opening the
-database marks every `applying` row `unknown`, before seeding and job
-recovery. Nothing returns `unknown` to `pending`. A `pending`, expired or
-`unknown` row can be dismissed. Staging accepts only dependencies that exist
-and can still apply, and `depends_on` never changes, so the dependencies form
-no cycle. Rows are never deleted. The migration takes
-`backups/pre-schema51.db` and validates the table before stamping version 51.
-A failed step leaves the database at 50.
+A stored row is in state `pending`, `applying`, `applied`, `dismissed`,
+`unknown`, or `invalidated_by_restore`. Calling `claim` moves a `pending` row to
+`applying` in its own write transaction before any domain write runs. It refuses
+a row whose `expires_at` has passed, reported as `expired` and never stored, and
+refuses a row with any dependency that is not `applied`, naming the first action
+to apply. A successful `claim` returns a `Claim` that carries the row and an
+opaque `ClaimToken` minted from 32 random bytes. Storage persists only the
+token's 32-byte SHA-256 digest in `claim_digest` while the row is `applying`.
+
+Calling `settle` requires that `ClaimToken` and needs no MCP key, so revoking a
+key during an apply cannot leave a row stuck in `applying`. Settlement updates
+the row only when `id`, `state='applying'`, and `claim_digest` all match, and
+clears `claim_digest` on exit. A stale or repeated settlement changes nothing
+and returns `false`. A caller settles as `End::Applied`, as `End::Released`
+(moving the row back to `pending` only for a failure positively known to have
+written nothing), or as `End::Unknown` (for any ambiguous outcome where a write
+may have committed).
+
+Opening the database moves every `applying` row to `unknown` and clears its
+`claim_digest` before seeding and job recovery. Nothing returns `unknown` to
+`pending`. Restoring a backup moves every open row in that backup (`pending`,
+`applying`, or `unknown`) to `invalidated_by_restore` and clears `claim_digest`
+before committing the restore journal. Invalidated rows stay in `list` until
+dismissed, cannot be claimed or used as dependencies, and must be staged again
+under a new id after checking whether earlier effects survived the restore.
+Rows that were `applied` or `dismissed` in the backup keep their state.
+
+A `pending`, `expired`, `unknown`, or `invalidated_by_restore` row can be
+dismissed. Staging accepts only dependencies that exist and can still apply, and
+`depends_on` never changes, so dependencies cannot form a cycle. Rows are never
+deleted. The migration writes `backups/pre-schema51.db` and validates the table
+and index before stamping version 51. A failed step leaves the database at 50.
 
 ## Experiment ancestry
 

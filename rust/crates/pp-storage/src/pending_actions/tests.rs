@@ -275,13 +275,23 @@ fn an_apply_interrupted_by_a_crash_reads_as_unknown_after_reopen() {
     assert!(!queue.settle(claim.token(), End::Applied));
 }
 
-fn restore_fixture() -> (tempfile::TempDir, WriterOwner, Queue) {
+fn restore_fixture() -> (
+    tempfile::TempDir,
+    WriterOwner,
+    crate::restore::InstallationClient,
+    Queue,
+) {
     let directory = tempfile::tempdir().unwrap();
     let gate = crate::ownership_marker::WriterGate::SwitchOn;
     let (owner, _) =
         WriterOwner::open_with_gate(directory.path(), Limits::default(), gate).unwrap();
+    let installation = owner.installation().unwrap();
     let queue = Queue::on(&owner);
-    (directory, owner, queue)
+    (directory, owner, installation, queue)
+}
+
+fn export_backup(installation: &crate::restore::InstallationClient) -> Vec<u8> {
+    std::fs::read(&installation.export_backup("test").unwrap().path).unwrap()
 }
 
 fn stage_backup(installation: &crate::restore::InstallationClient, archive: &[u8]) -> String {
@@ -292,10 +302,9 @@ fn stage_backup(installation: &crate::restore::InstallationClient, archive: &[u8
 
 #[test]
 fn restore_is_refused_while_an_action_applies() {
-    let (_directory, owner, queue) = restore_fixture();
+    let (_directory, _owner, installation, queue) = restore_fixture();
     queue.stage("a", &[]).unwrap();
-    let installation = owner.installation().unwrap();
-    let archive = std::fs::read(&installation.export_backup("test").unwrap().path).unwrap();
+    let archive = export_backup(&installation);
     let claim = queue.claim("a").unwrap();
     let restore_id = stage_backup(&installation, &archive);
     let activate = || installation.activate(&restore_id, CONFIRMATION);
@@ -311,7 +320,7 @@ fn restore_is_refused_while_an_action_applies() {
 
 #[test]
 fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
-    let (_directory, owner, queue) = restore_fixture();
+    let (_directory, _owner, installation, queue) = restore_fixture();
     for id in [
         "applied_after",
         "dismissed_after",
@@ -329,8 +338,7 @@ fn restore_invalidates_open_actions_in_backup_and_preserves_settled_states() {
     assert!(queue.settle(applied.token(), End::Applied));
     queue.dismiss("dismissed_at_backup").unwrap();
 
-    let installation = owner.installation().unwrap();
-    let archive = std::fs::read(&installation.export_backup("test").unwrap().path).unwrap();
+    let archive = export_backup(&installation);
 
     let applied_after = queue.claim("applied_after").unwrap();
     assert!(queue.settle(applied_after.token(), End::Applied));

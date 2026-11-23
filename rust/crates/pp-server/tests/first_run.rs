@@ -59,8 +59,35 @@ fn last_line(bytes: &[u8]) -> String {
     text.lines().last().unwrap_or_default().to_owned()
 }
 
-#[test]
-fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
+fn node_source() -> Installation {
+    let node = Installation::create(Fixture::NodeSchema34).unwrap();
+    node_installation::populate(node.path()).unwrap();
+    node
+}
+
+/// A link named `link` in `parent`, pointing at `target`.
+fn link_in(parent: &Installation, target: &Path) -> PathBuf {
+    let link = parent.path().join("link");
+    std::os::unix::fs::symlink(target, &link).unwrap();
+    link
+}
+
+fn assert_imported(output: &Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        last_line(&output.stdout),
+        "destination: an imported installation, ready to start with --data"
+    );
+}
+
+/// Starts the server on a stopped import, directly or through a link, and
+/// checks it refuses before writing anything there.
+fn assert_start_refuses_a_stopped_import(through_a_link: bool) {
     let stopped = Installation::create(Fixture::Empty).unwrap();
     std::fs::create_dir(stopped.path().join(".pp-import")).unwrap();
     std::fs::write(
@@ -69,8 +96,14 @@ fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
     )
     .unwrap();
     let before = snapshot(stopped.path()).unwrap();
+    let links = Installation::create(Fixture::Empty).unwrap();
+    let data = if through_a_link {
+        link_in(&links, stopped.path())
+    } else {
+        stopped.path().to_path_buf()
+    };
 
-    let output = run_startup_until_exit_or_timeout(stopped.path());
+    let output = run_startup_until_exit_or_timeout(&data);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -94,6 +127,16 @@ fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
 }
 
 #[test]
+fn ticket_t_35_server_refuses_a_stopped_import_and_leaves_it_as_found() {
+    assert_start_refuses_a_stopped_import(false);
+}
+
+#[test]
+fn ticket_t_35_server_refuses_a_linked_stopped_import_and_leaves_it_as_found() {
+    assert_start_refuses_a_stopped_import(true);
+}
+
+#[test]
 fn ticket_t_35_cli_prints_the_destination_after_a_refused_import() {
     let source = Installation::create(Fixture::Empty).unwrap();
     let parent = Installation::create(Fixture::Empty).unwrap();
@@ -109,23 +152,11 @@ fn ticket_t_35_cli_prints_the_destination_after_a_refused_import() {
 
 #[test]
 fn ticket_t_35_cli_prints_the_destination_after_an_import() {
-    let node = Installation::create(Fixture::NodeSchema34).unwrap();
-    node_installation::populate(node.path()).unwrap();
+    let node = node_source();
     let before = snapshot(node.path()).unwrap();
     let parent = Installation::create(Fixture::Empty).unwrap();
 
-    let output = import(node.path(), &parent.path().join("new"));
-
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        last_line(&output.stdout),
-        "destination: an imported installation, ready to start with --data"
-    );
+    assert_imported(&import(node.path(), &parent.path().join("new")));
     assert_eq!(
         snapshot(node.path()).unwrap(),
         before,
@@ -134,9 +165,45 @@ fn ticket_t_35_cli_prints_the_destination_after_an_import() {
 }
 
 #[test]
+fn ticket_t_35_cli_imports_into_a_linked_empty_folder() {
+    let node = node_source();
+    let empty = Installation::create(Fixture::Empty).unwrap();
+    let links = Installation::create(Fixture::Empty).unwrap();
+
+    assert_imported(&import(node.path(), &link_in(&links, empty.path())));
+    assert!(
+        empty.path().join(".pp-rust-owned.json").is_file(),
+        "the import did not write through the link"
+    );
+}
+
+#[test]
+fn ticket_t_35_cli_does_not_offer_a_folder_the_importer_refuses() {
+    let node = node_source();
+    let live_owner = format!("{{\"pid\": {}}}", std::process::id());
+    for (name, bytes) in [
+        (".desktop-lease/owner.json", "{}"),
+        (".desktop-owner.json", live_owner.as_str()),
+    ] {
+        let destination = Installation::create(Fixture::Empty).unwrap();
+        let path = destination.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+
+        let output = import(node.path(), destination.path());
+
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert_eq!(
+            last_line(&output.stderr),
+            "destination: not an import destination",
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn ticket_t_35_cli_does_not_call_a_failed_publish_a_node_installation() {
-    let node = Installation::create(Fixture::NodeSchema34).unwrap();
-    node_installation::populate(node.path()).unwrap();
+    let node = node_source();
     let parent = Installation::create(Fixture::Empty).unwrap();
     let destination = parent.path().join("new");
     let first = import(node.path(), &destination);

@@ -9,6 +9,8 @@ use crate::manifest_text::{
 #[cfg(test)]
 #[path = "manifest_glob_tests.rs"]
 mod glob_tests;
+#[path = "node_case.rs"]
+pub(super) mod node_case;
 
 #[derive(Clone, Default)]
 pub(crate) struct Manifest {
@@ -818,39 +820,11 @@ pub(crate) fn merge_with<E>(
     Ok(())
 }
 fn normalize_glob(text: &JsText) -> JsText {
-    let mut units = Vec::with_capacity(text.units().len());
-    let mut scalar = String::new();
-    for decoded in char::decode_utf16(text.units().iter().copied()) {
-        match decoded {
-            Ok(c) => scalar.push(if c == '\\' { '/' } else { c }),
-            Err(error) => {
-                units.extend(scalar.to_lowercase().encode_utf16());
-                scalar.clear();
-                units.push(error.unpaired_surrogate());
-            }
-        }
-    }
-    units.extend(scalar.to_lowercase().encode_utf16());
-    JsText::from_units(units).trim_ecmascript()
-}
-
-fn canonicalize_regex_unit(unit: u16) -> u16 {
-    let Some(c) = char::from_u32(u32::from(unit)) else {
-        return unit;
-    };
-    let mut uppercase = c.to_uppercase();
-    let Some(upper) = uppercase.next() else {
-        return unit;
-    };
-    if uppercase.next().is_some() || upper.len_utf16() != 1 {
-        return unit;
-    }
-    let upper = upper as u16;
-    if unit >= 0x80 && upper < 0x80 {
-        unit
-    } else {
-        upper
-    }
+    let units = text
+        .units()
+        .iter()
+        .map(|&unit| if unit == 0x5c { 0x2f } else { unit });
+    JsText::from_units(node_case::lowercase_units(units)).trim_ecmascript()
 }
 
 fn dot_matches(unit: u16) -> bool {
@@ -1166,7 +1140,7 @@ impl Glob {
             .units()
             .iter()
             .copied()
-            .map(canonicalize_regex_unit)
+            .map(node_case::canonicalize)
             .collect();
         Self { text, units }
     }
@@ -1186,7 +1160,7 @@ impl Glob {
             .units()
             .iter()
             .copied()
-            .map(canonicalize_regex_unit)
+            .map(node_case::canonicalize)
             .collect();
         let matched = wildcard_matches(&self.units, &key, &mut work)
             || (!self.units.contains(&0x2f)

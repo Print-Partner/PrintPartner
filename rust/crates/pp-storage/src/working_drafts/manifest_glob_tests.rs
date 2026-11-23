@@ -1,8 +1,6 @@
 use super::super::observation::BuilderGlob;
-use super::{
-    Glob, canonicalize_regex_unit, dot_matches, find_masked, find_short_masked, fits,
-    wildcard_matches,
-};
+use super::node_case::{canonicalize, lowercase_units};
+use super::{Glob, dot_matches, find_masked, find_short_masked, fits, wildcard_matches};
 use crate::manifest_text::{JsText, ManifestText};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -40,9 +38,7 @@ fn builder_glob_case_mappings_match_node_tables() {
     // Node pins each unit to the smallest unit in its class.
     let mut smallest = BTreeMap::new();
     for unit in 0..=u16::MAX {
-        smallest
-            .entry(canonicalize_regex_unit(unit))
-            .or_insert(unit);
+        smallest.entry(canonicalize(unit)).or_insert(unit);
     }
     let mut mismatches = Vec::new();
     for unit in 0..=u16::MAX {
@@ -51,7 +47,7 @@ fn builder_glob_case_mappings_match_node_tables() {
             .map_or(unit, |value| {
                 u16::try_from(value.as_u64().unwrap()).unwrap()
             });
-        let actual = smallest[&canonicalize_regex_unit(unit)];
+        let actual = smallest[&canonicalize(unit)];
         if actual != expected {
             mismatches.push(format!(
                 "/i {unit:#06x}: Node {expected:#06x}, Rust {actual:#06x}"
@@ -63,11 +59,7 @@ fn builder_glob_case_mappings_match_node_tables() {
             || scalar.encode_utf16(&mut [0; 2]).to_vec(),
             |value| serde_json::from_value(value.clone()).unwrap(),
         );
-        let actual: Vec<u16> = scalar
-            .to_lowercase()
-            .collect::<String>()
-            .encode_utf16()
-            .collect();
+        let actual = lowercase_units(scalar.encode_utf16(&mut [0; 2]).iter().copied());
         if actual != expected {
             mismatches.push(format!(
                 "toLowerCase {:#x}: Node {expected:x?}, Rust {actual:x?}",
@@ -75,7 +67,48 @@ fn builder_glob_case_mappings_match_node_tables() {
             ));
         }
     }
-    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "{}\nstd has Unicode {:?}. A scalar Node leaves unassigned belongs in UNASSIGNED_IN_NODE \
+         in node_case.rs; any other mismatch means std changed a scalar Node assigns.",
+        mismatches.join("\n"),
+        char::UNICODE_VERSION
+    );
+}
+
+#[test]
+fn builder_glob_final_sigma_context_matches_node() {
+    let (mut units, mut finals, mut digest) = (0_usize, 0_usize, 0x811c_9dc5_u32);
+    let mut buffer = [0; 2];
+    for scalar in (0..=0x10_ffff).filter_map(char::from_u32) {
+        let scalar = &*scalar.encode_utf16(&mut buffer);
+        // The third text ends in a cased letter, so the forward scan tells a case-ignorable
+        // scalar from one that breaks the context.
+        for (before, after) in [
+            ("\u{391}", "\u{3A3}/"),
+            ("", "\u{3A3}/"),
+            ("\u{391}\u{3A3}", "\u{391}/"),
+        ] {
+            let text = before
+                .encode_utf16()
+                .chain(scalar.iter().copied())
+                .chain(after.encode_utf16());
+            for unit in lowercase_units(text) {
+                units += 1;
+                finals += usize::from(unit == 0x3c2);
+                digest = (digest ^ u32::from(unit)).wrapping_mul(0x0100_0193);
+            }
+        }
+    }
+    // Node 22.23.3 and 24.21.0 (ICU 78.3, Unicode 17.0) give these for toLowerCase of the
+    // same text.
+    assert_eq!(
+        (units, finals, digest),
+        (16_490_499, 1_116_431, 0x2c60_2983),
+        "std has Unicode {:?}. Add each scalar std now treats as cased or case-ignorable that \
+         Node leaves unassigned to UNASSIGNED_IN_NODE in node_case.rs.",
+        char::UNICODE_VERSION
+    );
 }
 
 #[test]

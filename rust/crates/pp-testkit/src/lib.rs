@@ -571,11 +571,13 @@ fn write_owner_directory(path: &Path, owner: &str) -> io::Result<()> {
 
 /// Creates one directory with mode `0o700` whatever the umask.
 fn create_private_dir(path: &Path) -> io::Result<()> {
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(path)?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(path)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir(path)?;
     pin_mode(path, 0o700)
 }
 

@@ -77,7 +77,6 @@ impl Queue {
     }
 }
 
-/// A fresh store with each `(id, depends_on)` staged in order.
 fn staged(chain: &[(&str, &[&str])]) -> (tempfile::TempDir, WriterOwner, Queue) {
     let (directory, owner) = opened(Limits::default());
     let queue = Queue::on(&owner);
@@ -116,14 +115,16 @@ fn a_staged_action_is_listed_with_its_times_staged_by_and_dependencies() {
     assert_eq!(second.staged_by, "claude-ai");
     assert_eq!(second.params["name"], "Night lamp");
     assert_eq!(second.created_at.len(), "2026-11-22T23:04:05.123Z".len());
-    let created = chrono_seconds(&second.created_at);
-    assert_eq!(chrono_seconds(&second.expires_at) - created, 8 * 60 * 60);
+    let created = sqlite_unix_seconds(&second.created_at);
+    assert_eq!(
+        sqlite_unix_seconds(&second.expires_at) - created,
+        8 * 60 * 60
+    );
     assert!(matches!(queue.stage("a", &[]), Err(ActionError::IdTaken)));
     assert_eq!(StagedBy::label(" \t ").as_str(), "MCP client");
 }
 
-/// Unix seconds of a stored stamp, read with SQLite's own date parser.
-fn chrono_seconds(stamp: &str) -> i64 {
+fn sqlite_unix_seconds(stamp: &str) -> i64 {
     rusqlite::Connection::open_in_memory()
         .unwrap()
         .query_row(

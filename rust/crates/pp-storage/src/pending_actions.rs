@@ -1,5 +1,3 @@
-//! Storage queue for pending MCP actions.
-//!
 //! Opening the database turns `applying` into `unknown`
 //! ([`interrupt_applying`]), and nothing returns `unknown` to `pending`.
 //! Rows are never deleted. Staging accepts only dependencies that exist and
@@ -165,7 +163,6 @@ impl fmt::Debug for ClaimToken {
     }
 }
 
-/// How a claimed apply ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
     Applied,
@@ -406,7 +403,7 @@ pub(crate) fn interrupt_applying(connection: &mut Connection) -> anyhow::Result<
 
 /// Moves every open row in a restored database to `invalidated_by_restore`
 /// so restoring a backup never makes a previously settled or uncertain action
-/// claimable again. Single place encoding the restore rule.
+/// claimable again.
 pub(crate) fn invalidate_after_restore(connection: &mut Connection) -> anyhow::Result<()> {
     let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let now = now(&tx)?;
@@ -516,8 +513,7 @@ fn load(
     rows.next()?.map(|row| action(row, now)).transpose()
 }
 
-/// Parses a row. A `pending` row reads as [`State::Expired`] once
-/// `expires_at <= now`; both share one fixed-width format, so text compares.
+/// Both stamps share one fixed-width UTC format, so text comparison orders them.
 fn action(row: &Row<'_>, now: &str) -> Result<PendingAction, ActionError> {
     let id: String = row.get("id")?;
     let invalid = || ActionError::StoredRowInvalid { id: id.clone() };
@@ -546,10 +542,6 @@ fn action(row: &Row<'_>, now: &str) -> Result<PendingAction, ActionError> {
     })
 }
 
-/// The action to apply before `action`, depth first over `depends_on` in
-/// order. An applied dependency is skipped. A pending one is followed down
-/// to its own first blocker, and is the answer when it has none. Any other
-/// state is the answer.
 fn must_go_first(
     tx: &Transaction<'_>,
     tenant: &str,

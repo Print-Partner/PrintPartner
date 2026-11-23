@@ -925,7 +925,9 @@ pub(super) fn prepare(
             }
             let (filename, slug, role, quantity) = parse(&path, &layer.naming, b)?;
             scan.push(Scanned {
-                key: path.to_lowercase().trim_matches('/').into(),
+                key: manifest::node_case::lowercase(&path)
+                    .trim_matches('/')
+                    .into(),
                 path,
                 filename,
                 slug,

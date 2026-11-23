@@ -1,5 +1,5 @@
 use super::super::observation::BuilderGlob;
-use super::node_case::{canonicalize, lowercase_units};
+use super::node_case::{self, canonicalize, lowercase_units};
 use super::{Glob, dot_matches, find_masked, find_short_masked, fits, wildcard_matches};
 use crate::manifest_text::{JsText, ManifestText};
 use serde_json::Value;
@@ -108,6 +108,16 @@ fn builder_glob_final_sigma_context_matches_node() {
         "std has Unicode {:?}. Add each scalar std now treats as cased or case-ignorable that \
          Node leaves unassigned to UNASSIGNED_IN_NODE in node_case.rs.",
         char::UNICODE_VERSION
+    );
+}
+
+#[test]
+fn stored_part_key_lowercases_like_node() {
+    // Node 24.21.0 gives this: U+A7DD is unassigned there, so it stays and ends the
+    // sigma's context.
+    assert_eq!(
+        node_case::lowercase("Kit/A\u{3A3}\u{A7DD}.STL"),
+        "kit/a\u{3C2}\u{A7DD}.stl"
     );
 }
 

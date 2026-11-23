@@ -53,9 +53,9 @@ only. No step is skipped.
 | `fail` | The step failed and has no marker. Or, marker or not, it did not finish: it timed out, did not run, or the harness failed (the server was not ready or the sign-in did not work). | fails |
 | `unexpected_pass` | The step passed and still has a marker. | fails |
 
-A marker is the ticket in `step(3, "GRE-1531", …)`. The test of a marked step goes as far
-as the screens allow and then stops at `unwritten(…)`, which names what is still to check.
-The ticket that makes a step work finishes that test and sets the marker to `null` in the
+A marker is the ticket in `step(3, "GRE-1531", …)`, the ticket that will make that step pass.
+Playwright runs a marked step as `test.fail`, expecting it to fail; `score.ts` then scores it
+by the State table above. The ticket that makes a step work sets the marker to `null` in the
 same PR; the label `ci:daily-loop` runs the test on that PR. The `Daily loop` workflow runs
 it on each push to `main` and publishes the score ([CI](../development/ci.md#daily-loop)).
 

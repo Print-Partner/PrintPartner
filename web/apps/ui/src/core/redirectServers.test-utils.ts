@@ -1,13 +1,6 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-/**
- * Two real loopback HTTP servers, so Node's own `fetch` decides whether to follow a redirect.
- * `first` stands in for a proxy in front of the core: it answers every request with `status`
- * and a `Location` on `destination`. `destination` answers 200 with `landed`, a body the route's
- * schema accepts, so a followed redirect would read as the core's success. Every count is a
- * request a server received.
- */
 export async function redirectServers(landed: unknown) {
   const first: string[] = [];
   const destination: string[] = [];
@@ -39,7 +32,6 @@ export async function redirectServers(landed: unknown) {
       first.length = 0;
       destination.length = 0;
     },
-    /** Sends `path` with the page's own `init` to the first server. */
     forward: (path: string, init?: RequestInit) => nodeFetch(`${origin}${path}`, init),
     close: () =>
       Promise.all(

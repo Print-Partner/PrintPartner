@@ -90,11 +90,6 @@ function refusalCopy(detail: string): string {
   return refusalText(detail);
 }
 
-/**
- * One `createBuild` POST. A redirect throws `RedirectedWrite` in `fetchCore`, which is checked
- * like a lost answer. It runs in the mutation cache, so the core's own 401 opens sign-in
- * (`App.tsx`), and lets go of the cache once settled, since nothing reads a settled Create there.
- */
 async function post(client: QueryClient, body: CreateBuildRequest) {
   const observer = new MutationObserver(client, {
     retry: false,

@@ -130,7 +130,6 @@ describe("fetchCore", () => {
   });
 });
 
-// GRE-1863: a followed 307 or 308 would send the write again to its Location.
 describe("fetchCore on a redirected write", () => {
   it("sends a write manual, throws RedirectedWrite on a 307 and tells no 401 listener", async () => {
     const fetchMock = vi

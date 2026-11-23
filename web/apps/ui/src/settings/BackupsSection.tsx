@@ -40,7 +40,7 @@ function timeText(iso: string): string {
 
 /**
  * Posts the chosen file as the stage route's body. The browser sends its Content-Length, which
- * the core requires. `fetchCore` refuses a redirect on a write, so the answer read is the core's.
+ * the core requires.
  */
 async function stageBackup(file: File): Promise<Preview> {
   const path = routePath("stageInstallationRestore", {});
@@ -54,11 +54,6 @@ async function stageBackup(file: File): Promise<Preview> {
   return parsed.data;
 }
 
-/**
- * Sends one restore. `fetchCore` refuses a redirect on a write rather than following it, so a 307
- * or 308 from a layer in front of the core cannot send the restore a second time, and
- * `restoreVerdict` reads the refusal as an unknown outcome.
- */
 async function sendRestore(preview: Preview): Promise<void> {
   const path = routePath("restoreInstallation", {});
   const request = routes.restoreInstallation.request.safeParse({

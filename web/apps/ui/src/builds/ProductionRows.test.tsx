@@ -236,8 +236,6 @@ describe("Production row actions", () => {
   });
 });
 
-// GRE-1863: a layer in front of the core answers Send now with a redirect. A followed redirect
-// would send the dispatch again, and that is the request that reaches a printer.
 describe("Production row actions: a redirected Send now", () => {
   const waiting = item("q", { filename: "redirect.gcode" });
   let servers: Awaited<ReturnType<typeof redirectServers>>;

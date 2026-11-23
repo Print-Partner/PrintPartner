@@ -14,7 +14,6 @@ export const newKey = () =>
 
 // A send that never reached the core, or whose answer was lost, is resent with the same key;
 // the core answers a repeat with the first receipt and writes nothing. A refusal is not.
-// Both read a RedirectedWrite as lost, and the app's QueryClient vetoes its automatic retry.
 export const lostSend = (error: Error) =>
   !(error instanceof CoreError) && !(error instanceof RequestContractError);
 export const resendable = (error: Error) =>

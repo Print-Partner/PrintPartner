@@ -42,12 +42,6 @@ export class CoreError extends Error {
   }
 }
 
-/**
- * A write (any method but GET or HEAD) answered with a redirect. `fetchCore` never follows one:
- * the answer came from a layer in front of the core, so whether the core applied the write is
- * unknown. It is not a CoreError, so every classifier reads it as an unknown outcome, and the
- * app's QueryClient never retries it on its own (`App.tsx`).
- */
 export class RedirectedWrite extends Error {
   constructor(method: string, path: string, status: number) {
     super(

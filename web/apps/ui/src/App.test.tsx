@@ -352,7 +352,6 @@ describe("FRM-04 offline frame", () => {
   });
 });
 
-// GRE-1863: a mutation's own retry still runs, except on a write a layer redirected.
 describe("the app's QueryClient", () => {
   const send = (mutationFn: () => Promise<string>) =>
     new MutationObserver(createQueryClient(), {

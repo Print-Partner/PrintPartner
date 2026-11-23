@@ -477,7 +477,6 @@ describe("CHK-05 offline", () => {
   });
 });
 
-// GRE-1863: a layer in front of the core answers the burst POST with a redirect.
 describe("CHK-03 a redirected burst", () => {
   let servers: Awaited<ReturnType<typeof redirectServers>>;
   beforeAll(async () => {

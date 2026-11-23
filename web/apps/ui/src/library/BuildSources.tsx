@@ -83,9 +83,6 @@ const refusedByCore = (error: Error) =>
 class Unconfirmed extends Error {}
 
 /**
- * One PUT. `fetchCore` refuses a redirect on a write rather than following it, so the send stays
- * unconfirmed.
- *
  * The handler answers success only as `BuildOutcome::Layers`, which `present` sends as
  * `json_response(StatusCode::OK, ProfileLayers { profile_id, layers })`, and its layers then
  * hold the `'base'` layer it wrote. So only a 200 whose body matches the contract and holds a

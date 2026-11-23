@@ -1,6 +1,3 @@
-//! Tray Back up now (GRE-1036). One backup at a time: the slot stays taken
-//! from the menu click until the result's dialog is submitted.
-
 use pp_core::BackupFailure;
 use pp_desktop::tray::{BACKUP, backup_message};
 use std::{
@@ -14,17 +11,14 @@ use tauri::{AppHandle, Manager};
 
 pub(crate) const LABEL: &str = "Back up now";
 
-/// The native backup into a folder: `OfflineBackup::create_in` in production.
 pub(crate) type Effect = Arc<dyn Fn(&Path) -> Result<PathBuf, BackupFailure> + Send + Sync>;
 
 pub(crate) struct TrayBackup {
-    /// `None` when the Node child owns the data.
     effect: Option<Effect>,
     downloads: Option<PathBuf>,
     running: Arc<AtomicBool>,
 }
 
-/// Frees the slot on drop.
 struct Slot(Arc<AtomicBool>);
 
 impl Drop for Slot {
@@ -59,7 +53,6 @@ impl TrayBackup {
         self.running.load(Ordering::Acquire)
     }
 
-    /// `Some` only for Back up now, with a backup to run, while none runs.
     pub(crate) fn begin(&self, id: &str) -> Option<BackupRun> {
         let effect = Arc::clone(self.effect.as_ref().filter(|_| id == BACKUP)?);
         if self.running.swap(true, Ordering::AcqRel) {
@@ -93,7 +86,6 @@ impl FinishedBackup {
     }
 }
 
-/// Called on the main thread with a claimed run.
 pub(crate) fn start(app: &AppHandle, run: BackupRun) {
     show_running(app, true);
     let app = app.clone();
@@ -109,7 +101,6 @@ pub(crate) fn start(app: &AppHandle, run: BackupRun) {
     });
 }
 
-/// Main thread only: the item lives in the managed tray status (GRE-1254).
 fn show_running(app: &AppHandle, running: bool) {
     if let Some(state) = app.try_state::<crate::TrayStatus>()
         && let Ok(items) = state.lock()
@@ -126,7 +117,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    /// A fake that counts calls and returns `name` in the folder it was given.
     fn tray(
         saved: Result<&'static str, BackupFailure>,
         downloads: Option<PathBuf>,

@@ -53,14 +53,12 @@ pub fn runtime_status(state: &RuntimeStatus) -> (&'static str, Tone) {
 /// Menu id of Back up now (GRE-1036), shown when the Rust writer owns the data.
 pub const BACKUP: &str = "backup";
 
-/// The items a tray shows on top of the defaults.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MenuExtras {
     pub backup: bool,
     pub open_at_login: bool,
 }
 
-/// Every tray item id, in display order.
 #[rustfmt::skip]
 const ORDER: [&str; 10] = [
     "show", "browser", "status", "logs", "log_folder", "recover", "data", BACKUP, OPEN_AT_LOGIN, "quit",

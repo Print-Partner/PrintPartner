@@ -1,7 +1,3 @@
-//! The tray's Back up now (GRE-1036): one native backup (GRE-403, through
-//! GRE-1371's export), saved as a new file in a folder. Only a Rust-only start
-//! makes an [`Export`], so a Node-backed runtime has no [`OfflineBackup`].
-
 use crate::ShutdownGate;
 use sha2::Digest;
 use std::{
@@ -47,15 +43,12 @@ impl OfflineBackup {
     }
 }
 
-/// A trait so the ungated `CoreHandle` can hold the gated writer's export.
 pub(crate) trait Export: Send + Sync {
     fn export(&self) -> Result<Box<dyn Exported>, BackupFailure>;
 }
 
-/// A complete archive in its export folder. Dropping it removes the folder.
 pub(crate) trait Exported: Send {
     fn archive(&self) -> &Path;
-    /// Lowercase hex.
     fn sha256(&self) -> &str;
 }
 
@@ -73,7 +66,6 @@ fn save(exported: &dyn Exported, folder: &Path) -> Result<PathBuf, BackupFailure
         }
         Err(_) => copy_then_publish(exported, folder)?,
     };
-    // The archive is already complete under its name.
     if pp_os::sync_directory(folder).is_err() {
         tracing::warn!("tray_backup_directory_sync_failed");
     }
@@ -82,7 +74,6 @@ fn save(exported: &dyn Exported, folder: &Path) -> Result<PathBuf, BackupFailure
 
 /// For a folder on another drive: copies the archive into a hidden private
 /// file, checks the copy's SHA-256 against the export's, then publishes it.
-/// A copy that is not published is removed.
 fn copy_then_publish(exported: &dyn Exported, folder: &Path) -> Result<PathBuf, BackupFailure> {
     let id = rand::random::<u128>();
     let path = folder.join(format!(".print-partner-backup-{id:032x}.partial"));
@@ -95,7 +86,6 @@ fn copy_then_publish(exported: &dyn Exported, folder: &Path) -> Result<PathBuf, 
     published.map_err(|_| BackupFailure::Failed)
 }
 
-/// Closes `copy` before returning, so the caller can remove it on Windows.
 fn copy_checked(mut copy: File, exported: &dyn Exported, path: &Path) -> io::Result<()> {
     io::copy(&mut File::open(exported.archive())?, &mut copy)?;
     copy.sync_all()?;

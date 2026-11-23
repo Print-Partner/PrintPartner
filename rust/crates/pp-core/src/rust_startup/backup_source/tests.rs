@@ -4,8 +4,6 @@ use crate::{BackupFailure, OfflineBackup, ShutdownGate};
 use pp_storage::{Limits, WriterOwner, archive};
 use tempfile::TempDir;
 
-/// A data folder with one Source file, its open writer, the backup the tray
-/// gets for it, and an empty Downloads folder.
 fn opened() -> (TempDir, WriterOwner, OfflineBackup, TempDir) {
     let data = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(data.path().join("repos/source-a")).unwrap();

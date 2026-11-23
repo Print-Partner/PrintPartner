@@ -4,7 +4,6 @@ use tempfile::NamedTempFile;
 
 const BYTES: &[u8] = b"archive bytes";
 
-/// Sorted names in `folder` that start with `prefix`; none when it is missing.
 pub(crate) fn names(folder: &Path, prefix: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
@@ -15,7 +14,6 @@ pub(crate) fn names(folder: &Path, prefix: &str) -> Vec<String> {
     names
 }
 
-/// Counts its calls and always refuses for lack of space.
 struct Refusing(AtomicUsize);
 
 impl Export for Refusing {
@@ -42,7 +40,6 @@ fn ticket_t_29_tray_backup_saves_nothing_when_the_export_fails_or_shutdown_began
     assert!(names(folder.path(), "").is_empty());
 }
 
-/// An archive file and the digest the export reports for it.
 struct FakeExported(NamedTempFile, String);
 
 impl Exported for FakeExported {

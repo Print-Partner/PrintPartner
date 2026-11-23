@@ -1,6 +1,3 @@
-//! The Rust-only runtime's [`Export`]: GRE-1371's `export_backup`, which runs
-//! GRE-403's archive writer. Here because `rust_startup` is already gated.
-
 use crate::backup::{BackupFailure, Export, Exported};
 use pp_storage::{
     WriterFailure, WriterOwner,
@@ -8,8 +5,6 @@ use pp_storage::{
 };
 use std::{path::Path, sync::Arc};
 
-/// The client holds no `Arc<Mutex<WriterOwner>>`, and closing the writer does
-/// not wait for it; once closed, it answers [`BackupFailure::Stopping`].
 pub(crate) fn backup_source(writer: &WriterOwner) -> anyhow::Result<Arc<dyn Export>> {
     Ok(Arc::new(writer.installation()?))
 }

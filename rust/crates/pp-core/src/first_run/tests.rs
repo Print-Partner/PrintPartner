@@ -205,6 +205,43 @@ fn ticket_t_35_survey_cannot_tell_a_failed_publish_from_node() {
         "first-run cannot tell this folder from a stopped Node installation, which test \
          builds open on purpose; release builds refuse it at the writer's marker check"
     );
+
+    let retry = import_node(node.path(), &destination);
+    assert_eq!(
+        retry.destination,
+        LeftBehind::Surveyed(DataFolder::UnmarkedDatabase),
+        "the folder held a database before this import"
+    );
+    assert_eq!(
+        retry.destination.to_string(),
+        DataFolder::UnmarkedDatabase.to_string()
+    );
+}
+
+#[test]
+fn ticket_t_35_import_names_its_own_partial_copy() {
+    let parent = Installation::create(Fixture::Empty).unwrap();
+    let destination = parent.path().join("new");
+
+    let attempt = attempt_with(&destination, || {
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join(DATABASE), b"moved").unwrap();
+        Err(ImportError::Destination(Destination::NotEmpty(
+            "repos".into(),
+        )))
+    });
+
+    assert!(
+        matches!(attempt.result, AttemptResult::Refused(_)),
+        "{:?}",
+        attempt.result
+    );
+    assert_eq!(attempt.destination, LeftBehind::PartialCopy);
+    assert_eq!(
+        attempt.destination.to_string(),
+        "this import's partial copy, without an ownership marker; not an import destination; \
+         import again into a new, empty folder"
+    );
 }
 
 #[test]
@@ -232,7 +269,7 @@ fn ticket_t_35_import_node_imports_and_reports_an_installed_destination() {
     );
     assert_eq!(
         attempt.destination,
-        DataFolder::Installed { imported: true }
+        LeftBehind::Surveyed(DataFolder::Installed { imported: true })
     );
     assert_eq!(
         attempt.destination.to_string(),
@@ -259,7 +296,7 @@ fn ticket_t_35_refused_import_leaves_the_destination_empty_and_the_source_unchan
         "{:?}",
         attempt.result
     );
-    assert_eq!(attempt.destination, DataFolder::Empty);
+    assert_eq!(attempt.destination, LeftBehind::Surveyed(DataFolder::Empty));
     assert_eq!(
         std::fs::read_dir(&destination).unwrap().count(),
         0,
@@ -300,7 +337,7 @@ fn ticket_t_35_stopped_import_is_refused_by_startup_and_by_a_retry() {
     );
     assert_eq!(
         retry.destination,
-        DataFolder::Unfinished(Unfinished::StagePresent)
+        LeftBehind::Surveyed(DataFolder::Unfinished(Unfinished::StagePresent))
     );
     assert_eq!(
         snapshot(stopped.path()).unwrap(),

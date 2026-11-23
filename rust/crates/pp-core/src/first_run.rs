@@ -120,8 +120,30 @@ impl fmt::Display for DataFolder {
 #[derive(Debug)]
 pub struct Attempt {
     pub result: AttemptResult,
-    /// The destination after the attempt: the recovery result.
-    pub destination: DataFolder,
+    pub destination: LeftBehind,
+}
+
+/// What an import attempt left at its destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeftBehind {
+    /// What [`survey`] reads there now.
+    Surveyed(DataFolder),
+    /// Empty before this attempt and an unmarked database after it: the
+    /// importer failed after moving the database in. [`survey`] alone cannot
+    /// tell this folder from a Node installation.
+    PartialCopy,
+}
+
+impl fmt::Display for LeftBehind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Surveyed(folder) => write!(f, "{folder}"),
+            Self::PartialCopy => f.write_str(
+                "this import's partial copy, without an ownership marker; not an import \
+                 destination; import again into a new, empty folder",
+            ),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -155,15 +177,27 @@ impl fmt::Display for AttemptResult {
     }
 }
 
-/// Runs `node_import::import` once, then surveys the destination. The
-/// importer keeps every refusal and limit it has. Synchronous and long
+/// Runs `node_import::import` once and says what it left at `destination`.
+/// The importer keeps every refusal and limit it has. Synchronous and long
 /// (minutes per 10 GB): call it off the async runtime.
 pub fn import_node(source: &Path, destination: &Path) -> Attempt {
-    let result = node_import::import(source, destination)
-        .map_or_else(AttemptResult::from, AttemptResult::Imported);
+    attempt_with(destination, || node_import::import(source, destination))
+}
+
+/// Surveys `destination`, runs the import once, and surveys it again.
+fn attempt_with(
+    destination: &Path,
+    run: impl FnOnce() -> Result<ImportReport, ImportError>,
+) -> Attempt {
+    let before = survey(destination);
+    let result = run().map_or_else(AttemptResult::from, AttemptResult::Imported);
+    let destination = match (before, survey(destination)) {
+        (DataFolder::Empty, DataFolder::UnmarkedDatabase) => LeftBehind::PartialCopy,
+        (_, after) => LeftBehind::Surveyed(after),
+    };
     Attempt {
         result,
-        destination: survey(destination),
+        destination,
     }
 }
 

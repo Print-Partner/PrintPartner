@@ -10,6 +10,8 @@ use std::{fmt, path::Path};
 #[cfg(test)]
 mod tests;
 
+// Hard-coded because pp-storage keeps the importer's `copy::STAGE` private,
+// until a sensitive-path follow-up exports it.
 const STAGE: &str = ".pp-import";
 const DATABASE: &str = "print-partner.db";
 const NODE_LEASE: &str = ".desktop-lease";

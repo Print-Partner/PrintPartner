@@ -4,6 +4,8 @@
 mod child_process;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
+#[path = "support/rust_only.rs"]
+mod rust_only;
 
 use pp_testkit::{Fixture, Installation, node_installation, snapshot};
 use std::{
@@ -12,22 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn binary() -> PathBuf {
-    if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
-        child_process::bin_exe("pp-server")
-    } else {
-        env!("CARGO_BIN_EXE_pp-server").into()
-    }
-}
-
 fn run_startup_until_exit_or_timeout(data: &Path) -> Output {
-    let bundle = release::launch(data.to_path_buf()).bundle;
-    let mut child = child_process::command(binary())
-        .env("PP_DESKTOP_REBUILD", "1")
+    let mut child = rust_only::command(data)
         .env("PP_LISTEN_ADDR", "127.0.0.1:0")
-        .args(["--data".as_ref(), data.as_os_str()])
-        .args(["--web".as_ref(), bundle.web_root.as_os_str()])
-        .args(["--commit", &bundle.commit])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -41,7 +30,7 @@ fn run_startup_until_exit_or_timeout(data: &Path) -> Output {
 }
 
 fn import(from: &Path, data: &Path) -> Output {
-    child_process::command(binary())
+    child_process::command(rust_only::server_binary())
         .env("PP_DESKTOP_REBUILD", "1")
         .args(["import".as_ref(), "--from".as_ref(), from.as_os_str()])
         .args(["--data".as_ref(), data.as_os_str()])
@@ -154,14 +143,26 @@ fn ticket_t_35_cli_prints_the_destination_after_a_refused_import() {
 fn ticket_t_35_cli_prints_the_destination_after_an_import() {
     let node = node_source();
     let before = snapshot(node.path()).unwrap();
-    let parent = Installation::create(Fixture::Empty).unwrap();
+    let root = Installation::create(Fixture::Empty).unwrap();
 
-    assert_imported(&import(node.path(), &parent.path().join("new")));
+    assert_imported(&import(node.path(), &root.path().join("data")));
     assert_eq!(
         snapshot(node.path()).unwrap(),
         before,
         "the Node folder changed"
     );
+    let server = rust_only::Server::start(root.path());
+    assert!(
+        server.origin().starts_with("http://127.0.0.1:"),
+        "{}",
+        server.origin()
+    );
+    assert!(
+        server.data.join("import-report.json").is_file(),
+        "the server did not start on the imported folder"
+    );
+    let (exit, _, stderr) = server.stop();
+    assert!(exit.success(), "{stderr}");
 }
 
 #[test]
@@ -181,22 +182,23 @@ fn ticket_t_35_cli_imports_into_a_linked_empty_folder() {
 fn ticket_t_35_cli_does_not_offer_a_folder_the_importer_refuses() {
     let node = node_source();
     let live_owner = format!("{{\"pid\": {}}}", std::process::id());
-    for (name, bytes) in [
-        (".desktop-lease/owner.json", "{}"),
-        (".desktop-owner.json", live_owner.as_str()),
+    for (fixture, owner_record) in [
+        (Fixture::EmptyWithLeaseLeftovers, None),
+        (Fixture::Empty, Some(live_owner)),
     ] {
-        let destination = Installation::create(Fixture::Empty).unwrap();
-        let path = destination.path().join(name);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
+        let destination = Installation::create(fixture).unwrap();
+        if let Some(record) = &owner_record {
+            std::fs::write(destination.path().join(".desktop-owner.json"), record).unwrap();
+        }
+        let case = format!("{fixture:?}, owner record {owner_record:?}");
 
         let output = import(node.path(), destination.path());
 
-        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert_eq!(output.status.code(), Some(1), "{case}");
         assert_eq!(
             last_line(&output.stderr),
             "destination: not an import destination",
-            "{name}"
+            "{case}"
         );
     }
 }

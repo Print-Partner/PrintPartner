@@ -5,7 +5,7 @@ use crate::{child_process, release};
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    process::{Child, ExitStatus, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 
@@ -15,6 +15,19 @@ pub fn server_binary() -> PathBuf {
     } else {
         env!("CARGO_BIN_EXE_pp-server").into()
     }
+}
+
+/// A Rust-only start of `pp-server` on `data`, with the release bundle's web
+/// root and commit.
+pub fn command(data: &Path) -> Command {
+    let bundle = release::launch(data.to_path_buf()).bundle;
+    let mut command = child_process::command(server_binary());
+    command
+        .env("PP_DESKTOP_REBUILD", "1")
+        .args(["--data".as_ref(), data.as_os_str()])
+        .args(["--web".as_ref(), bundle.web_root.as_os_str()])
+        .args(["--commit", &bundle.commit]);
+    command
 }
 
 /// A running server. Dropping it, on any path including a panic or a failed
@@ -42,14 +55,9 @@ impl Server {
         credential: Option<&Path>,
     ) -> Self {
         let (data, status) = (root.join("data"), root.join("status.json"));
-        let bundle = release::launch(data.clone()).bundle;
-        let mut command = child_process::command(server_binary());
+        let mut command = command(&data);
         command
             .env_remove("PP_LISTEN_ADDR")
-            .env("PP_DESKTOP_REBUILD", "1")
-            .args(["--data".as_ref(), data.as_os_str()])
-            .args(["--web".as_ref(), bundle.web_root.as_os_str()])
-            .args(["--commit", &bundle.commit])
             .args(["--status-file".as_ref(), status.as_os_str()]);
         if let Some(address) = listen {
             command.env("PP_LISTEN_ADDR", address);

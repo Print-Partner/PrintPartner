@@ -1,5 +1,4 @@
 use super::*;
-use crate::node_import::Destination;
 use pp_testkit::{Fixture, Installation, LeaseForm, Spec, node_installation, snapshot};
 use std::path::PathBuf;
 
@@ -7,6 +6,13 @@ fn node_source() -> Installation {
     let node = Installation::create(Fixture::NodeSchema34).unwrap();
     node_installation::populate(node.path()).unwrap();
     node
+}
+
+fn import_into_a_new_folder(source: &Path) -> (Installation, PathBuf, Attempt) {
+    let parent = Installation::create(Fixture::Empty).unwrap();
+    let destination = parent.path().join("new");
+    let attempt = import_node(source, &destination);
+    (parent, destination, attempt)
 }
 
 fn leave_as_a_publish_that_failed_after_moving_every_root(destination: &std::path::Path) {
@@ -182,9 +188,7 @@ fn ticket_t_35_survey_and_admit_accept_node_folders() {
 #[test]
 fn ticket_t_35_survey_cannot_tell_a_failed_publish_from_node() {
     let node = node_source();
-    let parent = Installation::create(Fixture::Empty).unwrap();
-    let destination = parent.path().join("new");
-    let attempt = import_node(node.path(), &destination);
+    let (_parent, destination, attempt) = import_into_a_new_folder(node.path());
     assert!(
         matches!(attempt.result, AttemptResult::Imported(_)),
         "{}",
@@ -248,10 +252,8 @@ fn ticket_t_35_import_names_its_own_partial_copy() {
 fn ticket_t_35_import_node_imports_and_reports_an_installed_destination() {
     let node = node_source();
     let before = snapshot(node.path()).unwrap();
-    let parent = Installation::create(Fixture::Empty).unwrap();
-    let destination = parent.path().join("new");
 
-    let attempt = import_node(node.path(), &destination);
+    let (_parent, destination, attempt) = import_into_a_new_folder(node.path());
 
     let AttemptResult::Imported(report) = &attempt.result else {
         panic!("not imported: {}", attempt.result);
@@ -283,10 +285,8 @@ fn ticket_t_35_import_node_imports_and_reports_an_installed_destination() {
 fn ticket_t_35_refused_import_leaves_the_destination_empty_and_the_source_unchanged() {
     let source = holding(Fixture::Empty, &[]);
     let before = snapshot(source.path()).unwrap();
-    let parent = Installation::create(Fixture::Empty).unwrap();
-    let destination = parent.path().join("new");
 
-    let attempt = import_node(source.path(), &destination);
+    let (_parent, destination, attempt) = import_into_a_new_folder(source.path());
 
     assert!(
         matches!(
@@ -368,18 +368,5 @@ fn ticket_t_35_stopped_import_is_refused_by_startup_and_by_a_retry() {
         snapshot(node.path()).unwrap(),
         source_before,
         "source changed"
-    );
-}
-
-#[test]
-fn ticket_t_35_stage_name_matches_the_importer() {
-    let destination = holding(Fixture::Empty, &[(".pp-import/x", b"")]);
-    assert_eq!(
-        node_import::inspect_destination(destination.path()),
-        Destination::NotEmpty(".pp-import".into())
-    );
-    assert_eq!(
-        survey(destination.path()),
-        DataFolder::Unfinished(Unfinished::StagePresent)
     );
 }

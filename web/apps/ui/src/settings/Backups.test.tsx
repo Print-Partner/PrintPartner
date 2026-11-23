@@ -468,7 +468,7 @@ describe("Backups: check a backup file", () => {
     expect(fake.stages()).toHaveLength(1);
     const init = fake.stages()[0]?.[1];
     expect(init?.body).toBe(file);
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
     expect(new Headers(init?.headers).get("content-type")).toBe("application/gzip");
     expect(within(region).getByRole("button", { name: "Restore this backup" })).toBeTruthy();
     expect(document.querySelector("dialog, [role=dialog]")).toBeNull();
@@ -667,7 +667,7 @@ describe("Backups: restore", () => {
     expect(await within(again).findByText("Restoring. Keep this page open.")).toBeTruthy();
     expect(fake.restores()).toHaveLength(1);
     const init = fake.restores()[0]?.[1];
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
     expect(JSON.parse(String(init?.body))).toEqual({ restore_id: PREVIEW.restore_id, confirmation: PREVIEW.confirmation });
     await act(async () => answer.resolve(json(RESTORED)));
     expect(await within(again).findByText(/^Restore complete/)).toBeTruthy();

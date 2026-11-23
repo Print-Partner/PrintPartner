@@ -536,12 +536,11 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     );
   });
 
-  it("never follows a redirect: the POST is sent once with redirect error, then checked", async () => {
+  it("never follows a redirect: the POST is sent once with redirect manual, then checked", async () => {
     const core = scriptedCore({
-      // What fetch does with `redirect: "error"` when the answer is a 307: it rejects.
       answer: (write) => {
         write();
-        return Promise.reject(new TypeError("Failed to fetch"));
+        return Promise.resolve(new Response(null, { status: 307, headers: { location: "/x" } }));
       },
     });
     renderAt("/builds", core);
@@ -551,7 +550,7 @@ describe("Create Build repeat rule: an unconfirmed answer is checked, never rese
     );
     const posts = core.fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
     expect(posts).toHaveLength(1);
-    expect(posts[0]![1]?.redirect).toBe("error");
+    expect(posts[0]![1]?.redirect).toBe("manual");
   });
 
   it("a 200 that lands while the dialog is closed shows the Build in a list read after it", async () => {

@@ -598,7 +598,7 @@ describe("a send the UI never saw confirmed", () => {
   it("sends the PUT with redirects refused", async () => {
     const { core } = await sendUnconfirmed();
     const [, init] = core.fetchMock.mock.calls.find(([, i]) => i?.method === "PUT")!;
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
   });
 
   it("a core refusal wrote nothing, so the form stays open with the reason", async () => {

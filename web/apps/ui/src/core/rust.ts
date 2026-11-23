@@ -55,11 +55,9 @@ type WriteBody<N extends WriteRoute> = [RouteRequest<N>] extends [never]
   ? []
   : [body: RouteRequest<N>];
 
-/** A write's answer with how it arrived, for a caller that trusts only an exact status. */
+/** A write's answer with its HTTP status, for a caller that trusts only an exact status. */
 export interface WriteAnswer<N extends WriteRoute> {
   status: number;
-  /** True when `fetch` followed a redirect, so `status` is not the route's own answer. */
-  redirected: boolean;
   data: RouteResponse<N>;
 }
 
@@ -75,17 +73,13 @@ export async function writeCore<N extends WriteRoute>(
   params: RouteParams<N>,
   ...args: [...WriteBody<N>, idempotencyKey?: string]
 ): Promise<RouteResponse<N>> {
-  return (await writeCoreAnswer(name, params, {}, ...args)).data;
+  return (await writeCoreAnswer(name, params, ...args)).data;
 }
 
-/**
- * `writeCore`, also returning the HTTP status and whether a redirect was followed. `init` sets
- * how `fetch` treats a redirect; `"error"` keeps it from sending the write a second time.
- */
+/** `writeCore`, also returning the HTTP status. A redirect never arrives here: `fetchCore` throws. */
 export async function writeCoreAnswer<N extends WriteRoute>(
   name: N,
   params: RouteParams<N>,
-  init: Pick<RequestInit, "redirect">,
   ...args: [...WriteBody<N>, idempotencyKey?: string]
 ): Promise<WriteAnswer<N>> {
   const route = routes[name];
@@ -99,7 +93,6 @@ export async function writeCoreAnswer<N extends WriteRoute>(
     throw new RequestContractError(path);
   }
   const response = await fetchCore(path, {
-    ...init,
     method: route.method,
     headers: {
       accept: "application/json",
@@ -110,9 +103,5 @@ export async function writeCoreAnswer<N extends WriteRoute>(
   });
   const parsed = route.response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);
-  return {
-    status: response.status,
-    redirected: response.redirected,
-    data: parsed.data as RouteResponse<N>,
-  };
+  return { status: response.status, data: parsed.data as RouteResponse<N> };
 }

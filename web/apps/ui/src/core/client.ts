@@ -28,8 +28,6 @@ export class CoreError extends Error {
    * body or a malformed member such as `"code": null` leaves it false.
    */
   problem = false;
-  /** True when `fetch` followed a redirect, so the answer is not the requested route's own. */
-  redirected = false;
 
   constructor(
     readonly status: number,
@@ -43,6 +41,31 @@ export class CoreError extends Error {
     this.name = "CoreError";
   }
 }
+
+/**
+ * A write (any method but GET or HEAD) answered with a redirect. `fetchCore` never follows one:
+ * the answer came from a layer in front of the core, so whether the core applied the write is
+ * unknown. It is not a CoreError, so every classifier reads it as an unknown outcome, and the
+ * app's QueryClient never retries it on its own (`App.tsx`).
+ */
+export class RedirectedWrite extends Error {
+  constructor(method: string, path: string, status: number) {
+    super(
+      `${method} ${path} was answered with a redirect${status ? ` (${status})` : ""}; ` +
+        "it was not followed, so whether it applied is unknown",
+    );
+    this.name = "RedirectedWrite";
+  }
+}
+
+/**
+ * Browsers answer a manual redirect as `opaqueredirect` with status 0, and Node's fetch returns
+ * the 3xx itself. `redirected` catches a runtime that followed it anyway.
+ */
+const redirectAnswer = (response: Response) =>
+  response.type === "opaqueredirect" ||
+  response.redirected ||
+  (response.status >= 300 && response.status < 400);
 
 /** A Build a refusal names, such as the one holding an order. `profileId` is null when absent. */
 export interface HoldingBuild {
@@ -144,17 +167,24 @@ export async function fetchCore(
       `Core requests take a same-origin path such as /health, got ${JSON.stringify(path)}`,
     );
   }
-  const response = await fetch(path, { ...init, credentials: "same-origin" });
+  const method = (init?.method ?? "GET").toUpperCase();
+  const write = method !== "GET" && method !== "HEAD";
+  // A followed 307 or 308 sends the write again to the Location. Set last, so no caller undoes it.
+  const response = await fetch(path, {
+    ...init,
+    credentials: "same-origin",
+    ...(write ? { redirect: "manual" as const } : {}),
+  });
+  if (write && redirectAnswer(response)) throw new RedirectedWrite(method, path, response.status);
   if (!response.ok) {
     if (response.status === 401 && options?.notifyUnauthorized !== false) {
-      notifyUnauthorized(!["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase()));
+      notifyUnauthorized(write);
     }
     const { own, detail, code, conflictingBuilds, errors, files } = await problem(response);
     const error = new CoreError(response.status, path, detail, code, conflictingBuilds);
     error.errors = errors ?? [];
     error.files = files ?? [];
     error.problem = own ?? false;
-    error.redirected = response.redirected;
     throw error;
   }
   return response;

@@ -39,16 +39,14 @@ function timeText(iso: string): string {
 }
 
 /**
- * Posts one create. A redirect is refused, not followed: a followed 307 or 308 would send the
- * POST a second time, and the destination's answer is not the core's. The refused redirect is a
- * network error, which the section reads as not confirmed.
+ * Posts one create. `fetchCore` refuses a redirect on a write rather than following it, and the
+ * section reads that as not confirmed.
  */
 async function createBackup(): Promise<Backup> {
   const path = routePath("createInstallationBackup", {});
   const response = await fetchCore(path, {
     method: "POST",
     headers: { accept: "application/json" },
-    redirect: "error",
   });
   const parsed = routes.createInstallationBackup.response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);
@@ -57,7 +55,7 @@ async function createBackup(): Promise<Backup> {
 
 /**
  * Posts the chosen file as the stage route's body. The browser sends its Content-Length, which
- * the core requires. A redirect is refused, so the answer read is always the core's.
+ * the core requires. `fetchCore` refuses a redirect on a write, so the answer read is the core's.
  */
 async function stageBackup(file: File): Promise<Preview> {
   const path = routePath("stageInstallationRestore", {});
@@ -65,7 +63,6 @@ async function stageBackup(file: File): Promise<Preview> {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/gzip" },
     body: file,
-    redirect: "error",
   });
   const parsed = routes.stageInstallationRestore.response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);
@@ -73,9 +70,9 @@ async function stageBackup(file: File): Promise<Preview> {
 }
 
 /**
- * Sends one restore. A redirect is refused rather than followed, so a 307 or 308 from a layer in
- * front of the core cannot send the restore a second time; the refused redirect is a network
- * error, which `restoreVerdict` reads as an unknown outcome.
+ * Sends one restore. `fetchCore` refuses a redirect on a write rather than following it, so a 307
+ * or 308 from a layer in front of the core cannot send the restore a second time, and
+ * `restoreVerdict` reads the refusal as an unknown outcome.
  */
 async function sendRestore(preview: Preview): Promise<void> {
   const path = routePath("restoreInstallation", {});
@@ -88,7 +85,6 @@ async function sendRestore(preview: Preview): Promise<void> {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify(request.data),
-    redirect: "error",
   });
   const parsed = routes.restoreInstallation.response.safeParse(await response.json().catch(() => undefined));
   if (!parsed.success) throw new ContractError(path);

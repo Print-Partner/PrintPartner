@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CoreError, checkCoreHealth, fetchCore, onUnauthorized } from "./client";
+import { CoreError, RedirectedWrite, checkCoreHealth, fetchCore, onUnauthorized } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -127,6 +127,77 @@ describe("fetchCore", () => {
 
     expect(error).toBeInstanceOf(CoreError);
     expect((error as CoreError).message).toContain("503");
+  });
+});
+
+// GRE-1863: a followed 307 or 308 would send the write again to its Location.
+describe("fetchCore on a redirected write", () => {
+  it("sends a write manual, throws RedirectedWrite on a 307 and tells no 401 listener", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 307, headers: { location: "/elsewhere" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const listener = vi.fn();
+    const stop = onUnauthorized(listener);
+
+    const error = await fetchCore("/api/v2/plans", { method: "post", body: "{}" }).catch(
+      (caught: unknown) => caught,
+    );
+    stop();
+
+    expect(error).toBeInstanceOf(RedirectedWrite);
+    expect(error).not.toBeInstanceOf(CoreError);
+    expect((error as Error).message).toBe(
+      "POST /api/v2/plans was answered with a redirect (307); it was not followed, so whether it applied is unknown",
+    );
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "/api/v2/plans",
+        { method: "post", body: "{}", credentials: "same-origin", redirect: "manual" },
+      ],
+    ]);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("throws RedirectedWrite on a browser's opaqueredirect, whose status is 0", async () => {
+    const answer = new Response(null, { status: 200 });
+    Object.defineProperty(answer, "type", { value: "opaqueredirect" });
+    Object.defineProperty(answer, "status", { value: 0 });
+    Object.defineProperty(answer, "ok", { value: false });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(answer));
+
+    const error = await fetchCore("/api/v2/plans/2", { method: "PUT" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(RedirectedWrite);
+    expect((error as Error).message).toBe(
+      "PUT /api/v2/plans/2 was answered with a redirect; it was not followed, so whether it applied is unknown",
+    );
+  });
+
+  it("sends a write manual even when the caller asks to follow", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchCore("/api/v2/plans", { method: "DELETE", redirect: "follow" });
+
+    expect(fetchMock.mock.calls).toEqual([
+      ["/api/v2/plans", { method: "DELETE", credentials: "same-origin", redirect: "manual" }],
+    ]);
+  });
+
+  it("sends a read with no redirect option", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchCore("/api/v2/plans");
+    await fetchCore("/api/v2/plans", { method: "HEAD" });
+
+    expect(fetchMock.mock.calls).toEqual([
+      ["/api/v2/plans", { credentials: "same-origin" }],
+      ["/api/v2/plans", { method: "HEAD", credentials: "same-origin" }],
+    ]);
   });
 });
 

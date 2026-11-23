@@ -262,7 +262,7 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
       fireEvent.click(screen.getByRole("button", { name: "Sync Kit" }));
       await waitFor(() =>
         expect(core.sent).toEqual([
-          { path: "/api/v1/jobs/sync", body: { project_ids: [2] }, redirect: undefined },
+          { path: "/api/v1/jobs/sync", body: { project_ids: [2] }, redirect: "manual" },
         ]),
       );
     },
@@ -326,7 +326,7 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
     ).toBeTruthy();
     expect(within(region).queryByRole("button", { name: "Sync" })).toBeNull();
     expect(core.sent).toEqual([
-      { path: "/api/v1/jobs/sync", body: { project_ids: [2] }, redirect: undefined },
+      { path: "/api/v1/jobs/sync", body: { project_ids: [2] }, redirect: "manual" },
     ]);
   });
 

@@ -83,9 +83,8 @@ const refusedByCore = (error: Error) =>
 class Unconfirmed extends Error {}
 
 /**
- * One PUT. A redirect is refused, not followed: a followed 307 or 308 would send the PUT again,
- * and the destination's answer is not the core's. The refused redirect is a network error, so
- * the send stays unconfirmed.
+ * One PUT. `fetchCore` refuses a redirect on a write rather than following it, so the send stays
+ * unconfirmed.
  *
  * The handler answers success only as `BuildOutcome::Layers`, which `present` sends as
  * `json_response(StatusCode::OK, ProfileLayers { profile_id, layers })`, and its layers then
@@ -100,7 +99,6 @@ async function putBase(buildId: number, projectId: number): Promise<ProfileLayer
     method: "PUT",
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify(request.data),
-    redirect: "error",
   });
   if (response.status !== 200) throw new Unconfirmed(`the answer was ${response.status}, not 200`);
   const parsed = routes.setBuildBase.response.safeParse(await response.json().catch(() => undefined));

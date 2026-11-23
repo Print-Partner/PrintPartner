@@ -1,26 +1,22 @@
-//! The production worker, driver and checked HTTP transport, with a fake peer.
 use super::*;
 use pp_storage::send_queue::{INTERRUPTED_ERROR, UNKNOWN_OUTCOME_ERROR};
 use pp_testkit::moonraker::fault::{FaultPrinter, Reply as FaultReply};
 
-/// What a reopened job holds on each path to an uncertain send.
+const WAIT: Duration = Duration::from_secs(5);
+
 struct Recovery {
     generation: i64,
     text: &'static str,
     error: &'static str,
 }
 
-/// The worker saw the reply go missing and recorded it. Restart skips the
-/// job, so `generation` stays at the admitted attempt's.
-const UNKNOWN: Recovery = Recovery {
+const WORKER_RECORDED_UNKNOWN: Recovery = Recovery {
     generation: 1,
     text: "Effect outcome unknown",
     error: UNKNOWN_OUTCOME_ERROR,
 };
 
-/// The process died mid-attempt. Restart fences the attempt with a new
-/// `generation`.
-const INTERRUPTED: Recovery = Recovery {
+const RESTART_RECOVERED_INTERRUPTION: Recovery = Recovery {
     generation: 2,
     text: "The send may have reached the printer; it is never resent automatically. Inspect and reconcile",
     error: INTERRUPTED_ERROR,
@@ -59,8 +55,6 @@ impl Farm {
         std::fs::read(self.exports().join("printer-uploads/q1/a.gcode")).unwrap()
     }
 
-    /// Reopens twice with no work between and returns the first reopened
-    /// document.
     async fn assert_stable_reopen(
         self,
         printer: &FaultPrinter,
@@ -91,7 +85,7 @@ impl Farm {
         let worker = self.worker();
         for _ in 0..3 {
             assert_eq!(
-                tokio::time::timeout(Duration::from_secs(5), worker.run_next())
+                tokio::time::timeout(WAIT, worker.run_next())
                     .await
                     .unwrap()
                     .unwrap(),
@@ -128,22 +122,64 @@ impl Farm {
     }
 }
 
-type RunningSend = tokio::task::JoinHandle<anyhow::Result<Option<Sent>>>;
+struct RunningSend {
+    task: Option<tokio::task::JoinHandle<anyhow::Result<Option<Sent>>>>,
+}
 
-async fn settled(task: RunningSend) -> Sent {
-    tokio::time::timeout(Duration::from_secs(5), task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap()
-        .unwrap()
+impl RunningSend {
+    fn spawn(worker: SendWorker) -> Self {
+        Self {
+            task: Some(tokio::spawn(async move { worker.run_next().await })),
+        }
+    }
+
+    async fn settled(mut self) -> Sent {
+        let task = self.task.as_mut().unwrap();
+        match tokio::time::timeout(WAIT, task).await {
+            Ok(outcome) => {
+                self.task = None;
+                outcome.unwrap().unwrap().unwrap()
+            }
+            Err(_) => {
+                let _ = self.abort_and_join().await;
+                panic!("send worker did not settle within {WAIT:?}");
+            }
+        }
+    }
+
+    async fn cancel(mut self) {
+        let outcome = self.abort_and_join().await.unwrap();
+        assert!(outcome.unwrap_err().is_cancelled());
+    }
+
+    async fn abort_and_join(
+        &mut self,
+    ) -> Result<
+        Result<anyhow::Result<Option<Sent>>, tokio::task::JoinError>,
+        tokio::time::error::Elapsed,
+    > {
+        let task = self.task.as_mut().unwrap();
+        task.abort();
+        let outcome = tokio::time::timeout(WAIT, task).await;
+        if outcome.is_ok() {
+            self.task = None;
+        }
+        outcome
+    }
+}
+
+impl Drop for RunningSend {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
 }
 
 fn begin_send(printer: &FaultPrinter, start: bool) -> (Farm, RunningSend, Value) {
     let farm = Farm::open(&printer.url(), &[("q1", start, true)]);
     assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
-    let worker = farm.worker();
-    let task = tokio::spawn(async move { worker.run_next().await });
+    let task = RunningSend::spawn(farm.worker());
     assert_upload(&printer.request().unwrap(), &farm.staged());
     let operation = if start {
         "printer_upload_and_start"
@@ -187,11 +223,11 @@ async fn ticket_t_28_recovery_lost_upload_reply_survives_repeated_restart() {
     let printer = FaultPrinter::start().unwrap();
     let (farm, task, admitted) = begin_send(&printer, false);
     printer.accept(FaultReply::Lost).unwrap();
-    assert!(matches!(settled(task).await, Sent::Unknown(_)));
+    assert!(matches!(task.settled().await, Sent::Unknown(_)));
     let settled = farm.document();
     assert_eq!(settled["effects"], admitted["effects"]);
     let reopened = farm
-        .assert_stable_reopen(&printer, &admitted, 1, &UNKNOWN)
+        .assert_stable_reopen(&printer, &admitted, 1, &WORKER_RECORDED_UNKNOWN)
         .await;
     assert_eq!(reopened, settled, "restart leaves a recorded unknown alone");
 }
@@ -211,10 +247,10 @@ async fn ticket_t_28_recovery_lost_start_reply_never_reuploads_or_restarts() {
     let admitted = farm.assert_intent("printer_upload_and_start");
     assert_eq!(printer.accepted(), 1);
     printer.accept(FaultReply::Lost).unwrap();
-    assert!(matches!(settled(task).await, Sent::Unknown(_)));
+    assert!(matches!(task.settled().await, Sent::Unknown(_)));
     let settled = farm.document();
     let reopened = farm
-        .assert_stable_reopen(&printer, &admitted, 2, &UNKNOWN)
+        .assert_stable_reopen(&printer, &admitted, 2, &WORKER_RECORDED_UNKNOWN)
         .await;
     assert_eq!(reopened, settled, "restart leaves a recorded unknown alone");
 }
@@ -225,14 +261,13 @@ async fn ticket_t_28_recovery_interruption_after_remote_acceptance_keeps_intent(
     let (farm, task, admitted) = begin_send(&printer, false);
     printer.accept(FaultReply::Hold).unwrap();
     assert_eq!(printer.accepted(), 1);
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
+    task.cancel().await;
     assert_eq!(
         farm.document(),
         admitted,
         "no completion checkpoint was written"
     );
     printer.accept(FaultReply::Lost).unwrap();
-    farm.assert_stable_reopen(&printer, &admitted, 1, &INTERRUPTED)
+    farm.assert_stable_reopen(&printer, &admitted, 1, &RESTART_RECOVERED_INTERRUPTION)
         .await;
 }

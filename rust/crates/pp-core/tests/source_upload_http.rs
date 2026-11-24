@@ -549,6 +549,11 @@ async fn shutdown_discards_a_streaming_upload() {
 async fn upload_zip_imports_one_zip_and_other_types_stay() {
     let server = Server::start(IMPORT_SLOTS).await;
     let source = server.source().await;
+    let activity_path = "/api/v1/sources/activity";
+    assert_eq!(
+        server.json(Method::GET, activity_path, None).await,
+        (200, json!({"events": []}))
+    );
     let kit = zipped(&[
         ("body/frame.stl", &stl("frame")),
         ("guide.pdf", b"%PDF-1.4 synthetic"),
@@ -560,6 +565,19 @@ async fn upload_zip_imports_one_zip_and_other_types_stay() {
     let job = server.finished(accepted["job_id"].as_str().unwrap()).await;
     assert_eq!(job["status"], "done", "{job}");
     assert_eq!(job["kind"], "supplied-source-import", "{job}");
+    let (status, activity) = server.json(Method::GET, activity_path, None).await;
+    assert_eq!(status, 200);
+    let events = activity["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{activity}");
+    assert_eq!(events[0]["kind"], "source.updated");
+    assert_eq!(events[0]["source_id"], source);
+    assert!(
+        events[0]["source_name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Upload ")
+    );
+    assert_eq!(events[0]["detail"], Value::Null);
     let files = revision_files(&server.data);
     assert!(
         files.iter().any(|file| file.ends_with("/body/frame.stl")),
@@ -588,6 +606,10 @@ async fn upload_zip_imports_one_zip_and_other_types_stay() {
     );
     assert_eq!(server.job_count().await, jobs);
     assert_eq!(server.staged(), 0);
+    assert_eq!(
+        server.json(Method::GET, activity_path, None).await,
+        (200, activity)
+    );
     server.stop().await;
 }
 
@@ -616,5 +638,11 @@ async fn failed_import_names_its_reason() {
         "{failed}"
     );
     assert_eq!(server.revision(source).await, Value::Null);
+    assert_eq!(
+        server
+            .json(Method::GET, "/api/v1/sources/activity", None)
+            .await,
+        (200, json!({"events": []}))
+    );
     server.stop().await;
 }

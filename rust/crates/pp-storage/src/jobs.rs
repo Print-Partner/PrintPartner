@@ -252,8 +252,6 @@ pub enum Outcome {
     SourceSyncRecovery(crate::source_sync::SyncRecoveryInspection),
     #[cfg(feature = "desktop_rebuild")]
     SourceSyncFinish(crate::source_sync::SourceSyncFinishOutcome, LocalCommit),
-    #[cfg(feature = "desktop_rebuild")]
-    GithubSourceActivated(i64),
     Job(JobRecord, LocalCommit),
     List(Vec<JobRecord>),
     #[cfg(feature = "desktop_rebuild")]
@@ -427,12 +425,15 @@ pub(crate) enum Command {
         lease: AttemptLease,
         candidate: crate::source_sync::SyncCandidate,
         settlement: crate::source_sync::SyncSettlement,
+        github: Option<crate::uploads::GithubSnapshot>,
+        policy: AuthPolicy,
     },
     #[cfg(feature = "desktop_rebuild")]
     FailSourceSyncTarget {
         lease: AttemptLease,
         candidate: crate::source_sync::SyncCandidate,
         detail: String,
+        policy: AuthPolicy,
     },
     #[cfg(feature = "desktop_rebuild")]
     AcknowledgeSourceSyncTarget {
@@ -461,12 +462,6 @@ pub(crate) enum Command {
     FinishSourceSync {
         lease: AttemptLease,
         policy: AuthPolicy,
-    },
-    #[cfg(feature = "desktop_rebuild")]
-    ActivateGithubSource {
-        lease: AttemptLease,
-        candidate: crate::source_sync::SyncCandidate,
-        snapshot: crate::uploads::GithubSnapshot,
     },
     #[cfg(feature = "desktop_rebuild")]
     InspectRetainedSourceSync {
@@ -1257,20 +1252,44 @@ impl ServerWorkerClient {
 
     /// Stores one successful target result and releases that target's Source
     /// reservation. A stale attempt, or a Source proof that is not the claim's
-    /// live reservation, is refused and writes nothing.
+    /// live reservation, writes nothing. A revoked authority halts the batch.
     pub fn settle_source_sync_target(
         &self,
         lease: &AttemptLease,
         target: &mut crate::source_sync::SyncTargetLease,
         settlement: crate::source_sync::SyncSettlement,
     ) -> Result<crate::source_sync::SettledSyncTarget> {
+        self.settle_sync_target(lease, target, settlement, None)
+    }
+
+    /// Activates the GitHub snapshot and settles its target in one commit.
+    pub fn settle_github_source(
+        &self,
+        lease: &AttemptLease,
+        target: &mut crate::source_sync::SyncTargetLease,
+        snapshot: crate::uploads::GithubSnapshot,
+        settlement: crate::source_sync::SyncSettlement,
+    ) -> Result<crate::source_sync::SettledSyncTarget> {
+        self.settle_sync_target(lease, target, settlement, Some(snapshot))
+    }
+
+    fn settle_sync_target(
+        &self,
+        lease: &AttemptLease,
+        target: &mut crate::source_sync::SyncTargetLease,
+        settlement: crate::source_sync::SyncSettlement,
+        github: Option<crate::uploads::GithubSnapshot>,
+    ) -> Result<crate::source_sync::SettledSyncTarget> {
         ensure!(lease.worker == self.identity, "Foreign worker lease");
+        let policy = self.policy.ok_or(auth::AuthorityFailure::PolicyRequired)?;
         let settled = match submit(
             &self.storage,
             Command::SettleSourceSyncTarget {
                 lease: lease.clone(),
                 candidate: target.candidate()?,
                 settlement,
+                github,
+                policy,
             },
             &AtomicBool::new(false),
             Duration::from_secs(5),
@@ -1282,32 +1301,6 @@ impl ServerWorkerClient {
         };
         target.source_work.consume_retired()?;
         Ok(settled)
-    }
-
-    /// Publishes a materialized GitHub snapshot for a claimed target. The
-    /// reservation stays held for the following settle or fail.
-    pub fn activate_github_source(
-        &self,
-        lease: &AttemptLease,
-        target: &crate::source_sync::SyncTargetLease,
-        snapshot: crate::uploads::GithubSnapshot,
-    ) -> Result<i64> {
-        ensure!(lease.worker == self.identity, "Foreign worker lease");
-        match submit(
-            &self.storage,
-            Command::ActivateGithubSource {
-                lease: lease.clone(),
-                candidate: target.candidate()?,
-                snapshot,
-            },
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )?
-        .receive()?
-        {
-            Outcome::GithubSourceActivated(revision_id) => Ok(revision_id),
-            _ => unreachable!(),
-        }
     }
 
     /// The import free-space reserve for `tenant`, using the stored byte count
@@ -1323,7 +1316,7 @@ impl ServerWorkerClient {
     }
 
     /// Records one claimed target's local read failure and the Source failure
-    /// observation. The reservation stays held. A refusal writes nothing.
+    /// observation. The reservation stays held. A revoked authority halts the batch.
     pub fn fail_source_sync_target(
         &self,
         lease: &mut AttemptLease,
@@ -1331,12 +1324,14 @@ impl ServerWorkerClient {
         detail: &str,
     ) -> Result<crate::source_sync::FailedSyncTarget> {
         ensure!(lease.worker == self.identity, "Foreign worker lease");
+        let policy = self.policy.ok_or(auth::AuthorityFailure::PolicyRequired)?;
         let failed = match submit(
             &self.storage,
             Command::FailSourceSyncTarget {
                 lease: lease.clone(),
                 candidate: target.candidate()?,
                 detail: detail.to_owned(),
+                policy,
             },
             &AtomicBool::new(false),
             Duration::from_secs(5),
@@ -2420,25 +2415,33 @@ pub(crate) fn execute(
             lease,
             candidate,
             settlement,
-        } => TransactionDecision::SourceSyncSettled(crate::source_sync::settle(
-            &tx,
-            catalog_state,
-            &lease,
-            candidate,
-            settlement,
-        )?),
+            github,
+            policy,
+        } => sync_target_write(&tx, &lease, policy, |job| {
+            let settled = crate::source_sync::settle(
+                &tx,
+                catalog_state,
+                &lease,
+                &job,
+                candidate,
+                settlement,
+                github,
+            )?;
+            Ok(TransactionDecision::SourceSyncSettled(settled))
+        })?,
         #[cfg(feature = "desktop_rebuild")]
         Command::FailSourceSyncTarget {
             lease,
             candidate,
             detail,
-        } => TransactionDecision::Outcome(Outcome::SourceSyncFailed(crate::source_sync::fail(
-            &tx,
-            catalog_state,
-            &lease,
-            candidate,
-            &detail,
-        )?)),
+            policy,
+        } => sync_target_write(&tx, &lease, policy, |job| {
+            let failed =
+                crate::source_sync::fail(&tx, catalog_state, &lease, job, candidate, &detail)?;
+            Ok(TransactionDecision::Outcome(Outcome::SourceSyncFailed(
+                failed,
+            )))
+        })?,
         #[cfg(feature = "desktop_rebuild")]
         Command::AcknowledgeSourceSyncTarget {
             lease,
@@ -2473,16 +2476,6 @@ pub(crate) fn execute(
         Command::InspectSourceSyncTarget { lease, key, policy } => TransactionDecision::Outcome(
             Outcome::SourceSyncInspection(crate::source_sync::inspect(&tx, &lease, &key, policy)?),
         ),
-        #[cfg(feature = "desktop_rebuild")]
-        Command::ActivateGithubSource {
-            lease,
-            candidate,
-            snapshot,
-        } => {
-            let revision_id =
-                crate::uploads::activate_github(&tx, catalog_state, &lease, &candidate, snapshot)?;
-            TransactionDecision::Outcome(Outcome::GithubSourceActivated(revision_id))
-        }
         #[cfg(feature = "desktop_rebuild")]
         Command::FinishSourceSync { lease, policy } => {
             let result = crate::source_sync::finish(&tx, &lease, policy)?;
@@ -3273,7 +3266,14 @@ fn claim(
                     } else {
                         AuthorityRefusalPhase::Claim
                     };
-                    record_refusal(tx, &mut job, reason, phase, None)?;
+                    if job.kind == JobKind::Sync && crate::source_sync::has_batch(tx, &job.job_id)?
+                    {
+                        job =
+                            crate::source_sync::refuse_authority(tx, job, reason.failure().into())?
+                                .job;
+                    } else {
+                        record_refusal(tx, &mut job, reason, phase, None)?;
+                    }
                     if filter.job_id.is_some() {
                         return Ok(TransactionDecision::Refused(CommittedRefusal {
                             job,
@@ -3542,9 +3542,22 @@ fn reserved_resources(tx: &Transaction<'_>, tenant: &str, queued: bool) -> Resul
             if state == "quarantined" {
                 return resource;
             }
-            decode_row(&id, &document, &mut diagnostics)
-                .map(|job| job.payload.resource())
-                .unwrap_or(resource)
+            let Some(job) = decode_row(&id, &document, &mut diagnostics) else {
+                return resource;
+            };
+            #[cfg(feature = "desktop_rebuild")]
+            if job.kind == JobKind::Sync
+                && job.state == PersistentState::ReconciliationRequired
+                && job.effects.is_empty()
+                && job.authority_refusal.as_ref().is_some_and(|refusal| {
+                    refusal.phase == AuthorityRefusalPhase::SourceWriter
+                        && refusal.generation == job.generation - 1
+                })
+                && let Ok(retained) = crate::source_sync::retained_authority_resource(tx, &job)
+            {
+                return retained;
+            }
+            job.payload.resource()
         })
         .collect())
 }
@@ -3960,6 +3973,24 @@ fn require_feature(
         JobFailure::FeatureDisabled { feature }
     );
     Ok(())
+}
+
+/// Authorizes a sync target write or commits a reconciliation record for a
+/// claim whose authority was revoked while the worker prepared the result.
+#[cfg(feature = "desktop_rebuild")]
+fn sync_target_write(
+    tx: &Transaction<'_>,
+    lease: &AttemptLease,
+    policy: AuthPolicy,
+    write: impl FnOnce(JobRecord) -> Result<TransactionDecision>,
+) -> Result<TransactionDecision> {
+    let job = crate::source_sync::require_sync_job(tx, lease)?;
+    match require_original_authority(tx, &job, policy) {
+        Ok(_) => write(job),
+        Err(error) => {
+            crate::source_sync::refuse_authority(tx, job, error).map(TransactionDecision::Refused)
+        }
+    }
 }
 
 /// Revalidates the credential that enqueued `job` under the current policy.

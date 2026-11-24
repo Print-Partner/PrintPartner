@@ -1450,8 +1450,8 @@ fn open_and_advance_authority_refusal_halts_without_claimed_targets() {
 }
 
 #[test]
-fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
-    for at_open in [false, true] {
+fn authority_refusals_preserve_claimed_target_evidence() {
+    for operation in ["open", "advance", "settle", "fail"] {
         let mut sync = Fixture::new();
         let first = sync.source("Claimed");
         let second = sync.source("Pending");
@@ -1463,38 +1463,35 @@ fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
             [&job_id],
             |row| (0..10).map(|index| row.get::<_, rusqlite::types::Value>(index)).collect::<rusqlite::Result<Vec<_>>>(),
         ).unwrap();
-        if at_open {
+        if operation == "open" {
             drop(target.take());
-            let Fixture {
-                owner, root, token, ..
-            } = sync;
-            owner.shutdown().unwrap();
-            let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
-            let catalog = owner
-                .source_catalog_with_policy(
-                    catalog::Credentials::Session(auth::Secret::new(token.clone())),
-                    policy(),
-                )
-                .unwrap();
-            let worker = owner.job_worker_with_policy(policy(), admission()).unwrap();
-            lease = worker.claim_kind(JobKind::Sync).unwrap().unwrap().lease;
-            sync = Fixture {
-                owner,
-                root,
-                token,
-                catalog,
-                worker,
-            };
+            sync = reopen(sync);
+            lease = sync
+                .worker
+                .claim_kind(JobKind::Sync)
+                .unwrap()
+                .unwrap()
+                .lease;
         }
         sync.connection()
             .execute("DELETE FROM sessions", [])
             .unwrap();
-        let error = if at_open {
-            sync.worker.open_source_sync(&lease).unwrap_err()
-        } else {
-            sync.worker
+        let before = source_row(&sync, first);
+        let error = match operation {
+            "open" => sync.worker.open_source_sync(&lease).unwrap_err(),
+            "advance" => sync
+                .worker
                 .update(&mut lease, WorkerOperation::Progress(10))
-                .unwrap_err()
+                .unwrap_err(),
+            "settle" => sync
+                .worker
+                .settle_source_sync_target(&lease, target.as_mut().unwrap(), settlement(first))
+                .unwrap_err(),
+            "fail" => sync
+                .worker
+                .fail_source_sync_target(&mut lease, target.as_ref().unwrap(), "Read failed")
+                .unwrap_err(),
+            _ => unreachable!(),
         };
         assert_eq!(
             error.downcast_ref::<auth::AuthorityFailure>(),
@@ -1518,7 +1515,16 @@ fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
                 (second, "not_run".into(), Some("batch_halt".into())),
             ]
         );
-        if !at_open {
+        assert_eq!(source_row(&sync, first), before);
+        let mut db = sync.connection();
+        let tx = db.transaction().unwrap();
+        assert!(
+            catalog::source_activity(&tx, lease.tenant(), 10)
+                .unwrap()
+                .is_empty()
+        );
+        drop(tx);
+        if operation != "open" {
             sync.login();
             sync.catalog = sync
                 .owner
@@ -1532,6 +1538,49 @@ fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
         }
         drop(target);
         assert_refusal_survives_reopen(sync, &job_id);
+    }
+}
+
+#[test]
+fn revoked_recovered_sync_preserves_claim_for_reconciliation() {
+    for all in [false, true] {
+        let sync = Fixture::new();
+        let [claimed, untouched] = ["Claimed", "Untouched"].map(|name| sync.source(name));
+        let job_id = sync.enqueue((!all).then(|| vec![claimed as u64, untouched as u64]));
+        let mut lease = sync.open();
+        drop(local(sync.next(&mut lease)));
+        sync.connection()
+            .execute("DELETE FROM sessions", [])
+            .unwrap();
+        let sync = reopen(sync);
+        assert!(sync.worker.claim_kind(JobKind::Sync).unwrap().is_none());
+        assert_eq!(
+            sync.job(&job_id).state,
+            PersistentState::ReconciliationRequired
+        );
+        assert_eq!(
+            sync.targets(&job_id),
+            [
+                (
+                    claimed,
+                    "reconciliation_required".into(),
+                    Some("authority_refused".into())
+                ),
+                (untouched, "not_run".into(), Some("batch_halt".into())),
+            ]
+        );
+        let mut sync = reopen(sync);
+        sync.login();
+        let mut db = sync.connection();
+        let tx = db.transaction().unwrap();
+        assert!(jobs::source_reserved(&tx, lease.tenant(), claimed).unwrap());
+        assert!(!jobs::source_reserved(&tx, lease.tenant(), untouched).unwrap());
+        drop(tx);
+        let later = enqueue_later(&sync, untouched);
+        assert_eq!(sync.open().job_id(), later);
+        let Fixture { owner, root, .. } = sync;
+        owner.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -2356,6 +2405,110 @@ fn refuse_settle(
     let busy = sync.begin_work(source_id).err().unwrap();
     assert!(busy.downcast_ref::<SourceBusy>().is_some(), "{busy:#}");
     error.to_string()
+}
+
+#[test]
+fn github_publication_and_activity_commit_together_and_survive_job_recovery() {
+    let sync = Fixture::new();
+    let catalog::Outcome::Source(Some(source)) = sync
+        .catalog
+        .execute(catalog::Request::Create {
+            source: catalog::CreateSource {
+                name: "Kit".into(),
+                url: Some("https://github.com/example/kit".into()),
+                source_kind: Some("github".into()),
+                ..Default::default()
+            },
+        })
+        .unwrap()
+    else {
+        panic!("Source expected")
+    };
+    let job_id = sync.enqueue(Some(vec![source.id as u64]));
+    let mut lease = sync.open();
+    let NextSyncTarget::Github(mut target) = sync.next(&mut lease) else {
+        panic!("GitHub target expected");
+    };
+    let settlement = settlement(source.id);
+    let commit_sha = "a".repeat(40);
+    let revision_key = format!("{commit_sha}.snapshot-v2");
+    let snapshot = crate::uploads::GithubSnapshot {
+        commit_sha,
+        manifest_digest: settlement.receipt.content_hash.clone(),
+        locator: format!("{}/revisions/{revision_key}", source.id),
+        revision_key,
+        stored_bytes: 4,
+        files: vec![crate::uploads::File {
+            path: "kit.stl".into(),
+            size: 4,
+            sha256: "b".repeat(64),
+            kind: "stl".into(),
+        }],
+    };
+    let tenant = lease.tenant().to_owned();
+    sync.connection()
+        .execute(
+            "INSERT INTO app_events(tenant_id,at,kind,payload_json)
+             VALUES(?1,'2025-01-01T00:00:00Z','source.sync_failed',
+                    json_object('source_id',?2,'source_name','Old Kit','error','Old error'))",
+            params![tenant, source.id],
+        )
+        .unwrap();
+    let before = source_row(&sync, source.id);
+    sync.connection()
+        .execute_batch("CREATE TRIGGER refuse_activity BEFORE INSERT ON app_events BEGIN SELECT RAISE(ABORT, 'test activity write failure'); END;")
+        .unwrap();
+    assert_eq!(
+        sync.worker
+            .settle_github_source(
+                &lease,
+                target.lease_mut(),
+                snapshot.clone(),
+                settlement.clone()
+            )
+            .unwrap_err()
+            .to_string(),
+        "test activity write failure"
+    );
+    assert_eq!(source_row(&sync, source.id), before);
+    assert_eq!(
+        sync.targets(&job_id),
+        vec![(source.id, "claimed".into(), None)]
+    );
+    sync.connection()
+        .execute_batch("DROP TRIGGER refuse_activity")
+        .unwrap();
+    sync.worker
+        .settle_github_source(&lease, target.lease_mut(), snapshot, settlement)
+        .unwrap();
+    let Fixture { owner, root, .. } = sync;
+    owner.shutdown().unwrap();
+    let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
+    let worker = owner.job_worker_with_policy(policy(), admission()).unwrap();
+    let ClaimedAttempt { mut lease, .. } = worker.claim_kind(JobKind::Sync).unwrap().unwrap();
+    worker.open_source_sync(&lease).unwrap();
+    assert!(matches!(
+        worker.claim_next_source_sync_target(&mut lease).unwrap(),
+        NextSyncTarget::Complete
+    ));
+    worker.finish_source_sync(&lease).unwrap();
+    let mut db = Connection::open(root.join("print-partner.db")).unwrap();
+    let tx = db.transaction().unwrap();
+    let events = catalog::source_activity(&tx, &tenant, 10).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].kind, "source.updated");
+    assert_eq!(events[0].source_name, "Kit");
+    assert_eq!(events[1].kind, "source.sync_failed");
+    assert_eq!(events[1].source_name, "Old Kit");
+    assert_eq!(events[1].detail.as_deref(), Some("Old error"));
+    assert!(
+        catalog::source_activity(&tx, "default", 10)
+            .unwrap()
+            .is_empty()
+    );
+    drop(tx);
+    owner.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

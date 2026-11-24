@@ -2,6 +2,7 @@ use crate::{
     SettingsClient,
     catalog::{
         IssuedTokenState, SourceBinding, SourceBusy, SourceWorkLease, SourceWorkProof, State,
+        activity::{self, SourceOutcome},
     },
     jobs::{
         AttemptLease, CompletedResult, JobKind, JobRecord, LocalCommit, Payload, PersistentState,
@@ -610,7 +611,7 @@ fn selected(payload: &Payload) -> Result<Option<Vec<i64>>> {
         .transpose()
 }
 
-fn require_sync_job(tx: &Transaction<'_>, lease: &AttemptLease) -> Result<JobRecord> {
+pub(crate) fn require_sync_job(tx: &Transaction<'_>, lease: &AttemptLease) -> Result<JobRecord> {
     let job = crate::jobs::claimed_job(tx, lease)?;
     ensure!(job.kind == JobKind::Sync, "Attempt is not a Sync Job");
     Ok(job)
@@ -1107,24 +1108,12 @@ pub(crate) fn open(
     lease: &AttemptLease,
     policy: crate::auth::AuthPolicy,
 ) -> Result<Option<crate::jobs::CommittedRefusal>> {
-    let mut job = require_sync_job(tx, lease)?;
+    let job = require_sync_job(tx, lease)?;
     ensure!(!job.cancel_requested, "Sync was cancelled");
     if let Err(error) = crate::jobs::require_original_authority(tx, &job, policy) {
-        if !crate::jobs::set_sync_source_writer_authority_refusal(&mut job, &error) {
-            return Err(error);
-        }
-        let job = halt_job(tx, job, "authority_refused", &format!("{error:#}"))?;
-        return Ok(Some(crate::jobs::CommittedRefusal {
-            job,
-            failure: error.downcast()?,
-        }));
+        return refuse_authority(tx, job, error).map(Some);
     }
-    let opened: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM source_sync_batches WHERE job_id=?1)",
-        [&job.job_id],
-        |row| row.get(0),
-    )?;
-    if opened {
+    if has_batch(tx, &job.job_id)? {
         validate_basis(tx, &job)?;
         tx.execute(
             "UPDATE source_sync_targets SET state='pending',parent_generation=NULL,attempt_worker=NULL,attempt_fence_digest=NULL,reservation_incarnation=NULL,reservation_token=NULL,configuration_version=NULL,authority_actor=NULL,authority_basis_digest=NULL,activation_observation_digest=NULL,path_observation_digest=NULL,updated_at=?2 WHERE job_id=?1 AND state='claimed' AND parent_generation<>?3 AND result_json IS NULL AND failure_code IS NULL",
@@ -1164,6 +1153,47 @@ pub(crate) fn open(
     Ok(None)
 }
 
+pub(crate) fn has_batch(tx: &Transaction<'_>, job_id: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM source_sync_batches WHERE job_id=?1)",
+        [job_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Fences the attempt and keeps any unsettled target evidence available for
+/// reconciliation. Return the authority error only after committing the halt.
+pub(crate) fn refuse_authority(
+    tx: &Transaction<'_>,
+    mut job: JobRecord,
+    error: anyhow::Error,
+) -> Result<crate::jobs::CommittedRefusal> {
+    if !crate::jobs::set_sync_source_writer_authority_refusal(&mut job, &error) {
+        return Err(error);
+    }
+    let job = halt_job(tx, job, "authority_refused", &format!("{error:#}"))?;
+    Ok(crate::jobs::CommittedRefusal {
+        job,
+        failure: error.downcast()?,
+    })
+}
+
+/// Narrows a halted batch's reservation only for targets it never claimed.
+/// A target can be pending after an earlier attempt, so keep those with an
+/// earlier claim generation even when the halt marked them as not run.
+pub(crate) fn retained_authority_resource(tx: &Transaction<'_>, job: &JobRecord) -> Result<String> {
+    validate_basis(tx, job)?;
+    let sources = tx
+        .prepare(
+            "SELECT requested_source_id FROM source_sync_targets
+             WHERE job_id=?1 AND NOT (state='not_run' AND claim_generation=0)",
+        )?
+        .query_map([&job.job_id], |row| Ok(row.get::<_, i64>(0)?.to_string()))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ensure!(!sources.is_empty(), "Retained Sync has no claimed targets");
+    Ok(format!("source-set:{}", sources.join(",")))
+}
+
 fn progress(tx: &Transaction<'_>, job_id: &str) -> Result<u8> {
     let (done, total): (i64, i64) = tx.query_row(
         "SELECT count(*) FILTER (WHERE state IN ('succeeded','failed') AND reservation_acknowledged=1),count(*) FROM source_sync_targets WHERE job_id=?1",
@@ -1195,12 +1225,7 @@ pub(crate) fn halt_after_error(
         "Invalid Sync halt code"
     );
     let job = require_sync_job(tx, lease)?;
-    let exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM source_sync_batches WHERE job_id=?1)",
-        [&job.job_id],
-        |row| row.get(0),
-    )?;
-    if !exists {
+    if !has_batch(tx, &job.job_id)? {
         return Ok(None);
     }
     halt_job(tx, job, code, detail).map(Some)
@@ -1421,6 +1446,7 @@ pub(crate) fn next(
                 "UPDATE source_sync_targets SET source_name=?3,state='failed',failure_code='unsupported_kind',failure_detail='Source kind is not supported by Local Sync',reservation_acknowledged=1,updated_at=?4 WHERE job_id=?1 AND ordinal=?2 AND state='pending'",
                 params![key.job_id, key.ordinal, name, now()],
             )?;
+            activity::record(tx, &job.tenant, source_id, SourceOutcome::SyncFailed)?;
             return ordinary_failure(tx, job, &key);
         }
         Some((name, _, _, _, _, _)) => (name, None),
@@ -1517,6 +1543,16 @@ pub(crate) fn bind(
     candidate: &SyncCandidate,
 ) -> Result<BoundSyncTarget> {
     let job = require_sync_job(tx, lease)?;
+    bind_in_job(tx, state, lease, candidate, &job)
+}
+
+fn bind_in_job(
+    tx: &Transaction<'_>,
+    state: &State,
+    lease: &AttemptLease,
+    candidate: &SyncCandidate,
+    job: &JobRecord,
+) -> Result<BoundSyncTarget> {
     let key = &candidate.key;
     ensure!(key.job_id == job.job_id, "Sync target Job mismatch");
     ensure!(!job.cancel_requested, "Sync was cancelled");
@@ -1528,7 +1564,7 @@ pub(crate) fn bind(
         )
         .optional()?;
     ensure!(phase.as_deref() == Some("open"), "Sync batch is not open");
-    let source_id = *validate_basis(tx, &job)?
+    let source_id = *validate_basis(tx, job)?
         .get(usize::try_from(key.ordinal)?)
         .ok_or_else(|| anyhow!("Sync target is outside the sealed basis"))?;
     type Claim = (
@@ -1575,22 +1611,24 @@ pub(crate) fn bind(
         source_id,
         claim_generation,
     };
-    validate_target(tx, &job, &bound)?;
+    validate_target(tx, job, &bound)?;
     Ok(bound)
 }
 
 /// Stores one successful result for a claimed target and marks that
 /// reservation released. The attempt and the held Source proof must still be
-/// the claim's. A refusal writes nothing. The Job row and the batch stay as
+/// the claim's. An invalid claim writes nothing. The Job row and the batch stay as
 /// they were; the live token is retired only after this write commits.
 pub(crate) fn settle(
     tx: &Transaction<'_>,
     state: &State,
     lease: &AttemptLease,
+    job: &JobRecord,
     candidate: SyncCandidate,
     settlement: SyncSettlement,
+    github: Option<crate::uploads::GithubSnapshot>,
 ) -> Result<SettledSyncRelease> {
-    let bound = bind(tx, state, lease, &candidate)?;
+    let bound = bind_in_job(tx, state, lease, &candidate, job)?;
     let SyncSettlement { result, receipt } = settlement;
     let result_json = serde_json::to_string(&result)?;
     let result_digest = digest(result_json.as_bytes());
@@ -1602,6 +1640,20 @@ pub(crate) fn settle(
         Some(receipt.content_hash.clone()),
         Some(receipt.target.clone()),
     )?;
+    if let Some(snapshot) = github {
+        ensure!(
+            receipt.content_hash == snapshot.manifest_digest,
+            "Sync receipt does not match the GitHub snapshot"
+        );
+        crate::uploads::activate_github(tx, state, lease, &bound, snapshot)?;
+    } else {
+        let github: bool = tx.query_row(
+            "SELECT source_kind='github' FROM projects WHERE tenant_id=?1 AND id=?2",
+            params![job.tenant, bound.source_id],
+            |row| row.get(0),
+        )?;
+        ensure!(!github, "GitHub Sync settlement requires a snapshot");
+    }
     ensure!(
         tx.execute(
             "UPDATE source_sync_targets SET state='succeeded',result_json=?3,result_digest=?4,receipt_id=?5,receipt_hash=?6,receipt_target=?7,reservation_acknowledged=1,updated_at=?8 WHERE job_id=?1 AND ordinal=?2 AND state='claimed' AND result_json IS NULL AND result_digest IS NULL AND receipt_id IS NULL AND receipt_hash IS NULL AND receipt_target IS NULL",
@@ -1618,6 +1670,7 @@ pub(crate) fn settle(
         )? == 1,
         "Sync target settlement changed"
     );
+    activity::record(tx, &job.tenant, bound.source_id, SourceOutcome::Updated)?;
     let proof = candidate.proof;
     let binding = SourceBinding {
         tenant: lease.tenant().to_owned(),
@@ -1637,12 +1690,13 @@ pub(crate) fn settle(
 
 /// Records a local read failure for one claimed target and the Source failure
 /// observation. The reservation stays held and unacknowledged, so progress
-/// does not count this target. A refusal, including a target that already
+/// does not count this target. An invalid claim, including a target that already
 /// stores a successful result, writes nothing.
 pub(crate) fn fail(
     tx: &Transaction<'_>,
     state: &State,
     lease: &AttemptLease,
+    mut job: JobRecord,
     candidate: SyncCandidate,
     detail: &str,
 ) -> Result<FailedSyncTarget> {
@@ -1650,7 +1704,7 @@ pub(crate) fn fail(
         !detail.is_empty() && detail.len() <= 1024,
         "Invalid Local Sync failure"
     );
-    let bound = bind(tx, state, lease, &candidate)?;
+    let bound = bind_in_job(tx, state, lease, &candidate, &job)?;
     let stores_result: bool = tx.query_row(
         "SELECT result_json IS NOT NULL OR result_digest IS NOT NULL OR receipt_id IS NOT NULL OR receipt_hash IS NOT NULL OR receipt_target IS NOT NULL FROM source_sync_targets WHERE job_id=?1 AND ordinal=?2 AND state='claimed'",
         params![bound.key.job_id, bound.key.ordinal],
@@ -1665,8 +1719,8 @@ pub(crate) fn fail(
         )? == 1,
         "Sync target failure changed"
     );
+    activity::record(tx, &job.tenant, bound.source_id, SourceOutcome::SyncFailed)?;
     let failure = failure(tx, &bound.key)?;
-    let mut job = require_sync_job(tx, lease)?;
     let recorded = progress(tx, &job.job_id)?;
     job.progress = Some(recorded);
     crate::jobs::save(tx, &mut job, "source_sync_progress")?;

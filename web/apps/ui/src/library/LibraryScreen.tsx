@@ -105,10 +105,6 @@ function SourcesTable({
   );
 }
 
-/**
- * With no events, names the row control that fits the Library: Sync when any Source is a
- * GitHub Source, otherwise Upload ZIP. It does not promise the action records activity.
- */
 function RecentActivity({ events, hasGithub }: { events: SourceEvent[]; hasGithub: boolean }) {
   const headingId = useId();
   return (
@@ -117,8 +113,8 @@ function RecentActivity({ events, hasGithub }: { events: SourceEvent[]; hasGithu
       {events.length === 0 ? (
         <p className="pp-muted">
           {hasGithub
-            ? "No Source activity yet. To bring a GitHub Source up to date, press Sync on its row."
-            : "No Source activity yet. To add or replace a Source's files, press Upload ZIP on its row."}
+            ? "No Source activity yet. Press Sync on a GitHub Source’s row to see the result here."
+            : "No Source activity yet. Press Upload ZIP on a Source’s row. A successful import appears here."}
         </p>
       ) : (
         <ul className="pp-reasons">

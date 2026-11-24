@@ -235,7 +235,7 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
     renderAt("/library", core);
     const recent = await screen.findByRole("region", { name: "Recent activity" });
     expect(recent.textContent).toContain(
-      "No Source activity yet. To add or replace a Source's files, press Upload ZIP on its row.",
+      "No Source activity yet. Press Upload ZIP on a Source’s row. A successful import appears here.",
     );
     expect(recent.textContent).not.toContain("Sync");
     fireEvent.change(screen.getByLabelText("Upload ZIP for Rack"), {
@@ -256,7 +256,7 @@ describe("GRE-1867: Library and Source-files empty states name the next action",
       renderAt("/library", core);
       const recent = await screen.findByRole("region", { name: "Recent activity" });
       expect(recent.textContent).toContain(
-        "No Source activity yet. To bring a GitHub Source up to date, press Sync on its row.",
+        "No Source activity yet. Press Sync on a GitHub Source’s row to see the result here.",
       );
       expect(recent.textContent).not.toContain("Upload ZIP");
       fireEvent.click(screen.getByRole("button", { name: "Sync Kit" }));

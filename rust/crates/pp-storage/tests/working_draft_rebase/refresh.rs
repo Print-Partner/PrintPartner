@@ -18,9 +18,16 @@ const COMPETE: &str = "
         SELECT tenant_id,profile_id,base_revision_id,base_plan_version,'open',digest_format,snapshot_digest,'other-author','other-key',created_at FROM plan_drafts WHERE id=2;";
 
 fn request(f: &Fixture, version: Option<u32>) -> RefreshDraftRequest {
-    let digest = f.rows("SELECT snapshot_digest FROM plan_drafts WHERE id=2");
+    observed_request(f, id(2), version)
+}
+
+fn observed_request(f: &Fixture, draft: PositiveId, version: Option<u32>) -> RefreshDraftRequest {
+    let digest = f.rows(&format!(
+        "SELECT snapshot_digest FROM plan_drafts WHERE id={}",
+        draft.get()
+    ));
     serde_json::from_value(json!({
-        "expected_draft": {"draft_id":2,"base":{"revision_id":1,"plan_version":1},
+        "expected_draft": {"draft_id":draft,"base":{"revision_id":1,"plan_version":1},
             "state":"open","lifecycle_version":0,"snapshot_digest":digest[0]["snapshot_digest"]},
         "expected_header_version": version,
     }))
@@ -46,13 +53,15 @@ fn run(
     client: &WorkingDraftClient,
     request: RefreshDraftRequest,
 ) -> Result<RefreshDraftReceipt, RefreshError> {
+    let draft_id = request.expected_draft.draft_id();
+    let key = format!("refresh-{}", draft_id.get());
     client.refresh(
         session(),
         id(1),
         RefreshArgs {
-            draft_id: id(2),
+            draft_id,
             request,
-            idempotency_key: "refresh",
+            idempotency_key: &key,
         },
         Arc::new(AtomicBool::new(false)),
         Duration::from_secs(5),
@@ -288,6 +297,49 @@ fn refresh_preserves_quantity_on_a_rename_and_refuses_a_reused_path() {
         }
         owner.shutdown().unwrap();
     }
+}
+
+#[test]
+fn refresh_keeps_new_part_filament_or_refuses_if_preparation_would_change_it() {
+    let f = Fixture::new(&node("base-unchanged"));
+    let owner = f.open();
+    let set_default = |color: &str| {
+        f.sql().execute(
+            "INSERT OR REPLACE INTO app_settings (tenant_id,key,value) VALUES ('default','role_filaments_1',?)",
+            [json!({"primary":{"filament_custom_hex":color}}).to_string()],
+        ).unwrap();
+    };
+    set_default("#123456");
+    f.sql().execute_batch(ADVANCE).unwrap();
+    let client = refresh_client(
+        &f,
+        &owner,
+        &["bracket.stl", "excluded.stl", "gear.stl", "new.stl"],
+        None,
+    );
+    let first = run(&client, request(&f, None)).unwrap();
+    assert_eq!(f.rows("SELECT filament_custom_hex FROM plan_draft_parts WHERE draft_id=3 AND part_key='new.stl'"),
+        json!([{"filament_custom_hex":"#123456"}]));
+    f.sql().execute_batch(
+        "INSERT INTO source_revisions (id,tenant_id,project_id,upstream_revision_key,manifest_digest,snapshot_locator,synced_at,completeness)
+         SELECT 3,tenant_id,project_id,'next',manifest_digest,'1/revisions/next',synced_at,completeness FROM source_revisions WHERE id=2;
+         UPDATE projects SET current_source_revision_id=3 WHERE id=1;"
+    ).unwrap();
+    let observed = observed_request(&f, first.successor_draft_id, None);
+    set_default("#abcdef");
+    let before = f.recorded_rows();
+    let result = run(&client, observed.clone());
+    assert!(
+        matches!(result, Err(RefreshError::MergeConflicts(ref conflicts))
+        if matches!(conflicts.as_slice(), [RebaseConflict::UnsupportedPartDecision { .. }])),
+        "{result:?}"
+    );
+    assert_eq!(f.recorded_rows(), before);
+    set_default("#123456");
+    assert_eq!(run(&client, observed).unwrap().successor_draft_id, id(4));
+    assert_eq!(f.rows("SELECT filament_custom_hex FROM plan_draft_parts WHERE draft_id=4 AND part_key='new.stl'"),
+        json!([{"filament_custom_hex":"#123456"}]));
+    owner.shutdown().unwrap();
 }
 
 #[test]

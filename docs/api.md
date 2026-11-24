@@ -141,7 +141,7 @@ The operation refuses competing drafts, stale observations and untracked
 inputs. It also refuses saved manual reconciliation decisions and Part
 overrides beyond inclusion and quantity that differ from Accepted.
 For Parts with no Accepted predecessor, refresh treats their saved inclusion
-as a decision.
+as a decision and checks that preparation reproduces any stored filament assignment.
 `merge_conflicts` names missing, ambiguous or conflicting Part targets.
 A same-Source Part key and a tracked artifact digest that point to different
 Parts cause a refusal.

@@ -70,6 +70,10 @@ pub enum Conflict {
     TargetMissing {
         source_part_id: i64,
     },
+    UnsupportedPartDecision {
+        source_part_id: i64,
+        target_part_id: usize,
+    },
     ConcurrentDecision {
         source_part_id: i64,
         target_part_id: usize,
@@ -82,6 +86,9 @@ impl Conflict {
             Self::SourceIdentity { source_part_id, .. } => (*source_part_id, "source_identity"),
             Self::TargetAmbiguous { source_part_id, .. } => (*source_part_id, "target_ambiguous"),
             Self::TargetMissing { source_part_id } => (*source_part_id, "target_missing"),
+            Self::UnsupportedPartDecision { source_part_id, .. } => {
+                (*source_part_id, "unsupported_part_decision")
+            }
             Self::TargetCollision {
                 source_part_ids, ..
             } => (source_part_ids[0], "target_collision"),
@@ -776,7 +783,19 @@ fn merge(
                 conflicts.push(Conflict::TargetMissing { source_part_id });
             }
             [] => {}
-            [target] if !ambiguous => targets.push((index, *target)),
+            [target] if !ambiguous => {
+                if policy == MergePolicy::Refresh
+                    && part["baseRevisionPartId"].is_null()
+                    && !filament_preserved(part, &fresh.parts[*target])
+                {
+                    conflicts.push(Conflict::UnsupportedPartDecision {
+                        source_part_id,
+                        target_part_id: target + 1,
+                    });
+                } else {
+                    targets.push((index, *target));
+                }
+            }
             _ => {
                 budget.comparison(candidates.len())?;
                 conflicts.push(Conflict::TargetAmbiguous {
@@ -866,4 +885,10 @@ fn legacy_targets(
         return Ok((matches.to_vec(), ambiguous));
     }
     Ok((Vec::new(), false))
+}
+
+fn filament_preserved(part: &DraftPart, fresh: &DraftPart) -> bool {
+    let fields = ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"];
+    fields.iter().all(|&field| part[field].is_null())
+        || fields.iter().all(|&field| part[field] == fresh[field])
 }

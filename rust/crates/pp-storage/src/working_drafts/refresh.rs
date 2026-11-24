@@ -335,9 +335,10 @@ impl Refresh {
                 LEFT JOIN plan_revision_parts b ON b.id=p.base_revision_part_id AND b.tenant_id=p.tenant_id
                 WHERE p.tenant_id=?1 AND p.draft_id=?2 AND (
                     p.role_override IS NOT b.role_override OR p.notes IS NOT COALESCE(b.notes,'')
-                    OR p.filament_color_id IS NOT b.filament_color_id
-                    OR p.filament_custom_hex IS NOT b.filament_custom_hex
-                    OR p.spoolman_spool_id IS NOT b.spoolman_spool_id))",
+                    OR (b.id IS NOT NULL AND (
+                        p.filament_color_id IS NOT b.filament_color_id
+                        OR p.filament_custom_hex IS NOT b.filament_custom_hex
+                        OR p.spoolman_spool_id IS NOT b.spoolman_spool_id))))",
             params![tenant, self.draft], |row| row.get(0),
         ).map_err(WriterFailure::from)?;
         if unsupported {

@@ -1,10 +1,11 @@
 import { routePath, routes } from "@print-partner/rust-client";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { CoreError, fetchCore } from "../core/client";
 import { ContractError, readCore, writeCore } from "../core/rust";
 import { syncFailure, syncStartFailure } from "./GithubSync";
+import type { StartLibraryJob } from "./libraryJobs";
 import { revisionText, syncText, type Line, type Source } from "./sources";
 
 // LibraryScreen exports LineCell for Build Sources. A second copy here keeps
@@ -18,48 +19,14 @@ function LineCell({ line }: { line: Line }) {
   );
 }
 
-/** Source id to the import or sync job this browser started. A reload reads it back. */
-export const JOBS_KEY = "pp.library.jobs";
-
 /** How often a pending or running import or sync is read. No other status is polled. */
 export const IMPORT_POLL_MS = 2000;
-
-type JobMap = Record<string, string>;
 
 /** The DOM id of a Library row's Upload ZIP input or Sync button. One Library renders at a time. */
 export function rowControlId(sourceId: number, control: "upload" | "sync"): string {
   return `pp-source-${sourceId}-${control}`;
 }
 
-/** The stored map, or null when storage cannot be read or holds something else. */
-function readStored(): JobMap | null {
-  try {
-    const raw = localStorage.getItem(JOBS_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const jobs: JobMap = {};
-    for (const [id, job] of Object.entries(parsed)) {
-      if (typeof job === "string" && job !== "") jobs[id] = job;
-    }
-    return jobs;
-  } catch {
-    return null;
-  }
-}
-
-export function readJobs(): JobMap {
-  return readStored() ?? {};
-}
-
-function writeJobs(jobs: JobMap): boolean {
-  try {
-    localStorage.setItem(JOBS_KEY, JSON.stringify(jobs));
-    return true;
-  } catch {
-    return false;
-  }
-}
 /** The strings in `result.warnings`, when that list is present. */
 export function importWarnings(result: unknown): string[] {
   if (typeof result !== "object" || result === null || !("warnings" in result)) return [];
@@ -92,74 +59,6 @@ function uploadFailure(error: unknown): string {
   if (error instanceof CoreError) return error.detail ?? error.message;
   const message = error instanceof Error ? error.message : "The upload was not confirmed";
   return `${message} It was not sent again.`;
-}
-
-function sameJobs(a: JobMap, b: JobMap): boolean {
-  const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
-}
-
-export function useLibraryJobs() {
-  const [jobs, setJobs] = useState(readJobs);
-  const [refusals, setRefusals] = useState<Record<string, string>>({});
-  // Storage tells tabs about each other's jobs; it is never this tab's only copy. While it
-  // can be read and takes writes, this tab's map is what storage holds, so it is never
-  // staler than storage. A failed read changes only the named entry. Once storage refuses
-  // a write, or cannot record a start, this tab keeps its own map and stops following it.
-  const shared = useRef(true);
-  // Sets `key` to `jobId`, or ends job `ending` there when `jobId` is null.
-  const update = useCallback((key: string, jobId: string | null, ending = "") => {
-    let stored = shared.current ? readStored() : null;
-    if (stored === null && jobId !== null) shared.current = false;
-    if (stored && (jobId !== null || stored[key] === ending)) {
-      if (jobId === null) delete stored[key];
-      else stored[key] = jobId;
-      if (!writeJobs(stored)) {
-        shared.current = false;
-        stored = null;
-      }
-    }
-    const seen = stored;
-    setJobs((current) => {
-      if (seen) return sameJobs(current, seen) ? current : seen;
-      if (jobId !== null) return { ...current, [key]: jobId };
-      if (current[key] !== ending) return current;
-      const rest = { ...current };
-      delete rest[key];
-      return rest;
-    });
-  }, []);
-  const remember = useCallback(
-    (sourceId: number, jobId: string) => {
-      update(String(sourceId), jobId);
-      setRefusals((current) => {
-        if (!(String(sourceId) in current)) return current;
-        const rest = { ...current };
-        delete rest[String(sourceId)];
-        return rest;
-      });
-    },
-    [update],
-  );
-  // Ends `jobId` only. A newer job stored for the same Source is kept and followed.
-  const forget = useCallback(
-    (sourceId: number, jobId: string) => update(String(sourceId), null, jobId),
-    [update],
-  );
-  // Another tab that starts, replaces or ends a job writes the shared map; follow it here.
-  useEffect(() => {
-    const follow = (event: StorageEvent) => {
-      if (!shared.current || (event.key !== null && event.key !== JOBS_KEY)) return;
-      const stored = readStored();
-      if (stored) setJobs((current) => (sameJobs(current, stored) ? current : stored));
-    };
-    window.addEventListener("storage", follow);
-    return () => window.removeEventListener("storage", follow);
-  }, []);
-  const refuse = useCallback((sourceId: number, message: string) => {
-    setRefusals((current) => ({ ...current, [String(sourceId)]: message }));
-  }, []);
-  return { jobs, refusals, remember, forget, refuse };
 }
 
 type Phase =
@@ -206,7 +105,8 @@ export function SourceRows({
   activity,
   jobId,
   note,
-  remember,
+  starting,
+  start,
   forget,
   selected = false,
 }: {
@@ -214,24 +114,27 @@ export function SourceRows({
   activity: ReactNode;
   jobId: string | undefined;
   note: string | undefined;
-  remember: (sourceId: number, jobId: string) => void;
+  starting: boolean;
+  start: StartLibraryJob;
   forget: (sourceId: number, jobId: string) => void;
   /** This row's files are the ones on screen. Clicking the name clears that. */
   selected?: boolean;
 }) {
   const client = useQueryClient();
-  const [phase, setPhase] = useState<Phase>(() =>
-    jobId
-      ? { kind: "importing", progress: null }
-      : note
-        ? { kind: "refused", message: note }
-        : { kind: "idle" },
+  const [jobPhase, setPhase] = useState<Phase>(() =>
+    jobId ? { kind: "importing", progress: null } : { kind: "idle" },
   );
-  const sending = useRef(false);
+  const github = source.source_kind === "github";
+  let phase = jobPhase;
+  if (starting && !jobId) {
+    phase = github ? { kind: "importing", progress: null } : { kind: "uploading" };
+  } else if (!jobId && note && jobPhase.kind === "idle") {
+    phase = { kind: "refused", message: note };
+  }
   // Busy while this tab's map holds a job for the Source, the fact the files panel reads,
-  // or while this row's own send is unanswered. A job learned from another tab counts at
+  // or while this tab's own send is unanswered. A job learned from another tab counts at
   // once, before its first status read.
-  const busy = jobId != null || phase.kind === "uploading" || phase.kind === "importing";
+  const busy = jobId != null || starting;
 
   // A job that left the map while this row still showed it running was ended by another
   // tab, which read its result. Stop showing it and read the Source again.
@@ -305,46 +208,26 @@ export function SourceRows({
   }, [jobId, source.id, source.source_kind, forget, client]);
 
   const send = (file: File) => {
-    if (sending.current || busy) return;
+    if (busy) return;
     if (!file.name.toLowerCase().endsWith(".zip")) {
       setPhase({ kind: "refused", message: "Choose a .zip file." });
       return;
     }
-    sending.current = true;
-    setPhase({ kind: "uploading" });
-    void uploadSourceZip(source.id, file).then(
-      (accepted) => {
-        // Stored before any further await, so a reload follows this job and does not upload again.
-        remember(source.id, accepted.job_id);
-        setPhase({ kind: "importing", progress: null });
-        sending.current = false;
-      },
-      (error: unknown) => {
-        setPhase({ kind: "refused", message: uploadFailure(error) });
-        sending.current = false;
-      },
-    );
+    setPhase({ kind: "idle" });
+    void start(source.id, () => uploadSourceZip(source.id, file), uploadFailure);
   };
 
   const sync = () => {
-    if (sending.current || busy) return;
-    sending.current = true;
-    setPhase({ kind: "importing", progress: null });
-    void writeCore("startSourceSync", {}, { project_ids: [source.id] }).then(
-      (accepted) => {
-        // Stored before any further await, so a reload follows this job and does not sync again.
-        remember(source.id, accepted.job_id);
-        sending.current = false;
-      },
-      (error: unknown) => {
-        setPhase({ kind: "refused", message: syncStartFailure(error) });
-        sending.current = false;
-      },
+    if (busy) return;
+    setPhase({ kind: "idle" });
+    void start(
+      source.id,
+      () => writeCore("startSourceSync", {}, { project_ids: [source.id] }),
+      syncStartFailure,
     );
   };
 
   const live = phase.kind === "idle" || phase.kind === "done" ? undefined : "status";
-  const github = source.source_kind === "github";
   return (
     <>
       <tr data-selected={selected || undefined}>

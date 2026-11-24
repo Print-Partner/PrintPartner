@@ -7,6 +7,7 @@ import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
 import { syncStartFailure } from "./GithubSync";
 import { sourcesQuery } from "../core/sources";
+import type { StartLibraryJob } from "./libraryJobs";
 
 type SourceKind = "github" | "archive";
 
@@ -47,35 +48,19 @@ function branchReason(error: unknown): string {
  * pressing Create after a lost answer cannot add a second Source. A GitHub Source then starts
  * one sync. Leaving the URL field reads that repository's branches.
  */
-export function AddSource({
-  onJob,
-  onRefused,
-}: {
-  onJob: (sourceId: number, jobId: string) => void;
-  onRefused: (sourceId: number, message: string) => void;
-}) {
+export function AddSource({ start }: { start: StartLibraryJob }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button type="button" className="pp-button pp-button-primary" onClick={() => setOpen(true)}>
         Add Source
       </button>
-      {open && (
-        <AddSourceDialog onClose={() => setOpen(false)} onJob={onJob} onRefused={onRefused} />
-      )}
+      {open && <AddSourceDialog onClose={() => setOpen(false)} start={start} />}
     </>
   );
 }
 
-function AddSourceDialog({
-  onClose,
-  onJob,
-  onRefused,
-}: {
-  onClose: () => void;
-  onJob: (sourceId: number, jobId: string) => void;
-  onRefused: (sourceId: number, message: string) => void;
-}) {
+function AddSourceDialog({ onClose, start }: { onClose: () => void; start: StartLibraryJob }) {
   const client = useQueryClient();
   const offline = useConnection() === "offline";
   const ids = useId();
@@ -89,12 +74,12 @@ function AddSourceDialog({
     networkMode: "always",
     mutationFn: async (body: CreateSourceRequest) => {
       const source = await writeCore("createSource", {}, body);
-      if (body.source_kind !== "github") return { source, jobId: null, refused: null };
-      try {
-        const accepted = await writeCore("startSourceSync", {}, { project_ids: [source.id] });
-        return { source, jobId: accepted.job_id, refused: null };
-      } catch (error: unknown) {
-        return { source, jobId: null, refused: syncStartFailure(error) };
+      if (body.source_kind === "github") {
+        await start(
+          source.id,
+          () => writeCore("startSourceSync", {}, { project_ids: [source.id] }),
+          syncStartFailure,
+        );
       }
     },
     // Runs even after the dialog closed: the list is read again whatever the answer.
@@ -113,11 +98,7 @@ function AddSourceDialog({
     // Per-call callbacks do not run once the dialog has closed, so a late answer
     // never closes or writes into a dialog opened after it.
     create.mutate(sourceRequest(form), {
-      onSuccess: (result) => {
-        if (result.jobId) onJob(result.source.id, result.jobId);
-        else if (result.refused) onRefused(result.source.id, result.refused);
-        onClose();
-      },
+      onSuccess: onClose,
       onError: (error: Error) => {
         // A 4xx is the core's refusal; anything else may have added the Source.
         const refused = error instanceof CoreError && error.status < 500;

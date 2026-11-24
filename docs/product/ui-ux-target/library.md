@@ -55,6 +55,8 @@ Every row whose `source_kind` is `github` has **Sync** (`web/apps/ui/src/library
 
 The job id is written to `localStorage` key `pp.library.jobs` as soon as the 202 is read, the same map a ZIP import uses. A reload follows that same job and does not start another sync. A 404 removes it. Sync and the create flow above are the only ways a sync starts.
 
+ZIP import and sync share a browser job tracker that stays alive while navigating within the signed-in app. Leaving and reopening Library keeps a Source's action disabled while its start request is unanswered. If browser storage fails, the tab keeps following its known jobs in memory. The next job change, storage event, or Library entry reconciles unrecorded starts and observed endings against the latest readable map, keeping other tabs' entries for other Sources. If that map already has a different job for the same Source, the tab follows the shared job. A job the tab saw end stays out of its Running state for the signed-in session, even if storage still lists it.
+
 ## Source files
 
 The Source's name is a link to `/library/{id}` (`web/apps/ui/src/library/SourceFiles.tsx`). That page lists the current revision's files from `listSourceFiles`, grouped by folder, with each file's name and size. Files at the revision root are under **Top level**. An STL has a 64 px thumbnail from `GET /api/v1/sources/{id}/thumbnail?path=`; the image is requested when the row enters the viewport, and a failed response shows **No preview** instead of a broken image. A Source with no revision says **No files yet.** Clicking the selected name returns to `/library`.

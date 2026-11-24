@@ -16,6 +16,7 @@ import { FarmLog } from "./farm/FarmLog";
 import { FarmScreen } from "./farm/FarmScreen";
 import { BuildSources } from "./library/BuildSources";
 import { LibraryScreen } from "./library/LibraryScreen";
+import { LibraryJobsProvider } from "./library/libraryJobs";
 import { MatchReview } from "./farm/MatchReview";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
@@ -55,7 +56,11 @@ export const routes: RouteObject[] = [
   { path: "/setup", element: <SetupScreen /> },
   {
     path: "/",
-    element: <Frame />,
+    element: (
+      <LibraryJobsProvider>
+        <Frame />
+      </LibraryJobsProvider>
+    ),
     children: [
       { index: true, element: <Navigate to="/today" replace /> },
       ...DESTINATIONS.map((d) => ({

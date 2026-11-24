@@ -19,7 +19,8 @@ import {
   type Source,
   type SourceEvent,
 } from "./sources";
-import { SourceRows, useLibraryJobs } from "./ZipUpload";
+import { useLibraryJobs } from "./libraryJobs";
+import { SourceRows } from "./ZipUpload";
 
 export function LineCell({ line }: { line: Line }) {
   return (
@@ -93,9 +94,10 @@ function SourcesTable({
             key={source.id}
             source={source}
             activity={<ActivityCell events={events} id={source.id} none={noActivity} />}
-            jobId={jobs.jobs[String(source.id)]}
-            note={jobs.refusals[String(source.id)]}
-            remember={jobs.remember}
+            jobId={jobs.jobs[source.id]}
+            note={jobs.refusals[source.id]}
+            starting={jobs.starting.has(source.id)}
+            start={jobs.start}
             forget={jobs.forget}
             selected={source.id === selectedId}
           />
@@ -151,7 +153,7 @@ export function LibraryScreen() {
       // empty, offline or back.
       subnav={
         <p className="pp-screen-actions">
-          <AddSource onJob={jobs.remember} onRefused={jobs.refuse} />
+          <AddSource start={jobs.start} />
         </p>
       }
       state={state}
@@ -169,7 +171,7 @@ export function LibraryScreen() {
                   <LibraryFilesNext
                     sourceId={selected.id}
                     kind={selected.source_kind}
-                    running={jobs.jobs[String(selected.id)] != null}
+                    running={jobs.jobs[selected.id] != null}
                   />
                 }
               />

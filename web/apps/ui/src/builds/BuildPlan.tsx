@@ -12,8 +12,16 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { useLocation, useNavigate, useOutletContext } from "react-router";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { useLocation, useNavigate } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore, writeCore } from "../core/rust";
@@ -24,9 +32,19 @@ import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
 import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { plural } from "../today/beds";
-import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { BuildTabs } from "./BuildWorkspace";
 import { ExperimentOption, holdersOf } from "./ExperimentOption";
 import { planKey, useMatchStep } from "./PlanReconcile";
+import {
+  readPlanDraft,
+  RefreshNotice,
+  SOURCE_CHANGED,
+  staleInputs,
+  usePendingEdits,
+  usePlanRefresh,
+  type OpenPlan,
+  type PendingEdits,
+} from "./PlanRefresh";
 import { DRAFT_OPEN, NO_DRAFT, PLATES_CLEARED } from "./planCopy";
 import {
   acceptBody,
@@ -66,28 +84,33 @@ const restoredOf = (state: unknown): RestoredState["restored"] | null => {
  * The Build's header, the Accepted base and the open draft, if any. Every value the tab
  * shows comes from the Rust core; nothing here guesses the accepted Plan.
  */
-export const planQuery = (id: number) => ({
+export const planQuery = (id: number, selected?: RefObject<number | null>) => ({
   queryKey: planKey(id),
   queryFn: async ({ signal }: { signal: AbortSignal }): Promise<PlanData> => {
     const [drafts, { build, base }] = await Promise.all([
       readCore("listDrafts", { id }, signal),
       readCore("readBuildHeader", { id }, signal),
     ]);
-    const open = drafts.drafts.find((d) => d.state === "open");
+    const open = drafts.drafts.find(
+      (d) => d.state === "open" && (selected?.current == null || d.draft_id === selected.current),
+    );
     if (!open) return { build, base, draft: null };
-    const params = { id, draft_id: open.draft_id };
-    const [workspace, header] = await Promise.all([
-      readCore("readDraftWorkspace", params, signal),
-      readCore("readDraftHeader", params, signal),
-    ]);
-    return { build: header.build, base, draft: { workspace, header: header.draft } };
+    const loaded = await readPlanDraft(id, open.draft_id, signal);
+    return loaded.draft.workspace.draft.state === "open"
+      ? { ...loaded, base }
+      : { build, base, draft: null };
   },
   retry: (failures: number, error: Error) =>
     !(error instanceof CoreError && error.status === 404) && failures < 3,
 });
 
 /** Draft writes run one at a time, each against the draft the last one left. */
-function useDraftWrites(id: number) {
+function useDraftWrites(
+  id: number,
+  pinDraft: PinDraft,
+  recovery: RefObject<OpenPlan | null>,
+  markStale: (data: OpenPlan) => void,
+) {
   const client = useQueryClient();
   const latest = () => client.getQueryData<PlanData>(planKey(id));
   // A resend must repeat its first body: the core replays a key only for the same request.
@@ -98,8 +121,20 @@ function useDraftWrites(id: number) {
   };
   const settle = (key: string) => {
     bodies.current.delete(key);
-    return client.invalidateQueries({ queryKey: planKey(id) });
+    if (!recovery.current) return client.invalidateQueries({ queryKey: planKey(id) });
   };
+  const observed = async <T,>(data: PlanData, save: () => Promise<T>) => {
+    try {
+      return await save();
+    } catch (error) {
+      if (staleInputs(error) && data.draft && !recovery.current) {
+        markStale({ ...data, draft: data.draft });
+      }
+      throw error;
+    }
+  };
+  const retry = (failures: number, error: Error) =>
+    !recovery.current && failures < 2 && resendable(error);
   const scope = { id: `plan-draft-${id}` };
   const mutationKey = draftWriteKey(id);
   const header = useMutation({
@@ -110,20 +145,25 @@ function useDraftWrites(id: number) {
     // `changes` holds only the fields typed for this write. The rest come from the header
     // saved when the write starts, so a queued write never resends an older field value.
     mutationFn: ({ changes, key }: { changes: Partial<HeaderFields>; key: string }) => {
-      const body = once(key, () => {
+      if (recovery.current) throw new Error(SOURCE_CHANGED);
+      const { body, data } = once(key, () => {
         const data = latest();
         if (!data) throw new Error("The Plan has not loaded yet");
         const saved = data.draft?.header?.header ?? data.build;
         return {
-          expected_base: data.draft?.workspace.draft.base ?? data.base,
-          expected_draft: data.draft ? identityOf(data.draft.workspace.draft) : null,
-          expected_header_version: data.draft?.header?.header_version ?? null,
-          header: headerOf({ ...fieldsOf(saved), ...changes }),
+          data,
+          body: {
+            expected_base: data.draft?.workspace.draft.base ?? data.base,
+            expected_draft: data.draft ? identityOf(data.draft.workspace.draft) : null,
+            expected_header_version: data.draft?.header?.header_version ?? null,
+            header: headerOf({ ...fieldsOf(saved), ...changes }),
+          },
         };
       });
-      return writeCore("saveDraftHeader", { id }, body, key);
+      return observed(data, () => writeCore("saveDraftHeader", { id }, body, key));
     },
-    retry: (failures: number, error: Error) => failures < 2 && resendable(error),
+    retry,
+    onSuccess: ({ header }) => pinDraft(header.draft_id, true),
     onSettled: (_data, _error, { key }) => settle(key),
   });
   const parts = useMutation({
@@ -131,23 +171,30 @@ function useDraftWrites(id: number) {
     mutationKey,
     meta: KEEP_EDITS,
     mutationFn: ({ choice, key }: { choice: PlanChoice; key: string }) => {
-      const body = once(key, () => {
-        const draft = latest()?.draft;
+      if (recovery.current) throw new Error(SOURCE_CHANGED);
+      const { body, data } = once(key, () => {
+        const data = latest();
+        const draft = data?.draft;
         if (!draft) throw new Error("No draft is open");
         return {
-          decisions: [choice],
-          expected_base: draft.workspace.draft.base,
-          expected_draft: identityOf(draft.workspace.draft),
-          remap_checkoff_links: false,
+          data,
+          body: {
+            decisions: [choice],
+            expected_base: draft.workspace.draft.base,
+            expected_draft: identityOf(draft.workspace.draft),
+            remap_checkoff_links: false,
+          },
         };
       });
-      return writeCore("autosaveDraft", { id }, body, key);
+      return observed(data, () => writeCore("autosaveDraft", { id }, body, key));
     },
-    retry: (failures: number, error: Error) => failures < 2 && resendable(error),
+    retry,
     // The next write in the queue names the draft this one left.
     onSuccess: ({ workspace }) =>
       client.setQueryData<PlanData>(planKey(id), (data) =>
-        data?.draft ? { ...data, draft: { ...data.draft, workspace } } : data,
+        data?.draft?.workspace.draft.draft_id === workspace.draft.draft_id
+          ? { ...data, draft: { ...data.draft, workspace } }
+          : data,
       ),
     onSettled: (_data, _error, { key }) => settle(key),
   });
@@ -187,7 +234,9 @@ function SaveStatus({ writes }: { writes: Writes }) {
     writes.header.isPending || writes.parts.isPending
       ? "Saving to the draft"
       : failed
-        ? `${resendable(failed) ? "Save not confirmed" : "Not saved"}: ${refusalText(failed, "save")}`
+        ? staleInputs(failed) || failed.message === SOURCE_CHANGED
+          ? "Not saved. Your unsaved values are kept in this workspace."
+          : `${resendable(failed) ? "Save not confirmed" : "Not saved"}: ${refusalText(failed, "save")}`
         : last.isSuccess
           ? "Saved to the draft. The Build changes only when you accept."
           : "";
@@ -220,7 +269,19 @@ const carries = (write: HeldWrite, field: keyof HeaderFields) => field in write.
  * another window saved the same field, counts as typed again: it keeps its value and the
  * next blur sends it. A blur with nothing typed sends nothing.
  */
-function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; busy: boolean }) {
+function HeaderForm({
+  data,
+  writes,
+  busy,
+  locked,
+  pending,
+}: {
+  data: PlanData;
+  writes: Writes;
+  busy: boolean;
+  locked: boolean;
+  pending: PendingEdits;
+}) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
   // The header the fields last took, or null after a write settles, so they take it again.
@@ -268,10 +329,17 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
   const offline = useConnection() === "offline";
   const orders = useModule("orders");
   const ids = { form: useId(), reason: useId(), name: useId() };
+  usePendingEdits(
+    pending,
+    ids.form,
+    HEADER_FIELDS.filter(({ field }) => kept.has(field)).map(
+      ({ field, label }) => `${label}: ${fields[field] || "(blank)"}`,
+    ),
+  );
   const commit = () => {
     const header = headerOf(fields);
     setInvalid(header.name === "");
-    if (header.name === "" || offline || typed.size === 0) return;
+    if (header.name === "" || offline || locked || typed.size === 0) return;
     // A field is sent only when it differs from the value it will hold without this write:
     // the latest unsettled write's value for it, or else the saved value.
     const base = fieldsOf(saved);
@@ -304,7 +372,7 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
             <input
               type={f.type}
               value={fields[f.field]}
-              readOnly={offline}
+              readOnly={offline || locked}
               aria-invalid={f.field === "name" && invalid ? true : undefined}
               aria-describedby={
                 [offline && ids.reason, f.field === "name" && invalid && ids.name]
@@ -351,7 +419,7 @@ function useQuantityField(
   part: PartView,
   writes: Writes,
   queued: PlanChoice | undefined,
-  offline: boolean,
+  locked: boolean,
   save: (choice: PlanChoice) => string,
 ) {
   const [text, setText] = useState(part.quantity_override?.toString() ?? "");
@@ -377,6 +445,7 @@ function useQuantityField(
   return {
     text,
     invalid,
+    pending: edited || settled?.failed,
     type: (value: string) => {
       setText(value);
       setEdited(true);
@@ -385,7 +454,7 @@ function useQuantityField(
       const value = quantityValue(text);
       setInvalid(value === "invalid");
       // A blur with nothing typed since the last write sends nothing.
-      if (value === "invalid" || offline || !edited) return;
+      if (value === "invalid" || locked || !edited) return;
       setEdited(false);
       if (value === sent) return;
       setSentKey(save(quantityChoice(part, value)));
@@ -397,7 +466,40 @@ function useQuantityField(
  * One Part row: whether it is included and its quantity override. While an Included save
  * is queued or running, the box shows its value, and the next click toggles from that.
  */
-function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; reasonId: string }) {
+function useIncludedField(
+  part: PartView,
+  writes: Writes,
+  queued: PlanChoice | undefined,
+  save: (choice: PlanChoice) => string,
+) {
+  const included = queued?.kind === "set_included" ? queued.value : part.included;
+  const [last, setLast] = useState<{ key: string; value: boolean } | null>(null);
+  const [unsaved, setUnsaved] = useState<string | null>(null);
+  const [settled] = useSettledWrites(writes, last ? [last.key] : []);
+  if (last && settled) {
+    setLast(null);
+    setUnsaved(settled.failed ? (last.value ? "Include" : "Exclude") : null);
+  }
+  return {
+    included,
+    unsaved,
+    toggle: () => setLast({ key: save(includeChoice(part, !included)), value: !included }),
+  };
+}
+
+function PartRow({
+  part,
+  writes,
+  reasonId,
+  locked,
+  edits,
+}: {
+  part: PartView;
+  writes: Writes;
+  reasonId: string;
+  locked: boolean;
+  edits: PendingEdits;
+}) {
   const offline = useConnection() === "offline";
   const target = JSON.stringify(includeChoice(part, true).target);
   const pending = useMutationState({
@@ -405,15 +507,26 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
     select: (mutation) => (mutation.state.variables as { choice?: PlanChoice } | undefined)?.choice,
   }).filter((choice) => choice && JSON.stringify(choice.target) === target);
   const queued = (kind: PlanChoice["kind"]) => pending.findLast((choice) => choice?.kind === kind);
-  const queuedInclude = queued("set_included");
-  const included = queuedInclude?.kind === "set_included" ? queuedInclude.value : part.included;
   const errorId = useId();
   const save = (choice: PlanChoice) => {
     const key = newKey();
     writes.parts.mutate({ choice, key });
     return key;
   };
-  const quantity = useQuantityField(part, writes, queued("set_quantity_override"), offline, save);
+  const quantity = useQuantityField(
+    part,
+    writes,
+    queued("set_quantity_override"),
+    locked || offline,
+    save,
+  );
+  const included = useIncludedField(part, writes, queued("set_included"), save);
+  usePendingEdits(edits, errorId, [
+    ...(quantity.pending
+      ? [`${part.relative_path} quantity: ${quantity.text || "(from Source)"}`]
+      : []),
+    ...(included.unsaved ? [`${part.relative_path}: ${included.unsaved}`] : []),
+  ]);
   return (
     <tr>
       <th scope="row">
@@ -424,15 +537,18 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
       <td>
         <input
           type="checkbox"
-          checked={included}
+          checked={included.included}
           aria-label={`Include ${part.filename}`}
-          aria-disabled={offline || undefined}
+          aria-disabled={offline || locked || undefined}
           aria-describedby={offline ? reasonId : undefined}
           onChange={() => {
-            if (offline) return;
-            save(includeChoice(part, !included));
+            if (offline || locked) return;
+            included.toggle();
           }}
         />
+        {locked && included.unsaved && (
+          <span className="pp-field-error">Unsaved: {included.unsaved}</span>
+        )}
       </td>
       <td>
         <input
@@ -440,7 +556,7 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
           inputMode="numeric"
           value={quantity.text}
           placeholder={String(part.quantity_inferred)}
-          readOnly={offline}
+          readOnly={offline || locked}
           aria-label={`Quantity of ${part.filename}, blank for ${part.quantity_inferred} from the Source`}
           aria-invalid={quantity.invalid || undefined}
           aria-describedby={
@@ -461,7 +577,17 @@ function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; r
   );
 }
 
-function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
+function PartsTable({
+  parts,
+  writes,
+  locked,
+  edits,
+}: {
+  parts: PartView[];
+  writes: Writes;
+  locked: boolean;
+  edits: PendingEdits;
+}) {
   const headingId = useId();
   const reasonId = useId();
   const offline = useConnection() === "offline";
@@ -485,7 +611,14 @@ function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
         </thead>
         <tbody>
           {parts.map((part) => (
-            <PartRow key={part.draft_part_id} part={part} writes={writes} reasonId={reasonId} />
+            <PartRow
+              key={part.draft_part_id}
+              part={part}
+              writes={writes}
+              reasonId={reasonId}
+              locked={locked}
+              edits={edits}
+            />
           ))}
         </tbody>
       </table>
@@ -779,29 +912,105 @@ const refreshAfterAccept = (client: QueryClient, id: number) =>
     ),
   );
 
-function PlanBody({ id, data }: { id: number; data: PlanData }) {
+type PinDraft = (id: number, onlyIfPinned?: boolean) => void;
+
+function UnsavedEdits({ edits, onDismiss }: { edits: string[]; onDismiss: () => void }) {
+  if (!edits.length) return null;
+  return (
+    <section className="pp-plan-refresh" aria-label="Unsaved edits">
+      <p>
+        Unsaved edits from the previous workspace. Review the refreshed Parts and re-enter any
+        values you still need.
+      </p>
+      <ul>
+        {edits.map((edit) => (
+          <li key={edit}>{edit}</li>
+        ))}
+      </ul>
+      <button className="pp-button" type="button" onClick={onDismiss}>
+        Dismiss unsaved edits
+      </button>
+    </section>
+  );
+}
+
+function useInstalledPlan(queryData: PlanData) {
+  const [installed, setInstalled] = useState<OpenPlan | null>(null);
+  if (
+    installed &&
+    installed.draft.workspace.draft.draft_id === queryData.draft?.workspace.draft.draft_id
+  ) {
+    setInstalled(null);
+    return [queryData, setInstalled] as const;
+  }
+  return [installed ?? queryData, setInstalled] as const;
+}
+
+function PlanBody({
+  id,
+  queryData,
+  pinDraft,
+  active,
+  stale,
+  setStale,
+}: {
+  id: number;
+  queryData: PlanData;
+  pinDraft: PinDraft;
+  active: boolean;
+  stale: OpenPlan | null;
+  setStale: (data: OpenPlan | null) => void;
+}) {
   const client = useQueryClient();
-  const writes = useDraftWrites(id);
+  const sourceRef = useRef<OpenPlan | null>(null);
+  const [current, setInstalled] = useInstalledPlan(queryData);
+  const data = stale ?? current;
   const draft = data.draft;
+  const draftId = draft?.workspace.draft.draft_id;
   const location = useLocation();
   const navigate = useNavigate();
   // History's Restore as draft lands here with the restored draft, whose gate opens at once.
   // The state is cleared so a reload or Back does not open it again.
   const [restored] = useState(() => {
     const state = restoredOf(location.state);
-    return state && state.draftId === draft?.workspace.draft.draft_id ? state : null;
+    return state && state.draftId === draftId ? state : null;
   });
   const [gate, setGate] = useState(restored !== null);
+  if (!active && gate) setGate(false);
+  const writes = useDraftWrites(id, pinDraft, sourceRef, (source) => {
+    sourceRef.current = source;
+    pinDraft(source.draft.workspace.draft.draft_id);
+    setStale(source);
+    setGate(false);
+  });
   useEffect(() => {
-    if (restoredOf(location.state)) {
+    if (active && restoredOf(location.state)) {
       void navigate(location.pathname, { replace: true, state: null });
     }
-  }, [location.state, location.pathname, navigate]);
+  }, [active, location.state, location.pathname, navigate]);
   const [accepted, setAccepted] = useState<AcceptDraftReceipt | null>(null);
   // A field's blur can start a save in the same turn as a click, so ask the cache, not
   // the last render, whether one is still running.
   const saving = () => client.isMutating({ mutationKey: draftWriteKey(id) }) > 0;
   const busy = useIsMutating({ mutationKey: draftWriteKey(id) }) > 0;
+  const edits = useRef<PendingEdits>(new Map());
+  const [unsaved, setUnsaved] = useState<string[]>([]);
+  const [refreshed, setRefreshed] = useState<number | null>(null);
+  const refresh = usePlanRefresh(id, sourceRef, saving, KEEP_EDITS, async (plan) => {
+    await client.cancelQueries({ queryKey: planKey(id), exact: true });
+    const kept = [...edits.current.values()].flat();
+    setUnsaved((previous) => [...new Set([...previous, ...kept])]);
+    const successor = plan.draft.workspace.draft.draft_id;
+    pinDraft(successor);
+    client.setQueryData(planKey(id), plan);
+    sourceRef.current = null;
+    setInstalled(plan);
+    setStale(null);
+    setRefreshed(successor);
+    writes.header.reset();
+    writes.parts.reset();
+  });
+  const editorKey = refreshed ?? "original";
   return (
     <>
       <div className="pp-plan-status">
@@ -811,8 +1020,8 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
             Accepted. The Plan is now version <span className="num">{accepted.plan_version}</span>.
           </p>
         )}
-        {draft ? (
-          <MutationButton primary onClick={() => setGate(true)}>
+        {stale ? null : draft ? (
+          <MutationButton primary onClick={() => !sourceRef.current && setGate(true)}>
             Review and accept
           </MutationButton>
         ) : (
@@ -823,22 +1032,46 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
           </MutationButton>
         )}
       </div>
+      {stale ? (
+        <RefreshNotice
+          refresh={refresh}
+          saving={busy}
+          signedOutNote={<RefreshSignedOut error={refresh.error} />}
+        />
+      ) : refreshed === draftId ? (
+        <p role="status">Draft refreshed from current Sources.</p>
+      ) : null}
+      <UnsavedEdits edits={unsaved} onDismiss={() => setUnsaved([])} />
       <SaveStatus writes={writes} />
-      <HeaderForm key={id} data={data} writes={writes} busy={busy} />
-      {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
-      {gate && draft && !busy && (
+      <HeaderForm
+        key={`header-${editorKey}`}
+        data={data}
+        writes={writes}
+        busy={busy}
+        locked={stale !== null}
+        pending={edits.current}
+      />
+      {draft && (
+        <PartsTable
+          key={`parts-${editorKey}`}
+          parts={draft.workspace.parts}
+          writes={writes}
+          locked={stale !== null}
+          edits={edits.current}
+        />
+      )}
+      {active && gate && draft && !busy && !stale && (
         <AcceptGate
           id={id}
           workspace={draft.workspace}
-          restoredFrom={
-            restored?.draftId === draft.workspace.draft.draft_id ? restored.summary : null
-          }
+          restoredFrom={restored && restored.draftId === draftId ? restored.summary : null}
           onClose={() => setGate(false)}
           onAccepted={(receipt) => {
             setGate(false);
             writes.header.reset();
             writes.parts.reset();
             setAccepted(receipt);
+            setRefreshed(null);
             void refreshAfterAccept(client, id);
           }}
         />
@@ -847,11 +1080,33 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
   );
 }
 
+function RefreshSignedOut({ error }: { error: Error | null }) {
+  return error && signedOut(error) ? <SignedOutNote /> : null;
+}
+
 /** The Plan tab: the draft's header and Parts, saved as they change, and the Accept gate. */
-export function BuildPlan() {
-  const { id } = useOutletContext<WorkspaceContext>();
+export function BuildPlan({ id, active }: { id: number; active: boolean }) {
+  const location = useLocation();
+  const [view, setView] = useState({ key: "initial", visited: active });
+  // Keep local edits and refresh receipts across tabs. History's explicit Restore starts a new view.
+  const key = active && restoredOf(location.state) ? location.key : view.key;
+  if (active && (!view.visited || key !== view.key)) setView({ key, visited: true });
+  if (!active && !view.visited) return null;
+  return (
+    <div hidden={!active}>
+      <BuildPlanScreen key={key} id={id} active={active} />
+    </div>
+  );
+}
+
+function BuildPlanScreen({ id, active }: { id: number; active: boolean }) {
   const connection = useConnection();
-  const query = useQuery(planQuery(id));
+  const selected = useRef<number | null>(null);
+  const [stale, setStale] = useState<OpenPlan | null>(null);
+  const pinDraft: PinDraft = (draftId, onlyIfPinned) => {
+    if (!onlyIfPinned || selected.current !== null) selected.current = draftId;
+  };
+  const query = useQuery({ ...planQuery(id, selected), enabled: active && !stale });
   if (query.error instanceof CoreError && query.error.status === 404 && !query.data) {
     return <NotFound />;
   }
@@ -860,7 +1115,16 @@ export function BuildPlan() {
       title="Plan"
       subnav={<BuildTabs id={id} />}
       state={queryScreenState(query, connection)}
-      renderData={(data) => <PlanBody id={id} data={data} />}
+      renderData={(data) => (
+        <PlanBody
+          id={id}
+          queryData={data}
+          pinDraft={pinDraft}
+          active={active}
+          stale={stale}
+          setStale={setStale}
+        />
+      )}
       empty={{ message: "" }}
     />
   );

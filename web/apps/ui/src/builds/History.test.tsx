@@ -495,7 +495,9 @@ const writes = (fetchMock: ReturnType<typeof core>) =>
 describe("UI8-02 R on a snapshot opens Restore as draft into the Accept gate", () => {
   it("R on a restorable snapshot restores it as a draft and opens Accept on that draft", async () => {
     const fetchMock = restoreCore(restored);
-    const { router } = renderAt("/builds/2/history", fetchMock);
+    const { router } = renderAt("/builds/2/plan", fetchMock);
+    await screen.findByRole("button", { name: "Start a draft" });
+    fireEvent.click(screen.getByRole("link", { name: "History" }));
     await screen.findByText("Snapshot before apply");
     fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
     const gate = await screen.findByRole("dialog", { name: "Accept this draft" });

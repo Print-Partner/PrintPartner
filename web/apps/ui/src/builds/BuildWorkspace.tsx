@@ -1,7 +1,7 @@
 import type { ProfileLayers, ProfileSummary } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
-import { Link, NavLink, Outlet, useOutletContext, useParams } from "react-router";
+import { Link, NavLink, Outlet, useMatch, useOutletContext, useParams } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
@@ -56,10 +56,16 @@ export const buildQuery = (id: number) => ({
 });
 
 /** `/builds/:id` and its tabs. Each tab renders the tab bar under its heading. */
-export function BuildWorkspace() {
+export function BuildWorkspace({ plan }: { plan: (id: number, active: boolean) => ReactNode }) {
   const id = buildId(useParams().id);
+  const planActive = useMatch("/builds/:id/plan") !== null;
   if (id === null) return <NotFound />;
-  return <Outlet context={{ id } satisfies WorkspaceContext} />;
+  return (
+    <>
+      {plan(id, planActive)}
+      <Outlet context={{ id } satisfies WorkspaceContext} />
+    </>
+  );
 }
 
 export function BuildTabs({ id }: { id: number }) {

@@ -720,6 +720,22 @@ body {
   color: var(--status-danger);
 }
 
+.pp-plan-refresh {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+
+.pp-plan-refresh p,
+.pp-plan-refresh ul {
+  margin: 0;
+}
+
 .pp-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));

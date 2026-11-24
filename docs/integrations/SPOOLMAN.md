@@ -11,12 +11,18 @@ Print Partner can read filament and spool inventory from a Spoolman server. Buil
 ## Add the integration
 
 1. Open **Settings**.
-2. Find **Optional integrations** under the Library settings.
+2. Go to **Integrations**.
 3. Select **Add Spoolman**.
-4. Enter a name, base URL, and optional API key.
-5. Save and test the connection.
+4. Enter the **Name**, **Base URL**, and optional **API key**.
+5. Select **Save Spoolman**. The connection appears under **Integrations**.
 
 Use the URL that the Print Partner container can reach. `localhost` inside the container refers to the container itself, not the Docker host.
+
+## Edit or remove the integration
+
+- Select **Edit** on the Spoolman row. Leave **API key** blank to keep the saved key when the base URL stays the same. Enter a key to replace it or select **Clear saved API key** to remove it. When you change the base URL and a key is saved, enter the key to use at the new URL or clear the saved key.
+- Select **Remove** on the Spoolman row, then **Remove Spoolman** to confirm. This removes the connection and its saved key from Print Partner.
+- If the integration changed while you were editing or Print Partner couldn't confirm a change, review the refreshed list before making another change. If the refresh fails, select **Reload integrations**.
 
 ## Docker networking
 

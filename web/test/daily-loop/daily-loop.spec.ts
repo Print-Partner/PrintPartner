@@ -1300,24 +1300,21 @@ type NextAction = { label: string; reason: string };
 step(11, null, async ({ page }) => {
   test.setTimeout(420_000);
   await signIn(page);
-  const origin = new URL(page.url()).origin;
   // Spoolman is off on a new installation; the owner turns it on.
   await go(page, "Settings");
   await page.getByRole("button", { name: "Turn Spoolman on" }).click();
   await page.getByRole("button", { name: "Confirm Module change" }).click();
   await expect(page.getByRole("button", { name: "Turn Spoolman off" })).toBeVisible();
-  // The owner's import brings his Spoolman integration; the synthetic installation has
-  // none, and Settings cannot add one yet (GRE-1899), so the step adds the stand-in
-  // through the route Settings will call.
-  const added = await page.request.post(`${origin}/api/v2/integrations`, {
-    data: { kind: "spoolman", name: SPOOLMAN, base_url: process.env.PP_DAILY_LOOP_SPOOLMAN_URL ?? "" },
-    headers: { Origin: origin },
-  });
-  expect(added.ok(), `POST /api/v2/integrations: ${added.status()} ${await added.text()}`).toBe(true);
-  const { id: integrationId } = (await added.json()) as { id: string };
-  await page.reload();
+  // The synthetic installation has no Spoolman connection. Add the stand-in.
+  await page.getByRole("button", { name: "Add Spoolman" }).click();
+  const add = page.getByRole("dialog", { name: "Add Spoolman" });
+  await add.getByLabel("Name", { exact: true }).fill(SPOOLMAN);
+  await add.getByLabel("Base URL").fill(process.env.PP_DAILY_LOOP_SPOOLMAN_URL ?? "");
+  await add.getByRole("button", { name: "Save Spoolman" }).click();
   const integration = page.locator(".pp-fact").filter({ has: page.locator("dt", { hasText: SPOOLMAN }) });
   await expect(integration.locator("dd")).toContainText("Spoolman, on");
+  const integrationId = await integration.getAttribute("data-integration");
+  expect(integrationId).toBeTruthy();
 
   // What is left, as the core counts it: every unit of the accepted Plan not yet printed.
   const { profiles } = await core<{ profiles: { id: number; name: string }[] }>(page, "/api/v2/plans");

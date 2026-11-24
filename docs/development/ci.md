@@ -7,7 +7,7 @@ A pull request, a push to `main`, and a merge group run four parts (GRE-1649):
 3. `ui` in `.github/workflows/web-ci.yml`: replacement UI lint, UI and generated Rust client tests, and a build of the replacement UI. The same workflow runs `release-audit` on every ready PR, push and merge group.
 4. `rust image` and `rust image (arm64)` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in, when image inputs change on a pull request (and on every push to `main` and merge group). `rust image` runs on `ubuntu-latest` (amd64) and `rust image (arm64)` on the native `ubuntu-24.04-arm` runner, so each architecture is built and run on its own hardware (GRE-1295).
 
-No pull-request job runs Node parity, the old UI's test or build jobs, or the Node desktop. The Linux Rust job still runs `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py`, because `pp-compat` embeds that manifest. That step is a compile input, not the old UI's test job. Desktop workflows (`desktop-contracts.yml`, `desktop-deny.yml`, `desktop-e2e.yml`, `desktop-webkit.yml`, `desktop-runtime.yml`, `desktop-fleet-rust.yml`, `desktop-packaged-smoke.yml`, `desktop-native-macos.yml`) stay in the tree and start only from `workflow_dispatch`. Desktop CI returns in M5.
+The general Linux Rust job runs `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` to generate the compile input that `pp-compat` embeds. Node parity and the legacy desktop smoke and packaging workflows remain dispatch-only. For desktop pull requests, see [Linux desktop check](#linux-desktop-check).
 
 The nightly schedule (`37 7 * * *`) and a manual dispatch of Rust cross-OS build the workspace on `windows-latest` and `macos-26`. Those legs are named `rust (windows)` and `rust (macos)`. They compile with `cargo build --locked --workspace`. They do not run nextest, and they do not run on pull requests, pushes, or merge groups. A manual dispatch does not also run the Linux nextest job. A nightly `rust (macos)` failure opens the `ci-macos-main` issue. The daily-loop test runs on each push to `main`; see [Daily loop](#daily-loop).
 
@@ -50,6 +50,30 @@ A push to `main` runs the same four parts, with nextest's filter `all()` (owner 
 Hosted parts restore `Swatinem/rust-cache` with `shared-key: rust-linux`, the job id that saved the cache before the split. The `1/6` part saves that same key on a pull request and on `main`. The other parts only restore. pp-local skips this cache. The Rust image jobs use the GitHub Actions cache with `mode=max`, including on pull requests: scope `dockerfile-rust` for amd64 and `dockerfile-rust-arm64` for arm64. The first image build of a new cache is cold.
 
 This page covers what the jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks.
+
+## Linux desktop check
+
+Desktop CI on pull requests is the `desktop (linux)` job in `desktop-linux.yml` (GRE-1677). Windows and macOS desktop builds stay in the nightly workspace job and its manual dispatch until M7.
+
+On each ready PR, `scripts/ci-path-filter.py desktop-linux` checks the full PR diff. It selects Rust workspace crates, including `pp-desktop` and its dependencies, plus `desktop/`, desktop workflows, bundle staging and assembly tools, the replacement UI and Rust client, staged package manifests, and shared Cargo, Web package and Linux dependency inputs. A draft or an unrelated diff skips it. An unknown diff runs it. The check is advisory under the current ruleset and runs only on pull requests.
+
+The job installs the Linux Tauri libraries, builds the binary with `desktop_rebuild`, and runs the crate's tests with nextest and the `desktop-linux` profile. The profile excludes four origin-change tests that execute JavaScript in Node and the scratch audit that reruns the whole library test binary. The job uses a compile-only manifest that release verification rejects and starts no application Node process, UI, or desktop app. Installed startup and runtime bundle verification require a measured release and separate smoke testing.
+
+To run the build and tests locally with the Linux Tauri libraries, the repository Rust toolchain, and nextest 0.9.148:
+
+```sh
+(
+  set -e
+  temp_dir=$(mktemp -d)
+  trap 'rm -r -- "$temp_dir"' EXIT
+  export PP_DESKTOP_RELEASE_MANIFEST="$temp_dir/desktop-compile-manifest.json"
+  python3 rust/scripts/build-desktop-manifest.py --compile-only --output "$PP_DESKTOP_RELEASE_MANIFEST"
+  cargo build --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild
+  cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild --profile desktop-linux --no-tests=fail
+)
+```
+
+For the hosted result, check that `changes` logged `desktop-linux inputs changed: true` and that both the build and test steps in `desktop (linux)` passed at the PR head.
 
 ## Web job selection
 

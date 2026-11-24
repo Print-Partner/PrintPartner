@@ -287,6 +287,27 @@ class CiPathFilterTests(unittest.TestCase):
     def test_linux_setup_selects_rust(self):
         self.assertTrue(ci_filter.relevant("scripts/setup-ci-linux.sh", "rust"))
 
+    def test_desktop_linux_inputs(self):
+        for path in (
+                "rust/crates/pp-desktop/src/main.rs", "rust/crates/pp-desktop/tauri.conf.json",
+                "rust/crates/pp-desktop/icons/icon.png", "rust/crates/pp-desktop/bootstrap/index.html",
+                "rust/crates/pp-core/src/lib.rs", "rust/crates/pp-os/src/lib.rs",
+                "rust/crates/pp-storage/src/lib.rs",
+                "rust/scripts/desktop-bundle.sh", "rust/scripts/desktop-deb.sh",
+                "rust/scripts/stage-desktop.py", "rust/scripts/assemble-linux-deb.py",
+                "rust/scripts/build-desktop-manifest.py", "desktop/packaged-smoke/smoke.py",
+                "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
+                "web/apps/server/package.json", "web/packages/contracts/package.json",
+                "web/packages/domain/package.json",
+                "web/package-lock.json", "rust/Cargo.lock", "rust-toolchain.toml", "rust/.config/nextest.toml",
+                ".github/actions/linux-gui-deps/action.yml", ".github/workflows/desktop-linux.yml",
+                ".github/workflows/desktop-native-macos.yml", "scripts/ci-path-filter.py"):
+            self.assertTrue(ci_filter.relevant(path, "desktop-linux"), path)
+        for path in ("docs/development/ci.md", "web/apps/web/src/App.tsx",
+                     ".github/workflows/web-ci.yml"):
+            self.assertFalse(ci_filter.relevant(path, "desktop-linux"), path)
+        self.assertFalse(ci_filter.select("merge_group", "", "", "desktop-linux"))
+
     def test_actions_inputs(self):
         for path in [".github/workflows/a.yml", ".github/actions/a/action.yml",
                      "scripts/test_ci_path_filter.py", ".github/zizmor.yml",
@@ -296,7 +317,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "rust-image", "actions", "ui", "web"]:
+        for kind in ["rust", "rust-image", "actions", "desktop-linux", "ui", "web"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))
@@ -330,12 +351,14 @@ class CiPathFilterTests(unittest.TestCase):
             git("config", "user.name", "Proof")
             base = commit("README.md")
             docs = commit("docs/space and\nnewline.md")
-            for kind in ["rust", "actions", "ui", "web"]:
+            for kind in ["rust", "actions", "desktop-linux", "ui", "web"]:
                 self.assertEqual(select(base, docs, kind)[0], "relevant=false\n")
             for path, kind in (("web/apps/ui/src/App.tsx", "ui"),
                                ("web/packages/rust-client/src/client.ts", "ui"),
                                ("web/apps/server/src/app.ts", "web"),
-                               ("web/DEPLOY.md", "web")):
+                               ("web/DEPLOY.md", "web"),
+                               ("rust/crates/pp-desktop/src/main.rs", "desktop-linux"),
+                               ("rust/scripts/stage-desktop.py", "desktop-linux")):
                 git("checkout", "-q", "--detach", base)
                 changed = commit(path)
                 self.assertEqual(select(base, changed, kind)[0], "relevant=true\n")

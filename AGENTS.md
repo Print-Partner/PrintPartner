@@ -51,7 +51,7 @@ Follow the [definition of done](docs/development/definition-of-done.md):
 - One job per PR. Aim for 300 to 600 changed lines; about 1,500 is the hard ceiling, or about 600 for a cross-cutting PR. Split larger work into sequential PRs, each started from `main` after the previous one merges; never stack PRs. Every PR says `Fixes GRE-xxx`. Unmet acceptance items go to a child ticket that quotes them verbatim; don't use `Refs`. `linear-pr-sync.yml` sets the ticket states that follow a PR.
 - Work comes from the Rust cutover project through `/implement`, one ticket per fresh session.
 - Rust test rename PRs record old and new paths and the ticket in their crate's page under [Test file renames](docs/records/test-renames.md). Add rows only to that crate's file; the index stays navigation.
-- A second review is required only when the change touches import, schema, backup and restore, Checkoff, send, or Accept and publication. Chad merges. See [Who merges](docs/development/definition-of-done.md#who-merges).
+- Every PR needs an independent GitHub approval. For import, schema, backup and restore, Checkoff, send, or Accept and publication, record what the reviewer checked for data loss. Chad merges. See [Who merges](docs/development/definition-of-done.md#who-merges).
 - For a change to the web UI or desktop app, attach a screenshot or video. The capture steps are in [Gate evidence](docs/contributing/gate-evidence.md).
 - When you stop with work in flight, push the branch and write what is true at that head in the PR description.
 - Write docs, comments, and PR text plainly: concrete facts, commands, and numbers, active voice, no filler. Before large or risky work, write the plan, list how it could fail, and get open decisions answered.

@@ -234,11 +234,12 @@ for (const sha of ['', 'HEAD', 'a'.repeat(40), '--help', 'a'.repeat(39)]) {
   });
 }
 
-test('replacement UI job tests and builds the UI package', () => {
+test('replacement UI job lints, tests and builds the UI package', () => {
   const job = webCI.jobs.ui;
   assert.equal(job.needs[0], 'changes');
   assert.match(job.if, /needs\.changes\.outputs\.ui != 'false'/);
-  const run = job.steps.find(step => step.name === 'Test and build the replacement UI').run;
+  const run = job.steps.find(step => step.name === 'Lint, test and build the replacement UI').run;
+  assert.match(run, /npm run lint --workspace @print-partner\/ui/);
   assert.match(run, /npm test -w @print-partner\/rust-client/);
   assert.match(run, /npm run test --workspace @print-partner\/ui/);
   assert.match(run, /npm run build --workspace @print-partner\/ui/);

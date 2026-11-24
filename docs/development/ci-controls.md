@@ -62,8 +62,8 @@ is a separate workflow. Rust cross-OS runs `rust (linux)` on a pull request, a
 push and a merge group, and builds Windows and macOS only on the nightly
 schedule or a manual dispatch ([Merge queue](ci.md#merge-queue)).
 [Web job selection](ci.md#web-job-selection) lists the `ui` paths and commands.
-This adds no required check and does not edit the ruleset snapshot. The
-independent `release-audit` job runs without path selection on every non-draft
+The required `ui` job fails if the selector fails. The independent, required
+`release-audit` job runs without path selection on every non-draft
 PR and on non-PR events. The workaround ratchet runs in `just ci`, not in a
 pull-request job. A test loads the ratchet's declarations and requires the
 filter's extension list to match. The audit job's pinned Node setup, version
@@ -72,21 +72,18 @@ assertion, read-only permissions and unconditional audit command are checked by
 
 `checkNodeLanes` permits only the exact `needs: [changes]` and `ui` output
 condition for the `ui` job. `job_runs()` understands that condition, including
-the Linux event clause. Merge groups are an exception to the rule that non-PR
-events select every kind: they do not select `web`. Chad approves these
-CI-control changes and merges them.
+the Linux event clause. Merge groups select `ui` without reading the diff.
+Chad reviews and merges CI-control changes.
 
 ## Cross-OS capacity
 
-Pull requests do not run Windows or macOS. The nightly schedule and a manual
-dispatch of Rust cross-OS build the workspace on `windows-latest` and `macos-26`.
+The nightly schedule and a manual dispatch of Rust cross-OS build the workspace
+on `windows-latest` and `macos-26`. Selected pull requests also run the advisory
+[`rust (windows tests)` job](ci.md#windows-tests-on-pull-requests).
 `ci:cross-os` does not select a job. A push to `main` and a merge group run
-`rust (linux)`, including nextest
-([Merge queue](ci.md#merge-queue)). Hosted nextest is four hash partitions; the
-required context is still the aggregate. The required contexts stay
-`actionlint`, `zizmor` and `rust (linux)`. Chad does not edit ruleset 25285698
-for GRE-1664. See
-[Cross-OS PR label](ci.md#cross-os-pr-label).
+`rust (linux)`, including nextest. Hosted nextest uses six hash partitions.
+The required status check is the aggregate `rust (linux)` job.
+See [Merge queue](ci.md#merge-queue) for the full list of required checks.
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch
 on main. Its minimum permissions are `actions: write` for cancellation,
@@ -167,27 +164,39 @@ Bump a major version in a ticketed PR that updates the manifest pin, `Cargo.lock
 The GitHub ruleset
 [main CI controls](https://github.com/Print-Partner/PrintPartner/rules/25285698), ID `25285698`,
 is active on the default branch, currently `main`.
-The [committed ruleset JSON](main-ci-controls.ruleset.json) records its configuration.
+The [committed ruleset JSON](main-ci-controls.ruleset.json) records the target configuration.
 It omits node IDs, timestamps, API links, and the current user's bypass capability.
 
 The ruleset has these protections:
 
 - Block branch deletion and force pushes.
 - Require a pull request and allow only squash merges.
-- Require GitHub Actions checks `actionlint`, `zizmor` and `rust (linux)`.
-  Those names are unchanged. `rust (windows)` and `rust (macos)` are the nightly workspace builds, not pull-request checks, and they are not required. Chad removed `Lint Evidence block` and `review-gate` on 2026-11-15. GRE-1647 deleted those workflows, the Claude review, and the evidence lint.
-- Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
-- Allow branches that are not up to date with `main`.
-- Keep the bypass list empty, with no standing admin or bot bypass.
+- Require six checks from GitHub Actions (integration `15368`). They are
+  `actionlint`, `zizmor`, `rust (linux)`, `ui`, `release-audit` and `rust image`.
+- Require one independent GitHub approval, dismiss stale approvals, and require
+  every review thread to be resolved. CODEOWNERS routes review requests to Chad
+  for protected paths. GitHub cannot count an author's own approval, so another
+  maintainer with repository write access must approve Chad's PRs.
+- Validate the combined branch in the squash merge queue and keep the bypass list empty.
 
-`rust (macos)` and `rust (windows)` are absent from the ruleset. They are the nightly build names, not required checks. See [Continuous integration](ci.md).
+Devin Review posts bug and security findings on ready PRs. Its check is advisory.
+The ruleset relies on GitHub approvals and CI, and Chad merges.
 
-Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10. GRE-1647 then deleted `review-gate` and the Claude review.
+### Apply the GitHub review cutover
 
-No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
-self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.
+1. Open [the ruleset editor](https://github.com/Print-Partner/PrintPartner/settings/rules/25285698)
+   as a repository administrator. Compare the live rules with the snapshot before saving.
+2. In one save, set required approvals to one, enable dismissal of stale
+   approvals, and replace `pp/score` with `ui`, `release-audit` and `rust image`.
+   Select GitHub Actions as the expected source for all six checks. Keep thread
+   resolution, the merge queue, branch protections and the empty bypass list.
+3. Verify the new requirements on an open PR. Approve the current diff after
+   review, confirm all required checks are green, and check the first merge queue
+   entry reports all six checks before it lands. Apply the settings before
+   merging the PR that removes the old status workflow.
 
-To apply the committed JSON to the live ruleset (admin only):
+An administrator can apply the reviewed JSON through the API after comparing it
+with the live ruleset:
 
 ```sh
 jq 'del(.id, .source, .source_type)' docs/development/main-ci-controls.ruleset.json \
@@ -198,8 +207,8 @@ To compare the snapshot with the live ruleset, run this read-only check from the
 
 ```sh
 gh api repos/Print-Partner/PrintPartner/rulesets/25285698 \
-  | jq -S 'del(.node_id, .created_at, .updated_at, ._links, .current_user_can_bypass)' \
-  | diff -u docs/development/main-ci-controls.ruleset.json -
+  | jq -S 'del(.node_id, .created_at, .updated_at, ._links, .current_user_can_bypass) | .bypass_actors //= []' \
+  | diff -u <(jq -S . docs/development/main-ci-controls.ruleset.json) -
 ```
 
 No diff means the normalized live response matches the snapshot. A diff needs review before updating the snapshot.
@@ -208,7 +217,7 @@ No diff means the normalized live response matches the snapshot. A diff needs re
 
 ## Turn on the merge queue
 
-The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All five required checks report on `merge_group` events; [Merge queue](ci.md#merge-queue) describes what each one does there. The queue is on: the rule below was added to ruleset `25285698` on 2026-11-09 (ruleset version `56963310`), and `main-ci-controls.ruleset.json` records it. Agents never change the ruleset.
+The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All six required checks report on `merge_group` events. [Merge queue](ci.md#merge-queue) describes what each one does there. The queue is on: the rule below was added to ruleset `25285698` on 2026-11-09 (ruleset version `56963310`), and `main-ci-controls.ruleset.json` records it. Agents never change the ruleset.
 
 The rule, as added (it changed nothing else in the ruleset):
 
@@ -218,9 +227,9 @@ The rule, as added (it changed nothing else in the ruleset):
 | `grouping_strategy` | `ALLGREEN` | Only passing combinations land. A failing group ejects its PR; read the log before you queue it again. |
 | `max_entries_to_build` | `2` | Each entry builds the full Linux Rust path on hosted runners. Hosted concurrency is the limit. |
 | `min_entries_to_merge`, `max_entries_to_merge`, `min_entries_to_merge_wait_minutes` | `1`, `5`, `1` | A lone PR is not held. Merge limits only batch the final merge and save no CI. |
-| `check_response_timeout_minutes` | `150` | Covers a full Linux and Windows run with hosted queueing. |
+| `check_response_timeout_minutes` | `150` | Covers the required checks with hosted queueing. |
 
-The required status checks and `strict_required_status_checks_policy: false` stay as they are; the queue replaces "branch must be up to date".
+The queue checks the combined commit, so `strict_required_status_checks_policy` stays false.
 
 To test the queue, queue two small PRs back to back and check that both land.
 
@@ -234,9 +243,8 @@ Phase 2 remains Chad's work and keeps GRE-635 open:
 1. Create and install a GitHub App for agents with contents, pull requests, and workflows write access, plus checks read access.
    Store its key in the VMs' secret store and switch agent PR authorship to the App.
    Chad owns credentials and their handling.
-2. Require code-owner review, dismiss stale approvals, require approval of the latest push, and require review threads to be resolved.
-   First test whether code-owner review is enforced with `required_approving_review_count: 0`.
-   If it is, only CODEOWNERS paths need Chad's approval. Otherwise, a count of one requires Chad to approve every PR.
+2. Add a second write-access maintainer to the relevant CODEOWNERS paths before evaluating required code-owner review.
+   Verify that a PR from either maintainer can receive the required approval.
 3. Test enforcement with the separate agent identity.
    A workflow PR must not merge without Chad's approval.
    A PR touching only `rust/` must merge on green checks if the review policy permits it.

@@ -117,6 +117,8 @@ The guard rejects other operations, missing or extra fields, a relative or missi
 
 The guard refuses pull-request merges, force pushes, pushes to `main`, release publishing or editing, tag pushes, and hook bypasses. It also refuses edits to real `.env` files, Git metadata, generated manifests, and the Claude Code settings and hooks that run the guard: `.claude/settings.json`, `.claude/settings.local.json`, and `.claude/hooks/`.
 
+The guard still recognizes the [historical scoring workflow](score-records.md). Follow [Who merges](definition-of-done.md#who-merges) for the current GitHub review process.
+
 One checkout is exempt, and no guard rule was removed. `PP_COORDINATOR_WORKTREE` must be an absolute path, it must be the git top level of the checkout, and that top level must sit outside `/persist/worktrees/t3`. From that checkout, and only from there, the guard allows `gh pr merge <number> --squash --match-head-commit <40-character sha>` and a command that names `pp-review-gate` or `pp-score`. A path in the guard's sensitive class still needs the two scores `scripts/merge-classes.json` requires. This process does not use that checkout. Chad merges.
 
 A scorer worktree is the one other exception, and it is narrower. It is a checkout whose Git top level has a branch named `t3/score-<pr>-<seat>-<yyyymmdd>` checked out, the branch the score tail gives each scorer thread, with `GIT_DIR` and `GIT_WORK_TREE` unset. From there a command may name `pp-score`, so the scorer posts its own record as a new comment (`gh pr comment`, `gh issue comment`, or a `gh api` POST to `issues/<n>/comments`). Everything else stays refused there: naming `pp-review-gate`, editing or deleting a comment, and merging. Any other branch, including `t3/score-x`, is a lane. Under GRE-1280's threat model the branch name is enough; it does not stop an agent that renames its branch to get past the guard.
@@ -196,7 +198,7 @@ Before large or risky work, write the plan down and challenge it. Risky work inc
 
 ## Review and merge
 
-Required checks must be green on the head, and every review thread resolved. A second review is required only for a data-loss change. Chad merges. See [Who merges](definition-of-done.md#who-merges).
+Required checks must be green, an independent maintainer must approve in GitHub, and every review thread must be resolved. Review data-loss changes for failure and recovery paths. Chad merges in GitHub. See [Who merges](definition-of-done.md#who-merges).
 
 Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that quotes them verbatim; see [Fixes only](definition-of-done.md#fixes-only). `linear-pr-sync.yml` sets the ticket states that follow a PR, so don't move them yourself.
 

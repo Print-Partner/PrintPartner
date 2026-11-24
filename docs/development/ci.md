@@ -4,7 +4,7 @@ A pull request, a push to `main`, and a merge group run four parts (GRE-1649):
 
 1. `actionlint` and `zizmor` in `.github/workflows/actionlint.yml`, unchanged.
 2. `rust (linux)` in `.github/workflows/rust-cross-os.yml`: `cargo fmt`, `cargo clippy -D warnings`, and `cargo nextest run` on the default build. After GRE-1646 that default is the Rust-only build. The commands do not pass `--features desktop_rebuild` or `--no-default-features`. On `ubuntu-latest` (GRE-1664, rebalanced in GRE-1892) nextest runs as six `hash` partitions, and fmt plus clippy run on a separate part. The required check is the aggregate, still named `rust (linux)`.
-3. `ui` in `.github/workflows/web-ci.yml`: tests and a build of the replacement UI and the generated Rust client, when those inputs change.
+3. `ui` in `.github/workflows/web-ci.yml`: replacement UI lint, UI and generated Rust client tests, and a build of the replacement UI. The same workflow runs `release-audit` on every ready PR, push and merge group.
 4. `rust image` and `rust image (arm64)` in `.github/workflows/rust-image.yml`: build `Dockerfile.rust` and run `scripts/docker-rust-smoke.py`, which includes sign-in, when image inputs change on a pull request (and on every push to `main` and merge group). `rust image` runs on `ubuntu-latest` (amd64) and `rust image (arm64)` on the native `ubuntu-24.04-arm` runner, so each architecture is built and run on its own hardware (GRE-1295).
 
 No pull-request job runs Node parity, the old UI's test or build jobs, or the Node desktop. The Linux Rust job still runs `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py`, because `pp-compat` embeds that manifest. That step is a compile input, not the old UI's test job. Desktop workflows (`desktop-contracts.yml`, `desktop-deny.yml`, `desktop-e2e.yml`, `desktop-webkit.yml`, `desktop-runtime.yml`, `desktop-fleet-rust.yml`, `desktop-packaged-smoke.yml`, `desktop-native-macos.yml`) stay in the tree and start only from `workflow_dispatch`. Desktop CI returns in M5.
@@ -43,7 +43,7 @@ When the Linux job runs on a pull request, nextest uses the affected-crate filte
 
 #### Cross-OS PR label
 
-`ci:cross-os` does not select a pull-request job. Windows and macOS compile on the nightly build and on a manual dispatch of Rust cross-OS. The older `macos`, `ci:windows` and `ci:full` labels do not select a job either. The required-check set stays `actionlint`, `zizmor` and `rust (linux)`. Chad does not change ruleset 25285698 for this cut or for GRE-1664. `docs/development/main-ci-controls.ruleset.json` records that set. Chad removed `Lint Evidence block` and `review-gate` from the ruleset on 2026-11-15. The part jobs are not required. Their workflow names are `rust (linux) check` and `rust (linux) 1/6` through `rust (linux) 6/6` on a hosted runner, and `rust (linux) 1/1` on pp-local.
+`ci:cross-os` does not select a pull-request job. Windows and macOS compile on the nightly build and on a manual dispatch of Rust cross-OS. The older `macos`, `ci:windows` and `ci:full` labels do not select a job either. The Linux aggregate is required. Its part jobs report as `rust (linux) check` and `rust (linux) 1/6` through `rust (linux) 6/6` on a hosted runner, and `rust (linux) 1/1` on pp-local.
 
 A push to `main` runs the same four parts, with nextest's filter `all()` (owner decision, 2026-11-12, GRE-1476, kept so a push does not wait on a macOS runner). A merge group runs the same Linux job, including nextest, on `ubuntu-latest` ([Merge queue](#merge-queue)). A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)).
 
@@ -59,21 +59,21 @@ manual dispatch and reusable-workflow calls. Its jobs are `release-audit` and
 image is `.github/workflows/rust-image.yml`, not this file.
 
 The `changes` job runs `ci-path-filter.py ui`. The `ui` job needs that output.
-A failed selector or an unknown diff keeps the job selected. Draft PRs skip
+The job fails if the selector fails, and runs the full UI checks if the diff is unknown. Draft PRs skip
 before runner allocation. The `ui` kind covers `web/apps/ui/`, `web/test/`, shared packages
 including `rust-client`, web scripts and configuration, fixtures, manifests,
 scripts (other than the non-build governance, sync and evidence scripts) and CI inputs. The job runs on Node 24.21.0:
 
 ```sh
 npm ci
+npm run lint --workspace @print-partner/ui
 npm test -w @print-partner/rust-client
 npm run test --workspace @print-partner/ui
 npm run build --workspace @print-partner/ui
 ```
 
-`npm run build` for `@print-partner/ui` typechecks and runs Vite. The job does
-not lint and does not run `test:browser`. `just ci` still does both, on Node
-24.21.0, in the local `ui-package` step.
+`npm run build` for `@print-partner/ui` typechecks and runs Vite. The local
+`ui-package` step of `just ci` also runs `test:browser`.
 
 The `web` kind remains in `scripts/ci-path-filter.py` so its tests stay, and no
 job calls it. It covers non-Markdown files under `web/`, `scripts/`, `fixtures/`,
@@ -95,10 +95,8 @@ forbidden text, broken local links, the root `LICENSE`, `.gitignore` and
 read-only contents permission and no npm install.
 
 Merge groups select `rust`, `rust-image`, `actions`, `windows`, `macos` and `ui`, but not
-`web`. The `ui` job therefore runs in the queue when its inputs change, and on
-a merge group the selector returns true for `ui` without reading the diff.
-Other non-PR events select every kind. Required check names stay `actionlint`,
-`zizmor` and `rust (linux)`.
+`web`. The selector returns true for `ui` on every merge group without reading
+the diff. Other non-PR events select every kind. See [required checks](#merge-queue).
 
 ## Agent guidance check
 
@@ -344,7 +342,7 @@ The nightly job installs the toolchain and Node 24.21.0, writes the same manifes
 
 The macOS volume exists because the default macOS `TMPDIR` breaks three kinds of test. Its paths are too long for Unix socket names, it is under the `/var` symbolic link that no-follow opens refuse, and it treats `Straße.stl` and `STRASSE.stl` as one name.
 
-`rust (linux)` is a required check on `main`. `rust (windows)` and `rust (macos)` are the nightly build names. They are not required, and a pull request does not report them. `rust (windows tests)` is not required either. [Settings for Chad](ci-controls.md#settings-for-chad) lists the ruleset. The required names are unchanged: `actionlint`, `zizmor`, `rust (linux)`.
+`rust (linux)` is a required check on `main`. `rust (windows)` and `rust (macos)` are nightly builds. `rust (windows tests)` is an optional PR check. [CI controls](ci-controls.md#settings-for-chad) lists the ruleset.
 
 ## Run the required checks with one command
 
@@ -397,7 +395,7 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `fmt` | Step 4 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `rust-deps` | Scanner negative controls and `cargo machete rust`, pinned to 0.9.2 | `cargo-machete` in `rust-deps-weekly.yml` |
 | `web-assets` | Desktop web build and `rust/bundle-manifest.json` | `rust (linux)` (required) |
-| `ui-package` | `lint`, `test`, `build` and `test:browser` for `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. `test:browser` exits 77 for a missing browser engine, which the step reports as SKIP. The hosted `ui` job runs the test and the build on Node 24.21.0 and does not lint or open a browser. | `ui` in `web-ci.yml` for the test and the build |
+| `ui-package` | `lint`, `test`, `build` and `test:browser` for `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. `test:browser` exits 77 for a missing browser engine, which the step reports as SKIP. | `ui` in `web-ci.yml` for lint, tests and build |
 | `workaround-ratchet` | `scripts/workaround-ratchet.mjs` and its tests, which cap `TODO`, `eslint-disable` and Rust `#[allow]` markers, on Node 22.23.3. It runs after `web-assets`, which installs its parser. | None. Local only. |
 | `duplication` | jscpd negative controls and the five-area duplicated-token baseline, on Node 22.23.3 | None. Local only; there is no hosted duplication job. |
 | `clippy`, `nextest` | Clippy and nextest on the default build, with the Linux `--workspace` scope | `rust (linux)` (required) |
@@ -550,7 +548,7 @@ failure, then 77, then 0. The step declares 77 as its
 `skip_status`, so the summary shows `SKIP ui-package` and `--fail-on-skip`
 fails.
 
-The hosted `ui` job runs the package tests and `npm run build --workspace @print-partner/ui` on Node 24.21.0, and `npm test -w @print-partner/rust-client`. It does not lint and does not run `test:browser`. The root `npm test` and `npm run build` scripts still list the old workspaces by name, so they do not run this package. Pull-request CI does not run those root scripts.
+The hosted `ui` job runs the package lint, tests and build on Node 24.21.0, and `npm test -w @print-partner/rust-client`. The local `ui-package` step also runs the browser suite. The root `npm test` and `npm run build` scripts still list the old workspaces by name, so they do not run this package. Pull-request CI does not run those root scripts.
 
 The desktop does not ship `apps/ui`, so `rust/bundle-manifest.json` does not
 measure it. You can run these commands after building the manifest; Vitest's
@@ -851,8 +849,11 @@ GitHub's merge queue is available because the repository belongs to the Print-Pa
 | --- | --- | --- |
 | `actionlint`, `zizmor` | `actionlint.yml` | Both linters run in full. `ci-path-filter.py` selects the `actions` kind on merge groups, because the group's diff against `main` is not the PR's diff. |
 | `rust (linux)` | `rust-cross-os.yml` | The aggregate. On `ubuntu-latest` it waits for fmt, clippy and six nextest hash partitions. The filter is `all()` because a merge group selects the `rust` kind without reading the PR diff. |
+| `ui` | `web-ci.yml` | Lints, tests and builds the replacement UI and tests the generated Rust client. |
+| `release-audit` | `web-ci.yml` | Audits public release inputs on the combined commit. |
+| `rust image` | `rust-image.yml` | Builds the amd64 Rust-only image and smoke-tests sign-in and the replacement UI. |
 
-`rust (windows)` and `rust (macos)` are the nightly build names. Neither runs on merge groups, and neither does `rust (windows tests)`. `ui`, `rust image` and `rust image (arm64)` also run on a merge group. They are not required checks.
+`rust image (arm64)` also runs in the queue and reports separately as an advisory check. Use the labelled [Daily loop](#daily-loop) run for changes that cross the cutover workflow.
 
 GRE-1466 (2026-11-12) kept merge groups to fmt and clippy because two measured groups took 47 and 49 minutes. GRE-1649 puts nextest back on the merge group. GRE-1664 splits that hosted nextest into four hash partitions so a warm pull request finishes in under 20 minutes. The commands are still one default-feature pass.
 

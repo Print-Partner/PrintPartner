@@ -116,6 +116,8 @@ async fn moved_to_the_printer(origin: &str, cookie: &str, moonraker: &Value) {
     let mut expected = view.clone();
     expected["name"] = json!("Moved");
     expected["base_url"] = moonraker["base_url"].clone();
+    assert_ne!(moved["revision"], view["revision"]);
+    expected["revision"] = moved["revision"].clone();
     assert_eq!((code, &moved), (StatusCode::OK, &expected), "{text}");
     assert!(!text.contains(SECRET), "{text}");
     tested_and_polled(origin, cookie, id).await;
@@ -270,7 +272,7 @@ async fn integration_setup_in_child() {
         view,
         json!({"id": id, "kind": "moonraker", "name": "Voron", "enabled": true,
             "base_url": printer.url(), "username": null,
-            "has_api_key": true, "has_password": false})
+            "has_api_key": true, "has_password": false, "revision": view["revision"]})
     );
 
     // A Spoolman integration created here is one the default setting takes.
@@ -314,6 +316,126 @@ async fn integration_setup_in_child() {
         assert!(line.starts_with("GET "), "the printer saw {line}");
     }
     key_is_in_no_file_but_the_database(&data);
+}
+
+#[tokio::test]
+async fn spoolman_patch_refuses_a_stale_revision() {
+    let data = temporary("spoolman-revision");
+    run_in_child("integration_setup::spoolman_revision_in_child", &data).await;
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn spoolman_revision_in_child() {
+    const OLD_URL: &str = "http://old-spoolman.invalid";
+    const NEW_URL: &str = "http://new-spoolman.invalid";
+    const OLD_REVISION: &str = "2099-01-01T00:00:00.000Z";
+    const ROUTE: &str = "/api/v2/integrations/spool-1";
+    let data = proof_data();
+    // A stored clock ahead of the writer's clock makes the collision case
+    // deterministic, regardless of how long each request takes.
+    let rows = json!([{"id": "spool-1", "type": "spoolman", "name": "Spools",
+        "config": {"base_url": OLD_URL, "enabled": false, "api_key": "old-key-canary"},
+        "created_at": OLD_REVISION, "updated_at": OLD_REVISION}]);
+    seed_settings(&data, &[("integrations", rows)]);
+    let (runtime, origin, desktop) = start_rust_only(&data).await;
+    let first = signed_in(&origin, &desktop, 1).await;
+    let second = signed_in(&origin, &desktop, 2).await;
+    let a = spoolman_read(&origin, &first).await;
+    let b = spoolman_read(&origin, &second).await;
+    assert_eq!(a["revision"], OLD_REVISION);
+    assert_eq!(a, b);
+
+    let patch = json!({"expected_revision": a["revision"], "base_url": NEW_URL, "api_key": SECRET});
+    let (status, moved, text) = call(&origin, &first, "PATCH", ROUTE, Some(patch)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(moved["revision"], "2099-01-01T00:00:00.001Z");
+    assert_eq!(moved["base_url"], NEW_URL);
+    assert_redacted_spoolman(&text);
+
+    for patch in [
+        json!({"expected_revision": b["revision"], "base_url": OLD_URL, "api_key": "stale-key-canary"}),
+        json!({"expected_revision": b["revision"], "api_key": null}),
+    ] {
+        let (status, problem, text) = call(&origin, &second, "PATCH", ROUTE, Some(patch)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{text}");
+        assert_eq!(problem["code"], "integration_changed");
+        assert!(!text.contains(NEW_URL) && !text.contains(OLD_REVISION));
+        assert_redacted_spoolman(&text);
+    }
+    let current = spoolman_read(&origin, &second).await;
+    assert_eq!(current, moved);
+    let stored = super::farm_reads::settings_rows(&data).unwrap();
+    assert!(stored.contains(&format!(
+        r#""base_url":"{NEW_URL}","enabled":false,"api_key":"{SECRET}""#
+    )));
+
+    let stranger = format!("{desktop}; pp_session=not-a-session");
+    for (path, revision) in [
+        (ROUTE, &b["revision"]),
+        (ROUTE, &current["revision"]),
+        ("/api/v2/integrations/missing", &current["revision"]),
+    ] {
+        let patch = json!({"expected_revision": revision, "name": "Unauthorized"});
+        let (status, _, text) = call(&origin, &stranger, "PATCH", path, Some(patch)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+        assert!(
+            !text.contains("integration_changed") && !text.contains(revision.as_str().unwrap())
+        );
+        assert_redacted_spoolman(&text);
+    }
+
+    // Rotating only the key changes the revision even though has_api_key
+    // and the rest of the public integration data stay the same.
+    let patch = json!({"expected_revision": current["revision"], "api_key": "rotated-key-canary"});
+    let (status, rotated, text) = call(&origin, &first, "PATCH", ROUTE, Some(patch)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(rotated["revision"], "2099-01-01T00:00:00.002Z");
+    assert_eq!(rotated["has_api_key"], true);
+    let mut expected = current.clone();
+    expected["revision"] = rotated["revision"].clone();
+    assert_eq!(rotated, expected);
+    assert_redacted_spoolman(&text);
+    let patch = json!({"expected_revision": current["revision"], "api_key": null});
+    let (status, problem, _) = call(&origin, &second, "PATCH", ROUTE, Some(patch)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(problem["code"], "integration_changed");
+
+    let patch = json!({"name": "Older client"});
+    let (status, renamed, text) = call(&origin, &second, "PATCH", ROUTE, Some(patch)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(renamed["name"], "Older client");
+    assert_eq!(renamed["base_url"], NEW_URL);
+    assert_eq!(renamed["revision"], "2099-01-01T00:00:00.003Z");
+    assert_redacted_spoolman(&text);
+    let persisted = spoolman_read(&origin, &first).await;
+    assert_eq!(persisted, renamed);
+    let stored = super::farm_reads::settings_rows(&data).unwrap();
+    assert!(stored.contains(r#""api_key":"rotated-key-canary""#));
+    shut_down(runtime).await;
+}
+
+async fn spoolman_read(origin: &str, cookie: &str) -> Value {
+    let (status, body, text) = call(origin, cookie, "GET", CREATED, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_redacted_spoolman(&text);
+    body["integrations"][0].clone()
+}
+
+fn assert_redacted_spoolman(text: &str) {
+    for secret in [
+        SECRET,
+        "old-key-canary",
+        "stale-key-canary",
+        "rotated-key-canary",
+    ] {
+        assert!(!text.contains(secret), "response includes a key");
+    }
+    assert!(
+        !text.contains(r#""api_key""#),
+        "response includes the key field"
+    );
 }
 
 #[tokio::test]

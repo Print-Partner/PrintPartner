@@ -43,6 +43,7 @@ pub mod code {
     pub const INTEGRATION_NOT_FOUND: &str = ProblemCode::IntegrationNotFound.as_str();
     pub const INTEGRATION_LIMIT: &str = ProblemCode::IntegrationLimit.as_str();
     pub const INTEGRATION_NOT_EDITABLE: &str = ProblemCode::IntegrationNotEditable.as_str();
+    pub const INTEGRATION_CHANGED: &str = ProblemCode::IntegrationChanged.as_str();
     pub const INTEGRATIONS_UNREADABLE: &str = ProblemCode::IntegrationsUnreadable.as_str();
     pub const INVALID_PRINTER: &str = ProblemCode::InvalidPrinter.as_str();
     pub const PRINTER_NOT_FOUND: &str = ProblemCode::PrinterNotFound.as_str();
@@ -96,6 +97,8 @@ pub struct CreateIntegrationRequest {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UpdateIntegrationRequest {
+    /// Revision from the view being edited. Absent or null skips the check.
+    pub expected_revision: Option<String>,
     pub name: Option<String>,
     pub base_url: Option<String>,
     pub enabled: Option<bool>,
@@ -137,6 +140,12 @@ pub struct IntegrationView {
     pub username: Option<String>,
     pub has_api_key: bool,
     pub has_password: bool,
+    /// Opaque precondition for PATCH. Always sent, null for a kept kind.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
+    )]
+    pub revision: Option<String>,
 }
 
 /// `GET /api/v2/integrations` body: every stored integration in stored order,
@@ -158,6 +167,7 @@ impl From<IntegrationSummary> for IntegrationView {
             username: summary.username,
             has_api_key: summary.has_api_key,
             has_password: summary.has_password,
+            revision: summary.revision,
         }
     }
 }
@@ -246,6 +256,7 @@ async fn update(
     };
     let secret = |sent: Option<Option<String>>| sent.map(|value| value.map(Secret::new));
     let patch = IntegrationPatch {
+        expected_revision: request.expected_revision,
         name: request.name,
         base_url: request.base_url,
         enabled: request.enabled,
@@ -315,6 +326,10 @@ impl ToProblem for (&PrinterSetupError, &Wording) {
             PrinterSetupError::NotEditable => conflict((
                 "This kind of integration cannot be edited here",
                 ProblemCode::IntegrationNotEditable,
+            )),
+            PrinterSetupError::IntegrationChanged => conflict((
+                "This integration changed since it was read. Reload it before saving.",
+                ProblemCode::IntegrationChanged,
             )),
             PrinterSetupError::SlotHoldsFilament => conflict((
                 "A filament slot this removes still holds filament. Unload it first.",

@@ -138,6 +138,7 @@ problem_codes! {
     IntegrationNotFound = "integration_not_found";
     IntegrationLimit = "integration_limit";
     IntegrationNotEditable = "integration_not_editable";
+    IntegrationChanged = "integration_changed";
     IntegrationsUnreadable = "integrations_unreadable";
     InvalidPrinter = "invalid_printer";
     PrinterNotFound = "printer_not_found";

@@ -2431,6 +2431,7 @@ pub(crate) mod codegen {
             username: filled.then(|| "maker".into()),
             has_api_key: false,
             has_password: filled,
+            revision: filled.then(|| "2026-11-07T05:00:00.000Z".into()),
         };
         let list = |integrations| IntegrationList { integrations };
         let mut cases = vec![
@@ -2500,6 +2501,12 @@ pub(crate) mod codegen {
             ("address", json!({"base_url": "http://fixture.invalid"})),
             ("pause", json!({"name": "Voron", "enabled": false})),
             ("password", json!({"password": "fixture-password"})),
+            (
+                "revision",
+                json!({"expected_revision": "2026-11-07T05:00:00.000Z", "api_key": "fixture-key"}),
+            ),
+            ("null-revision", json!({"expected_revision": null})),
+            ("revision-not-text", json!({"expected_revision": 1})),
             ("clear", json!({"api_key": null, "password": null})),
             ("kind", json!({"kind": "prusalink"})),
             ("enabled-not-boolean", json!({"enabled": "no"})),

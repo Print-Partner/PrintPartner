@@ -71,10 +71,40 @@ fn an_edit_changes_what_it_sends_and_keeps_the_rest() {
     // With no stored secret, the address changes alone. An edit that sends
     // nothing answers the stored integration.
     let moved = patch(None, Some("http://moved.test"));
-    let moved = fixture.change(&created.id, moved).unwrap();
+    let mut moved = fixture.change(&created.id, moved).unwrap();
     assert_eq!(moved.base_url.as_deref(), Some("http://moved.test"));
-    let same = fixture.change(&created.id, IntegrationPatch::default());
-    assert_eq!(same.unwrap(), moved);
+    let same = fixture
+        .change(&created.id, IntegrationPatch::default())
+        .unwrap();
+    assert_ne!(same.revision, moved.revision);
+    moved.revision = same.revision.clone();
+    assert_eq!(same, moved);
+}
+
+#[test]
+fn a_malformed_legacy_timestamp_is_redacted_and_still_allows_a_guarded_edit() {
+    let fixture = Fixture::new();
+    let old = json!([{"id": "spool-1", "type": "spoolman", "name": "Spools", "created_at": "",
+        "config": {"base_url": "http://spool.test", "enabled": true, "api_key": "legacy-key-canary"},
+        "updated_at": "legacy-key-canary"}]);
+    fixture.seed(&old.to_string());
+    let list = fixture
+        .client
+        .list_integrations(fixture.session(), &IDLE, WAIT)
+        .unwrap();
+    let revision = list[0].revision.as_deref();
+    assert_eq!(revision, Some("legacy"));
+    let edited = fixture
+        .change(
+            "spool-1",
+            IntegrationPatch {
+                expected_revision: list[0].revision.clone(),
+                ..patch(Some("Renamed"), None)
+            },
+        )
+        .unwrap();
+    assert_ne!(edited.revision.as_deref(), revision);
+    assert_eq!(row(&fixture)["config"], old[0]["config"]);
 }
 
 #[test]

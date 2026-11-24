@@ -200,14 +200,14 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
 
-## Integration create, edit and delete routes (GRE-1439, GRE-1481)
+## Integration create, edit and delete routes (GRE-1439, GRE-1481, GRE-1938)
 
 `POST /api/v2/integrations` adds a Moonraker, PrusaLink or Spoolman integration
 and `DELETE /api/v2/integrations/{id}` removes one of any kind, for the
 replacement Settings screen. They are `createIntegration` and
 `deleteIntegration` in the generated `@print-partner/rust-client`. Both answer
 `200` with an `IntegrationView`: `id`, `kind`, `name`, `enabled`, `base_url`,
-`username`, `has_api_key` and `has_password`. Delete answers the view it
+`username`, `has_api_key`, `has_password` and `revision`. Delete answers the view it
 removed. No response or problem carries an API key or a password.
 
 - They mount only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
@@ -226,6 +226,14 @@ removed. No response or problem carries an API key or a password.
   stored value; for the other three, null keeps it. `kind` is not a field: an
   integration's kind never changes. Only the fields a request sends are
   checked, so a row that predates a check can still be edited.
+- To guard an edit, read the integration from `GET /api/v2/integrations`
+  and send its `revision` as `expected_revision` in the PATCH body. Treat the
+  value as an opaque string scoped to the integration ID. It changes on every
+  successful PATCH, including credential-only changes, and the response and
+  later reads return the new value. The writer authorizes first and compares
+  the revision in the same transaction as the edit. On `integration_changed`,
+  reload and let the user review the latest values before saving again. Absent
+  or null `expected_revision` keeps the earlier unconditional PATCH behavior.
 - An edit that changes `base_url` must also send each stored `api_key` and
   `password`, as the value to use at the new address or as null. Without that
   the stored secret would be sent to whatever host the caller named, so the
@@ -254,6 +262,7 @@ removed. No response or problem carries an API key or a password.
 | No stored integration has that id | `404` | `integration_not_found` |
 | The installation already has 64 integrations | `409` | `integration_limit` |
 | An edit names an integration of a kind that cannot be edited here | `409` | `integration_not_editable` |
+| The supplied `expected_revision` differs from the stored revision. The address and credentials stay as stored. | `409` | `integration_changed` |
 | The stored `integrations` document is not the typed shape. Every write is refused and the stored text is left as it is. | `500` | `integrations_unreadable` |
 | The write could not start before its deadline | `503` | `transaction_unavailable` |
 
@@ -281,9 +290,9 @@ Settings screen, in stored order. It is `listIntegrations` in the generated
 `@print-partner/rust-client` and answers `200` with
 `{"integrations": [IntegrationView, ...]}`, the same view the create and
 delete routes answer. Kinds those routes cannot create (Bambu, Home Assistant,
-AI assistant, slicer sidecar) are listed too, with `base_url: null`, so they
-can be deleted. No secret is read into the answer: a view says only whether an
-API key or password is set.
+AI assistant, slicer sidecar) are listed too, with `base_url: null` and
+`revision: null`, so they can be deleted. A view reports only whether an API
+key or password is set.
 
 - Same mount, gate and credential proof as create and delete; storage reads
   through the read seam (`SettingsClient::read`), so the credential check and

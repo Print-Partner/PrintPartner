@@ -41,7 +41,7 @@ const printer = (id: string, name: string, integration: Printer["integration"]):
   loaded_filaments: [],
 });
 const VORON = printer("p-1", "Voron", { id: "i-1", kind: "moonraker" });
-const VIEW = { id: "i-9", kind: "moonraker", name: "Micron", enabled: true, base_url: "http://micron.test", username: null, has_api_key: true, has_password: false };
+const VIEW = { id: "i-9", kind: "moonraker", name: "Micron", enabled: true, base_url: "http://micron.test", username: null, has_api_key: true, has_password: false, revision: "fixture-revision" };
 const CONFIG = { id: "p-9", name: "Micron", model: "Micron+", bed_width_mm: 180, bed_depth_mm: 180, bed_height_mm: 160, margin_mm: 4, max_filament_slots: 1, integration_id: "i-9" };
 const PROBE = { kind: "moonraker", reachable: true, credentials_needed: false, reason: "Printer responded successfully.", capabilities: ["status"] };
 const LIST = "GET /api/v2/printers";

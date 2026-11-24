@@ -67,6 +67,13 @@ pub enum Conflict {
         source_part_ids: Vec<i64>,
         target_part_id: usize,
     },
+    TargetMissing {
+        source_part_id: i64,
+    },
+    UnsupportedPartDecision {
+        source_part_id: i64,
+        target_part_id: usize,
+    },
     ConcurrentDecision {
         source_part_id: i64,
         target_part_id: usize,
@@ -78,6 +85,10 @@ impl Conflict {
         match self {
             Self::SourceIdentity { source_part_id, .. } => (*source_part_id, "source_identity"),
             Self::TargetAmbiguous { source_part_id, .. } => (*source_part_id, "target_ambiguous"),
+            Self::TargetMissing { source_part_id } => (*source_part_id, "target_missing"),
+            Self::UnsupportedPartDecision { source_part_id, .. } => {
+                (*source_part_id, "unsupported_part_decision")
+            }
             Self::TargetCollision {
                 source_part_ids, ..
             } => (source_part_ids[0], "target_collision"),
@@ -167,6 +178,34 @@ impl Source<'_> {
             }));
         }
         Ok(None)
+    }
+}
+
+pub(super) fn replace_open(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    source: &Source<'_>,
+) -> Result<bool> {
+    let closed = tx.execute(
+        "UPDATE plan_drafts SET state='abandoned',lifecycle_version=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=?",
+        params![source.generation, tenant, profile, source.id, source.version, source.digest],
+    )? == 1;
+    if closed {
+        crate::domain_events::draft_changed(tx, tenant, profile, source.id)?;
+    }
+    Ok(closed)
+}
+
+impl<'a> Source<'a> {
+    pub(super) fn observed_open(id: i64, version: i64, digest: &'a str) -> Self {
+        Self {
+            id,
+            state: SourceState::Open,
+            version,
+            generation: version + 1,
+            digest,
+        }
     }
 }
 
@@ -314,7 +353,14 @@ pub(super) fn rebase(connection: &mut Connection, args: Args<'_>) -> Result<Reba
     )?;
     let now = accepted_parts(&tx, &tenant, profile, &base["baseRevisionId"], &mut budget)?;
     tx.commit()?;
-    let conflicts = merge(&current, &old, &now, &mut prepared, &mut budget)?;
+    let conflicts = merge(
+        &current,
+        &old,
+        &now,
+        &mut prepared,
+        MergePolicy::Legacy,
+        &mut budget,
+    )?;
     if !conflicts.is_empty() {
         return finished(RebaseOutcome::MergeConflicts { conflicts });
     }
@@ -342,18 +388,10 @@ pub(super) fn rebase(connection: &mut Connection, args: Args<'_>) -> Result<Reba
         if captured.fingerprint != prepared.capture.fingerprint {
             return Ok(RebaseOutcome::InputsChanged);
         }
-        if open
-            && tx.execute(
-                "UPDATE plan_drafts SET state='abandoned',lifecycle_version=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=?",
-                params![source.generation, tenant, profile, source.id, source.version, source.digest],
-            )? != 1
-        {
+        if open && !replace_open(tx, &tenant, profile, &source)? {
             return Ok(RebaseOutcome::SourceConflict {
                 draft: snapshot(&current)?,
             });
-        }
-        if open {
-            crate::domain_events::draft_changed(tx, &tenant, profile, source.id)?;
         }
         let id = insert_snapshot(
             tx,
@@ -484,7 +522,7 @@ fn load(
 
 /// Node's `digestPlanInputs` comparison: the input fields, stably sorted by
 /// Source.
-fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
+pub(super) fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
     let mut inputs: Vec<_> = inputs
         .iter()
         .map(|input| model::project(input, model::INPUT_FIELDS))
@@ -546,6 +584,18 @@ fn accepted_parts(
     Ok(parts)
 }
 
+pub(super) fn merge_refresh(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    source: &Draft,
+    fresh: &mut preparation::PreparedDraftSnapshot,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<Vec<Conflict>> {
+    let base = accepted_parts(tx, tenant, profile, &fresh.base["baseRevisionId"], budget)?;
+    merge(source, &base, &base, fresh, MergePolicy::Refresh, budget)
+}
+
 /// Where a draft's Parts come from: each layer's Source, or `None` when two
 /// inputs share the layer, and the Parts by Source and key or artifact.
 struct Evidence {
@@ -604,16 +654,44 @@ impl Evidence {
             .get(&(source, artifact.to_owned()))
             .map_or(&[], Vec::as_slice)
     }
+
+    fn refresh_targets(
+        &self,
+        fresh: &Self,
+        source: i64,
+        part: &DraftPart,
+    ) -> Result<(Vec<usize>, bool)> {
+        let key = text(part, "partKey")?;
+        let by_key = fresh.keyed(source, key);
+        let mut ambiguous = !by_key.is_empty() && self.keyed(source, key).len() != 1;
+        let mut targets = by_key.to_vec();
+        if let Some(digest) = part["artifactDigest"].as_str()
+            && self.tracked.contains(&source)
+            && fresh.tracked.contains(&source)
+        {
+            let by_artifact = fresh.artifacts(source, digest);
+            ambiguous |= !by_artifact.is_empty() && self.artifacts(source, digest).len() != 1;
+            targets.extend_from_slice(by_artifact);
+            targets.sort_unstable();
+            targets.dedup();
+        }
+        Ok((targets, ambiguous))
+    }
 }
 
-/// Node's `mergeRebasedPlanDraft`: replays the source draft's inclusion and
-/// quantity decisions onto the fresh preparation and refreshes its digest.
-/// Returns the conflicts instead when any decision has no single target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MergePolicy {
+    Legacy,
+    Refresh,
+}
+
+/// Replays inclusion and quantity decisions onto the prepared Parts.
 fn merge(
     source: &Draft,
     old: &[Accepted],
     now: &[Accepted],
     fresh: &mut preparation::PreparedDraftSnapshot,
+    policy: MergePolicy,
     budget: &mut observation::PreparationBudget<'_>,
 ) -> Result<Vec<Conflict>> {
     let old_by_id: HashMap<_, _> = old.iter().map(|part| (part.id, part)).collect();
@@ -630,15 +708,20 @@ fn merge(
     };
     let mut order: Vec<_> = (0..source.parts.len()).collect();
     order.sort_by_key(|index| source.parts[*index]["id"].as_i64());
+    const FIELDS: [Field; 2] = [Field::Included, Field::QuantityOverride];
     let mut decisions = Vec::new();
-    for &index in &order {
+    for index in order {
         budget.check()?;
         let part = &source.parts[index];
-        for field in [Field::Included, Field::QuantityOverride] {
+        let mut fields = Vec::new();
+        for field in FIELDS {
             let new_included = field == Field::Included && part["baseRevisionPartId"].is_null();
             if new_included || part[field.key()] != baseline(part, field)? {
-                decisions.push((index, field));
+                fields.push(field);
             }
+        }
+        if !fields.is_empty() {
+            decisions.push((index, fields));
         }
     }
     if decisions.is_empty() {
@@ -667,11 +750,9 @@ fn merge(
                 .push(index);
         }
     }
-    let mut decided: Vec<_> = decisions.iter().map(|(index, _)| *index).collect();
-    decided.dedup();
     let mut targets = Vec::<(usize, usize)>::new();
     let mut conflicts = Vec::new();
-    for index in decided {
+    for &(index, _) in &decisions {
         budget.check()?;
         let part = &source.parts[index];
         let source_part_id = num(part, "id")?;
@@ -682,43 +763,42 @@ fn merge(
             });
             continue;
         };
-        let projection = part["baseRevisionPartId"]
-            .as_i64()
-            .and_then(|id| old_by_id.get(&id)?.projection)
-            .filter(|projection| {
-                old_projections.get(projection) == Some(&1)
-                    && now_projections.get(projection) == Some(&1)
-            });
-        let mut candidates = projection
-            .and_then(|projection| fresh_by_projection.get(&projection))
-            .cloned()
-            .unwrap_or_default();
-        let mut ambiguous = false;
-        if candidates.is_empty() {
-            let key = text(part, "partKey")?;
-            let found = fresh_evidence.keyed(source_id, key);
-            ambiguous = !found.is_empty()
-                && !(source_evidence.keyed(source_id, key).len() == 1 && found.len() == 1);
-            candidates = found.to_vec();
-        }
-        if let Some(artifact) = part["artifactDigest"].as_str()
-            && !ambiguous
-            && candidates.is_empty()
-        {
-            let found = if fresh_evidence.tracked.contains(&source_id) {
-                fresh_evidence.artifacts(source_id, artifact)
-            } else {
-                &[]
-            };
-            ambiguous = !found.is_empty()
-                && !(source_evidence.tracked.contains(&source_id)
-                    && source_evidence.artifacts(source_id, artifact).len() == 1
-                    && found.len() == 1);
-            candidates = found.to_vec();
-        }
+        let (candidates, ambiguous) = if policy == MergePolicy::Refresh {
+            source_evidence.refresh_targets(&fresh_evidence, source_id, part)?
+        } else {
+            let projection = part["baseRevisionPartId"]
+                .as_i64()
+                .and_then(|id| old_by_id.get(&id)?.projection)
+                .filter(|projection| {
+                    old_projections.get(projection) == Some(&1)
+                        && now_projections.get(projection) == Some(&1)
+                });
+            legacy_targets(
+                &source_evidence,
+                &fresh_evidence,
+                source_id,
+                part,
+                projection.and_then(|id| fresh_by_projection.get(&id).map(Vec::as_slice)),
+            )?
+        };
         match candidates.as_slice() {
+            [] if policy == MergePolicy::Refresh => {
+                conflicts.push(Conflict::TargetMissing { source_part_id });
+            }
             [] => {}
-            [target] if !ambiguous => targets.push((index, *target)),
+            [target] if !ambiguous => {
+                if policy == MergePolicy::Refresh
+                    && part["baseRevisionPartId"].is_null()
+                    && !filament_preserved(part, &fresh.parts[*target])
+                {
+                    conflicts.push(Conflict::UnsupportedPartDecision {
+                        source_part_id,
+                        target_part_id: target + 1,
+                    });
+                } else {
+                    targets.push((index, *target));
+                }
+            }
             _ => {
                 budget.comparison(candidates.len())?;
                 conflicts.push(Conflict::TargetAmbiguous {
@@ -745,35 +825,41 @@ fn merge(
     }
     if conflicts.is_empty() {
         let targets: HashMap<_, _> = targets.into_iter().collect();
-        let original = fresh.parts.clone();
-        for (index, field) in decisions {
+        for (index, fields) in decisions {
             budget.check()?;
-            // A decision without a target was on a Part the Source dropped.
             let Some(&target) = targets.get(&index) else {
                 continue;
             };
             let part = &source.parts[index];
-            let value = &part[field.key()];
-            let current = &original[target][field.key()];
-            let independent = field == Field::Included
-                && part["baseRevisionPartId"].is_null()
-                && original[target]["baseRevisionPartId"].is_null();
-            if !independent && *current != baseline(part, field)? && current != value {
-                conflicts.push(Conflict::ConcurrentDecision {
-                    source_part_id: num(part, "id")?,
-                    target_part_id: target + 1,
-                    field,
-                });
-                continue;
-            }
             let next = &mut fresh.parts[target];
-            next[field.key()] = value.clone();
-            if field == Field::QuantityOverride {
-                next["quantityEffective"] = if value.is_null() {
-                    next["quantityInferred"].clone()
-                } else {
-                    value.clone()
-                };
+            let unbased = next["baseRevisionPartId"].is_null();
+            // A renamed Part can lose its Accepted predecessor. Carry both
+            // fields of the mapped Part so preparation cannot reset its inclusion.
+            let fresh_defaults = policy == MergePolicy::Refresh && unbased;
+            let fields = if fresh_defaults { &FIELDS[..] } else { &fields };
+            for &field in fields {
+                let value = &part[field.key()];
+                let current = &next[field.key()];
+                let independent = fresh_defaults
+                    || (unbased
+                        && field == Field::Included
+                        && part["baseRevisionPartId"].is_null());
+                if !independent && *current != baseline(part, field)? && current != value {
+                    conflicts.push(Conflict::ConcurrentDecision {
+                        source_part_id: num(part, "id")?,
+                        target_part_id: target + 1,
+                        field,
+                    });
+                    continue;
+                }
+                next[field.key()] = value.clone();
+                if field == Field::QuantityOverride {
+                    next["quantityEffective"] = if value.is_null() {
+                        next["quantityInferred"].clone()
+                    } else {
+                        value.clone()
+                    };
+                }
             }
         }
     }
@@ -782,4 +868,36 @@ fn merge(
     }
     conflicts.sort_by(|left, right| left.order().cmp(&right.order()));
     Ok(conflicts)
+}
+
+fn legacy_targets(
+    source: &Evidence,
+    fresh: &Evidence,
+    source_id: i64,
+    part: &DraftPart,
+    projected: Option<&[usize]>,
+) -> Result<(Vec<usize>, bool)> {
+    if let Some(targets) = projected {
+        return Ok((targets.to_vec(), false));
+    }
+    let key = text(part, "partKey")?;
+    let keyed = fresh.keyed(source_id, key);
+    if !keyed.is_empty() {
+        return Ok((keyed.to_vec(), source.keyed(source_id, key).len() != 1));
+    }
+    if let Some(digest) = part["artifactDigest"].as_str()
+        && fresh.tracked.contains(&source_id)
+    {
+        let matches = fresh.artifacts(source_id, digest);
+        let ambiguous =
+            !source.tracked.contains(&source_id) || source.artifacts(source_id, digest).len() != 1;
+        return Ok((matches.to_vec(), ambiguous));
+    }
+    Ok((Vec::new(), false))
+}
+
+fn filament_preserved(part: &DraftPart, fresh: &DraftPart) -> bool {
+    let fields = ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"];
+    fields.iter().all(|&field| part[field].is_null())
+        || fields.iter().all(|&field| part[field] == fresh[field])
 }

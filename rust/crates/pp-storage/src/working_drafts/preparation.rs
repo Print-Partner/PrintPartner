@@ -188,7 +188,7 @@ pub(super) fn setting(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<O
     )?
     .and_then(|v| v["value"].as_str().map(str::to_owned)))
 }
-fn spoolman_enabled(
+pub(super) fn spoolman_enabled(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,

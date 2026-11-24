@@ -310,6 +310,10 @@ fn mount(
             post(lifecycle::rebase),
         )
         .route(
+            "/plans/{id}/drafts/{draft_id}/refresh",
+            post(lifecycle::refresh),
+        )
+        .route(
             "/plans/{id}/drafts/{draft_id}/apply",
             post(lifecycle::apply),
         )
@@ -654,6 +658,7 @@ fn keyed_write(method: &Method, path: &str) -> bool {
         Method::POST => [
             "/recompute",
             "/rebase",
+            "/refresh",
             "/apply",
             "/drafts/save",
             "/restore",

@@ -1,5 +1,6 @@
 //! Draft recompute, rebase and Accept, as Node's `plan-drafts.ts` serves them.
 use super::*;
+use crate::problem::{self, Problem, ProblemCode, ToProblem};
 use pp_storage::{
     plan_publication::{ApplyRequest, PublicationCommand},
     required_units::{DomainCode, DraftIdentity, Workspace},
@@ -8,10 +9,70 @@ use pp_storage::{
         RecomputeRequest, RecomputeWorkspaceOutcome,
         autosave::{AutosaveCommand, AutosaveOutcome, DraftAutosaved},
         header::{HeaderCommand, HeaderOutcome, HeaderRefusal},
+        refresh::{RefreshArgs, RefreshDraftRequest, RefreshError},
         restore::{RestoreCommand, RestoreOutcome, RestoreRefusal, RestoreSnapshotRequest},
         save::Refusal as SaveRefusal,
     },
 };
+
+pub(super) async fn refresh(
+    Extension(app): Extension<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (profile, draft, key, request) =
+        match keyed_body::<RefreshDraftRequest>(&uri, "refresh", &headers, &body) {
+            Ok(parts) => parts,
+            Err(refused) => return *refused,
+        };
+    let credential = presented.into_credential();
+    let work = move |client: &WorkingDraftClient, flag, wait| {
+        let args = RefreshArgs {
+            draft_id: draft,
+            request,
+            idempotency_key: &key,
+        };
+        Ok(client.refresh(credential, profile, args, flag, wait))
+    };
+    match run_write(&app, work).await {
+        Ok(Ok(receipt)) => json_response(StatusCode::OK, receipt),
+        Ok(Err(RefreshError::Draft(reason))) => present_autosave(reason),
+        Ok(Err(RefreshError::InvalidRequest)) => invalid_request(),
+        Ok(Err(error)) => {
+            let mut extensions = serde_json::Map::new();
+            if let RefreshError::MergeConflicts(conflicts) = &error {
+                extensions.insert("conflicts".into(), json!(conflicts));
+            }
+            problem::build(error.to_problem(), extensions)
+        }
+        Err(error) => write_failure(error, "refresh", profile, Some(draft)),
+    }
+}
+
+impl ToProblem for RefreshError {
+    fn to_problem(&self) -> Problem {
+        let (status, code) = match self {
+            Self::Writer(failure) => return failure.to_problem(),
+            Self::NotAuthor => (StatusCode::FORBIDDEN, ProblemCode::DraftNotAuthor),
+            Self::CompetingDraft => (StatusCode::CONFLICT, ProblemCode::CompetingDraft),
+            Self::HeaderChanged => (StatusCode::CONFLICT, ProblemCode::HeaderChanged),
+            Self::UnsupportedDecisions => {
+                (StatusCode::CONFLICT, ProblemCode::UnsupportedDraftDecisions)
+            }
+            Self::InputsUnchanged => (StatusCode::CONFLICT, ProblemCode::InputsUnchanged),
+            Self::UntrackedInputs => (StatusCode::CONFLICT, ProblemCode::UntrackedInputs),
+            Self::WouldWipe => (StatusCode::UNPROCESSABLE_ENTITY, ProblemCode::WouldWipe),
+            Self::MergeConflicts(_) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ProblemCode::MergeConflicts,
+            ),
+            Self::InvalidRequest | Self::Draft(_) => unreachable!("handled by the draft router"),
+        };
+        problem::problem(status, "", Some(code.as_str())).without_detail()
+    }
+}
 
 /// Node's `POST /plans/:id/drafts/recompute`: a body with a boolean
 /// `apply_manifest` and an `Idempotency-Key`. The new or existing draft is

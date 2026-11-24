@@ -131,6 +131,13 @@ problem_codes! {
     AcceptedBaselineRequired = "accepted_baseline_required";
     RequiredUnitSetUnavailable = "required_unit_set_unavailable";
     InvalidHeader = "invalid_header";
+    DraftNotAuthor = "draft_not_author";
+    CompetingDraft = "competing_draft";
+    UnsupportedDraftDecisions = "unsupported_draft_decisions";
+    InputsUnchanged = "inputs_unchanged";
+    UntrackedInputs = "untracked_inputs";
+    WouldWipe = "would_wipe";
+    MergeConflicts = "merge_conflicts";
     // Every write through the write seam, with `OutcomeUnknown`.
     TransactionUnavailable = "transaction_unavailable";
     // The integration and printer routes.

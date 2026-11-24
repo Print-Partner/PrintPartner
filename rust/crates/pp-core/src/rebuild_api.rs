@@ -1097,8 +1097,11 @@ mod tests {
         let duplicated = route.name == "duplicateBuild"
             && status == 201
             && body["parent_build_id"].as_i64().is_some();
+        let missing_refresh_draft =
+            route.name == "refreshDraft" && status == 409 && body["code"] == "draft_changed";
         status == 200
             || duplicated
+            || missing_refresh_draft
             || handler_not_found(status, body)
             || stale
             || no_layers

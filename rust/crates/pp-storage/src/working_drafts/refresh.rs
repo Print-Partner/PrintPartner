@@ -87,8 +87,15 @@ enum Checked {
 struct Prepared {
     tenant: String,
     actor: String,
-    kit: Option<String>,
+    settings: PreparationSettings,
     snapshot: preparation::PreparedDraftSnapshot,
+}
+
+#[derive(PartialEq, Eq)]
+struct PreparationSettings {
+    kit: Option<String>,
+    role_filaments: Option<String>,
+    spoolman: bool,
 }
 
 impl WorkingDraftClient {
@@ -198,11 +205,10 @@ impl Refresh {
         if !conflicts.is_empty() {
             return Err(RefreshError::MergeConflicts(conflicts));
         }
-        let kit = self.kit(tx, &tenant)?;
         Ok(Ok(Prepared {
+            settings: self.settings(tx, &tenant, budget)?,
             tenant,
             actor,
-            kit,
             snapshot,
         }))
     }
@@ -230,7 +236,7 @@ impl Refresh {
         )
         .map_err(preparation_error)?;
         if captured.fingerprint != prepared.snapshot.capture.fingerprint
-            || self.kit(tx, &tenant)? != prepared.kit
+            || self.settings(tx, &tenant, budget)? != prepared.settings
         {
             return Err(RefreshError::Draft(save::Refusal::InputsChanged));
         }
@@ -257,9 +263,28 @@ impl Refresh {
         self.receipt(successor)
     }
 
-    fn kit(&self, tx: &Transaction<'_>, tenant: &str) -> Result<Option<String>, WriterFailure> {
-        preparation::setting(tx, tenant, &format!("kit_manifest_{}", self.profile))
-            .map_err(WriterFailure::from)
+    fn settings(
+        &self,
+        tx: &Transaction<'_>,
+        tenant: &str,
+        budget: &mut observation::PreparationBudget<'_>,
+    ) -> Result<PreparationSettings, RefreshError> {
+        let mut read = |prefix: &str| {
+            let value = preparation::setting(tx, tenant, &format!("{prefix}_{}", self.profile))
+                .map_err(WriterFailure::from)?;
+            if let Some(raw) = &value {
+                budget
+                    .document(raw.len(), raw.len())
+                    .map_err(preparation_error)?;
+            }
+            Ok::<_, RefreshError>(value)
+        };
+        Ok(PreparationSettings {
+            kit: read("kit_manifest")?,
+            role_filaments: read("role_filaments")?,
+            spoolman: preparation::spoolman_enabled(tx, tenant, self.profile, budget)
+                .map_err(preparation_error)?,
+        })
     }
 
     fn receipt(&self, successor: i64) -> Result<RefreshDraftReceipt, RefreshError> {

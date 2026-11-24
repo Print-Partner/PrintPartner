@@ -197,6 +197,13 @@ fn refresh_refuses_the_wrong_author_competitors_and_concurrent_changes() {
         ),
         (
             "",
+            Some(
+                "INSERT INTO app_settings (tenant_id,key,value) VALUES ('default','role_filaments_1','{\"primary\":{\"filament_custom_hex\":\"#123456\"}}')",
+            ),
+            "inputs",
+        ),
+        (
+            "",
             Some("UPDATE projects SET current_source_revision_id=1 WHERE id=1"),
             "inputs",
         ),
@@ -225,7 +232,7 @@ fn refresh_refuses_the_wrong_author_competitors_and_concurrent_changes() {
         let client = refresh_client(
             &f,
             &owner,
-            &["bracket.stl", "excluded.stl", "gear.stl"],
+            &["bracket.stl", "excluded.stl", "gear.stl", "new.stl"],
             during,
         );
         let parts = f.rows("SELECT * FROM plan_draft_parts ORDER BY id");

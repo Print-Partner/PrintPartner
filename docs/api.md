@@ -134,8 +134,9 @@ changed, revision-tracked Source inputs. The Accepted base must still match
 the observed draft's base. Refresh carries the header and maps saved
 inclusion and quantity choices to Parts from the same Source. The writer
 checks the observed draft, header, Accepted base, prepared Source fingerprint
-and Kit options before atomically abandoning that draft and inserting its
-successor. Accepted plans, Required units and Build History stay intact.
+and preparation settings, including Kit options and filament defaults, before
+atomically abandoning that draft and inserting its successor. Accepted plans,
+Required units and Build History stay intact.
 
 The operation refuses competing drafts, stale observations and untracked
 inputs. It also refuses saved manual reconciliation decisions and Part

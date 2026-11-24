@@ -85,7 +85,7 @@ For the hosted result, check that `changes` logged `desktop-linux inputs changed
 - `desktop/**` and `.github/workflows/desktop-*`
 - `rust/scripts/desktop-*` and these files under `rust/scripts/`: `assemble-linux-deb.py`, `assemble-macos-resources.py`, `build-desktop-manifest.py`, `check-macos-bundle.py`, `desktop_workspaces.py`, `macos_addon_slices.py`, `precompress-spa.py`, `stage-desktop.py`, and `stage_dependencies.py`
 - `web/apps/ui/**`, `web/packages/rust-client/**`, `web/package.json`, `web/package-lock.json`, `web/tsconfig.base.json`, and the `package.json` files in `web/apps/server/`, `web/packages/contracts/`, and `web/packages/domain/`
-- `web/apps/server/src/data/**` and `fixtures/admin/settings-support.json`, which contain data embedded by Rust
+- `web/apps/server/src/data/**`, `fixtures/admin/settings-support.json`, and `fixtures/drivers/moonraker/moonraker-success.json`, which contain data embedded by Rust
 - `scripts/ci-path-filter.py`, `scripts/ci-affected-nextest-filter.py`, `scripts/test_ci_path_filter.py`, and `scripts/test_ci_affected_nextest_filter.py`
 
 To reproduce the compile on Windows, use the repository Rust toolchain, Python and the MSVC build tools. From the repository root in PowerShell:

@@ -315,7 +315,8 @@ class CiPathFilterTests(unittest.TestCase):
         for path in (".github/actions/linux-gui-deps/action.yml", "rust/.config/nextest.toml"):
             self.assertTrue(ci_filter.relevant(path, "desktop-linux"), path)
             self.assertFalse(ci_filter.relevant(path, "desktop-windows"), path)
-        for path in ("fixtures/admin/settings-support.json", "web/apps/server/src/data/legal/LICENSE"):
+        for path in ("fixtures/admin/settings-support.json", "fixtures/drivers/moonraker/moonraker-success.json",
+                     "web/apps/server/src/data/legal/LICENSE"):
             self.assertTrue(ci_filter.relevant(path, "desktop-windows"), path)
 
     def test_actions_inputs(self):
@@ -370,7 +371,8 @@ class CiPathFilterTests(unittest.TestCase):
                                ("rust/crates/pp-desktop/src/main.rs", "desktop-linux"),
                                ("rust/scripts/stage-desktop.py", "desktop-linux"),
                                ("rust/crates/pp-desktop/src/main.rs", "desktop-windows"),
-                               ("rust/scripts/stage-desktop.py", "desktop-windows")):
+                               ("rust/scripts/stage-desktop.py", "desktop-windows"),
+                               ("fixtures/drivers/moonraker/moonraker-success.json", "desktop-windows")):
                 git("checkout", "-q", "--detach", base)
                 changed = commit(path)
                 self.assertEqual(select(base, changed, kind)[0], "relevant=true\n")

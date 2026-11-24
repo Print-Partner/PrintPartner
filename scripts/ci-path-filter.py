@@ -101,9 +101,9 @@ def relevant(path, kind):
             ".github/actions/linux-gui-deps/action.yml", "rust/.config/nextest.toml",
         }:
             return True
-        if kind == "desktop-windows" and (
-            path == "fixtures/admin/settings-support.json" or path.startswith("web/apps/server/src/data/")
-        ):
+        if kind == "desktop-windows" and (path.startswith("web/apps/server/src/data/") or path in {
+            "fixtures/admin/settings-support.json", "fixtures/drivers/moonraker/moonraker-success.json",
+        }):
             return True
         # Include workspace crates so transitive Rust dependencies trigger the build.
         return path in DESKTOP_INPUTS or path.startswith((

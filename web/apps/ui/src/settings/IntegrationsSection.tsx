@@ -8,6 +8,7 @@ import { reason } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { HIDDEN_NOTE, integrationsQuery, shownAddress, UNSHOWN_ADDRESS } from "./connections";
+import { SpoolmanDialog, type SpoolmanAction } from "./SpoolmanDialog";
 
 type Integration = RouteResponse<"listIntegrations">["integrations"][number];
 
@@ -180,7 +181,13 @@ function BambuPin({ integration, offline, onMessage }: { integration: Integratio
   );
 }
 
-function Row({ integration, offline, onMessage }: { integration: Integration; offline: boolean; onMessage: (text: string) => void }) {
+function Row({ integration, offline, onMessage, onSpoolmanAction, writesBlocked }: {
+  integration: Integration;
+  offline: boolean;
+  onMessage: (text: string) => void;
+  onSpoolmanAction: (action: SpoolmanAction) => void;
+  writesBlocked: boolean;
+}) {
   const credentials = credentialText(integration);
   const address = shownAddress(integration.base_url);
   return (
@@ -192,9 +199,17 @@ function Row({ integration, offline, onMessage }: { integration: Integration; of
         {address?.hidden && <span className="pp-fact-detail">{HIDDEN_NOTE}</span>}
         {credentials && <span className="pp-fact-detail">{credentials}</span>}
         {integration.kind === "spoolman" && (
-          <span className="pp-fact-detail">
-            Spoolman alone owns filament counts. Stock it cannot read shows as unknown, never as zero.
-          </span>
+          <>
+            <span className="pp-fact-detail">
+              Spoolman alone owns filament counts. Stock it cannot read shows as unknown, never as zero.
+            </span>
+            <div className="pp-row-actions">
+              <button type="button" className="pp-button" disabled={writesBlocked} aria-label={`Edit ${integration.name}`}
+                onClick={() => onSpoolmanAction({ kind: "edit", integration })}>Edit</button>
+              <button type="button" className="pp-button" disabled={writesBlocked} aria-label={`Remove ${integration.name}`}
+                onClick={() => onSpoolmanAction({ kind: "remove", integration })}>Remove</button>
+            </div>
+          </>
         )}
         {integration.kind === "bambu" && <BambuPin integration={integration} offline={offline} onMessage={onMessage} />}
       </dd>
@@ -202,17 +217,37 @@ function Row({ integration, offline, onMessage }: { integration: Integration; of
   );
 }
 
-/**
- * The saved integrations from `GET /api/v2/integrations`: kind, address, and only whether
- * each credential is set. Bambu rows add the certificate pin. Adding and editing
- * integrations follow in their own change.
- */
 export function IntegrationsSection() {
   const connection = useConnection();
   const offline = connection !== "online";
   const integrations = useQuery(integrationsQuery);
+  const client = useQueryClient();
+  const [action, setAction] = useState<SpoolmanAction | null>(null);
   const [message, setMessage] = useState("");
   const list = integrations.data?.integrations;
+  const writesBlocked = offline || integrations.isError || !list;
+  const open = (next: SpoolmanAction) => {
+    setMessage("");
+    setAction(next);
+  };
+  const done = (text: string) => {
+    setMessage(text);
+    setAction(null);
+  };
+  const saved = (result: Integration) => {
+    if (!action) return;
+    client.setQueryData(integrationsQuery.queryKey, (current: { integrations: Integration[] } | undefined) => {
+      if (!current) return current;
+      return {
+        integrations: action.kind === "add" ? [...current.integrations.filter(({ id }) => id !== result.id), result]
+          : action.kind === "remove" ? current.integrations.filter(({ id }) => id !== result.id)
+          : current.integrations.map((row) => row.id === result.id ? result : row),
+      };
+    });
+    void client.invalidateQueries({ queryKey: integrationsQuery.queryKey, exact: true });
+    const verb = action.kind === "add" ? "Added" : action.kind === "remove" ? "Removed" : "Saved";
+    done(`${verb} ${result.name}.`);
+  };
   let body: ReactNode;
   if (!list) {
     body = integrations.isError ? null : <p role="status">Loading integrations.</p>;
@@ -222,7 +257,8 @@ export function IntegrationsSection() {
     body = (
       <dl className="pp-facts">
         {list.map((integration) => (
-          <Row key={integration.id} integration={integration} offline={offline} onMessage={setMessage} />
+          <Row key={integration.id} integration={integration} offline={offline} onMessage={setMessage}
+            onSpoolmanAction={open} writesBlocked={writesBlocked} />
         ))}
       </dl>
     );
@@ -231,6 +267,11 @@ export function IntegrationsSection() {
     <>
       <p>Saved keys and passwords are never shown here; the core says only whether one is set.</p>
       {connection === "offline" && <p>{OFFLINE_REASON}</p>}
+      <div className="pp-screen-actions">
+        <button type="button" className="pp-button" disabled={writesBlocked} onClick={() => open({ kind: "add" })}>
+          Add Spoolman
+        </button>
+      </div>
       {message && <p role="status">{message}</p>}
       {integrations.isError && (
         <div role="alert" className="pp-banner" data-kind="error">
@@ -244,6 +285,8 @@ export function IntegrationsSection() {
         </div>
       )}
       {body}
+      {action && <SpoolmanDialog action={action} offline={offline} onClose={() => setAction(null)}
+        onSaved={saved} refresh={() => integrations.refetch({ throwOnError: true })} onRecovered={done} />}
     </>
   );
 }

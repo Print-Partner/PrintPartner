@@ -7,8 +7,11 @@ import { routes } from "../routes";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const problem = (status: number, detail: string) =>
-  new Response(JSON.stringify({ type: "about:blank", title: "Refused", status, detail }), {
+const problem = (status: number, detail: string, code?: string) =>
+  new Response(JSON.stringify({
+    type: status === 409 ? "urn:print-partner:problem:conflict" : "about:blank",
+    title: "Refused", status, detail, code,
+  }), {
     status,
     headers: { "content-type": "application/problem+json" },
   });
@@ -98,6 +101,164 @@ afterEach(() => {
 
 const section = () => screen.findByRole("region", { name: "Integrations" });
 const row = (name: string) => screen.getByText(name, { selector: "dt" }).closest(".pp-fact") as HTMLElement;
+const SPOOLMAN_PATH = "/api/v2/integrations";
+const SPOOLMAN_URL = "http://spoolman.test:7912";
+const spoolman = view("s1", "spoolman", "Spools", { base_url: SPOOLMAN_URL, has_api_key: true });
+const editSpoolman = async (name = "Spools") => {
+  await screen.findByText(name, { selector: "dt" });
+  fireEvent.click(within(row(name)).getByRole("button", { name: `Edit ${name}` }));
+  return screen.getByRole("dialog", { name: "Edit Spoolman" });
+};
+const fill = (dialog: HTMLElement, label: string | RegExp, value: string) =>
+  fireEvent.change(within(dialog).getByLabelText(label), { target: { value } });
+const saveSpoolman = (dialog: HTMLElement) =>
+  fireEvent.click(within(dialog).getByRole("button", { name: "Save Spoolman" }));
+
+describe("Spoolman settings", () => {
+  it("adds a Spoolman connection and removes it only after confirmation", async () => {
+    const writes: { method: string; body: unknown; path: string }[] = [];
+    let integrations: (typeof spoolman)[] = [];
+    renderSettings(core({
+      list: () => json({ integrations }),
+      other: (path, init) => {
+        if (!init?.method || !path.startsWith(SPOOLMAN_PATH)) return;
+        writes.push({ method: init.method, path, body: init.body ? JSON.parse(String(init.body)) : undefined });
+        integrations = init.method === "POST" ? [spoolman] : [];
+        return json(spoolman);
+      },
+    }).fetchMock);
+    await screen.findByText("No integrations yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Add Spoolman" }));
+    const add = screen.getByRole("dialog", { name: "Add Spoolman" });
+    fill(add, "Name", spoolman.name);
+    fill(add, "Base URL", SPOOLMAN_URL);
+    fill(add, /API key/, SECRET);
+    saveSpoolman(add);
+    await screen.findByText("Added Spools.");
+    expect(within(row("Spools")).getByText("API key saved")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(SECRET);
+    const open = () => fireEvent.click(within(row("Spools")).getByRole("button", { name: "Remove Spools" }));
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(writes).toHaveLength(1);
+    open();
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Remove Spools?" })).getByRole("button", { name: "Remove Spoolman" }));
+    await screen.findByText("Removed Spools.");
+    expect(writes).toEqual([
+      { method: "POST", path: SPOOLMAN_PATH, body: { kind: "spoolman", name: "Spools", base_url: SPOOLMAN_URL, api_key: SECRET } },
+      { method: "DELETE", path: `${SPOOLMAN_PATH}/s1`, body: undefined },
+    ]);
+    expect(screen.getByText("No integrations yet.")).toBeTruthy();
+  });
+
+  it("guards edits, keeps the omitted key, and makes an address change carry a replacement or null", async () => {
+    const patches: unknown[] = [];
+    let stored = { ...spoolman, base_url: `${SPOOLMAN_URL}/?key=${SECRET}` };
+    renderSettings(core({
+      list: () => json({ integrations: [stored] }),
+      other: (path, init) => {
+        if (path !== `${SPOOLMAN_PATH}/s1` || init?.method !== "PATCH") return;
+        const patch = JSON.parse(String(init.body));
+        const { name, base_url: baseUrl, api_key: apiKey } = patch;
+        patches.push(patch);
+        stored = {
+          ...stored, name: name ?? stored.name, base_url: baseUrl ?? stored.base_url,
+          has_api_key: apiKey === undefined ? stored.has_api_key : apiKey !== null, revision: `v${patches.length}`,
+        };
+        return json(stored);
+      },
+    }).fetchMock);
+
+    const edit = await editSpoolman();
+    expect((within(edit).getByLabelText(/API key \(optional\)/) as HTMLInputElement).value).toBe("");
+    expect((within(edit).getByLabelText("Base URL") as HTMLInputElement).value).toBe(`${SPOOLMAN_URL}/`);
+    fill(edit, "Name", "Inventory");
+    saveSpoolman(edit);
+    await screen.findByText("Saved Inventory.");
+    expect(patches[0]).toStrictEqual({ expected_revision: "fixture-revision", name: "Inventory" });
+
+    const move = await editSpoolman("Inventory");
+    const replacement = "http://new-spoolman.test:7912";
+    fill(move, "Base URL", replacement);
+    const key = within(move).getByLabelText("API key") as HTMLInputElement;
+    expect(key.required).toBe(true);
+    saveSpoolman(move);
+    expect(patches).toHaveLength(1);
+    fill(move, "API key", SECRET);
+    saveSpoolman(move);
+    await screen.findByText("Saved Inventory.");
+    expect(patches[1]).toEqual({ expected_revision: "v1", base_url: replacement, api_key: SECRET });
+
+    const clear = await editSpoolman("Inventory");
+    fill(clear, "Base URL", SPOOLMAN_URL);
+    fireEvent.click(within(clear).getByLabelText("Clear saved API key"));
+    saveSpoolman(clear);
+    await screen.findByText("Saved Inventory.");
+    expect(patches[2]).toEqual({ expected_revision: "v2", base_url: SPOOLMAN_URL, api_key: null });
+    expect(within(row("Inventory")).queryByText("API key saved")).toBeNull();
+  });
+
+  it("shows a concurrent edit and requires reopening the form before writing with the new revision", async () => {
+    let stored = spoolman;
+    const patches: unknown[] = [];
+    renderSettings(core({
+      list: () => json({ integrations: [stored] }),
+      other: (path, init) => {
+        if (path !== `${SPOOLMAN_PATH}/s1` || init?.method !== "PATCH") return;
+        patches.push(JSON.parse(String(init.body)));
+        if (patches.length === 1) return problem(409, "The integration changed", "integration_changed");
+        stored = { ...stored, name: "My inventory", revision: "v3" };
+        return json(stored);
+      },
+    }).fetchMock);
+    const edit = await editSpoolman();
+    fill(edit, "Name", "Stale name");
+    fill(edit, /API key \(optional\)/, SECRET);
+    stored = { ...spoolman, name: "Latest inventory", revision: "v2" };
+    saveSpoolman(edit);
+    await screen.findByText(/This integration changed while you were editing it/);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(patches).toEqual([{ expected_revision: "fixture-revision", name: "Stale name", api_key: SECRET }]);
+
+    const latest = await editSpoolman("Latest inventory");
+    expect((within(latest).getByLabelText("Name") as HTMLInputElement).value).toBe("Latest inventory");
+    expect((within(latest).getByLabelText(/API key \(optional\)/) as HTMLInputElement).value).toBe("");
+    fill(latest, "Name", "My inventory");
+    saveSpoolman(latest);
+    await screen.findByText("Saved My inventory.");
+    expect(patches[1]).toEqual({ expected_revision: "v2", name: "My inventory" });
+  });
+
+  it("retries only the list read after an unconfirmed add and a failed refresh", async () => {
+    let writes = 0;
+    let readsAfterWrite = 0;
+    renderSettings(core({
+      list: () => {
+        if (!writes) return json({ integrations: [] });
+        if (++readsAfterWrite === 1) return problem(503, "Unavailable");
+        return json({ integrations: [{ ...spoolman, has_api_key: false }] });
+      },
+      other: (path, init) => {
+        if (path !== SPOOLMAN_PATH || init?.method !== "POST") return;
+        writes++;
+        return json({ unreadable: true });
+      },
+    }).fetchMock);
+    await screen.findByText("No integrations yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Add Spoolman" }));
+    const add = screen.getByRole("dialog", { name: "Add Spoolman" });
+    fill(add, "Name", "Spools");
+    fill(add, "Base URL", SPOOLMAN_URL);
+    saveSpoolman(add);
+    await within(add).findByText(/The current integrations couldn't be loaded/);
+    expect(within(add).queryByRole("button", { name: "Save Spoolman" })).toBeNull();
+    fireEvent.click(within(add).getByRole("button", { name: "Reload integrations" }));
+    await screen.findByText(/Print Partner couldn't confirm the change. The list is up to date/);
+    expect(row("Spools")).toBeTruthy();
+    expect(writes).toBe(1);
+    expect(readsAfterWrite).toBe(2);
+  });
+});
 
 describe("SET-02 integration settings never display secrets", () => {
   it("lists every integration with its kind, address and which credentials are set", async () => {

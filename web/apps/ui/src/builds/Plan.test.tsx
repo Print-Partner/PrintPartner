@@ -17,7 +17,13 @@ import { DRAFT_OPEN, NO_DRAFT, PLATES_CLEARED } from "./planCopy";
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const problem = (status: number, code: string) =>
-  json({ type: "urn:print-partner:problem:conflict", title: "Conflict", status, code }, status);
+  new Response(
+    JSON.stringify({ type: "urn:print-partner:problem:conflict", title: "Conflict", status, code }),
+    {
+      status,
+      headers: { "content-type": "application/problem+json" },
+    },
+  );
 
 const health = (orders: "on" | "off"): Health => ({
   ok: true,
@@ -224,6 +230,179 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe("Plan refresh after Source changes", () => {
+  const draftsPath = "/api/v2/plans/2/drafts";
+  const refreshPath = `${draftsPath}/9/refresh`;
+  const savePath = `${draftsPath}/save`;
+  const successor = {
+    ...DRAFT,
+    draft_id: 17,
+    lifecycle_version: 0,
+    snapshot_digest: "b".repeat(64),
+  };
+  const refreshed = {
+    ...workspace(successor),
+    parts: [part(21, "renamed-bracket.stl", true, null), part(22, "gear.stl", false, 4)],
+  };
+
+  function setup(answer: Handler, readSuccessor?: () => Response) {
+    const original = core();
+    let currentSuccessor = refreshed;
+    let madeSuccessor = false;
+    let originalHeaderVersion = 1;
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === savePath) {
+        if (!madeSuccessor) return problem(409, "inputs_changed");
+        const { decisions } = JSON.parse(String(init?.body));
+        currentSuccessor = {
+          ...refreshed,
+          parts: [part(21, "renamed-bracket.stl", true, decisions[0].value), refreshed.parts[1]!],
+        };
+        return json({
+          receipt: {
+            profile_id: 2,
+            draft_id: 17,
+            reconciliation_id: 1,
+            snapshot_digest: successor.snapshot_digest,
+            saved_at: "2026-11-07T00:00:00.000Z",
+          },
+          workspace: currentSuccessor,
+        });
+      }
+      if (path === refreshPath) {
+        const response = await answer(path, init);
+        if (response) return response;
+        madeSuccessor = true;
+        return json({ source_draft_id: 9, successor_draft_id: 17 });
+      }
+      if (path === `${draftsPath}/9/header`) return json(draftHeader(originalHeaderVersion));
+      if (path === draftsPath && madeSuccessor) {
+        return json({ profile_id: 2, drafts: [{ ...DRAFT, draft_id: 88 }, successor] });
+      }
+      if (path === `${draftsPath}/17`) return readSuccessor?.() ?? json(currentSuccessor);
+      if (path === `${draftsPath}/17/header`) return json({ ...draftHeader(1), draft_id: 17 });
+      return original(path, init);
+    });
+    const client = renderAt(fetchMock);
+    return {
+      client,
+      fetchMock,
+      changeHeader: () => {
+        originalHeaderVersion = 8;
+      },
+    };
+  }
+
+  const quantity = (name: string) =>
+    screen.getByRole<HTMLInputElement>("textbox", { name: new RegExp(`Quantity of ${name}`) });
+  const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+  const type = (input: HTMLInputElement, value: string) =>
+    fireEvent.change(input, { target: { value } });
+  const staleSave = async () => {
+    await screen.findByRole("textbox", { name: /Quantity of bracket/ });
+    type(quantity("bracket"), "7");
+    fireEvent.blur(quantity("bracket"));
+    await screen.findByRole("button", { name: "Refresh from Sources" });
+  };
+
+  it("refreshes the observed draft, keeps unsaved text, and saves a correction on the exact successor", async () => {
+    const { client, fetchMock } = setup(() => undefined);
+    await screen.findByText(DRAFT_OPEN);
+    type(field("Customer"), "Typed customer");
+    await staleSave();
+    expect(screen.getByText(/Sources changed since this draft/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review and accept" })).toBeNull();
+    expect(quantity("bracket").readOnly).toBe(true);
+    expect(writes(fetchMock).map((write) => write.path)).toEqual([savePath]);
+
+    click("Refresh from Sources");
+    await screen.findByText("Draft refreshed from current Sources.");
+    expect(writes(fetchMock)[1]).toMatchObject({
+      path: refreshPath,
+      body: { expected_draft: DRAFT, expected_header_version: 1 },
+    });
+    expect(screen.getByText("stl/bracket.stl quantity: 7")).toBeTruthy();
+    expect(screen.getByText("Customer: Typed customer")).toBeTruthy();
+    expect(field("Customer").value).toBe("Acme");
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["core", "plan", 2] });
+    });
+    expect(fetchMock.mock.calls.some(([path]) => path === `${draftsPath}/88`)).toBe(false);
+
+    type(quantity("renamed-bracket"), "7");
+    fireEvent.blur(quantity("renamed-bracket"));
+    await screen.findByText(/Saved to the draft/);
+    expect(writes(fetchMock)).toHaveLength(3);
+    expect(writes(fetchMock)[2]).toMatchObject({
+      path: savePath,
+      body: {
+        expected_draft: successor,
+        decisions: [{ value: 7, target: { relative_path: "stl/renamed-bracket.stl" } }],
+      },
+    });
+    expect(
+      fetchMock.mock.calls.some(([path]) => /accept-preview|reconciliation|\/apply$/.test(path)),
+    ).toBe(false);
+  });
+
+  it("keeps the old workspace and pending values when a saved choice cannot carry", async () => {
+    const { fetchMock } = setup(() => problem(422, "merge_conflicts"));
+    await staleSave();
+    click("Refresh from Sources");
+    await screen.findByText(/Some saved Part choices could not be carried/);
+    expect(quantity("bracket").value).toBe("7");
+    expect(screen.queryByRole("textbox", { name: /Quantity of renamed-bracket/ })).toBeNull();
+    expect(writes(fetchMock).map((write) => write.path)).toEqual([savePath, refreshPath]);
+  });
+
+  it("reads the current header explicitly before retrying a concurrent-change refusal", async () => {
+    let rejected = false;
+    const { changeHeader, fetchMock } = setup(() => {
+      if (rejected) return undefined;
+      rejected = true;
+      return problem(409, "header_changed");
+    });
+    await staleSave();
+    changeHeader();
+    click("Refresh from Sources");
+    await screen.findByRole("button", { name: "Check current draft" });
+    expect(quantity("bracket").value).toBe("7");
+    click("Check current draft");
+    await screen.findByText(/Draft checked/);
+    expect(writes(fetchMock)).toHaveLength(2);
+    click("Refresh from Sources");
+    await screen.findByText("Draft refreshed from current Sources.");
+    const [, first, second] = writes(fetchMock);
+    expect(second!.key).not.toBe(first!.key);
+    expect(second!.body).toEqual({ expected_draft: DRAFT, expected_header_version: 8 });
+  });
+
+  it("replays an unconfirmed write only on request, then retries only the successor reads", async () => {
+    let sends = 0;
+    let reads = 0;
+    const { fetchMock } = setup(
+      () => (sends++ === 0 ? problem(503, "outcome_unknown") : undefined),
+      () => (reads++ === 0 ? problem(401, "not_authenticated") : json(refreshed)),
+    );
+    await staleSave();
+    click("Refresh from Sources");
+    await screen.findByRole("button", { name: "Check refresh" });
+    expect(writes(fetchMock)).toHaveLength(2);
+    expect(quantity("bracket").value).toBe("7");
+
+    click("Check refresh");
+    await screen.findByRole("button", { name: "Load refreshed draft" });
+    expect(screen.getByRole("link", { name: "sign in" })).toBeTruthy();
+    expect(writes(fetchMock)).toHaveLength(3);
+    expect(writes(fetchMock)[2]).toEqual(writes(fetchMock)[1]);
+    expect(quantity("bracket").value).toBe("7");
+
+    click("Load refreshed draft");
+    await screen.findByText("Draft refreshed from current Sources.");
+    expect(writes(fetchMock)).toHaveLength(3);
+  });
 });
 
 describe("Order fields in the Accept gate", () => {

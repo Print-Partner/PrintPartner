@@ -19,6 +19,12 @@ History shows accepted revisions, snapshots, checkoff bursts and sends. Restore 
 
 The replacement UI says the same thing everywhere it explains a Plan change: Help's **Plan changes** section, the Plan tab's draft line, and History's empty state (GRE-1140). Each change saves to the draft: a checkbox such as Included at once, and a typed field (name, order number, customer, due date or quantity) when it loses focus or on Enter. A saved draft survives a restart. Only Accept changes the Build. Accept first saves a snapshot of the accepted Plan it replaces when the core can restore one, and the preview's snapshot note says whether it will. History can restore such a snapshot as a draft. The wording lives in `web/apps/ui/src/builds/planCopy.ts`, and `planCopy.test.ts` fails if any replacement UI source says changes save automatically or that there is no acceptance step. Restoring a plan never rewinds printed evidence or a printer command.
 
+## Recover a draft after a Source changes
+
+If a draft save reports `inputs_changed`, the Plan tab keeps the previous workspace visible and pauses editing and Accept. **Refresh from Sources** asks Rust to refresh that exact draft at its saved header version. If the draft or its header changed elsewhere, **Check current draft** reads the same draft before another refresh attempt. If Rust refuses to carry a saved Part choice, or finds another open draft, the tab explains the refusal and keeps the previous workspace available.
+
+If the core cannot confirm the write, **Check refresh** sends the same request with the same key. After a confirmed receipt, **Load refreshed draft** retries only the reads of the named successor. The tab opens that successor once both its workspace and header load and it is still open. Unsaved values from the old workspace stay visible for manual re-entry, since a Part's identity or path can change. Refresh carries supported saved edits into the successor and leaves the accepted Plan, Required-unit identities and Build History intact. **Review and accept** is a separate step.
+
 ## Contracts
 
 Status terms and the Rust-only rule are defined in the [contract overview](../ui-ux-target.md#contracts-the-ui-needs).
@@ -30,6 +36,7 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | Plan feature overrides | `GET` and `PATCH /plans/{id}/features` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1243); see [Plan features and decision append in Rust](../../records/d19-publication-client.md#plan-features-and-decision-append-in-rust-gre-1243) |
 | Accept | `POST /api/v2/plans/{id}/drafts/{draft_id}/apply` with an `Idempotency-Key` | Exists in Rust behind `desktop_rebuild`; the generated client's `acceptDraft` (GRE-1120). The Plan tab sends the previewed `revision`, so a stale Accept is `draft_changed`. Before the preview, the Plan tab settles Required-unit reconciliation through `PUT /api/v2/plans/{id}/drafts/{draft_id}/reconciliation` (`reconcileDraft`, GRE-1276) |
 | Plan tab edits | `PUT /api/v2/plans/{id}/drafts/header`, `POST /api/v2/plans/{id}/drafts/save`, and `GET /api/v2/plans/{id}/drafts/header` for the Build header and Accepted base before any draft | Exists in Rust behind `desktop_rebuild` (GRE-1197, GRE-1120); see [Draft header fields](../../draft-headers.md) |
+| Refresh after a Source change | `POST /api/v2/plans/{id}/drafts/{draft_id}/refresh` with an `Idempotency-Key` | The generated client's `refreshDraft` (GRE-1950, GRE-1951); see the [API](../../api.md) |
 | Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
 
 ## Delivery slices

@@ -1543,30 +1543,45 @@ fn authority_refusals_preserve_claimed_target_evidence() {
 
 #[test]
 fn revoked_recovered_sync_preserves_claim_for_reconciliation() {
-    let sync = Fixture::new();
-    let id = sync.source("Claimed");
-    let job_id = sync.enqueue(Some(vec![id as u64]));
-    let mut lease = sync.open();
-    let target = local(sync.next(&mut lease));
-    sync.connection()
-        .execute("DELETE FROM sessions", [])
-        .unwrap();
-    drop(target);
-    let sync = reopen(sync);
-    assert!(sync.worker.claim_kind(JobKind::Sync).unwrap().is_none());
-    assert_eq!(
-        sync.job(&job_id).state,
-        PersistentState::ReconciliationRequired
-    );
-    assert_eq!(
-        sync.targets(&job_id),
-        [(
-            id,
-            "reconciliation_required".into(),
-            Some("authority_refused".into())
-        )]
-    );
-    assert_refusal_survives_reopen(sync, &job_id);
+    for all in [false, true] {
+        let sync = Fixture::new();
+        let [claimed, untouched] = ["Claimed", "Untouched"].map(|name| sync.source(name));
+        let job_id = sync.enqueue((!all).then(|| vec![claimed as u64, untouched as u64]));
+        let mut lease = sync.open();
+        drop(local(sync.next(&mut lease)));
+        sync.connection()
+            .execute("DELETE FROM sessions", [])
+            .unwrap();
+        let sync = reopen(sync);
+        assert!(sync.worker.claim_kind(JobKind::Sync).unwrap().is_none());
+        assert_eq!(
+            sync.job(&job_id).state,
+            PersistentState::ReconciliationRequired
+        );
+        assert_eq!(
+            sync.targets(&job_id),
+            [
+                (
+                    claimed,
+                    "reconciliation_required".into(),
+                    Some("authority_refused".into())
+                ),
+                (untouched, "not_run".into(), Some("batch_halt".into())),
+            ]
+        );
+        let mut sync = reopen(sync);
+        sync.login();
+        let mut db = sync.connection();
+        let tx = db.transaction().unwrap();
+        assert!(jobs::source_reserved(&tx, lease.tenant(), claimed).unwrap());
+        assert!(!jobs::source_reserved(&tx, lease.tenant(), untouched).unwrap());
+        drop(tx);
+        let later = enqueue_later(&sync, untouched);
+        assert_eq!(sync.open().job_id(), later);
+        let Fixture { owner, root, .. } = sync;
+        owner.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]

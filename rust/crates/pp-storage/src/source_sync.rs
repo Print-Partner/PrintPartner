@@ -1178,6 +1178,22 @@ pub(crate) fn refuse_authority(
     })
 }
 
+/// Narrows a halted batch's reservation only for targets it never claimed.
+/// A target can be pending after an earlier attempt, so keep those with an
+/// earlier claim generation even when the halt marked them as not run.
+pub(crate) fn retained_authority_resource(tx: &Transaction<'_>, job: &JobRecord) -> Result<String> {
+    validate_basis(tx, job)?;
+    let sources = tx
+        .prepare(
+            "SELECT requested_source_id FROM source_sync_targets
+             WHERE job_id=?1 AND NOT (state='not_run' AND claim_generation=0)",
+        )?
+        .query_map([&job.job_id], |row| Ok(row.get::<_, i64>(0)?.to_string()))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ensure!(!sources.is_empty(), "Retained Sync has no claimed targets");
+    Ok(format!("source-set:{}", sources.join(",")))
+}
+
 fn progress(tx: &Transaction<'_>, job_id: &str) -> Result<u8> {
     let (done, total): (i64, i64) = tx.query_row(
         "SELECT count(*) FILTER (WHERE state IN ('succeeded','failed') AND reservation_acknowledged=1),count(*) FROM source_sync_targets WHERE job_id=?1",

@@ -3542,9 +3542,22 @@ fn reserved_resources(tx: &Transaction<'_>, tenant: &str, queued: bool) -> Resul
             if state == "quarantined" {
                 return resource;
             }
-            decode_row(&id, &document, &mut diagnostics)
-                .map(|job| job.payload.resource())
-                .unwrap_or(resource)
+            let Some(job) = decode_row(&id, &document, &mut diagnostics) else {
+                return resource;
+            };
+            #[cfg(feature = "desktop_rebuild")]
+            if job.kind == JobKind::Sync
+                && job.state == PersistentState::ReconciliationRequired
+                && job.effects.is_empty()
+                && job.authority_refusal.as_ref().is_some_and(|refusal| {
+                    refusal.phase == AuthorityRefusalPhase::SourceWriter
+                        && refusal.generation == job.generation - 1
+                })
+                && let Ok(retained) = crate::source_sync::retained_authority_resource(tx, &job)
+            {
+                return retained;
+            }
+            job.payload.resource()
         })
         .collect())
 }

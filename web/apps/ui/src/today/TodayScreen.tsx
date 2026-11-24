@@ -449,14 +449,17 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
   );
 }
 
+const taskUnitCount = (action: Task["next_action"]) =>
+  action.unit_count === null ? null : plural(action.unit_count, "unit");
+
 /** The hero when no bed waits: the top-ranked task, its reason and what it covers. */
 function TopTask({ task }: { task: Task }) {
-  const { unit_count, item_count, issue_count } = task.next_action;
+  const { item_count, issue_count } = task.next_action;
   const counts = [
-    unit_count !== null && plural(unit_count, "unit"),
-    item_count !== null && plural(item_count, "item"),
-    issue_count !== null && plural(issue_count, "issue"),
-  ].filter((c) => c !== false);
+    taskUnitCount(task.next_action),
+    item_count === null ? null : plural(item_count, "item"),
+    issue_count === null ? null : plural(issue_count, "issue"),
+  ].filter((count) => count !== null);
   return (
     <section className="pp-hero" aria-labelledby="pp-hero-title">
       <h2 id="pp-hero-title">{task.next_action.label}</h2>
@@ -533,16 +536,21 @@ function RankedTasks({
         </div>
       ) : (
         <ol className="pp-tasks" aria-label="Ranked tasks">
-          {tasks.map((task) => (
-            <li key={task.plan_id}>
-              <Link to={`/builds/${task.plan_id}`} className="pp-link">
-                {task.build_name}
-              </Link>{" "}
-              {task.next_action.label}
-              {task.attention && <span className="pp-tag">Needs you</span>}
-              <span className="pp-fact-detail">{task.rank_reason}</span>
-            </li>
-          ))}
+          {tasks.map((task) => {
+            const action = task.next_action;
+            const units = action.stage_id === "checkoff" ? taskUnitCount(action) : null;
+            return (
+              <li key={task.plan_id}>
+                <Link to={`/builds/${task.plan_id}`} className="pp-link">
+                  {task.build_name}
+                </Link>{" "}
+                {action.label}
+                {units && ` (${units})`}
+                {task.attention && <span className="pp-tag">Needs you</span>}
+                <span className="pp-fact-detail">{task.rank_reason}</span>
+              </li>
+            );
+          })}
         </ol>
       )}
     </>

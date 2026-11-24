@@ -13,6 +13,9 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 
 The task feed must be a read view over the ported Build Workflow projection (GRE-415), not a second ranking engine. Today, Build Overview and MCP must not be able to disagree about the next action.
 
+For Checkoff actions, Today shows the workflow's unit count beside each ranked
+task and in the lead task. If the workflow has no count, Today leaves the quantity blank.
+
 ## Delivery slices
 
 Numbers preserve the [product build order](../ui-ux-target.md#build-order); Linear owns execution state.

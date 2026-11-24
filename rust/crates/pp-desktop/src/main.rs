@@ -11,6 +11,9 @@ use tauri::{
 };
 mod recovery;
 
+#[cfg(all(target_os = "linux", feature = "desktop_rebuild"))]
+compile_error!("GRE-1677 desktop Linux CI compile probe");
+
 #[cfg(all(not(debug_assertions), feature = "desktop-e2e"))]
 compile_error!("the desktop-e2e feature is not part of a release build");
 

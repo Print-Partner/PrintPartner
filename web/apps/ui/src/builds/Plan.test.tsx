@@ -357,6 +357,21 @@ describe("Plan refresh after Source changes", () => {
     expect(writes(fetchMock).map((write) => write.path)).toEqual([savePath, refreshPath]);
   });
 
+  it("keeps an inclusion edit queued behind the stale save without sending it", async () => {
+    const { fetchMock } = setup(() => undefined);
+    await screen.findByRole("textbox", { name: /Quantity of bracket/ });
+    type(quantity("bracket"), "7");
+    fireEvent.blur(quantity("bracket"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include bracket.stl" }));
+
+    await screen.findByRole("button", { name: "Refresh from Sources" });
+    expect(screen.getByText("Unsaved: Exclude")).toBeTruthy();
+    expect(writes(fetchMock).map((write) => write.path)).toEqual([savePath]);
+    click("Refresh from Sources");
+    await screen.findByText("stl/bracket.stl: Exclude");
+    expect(writes(fetchMock).map((write) => write.path)).toEqual([savePath, refreshPath]);
+  });
+
   it("reads the current header explicitly before retrying a concurrent-change refusal", async () => {
     let rejected = false;
     const { changeHeader, fetchMock } = setup(() => {

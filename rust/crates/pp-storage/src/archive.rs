@@ -7,12 +7,16 @@ use flate2::{Compression, bufread::GzDecoder, write::GzEncoder};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     collections::BTreeSet,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 use tar::{EntryType, Header, HeaderMode};
+
+mod metadata_reader;
+use metadata_reader::MetadataReader;
 
 pub const FORMAT_VERSION: u64 = 2;
 pub const METADATA_FILE: &str = "backup-metadata.json";
@@ -676,6 +680,16 @@ fn open_archive(archive: &Path) -> Result<File> {
     File::open(archive).with_context(|| format!("Open backup archive {}", archive.display()))
 }
 
+fn read_tar(
+    archive: File,
+    member_size: &Cell<Option<u64>>,
+) -> tar::Archive<MetadataReader<'_, GzDecoder<BufReader<File>>>> {
+    // The bufread decoder leaves bytes after the gzip member in the buffer
+    // so validation can reject them in check_stream_end.
+    let decoder = GzDecoder::new(BufReader::new(archive));
+    tar::Archive::new(MetadataReader::new(decoder, member_size))
+}
+
 /// The decompressed bytes an archive's tar headers declare, read without
 /// extracting anything. Staging checks free space against it, then extracts
 /// with it as [`Limits::max_total_bytes`].
@@ -686,12 +700,15 @@ pub(crate) fn declared_bytes(archive: &File, limits: Limits) -> Result<u64> {
     let mut archive = archive.try_clone()?;
     archive.rewind()?;
     let compressed = archive.metadata()?.len();
-    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(archive)));
+    let member_size = Cell::new(None);
+    let mut reader = read_tar(archive, &member_size);
     let mut tally = Tally::default();
     for entry in reader.entries()? {
         let entry = entry?;
         if !extended_header(entry.header().entry_type()) {
-            tally.add(entry.size(), compressed, limits)?;
+            let size = entry.size();
+            tally.add(size, compressed, limits)?;
+            member_size.set(Some(size));
         }
     }
     Ok(tally.total)
@@ -868,9 +885,8 @@ fn validate_into(
     extract: fn(&str) -> bool,
 ) -> Result<(Metadata, BTreeSet<String>, BTreeSet<String>)> {
     let compressed = archive.metadata()?.len();
-    // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
-    // and leaves anything after it there, so `check_stream_end` can see it.
-    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(archive)));
+    let member_size = Cell::new(None);
+    let mut reader = read_tar(archive, &member_size);
     let (mut seen, mut directories) = (BTreeSet::new(), BTreeSet::new());
     let mut tally = Tally::default();
     let mut metadata = None;
@@ -882,6 +898,7 @@ fn validate_into(
         }
         let size = entry.size();
         tally.add(size, compressed, limits)?;
+        member_size.set(Some(size));
         let path = checked_entry_path(&entry.path_bytes(), entry_type, &mut seen)?;
         if entry_type == EntryType::Directory {
             directories.insert(path.clone());
@@ -907,7 +924,7 @@ fn validate_into(
             std::io::copy(&mut entry, &mut std::io::sink())?;
         }
     }
-    check_stream_end(reader.into_inner())?;
+    check_stream_end(reader.into_inner().into_inner())?;
     let metadata = metadata.ok_or_else(|| anyhow!("Backup archive is missing {METADATA_FILE}"))?;
     ensure!(
         seen.contains(DATABASE_FILE),

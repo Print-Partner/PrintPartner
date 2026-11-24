@@ -233,7 +233,13 @@ fn ticket_t_8_restore_stage_extracts_a_full_backup_and_leaves_live_files_untouch
     let (installation, root) = installation();
     let owner = open(&root).unwrap();
     let scratch = tempfile::tempdir().unwrap();
+    // Rust's tar writer uses GNU long-name metadata for this path.
+    let long_path = format!("repos/{}/part.stl", "x".repeat(120));
+    let live_part = root.join(&long_path);
+    std::fs::create_dir_all(live_part.parent().unwrap()).unwrap();
+    std::fs::write(&live_part, b"backed-up part").unwrap();
     let (backup, backed_up) = backup_then_change(&owner, &root, scratch.path());
+    std::fs::write(&live_part, b"live part").unwrap();
     let live = state(&root);
     let entries = installation.entries().unwrap();
     let client = owner.installation().unwrap();
@@ -245,6 +251,11 @@ fn ticket_t_8_restore_stage_extracts_a_full_backup_and_leaves_live_files_untouch
         .join(WORK_DIR)
         .join(format!("{STAGED_PREFIX}{}", staged.restore_id));
     assert_eq!(state(&staged_dir), backed_up);
+    assert_eq!(
+        std::fs::read(staged_dir.join(long_path)).unwrap(),
+        b"backed-up part"
+    );
+    assert_eq!(std::fs::read(live_part).unwrap(), b"live part");
     assert_eq!(
         work_entries(&root),
         [format!("{STAGED_PREFIX}{}", staged.restore_id)],

@@ -708,15 +708,20 @@ fn merge(
     };
     let mut order: Vec<_> = (0..source.parts.len()).collect();
     order.sort_by_key(|index| source.parts[*index]["id"].as_i64());
+    const FIELDS: [Field; 2] = [Field::Included, Field::QuantityOverride];
     let mut decisions = Vec::new();
-    for &index in &order {
+    for index in order {
         budget.check()?;
         let part = &source.parts[index];
-        for field in [Field::Included, Field::QuantityOverride] {
+        let mut fields = Vec::new();
+        for field in FIELDS {
             let new_included = field == Field::Included && part["baseRevisionPartId"].is_null();
             if new_included || part[field.key()] != baseline(part, field)? {
-                decisions.push((index, field));
+                fields.push(field);
             }
+        }
+        if !fields.is_empty() {
+            decisions.push((index, fields));
         }
     }
     if decisions.is_empty() {
@@ -745,11 +750,9 @@ fn merge(
                 .push(index);
         }
     }
-    let mut decided: Vec<_> = decisions.iter().map(|(index, _)| *index).collect();
-    decided.dedup();
     let mut targets = Vec::<(usize, usize)>::new();
     let mut conflicts = Vec::new();
-    for index in decided {
+    for &(index, _) in &decisions {
         budget.check()?;
         let part = &source.parts[index];
         let source_part_id = num(part, "id")?;
@@ -822,35 +825,41 @@ fn merge(
     }
     if conflicts.is_empty() {
         let targets: HashMap<_, _> = targets.into_iter().collect();
-        let original = fresh.parts.clone();
-        for (index, field) in decisions {
+        for (index, fields) in decisions {
             budget.check()?;
-            // A decision without a target was on a Part the Source dropped.
             let Some(&target) = targets.get(&index) else {
                 continue;
             };
             let part = &source.parts[index];
-            let value = &part[field.key()];
-            let current = &original[target][field.key()];
-            let independent = original[target]["baseRevisionPartId"].is_null()
-                && (policy == MergePolicy::Refresh
-                    || field == Field::Included && part["baseRevisionPartId"].is_null());
-            if !independent && *current != baseline(part, field)? && current != value {
-                conflicts.push(Conflict::ConcurrentDecision {
-                    source_part_id: num(part, "id")?,
-                    target_part_id: target + 1,
-                    field,
-                });
-                continue;
-            }
             let next = &mut fresh.parts[target];
-            next[field.key()] = value.clone();
-            if field == Field::QuantityOverride {
-                next["quantityEffective"] = if value.is_null() {
-                    next["quantityInferred"].clone()
-                } else {
-                    value.clone()
-                };
+            let unbased = next["baseRevisionPartId"].is_null();
+            // A renamed Part can lose its Accepted predecessor. Carry both
+            // fields of the mapped Part so preparation cannot reset its inclusion.
+            let fresh_defaults = policy == MergePolicy::Refresh && unbased;
+            let fields = if fresh_defaults { &FIELDS[..] } else { &fields };
+            for &field in fields {
+                let value = &part[field.key()];
+                let current = &next[field.key()];
+                let independent = fresh_defaults
+                    || (unbased
+                        && field == Field::Included
+                        && part["baseRevisionPartId"].is_null());
+                if !independent && *current != baseline(part, field)? && current != value {
+                    conflicts.push(Conflict::ConcurrentDecision {
+                        source_part_id: num(part, "id")?,
+                        target_part_id: target + 1,
+                        field,
+                    });
+                    continue;
+                }
+                next[field.key()] = value.clone();
+                if field == Field::QuantityOverride {
+                    next["quantityEffective"] = if value.is_null() {
+                        next["quantityInferred"].clone()
+                    } else {
+                        value.clone()
+                    };
+                }
             }
         }
     }

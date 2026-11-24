@@ -68,7 +68,7 @@ fn run(
     )
 }
 
-fn set_quantity(client: &WorkingDraftClient, request: &RefreshDraftRequest) {
+fn set_quantity(client: &WorkingDraftClient, request: &RefreshDraftRequest, part_id: u64) {
     let result = client
         .edit(
             session(),
@@ -76,7 +76,7 @@ fn set_quantity(client: &WorkingDraftClient, request: &RefreshDraftRequest) {
             id(2),
             serde_json::from_value(json!({
                 "expected_snapshot_digest":request.expected_draft.snapshot_digest(),
-                "decisions":[{"kind":"set_quantity_override","draft_part_ids":[6],"value":7}]
+                "decisions":[{"kind":"set_quantity_override","draft_part_ids":[part_id],"value":7}]
             }))
             .unwrap(),
             Arc::new(AtomicBool::new(false)),
@@ -125,7 +125,7 @@ fn stale_autosave_recovers_exact_successor_after_lost_response_and_restart() {
         None,
     );
     f.sql().execute_batch("INSERT INTO plan_draft_headers VALUES (2,'default','Draft name','PO-7','Customer','2026-12-31',3,'fixture')").unwrap();
-    set_quantity(&client, &request(&f, Some(3)));
+    set_quantity(&client, &request(&f, Some(3)), 6);
     let observed = request(&f, Some(3));
     f.sql().execute_batch(ADVANCE).unwrap();
     let before = published(&f, &owner);
@@ -263,43 +263,45 @@ fn refresh_refuses_the_wrong_author_competitors_and_concurrent_changes() {
 }
 
 #[test]
-fn refresh_preserves_quantity_on_a_rename_and_refuses_a_reused_path() {
+fn refresh_preserves_planning_choices_on_a_rename_and_refuses_a_reused_path() {
     for path_reused in [false, true] {
         let f = Fixture::new(&node("base-unchanged"));
         let owner = f.open();
-        let mut files = vec!["bracket.stl", "excluded.stl", "renamed-gear.stl"];
+        let mut files = vec!["bracket.stl", "gear.stl", "renamed-exclusion.stl"];
         if path_reused {
-            files.push("gear.stl");
+            files.push("excluded.stl");
         }
-        let saved =
-            f.rows("SELECT artifact_digest, quantity_override FROM plan_draft_parts WHERE id=6");
-        assert_eq!(saved[0]["quantity_override"], 2);
+        let saved = f.rows(
+            "SELECT artifact_digest,quantity_override,included FROM plan_draft_parts WHERE id=5",
+        );
+        assert_eq!(saved[0]["quantity_override"], 1);
+        assert_eq!(saved[0]["included"], 0);
         let digest = saved[0]["artifact_digest"].as_str().unwrap().to_owned();
         let reads = f.reads_with_digests(
             &json!(files),
             &Value::Null,
             None,
-            [("renamed-gear.stl".into(), digest)].into(),
+            [("renamed-exclusion.stl".into(), digest)].into(),
         );
         let client = owner
             .working_drafts_with_observations(policy(), reads, PreparationLimits::default())
             .unwrap();
-        set_quantity(&client, &request(&f, None));
+        set_quantity(&client, &request(&f, None), 5);
         f.sql().execute_batch(ADVANCE).unwrap();
         let before = f.recorded_rows();
         let result = run(&client, request(&f, None));
         if path_reused {
             assert!(
                 matches!(result, Err(RefreshError::MergeConflicts(ref conflicts))
-                if matches!(conflicts.as_slice(), [RebaseConflict::TargetAmbiguous { source_part_id: 6, .. }])),
+                if matches!(conflicts.as_slice(), [RebaseConflict::TargetAmbiguous { source_part_id: 5, .. }])),
                 "{result:?}"
             );
             assert_eq!(f.recorded_rows(), before);
         } else {
             assert_eq!(result.unwrap().successor_draft_id, id(3));
             assert_eq!(
-                f.rows("SELECT quantity_override, quantity_effective FROM plan_draft_parts WHERE draft_id=3 AND part_key='renamed-gear.stl'"),
-                json!([{"quantity_override":7,"quantity_effective":7}])
+                f.rows("SELECT quantity_override,quantity_effective,included FROM plan_draft_parts WHERE draft_id=3 AND part_key='renamed-exclusion.stl'"),
+                json!([{"quantity_override":7,"quantity_effective":7,"included":0}])
             );
         }
         owner.shutdown().unwrap();
@@ -400,7 +402,7 @@ fn refresh_keeps_the_original_on_an_unmapped_edit_or_failed_successor_insert() {
     let owner = f.open();
     let files = ["bracket.stl", "excluded.stl", "gear.stl"];
     let original = refresh_client(&f, &owner, &files, None);
-    set_quantity(&original, &request(&f, None));
+    set_quantity(&original, &request(&f, None), 6);
     f.sql().execute_batch(ADVANCE).unwrap();
     let observed = request(&f, None);
     let before = f.recorded_rows();

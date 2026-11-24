@@ -8,6 +8,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { LoadedAt, ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 import { PrinterStatus } from "../status/PrinterStatus";
+import { FarmSendQueue } from "./FarmSendQueue";
 import { usePrinterStream, type PrinterStreamView, type StreamPrinter } from "./printerStream";
 import { BED_WORDS, EXECUTION_WORDS, reasonText, type IntegrationKind } from "./words";
 
@@ -209,36 +210,41 @@ export function FarmScreen() {
       ? { kind: "module-off", module: "Farm", wouldShow: "every printer and its state" }
       : farmState(stream, printers, connection);
   return (
-    <ScreenTemplate
-      title="Farm"
-      state={state}
-      renderData={(rows) => (
-        <>
-          {state.kind !== "offline" && (
-            <StreamNotice stream={stream} readAt={printers.dataUpdatedAt || undefined} />
-          )}
-          {stream.printers && <DetailsNotice query={printers} live={stream.status === "live"} />}
-          <PrintersTable rows={rows} />
-          <p>
-            <Link to="/farm/match" className="pp-link">
-              Match prints the app could not match
+    <>
+      <ScreenTemplate
+        title="Farm"
+        state={state}
+        renderData={(rows) => (
+          <>
+            {state.kind !== "offline" && (
+              <StreamNotice stream={stream} readAt={printers.dataUpdatedAt || undefined} />
+            )}
+            {stream.printers && <DetailsNotice query={printers} live={stream.status === "live"} />}
+            <PrintersTable rows={rows} />
+            <p>
+              <Link to="/farm/match" className="pp-link">
+                Match prints the app could not match
+              </Link>
+            </p>
+            <p>
+              <Link to="/farm/log" className="pp-link">
+                Farm log
+              </Link>
+            </p>
+          </>
+        )}
+        empty={{
+          message: "No printers yet. Printers you add in Settings appear here.",
+          action: (
+            <Link to="/settings#printers" className="pp-link">
+              Add a printer in Settings
             </Link>
-          </p>
-          <p>
-            <Link to="/farm/log" className="pp-link">
-              Farm log
-            </Link>
-          </p>
-        </>
+          ),
+        }}
+      />
+      {farm?.state === "on" && (
+        <FarmSendQueue printers={stream.printers ?? printers.data?.printers ?? []} />
       )}
-      empty={{
-        message: "No printers yet. Printers you add in Settings appear here.",
-        action: (
-          <Link to="/settings#printers" className="pp-link">
-            Add a printer in Settings
-          </Link>
-        ),
-      }}
-    />
+    </>
   );
 }

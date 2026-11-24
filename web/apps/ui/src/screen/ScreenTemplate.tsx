@@ -111,12 +111,14 @@ export function ModuleOff({
 
 export function ScreenTemplate<T>({
   title,
+  heading: Heading = "h1",
   state,
   renderData,
   empty,
   subnav,
 }: {
   title: string;
+  heading?: "h1" | "h2";
   /** Navigation that belongs under the heading in every state, such as a tab bar. */
   subnav?: ReactNode;
   state: ScreenState<T>;
@@ -182,7 +184,7 @@ export function ScreenTemplate<T>({
   }
   return (
     <section aria-labelledby={headingId} className="pp-screen" data-state={state.kind}>
-      <h1 id={headingId}>{title}</h1>
+      <Heading id={headingId}>{title}</Heading>
       {subnav}
       {banner}
       {content}

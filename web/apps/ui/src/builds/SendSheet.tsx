@@ -3,6 +3,7 @@ import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-q
 import { useId, useState } from "react";
 import { CoreError } from "../core/client";
 import { writeCore } from "../core/rust";
+import { sendQueueQuery } from "../core/sendQueue";
 import { reason } from "../core/writes";
 import { useConnection } from "../frame/connection";
 import { Dialog } from "../frame/Dialog";
@@ -13,7 +14,6 @@ import {
   previewSendUnits,
   sendable,
   sendPrintersQuery,
-  sendQueueQuery,
   SLICED,
   startRefusal,
   uncertain,

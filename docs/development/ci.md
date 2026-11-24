@@ -62,10 +62,15 @@ The job installs the Linux Tauri libraries, builds the binary with `desktop_rebu
 To run the build and tests locally with the Linux Tauri libraries, the repository Rust toolchain, and nextest 0.9.148:
 
 ```sh
-export PP_DESKTOP_RELEASE_MANIFEST="$(mktemp -d)/desktop-compile-manifest.json"
-python3 rust/scripts/build-desktop-manifest.py --compile-only --output "$PP_DESKTOP_RELEASE_MANIFEST"
-cargo build --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild
-cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild --profile desktop-linux --no-tests=fail
+(
+  set -e
+  temp_dir=$(mktemp -d)
+  trap 'rm -r -- "$temp_dir"' EXIT
+  export PP_DESKTOP_RELEASE_MANIFEST="$temp_dir/desktop-compile-manifest.json"
+  python3 rust/scripts/build-desktop-manifest.py --compile-only --output "$PP_DESKTOP_RELEASE_MANIFEST"
+  cargo build --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild
+  cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild --profile desktop-linux --no-tests=fail
+)
 ```
 
 For the hosted result, check that `changes` logged `desktop-linux inputs changed: true` and that both the build and test steps in `desktop (linux)` passed at the PR head.

@@ -115,10 +115,48 @@ POST   /plans/:id/duplicate
 POST   /plans/:id/archive
 GET    /plans/:id/drafts
 POST   /plans/:id/drafts/recompute
+POST   /plans/:id/drafts/:draftId/refresh
 POST   /plans/:id/drafts/:draftId/apply
 ```
 
 Applying a draft creates the accepted Plan revision used by Checkoff and Production. Callers should not update accepted state by patching part rows directly.
+
+### Refresh an open Plan draft
+
+Rust's `POST /api/v2/plans/{id}/drafts/{draft_id}/refresh` takes an
+`Idempotency-Key` and `{ expected_draft, expected_header_version }`. Use the
+open draft identity from the draft list or workspace, including its base,
+lifecycle version and snapshot digest. Use the saved header's version, or
+`null` when there is no draft header.
+
+The signed-in draft author can refresh the Build's sole open draft against
+changed, revision-tracked Source inputs. The Accepted base must still match
+the observed draft's base. Refresh carries the header and maps saved
+inclusion and quantity choices to Parts from the same Source. The writer
+checks the observed draft, header, Accepted base, prepared Source fingerprint
+and preparation settings, including Kit options and filament defaults, before
+atomically abandoning that draft and inserting its successor. Accepted plans,
+Required units and Build History stay intact.
+
+The operation refuses competing drafts, stale observations and untracked
+inputs. It also refuses saved manual reconciliation decisions and Part
+overrides beyond inclusion and quantity that differ from Accepted.
+For Parts with no Accepted predecessor, refresh treats their saved inclusion
+as a decision and checks that preparation reproduces any stored filament assignment.
+`merge_conflicts` names missing, ambiguous or conflicting Part targets.
+A same-Source Part key and a tracked artifact digest that point to different
+Parts cause a refusal.
+Refusals leave the existing workspace available.
+
+The 200 response is a durable receipt with `source_draft_id` and
+`successor_draft_id`. Refresh performs no Required-unit selection. Read the
+exact successor by ID and confirm its state before changing workspaces.
+After an unconfirmed response, explicitly retry the original URL, body and
+key as the same actor. Replay returns the original receipt even if the
+successor has since closed. Reusing that key for a different refresh request
+on the same Build returns `idempotency_conflict`.
+
+### Production Setup
 
 Production Setup is a Build-owned resource:
 

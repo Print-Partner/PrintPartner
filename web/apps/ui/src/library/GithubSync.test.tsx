@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes as appRoutes } from "../routes";
 import { syncFailure } from "./GithubSync";
-import { IMPORT_POLL_MS as SYNC_POLL_MS, JOBS_KEY, readJobs } from "./ZipUpload";
+import { JOBS_KEY, readJobs } from "./libraryJobs";
+import { IMPORT_POLL_MS as SYNC_POLL_MS } from "./ZipUpload";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -324,7 +325,8 @@ describe("GRE-1728 GitHub branch list and sync", () => {
     fireEvent.click(button());
     await see("Syncing");
     expect(button().disabled).toBe(true);
-    await advance(SYNC_POLL_MS);
+    await advance(0);
+    expect(core.jobReads).toEqual(["job-1"]);
     expect(button().disabled).toBe(true);
     await advance(SYNC_POLL_MS);
     await see("Sync failed");
@@ -360,7 +362,7 @@ describe("GRE-1728 GitHub branch list and sync", () => {
     fireEvent.click(await seeButton("Sync Kit"));
     await see("Syncing");
     expect(core.syncs).toEqual([[4]]);
-    await advance(SYNC_POLL_MS);
+    await advance(0);
     expect(within(row("Kit")).getByText("Syncing")).toBeTruthy();
     expect(core.jobReads).toEqual(["job-1"]);
     await advance(SYNC_POLL_MS);

@@ -25,6 +25,7 @@ It prints each PNG path and the command to publish them at the end, and exits 1 
 | `--shot PATH` | App path to screenshot, such as `/builds/2/history`. Repeat for more. The file is the path with `/` as `-`: `builds-2-history.png`. |
 | `--step NAME:BUILD` | Setup step before the shots, run in the order given. See below. |
 | `--module NAME` | Turn a Module on (`farm`, `orders`, `bambu` or `spoolman`) before the core starts. Repeat for more. All four start off, so `/farm/...` paths need `--module farm`. |
+| `--farm-send-queue` | Seed a queued send and an interrupted send for two Builds. Rust reads these as Not sent and Outcome unknown. Use with `--module farm --shot /farm`. |
 | `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed. |
 | `--review-plan` | Open Review and accept before capturing each Plan shot. |
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |

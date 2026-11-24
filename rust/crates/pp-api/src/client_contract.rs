@@ -188,6 +188,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
     ClientRoute {
         headers: &["Idempotency-Key"],
         ..route(
+            "refreshDraft",
+            "POST",
+            "/api/v2/plans/{id}/drafts/{draft_id}/refresh",
+            Some("RefreshDraftRequest"),
+            "RefreshDraftReceipt",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
             "acceptDraft",
             "POST",
             "/api/v2/plans/{id}/drafts/{draft_id}/apply",
@@ -641,6 +651,7 @@ pub(crate) mod codegen {
                 BuildHeader, BuildHeaderView, DraftHeaderReceipt, DraftHeaderSaved,
                 DraftHeaderState, HeaderView, SaveDraftHeaderRequest,
             },
+            refresh::{RefreshDraftReceipt, RefreshDraftRequest},
             restore::RestoreSnapshotRequest,
         },
     };
@@ -689,6 +700,14 @@ pub(crate) mod codegen {
             schemars::schema_for!(SaveDraftHeaderRequest),
         )?;
         schema("DraftHeaderSaved", schemars::schema_for!(DraftHeaderSaved))?;
+        schema(
+            "RefreshDraftRequest",
+            schemars::schema_for!(RefreshDraftRequest),
+        )?;
+        schema(
+            "RefreshDraftReceipt",
+            schemars::schema_for!(RefreshDraftReceipt),
+        )?;
         schema(
             "RestoreSnapshotRequest",
             schemars::schema_for!(RestoreSnapshotRequest),
@@ -2754,6 +2773,19 @@ pub(crate) mod codegen {
             cases.push(served("DraftAcceptPreview", name, value)?);
         }
         cases.extend(header_fixtures()?);
+        cases.push(request::<RefreshDraftRequest>("RefreshDraftRequest", "observed", json!({
+            "expected_draft": {"draft_id": 1, "state": "open", "lifecycle_version": 0,
+                "snapshot_digest": "a".repeat(64), "base": {"revision_id": null, "plan_version": 0}},
+            "expected_header_version": null
+        })));
+        cases.push(served(
+            "RefreshDraftReceipt",
+            "committed",
+            RefreshDraftReceipt {
+                source_draft_id: serde_json::from_value(json!(1))?,
+                successor_draft_id: serde_json::from_value(json!(2))?,
+            },
+        )?);
         cases.extend(experiment_fixtures()?);
         cases.extend(lifecycle_fixtures(&workspaces[0])?);
         for (index, value) in workspaces.into_iter().enumerate() {

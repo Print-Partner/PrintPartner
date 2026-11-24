@@ -2,6 +2,9 @@
 //! Replays `fixtures/working-draft-rebase-node.mjs`. Regenerate it with
 //! `node --import ./web/node_modules/tsx/dist/loader.mjs --conditions=development
 //! rust/crates/pp-storage/tests/fixtures/working-draft-rebase-node.mjs web/apps/server`.
+#[path = "working_draft_rebase/refresh.rs"]
+mod refresh;
+
 use pp_storage::{
     Limits, WriterOwner,
     auth::{self, Secret},
@@ -20,6 +23,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -53,13 +57,14 @@ fn node(name: &str) -> Value {
 /// runs it after preparation, and can cancel.
 struct Reads {
     files: Vec<String>,
+    artifact_digests: HashMap<String, String>,
     database: PathBuf,
     between: Mutex<Option<String>>,
     cancel: Option<Arc<AtomicBool>>,
     delay: Duration,
 }
 struct Root(Arc<Reads>);
-struct Inventory(Vec<InventoryPath>);
+struct Inventory(Vec<InventoryPath>, Arc<Reads>);
 struct Shared(Arc<Reads>);
 impl DraftReads for Shared {
     fn resolve_stl_root(
@@ -120,7 +125,7 @@ impl StlRootRead for Root {
                 })
             })
             .collect::<ReadResult<_>>()?;
-        Ok(Box::new(Inventory(entries)))
+        Ok(Box::new(Inventory(entries, self.0.clone())))
     }
 }
 impl StlInventory for Inventory {
@@ -132,11 +137,17 @@ impl StlInventory for Inventory {
         index: usize,
         budget: &mut PreparationBudget<'_>,
     ) -> ReadResult<ArtifactRead> {
-        let bytes = self.0[index].physical_relative_path.as_bytes();
+        let path = &self.0[index].physical_relative_path;
+        let bytes = path.as_bytes();
         budget.artifact(bytes.len() as u64, bytes.len())?;
         Ok(ArtifactRead {
             byte_count: bytes.len() as u64,
-            byte_sha256: hex::encode(Sha256::digest(bytes)),
+            byte_sha256: self
+                .1
+                .artifact_digests
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| hex::encode(Sha256::digest(bytes))),
         })
     }
 }
@@ -179,8 +190,18 @@ impl Fixture {
         between: &Value,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Arc<Shared> {
+        self.reads_with_digests(files, between, cancel, HashMap::new())
+    }
+    fn reads_with_digests(
+        &self,
+        files: &Value,
+        between: &Value,
+        cancel: Option<Arc<AtomicBool>>,
+        artifact_digests: HashMap<String, String>,
+    ) -> Arc<Shared> {
         Arc::new(Shared(Arc::new(Reads {
             files: serde_json::from_value(files.clone()).unwrap(),
+            artifact_digests,
             database: self.database(),
             between: Mutex::new(between.as_str().map(str::to_owned)),
             cancel,
@@ -421,6 +442,7 @@ fn a_preparation_slower_than_the_busy_wait_still_writes() {
     let owner = f.open();
     let reads = Arc::new(Shared(Arc::new(Reads {
         files: serde_json::from_value(case["files"].clone()).unwrap(),
+        artifact_digests: HashMap::new(),
         database: f.database(),
         between: Mutex::new(None),
         cancel: None,

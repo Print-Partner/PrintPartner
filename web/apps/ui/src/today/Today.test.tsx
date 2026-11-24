@@ -64,7 +64,12 @@ const printer = (
   loaded_filaments: [],
 });
 
-const task = (planId: number, buildName: string, label: string): Task => ({
+const task = (
+  planId: number,
+  buildName: string,
+  label: string,
+  action: Partial<Task["next_action"]> = {},
+): Task => ({
   plan_id: planId,
   build_name: buildName,
   attention: true,
@@ -80,6 +85,7 @@ const task = (planId: number, buildName: string, label: string): Task => ({
     unit_count: 4,
     item_count: null,
     issue_count: null,
+    ...action,
   },
 });
 
@@ -139,7 +145,14 @@ function fakeCore({
     if (path === "/api/v2/printers") return json({ printers: state.printers });
     if (path === "/api/v2/tasks")
       return json({
-        tasks: [task(22, "Build 22", "Verify prints"), task(19, "Build 19", "Prepare production")],
+        tasks: [
+          task(22, "Build 22", "Verify prints"),
+          task(19, "Build 19", "Prepare production", {
+            kind: "prepare_production",
+            stage_id: "production",
+            target: { plan_id: 19, draft_id: null, tab: "production" },
+          }),
+        ],
         unavailable: [],
       });
     return json({ title: "Not Found" }, 404);
@@ -277,6 +290,48 @@ describe("UI4-01 the hero task shows the reason and the diff inline", () => {
 });
 
 describe("ranked tasks stay current", () => {
+  it("keeps each Checkoff unit count with its Build as the workflow feed changes rank", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: [] });
+    const label = "Check off printed units";
+    const checkoffTask = (id: number, unitCount: number | null) =>
+      task(id, `Build ${id}`, label, { kind: "check_off_manually", unit_count: unitCount });
+    const first = checkoffTask(1, 15);
+    const second = checkoffTask(2, 1);
+    const unknown = checkoffTask(3, null);
+    const feed: TaskFeed = { tasks: [first, second, unknown], unavailable: [] };
+    const base = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/api/v2/tasks" ? json(feed) : base(path, init),
+    );
+    renderToday(core);
+
+    const top = () => within(screen.getByRole("region", { name: label }));
+    const row = (name: string) =>
+      within(screen.getByRole("list", { name: "Ranked tasks" }))
+        .getByRole("link", { name })
+        .closest("li")!;
+
+    await screen.findByRole("region", { name: label });
+    expect(top().getByRole("link", { name: first.build_name })).toBeTruthy();
+    expect(top().getByText("15 units")).toBeTruthy();
+    expect(row(second.build_name).textContent).toContain(`${label} (1 unit)`);
+    expect(row(unknown.build_name).textContent).not.toMatch(/\d+ units?\b/);
+
+    feed.tasks = [second, first, unknown];
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(top().getByRole("link", { name: second.build_name })).toBeTruthy();
+    expect(top().getByText("1 unit")).toBeTruthy();
+    expect(row(first.build_name).textContent).toContain(`${label} (15 units)`);
+
+    feed.tasks = [unknown, second, first];
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(top().getByRole("link", { name: unknown.build_name })).toBeTruthy();
+    expect(top().queryByText(/^\d+ units?$/)).toBeNull();
+    expect(row(second.build_name).textContent).toContain(`${label} (1 unit)`);
+    expect(row(first.build_name).textContent).toContain(`${label} (15 units)`);
+  });
+
   it("rereads the task feed every 30 s and keeps the last list when a reread fails", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore();

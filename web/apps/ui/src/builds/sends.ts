@@ -8,21 +8,13 @@ import {
 } from "@print-partner/rust-client";
 import { CoreError, fetchCore } from "../core/client";
 import { ContractError, readCore } from "../core/rust";
+import { sendStatus, type QueuedSend } from "../core/sendQueue";
 import { lostSend } from "../core/writes";
 
-export type QueuedSend = SendQueue["items"][number];
 export type SendPrinter = FarmPrinterList["printers"][number];
-
-/** While a listed send is Sending, the list reads the queue again this often. */
-export const SENDING_POLL_MS = 3_000;
 
 /** Sliced files the core takes; anything else is refused before a request. */
 export const SLICED = /\.(gcode|gco|bgcode)$/i;
-
-export const sendQueueQuery = {
-  queryKey: ["core", "send-queue"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("readSendQueue", {}, signal),
-} as const;
 
 /** The farm read, fresh each time the sheet opens, for each printer's current state. */
 export const sendPrintersQuery = {
@@ -36,22 +28,6 @@ export function buildSends(queue: SendQueue, build: number): QueuedSend[] {
   return queue.items
     .filter((item) => item.profile_id === build && item.state !== "cancelled")
     .reverse();
-}
-
-export type SendStatus = "Not sent" | "Sending" | "Sent" | "Failed" | "Outcome unknown";
-
-export function sendStatus(item: QueuedSend): SendStatus {
-  if (item.outcome_unknown) return "Outcome unknown";
-  switch (item.state) {
-    case "queued":
-      return "Not sent";
-    case "sending":
-      return "Sending";
-    case "done":
-      return "Sent";
-    default:
-      return "Failed";
-  }
 }
 
 /**

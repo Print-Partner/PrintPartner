@@ -89,6 +89,7 @@ function core({ printers = FLEET, farm = "on" as "on" | "off" } = {}) {
   return vi.fn(async (path: string) => {
     if (path === "/health") return json(health(farm));
     if (path === "/api/v2/printers") return json({ printers });
+    if (path === "/api/v2/printer-send-queue") return json({ items: [] });
     return json({ title: "Not Found" }, 404);
   });
 }
@@ -200,7 +201,7 @@ describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
     const heard = (name: string) => row(name).querySelector("time")?.getAttribute("dateTime");
     expect(Date.parse(heard("Micron")!)).toBeGreaterThan(Date.parse(HEARD) + 590_000);
     expect(heard("Annex K3")).toBe("2026-11-05T20:00:00.000Z");
-    expect(fetchMock.mock.calls.every(([path]) => path === "/health" || path === "/api/v2/printers")).toBe(true);
+    expect(printerCalls(fetchMock)).toBe(1);
     expect(sockets).toHaveLength(1);
   });
 
@@ -242,6 +243,7 @@ describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
     const fetchMock = vi.fn(async (path: string) => {
       if (path === "/health") return json(health("on"));
       if (path === "/api/v2/printers") return json({ printers: fleet });
+      if (path === "/api/v2/printer-send-queue") return json({ items: [] });
       return json({ title: "Not Found" }, 404);
     });
     renderAt("/farm", fetchMock);
@@ -393,8 +395,9 @@ describe("Farm screen states", () => {
   });
 
   it("shows the streamed printers when the farm read fails", async () => {
+    const healthy = core();
     const failing = vi.fn(async (path: string) =>
-      path === "/health" ? json(health("on")) : json({ title: "Internal Server Error" }, 500),
+      path === "/api/v2/printers" ? json({ title: "Internal Server Error" }, 500) : healthy(path),
     );
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderAt("/farm", failing);

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { routes } from "../routes";
 import { LibraryFilesNext } from "./FilesNext";
-import { JOBS_KEY, rowControlId } from "./ZipUpload";
+import { JOBS_KEY } from "./libraryJobs";
+import { rowControlId } from "./ZipUpload";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -567,6 +568,129 @@ const ENDS = CASES.flatMap(([what, kind]) => [
   [what, "its failed answer", kind] as const,
   [what, "another tab ending it", kind] as const,
 ]);
+
+describe("GRE-1875: Library job recovery", () => {
+  const startedJob = (source: Source, count: number) =>
+    `${source.source_kind === "github" ? "sync" : "upload"}-${count}`;
+  const jobReads = (core: ReturnType<typeof scriptedCore>, job: string) =>
+    core.fetchMock.mock.calls.filter(([url]) => url === `/api/v1/jobs/${job}`).length;
+
+  it.each(CASES)("retries an unrecorded %s when another Source starts", async (_, { source, other }) => {
+    const outage = throwing("setItem");
+    const core = scriptedCore({ sources: [ZIP, GITHUB] });
+    const router = renderAt(`/library/${source.id}`, core);
+    await startFromPanel(source);
+    expect(localStorage.getItem(JOBS_KEY)).toBeNull();
+
+    outage.mockRestore();
+    await act(() => router.navigate(`/library/${other.id}`));
+    await startFromPanel(other);
+    expect(JSON.parse(localStorage.getItem(JOBS_KEY) ?? "")).toEqual({
+      [source.id]: startedJob(source, 1),
+      [other.id]: startedJob(other, 2),
+    });
+    expect(rowControl(source).disabled).toBe(true);
+    expect(core.sent).toHaveLength(2);
+  });
+
+  it.each(CASES)("learns another tab's %s after a refused write", async (_, { source, other, job }) => {
+    const outage = throwing("setItem");
+    const core = scriptedCore({ sources: [ZIP, GITHUB] });
+    const router = renderAt(`/library/${other.id}`, core);
+    await startFromPanel(other);
+    expect(localStorage.getItem(JOBS_KEY)).toBeNull();
+
+    outage.mockRestore();
+    await act(() => router.navigate(`/library/${source.id}`));
+    const region = await filesFor(source.name);
+    otherTabWrites({ [source.id]: job });
+    expect(await within(region).findByText(/is running/)).toBeTruthy();
+    expect(rowControl(source).disabled).toBe(true);
+    expect(rowControl(other).disabled).toBe(true);
+    expect(jobReads(core, job)).toBe(1);
+    expect(JSON.parse(localStorage.getItem(JOBS_KEY) ?? "")).toEqual({
+      [source.id]: job,
+      [other.id]: startedJob(other, 1),
+    });
+    expect(core.sent).toHaveLength(1);
+  });
+
+  it.each(CASES)("never follows an ended %s again after a refused read", async (_, { source, other, job, action }) => {
+    const stale = { [source.id]: job, [other.id]: "other-job" };
+    localStorage.setItem(JOBS_KEY, JSON.stringify(stale));
+    const core = scriptedCore({ sources: [ZIP, GITHUB] });
+    const answer = core.hold(job);
+    const otherAnswer = core.hold("other-job");
+    const router = renderAt(`/library/${source.id}`, core);
+    const region = await filesFor(source.name);
+    await waitFor(() => expect(jobReads(core, job)).toBe(1));
+    await waitFor(() => expect(jobReads(core, "other-job")).toBe(1));
+
+    const outage = throwing("getItem");
+    await act(async () => answer("error"));
+    expect(await within(region).findByRole("button", { name: action })).toBeTruthy();
+    expect(rowControl(other).disabled).toBe(true);
+    outage.mockRestore();
+    expect(JSON.parse(localStorage.getItem(JOBS_KEY) ?? "")).toEqual(stale);
+
+    await act(async () => otherAnswer("error"));
+    expect(localStorage.getItem(JOBS_KEY)).toBe("{}");
+    expect(within(region).queryByText(/is running/)).toBeNull();
+    expect(jobReads(core, job)).toBe(1);
+    otherTabWrites({ [source.id]: job });
+    await act(() => router.navigate("/type"));
+    await act(() => router.navigate(`/library/${source.id}`));
+    const reopened = await filesFor(source.name);
+    expect(within(reopened).getByRole("button", { name: action })).toBeTruthy();
+    expect(within(reopened).queryByText(/is running/)).toBeNull();
+    expect(jobReads(core, job)).toBe(1);
+    expect(core.sent).toEqual([]);
+  });
+
+  it.each(CASES)("guards an unanswered %s across Library re-entry", async (_, { source, action }) => {
+    const core = scriptedCore({ sources: [ZIP, GITHUB] });
+    const release = core.holdWrites();
+    const path = `/library/${source.id}`;
+    const router = renderAt(path, core);
+    await within(await filesFor(source.name)).findByRole("button", { name: action });
+    forcePress(source);
+    await waitFor(() => expect(core.sent).toHaveLength(1));
+
+    await act(() => router.navigate("/type"));
+    expect(screen.queryByRole("heading", { name: "Library" })).toBeNull();
+    await act(() => router.navigate(path));
+    const region = await filesFor(source.name);
+    expect(rowControl(source).disabled).toBe(true);
+    fireEvent.click(within(region).getByRole("button", { name: action }));
+    forcePress(source);
+    expect(core.sent).toHaveLength(1);
+    expect(jobReads(core, startedJob(source, 1))).toBe(0);
+
+    await act(async () => release());
+    expect(await within(region).findByText(/is running/)).toBeTruthy();
+    expect(jobReads(core, startedJob(source, 1))).toBe(1);
+    expect(core.sent).toHaveLength(1);
+  });
+
+  it.each(CASES)("ignores a late %s answer after leaving the signed-in frame", async (_, { source, action }) => {
+    const core = scriptedCore({ sources: [ZIP, GITHUB] });
+    const release = core.holdWrites();
+    const path = `/library/${source.id}`;
+    const router = renderAt(path, core);
+    await within(await filesFor(source.name)).findByRole("button", { name: action });
+    forcePress(source);
+    await waitFor(() => expect(core.sent).toHaveLength(1));
+
+    await act(() => router.navigate("/login"));
+    await act(() => router.navigate(path));
+    await filesFor(source.name);
+    expect(rowControl(source).disabled).toBe(false);
+    await act(async () => release());
+    expect(localStorage.getItem(JOBS_KEY)).toBeNull();
+    expect(jobReads(core, startedJob(source, 1))).toBe(0);
+    expect(core.sent).toHaveLength(1);
+  });
+});
 
 describe("GRE-1867 fix round 4: a Source with a job in this tab's map is busy on its row too", () => {
   it.each(ENDS)(

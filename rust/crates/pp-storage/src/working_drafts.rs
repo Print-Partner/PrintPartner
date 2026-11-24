@@ -35,6 +35,7 @@ mod preparation;
 mod preparation_tests;
 mod rebase;
 pub mod rebuild;
+pub mod refresh;
 pub mod restore;
 pub mod save;
 pub use rebase::{
@@ -544,6 +545,7 @@ crate::impl_debug_error!(Failure);
 #[derive(Clone)]
 pub struct WorkingDraftClient {
     shared: Arc<Shared>,
+    reader: crate::SettingsClient,
     policy: auth::AuthPolicy,
     observations: Option<Observations>,
 }
@@ -632,6 +634,7 @@ impl WriterOwner {
         auth::validate_policy(policy)?;
         Ok(WorkingDraftClient {
             shared: self.client.shared.clone(),
+            reader: self.client.clone(),
             policy,
             observations: None,
         })

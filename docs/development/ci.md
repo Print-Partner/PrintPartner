@@ -53,7 +53,7 @@ This page covers what the jobs run and how to reproduce them. [Change a CI workf
 
 ## Linux desktop check
 
-Desktop CI on pull requests is the `desktop (linux)` job in `desktop-linux.yml` (GRE-1677). Windows and macOS desktop builds stay in the nightly workspace job and its manual dispatch until M7.
+The `desktop (linux)` job in `desktop-linux.yml` builds and tests the desktop app on pull requests (GRE-1677).
 
 On each ready PR, `scripts/ci-path-filter.py desktop-linux` checks the full PR diff. It selects Rust workspace crates, including `pp-desktop` and its dependencies, plus `desktop/`, desktop workflows, bundle staging and assembly tools, the replacement UI and Rust client, staged package manifests, and shared Cargo, Web package and Linux dependency inputs. A draft or an unrelated diff skips it. An unknown diff runs it. The check is advisory under the current ruleset and runs only on pull requests.
 
@@ -74,6 +74,29 @@ To run the build and tests locally with the Linux Tauri libraries, the repositor
 ```
 
 For the hosted result, check that `changes` logged `desktop-linux inputs changed: true` and that both the build and test steps in `desktop (linux)` passed at the PR head.
+
+### Windows desktop build
+
+`desktop (windows)` in `desktop-windows.yml` builds the Rust desktop binary on `windows-latest` with `desktop_rebuild` (GRE-1681). The compile-only manifest is generated with Python, and the job does not install or start Node, build or start the old UI, or launch the app. The check is advisory and runs only on ready pull requests. The nightly `rust (windows)` workspace build and `rust (windows tests)` stay separate.
+
+`scripts/ci-path-filter.py desktop-windows` selects the job from the full PR diff. A draft or an unrelated diff skips the job, and an unknown diff runs it. These paths select it:
+
+- `rust/crates/**`, `rust/Cargo.toml`, `rust/Cargo.lock`, `rust-toolchain.toml`, `.cargo/**`, and `rust/.cargo/**`
+- `desktop/**` and `.github/workflows/desktop-*`
+- `rust/scripts/desktop-*` and these files under `rust/scripts/`: `assemble-linux-deb.py`, `assemble-macos-resources.py`, `build-desktop-manifest.py`, `check-macos-bundle.py`, `desktop_workspaces.py`, `macos_addon_slices.py`, `precompress-spa.py`, `stage-desktop.py`, and `stage_dependencies.py`
+- `web/apps/ui/**`, `web/packages/rust-client/**`, `web/package.json`, `web/package-lock.json`, `web/tsconfig.base.json`, and the `package.json` files in `web/apps/server/`, `web/packages/contracts/`, and `web/packages/domain/`
+- `web/apps/server/src/data/**` and `fixtures/admin/settings-support.json`, which contain data embedded by Rust
+- `scripts/ci-path-filter.py`, `scripts/ci-affected-nextest-filter.py`, `scripts/test_ci_path_filter.py`, and `scripts/test_ci_affected_nextest_filter.py`
+
+To reproduce the compile on Windows, use the repository Rust toolchain, Python and the MSVC build tools. From the repository root in PowerShell:
+
+```powershell
+$env:PP_DESKTOP_RELEASE_MANIFEST = Join-Path $env:TEMP "desktop-compile-$([guid]::NewGuid()).json"
+python rust/scripts/build-desktop-manifest.py --compile-only --output "$env:PP_DESKTOP_RELEASE_MANIFEST"
+cargo build --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild
+Remove-Item $env:PP_DESKTOP_RELEASE_MANIFEST
+Remove-Item Env:PP_DESKTOP_RELEASE_MANIFEST
+```
 
 ## Web job selection
 

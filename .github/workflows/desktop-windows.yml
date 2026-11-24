@@ -1,0 +1,62 @@
+name: Desktop Windows
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.select.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select changed desktop inputs
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-path-filter.py desktop-windows
+
+  desktop-windows:
+    name: desktop (windows)
+    needs: changes
+    if: ${{ !github.event.pull_request.draft && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false') }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - name: Require successful input selection
+        if: needs.changes.result != 'success'
+        run: exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rust -> target
+      - name: Generate the compile-only manifest
+        run: |
+          $manifest = Join-Path $env:RUNNER_TEMP 'desktop-compile-manifest.json'
+          python rust/scripts/build-desktop-manifest.py --compile-only --output "$manifest"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PP_DESKTOP_RELEASE_MANIFEST=$manifest" >> $env:GITHUB_ENV
+      - name: Build the Rust desktop binary
+        run: cargo build --locked --manifest-path rust/Cargo.toml -p pp-desktop --features desktop_rebuild

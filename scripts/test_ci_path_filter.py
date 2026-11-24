@@ -287,7 +287,7 @@ class CiPathFilterTests(unittest.TestCase):
     def test_linux_setup_selects_rust(self):
         self.assertTrue(ci_filter.relevant("scripts/setup-ci-linux.sh", "rust"))
 
-    def test_desktop_linux_inputs(self):
+    def test_shared_desktop_inputs(self):
         for path in (
                 "rust/crates/pp-desktop/src/main.rs", "rust/crates/pp-desktop/tauri.conf.json",
                 "rust/crates/pp-desktop/icons/icon.png", "rust/crates/pp-desktop/bootstrap/index.html",
@@ -299,14 +299,24 @@ class CiPathFilterTests(unittest.TestCase):
                 "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
                 "web/apps/server/package.json", "web/packages/contracts/package.json",
                 "web/packages/domain/package.json",
-                "web/package-lock.json", "rust/Cargo.lock", "rust-toolchain.toml", "rust/.config/nextest.toml",
-                ".github/actions/linux-gui-deps/action.yml", ".github/workflows/desktop-linux.yml",
+                "web/package-lock.json", "rust/Cargo.lock", "rust-toolchain.toml",
+                ".github/workflows/desktop-linux.yml", ".github/workflows/desktop-windows.yml",
                 ".github/workflows/desktop-native-macos.yml", "scripts/ci-path-filter.py"):
-            self.assertTrue(ci_filter.relevant(path, "desktop-linux"), path)
+            for kind in ("desktop-linux", "desktop-windows"):
+                self.assertTrue(ci_filter.relevant(path, kind), (path, kind))
         for path in ("docs/development/ci.md", "web/apps/web/src/App.tsx",
                      ".github/workflows/web-ci.yml"):
-            self.assertFalse(ci_filter.relevant(path, "desktop-linux"), path)
-        self.assertFalse(ci_filter.select("merge_group", "", "", "desktop-linux"))
+            for kind in ("desktop-linux", "desktop-windows"):
+                self.assertFalse(ci_filter.relevant(path, kind), (path, kind))
+        for kind in ("desktop-linux", "desktop-windows"):
+            self.assertFalse(ci_filter.select("merge_group", "", "", kind))
+
+    def test_platform_specific_desktop_inputs(self):
+        for path in (".github/actions/linux-gui-deps/action.yml", "rust/.config/nextest.toml"):
+            self.assertTrue(ci_filter.relevant(path, "desktop-linux"), path)
+            self.assertFalse(ci_filter.relevant(path, "desktop-windows"), path)
+        for path in ("fixtures/admin/settings-support.json", "web/apps/server/src/data/legal/LICENSE"):
+            self.assertTrue(ci_filter.relevant(path, "desktop-windows"), path)
 
     def test_actions_inputs(self):
         for path in [".github/workflows/a.yml", ".github/actions/a/action.yml",
@@ -317,7 +327,7 @@ class CiPathFilterTests(unittest.TestCase):
             self.assertFalse(ci_filter.relevant(path, "actions"))
 
     def test_unknown_base_and_non_pr_events_run(self):
-        for kind in ["rust", "rust-image", "actions", "desktop-linux", "ui", "web"]:
+        for kind in ["rust", "rust-image", "actions", "desktop-linux", "desktop-windows", "ui", "web"]:
             self.assertTrue(ci_filter.select("pull_request", "", "", kind))
             self.assertTrue(ci_filter.select("pull_request", "0" * 40, "1" * 40, kind))
             self.assertTrue(ci_filter.select("push", "", "", kind))
@@ -351,14 +361,16 @@ class CiPathFilterTests(unittest.TestCase):
             git("config", "user.name", "Proof")
             base = commit("README.md")
             docs = commit("docs/space and\nnewline.md")
-            for kind in ["rust", "actions", "desktop-linux", "ui", "web"]:
+            for kind in ["rust", "actions", "desktop-linux", "desktop-windows", "ui", "web"]:
                 self.assertEqual(select(base, docs, kind)[0], "relevant=false\n")
             for path, kind in (("web/apps/ui/src/App.tsx", "ui"),
                                ("web/packages/rust-client/src/client.ts", "ui"),
                                ("web/apps/server/src/app.ts", "web"),
                                ("web/DEPLOY.md", "web"),
                                ("rust/crates/pp-desktop/src/main.rs", "desktop-linux"),
-                               ("rust/scripts/stage-desktop.py", "desktop-linux")):
+                               ("rust/scripts/stage-desktop.py", "desktop-linux"),
+                               ("rust/crates/pp-desktop/src/main.rs", "desktop-windows"),
+                               ("rust/scripts/stage-desktop.py", "desktop-windows")):
                 git("checkout", "-q", "--detach", base)
                 changed = commit(path)
                 self.assertEqual(select(base, changed, kind)[0], "relevant=true\n")

@@ -62,6 +62,8 @@ class PullRequestImageTest(unittest.TestCase):
                 self.assertTrue(job["if"].startswith(f"({draft_guard}) && ("))
                 self.assertIn("needs.changes.outputs.relevant != 'false'", job["if"])
                 steps = job["steps"]
+                self.assertEqual(steps[0]["env"], {"SELECTOR_RESULT": "${{ needs.changes.result }}"})
+                self.assertEqual(steps[0]["run"], 'test "$SELECTOR_RESULT" = success')
                 build = step_index(steps, builds, "builds the image")
                 smoke = step_index(steps, lambda s: s.get("run", "").startswith(SMOKE), "runs the smoke test")
                 self.assertLess(build, smoke)

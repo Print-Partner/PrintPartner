@@ -8,7 +8,7 @@ Work comes from the Rust cutover project, one ticket per fresh session, through 
 
 1. **One job per PR.** Aim for 300 to 600 changed lines. About 1,500 is the hard ceiling, or about 600 for a cross-cutting PR. Split larger work into sequential PRs: each one starts from `main` after the previous one merges, never stacked on an open PR's branch. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
-3. **Reviewed.** Required CI is green on the head, and every review thread is resolved. A second review is required only for a [data-loss change](#who-merges). Chad merges.
+3. **Reviewed.** Required CI is green, an independent maintainer has approved the current diff in GitHub, and every review thread is resolved. Record what the reviewer checked on [data-loss changes](#who-merges). Chad merges.
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
 5. **Rust test renames.** Record every renamed file in its crate's page under [Test file renames](../records/test-renames.md). Rename PRs add rows only to their crate's file; preserve existing rows verbatim. The shared index is navigation.
 
@@ -16,7 +16,9 @@ Work comes from the Rust cutover project, one ticket per fresh session, through 
 
 Chad merges. An agent opens the PR and stops.
 
-A second review, by someone other than the author, is required only when the change can lose or corrupt data:
+Ask one maintainer with repository write access, other than the author, to approve in GitHub. New commits that change the diff dismiss stale approvals. Devin Review posts actionable bug and security findings. The maintainer reviews the diff, addresses open findings and approves the PR.
+
+The reviewer checks failure and recovery paths when the change can lose or corrupt data:
 
 - import
 - schema
@@ -25,7 +27,7 @@ A second review, by someone other than the author, is required only when the cha
 - send
 - Accept and publication (`plan_publication`, `plates/initialize.rs`, `working_drafts/save.rs`; owner decision, 2026-11-12)
 
-Say that in the PR body. Other changes need the required checks green and the review threads resolved. Chad still merges those.
+Record the review in the PR body for those changes. Discuss any unresolved finding before merging.
 
 ## Fixes only
 

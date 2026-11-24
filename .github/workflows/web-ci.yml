@@ -63,6 +63,11 @@ jobs:
       run:
         working-directory: web
     steps:
+      - name: Require successful input selection
+        working-directory: .
+        env:
+          SELECTOR_RESULT: ${{ needs.changes.result }}
+        run: test "$SELECTOR_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -73,9 +78,10 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Verify pinned Node version
         run: test "$(node --version)" = "v24.21.0"
-      - name: Test and build the replacement UI
+      - name: Lint, test and build the replacement UI
         run: |
           npm ci
+          npm run lint --workspace @print-partner/ui
           npm test -w @print-partner/rust-client
           npm run test --workspace @print-partner/ui
           npm run build --workspace @print-partner/ui

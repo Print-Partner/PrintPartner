@@ -196,7 +196,7 @@ Before large or risky work, write the plan down and challenge it. Risky work inc
 
 ## Review and merge
 
-Required checks must be green on the head, and every review thread resolved. A second review is required only for a data-loss change. Chad merges. See [Who merges](definition-of-done.md#who-merges).
+Required checks must be green, an independent maintainer must approve in GitHub, and every review thread must be resolved. Review data-loss changes for failure and recovery paths. Chad merges in GitHub. See [Who merges](definition-of-done.md#who-merges).
 
 Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that quotes them verbatim; see [Fixes only](definition-of-done.md#fixes-only). `linear-pr-sync.yml` sets the ticket states that follow a PR, so don't move them yourself.
 

@@ -1,5 +1,9 @@
 # Sensitive merge score records
 
+Historical reference. The [GitHub review cutover](ci-controls.md#apply-the-github-review-cutover)
+replaces this workflow for Print Partner. The local coordinator guard still recognizes
+historical records. See [Who merges](definition-of-done.md#who-merges) for the current process.
+
 The coordinator guard and the `pp/score` status read score comments only from `scorer_authors` in
 `scripts/merge-classes.json`, currently `poitee`, and both read them with one reader,
 `read_comments` in `scripts/merge_class.py` (see [How records are read](#how-records-are-read)). That account posts every

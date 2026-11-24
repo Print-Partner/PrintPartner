@@ -146,15 +146,20 @@ class MergeGroupWorkflowTests(unittest.TestCase):
             job = jobs["ui"]
             self.assertEqual(job["needs"], ["changes"])
             self.assertEqual(job_runs(job["if"], contexts), runs)
+        self.assertTrue(any("npm run lint --workspace @print-partner/ui" in step.get("run", "").splitlines()
+                            for step in jobs["ui"]["steps"]))
+        self.assertEqual(jobs["ui"]["steps"][0]["env"], {"SELECTOR_RESULT": "${{ needs.changes.result }}"})
+        self.assertEqual(jobs["ui"]["steps"][0]["run"], 'test "$SELECTOR_RESULT" = success')
 
     def test_every_required_check_reports_on_merge_groups(self):
         """Each required context comes from a job that a merge_group run starts and cannot skip."""
         required = {"actionlint": "actionlint.yml", "zizmor": "actionlint.yml",
-                    "rust (linux)": "rust-cross-os.yml"}
+                    "rust (linux)": "rust-cross-os.yml", "ui": "web-ci.yml",
+                    "release-audit": "web-ci.yml", "rust image": "rust-image.yml"}
         ruleset = json.loads((ROOT / "docs/development/main-ci-controls.ruleset.json").read_text())
         (checks,) = [rule["parameters"]["required_status_checks"] for rule in ruleset["rules"]
                      if rule["type"] == "required_status_checks"]
-        self.assertEqual({check["context"] for check in checks}, set(required))
+        self.assertCountEqual(checks, [{"context": context, "integration_id": 15368} for context in required])
         contexts = {"github": {"event_name": EVENT_NAME}, "needs": {
             "changes": {"result": "success", "outputs": {"relevant": "true", "windows": "true",
                                                         "ui": "true", "web": "false"}},
@@ -167,6 +172,20 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                 (job,) = [job for job_id, job in workflow["jobs"].items()
                           if job.get("name", job_id) == context]
                 self.assertTrue(job_runs(job.get("if", ""), contexts), f"{context} skips merge groups")
+                self.assertNotIn("continue-on-error", job)
+
+    def test_default_branch_requires_independent_review_and_has_no_bypass_actors(self):
+        ruleset = json.loads((ROOT / "docs/development/main-ci-controls.ruleset.json").read_text())
+        self.assertEqual(ruleset["enforcement"], "active")
+        self.assertEqual(ruleset["conditions"]["ref_name"], {"include": ["~DEFAULT_BRANCH"], "exclude": []})
+        self.assertEqual(ruleset["bypass_actors"], [])
+        rules = {rule["type"]: rule.get("parameters") for rule in ruleset["rules"]}
+        self.assertTrue({"deletion", "non_fast_forward", "merge_queue"} <= rules.keys())
+        reviews = rules["pull_request"]
+        self.assertEqual(reviews["allowed_merge_methods"], ["squash"])
+        self.assertEqual(reviews["required_approving_review_count"], 1)
+        self.assertIs(reviews["dismiss_stale_reviews_on_push"], True)
+        self.assertIs(reviews["required_review_thread_resolution"], True)
 
     def test_merge_groups_run_linux_rust_on_hosted_runners(self):
         spec = importlib.util.spec_from_file_location("ci_rust_runner", ROOT / "scripts/ci-rust-runner.py")

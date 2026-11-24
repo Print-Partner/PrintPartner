@@ -291,10 +291,14 @@ class CiPathFilterTests(unittest.TestCase):
         for path in (
                 "rust/crates/pp-desktop/src/main.rs", "rust/crates/pp-desktop/tauri.conf.json",
                 "rust/crates/pp-desktop/icons/icon.png", "rust/crates/pp-desktop/bootstrap/index.html",
+                "rust/crates/pp-core/src/lib.rs", "rust/crates/pp-os/src/lib.rs",
+                "rust/crates/pp-storage/src/lib.rs",
                 "rust/scripts/desktop-bundle.sh", "rust/scripts/desktop-deb.sh",
                 "rust/scripts/stage-desktop.py", "rust/scripts/assemble-linux-deb.py",
                 "rust/scripts/build-desktop-manifest.py", "desktop/packaged-smoke/smoke.py",
                 "web/apps/ui/src/App.tsx", "web/packages/rust-client/src/client.ts",
+                "web/apps/server/package.json", "web/packages/contracts/package.json",
+                "web/packages/domain/package.json",
                 "web/package-lock.json", "rust/Cargo.lock", "rust-toolchain.toml", "rust/.config/nextest.toml",
                 ".github/actions/linux-gui-deps/action.yml", ".github/workflows/desktop-linux.yml",
                 ".github/workflows/desktop-native-macos.yml", "scripts/ci-path-filter.py"):

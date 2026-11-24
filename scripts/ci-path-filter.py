@@ -76,13 +76,14 @@ def rust_image_relevant(path):
 DESKTOP_LINUX_INPUTS = {
     ".github/actions/linux-gui-deps/action.yml",
     "rust-toolchain.toml", "rust/Cargo.toml", "rust/Cargo.lock", "rust/.config/nextest.toml",
-    "rust/crates/pp-compat/build.rs",
     "rust/scripts/assemble-linux-deb.py", "rust/scripts/assemble-macos-resources.py",
     "rust/scripts/build-desktop-manifest.py", "rust/scripts/check-macos-bundle.py",
     "rust/scripts/desktop_workspaces.py", "rust/scripts/macos_addon_slices.py",
     "rust/scripts/precompress-spa.py", "rust/scripts/stage-desktop.py",
     "rust/scripts/stage_dependencies.py",
     "web/package.json", "web/package-lock.json", "web/tsconfig.base.json",
+    "web/apps/server/package.json", "web/packages/contracts/package.json",
+    "web/packages/domain/package.json",
 }
 
 
@@ -97,8 +98,9 @@ def relevant(path, kind):
     if kind == "rust-image":
         return rust_image_relevant(path)
     if kind == "desktop-linux":
+        # Include workspace crates so transitive Rust dependencies trigger the build.
         return path in DESKTOP_LINUX_INPUTS or path.startswith((
-            ".github/workflows/desktop-", "desktop/", "rust/crates/pp-desktop/",
+            ".github/workflows/desktop-", "desktop/", "rust/crates/",
             "rust/scripts/desktop-", "web/apps/ui/", "web/packages/rust-client/",
             ".cargo/", "rust/.cargo/",
         ))

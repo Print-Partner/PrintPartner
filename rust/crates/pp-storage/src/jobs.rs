@@ -1252,7 +1252,7 @@ impl ServerWorkerClient {
 
     /// Stores one successful target result and releases that target's Source
     /// reservation. A stale attempt, or a Source proof that is not the claim's
-    /// live reservation, is refused and writes nothing.
+    /// live reservation, writes nothing. A revoked authority halts the batch.
     pub fn settle_source_sync_target(
         &self,
         lease: &AttemptLease,
@@ -1316,7 +1316,7 @@ impl ServerWorkerClient {
     }
 
     /// Records one claimed target's local read failure and the Source failure
-    /// observation. The reservation stays held. A refusal writes nothing.
+    /// observation. The reservation stays held. A revoked authority halts the batch.
     pub fn fail_source_sync_target(
         &self,
         lease: &mut AttemptLease,
@@ -2417,29 +2417,31 @@ pub(crate) fn execute(
             settlement,
             github,
             policy,
-        } => TransactionDecision::SourceSyncSettled(crate::source_sync::settle(
-            &tx,
-            catalog_state,
-            &lease,
-            candidate,
-            settlement,
-            github,
-            policy,
-        )?),
+        } => sync_target_write(&tx, &lease, policy, |job| {
+            let settled = crate::source_sync::settle(
+                &tx,
+                catalog_state,
+                &lease,
+                &job,
+                candidate,
+                settlement,
+                github,
+            )?;
+            Ok(TransactionDecision::SourceSyncSettled(settled))
+        })?,
         #[cfg(feature = "desktop_rebuild")]
         Command::FailSourceSyncTarget {
             lease,
             candidate,
             detail,
             policy,
-        } => TransactionDecision::Outcome(Outcome::SourceSyncFailed(crate::source_sync::fail(
-            &tx,
-            catalog_state,
-            &lease,
-            candidate,
-            &detail,
-            policy,
-        )?)),
+        } => sync_target_write(&tx, &lease, policy, |job| {
+            let failed =
+                crate::source_sync::fail(&tx, catalog_state, &lease, job, candidate, &detail)?;
+            Ok(TransactionDecision::Outcome(Outcome::SourceSyncFailed(
+                failed,
+            )))
+        })?,
         #[cfg(feature = "desktop_rebuild")]
         Command::AcknowledgeSourceSyncTarget {
             lease,
@@ -3264,7 +3266,14 @@ fn claim(
                     } else {
                         AuthorityRefusalPhase::Claim
                     };
-                    record_refusal(tx, &mut job, reason, phase, None)?;
+                    if job.kind == JobKind::Sync && crate::source_sync::has_batch(tx, &job.job_id)?
+                    {
+                        job =
+                            crate::source_sync::refuse_authority(tx, job, reason.failure().into())?
+                                .job;
+                    } else {
+                        record_refusal(tx, &mut job, reason, phase, None)?;
+                    }
                     if filter.job_id.is_some() {
                         return Ok(TransactionDecision::Refused(CommittedRefusal {
                             job,
@@ -3951,6 +3960,24 @@ fn require_feature(
         JobFailure::FeatureDisabled { feature }
     );
     Ok(())
+}
+
+/// Authorizes a sync target write or commits a reconciliation record for a
+/// claim whose authority was revoked while the worker prepared the result.
+#[cfg(feature = "desktop_rebuild")]
+fn sync_target_write(
+    tx: &Transaction<'_>,
+    lease: &AttemptLease,
+    policy: AuthPolicy,
+    write: impl FnOnce(JobRecord) -> Result<TransactionDecision>,
+) -> Result<TransactionDecision> {
+    let job = crate::source_sync::require_sync_job(tx, lease)?;
+    match require_original_authority(tx, &job, policy) {
+        Ok(_) => write(job),
+        Err(error) => {
+            crate::source_sync::refuse_authority(tx, job, error).map(TransactionDecision::Refused)
+        }
+    }
 }
 
 /// Revalidates the credential that enqueued `job` under the current policy.

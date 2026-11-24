@@ -1450,8 +1450,8 @@ fn open_and_advance_authority_refusal_halts_without_claimed_targets() {
 }
 
 #[test]
-fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
-    for at_open in [false, true] {
+fn authority_refusals_preserve_claimed_target_evidence() {
+    for operation in ["open", "advance", "settle", "fail"] {
         let mut sync = Fixture::new();
         let first = sync.source("Claimed");
         let second = sync.source("Pending");
@@ -1463,38 +1463,35 @@ fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
             [&job_id],
             |row| (0..10).map(|index| row.get::<_, rusqlite::types::Value>(index)).collect::<rusqlite::Result<Vec<_>>>(),
         ).unwrap();
-        if at_open {
+        if operation == "open" {
             drop(target.take());
-            let Fixture {
-                owner, root, token, ..
-            } = sync;
-            owner.shutdown().unwrap();
-            let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
-            let catalog = owner
-                .source_catalog_with_policy(
-                    catalog::Credentials::Session(auth::Secret::new(token.clone())),
-                    policy(),
-                )
-                .unwrap();
-            let worker = owner.job_worker_with_policy(policy(), admission()).unwrap();
-            lease = worker.claim_kind(JobKind::Sync).unwrap().unwrap().lease;
-            sync = Fixture {
-                owner,
-                root,
-                token,
-                catalog,
-                worker,
-            };
+            sync = reopen(sync);
+            lease = sync
+                .worker
+                .claim_kind(JobKind::Sync)
+                .unwrap()
+                .unwrap()
+                .lease;
         }
         sync.connection()
             .execute("DELETE FROM sessions", [])
             .unwrap();
-        let error = if at_open {
-            sync.worker.open_source_sync(&lease).unwrap_err()
-        } else {
-            sync.worker
+        let before = source_row(&sync, first);
+        let error = match operation {
+            "open" => sync.worker.open_source_sync(&lease).unwrap_err(),
+            "advance" => sync
+                .worker
                 .update(&mut lease, WorkerOperation::Progress(10))
-                .unwrap_err()
+                .unwrap_err(),
+            "settle" => sync
+                .worker
+                .settle_source_sync_target(&lease, target.as_mut().unwrap(), settlement(first))
+                .unwrap_err(),
+            "fail" => sync
+                .worker
+                .fail_source_sync_target(&mut lease, target.as_ref().unwrap(), "Read failed")
+                .unwrap_err(),
+            _ => unreachable!(),
         };
         assert_eq!(
             error.downcast_ref::<auth::AuthorityFailure>(),
@@ -1518,7 +1515,16 @@ fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
                 (second, "not_run".into(), Some("batch_halt".into())),
             ]
         );
-        if !at_open {
+        assert_eq!(source_row(&sync, first), before);
+        let mut db = sync.connection();
+        let tx = db.transaction().unwrap();
+        assert!(
+            catalog::source_activity(&tx, lease.tenant(), 10)
+                .unwrap()
+                .is_empty()
+        );
+        drop(tx);
+        if operation != "open" {
             sync.login();
             sync.catalog = sync
                 .owner
@@ -1533,6 +1539,34 @@ fn open_and_advance_authority_refusals_preserve_claimed_target_evidence() {
         drop(target);
         assert_refusal_survives_reopen(sync, &job_id);
     }
+}
+
+#[test]
+fn revoked_recovered_sync_preserves_claim_for_reconciliation() {
+    let sync = Fixture::new();
+    let id = sync.source("Claimed");
+    let job_id = sync.enqueue(Some(vec![id as u64]));
+    let mut lease = sync.open();
+    let target = local(sync.next(&mut lease));
+    sync.connection()
+        .execute("DELETE FROM sessions", [])
+        .unwrap();
+    drop(target);
+    let sync = reopen(sync);
+    assert!(sync.worker.claim_kind(JobKind::Sync).unwrap().is_none());
+    assert_eq!(
+        sync.job(&job_id).state,
+        PersistentState::ReconciliationRequired
+    );
+    assert_eq!(
+        sync.targets(&job_id),
+        [(
+            id,
+            "reconciliation_required".into(),
+            Some("authority_refused".into())
+        )]
+    );
+    assert_refusal_survives_reopen(sync, &job_id);
 }
 
 #[test]

@@ -1945,7 +1945,6 @@ fn activate(
         )?;
         let postprocessing =
             apply_activation(tx, catalog_state, op, &artifact, &revision, id, &now)?;
-        #[cfg(feature = "desktop_rebuild")]
         if matches!(&op.input, Input::Zip { .. }) || op.input.captured_zip_path().is_some() {
             catalog::activity::record(
                 tx,

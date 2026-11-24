@@ -298,6 +298,10 @@ describe("Plan refresh after Source changes", () => {
   const quantity = (name: string) =>
     screen.getByRole<HTMLInputElement>("textbox", { name: new RegExp(`Quantity of ${name}`) });
   const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+  const tab = async (name: string) => {
+    fireEvent.click(screen.getByRole("link", { name }));
+    await screen.findByRole("heading", { name });
+  };
   const type = (input: HTMLInputElement, value: string) =>
     fireEvent.change(input, { target: { value } });
   const staleSave = async () => {
@@ -326,6 +330,9 @@ describe("Plan refresh after Source changes", () => {
     expect(screen.getByText("stl/bracket.stl quantity: 7")).toBeTruthy();
     expect(screen.getByText("Customer: Typed customer")).toBeTruthy();
     expect(field("Customer").value).toBe("Acme");
+    await tab("Sources");
+    await tab("Plan");
+    expect(screen.getByText("stl/bracket.stl quantity: 7")).toBeTruthy();
     await act(async () => {
       await client.refetchQueries({ queryKey: ["core", "plan", 2] });
     });
@@ -354,6 +361,15 @@ describe("Plan refresh after Source changes", () => {
     await screen.findByText(/Some saved Part choices could not be carried/);
     expect(quantity("bracket").value).toBe("7");
     expect(screen.queryByRole("textbox", { name: /Quantity of renamed-bracket/ })).toBeNull();
+    const draftReads = () => fetchMock.mock.calls.filter(([path]) => path === draftsPath).length;
+    const before = draftReads();
+    await tab("Sources");
+    expect(screen.queryByRole("button", { name: "Refresh from Sources" })).toBeNull();
+    await tab("Plan");
+    await screen.findByText(/Some saved Part choices could not be carried/);
+    expect(quantity("bracket").value).toBe("7");
+    expect(quantity("bracket").readOnly).toBe(true);
+    expect(draftReads()).toBe(before);
     expect(writes(fetchMock).map((write) => write.path)).toEqual([savePath, refreshPath]);
   });
 
@@ -407,6 +423,8 @@ describe("Plan refresh after Source changes", () => {
     expect(writes(fetchMock)).toHaveLength(2);
     expect(quantity("bracket").value).toBe("7");
 
+    await tab("Sources");
+    await tab("Plan");
     click("Check refresh");
     await screen.findByRole("button", { name: "Load refreshed draft" });
     expect(screen.getByRole("link", { name: "sign in" })).toBeTruthy();

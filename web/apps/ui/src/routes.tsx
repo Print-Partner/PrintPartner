@@ -44,7 +44,7 @@ function PrinterStates() {
 /** Every Build tab's screen. A new tab without one is a type error, not a placeholder. */
 const BUILD_TAB_SCREENS: Record<BuildTabPath, ReactNode> = {
   sources: <BuildSources />,
-  plan: <BuildPlan />,
+  plan: <></>, // BuildWorkspace keeps Plan mounted after the first visit.
   production: <BuildProduction />,
   checkoff: <BuildCheckoff />,
   history: <BuildHistory />,
@@ -82,7 +82,9 @@ export const routes: RouteObject[] = [
       })),
       {
         path: "builds/:id",
-        element: <BuildWorkspace />,
+        element: (
+          <BuildWorkspace plan={(id, active) => <BuildPlan key={id} id={id} active={active} />} />
+        ),
         children: [
           { index: true, element: <BuildOverview /> },
           ...BUILD_TABS.flatMap((t) =>

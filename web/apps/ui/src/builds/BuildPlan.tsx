@@ -21,7 +21,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { useLocation, useNavigate, useOutletContext } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore, writeCore } from "../core/rust";
@@ -32,7 +32,7 @@ import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
 import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { plural } from "../today/beds";
-import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { BuildTabs } from "./BuildWorkspace";
 import { ExperimentOption, holdersOf } from "./ExperimentOption";
 import { planKey, useMatchStep } from "./PlanReconcile";
 import {
@@ -950,14 +950,19 @@ function PlanBody({
   id,
   queryData,
   pinDraft,
+  active,
+  stale,
+  setStale,
 }: {
   id: number;
   queryData: PlanData;
   pinDraft: PinDraft;
+  active: boolean;
+  stale: OpenPlan | null;
+  setStale: (data: OpenPlan | null) => void;
 }) {
   const client = useQueryClient();
   const sourceRef = useRef<OpenPlan | null>(null);
-  const [stale, setStale] = useState<OpenPlan | null>(null);
   const [current, setInstalled] = useInstalledPlan(queryData);
   const data = stale ?? current;
   const draft = data.draft;
@@ -971,16 +976,18 @@ function PlanBody({
     return state && state.draftId === draftId ? state : null;
   });
   const [gate, setGate] = useState(restored !== null);
+  if (!active && gate) setGate(false);
   const writes = useDraftWrites(id, pinDraft, sourceRef, (source) => {
     sourceRef.current = source;
+    pinDraft(source.draft.workspace.draft.draft_id);
     setStale(source);
     setGate(false);
   });
   useEffect(() => {
-    if (restoredOf(location.state)) {
+    if (active && restoredOf(location.state)) {
       void navigate(location.pathname, { replace: true, state: null });
     }
-  }, [location.state, location.pathname, navigate]);
+  }, [active, location.state, location.pathname, navigate]);
   const [accepted, setAccepted] = useState<AcceptDraftReceipt | null>(null);
   // A field's blur can start a save in the same turn as a click, so ask the cache, not
   // the last render, whether one is still running.
@@ -1053,7 +1060,7 @@ function PlanBody({
           edits={edits.current}
         />
       )}
-      {gate && draft && !busy && !stale && (
+      {active && gate && draft && !busy && !stale && (
         <AcceptGate
           id={id}
           workspace={draft.workspace}
@@ -1078,18 +1085,28 @@ function RefreshSignedOut({ error }: { error: Error | null }) {
 }
 
 /** The Plan tab: the draft's header and Parts, saved as they change, and the Accept gate. */
-export function BuildPlan() {
-  const { id } = useOutletContext<WorkspaceContext>();
-  return <BuildPlanScreen key={id} id={id} />;
+export function BuildPlan({ id, active }: { id: number; active: boolean }) {
+  const location = useLocation();
+  const [view, setView] = useState({ key: "initial", visited: active });
+  // Keep local edits and refresh receipts across tabs. History's explicit Restore starts a new view.
+  const key = active && restoredOf(location.state) ? location.key : view.key;
+  if (active && (!view.visited || key !== view.key)) setView({ key, visited: true });
+  if (!active && !view.visited) return null;
+  return (
+    <div hidden={!active}>
+      <BuildPlanScreen key={key} id={id} active={active} />
+    </div>
+  );
 }
 
-function BuildPlanScreen({ id }: { id: number }) {
+function BuildPlanScreen({ id, active }: { id: number; active: boolean }) {
   const connection = useConnection();
   const selected = useRef<number | null>(null);
+  const [stale, setStale] = useState<OpenPlan | null>(null);
   const pinDraft: PinDraft = (draftId, onlyIfPinned) => {
     if (!onlyIfPinned || selected.current !== null) selected.current = draftId;
   };
-  const query = useQuery(planQuery(id, selected));
+  const query = useQuery({ ...planQuery(id, selected), enabled: active && !stale });
   if (query.error instanceof CoreError && query.error.status === 404 && !query.data) {
     return <NotFound />;
   }
@@ -1098,7 +1115,16 @@ function BuildPlanScreen({ id }: { id: number }) {
       title="Plan"
       subnav={<BuildTabs id={id} />}
       state={queryScreenState(query, connection)}
-      renderData={(data) => <PlanBody id={id} queryData={data} pinDraft={pinDraft} />}
+      renderData={(data) => (
+        <PlanBody
+          id={id}
+          queryData={data}
+          pinDraft={pinDraft}
+          active={active}
+          stale={stale}
+          setStale={setStale}
+        />
+      )}
       empty={{ message: "" }}
     />
   );

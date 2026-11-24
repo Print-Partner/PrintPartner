@@ -247,6 +247,50 @@ fn refresh_refuses_the_wrong_author_competitors_and_concurrent_changes() {
 }
 
 #[test]
+fn refresh_preserves_quantity_on_a_rename_and_refuses_a_reused_path() {
+    for path_reused in [false, true] {
+        let f = Fixture::new(&node("base-unchanged"));
+        let owner = f.open();
+        let mut files = vec!["bracket.stl", "excluded.stl", "renamed-gear.stl"];
+        if path_reused {
+            files.push("gear.stl");
+        }
+        let saved =
+            f.rows("SELECT artifact_digest, quantity_override FROM plan_draft_parts WHERE id=6");
+        assert_eq!(saved[0]["quantity_override"], 2);
+        let digest = saved[0]["artifact_digest"].as_str().unwrap().to_owned();
+        let reads = f.reads_with_digests(
+            &json!(files),
+            &Value::Null,
+            None,
+            [("renamed-gear.stl".into(), digest)].into(),
+        );
+        let client = owner
+            .working_drafts_with_observations(policy(), reads, PreparationLimits::default())
+            .unwrap();
+        set_quantity(&client, &request(&f, None));
+        f.sql().execute_batch(ADVANCE).unwrap();
+        let before = f.recorded_rows();
+        let result = run(&client, request(&f, None));
+        if path_reused {
+            assert!(
+                matches!(result, Err(RefreshError::MergeConflicts(ref conflicts))
+                if matches!(conflicts.as_slice(), [RebaseConflict::TargetAmbiguous { source_part_id: 6, .. }])),
+                "{result:?}"
+            );
+            assert_eq!(f.recorded_rows(), before);
+        } else {
+            assert_eq!(result.unwrap().successor_draft_id, id(3));
+            assert_eq!(
+                f.rows("SELECT quantity_override, quantity_effective FROM plan_draft_parts WHERE draft_id=3 AND part_key='renamed-gear.stl'"),
+                json!([{"quantity_override":7,"quantity_effective":7}])
+            );
+        }
+        owner.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn refresh_keeps_the_original_manual_reconciliation() {
     use pp_storage::required_units::{Outcome, ReconciliationCommand};
     let f = Fixture::new(&node("base-unchanged"));

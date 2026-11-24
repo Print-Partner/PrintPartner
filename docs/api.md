@@ -143,6 +143,8 @@ overrides beyond inclusion and quantity that differ from Accepted.
 For Parts with no Accepted predecessor, refresh treats their saved inclusion
 as a decision.
 `merge_conflicts` names missing, ambiguous or conflicting Part targets.
+A same-Source Part key and a tracked artifact digest that point to different
+Parts cause a refusal.
 Refusals leave the existing workspace available.
 
 The 200 response is a durable receipt with `source_draft_id` and

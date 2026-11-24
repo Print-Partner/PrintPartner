@@ -647,17 +647,38 @@ impl Evidence {
             .get(&(source, artifact.to_owned()))
             .map_or(&[], Vec::as_slice)
     }
+
+    fn refresh_targets(
+        &self,
+        fresh: &Self,
+        source: i64,
+        part: &DraftPart,
+    ) -> Result<(Vec<usize>, bool)> {
+        let key = text(part, "partKey")?;
+        let by_key = fresh.keyed(source, key);
+        let mut ambiguous = !by_key.is_empty() && self.keyed(source, key).len() != 1;
+        let mut targets = by_key.to_vec();
+        if let Some(digest) = part["artifactDigest"].as_str()
+            && self.tracked.contains(&source)
+            && fresh.tracked.contains(&source)
+        {
+            let by_artifact = fresh.artifacts(source, digest);
+            ambiguous |= !by_artifact.is_empty() && self.artifacts(source, digest).len() != 1;
+            targets.extend_from_slice(by_artifact);
+            targets.sort_unstable();
+            targets.dedup();
+        }
+        Ok((targets, ambiguous))
+    }
 }
 
-/// Node's `mergeRebasedPlanDraft`: replays the source draft's inclusion and
-/// quantity decisions onto the fresh preparation and refreshes its digest.
-/// Returns the conflicts instead when any decision has no single target.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MergePolicy {
     Legacy,
     Refresh,
 }
 
+/// Replays inclusion and quantity decisions onto the prepared Parts.
 fn merge(
     source: &Draft,
     old: &[Accepted],
@@ -732,50 +753,24 @@ fn merge(
             });
             continue;
         };
-        let projection = part["baseRevisionPartId"]
-            .as_i64()
-            .and_then(|id| old_by_id.get(&id)?.projection)
-            .filter(|projection| {
-                old_projections.get(projection) == Some(&1)
-                    && now_projections.get(projection) == Some(&1)
-            });
-        let mut candidates = projection
-            .and_then(|projection| fresh_by_projection.get(&projection))
-            .cloned()
-            .unwrap_or_default();
-        if policy == MergePolicy::Refresh {
-            // Preparation can link a same-path replacement from another Source
-            // to the Accepted predecessor. A saved edit cannot follow that link.
-            for target in &candidates {
-                if fresh_evidence.source(&fresh.parts[*target])? != Some(source_id) {
-                    candidates = Vec::new();
-                    break;
-                }
-            }
-        }
-        let mut ambiguous = false;
-        if candidates.is_empty() {
-            let key = text(part, "partKey")?;
-            let found = fresh_evidence.keyed(source_id, key);
-            ambiguous = !found.is_empty()
-                && !(source_evidence.keyed(source_id, key).len() == 1 && found.len() == 1);
-            candidates = found.to_vec();
-        }
-        if let Some(artifact) = part["artifactDigest"].as_str()
-            && !ambiguous
-            && candidates.is_empty()
-        {
-            let found = if fresh_evidence.tracked.contains(&source_id) {
-                fresh_evidence.artifacts(source_id, artifact)
-            } else {
-                &[]
-            };
-            ambiguous = !found.is_empty()
-                && !(source_evidence.tracked.contains(&source_id)
-                    && source_evidence.artifacts(source_id, artifact).len() == 1
-                    && found.len() == 1);
-            candidates = found.to_vec();
-        }
+        let (candidates, ambiguous) = if policy == MergePolicy::Refresh {
+            source_evidence.refresh_targets(&fresh_evidence, source_id, part)?
+        } else {
+            let projection = part["baseRevisionPartId"]
+                .as_i64()
+                .and_then(|id| old_by_id.get(&id)?.projection)
+                .filter(|projection| {
+                    old_projections.get(projection) == Some(&1)
+                        && now_projections.get(projection) == Some(&1)
+                });
+            legacy_targets(
+                &source_evidence,
+                &fresh_evidence,
+                source_id,
+                part,
+                projection.and_then(|id| fresh_by_projection.get(&id).map(Vec::as_slice)),
+            )?
+        };
         match candidates.as_slice() {
             [] if policy == MergePolicy::Refresh => {
                 conflicts.push(Conflict::TargetMissing { source_part_id });
@@ -818,9 +813,9 @@ fn merge(
             let part = &source.parts[index];
             let value = &part[field.key()];
             let current = &original[target][field.key()];
-            let independent = field == Field::Included
-                && part["baseRevisionPartId"].is_null()
-                && original[target]["baseRevisionPartId"].is_null();
+            let independent = original[target]["baseRevisionPartId"].is_null()
+                && (policy == MergePolicy::Refresh
+                    || field == Field::Included && part["baseRevisionPartId"].is_null());
             if !independent && *current != baseline(part, field)? && current != value {
                 conflicts.push(Conflict::ConcurrentDecision {
                     source_part_id: num(part, "id")?,
@@ -845,4 +840,30 @@ fn merge(
     }
     conflicts.sort_by(|left, right| left.order().cmp(&right.order()));
     Ok(conflicts)
+}
+
+fn legacy_targets(
+    source: &Evidence,
+    fresh: &Evidence,
+    source_id: i64,
+    part: &DraftPart,
+    projected: Option<&[usize]>,
+) -> Result<(Vec<usize>, bool)> {
+    if let Some(targets) = projected {
+        return Ok((targets.to_vec(), false));
+    }
+    let key = text(part, "partKey")?;
+    let keyed = fresh.keyed(source_id, key);
+    if !keyed.is_empty() {
+        return Ok((keyed.to_vec(), source.keyed(source_id, key).len() != 1));
+    }
+    if let Some(digest) = part["artifactDigest"].as_str()
+        && fresh.tracked.contains(&source_id)
+    {
+        let matches = fresh.artifacts(source_id, digest);
+        let ambiguous =
+            !source.tracked.contains(&source_id) || source.artifacts(source_id, digest).len() != 1;
+        return Ok((matches.to_vec(), ambiguous));
+    }
+    Ok((Vec::new(), false))
 }

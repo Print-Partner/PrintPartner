@@ -72,20 +72,18 @@ assertion, read-only permissions and unconditional audit command are checked by
 
 `checkNodeLanes` permits only the exact `needs: [changes]` and `ui` output
 condition for the `ui` job. `job_runs()` understands that condition, including
-the Linux event clause. Merge groups select `ui` without reading the diff. Chad approves these
-CI-control changes and merges them.
+the Linux event clause. Merge groups select `ui` without reading the diff.
+Chad reviews and merges CI-control changes.
 
 ## Cross-OS capacity
 
-Pull requests do not run Windows or macOS. The nightly schedule and a manual
-dispatch of Rust cross-OS build the workspace on `windows-latest` and `macos-26`.
+The nightly schedule and a manual dispatch of Rust cross-OS build the workspace
+on `windows-latest` and `macos-26`. Selected pull requests also run the advisory
+[`rust (windows tests)` job](ci.md#windows-tests-on-pull-requests).
 `ci:cross-os` does not select a job. A push to `main` and a merge group run
-`rust (linux)`, including nextest
-([Merge queue](ci.md#merge-queue)). Hosted nextest is four hash partitions; the
-required context is still the aggregate. The required contexts stay
-`actionlint`, `zizmor` and `rust (linux)`. Chad does not edit ruleset 25285698
-for GRE-1664. See
-[Cross-OS PR label](ci.md#cross-os-pr-label).
+`rust (linux)`, including nextest. Hosted nextest uses six hash partitions.
+The required status check is the aggregate `rust (linux)` job.
+See [Merge queue](ci.md#merge-queue) for the full list of required checks.
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch
 on main. Its minimum permissions are `actions: write` for cancellation,
@@ -229,7 +227,7 @@ The rule, as added (it changed nothing else in the ruleset):
 | `grouping_strategy` | `ALLGREEN` | Only passing combinations land. A failing group ejects its PR; read the log before you queue it again. |
 | `max_entries_to_build` | `2` | Each entry builds the full Linux Rust path on hosted runners. Hosted concurrency is the limit. |
 | `min_entries_to_merge`, `max_entries_to_merge`, `min_entries_to_merge_wait_minutes` | `1`, `5`, `1` | A lone PR is not held. Merge limits only batch the final merge and save no CI. |
-| `check_response_timeout_minutes` | `150` | Covers a full Linux and Windows run with hosted queueing. |
+| `check_response_timeout_minutes` | `150` | Covers the required checks with hosted queueing. |
 
 The queue checks the combined commit, so `strict_required_status_checks_policy` stays false.
 

@@ -67,6 +67,9 @@ pub enum Conflict {
         source_part_ids: Vec<i64>,
         target_part_id: usize,
     },
+    TargetMissing {
+        source_part_id: i64,
+    },
     ConcurrentDecision {
         source_part_id: i64,
         target_part_id: usize,
@@ -78,6 +81,7 @@ impl Conflict {
         match self {
             Self::SourceIdentity { source_part_id, .. } => (*source_part_id, "source_identity"),
             Self::TargetAmbiguous { source_part_id, .. } => (*source_part_id, "target_ambiguous"),
+            Self::TargetMissing { source_part_id } => (*source_part_id, "target_missing"),
             Self::TargetCollision {
                 source_part_ids, ..
             } => (source_part_ids[0], "target_collision"),
@@ -167,6 +171,34 @@ impl Source<'_> {
             }));
         }
         Ok(None)
+    }
+}
+
+pub(super) fn replace_open(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    source: &Source<'_>,
+) -> Result<bool> {
+    let closed = tx.execute(
+        "UPDATE plan_drafts SET state='abandoned',lifecycle_version=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=?",
+        params![source.generation, tenant, profile, source.id, source.version, source.digest],
+    )? == 1;
+    if closed {
+        crate::domain_events::draft_changed(tx, tenant, profile, source.id)?;
+    }
+    Ok(closed)
+}
+
+impl<'a> Source<'a> {
+    pub(super) fn observed_open(id: i64, version: i64, digest: &'a str) -> Self {
+        Self {
+            id,
+            state: SourceState::Open,
+            version,
+            generation: version + 1,
+            digest,
+        }
     }
 }
 
@@ -314,7 +346,14 @@ pub(super) fn rebase(connection: &mut Connection, args: Args<'_>) -> Result<Reba
     )?;
     let now = accepted_parts(&tx, &tenant, profile, &base["baseRevisionId"], &mut budget)?;
     tx.commit()?;
-    let conflicts = merge(&current, &old, &now, &mut prepared, &mut budget)?;
+    let conflicts = merge(
+        &current,
+        &old,
+        &now,
+        &mut prepared,
+        MergePolicy::Legacy,
+        &mut budget,
+    )?;
     if !conflicts.is_empty() {
         return finished(RebaseOutcome::MergeConflicts { conflicts });
     }
@@ -342,18 +381,10 @@ pub(super) fn rebase(connection: &mut Connection, args: Args<'_>) -> Result<Reba
         if captured.fingerprint != prepared.capture.fingerprint {
             return Ok(RebaseOutcome::InputsChanged);
         }
-        if open
-            && tx.execute(
-                "UPDATE plan_drafts SET state='abandoned',lifecycle_version=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=?",
-                params![source.generation, tenant, profile, source.id, source.version, source.digest],
-            )? != 1
-        {
+        if open && !replace_open(tx, &tenant, profile, &source)? {
             return Ok(RebaseOutcome::SourceConflict {
                 draft: snapshot(&current)?,
             });
-        }
-        if open {
-            crate::domain_events::draft_changed(tx, &tenant, profile, source.id)?;
         }
         let id = insert_snapshot(
             tx,
@@ -484,7 +515,7 @@ fn load(
 
 /// Node's `digestPlanInputs` comparison: the input fields, stably sorted by
 /// Source.
-fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
+pub(super) fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
     let mut inputs: Vec<_> = inputs
         .iter()
         .map(|input| model::project(input, model::INPUT_FIELDS))
@@ -544,6 +575,18 @@ fn accepted_parts(
         });
     }
     Ok(parts)
+}
+
+pub(super) fn merge_refresh(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    source: &Draft,
+    fresh: &mut preparation::PreparedDraftSnapshot,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<Vec<Conflict>> {
+    let base = accepted_parts(tx, tenant, profile, &fresh.base["baseRevisionId"], budget)?;
+    merge(source, &base, &base, fresh, MergePolicy::Refresh, budget)
 }
 
 /// Where a draft's Parts come from: each layer's Source, or `None` when two
@@ -609,11 +652,18 @@ impl Evidence {
 /// Node's `mergeRebasedPlanDraft`: replays the source draft's inclusion and
 /// quantity decisions onto the fresh preparation and refreshes its digest.
 /// Returns the conflicts instead when any decision has no single target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MergePolicy {
+    Legacy,
+    Refresh,
+}
+
 fn merge(
     source: &Draft,
     old: &[Accepted],
     now: &[Accepted],
     fresh: &mut preparation::PreparedDraftSnapshot,
+    policy: MergePolicy,
     budget: &mut observation::PreparationBudget<'_>,
 ) -> Result<Vec<Conflict>> {
     let old_by_id: HashMap<_, _> = old.iter().map(|part| (part.id, part)).collect();
@@ -693,6 +743,16 @@ fn merge(
             .and_then(|projection| fresh_by_projection.get(&projection))
             .cloned()
             .unwrap_or_default();
+        if policy == MergePolicy::Refresh {
+            // Preparation can link a same-path replacement from another Source
+            // to the Accepted predecessor. A saved edit cannot follow that link.
+            for target in &candidates {
+                if fresh_evidence.source(&fresh.parts[*target])? != Some(source_id) {
+                    candidates = Vec::new();
+                    break;
+                }
+            }
+        }
         let mut ambiguous = false;
         if candidates.is_empty() {
             let key = text(part, "partKey")?;
@@ -717,6 +777,9 @@ fn merge(
             candidates = found.to_vec();
         }
         match candidates.as_slice() {
+            [] if policy == MergePolicy::Refresh => {
+                conflicts.push(Conflict::TargetMissing { source_part_id });
+            }
             [] => {}
             [target] if !ambiguous => targets.push((index, *target)),
             _ => {

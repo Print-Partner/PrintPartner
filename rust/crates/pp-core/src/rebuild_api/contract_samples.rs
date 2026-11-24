@@ -84,6 +84,11 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
                 "plan_revision_digest": "0".repeat(64), "required_unit_mapping_digest": "0".repeat(64)},
             "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]})
     }),
+    ("refreshDraft", || {
+        json!({"expected_draft": {"draft_id": 1, "state": "open", "lifecycle_version": 0,
+            "snapshot_digest": "0".repeat(64), "base": {"revision_id": null, "plan_version": 0}},
+            "expected_header_version": null})
+    }),
     // The single owner already exists, so the handler refuses a second one.
     (
         "registerOwner",

@@ -2,6 +2,9 @@
 //! Replays `fixtures/working-draft-rebase-node.mjs`. Regenerate it with
 //! `node --import ./web/node_modules/tsx/dist/loader.mjs --conditions=development
 //! rust/crates/pp-storage/tests/fixtures/working-draft-rebase-node.mjs web/apps/server`.
+#[path = "working_draft_rebase/refresh.rs"]
+mod refresh;
+
 use pp_storage::{
     Limits, WriterOwner,
     auth::{self, Secret},

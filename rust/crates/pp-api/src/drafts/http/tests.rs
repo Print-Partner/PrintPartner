@@ -2748,6 +2748,61 @@ fn observed(digest: &Value) -> Value {
     json!({"draft_id": 2, "state": "open", "lifecycle_version": 0, "snapshot_digest": digest, "base": {"revision_id": 1, "plan_version": 1}})
 }
 
+#[tokio::test]
+async fn refresh_routes_recover_stale_autosave_and_return_the_exact_successor() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let revision = server.directory.join("repos/1/revisions/refreshed");
+    std::fs::create_dir_all(&revision).unwrap();
+    for file in ["bracket.stl", "excluded.stl", "gear.stl"] {
+        std::fs::write(revision.join(file), b"solid fixture\nendsolid fixture\n").unwrap();
+    }
+    let accepted = accepted_rows(&server);
+    let identity = observed(&json!(DIGEST));
+    let body = json!({"expected_draft":identity,"expected_header_version":null});
+    let path = "/api/v2/plans/1/drafts/2/refresh";
+    let save = "/api/v2/plans/1/drafts/save";
+    for (key, body) in [
+        (None, body.clone()),
+        (Some("refresh"), json!({"expected_draft":identity})),
+    ] {
+        assert_eq!(
+            json_reply(keyed(&server, path, key).json(&body), 400).await["code"],
+            "invalid_request"
+        );
+    }
+    server.sql().execute_batch(
+        "INSERT INTO source_revisions (id,tenant_id,project_id,upstream_revision_key,manifest_digest,snapshot_locator,synced_at,completeness)
+         SELECT 2,tenant_id,project_id,'refreshed',manifest_digest,'1/revisions/refreshed',synced_at,completeness FROM source_revisions WHERE id=1;
+         UPDATE projects SET current_source_revision_id=2 WHERE id=1;",
+    ).unwrap();
+    assert_eq!(
+        json_reply(
+            keyed(&server, save, Some("stale")).json(&autosave_body(identity, 4)),
+            409
+        )
+        .await,
+        json!({"code":"inputs_changed"})
+    );
+    assert!(draft_events(&server).is_empty());
+    let attempt = || keyed(&server, path, Some("refresh")).json(&body);
+    let response = attempt().send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    drop(response);
+    let events = draft_events(&server);
+    let receipt = json_reply(attempt(), 200).await;
+    assert_eq!(receipt, json!({"source_draft_id":2,"successor_draft_id":3}));
+    assert_eq!(draft_events(&server), events);
+    let workspace = json_reply(server.request(Method::GET, "/api/v2/plans/1/drafts/3"), 200).await;
+    let corrected = json_reply(
+        keyed(&server, save, Some("corrected")).json(&autosave_body(workspace["draft"].clone(), 4)),
+        200,
+    )
+    .await;
+    assert_eq!(corrected["receipt"]["draft_id"], 3);
+    assert_eq!(accepted_rows(&server), accepted);
+    server.close().await;
+}
+
 /// Accepted Plan rows autosave must never write.
 fn accepted_rows(server: &ReadServer) -> Vec<(String, Vec<String>)> {
     logical_database(&server.sql())

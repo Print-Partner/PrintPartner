@@ -82,6 +82,10 @@ def builds_list(session, out, repeats):
 # Thumbnails ---------------------------------------------------------------------
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+PNG_BIT_DEPTHS = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8},
+                  4: {8, 16}, 6: {8, 16}}
+PNG_SIZE = (256, 256)
 
 
 def source_id_for_layer(layers, source_layer):
@@ -99,20 +103,87 @@ def thumbnail_url(source_id, path):
     return f"/sources/{source_id}/thumbnail?path={quote(path, safe='')}"
 
 
-def _require_png(source_id, path, status, headers, data):
+def _png_dimensions(data):
+    if not data.startswith(PNG_SIGNATURE):
+        raise ValueError("missing PNG signature")
+    offset, header, image_data, ended = len(PNG_SIGNATURE), None, [], False
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise ValueError("truncated PNG chunk")
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        kind = data[offset + 4:offset + 8]
+        start, end = offset + 8, offset + 8 + length
+        if end + 4 > len(data):
+            raise ValueError("truncated PNG chunk")
+        contents = data[start:end]
+        crc = struct.unpack(">I", data[end:end + 4])[0]
+        if zlib.crc32(kind + contents) & 0xFFFFFFFF != crc:
+            raise ValueError("invalid PNG chunk checksum")
+        if header is None:
+            if kind != b"IHDR" or length != 13:
+                raise ValueError("missing PNG header")
+            header = struct.unpack(">IIBBBBB", contents)
+        elif kind == b"IHDR":
+            raise ValueError("duplicate PNG header")
+        if kind == b"IDAT":
+            image_data.append(contents)
+        if kind == b"IEND":
+            if length != 0 or end + 4 != len(data):
+                raise ValueError("invalid PNG end chunk")
+            ended = True
+            break
+        offset = end + 4
+    if header is None or not image_data or not ended:
+        raise ValueError("incomplete PNG")
+    width, height, bit_depth, color_type, compression, filtering, interlace = header
+    if width < 1 or height < 1 or width > PNG_SIZE[0] or height > PNG_SIZE[1]:
+        raise ValueError(f"invalid PNG dimensions {width}x{height}")
+    if (color_type not in PNG_CHANNELS or bit_depth not in PNG_BIT_DEPTHS[color_type]
+            or compression != 0 or filtering != 0 or interlace != 0):
+        raise ValueError("unsupported PNG format")
+    decoder = zlib.decompressobj()
+    try:
+        pixels = decoder.decompress(b"".join(image_data)) + decoder.flush()
+    except zlib.error as error:
+        raise ValueError("invalid PNG image data") from error
+    if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise ValueError("incomplete PNG image data")
+    row_bytes = (width * PNG_CHANNELS[color_type] * bit_depth + 7) // 8
+    stride = row_bytes + 1
+    if len(pixels) != height * stride:
+        raise ValueError("invalid PNG image data length")
+    if any(pixels[row] > 4 for row in range(0, len(pixels), stride)):
+        raise ValueError("invalid PNG row filter")
+    return width, height
+
+
+def _require_png(label, status, headers, data, expected_size=PNG_SIZE, allow_placeholder=False):
     kind = headers.get("content-type", "").split(";", 1)[0].strip()
-    if status != 200 or kind != "image/png" or not data.startswith(PNG_SIGNATURE):
-        raise RuntimeError(
-            f"source {source_id} {path}: thumbnail answered {status} {kind}: {data[:80]!r}")
+    if status != 200 or kind != "image/png":
+        raise RuntimeError(f"{label}: thumbnail answered {status} {kind}: {data[:80]!r}")
+    if headers.get("x-thumbnail-placeholder") == "1" and not allow_placeholder:
+        raise RuntimeError(f"{label}: thumbnail response was a placeholder")
+    try:
+        size = _png_dimensions(data)
+    except ValueError as error:
+        raise RuntimeError(f"{label}: invalid thumbnail PNG: {error}") from error
+    if expected_size is not None and size != expected_size:
+        raise RuntimeError(f"{label}: thumbnail dimensions were {size[0]}x{size[1]}")
+    return size
 
 
 def _thumbnail_pass(session, out, parts, part_key, build_key):
     started = time.perf_counter()
+    responses = []
     for source_id, path in parts:
         status, headers, data, ms = session.request("GET", thumbnail_url(source_id, path))
-        _require_png(source_id, path, status, headers, data)
+        responses.append((source_id, path, status, headers, data, ms))
+    elapsed = (time.perf_counter() - started) * 1000
+    for source_id, path, status, headers, data, _ms in responses:
+        _require_png(f"source {source_id} {path}", status, headers, data)
+    for _source_id, _path, _status, _headers, _data, ms in responses:
         out.setdefault(part_key, []).append(ms)
-    out.setdefault(build_key, []).append((time.perf_counter() - started) * 1000)
+    out.setdefault(build_key, []).append(elapsed)
 
 
 def rust_thumbnails(session, out, build_id):
@@ -144,36 +215,58 @@ def thumbnails(session, runtime, out, build_id):
     if runtime == "rust":
         rust_thumbnails(session, out, build_id)
         return
-    status, _h, _d, _ms = session.request("GET", "/parts/1/thumbnail")
+    status, headers, data, _ms = session.request("GET", "/parts/1/thumbnail")
     if status == 404:
         return
+    _require_png("Node thumbnail route probe", status, headers, data, expected_size=(1, 1),
+                 allow_placeholder=True)
     checkoff, _ = session.json("GET", f"/plans/{build_id}/checkoff")
     parts = [part["id"] for part in checkoff["parts"]]
+    if not parts:
+        raise RuntimeError(f"build {build_id} has no parts to thumbnail")
     png, version = thumbnail_png(), renderer_version()
+    _require_png("Node uploaded thumbnail", 200, {"content-type": "image/png"}, png)
     started = time.perf_counter()
+    cold_responses = []
     for part in parts:
-        status, headers, _data, ms = session.request("GET", f"/parts/{part}/thumbnail")
-        if headers.get("x-thumbnail-placeholder") != "1":
+        placeholder_status, placeholder_headers, placeholder_data, ms = session.request(
+            "GET", f"/parts/{part}/thumbnail")
+        if placeholder_status != 200 or placeholder_headers.get("x-thumbnail-placeholder") != "1":
             raise RuntimeError(f"part {part}: thumbnail cache was not cold")
-        status, headers, _data, mesh_ms = session.request("GET", f"/parts/{part}/mesh")
+        status, mesh_headers, _data, mesh_ms = session.request("GET", f"/parts/{part}/mesh")
         if status != 200:
             raise RuntimeError(f"part {part}: mesh answered {status}")
         body, content_type = multipart("file", "thumbnail.png", png, "image/png")
         status, _h, data, up_ms = session.request("POST", f"/parts/{part}/thumbnail", body, {
-            "Content-Type": content_type, "If-Match": headers["etag"],
+            "Content-Type": content_type, "If-Match": mesh_headers["etag"],
             "X-Thumbnail-Renderer-Version": version})
         if status != 200:
             raise RuntimeError(f"part {part}: thumbnail upload answered {status}: {data[:200]!r}")
-        out.setdefault("thumbnail_cold_part_ms", []).append(ms + mesh_ms + up_ms)
-    out.setdefault("thumbnail_cold_build_ms", []).append((time.perf_counter() - started) * 1000)
+        cold_responses.append((part, placeholder_status, placeholder_headers, placeholder_data,
+                               ms + mesh_ms + up_ms))
+        cold_build_ms = (time.perf_counter() - started) * 1000
+    for part, status, headers, data, _ms in cold_responses:
+        _require_png(f"part {part} cold placeholder", status, headers, data,
+                     expected_size=(1, 1), allow_placeholder=True)
+    for _part, _status, _headers, _data, ms in cold_responses:
+        out.setdefault("thumbnail_cold_part_ms", []).append(ms)
+    out.setdefault("thumbnail_cold_build_ms", []).append(cold_build_ms)
     for _ in range(3):
         started = time.perf_counter()
+        warm_responses = []
         for part in parts:
-            status, headers, _data, ms = session.request("GET", f"/parts/{part}/thumbnail")
+            status, headers, data, ms = session.request("GET", f"/parts/{part}/thumbnail")
             if status != 200 or headers.get("x-thumbnail-placeholder") == "1":
                 raise RuntimeError(f"part {part}: warm thumbnail answered {status}")
+            warm_responses.append((part, status, headers, data, ms))
+        warm_build_ms = (time.perf_counter() - started) * 1000
+        for part, status, headers, data, _ms in warm_responses:
+            _require_png(f"part {part} warm", status, headers, data)
+            if data != png:
+                raise RuntimeError(f"part {part}: warm thumbnail differs from the uploaded PNG")
+        for _part, _status, _headers, _data, ms in warm_responses:
             out.setdefault("thumbnail_warm_part_ms", []).append(ms)
-        out.setdefault("thumbnail_warm_build_ms", []).append((time.perf_counter() - started) * 1000)
+        out.setdefault("thumbnail_warm_build_ms", []).append(warm_build_ms)
     out.setdefault("thumbnail_parts", []).append(len(parts))
 
 

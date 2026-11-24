@@ -328,7 +328,47 @@ class RecordingThumbnailSession:
         return self.status, {"content-type": self.content_type}, self.body, 5.0
 
 
-PNG = b"\x89PNG\r\n\x1a\n"
+PNG = scenarios.thumbnail_png()
+PLACEHOLDER_PNG = scenarios.thumbnail_png(size=1)
+
+
+def _png_chunk_bounds(data, target):
+    offset = len(scenarios.PNG_SIGNATURE)
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        kind = data[offset + 4:offset + 8]
+        end = offset + 8 + length
+        if kind == target:
+            return offset, end
+        offset = end + 4
+    raise AssertionError(f"PNG chunk {target!r} not found")
+
+
+def _replace_png_chunk(data, target, contents):
+    output = bytearray(data[:len(scenarios.PNG_SIGNATURE)])
+    offset = len(scenarios.PNG_SIGNATURE)
+    replaced = False
+    while offset < len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        kind = data[offset + 4:offset + 8]
+        end = offset + 8 + length
+        if kind == target and not replaced:
+            output.extend(struct.pack(">I", len(contents)) + kind + contents
+                          + struct.pack(">I", zlib.crc32(kind + contents) & 0xFFFFFFFF))
+            replaced = True
+        else:
+            output.extend(data[offset:end + 4])
+        offset = end + 4
+    if not replaced:
+        raise AssertionError(f"PNG chunk {target!r} not found")
+    return bytes(output)
+
+
+def _mismatched_png():
+    offset, end = _png_chunk_bounds(PNG, b"IDAT")
+    pixels = bytearray(zlib.decompress(PNG[offset + 8:end]))
+    pixels[1] ^= 1
+    return _replace_png_chunk(PNG, b"IDAT", zlib.compress(pixels, 6))
 
 
 class ThumbnailTiming(unittest.TestCase):
@@ -362,6 +402,132 @@ class ThumbnailTiming(unittest.TestCase):
         empty.parts = []
         with self.assertRaises(RuntimeError):
             scenarios.thumbnails(empty, "rust", {}, 7)
+
+    def test_rust_failed_part_leaves_the_whole_pass_unsampled(self):
+        class FailedSecondPart:
+            def __init__(self):
+                self.responses = [
+                    (200, {"content-type": "image/png"}, PNG, 1.0),
+                    (500, {"content-type": "image/png"}, b"server error", 2.0),
+                ]
+
+            def request(self, method, path):
+                return self.responses.pop(0)
+
+        out = {}
+        with self.assertRaises(RuntimeError):
+            scenarios._thumbnail_pass(FailedSecondPart(), out,
+                                      [("source-a", "a.stl"), ("source-b", "b.stl")],
+                                      "thumbnail_cold_part_ms", "thumbnail_cold_build_ms")
+        self.assertEqual(out, {})
+
+    def test_png_validation_checks_response_and_decoded_content(self):
+        headers = {"content-type": "image/png"}
+        self.assertEqual(scenarios._require_png("Rust", 200, headers, PNG), (256, 256))
+        self.assertEqual(scenarios._require_png("Node placeholder", 200,
+                                                {**headers, "x-thumbnail-placeholder": "1"},
+                                                PLACEHOLDER_PNG, expected_size=(1, 1),
+                                                allow_placeholder=True), (1, 1))
+        bad_crc = bytearray(PNG)
+        _, idat_end = _png_chunk_bounds(PNG, b"IDAT")
+        bad_crc[idat_end] ^= 1
+        bad_data = _replace_png_chunk(PNG, b"IDAT", b"not-zlib")
+        placeholder_headers = {**headers, "x-thumbnail-placeholder": "1"}
+        failures = [
+            (500, headers, PNG, (256, 256), False),
+            (200, {"content-type": "application/problem+json"}, b"{}", (256, 256), False),
+            (200, headers, PNG[:-12], (256, 256), False),
+            (200, headers, scenarios.thumbnail_png(size=1), (256, 256), False),
+            (200, placeholder_headers, scenarios.thumbnail_png(size=2), (1, 1), True),
+        ]
+        for status, response_headers, body, expected_size, allow_placeholder in failures:
+            with self.subTest(status=status, headers=response_headers, size=len(body)):
+                with self.assertRaises(RuntimeError):
+                    scenarios._require_png("thumbnail", status, response_headers, body,
+                                           expected_size=expected_size,
+                                           allow_placeholder=allow_placeholder)
+        for corruption, body, message in [
+                ("chunk CRC", bytes(bad_crc), "invalid PNG chunk checksum"),
+                ("image data", bad_data, "invalid PNG image data")]:
+            with self.subTest(corruption=corruption):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    scenarios._require_png("thumbnail", 200, headers, body)
+
+
+class RecordingNodeThumbnailSession:
+    def __init__(self, cold_status=200, warm_status=200, warm_body=None):
+        self.calls = []
+        self.thumbnail_gets = 0
+        self.cold_status = cold_status
+        self.warm_status = warm_status
+        self.warm_body = PNG if warm_body is None else warm_body
+        self.upload = None
+
+    def json(self, method, path, body=None, headers=None, expect=(200,)):
+        self.calls.append((method, path))
+        if path == "/plans/7/checkoff":
+            return {"parts": [{"id": 1}]}, 1.0
+        raise AssertionError(path)
+
+    def request(self, method, path, body=None, headers=None):
+        self.calls.append((method, path))
+        if path == "/parts/1/thumbnail" and method == "GET":
+            self.thumbnail_gets += 1
+            if self.thumbnail_gets == 1:
+                return 200, {"content-type": "image/png", "x-thumbnail-placeholder": "1"}, \
+                    PLACEHOLDER_PNG, 0.5
+            if self.thumbnail_gets == 2:
+                return self.cold_status, {
+                    "content-type": "image/png", "x-thumbnail-placeholder": "1", "etag": '"etag"'}, \
+                    PLACEHOLDER_PNG, 1.0
+            return self.warm_status, {"content-type": "image/png"}, self.warm_body, 4.0
+        if path == "/parts/1/mesh":
+            return 200, {"etag": '"etag"'}, b"mesh", 2.0
+        if method == "POST" and path == "/parts/1/thumbnail":
+            self.upload = body
+            return 200, {}, b'{"saved":true}', 3.0
+        raise AssertionError((method, path))
+
+
+class NodeThumbnailTiming(unittest.TestCase):
+    def test_node_times_valid_thumbnail_upload_and_cached_png(self):
+        session = RecordingNodeThumbnailSession()
+        out = {}
+        scenarios.thumbnails(session, "node", out, 7)
+        self.assertEqual(out["thumbnail_cold_part_ms"], [6.0])
+        self.assertEqual(len(out["thumbnail_cold_build_ms"]), 1)
+        self.assertEqual(out["thumbnail_warm_part_ms"], [4.0] * 3)
+        self.assertEqual(len(out["thumbnail_warm_build_ms"]), 3)
+        self.assertEqual(out["thumbnail_parts"], [1])
+        self.assertIn(PNG, session.upload)
+
+    def test_node_failed_or_mismatched_responses_add_no_sample_for_that_pass(self):
+        cold = RecordingNodeThumbnailSession(cold_status=500)
+        cold_out = {}
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(cold, "node", cold_out, 7)
+        self.assertFalse(any(key.startswith("thumbnail_") for key in cold_out))
+
+        warm = RecordingNodeThumbnailSession(warm_body=b"not a PNG")
+        warm_out = {}
+        with self.assertRaises(RuntimeError):
+            scenarios.thumbnails(warm, "node", warm_out, 7)
+        self.assertEqual(warm_out["thumbnail_cold_part_ms"], [6.0])
+        self.assertNotIn("thumbnail_warm_part_ms", warm_out)
+        self.assertNotIn("thumbnail_warm_build_ms", warm_out)
+
+        mismatched_png = _mismatched_png()
+        self.assertNotEqual(mismatched_png, PNG)
+        self.assertEqual(scenarios._require_png("valid mismatched image", 200,
+                                                {"content-type": "image/png"},
+                                                mismatched_png), (256, 256))
+        mismatched = RecordingNodeThumbnailSession(warm_body=mismatched_png)
+        mismatched_out = {}
+        with self.assertRaisesRegex(RuntimeError, "differs from the uploaded PNG"):
+            scenarios.thumbnails(mismatched, "node", mismatched_out, 7)
+        self.assertEqual(mismatched_out["thumbnail_cold_part_ms"], [6.0])
+        self.assertNotIn("thumbnail_warm_part_ms", mismatched_out)
+        self.assertNotIn("thumbnail_warm_build_ms", mismatched_out)
 
     def test_node_records_nothing_when_the_part_route_is_absent(self):
         class Missing:

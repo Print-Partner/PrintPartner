@@ -46,3 +46,14 @@ test-threads = 3
 [[profile.pp-local-linux.overrides]]
 filter = 'binary(=runtime_m0) | package(=pp-compat)'
 threads-required = "num-test-threads"
+
+# These tests execute the origin-change JavaScript in Node.
+[profile.desktop-linux]
+default-filter = '''
+not (
+    test(=origin_change::tests::ticket_t_12_portable_settings_follow_a_replacement_origin)
+    | test(=origin_change::tests::ticket_t_12_portable_settings_follow_a_change_after_the_init_script)
+    | test(=origin_change::tests::ticket_t_12_session_storage_writes_do_not_publish_local_settings)
+    | test(=origin_change::tests::ticket_t_12_origin_change_keeps_a_later_edit_across_reload)
+)
+'''

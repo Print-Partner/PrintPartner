@@ -73,6 +73,19 @@ def rust_image_relevant(path):
     return not path.startswith(".github/") or path in RUST_IMAGE_GITHUB_INPUTS
 
 
+DESKTOP_LINUX_INPUTS = {
+    ".github/actions/linux-gui-deps/action.yml",
+    "rust-toolchain.toml", "rust/Cargo.toml", "rust/Cargo.lock", "rust/.config/nextest.toml",
+    "rust/crates/pp-compat/build.rs",
+    "rust/scripts/assemble-linux-deb.py", "rust/scripts/assemble-macos-resources.py",
+    "rust/scripts/build-desktop-manifest.py", "rust/scripts/check-macos-bundle.py",
+    "rust/scripts/desktop_workspaces.py", "rust/scripts/macos_addon_slices.py",
+    "rust/scripts/precompress-spa.py", "rust/scripts/stage-desktop.py",
+    "rust/scripts/stage_dependencies.py",
+    "web/package.json", "web/package-lock.json", "web/tsconfig.base.json",
+}
+
+
 def relevant(path, kind):
     # A filter change must test its own consumers.
     if path in {"scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py",
@@ -83,6 +96,12 @@ def relevant(path, kind):
         return windows_tests_relevant(path)
     if kind == "rust-image":
         return rust_image_relevant(path)
+    if kind == "desktop-linux":
+        return path in DESKTOP_LINUX_INPUTS or path.startswith((
+            ".github/workflows/desktop-", "desktop/", "rust/crates/pp-desktop/",
+            "rust/scripts/desktop-", "web/apps/ui/", "web/packages/rust-client/",
+            ".cargo/", "rust/.cargo/",
+        ))
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
@@ -159,8 +178,9 @@ def select(event, base, head, kind, labels=()):
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "rust-image", "actions", "windows", "windows-tests", "macos", "ui", "web"}:
-        raise SystemExit("Expected rust, rust-image, actions, windows, windows-tests, macos, ui or web")
+    if kind not in {"rust", "rust-image", "actions", "desktop-linux", "windows", "windows-tests",
+                    "macos", "ui", "web"}:
+        raise SystemExit("Expected rust, rust-image, actions, desktop-linux, windows, windows-tests, macos, ui or web")
     labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
                        os.environ.get("HEAD_SHA"), kind, labels)).lower()

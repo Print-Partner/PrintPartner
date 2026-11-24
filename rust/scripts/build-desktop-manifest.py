@@ -11,12 +11,25 @@ import sys
 from desktop_workspaces import ARTIFACTS, shipped_workspaces, workspace_parents
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--web', type=pathlib.Path, required=True)
-parser.add_argument('--node', type=pathlib.Path, required=True)
+parser.add_argument('--web', type=pathlib.Path)
+parser.add_argument('--node', type=pathlib.Path)
 parser.add_argument('--output', type=pathlib.Path, required=True)
-parser.add_argument('--commit', required=True)
+parser.add_argument('--commit')
 parser.add_argument('--package-root', type=pathlib.Path)
+parser.add_argument('--compile-only', action='store_true',
+                    help='write an input for desktop compile and unit tests that release verification rejects')
 args = parser.parse_args()
+if args.compile_only:
+    if any(value is not None for value in (args.web, args.node, args.commit, args.package_root)):
+        parser.error('--compile-only takes only --output')
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # The compatibility crate embeds the file during compilation. Required
+    # inventory fields are absent, so a release cannot use this input to start.
+    with args.output.open('x', encoding='utf-8') as output:
+        output.write(json.dumps({'compile_only': True}) + '\n')
+    sys.exit(0)
+if args.web is None or args.node is None or args.commit is None:
+    parser.error('--web, --node and --commit are required for a measured manifest')
 if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
     parser.error("--commit must be a full lowercase Git commit")
 web = args.web.resolve(strict=True)

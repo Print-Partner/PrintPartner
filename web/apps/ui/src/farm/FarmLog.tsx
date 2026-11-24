@@ -37,7 +37,9 @@ const UNDO_REASONS: Record<UndoReason, string> = {
 const farmLogQuery = {
   queryKey: ["core", "farm-log"],
   queryFn: ({ pageParam, signal }: { pageParam: string | null; signal: AbortSignal }) =>
-    readCore("listFarmLog", {}, signal, pageParam ? { cursor: pageParam } : undefined),
+    readCore("listFarmLog", {}, signal, pageParam ? { cursor: pageParam } : undefined, {
+      rejectRedirect: true,
+    }),
   initialPageParam: null as string | null,
   getNextPageParam: (page: FarmLogPage) => page.next_cursor,
 };

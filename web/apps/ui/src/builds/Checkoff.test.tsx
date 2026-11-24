@@ -1,8 +1,9 @@
 import type { CheckoffUnits, Health } from "@print-partner/rust-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
 
@@ -474,4 +475,32 @@ describe("CHK-05 offline", () => {
     fireEvent.click(record);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
+});
+
+describe("CHK-03 a redirected burst", () => {
+  let servers: Awaited<ReturnType<typeof redirectServers>>;
+  beforeAll(async () => {
+    servers = await redirectServers(RECEIPT);
+  });
+  afterAll(() => servers.close());
+
+  it.each([307, 308] as const)(
+    "a %i reaches the core once, is not followed or resent, and shows the burst may have landed",
+    async (status) => {
+      servers.redirectWith(status);
+      const fetchMock = core(reads(units, (path, init) => servers.forward(path, init)));
+      renderAt(fetchMock);
+      await screen.findByRole("group", { name: /^bracket\.stl/ });
+      fireEvent.keyDown(box("bracket.stl", 1), { key: "f" });
+      fireEvent.click(screen.getByRole("button", { name: "Record 2 picked units" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert.querySelector("p")?.textContent).toBe("Could not record the burst.");
+      expect(
+        screen.getByText("The last burst may have landed. Retry it before recording another."),
+      ).toBeTruthy();
+      expect(screen.queryByText(/Recorded:/)).toBeNull();
+      expect(servers.first).toEqual(["POST /api/v2/plans/2/checkoff/bursts"]);
+      expect(servers.destination).toEqual([]);
+    },
+  );
 });

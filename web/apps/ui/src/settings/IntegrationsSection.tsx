@@ -25,7 +25,8 @@ const KIND_NAMES: Record<Integration["kind"], string> = {
 const pinQuery = (id: string) =>
   ({
     queryKey: ["core", "integrations", id, "tls-pin"],
-    queryFn: ({ signal }: { signal: AbortSignal }) => readCore("readTlsPin", { id }, signal),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      readCore("readTlsPin", { id }, signal, undefined, { rejectRedirect: true }),
   }) as const;
 
 const why = (failure: unknown) => reason(failure instanceof Error ? failure : new Error(String(failure)));

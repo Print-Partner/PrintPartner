@@ -14,7 +14,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useLocation, useNavigate, useOutletContext } from "react-router";
-import { CoreError } from "../core/client";
+import { CoreError, RedirectedRead } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore, writeCore } from "../core/rust";
 import { newKey, resendable } from "../core/writes";
@@ -70,20 +70,22 @@ export const planQuery = (id: number) => ({
   queryKey: planKey(id),
   queryFn: async ({ signal }: { signal: AbortSignal }): Promise<PlanData> => {
     const [drafts, { build, base }] = await Promise.all([
-      readCore("listDrafts", { id }, signal),
-      readCore("readBuildHeader", { id }, signal),
+      readCore("listDrafts", { id }, signal, undefined, { rejectRedirect: true }),
+      readCore("readBuildHeader", { id }, signal, undefined, { rejectRedirect: true }),
     ]);
     const open = drafts.drafts.find((d) => d.state === "open");
     if (!open) return { build, base, draft: null };
     const params = { id, draft_id: open.draft_id };
     const [workspace, header] = await Promise.all([
-      readCore("readDraftWorkspace", params, signal),
-      readCore("readDraftHeader", params, signal),
+      readCore("readDraftWorkspace", params, signal, undefined, { rejectRedirect: true }),
+      readCore("readDraftHeader", params, signal, undefined, { rejectRedirect: true }),
     ]);
     return { build: header.build, base, draft: { workspace, header: header.draft } };
   },
   retry: (failures: number, error: Error) =>
-    !(error instanceof CoreError && error.status === 404) && failures < 3,
+    !(error instanceof RedirectedRead) &&
+    !(error instanceof CoreError && error.status === 404) &&
+    failures < 3,
 });
 
 /** Draft writes run one at a time, each against the draft the last one left. */

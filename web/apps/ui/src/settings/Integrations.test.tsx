@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { routes } from "../routes";
 
 const json = (body: unknown, status = 200) =>
@@ -63,8 +64,8 @@ type Answer = (path: string, init?: RequestInit) => Response | Promise<Response>
  */
 function core({
   list = (): Response => json(LIST),
-  pin = (): Response => json(PINNED),
-  reset = (): Response => json({ reset: true }),
+  pin = (_init?: RequestInit): Response | Promise<Response> => json(PINNED),
+  reset = (_init?: RequestInit): Response | Promise<Response> => json({ reset: true }),
   other = (_path: string, _init?: RequestInit): Response | undefined => undefined,
 } = {}) {
   let down = false;
@@ -75,8 +76,8 @@ function core({
     if (path === "/health") return json(HEALTH);
     if (path === "/api/v2/printers") return json({ printers: [] });
     if (path === "/api/v2/integrations") return list();
-    if (path === "/api/v1/integrations/b1/tls-pin") return pin();
-    if (path === "/api/v1/integrations/b1/tls-pin/reset" && init?.method === "POST") return reset();
+    if (path === "/api/v1/integrations/b1/tls-pin") return pin(init);
+    if (path === "/api/v1/integrations/b1/tls-pin/reset" && init?.method === "POST") return reset(init);
     return problem(404, `unexpected ${path}`);
   };
   const fetchMock = vi.fn((path: string, init?: RequestInit) => Promise.resolve().then(() => answer(path, init)));
@@ -438,6 +439,27 @@ describe("Bambu certificate pin", () => {
     renderSettings(core({ pin: () => problem(503, "The core is busy") }).fetchMock);
     expect(await screen.findByText("Certificate state unavailable: The core is busy.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reset certificate" })).toBeNull();
+  });
+
+  it("after a redirected reset, refuses a redirected pin read and never says the certificate is no longer pinned", async () => {
+    const servers = await redirectServers({ pinned: false });
+    try {
+      servers.redirectWith(307);
+      let pinReads = 0;
+      renderSettings(core({
+        pin: (init) => (++pinReads === 1 ? json(PINNED) : servers.forward("/api/v1/integrations/b1/tls-pin", init)),
+        reset: (init) => servers.forward("/api/v1/integrations/b1/tls-pin/reset", init),
+      }).fetchMock);
+      await screen.findByText(/^Certificate pinned/);
+      fireEvent.click(within(row("X1C")).getByRole("button", { name: "Reset certificate" }));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Reset certificate" }));
+      expect((await within(dialog).findByRole("alert")).textContent).toBe("The core didn't confirm the reset. Checking the current pin.");
+      expect(await within(row("X1C")).findByText(/^Certificate state unavailable: /)).toBeTruthy();
+      expect(dialog.textContent).not.toContain("no longer pinned");
+      expect(servers.first).toEqual(["POST /api/v1/integrations/b1/tls-pin/reset", "GET /api/v1/integrations/b1/tls-pin"]);
+      expect(servers.destination).toEqual([]);
+    } finally { await servers.close(); }
   });
 });
 

@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { onlineManager } from "@tanstack/react-query";
+import { MutationObserver, onlineManager } from "@tanstack/react-query";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "./App";
 import { PLAN_HELP } from "./builds/planCopy";
+import { RedirectedWrite } from "./core/client";
 import { HEALTH_TIMEOUT_MS } from "./frame/connection";
 import { SEQUENCE_MS } from "./frame/useShortcuts";
 import { routes } from "./routes";
@@ -348,5 +349,33 @@ describe("FRM-04 offline frame", () => {
     renderAt("/today", hang);
     expect(await screen.findByText("Offline")).toBeTruthy();
     expect(timeout).toHaveBeenCalledWith(HEALTH_TIMEOUT_MS);
+  });
+});
+
+describe("the app's QueryClient", () => {
+  const send = (mutationFn: () => Promise<string>) =>
+    new MutationObserver(createQueryClient(), {
+      mutationFn,
+      retry: () => true,
+      retryDelay: 0,
+      networkMode: "always",
+    }).mutate();
+
+  it("never retries a RedirectedWrite", async () => {
+    const mutationFn = vi.fn(() =>
+      Promise.reject(new RedirectedWrite("POST", "/api/v2/plans", 307)),
+    );
+    await expect(send(mutationFn)).rejects.toBeInstanceOf(RedirectedWrite);
+    expect(mutationFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still retries a lost answer as the mutation says", async () => {
+    const mutationFn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue("receipt");
+    await expect(send(mutationFn)).resolves.toBe("receipt");
+    expect(mutationFn).toHaveBeenCalledTimes(3);
   });
 });

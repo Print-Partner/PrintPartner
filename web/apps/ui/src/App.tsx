@@ -3,12 +3,27 @@ import { useEffect } from "react";
 import { RouterProvider, type createBrowserRouter } from "react-router";
 import { isAuthPath, signInFor } from "./auth/next";
 import { keepsEdits, signedOut } from "./auth/SignedOutNote";
-import { onUnauthorized } from "./core/client";
+import { onUnauthorized, RedirectedWrite } from "./core/client";
 
 type AppRouter = ReturnType<typeof createBrowserRouter>;
+type MutationOptionsAny = NonNullable<Parameters<QueryClient["defaultMutationOptions"]>[0]>;
+
+class AppQueryClient extends QueryClient {
+  override defaultMutationOptions<T extends MutationOptionsAny>(options?: T): T {
+    const merged = super.defaultMutationOptions(options);
+    if (options?._defaulted || !merged.retry) return merged;
+    const retry = merged.retry;
+    return {
+      ...merged,
+      retry: (failures: number, error: Error) =>
+        !(error instanceof RedirectedWrite) &&
+        (typeof retry === "function" ? retry(failures, error) : retry === true || failures < retry),
+    };
+  }
+}
 
 export function createQueryClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false } } });
+  return new AppQueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false } } });
 }
 
 /** An opted-in write (`KEEP_EDITS`) is in flight or was refused with 401: its edit is unsaved. */

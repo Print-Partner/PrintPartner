@@ -90,25 +90,12 @@ function refusalCopy(detail: string): string {
   return refusalText(detail);
 }
 
-/**
- * One `createBuild` POST. `fetch` would resend it to a redirect's target, so a redirect rejects
- * instead; an error that came through a redirect anyway answers null. Both are checked like a
- * lost answer. It runs in the mutation cache, so the core's own 401 opens sign-in (`App.tsx`),
- * and lets go of the cache once settled, since nothing reads a settled Create there.
- */
 async function post(client: QueryClient, body: CreateBuildRequest) {
   const observer = new MutationObserver(client, {
     retry: false,
     networkMode: "always",
     gcTime: 0,
-    mutationFn: async (request: CreateBuildRequest) => {
-      try {
-        return await writeCoreAnswer("createBuild", {}, { redirect: "error" }, request);
-      } catch (error: unknown) {
-        if (error instanceof CoreError && error.redirected) return null;
-        throw error;
-      }
-    },
+    mutationFn: (request: CreateBuildRequest) => writeCoreAnswer("createBuild", {}, request),
   });
   try {
     return await observer.mutate(body);
@@ -119,8 +106,8 @@ async function post(client: QueryClient, body: CreateBuildRequest) {
 
 /**
  * Sends `createBuild` once, unless a create is already in flight or being checked. Only an exact
- * 200, not redirected, confirms the Build. Any other answer that is not the core's refusal is
- * checked against a Builds list read after it, never resent.
+ * 200 confirms the Build. Any other answer that is not the core's refusal is checked against a
+ * Builds list read after it, never resent.
  */
 export async function startCreate(client: QueryClient, body: CreateBuildRequest): Promise<void> {
   if (busy(state)) return;
@@ -140,7 +127,7 @@ export async function startCreate(client: QueryClient, body: CreateBuildRequest)
   } finally {
     void client.invalidateQueries({ queryKey: ["core", "tasks"] });
   }
-  if (!answer || answer.status !== 200 || answer.redirected) return check(client, name, before);
+  if (answer.status !== 200) return check(client, name, before);
   set(dialogs > 0 ? { kind: "opened", name, build: answer.data } : IDLE);
   // The list must show the Build even when no dialog opens it. A later Create cancels this read.
   await freshList(client).catch(() => client.invalidateQueries({ queryKey: buildsQuery.queryKey }));
@@ -166,7 +153,7 @@ async function freshList(client: QueryClient): Promise<ProfileList | null> {
   let list: ProfileList | undefined;
   let failure: unknown;
   try {
-    const quiet = { notifyUnauthorized: false };
+    const quiet = { notifyUnauthorized: false, rejectRedirect: true };
     list = await readCore("listBuilds", {}, abort.signal, undefined, quiet);
   } catch (error: unknown) {
     failure = error;

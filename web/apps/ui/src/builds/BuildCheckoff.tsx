@@ -6,7 +6,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useOutletContext } from "react-router";
-import { CoreError } from "../core/client";
+import { CoreError, RedirectedRead } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
 import { lostSend, newKey, reason, resendable } from "../core/writes";
 import { useConnection } from "../frame/connection";
@@ -34,9 +34,11 @@ import {
 const checkoffUnitsQuery = (id: number) => ({
   queryKey: ["core", "checkoff-units", id],
   queryFn: ({ signal }: { signal: AbortSignal }) =>
-    readCore("readBuildCheckoffUnits", { id }, signal),
+    readCore("readBuildCheckoffUnits", { id }, signal, undefined, { rejectRedirect: true }),
   retry: (failures: number, error: Error) =>
-    !(error instanceof CoreError && error.status === 404) && failures < 3,
+    !(error instanceof RedirectedRead) &&
+    !(error instanceof CoreError && error.status === 404) &&
+    failures < 3,
 });
 
 // A lost send may have landed, so only its same-key Retry may record next, and Record stays

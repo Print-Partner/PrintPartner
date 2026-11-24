@@ -2,7 +2,7 @@ import type { ProfileLayers, ProfileSummary } from "@print-partner/rust-client";
 import { useQuery } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useOutletContext, useParams } from "react-router";
-import { CoreError } from "../core/client";
+import { CoreError, RedirectedRead } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
 import { buildWorkflowQuery, openDecisionCount } from "../core/workflow";
@@ -46,13 +46,15 @@ export const buildQuery = (id: number) => ({
   queryKey: ["core", "build", id],
   queryFn: async ({ signal }: { signal: AbortSignal }): Promise<BuildData> => {
     const [build, layers] = await Promise.all([
-      readCore("readBuild", { id }, signal),
-      readCore("listBuildLayers", { id }, signal),
+      readCore("readBuild", { id }, signal, undefined, { rejectRedirect: true }),
+      readCore("listBuildLayers", { id }, signal, undefined, { rejectRedirect: true }),
     ]);
     return { build, layers: layers.layers };
   },
   retry: (failures: number, error: Error) =>
-    !(error instanceof CoreError && error.status === 404) && failures < 3,
+    !(error instanceof RedirectedRead) &&
+    !(error instanceof CoreError && error.status === 404) &&
+    failures < 3,
 });
 
 /** `/builds/:id` and its tabs. Each tab renders the tab bar under its heading. */

@@ -7,9 +7,10 @@ import type {
 } from "@print-partner/rust-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
 import { App, createQueryClient } from "../App";
+import { redirectServers } from "../core/redirectServers.test-utils";
 import { routes } from "../routes";
 import { refusalText } from "../screen/SourceSelect";
 import { forgetAllSends } from "./unconfirmedBase";
@@ -598,7 +599,45 @@ describe("a send the UI never saw confirmed", () => {
   it("sends the PUT with redirects refused", async () => {
     const { core } = await sendUnconfirmed();
     const [, init] = core.fetchMock.mock.calls.find(([, i]) => i?.method === "PUT")!;
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
+  });
+
+  describe("with real loopback redirect servers", () => {
+    let servers: Awaited<ReturnType<typeof redirectServers>>;
+    beforeAll(async () => {
+      servers = await redirectServers({
+        profile_id: 1000,
+        layers: [{ id: 10000, layer_order: 0, layer_type: "base", project_id: 1, project_name: "Kit A" }],
+      });
+    });
+    afterAll(() => servers.close());
+
+    it.each([307, 308] as const)(
+      "a %i on Set base and on the follow-up layers read stays unconfirmed and never trusts the redirected base",
+      async (status) => {
+        servers.redirectWith(status);
+        const core = scriptedCore({ sources: ["Kit A", "Kit B"] });
+        let redirectReads = false;
+        const page = vi.fn((path: string, init?: RequestInit) => {
+          if (path === "/api/v2/plans/1000/layers/base" && init?.method === "PUT") {
+            redirectReads = true;
+            return servers.forward(path, init);
+          }
+          if (redirectReads && path === "/api/v2/plans/1000/layers") return servers.forward(path, init);
+          return core.fetchMock(path, init);
+        });
+        renderAt("/builds/1000/sources", page);
+        const form = await readyForm();
+        fireEvent.change(within(form).getByLabelText("Base Source"), { target: { value: "1" } });
+        fireEvent.click(within(form).getByRole("button", { name: "Set base Source" }));
+        const panel = await unconfirmedPanel();
+        expect(await within(panel).findByText("Could not read the Build again. Press Read again to see whether the base Source was set.")).toBeTruthy();
+        expect(within(panel).getByRole("button", { name: "Set a base anyway" }).getAttribute("aria-disabled")).toBe("true");
+        expect(screen.queryByRole("table", { name: "Build Sources" })).toBeNull();
+        expect(servers.first).toEqual(["PUT /api/v2/plans/1000/layers/base", "GET /api/v2/plans/1000/layers"]);
+        expect(servers.destination).toEqual([]);
+      },
+    );
   });
 
   it("a core refusal wrote nothing, so the form stays open with the reason", async () => {

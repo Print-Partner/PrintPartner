@@ -106,6 +106,14 @@ class EmptyStates(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT * FROM app_settings").fetchall(), [('printer.fleet', 'kept')])
 
 
+class FarmSendQueue(unittest.TestCase):
+    def test_requires_synthetic_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                run.seed_farm_send_queue(Path(tmp))
+            self.assertFalse((Path(tmp) / "print-partner.db").exists())
+
+
 class Stop(Exception):
     pass
 

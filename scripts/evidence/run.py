@@ -241,6 +241,8 @@ def parse_args(argv):
     parser.add_argument("--out", type=Path, help="directory for the PNGs (default: a new temporary directory)")
     parser.add_argument("--empty-states", action="store_true",
                         help="prepare empty Today, History, Farm log and overdue Builds on synthetic data")
+    parser.add_argument("--farm-send-queue", action="store_true",
+                        help="seed queued and interrupted sends for two synthetic Builds before startup")
     parser.add_argument("--review-plan", action="store_true", help="open Review and accept on Plan shots")
     parser.add_argument("--full-page", action="store_true", help="capture the whole scrolled page")
     parser.add_argument("--rebuild", action="store_true", help="build even if the checkout is unchanged")
@@ -290,6 +292,27 @@ def prepare_empty_states(seed):
         db.execute("DELETE FROM app_settings WHERE key IN "
                    "('printer.checkoff_links','printer.farm_log','printer.send_queue')")
     say("prepared synthetic empty states (History uses Build 1000)")
+
+
+def seed_farm_send_queue(seed):
+    if not (seed / "SYNTHETIC-DATASET.json").is_file():
+        raise SystemExit("Farm send queue requires a synthetic seed")
+    with sqlite3.connect(seed / "print-partner.db") as db:
+        builds = db.execute("SELECT id FROM build_profiles ORDER BY id LIMIT 2").fetchall()
+        if len(builds) != 2:
+            raise RuntimeError("Farm send queue evidence needs two synthetic Builds")
+        # The Rust import marks the old "sending" row Outcome unknown on startup.
+        # Neither row has an upload job or a printer with a host link.
+        sends = (("bracket", "queued"), ("spindle", "sending"))
+        rows = [
+            {"id": f"evidence-send-{i}", "filename": f"{name}.gcode",
+             "artifact_path": str(seed / f"{name}.gcode"), "profile_id": build,
+             "printer_id": f"synthetic-printer-{i}", "state": state}
+            for i, ((build,), (name, state)) in enumerate(zip(builds, sends, strict=True), 1)
+        ]
+        db.execute("INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.send_queue',?)",
+                   (json.dumps(rows),))
+    say("prepared synthetic sends for two Builds")
 
 
 def seed_planning_brief(seed, steps):
@@ -381,6 +404,8 @@ def session(args, work, out_dir, node, binary):
         turn_on_modules(seed, args.module)
         seed_order_holder(seed, args.step)
         seed_planning_brief(seed, args.step)
+        if args.farm_send_queue:
+            seed_farm_send_queue(seed)
         if args.empty_states:
             prepare_empty_states(seed)
         # verify.py copies the seed into its own temporary data directory under launch_tmp,

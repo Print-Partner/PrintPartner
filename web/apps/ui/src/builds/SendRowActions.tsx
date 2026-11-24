@@ -2,15 +2,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { CoreError } from "../core/client";
 import { writeCore } from "../core/rust";
+import { sendQueueQuery, type QueuedSend } from "../core/sendQueue";
 import { reason } from "../core/writes";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { StartConfirm } from "./SendSheet";
 import {
   actionsFor,
   sendPrintersQuery,
-  sendQueueQuery,
   uncertain,
-  type QueuedSend,
   type RowAction,
   type SendPrinter,
 } from "./sends";

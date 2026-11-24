@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useOutletContext } from "react-router";
 import { useModule } from "../core/modules";
+import { SENDING_POLL_MS, sendQueueQuery, sendStatus, type QueuedSend } from "../core/sendQueue";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
@@ -9,15 +10,7 @@ import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { ExportActions } from "./ExportActions";
 import { SendRowActions } from "./SendRowActions";
 import { SendSheet, type SendOutcome } from "./SendSheet";
-import {
-  buildSends,
-  SENDING_POLL_MS,
-  sendPrintersQuery,
-  sendQueueQuery,
-  sendStatus,
-  type QueuedSend,
-  type SendPrinter,
-} from "./sends";
+import { buildSends, sendPrintersQuery, type SendPrinter } from "./sends";
 
 function When({ iso }: { iso: string | null }) {
   if (!iso) return <>Unknown</>;

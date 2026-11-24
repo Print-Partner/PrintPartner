@@ -252,8 +252,6 @@ pub enum Outcome {
     SourceSyncRecovery(crate::source_sync::SyncRecoveryInspection),
     #[cfg(feature = "desktop_rebuild")]
     SourceSyncFinish(crate::source_sync::SourceSyncFinishOutcome, LocalCommit),
-    #[cfg(feature = "desktop_rebuild")]
-    GithubSourceActivated(i64),
     Job(JobRecord, LocalCommit),
     List(Vec<JobRecord>),
     #[cfg(feature = "desktop_rebuild")]
@@ -427,12 +425,15 @@ pub(crate) enum Command {
         lease: AttemptLease,
         candidate: crate::source_sync::SyncCandidate,
         settlement: crate::source_sync::SyncSettlement,
+        github: Option<crate::uploads::GithubSnapshot>,
+        policy: AuthPolicy,
     },
     #[cfg(feature = "desktop_rebuild")]
     FailSourceSyncTarget {
         lease: AttemptLease,
         candidate: crate::source_sync::SyncCandidate,
         detail: String,
+        policy: AuthPolicy,
     },
     #[cfg(feature = "desktop_rebuild")]
     AcknowledgeSourceSyncTarget {
@@ -461,12 +462,6 @@ pub(crate) enum Command {
     FinishSourceSync {
         lease: AttemptLease,
         policy: AuthPolicy,
-    },
-    #[cfg(feature = "desktop_rebuild")]
-    ActivateGithubSource {
-        lease: AttemptLease,
-        candidate: crate::source_sync::SyncCandidate,
-        snapshot: crate::uploads::GithubSnapshot,
     },
     #[cfg(feature = "desktop_rebuild")]
     InspectRetainedSourceSync {
@@ -1264,13 +1259,37 @@ impl ServerWorkerClient {
         target: &mut crate::source_sync::SyncTargetLease,
         settlement: crate::source_sync::SyncSettlement,
     ) -> Result<crate::source_sync::SettledSyncTarget> {
+        self.settle_sync_target(lease, target, settlement, None)
+    }
+
+    /// Activates the GitHub snapshot and settles its target in one commit.
+    pub fn settle_github_source(
+        &self,
+        lease: &AttemptLease,
+        target: &mut crate::source_sync::SyncTargetLease,
+        snapshot: crate::uploads::GithubSnapshot,
+        settlement: crate::source_sync::SyncSettlement,
+    ) -> Result<crate::source_sync::SettledSyncTarget> {
+        self.settle_sync_target(lease, target, settlement, Some(snapshot))
+    }
+
+    fn settle_sync_target(
+        &self,
+        lease: &AttemptLease,
+        target: &mut crate::source_sync::SyncTargetLease,
+        settlement: crate::source_sync::SyncSettlement,
+        github: Option<crate::uploads::GithubSnapshot>,
+    ) -> Result<crate::source_sync::SettledSyncTarget> {
         ensure!(lease.worker == self.identity, "Foreign worker lease");
+        let policy = self.policy.ok_or(auth::AuthorityFailure::PolicyRequired)?;
         let settled = match submit(
             &self.storage,
             Command::SettleSourceSyncTarget {
                 lease: lease.clone(),
                 candidate: target.candidate()?,
                 settlement,
+                github,
+                policy,
             },
             &AtomicBool::new(false),
             Duration::from_secs(5),
@@ -1282,32 +1301,6 @@ impl ServerWorkerClient {
         };
         target.source_work.consume_retired()?;
         Ok(settled)
-    }
-
-    /// Publishes a materialized GitHub snapshot for a claimed target. The
-    /// reservation stays held for the following settle or fail.
-    pub fn activate_github_source(
-        &self,
-        lease: &AttemptLease,
-        target: &crate::source_sync::SyncTargetLease,
-        snapshot: crate::uploads::GithubSnapshot,
-    ) -> Result<i64> {
-        ensure!(lease.worker == self.identity, "Foreign worker lease");
-        match submit(
-            &self.storage,
-            Command::ActivateGithubSource {
-                lease: lease.clone(),
-                candidate: target.candidate()?,
-                snapshot,
-            },
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )?
-        .receive()?
-        {
-            Outcome::GithubSourceActivated(revision_id) => Ok(revision_id),
-            _ => unreachable!(),
-        }
     }
 
     /// The import free-space reserve for `tenant`, using the stored byte count
@@ -1331,12 +1324,14 @@ impl ServerWorkerClient {
         detail: &str,
     ) -> Result<crate::source_sync::FailedSyncTarget> {
         ensure!(lease.worker == self.identity, "Foreign worker lease");
+        let policy = self.policy.ok_or(auth::AuthorityFailure::PolicyRequired)?;
         let failed = match submit(
             &self.storage,
             Command::FailSourceSyncTarget {
                 lease: lease.clone(),
                 candidate: target.candidate()?,
                 detail: detail.to_owned(),
+                policy,
             },
             &AtomicBool::new(false),
             Duration::from_secs(5),
@@ -2420,24 +2415,30 @@ pub(crate) fn execute(
             lease,
             candidate,
             settlement,
+            github,
+            policy,
         } => TransactionDecision::SourceSyncSettled(crate::source_sync::settle(
             &tx,
             catalog_state,
             &lease,
             candidate,
             settlement,
+            github,
+            policy,
         )?),
         #[cfg(feature = "desktop_rebuild")]
         Command::FailSourceSyncTarget {
             lease,
             candidate,
             detail,
+            policy,
         } => TransactionDecision::Outcome(Outcome::SourceSyncFailed(crate::source_sync::fail(
             &tx,
             catalog_state,
             &lease,
             candidate,
             &detail,
+            policy,
         )?)),
         #[cfg(feature = "desktop_rebuild")]
         Command::AcknowledgeSourceSyncTarget {
@@ -2473,16 +2474,6 @@ pub(crate) fn execute(
         Command::InspectSourceSyncTarget { lease, key, policy } => TransactionDecision::Outcome(
             Outcome::SourceSyncInspection(crate::source_sync::inspect(&tx, &lease, &key, policy)?),
         ),
-        #[cfg(feature = "desktop_rebuild")]
-        Command::ActivateGithubSource {
-            lease,
-            candidate,
-            snapshot,
-        } => {
-            let revision_id =
-                crate::uploads::activate_github(&tx, catalog_state, &lease, &candidate, snapshot)?;
-            TransactionDecision::Outcome(Outcome::GithubSourceActivated(revision_id))
-        }
         #[cfg(feature = "desktop_rebuild")]
         Command::FinishSourceSync { lease, policy } => {
             let result = crate::source_sync::finish(&tx, &lease, policy)?;

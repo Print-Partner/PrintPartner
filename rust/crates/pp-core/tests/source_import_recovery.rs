@@ -16,6 +16,7 @@ use pp_storage::{
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::{
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
@@ -157,7 +158,24 @@ fn stage_frozen(fixture: &Fixture, key: &str) -> String {
 /// Admits a captured import of one STL under `limits` and freezes its retained
 /// capture. Returns the retained capture id.
 fn stage_frozen_with_limits(fixture: &Fixture, key: &str, limits: AdmissionLimits) -> String {
-    let payload = CapturedPayloadV1::files(vec!["triangle.stl".into()]);
+    stage_capture(
+        fixture,
+        key,
+        limits,
+        "triangle.stl",
+        BYTES,
+        CapturedPayloadV1::files(vec!["triangle.stl".into()]),
+    )
+}
+
+fn stage_capture(
+    fixture: &Fixture,
+    key: &str,
+    limits: AdmissionLimits,
+    path: &str,
+    bytes: &[u8],
+    payload: CapturedPayloadV1,
+) -> String {
     let preflight = fixture
         .imports
         .preflight_capture(
@@ -173,15 +191,15 @@ fn stage_frozen_with_limits(fixture: &Fixture, key: &str, limits: AdmissionLimit
     let id = candidate.capture_id().as_str().to_owned();
     candidate
         .write_file(
-            SourcePath::try_from("triangle.stl".to_owned()).unwrap(),
-            BYTES,
+            SourcePath::try_from(path.to_owned()).unwrap(),
+            bytes,
             limits.max_input_bytes,
         )
         .unwrap();
     let inventory = vec![File {
-        path: "triangle.stl".into(),
-        size: BYTES.len() as u64,
-        sha256: hex::encode(Sha256::digest(BYTES)),
+        path: path.into(),
+        size: bytes.len() as u64,
+        sha256: hex::encode(Sha256::digest(bytes)),
         kind: "input".into(),
     }];
     let prepared = preflight
@@ -285,6 +303,58 @@ fn source_import_restart_resumes_recorded_phase() {
         assert!(after.iter().any(|row| row.3 == "activated"));
         assert_eq!(after.last().unwrap().3, "cleanup");
     }
+}
+
+#[test]
+fn zip_activity_survives_restart_between_activation_and_cleanup() {
+    let fixture = Fixture::open();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("triangle.stl", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(BYTES).unwrap();
+    let bytes = zip.finish().unwrap().into_inner();
+    let id = stage_capture(
+        &fixture,
+        "restart-zip",
+        capture_limits(),
+        "kit.zip",
+        &bytes,
+        CapturedPayloadV1::zip("kit.zip".into()),
+    );
+    let activated = fixture
+        .imports
+        .work_frozen(
+            open_frozen(&fixture, &id),
+            Through::Activated,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(activated.state, State::Activated);
+    let activity_ids = |fixture: &Fixture| {
+        Connection::open(fixture.root.join("data/print-partner.db")).unwrap()
+            .prepare("SELECT id FROM app_events WHERE tenant_id=?1 AND kind='source.updated' ORDER BY id")
+            .unwrap()
+            .query_map([&activated.tenant], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let before = activity_ids(&fixture);
+    assert_eq!(before.len(), 1);
+    let fixture = fixture.reopen();
+    let resumed = fixture
+        .imports
+        .work_operation(
+            &activated.job_id,
+            None,
+            Through::Settled,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(resumed.cleanup_settled);
+    assert_eq!(activity_ids(&fixture), before);
 }
 
 #[test]

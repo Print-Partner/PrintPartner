@@ -18,6 +18,36 @@ pub struct SourceActivityEvent {
     )]
     pub detail: Option<String>,
 }
+
+pub(crate) enum SourceOutcome {
+    Updated,
+    SyncFailed,
+}
+
+/// Call from the transaction that commits the Source effect or failed target.
+/// The event carries only the tenant's Source ID and display name.
+pub(crate) fn record(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    source_id: i64,
+    outcome: SourceOutcome,
+) -> Result<()> {
+    let kind = match outcome {
+        SourceOutcome::Updated => "source.updated",
+        SourceOutcome::SyncFailed => "source.sync_failed",
+    };
+    ensure!(
+        tx.execute(
+            "INSERT INTO app_events (tenant_id, at, kind, payload_json)
+             SELECT tenant_id, ?3, ?4, json_object('source_id', id, 'source_name', name)
+             FROM projects WHERE tenant_id=?1 AND id=?2",
+            params![tenant, source_id, auth::catalog_timestamp(), kind],
+        )? == 1,
+        "Source activity requires an existing Source"
+    );
+    Ok(())
+}
+
 pub(super) fn list(
     tx: &Transaction<'_>,
     tenant: &str,

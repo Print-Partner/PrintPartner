@@ -196,8 +196,12 @@ impl SyncWorker {
         match self.prepare(lease, &target, tenant, cancelled).await {
             Ok((snapshot, settlement)) => {
                 self.with_lease(lease, move |worker, attempt| {
-                    worker.activate_github_source(&attempt, target.lease(), snapshot)?;
-                    worker.settle_source_sync_target(&attempt, target.lease_mut(), settlement)?;
+                    worker.settle_github_source(
+                        &attempt,
+                        target.lease_mut(),
+                        snapshot,
+                        settlement,
+                    )?;
                     Ok(((), attempt))
                 })
                 .await
@@ -1080,6 +1084,14 @@ mod tests {
         source
     }
 
+    async fn activity(app: &App) -> Vec<Value> {
+        let (status, body) = app
+            .exchange(Method::GET, "/api/v1/sources/activity", None)
+            .await;
+        assert_eq!(status, 200, "{body}");
+        body["events"].as_array().unwrap().clone()
+    }
+
     async fn sync_again(app: &App, worker: &SyncWorker, id: i64) {
         let (status, job) = app
             .exchange(
@@ -1372,13 +1384,21 @@ mod tests {
         let kept = source_of(&live.app, id).await;
         let revision = kept["current_source_revision_id"].clone();
         let commit_sha = kept["last_commit_sha"].clone();
+        let updated = activity(&live.app).await;
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0]["kind"], "source.updated");
+        assert_eq!(updated[0]["source_id"], id);
+        assert_eq!(updated[0]["source_name"], "Keep");
 
-        for (flag, phrase) in [
+        for (index, (flag, phrase)) in [
             ("gone", "not found"),
             ("truncated", "truncated"),
             ("download", "not found"),
             ("reserve", "import reserve"),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             {
                 let mut world = world.lock().unwrap();
                 world.gone = flag == "gone";
@@ -1414,6 +1434,13 @@ mod tests {
             let source = source_of(&live.app, id).await;
             assert_eq!(source["current_source_revision_id"], revision, "{flag}");
             assert_eq!(source["last_commit_sha"], commit_sha, "{flag}");
+            let events = activity(&live.app).await;
+            assert_eq!(events.len(), index + 2, "{events:?}");
+            assert_eq!(events[0]["kind"], "source.sync_failed");
+            assert_eq!(events[0]["source_id"], id);
+            assert_eq!(events[0]["source_name"], "Keep");
+            assert_eq!(events[0]["detail"], Value::Null);
+            assert_eq!(events.last(), updated.first());
         }
         live.app.serving.stop().await.unwrap();
     }
@@ -1510,6 +1537,7 @@ mod tests {
         .expect("download did not start");
         let running = snapshot(&first.app, &job_id).await;
         assert_eq!(running["status"], "running", "{running}");
+        assert!(activity(&first.app).await.is_empty());
         stop.store(true, Ordering::Release);
         wake.notify_one();
         tokio::time::timeout(crate::MUTATION_DRAIN, task)
@@ -1531,6 +1559,7 @@ mod tests {
         let (mut second, _) = live(directory.path(), transport, Some(cookie)).await;
         let queued = snapshot(&second.app, &job_id).await;
         assert_eq!(queued["status"], "pending", "{queued}");
+        assert!(activity(&second.app).await.is_empty());
         let stop = Arc::new(AtomicBool::new(false));
         let wake = second.worker.waker();
         let task = second.worker.spawn(Arc::clone(&stop));
@@ -1570,6 +1599,10 @@ mod tests {
             revisions(directory.path(), id),
             vec![format!("{commit}.snapshot-v2")]
         );
+        let resumed_events = activity(&second.app).await;
+        assert_eq!(resumed_events.len(), 1);
+        assert_eq!(resumed_events[0]["kind"], "source.updated");
+        assert_eq!(resumed_events[0]["source_id"], id);
         let follow = {
             let guard = second.owner.lock().unwrap();
             SyncWorker::new(&guard, policy(), follow_transport).unwrap()
@@ -1584,6 +1617,11 @@ mod tests {
         );
         let followed = snapshot(&second.app, &again).await;
         assert_eq!(followed["status"], "done", "{followed}");
+        let followed_events = activity(&second.app).await;
+        assert_eq!(followed_events.len(), 2);
+        assert_eq!(followed_events[0]["source_id"], id);
+        assert_eq!(followed_events[0]["kind"], "source.updated");
+        assert_eq!(&followed_events[1..], resumed_events.as_slice());
         second.app.serving.stop().await.unwrap();
     }
 }

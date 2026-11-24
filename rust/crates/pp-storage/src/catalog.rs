@@ -1,5 +1,5 @@
 #[cfg(feature = "desktop_rebuild")]
-mod activity;
+pub(crate) mod activity;
 #[cfg(feature = "desktop_rebuild")]
 mod location;
 #[cfg(feature = "desktop_rebuild")]

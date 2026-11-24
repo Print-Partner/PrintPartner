@@ -2359,6 +2359,110 @@ fn refuse_settle(
 }
 
 #[test]
+fn github_publication_and_activity_commit_together_and_survive_job_recovery() {
+    let sync = Fixture::new();
+    let catalog::Outcome::Source(Some(source)) = sync
+        .catalog
+        .execute(catalog::Request::Create {
+            source: catalog::CreateSource {
+                name: "Kit".into(),
+                url: Some("https://github.com/example/kit".into()),
+                source_kind: Some("github".into()),
+                ..Default::default()
+            },
+        })
+        .unwrap()
+    else {
+        panic!("Source expected")
+    };
+    let job_id = sync.enqueue(Some(vec![source.id as u64]));
+    let mut lease = sync.open();
+    let NextSyncTarget::Github(mut target) = sync.next(&mut lease) else {
+        panic!("GitHub target expected");
+    };
+    let settlement = settlement(source.id);
+    let commit_sha = "a".repeat(40);
+    let revision_key = format!("{commit_sha}.snapshot-v2");
+    let snapshot = crate::uploads::GithubSnapshot {
+        commit_sha,
+        manifest_digest: settlement.receipt.content_hash.clone(),
+        locator: format!("{}/revisions/{revision_key}", source.id),
+        revision_key,
+        stored_bytes: 4,
+        files: vec![crate::uploads::File {
+            path: "kit.stl".into(),
+            size: 4,
+            sha256: "b".repeat(64),
+            kind: "stl".into(),
+        }],
+    };
+    let tenant = lease.tenant().to_owned();
+    sync.connection()
+        .execute(
+            "INSERT INTO app_events(tenant_id,at,kind,payload_json)
+             VALUES(?1,'2025-01-01T00:00:00Z','source.sync_failed',
+                    json_object('source_id',?2,'source_name','Old Kit','error','Old error'))",
+            params![tenant, source.id],
+        )
+        .unwrap();
+    let before = source_row(&sync, source.id);
+    sync.connection()
+        .execute_batch("CREATE TRIGGER refuse_activity BEFORE INSERT ON app_events BEGIN SELECT RAISE(ABORT, 'test activity write failure'); END;")
+        .unwrap();
+    assert_eq!(
+        sync.worker
+            .settle_github_source(
+                &lease,
+                target.lease_mut(),
+                snapshot.clone(),
+                settlement.clone()
+            )
+            .unwrap_err()
+            .to_string(),
+        "test activity write failure"
+    );
+    assert_eq!(source_row(&sync, source.id), before);
+    assert_eq!(
+        sync.targets(&job_id),
+        vec![(source.id, "claimed".into(), None)]
+    );
+    sync.connection()
+        .execute_batch("DROP TRIGGER refuse_activity")
+        .unwrap();
+    sync.worker
+        .settle_github_source(&lease, target.lease_mut(), snapshot, settlement)
+        .unwrap();
+    let Fixture { owner, root, .. } = sync;
+    owner.shutdown().unwrap();
+    let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
+    let worker = owner.job_worker_with_policy(policy(), admission()).unwrap();
+    let ClaimedAttempt { mut lease, .. } = worker.claim_kind(JobKind::Sync).unwrap().unwrap();
+    worker.open_source_sync(&lease).unwrap();
+    assert!(matches!(
+        worker.claim_next_source_sync_target(&mut lease).unwrap(),
+        NextSyncTarget::Complete
+    ));
+    worker.finish_source_sync(&lease).unwrap();
+    let mut db = Connection::open(root.join("print-partner.db")).unwrap();
+    let tx = db.transaction().unwrap();
+    let events = catalog::source_activity(&tx, &tenant, 10).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].kind, "source.updated");
+    assert_eq!(events[0].source_name, "Kit");
+    assert_eq!(events[1].kind, "source.sync_failed");
+    assert_eq!(events[1].source_name, "Old Kit");
+    assert_eq!(events[1].detail.as_deref(), Some("Old error"));
+    assert!(
+        catalog::source_activity(&tx, "default", 10)
+            .unwrap()
+            .is_empty()
+    );
+    drop(tx);
+    owner.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn sync_settle_persists_one_result() {
     let sync = Fixture::new();
     let first = sync.source("First");

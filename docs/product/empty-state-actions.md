@@ -21,13 +21,17 @@ confirms printed units or sends a printer command.
 | A Module is off | See Modules in Settings | `ModuleOff` links to `/settings#modules`. |
 | Command palette has no match | Clear search | Says the search matched nothing, suggests a screen name or "help", and clears the search back to every command. |
 | Library has no Sources | Add Source | The message names Add Source, which is under the heading in every state and opens the Add Source dialog (GRE-1513). Create adds a Source record. A non-GitHub row can upload a ZIP (GRE-1725). A GitHub Source starts one sync (GRE-1728). |
-| Library has no Source activity, and has a GitHub Source | Sync on its row | Names the row's Sync button. The message does not promise that a sync records activity: the Rust core lists only events imported from Node. |
-| Library has no Source activity, and only ZIP Sources | Upload ZIP on its row | Names the row's Upload ZIP control. A ZIP upload records no activity either. |
+| Library has no Source activity, and has a GitHub Source | Sync on its row | A successful sync appears as Updated, including a sync to the same revision. A failed sync of an existing Source appears as Sync failed. |
+| Library has no Source activity, and only ZIP Sources | Upload ZIP on its row | A successful ZIP import appears as Updated when its revision becomes current. |
 | A Source in Library has no files (no revision, or a revision with no files) | Upload ZIP, or Sync for a GitHub Source | The button presses that Source's own Upload ZIP or Sync control on its row, so the row's existing flow runs and the files view sends nothing itself. While the row follows an import or sync remembered in this browser, the view says it is running and shows no button. It follows that job's entry: when this tab reads the job's end, or another tab ends or replaces it, the view updates. A press that finds the row control missing or disabled says so (GRE-1867). |
 | A Build's base or add-on Source has no files (Sources tab) | Upload ZIP in Library, or Sync in Library | Opens `/library/<id>`, where the Source's files view and row offer the action. When the Library's Sources are not loaded, the link is Open in Library (GRE-1867). |
 
 Today renders its ranked-task empty message inside a successful checkoff read.
 An empty task list does not imply that every Build is finished or ready to print.
+
+The Rust core records these Source outcomes alongside history imported from Node
+(GRE-1873). New entries carry the Source ID and display name. Failure details
+are available in the sync job.
 
 No Build tab is deferred. `routes.tsx` maps every tab path in `BUILD_TABS` to its
 screen through a typed record, so a tab added without a screen fails the

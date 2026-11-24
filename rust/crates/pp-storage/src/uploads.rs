@@ -1943,7 +1943,18 @@ fn activate(
             "UPDATE source_revision_attempts SET activated=1 WHERE tenant_id=?1 AND operation_key=?2",
             params![op.tenant, op.key],
         )?;
-        apply_activation(tx, catalog_state, op, &artifact, &revision, id, &now)?
+        let postprocessing =
+            apply_activation(tx, catalog_state, op, &artifact, &revision, id, &now)?;
+        #[cfg(feature = "desktop_rebuild")]
+        if matches!(&op.input, Input::Zip { .. }) || op.input.captured_zip_path().is_some() {
+            catalog::activity::record(
+                tx,
+                &op.tenant,
+                op.source_id,
+                catalog::activity::SourceOutcome::Updated,
+            )?;
+        }
+        postprocessing
     } else {
         Postprocessing::NotActivated
     };
@@ -2272,10 +2283,9 @@ pub(crate) fn activate_github(
     tx: &Transaction<'_>,
     catalog_state: &catalog::State,
     lease: &jobs::AttemptLease,
-    candidate: &crate::source_sync::SyncCandidate,
+    bound: &crate::source_sync::BoundSyncTarget,
     snapshot: GithubSnapshot,
-) -> Result<i64> {
-    let bound = crate::source_sync::bind(tx, catalog_state, lease, candidate)?;
+) -> Result<()> {
     ensure!(
         commit_text(&snapshot.commit_sha) && revision_text(&snapshot.revision_key),
         "Invalid GitHub revision"
@@ -2316,8 +2326,15 @@ pub(crate) fn activate_github(
         .ok_or_else(|| anyhow!("Input size overflow"))?;
     let reserved = snapshot.stored_bytes.max(content).max(1);
     let limit = content.max(1);
+    // A pre-upgrade worker may have activated this target without settling it.
+    // Give the atomic path its own key so it can settle a fresh observation
+    // while retaining the old import record.
     let job_id = hex::encode(Sha256::digest(
-        format!("github-sync:{}:{}", bound.key.job_id, bound.key.ordinal).as_bytes(),
+        format!(
+            "github-sync-settle:{}:{}",
+            bound.key.job_id, bound.key.ordinal
+        )
+        .as_bytes(),
     ));
     let paths = requested_files
         .iter()
@@ -2388,15 +2405,12 @@ pub(crate) fn activate_github(
         params![op.tenant, op.key, i64::try_from(snapshot.stored_bytes)?],
     )?;
     activate(tx, catalog_state, &mut op, lease)?;
-    let revision_id = op
-        .receipt
-        .as_ref()
-        .filter(|receipt| receipt.activated)
-        .map(|receipt| receipt.revision_id)
-        .ok_or_else(|| anyhow!("Source changed during sync"))?;
+    ensure!(
+        op.receipt.as_ref().is_some_and(|receipt| receipt.activated),
+        "Source changed during sync"
+    );
     op.cleanup_settled = true;
-    store(tx, &op)?;
-    Ok(revision_id)
+    store(tx, &op)
 }
 
 fn commit_text(value: &str) -> bool {

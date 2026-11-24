@@ -11,9 +11,6 @@ use tauri::{
 };
 mod recovery;
 
-#[cfg(windows)]
-compile_error!("GRE-1681 deliberate Windows desktop compile failure");
-
 #[cfg(all(not(debug_assertions), feature = "desktop-e2e"))]
 compile_error!("the desktop-e2e feature is not part of a release build");
 

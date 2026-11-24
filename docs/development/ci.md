@@ -57,7 +57,7 @@ Desktop CI on pull requests is the `desktop (linux)` job in `desktop-linux.yml` 
 
 On each ready PR, `scripts/ci-path-filter.py desktop-linux` checks the full PR diff. Changes under `rust/crates/pp-desktop/` or `desktop/`, desktop workflows, bundle staging, assembly and manifest tools, the replacement UI and Rust client, and shared Cargo, Web package and Linux dependency inputs select the job. A draft or an unrelated diff skips it. An unknown diff runs it. The check is advisory under the current ruleset and runs only on pull requests.
 
-The job installs the Linux Tauri libraries, builds the binary with `desktop_rebuild`, and runs the crate's tests with nextest and the `desktop-linux` profile. The profile excludes four origin-change tests that execute JavaScript in Node. The job uses a compile-only manifest that release verification rejects and starts no application Node process, UI, or desktop app. Installed startup and runtime bundle verification require a measured release and separate smoke testing.
+The job installs the Linux Tauri libraries, builds the binary with `desktop_rebuild`, and runs the crate's tests with nextest and the `desktop-linux` profile. The profile excludes four origin-change tests that execute JavaScript in Node and the scratch audit that reruns the whole library test binary. The job uses a compile-only manifest that release verification rejects and starts no application Node process, UI, or desktop app. Installed startup and runtime bundle verification require a measured release and separate smoke testing.
 
 To run the build and tests locally with the Linux Tauri libraries, the repository Rust toolchain, and nextest 0.9.148:
 

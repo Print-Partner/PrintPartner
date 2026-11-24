@@ -47,7 +47,8 @@ test-threads = 3
 filter = 'binary(=runtime_m0) | package(=pp-compat)'
 threads-required = "num-test-threads"
 
-# These tests execute the origin-change JavaScript in Node.
+# Four tests execute the origin-change JavaScript in Node. The scratch audit
+# also runs them because it re-runs the whole libtest binary.
 [profile.desktop-linux]
 default-filter = '''
 not (
@@ -55,5 +56,6 @@ not (
     | test(=origin_change::tests::ticket_t_12_portable_settings_follow_a_change_after_the_init_script)
     | test(=origin_change::tests::ticket_t_12_session_storage_writes_do_not_publish_local_settings)
     | test(=origin_change::tests::ticket_t_12_origin_change_keeps_a_later_edit_across_reload)
+    | test(=scratch_root_is_empty_after_lib_tests)
 )
 '''

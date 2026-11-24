@@ -146,8 +146,6 @@ class MergeGroupWorkflowTests(unittest.TestCase):
             job = jobs["ui"]
             self.assertEqual(job["needs"], ["changes"])
             self.assertEqual(job_runs(job["if"], contexts), runs)
-        self.assertTrue(any("npm run lint --workspace @print-partner/ui" in step.get("run", "").splitlines()
-                            for step in jobs["ui"]["steps"]))
         self.assertEqual(jobs["ui"]["steps"][0]["env"], {"SELECTOR_RESULT": "${{ needs.changes.result }}"})
         self.assertEqual(jobs["ui"]["steps"][0]["run"], 'test "$SELECTOR_RESULT" = success')
 

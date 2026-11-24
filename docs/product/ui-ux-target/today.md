@@ -13,6 +13,12 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 
 The task feed must be a read view over the ported Build Workflow projection (GRE-415), not a second ranking engine. Today, Build Overview and MCP must not be able to disagree about the next action.
 
+Clear Beds lists the oldest bed first and gives its confirmation the primary style.
+When the burst confirmation is available, it takes that
+style. Each bed keeps its own confirmation button. Unit labels use the Checkoff
+touch target size at narrow widths, and keyboard selection previews a burst before
+the operator explicitly confirms it. One Undo reverses the confirmed burst.
+
 ## Delivery slices
 
 Numbers preserve the [product build order](../ui-ux-target.md#build-order); Linear owns execution state.

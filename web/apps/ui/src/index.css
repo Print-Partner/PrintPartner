@@ -657,6 +657,7 @@ body {
 }
 
 /* Checkoff targets are 44 to 48 px (docs/product/ui-ux-target.md, Density). */
+.pp-bed .pp-unit,
 .pp-checkoff-parts .pp-unit {
   min-height: 44px;
   min-width: 44px;

@@ -186,13 +186,14 @@ export function ClearBeds({
     confirm(picks, () => setPicked((now) => new Set([...now].filter((key) => !sent.has(key)))));
   };
   const tooMany = picks.length > MAX_BURST_BEDS;
+  const showPickedConfirmation = picks.length > 0 && !tooMany;
 
   return (
     <section className="pp-hero" aria-labelledby="pp-hero-title" onKeyDown={onKeyDown}>
       <h2 id="pp-hero-title">{`Clear ${plural(beds.length, "bed")} and confirm what came off`}</h2>
       <p className="pp-hero-reason">{`Frees ${listWords([...new Set(beds.map((b) => b.printer))])}.`}</p>
       <ul className="pp-beds">
-        {beds.map((bed) => {
+        {beds.map((bed, index) => {
           const first = lowerFirst(beds, [{ bed, units: bed.pending }]);
           const running = lowerFirst(blocking.printing, [{ bed, units: bed.pending }]);
           const elsewhere = lowerFirst(blocking.unconfirmed, [{ bed, units: bed.pending }]);
@@ -222,7 +223,10 @@ export function ClearBeds({
                   {`Lower units of these Parts are still printing: ${pickWords(running)}. Progress fills from the left, so the core refuses this until they come off and are confirmed, unless they were completed another way.`}
                 </p>
               )}
-              <MutationButton primary onClick={() => confirm([{ bed, units: bed.pending }])}>
+              <MutationButton
+                primary={index === 0 && !showPickedConfirmation}
+                onClick={() => confirm([{ bed, units: bed.pending }])}
+              >
                 {`Confirm ${bed.printer} bed`}
               </MutationButton>
               <fieldset className="pp-units">
@@ -259,7 +263,7 @@ export function ClearBeds({
             {`One burst holds at most ${MAX_BURST_BEDS} beds, and ${picks.length} are picked. Untick some beds and confirm them in a second burst.`}
           </p>
         )}
-        {picks.length > 0 && !tooMany && (
+        {showPickedConfirmation && (
           <MutationButton primary onClick={confirmPicked}>
             {`Confirm ${plural(
               picks.reduce((n, p) => n + p.units.length, 0),

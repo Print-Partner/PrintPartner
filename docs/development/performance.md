@@ -304,3 +304,47 @@ What this run says:
 - Each Rust median is lower than the Node median for the same row. The cold Build is 53.9 ms on Rust and 565 ms on Node (0.10x). Per Part that is 2.5 ms and 26.8 ms (0.09x). The warm Build is 4.8 ms and 164 ms (0.03x). Per Part that is 0.2 ms and 7.7 ms (0.03x).
 - Node's cold time is the placeholder, the mesh and the upload. Rust's cold GET renders the STL. These STLs are the synthetic closed boxes in the seed-388 dataset.
 - Ten rounds and 20 Parts give 10 cold Build samples, 200 cold Part samples, 30 warm Build samples and 600 warm Part samples on each runtime.
+
+## Source thumbnails, 2026-11-24
+
+[GRE-1952](https://linear.app/greetz/issue/GRE-1952/recheck-rust-thumbnail-performance-against-node) rechecks the current runtime against the existing request-sequence median gate (Rust median no greater than Node median in the matching row). GRE-1952 does not define a separate end-to-end, user-facing thumbnail speed gate. The earlier Plan, Checkoff, export, and 2026-11-15 thumbnail evidence above remains unchanged.
+
+### Reproduce this capture
+
+With npm dependencies installed as described in [Run it](#run-it), use Node 24.21.0 for the runtime and Node 22.23.3 as the schema-parity oracle:
+
+```sh
+export PATH="$HOME/.nvm/versions/node/v24.21.0/bin:$PATH"
+export PP_SCHEMA_PARITY_NODE="$HOME/.nvm/versions/node/v22.23.3/bin/node"
+NODE="$HOME/.nvm/versions/node/v24.21.0/bin/node"
+VITE_PRINT_PARTNER_DESKTOP=1 npm --prefix web run build
+python3 rust/scripts/build-desktop-manifest.py --web web --node "$NODE" \
+  --output rust/bundle-manifest.json --commit "$(git rev-parse HEAD)"
+cargo build --manifest-path rust/Cargo.toml --locked --release -p pp-server \
+  --features desktop_rebuild
+OUT="$HOME/gre1952-benchmark/capture-$(date -u +%Y%m%dT%H%M%SZ)"
+python3 scripts/perf-baseline/baseline.py --binary rust/target/release/pp-server \
+  --node "$NODE" --out "$OUT" --runs 10 --settle-secs 5 --idle-secs 30 \
+  --plan-iterations 6 --list-repeats 10 --export-repeats 2 --max-load 8 \
+  --quiet-timeout 300
+```
+
+`OUT` must be a new or empty directory. The harness seeds dataset 388 and five loopback Moonraker simulators; it runs the same release binary with `PP_DESKTOP_REBUILD` unset for Node and set to `1` for Rust. It interleaves ten fresh starts per runtime. Timings depend on the host and load. The recorded bundle and checkout commit were `064aceaec90bb42e81966c002ef3fc0cb11df143`; the captured release binary SHA-256 is recorded below and in the raw JSON.
+
+Captured 2026-11-24 at 21:40:56 UTC on Linux: Intel Xeon Processor, 8 logical CPUs, 31.3 GiB, kernel 6.8.0-1060-aws. The release `pp-server` (`desktop_rebuild`) and bundle manifest use commit `064aceaec90bb42e81966c002ef3fc0cb11df143`; binary SHA-256 `20f40e9b77bc0d300cd561242f8e145d4e22a100dba4c73fe1779d629fd3879e`. `checkout_dirty` is true because this capture used the thumbnail-response validation changes in the harness; no Rust runtime source changed. Toolchain: Rust 1.99.0, Node 24.21.0, Python 3.12.16 (the Node 22.23.3 schema-parity executable was set for the build). Seed 388, 5 loopback Moonraker simulators, dataset digest `41d971796bceb6e3fc0d290d1e376a2e17fba7d71f9d9ab60f48861cbab44ad1`. Ten interleaved rounds per runtime with default counts and `--max-load 8`; start loads ranged from 0.1 to 5.0. Raw samples and metadata: [performance-baseline-2026-11-24-thumbnails.json](performance-baseline-2026-11-24-thumbnails.json).
+
+Each runtime's sequence covers the same 20 Parts in the seed-388 Build, but the sequences do not render equivalent thumbnail content. Rust cold and warm use `GET /sources/{id}/thumbnail?path=` for the Part's Source and STL path; cold renders, warm reads its cache. Node cold is the 1×1 placeholder `GET /parts/:id/thumbnail`, `GET /parts/:id/mesh`, and `POST /parts/:id/thumbnail` with the harness's synthetic 256×256 PNG; warm is the cached `GET /parts/:id/thumbnail`. The Node warm body must match the uploaded PNG exactly. The harness validates successful status, `image/png`, PNG checksums and decoded data, and the expected dimensions before appending a sample. It accepts only a valid 1×1 placeholder in Node's cold path; a failed request, invalid image, warm placeholder, or mismatched Node cache produces no sample for that pass.
+
+The synthetic Node PNG does not contain equivalent thumbnail content, and generating it does not perform the rendering work Rust does on an STL. The Node browser's actual WebGL render is not timed; the harness uploads a synthetic fixture instead. Although both warm responses are valid 256×256 PNGs, this capture makes no end-to-end thumbnail/rendering parity claim.
+
+| Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Thumbnails cold, whole Build | 551 ms | 861 ms (max) | 72.2 ms | 83.9 ms (max) | 0.13x | 10/10 |  |
+| Thumbnail cold, per Part | 25.3 ms | 46.9 ms | 3.2 ms | 6.1 ms | 0.13x | 200/200 |  |
+| Thumbnails warm, whole Build | 136 ms | 195 ms | 11.3 ms | 16.8 ms | 0.08x | 30/30 |  |
+| Thumbnail warm, per Part | 6.7 ms | 11.6 ms | 0.5 ms | 1.0 ms | 0.07x | 600/600 |  |
+
+What this run says:
+
+- All four Rust medians are below the Node medians, passing the existing request-sequence median gate for this capture. This is not an end-to-end thumbnail-rendering or user-facing speed result.
+- Both runtimes measured 20 Parts per Build, with 10 cold Build, 200 cold Part, 30 warm Build, and 600 warm Part samples. `http_retries` was zero on both sides.

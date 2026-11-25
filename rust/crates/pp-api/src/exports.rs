@@ -20,7 +20,7 @@ use axum::{
 use pp_services::exports::{self, ChecklistPart, ChecklistPlan, Colour, pack::PackRefusal};
 use pp_storage::{
     WriterFailure,
-    accepted_artifacts::ArtifactFailure,
+    accepted_artifacts::{ArtifactFailure, ArtifactOpenMode, OpenedArtifact},
     production::geometry::GeometryLimits,
     read_model::{AcceptedRead, Artifact, Part, ReadClient, Snapshot, views},
 };
@@ -271,8 +271,15 @@ fn accepted_thumbnail(
     cancelled: &AtomicBool,
 ) -> Result<Option<Vec<u8>>, ExportFailure> {
     let limits = GeometryLimits::default();
-    let stl = match client.read_artifact_bounded(artifact, limits.max_bytes as u64, cancelled) {
-        Ok(stl) => stl,
+    let stl = match client.open_artifact(
+        artifact,
+        ArtifactOpenMode::Bounded {
+            max_bytes: limits.max_bytes as u64,
+            cancelled,
+        },
+    ) {
+        Ok(OpenedArtifact::Bounded(stl)) => stl,
+        Ok(OpenedArtifact::Stream { .. }) => return Ok(None),
         Err(ArtifactFailure::Cancelled) => return Err(ExportFailure::Interrupted),
         Err(_) => return Ok(None),
     };

@@ -84,6 +84,25 @@ impl fmt::Display for ArtifactFailure {
 
 impl std::error::Error for ArtifactFailure {}
 
+/// How an accepted artifact is made available to an export.
+pub enum ArtifactOpenMode<'a> {
+    /// Verify and return the open file positioned at its end.
+    Stream,
+    /// Verify and buffer no more than `max_bytes`, polling `cancelled`.
+    Bounded {
+        max_bytes: u64,
+        cancelled: &'a std::sync::atomic::AtomicBool,
+    },
+}
+
+/// Verified accepted artifact contents.
+pub enum OpenedArtifact {
+    /// The accepted file and its verified length.
+    Stream { file: File, length: u64 },
+    /// The accepted bytes, read and verified within the caller's bound.
+    Bounded(Vec<u8>),
+}
+
 /// Opens `artifact` under `repos` without following links and returns the
 /// open file and its hashed length once its SHA-256 matches. The file's
 /// position is at its end.

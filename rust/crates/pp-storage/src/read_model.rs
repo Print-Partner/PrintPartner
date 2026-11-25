@@ -213,21 +213,40 @@ impl ReadClient {
         self.submit(credential, target, cancelled, wait)
     }
 
-    /// Reads one Accepted Plan on the read seam, never through the writer
-    /// thread. `None` names no Build: the credential is still checked, and
-    /// the answer is [`AcceptedRead::Missing`], as for a Build the caller's
-    /// tenant does not have.
-    /// Opens an accepted Part's STL under this client's Source snapshots with
-    /// [`crate::accepted_artifacts::open_verified`]. It reads files only, not
-    /// storage, so it holds no reader while it hashes.
+    /// Opens a verified accepted artifact as a stream or within a byte bound.
     #[cfg(feature = "desktop_rebuild")]
     pub fn open_artifact(
         &self,
         artifact: &Artifact,
-    ) -> Result<(std::fs::File, u64), crate::accepted_artifacts::ArtifactFailure> {
-        crate::accepted_artifacts::open_verified(&self.repos, artifact)
+        mode: crate::accepted_artifacts::ArtifactOpenMode<'_>,
+    ) -> Result<crate::accepted_artifacts::OpenedArtifact, crate::accepted_artifacts::ArtifactFailure>
+    {
+        match mode {
+            crate::accepted_artifacts::ArtifactOpenMode::Stream => {
+                crate::accepted_artifacts::open_verified(&self.repos, artifact).map(
+                    |(file, length)| crate::accepted_artifacts::OpenedArtifact::Stream {
+                        file,
+                        length,
+                    },
+                )
+            }
+            crate::accepted_artifacts::ArtifactOpenMode::Bounded {
+                max_bytes,
+                cancelled,
+            } => crate::accepted_artifacts::read_verified_bounded(
+                &self.repos,
+                artifact,
+                max_bytes,
+                cancelled,
+            )
+            .map(crate::accepted_artifacts::OpenedArtifact::Bounded),
+        }
     }
 
+    /// Reads one Accepted Plan on the read seam, never through the writer
+    /// thread. `None` names no Build: the credential is still checked, and
+    /// the answer is [`AcceptedRead::Missing`], as for a Build the caller's
+    /// tenant does not have.
     #[cfg(feature = "desktop_rebuild")]
     pub fn read_plan(
         &self,

@@ -13,6 +13,7 @@ use axum::{
 };
 use http_body::Frame;
 use pp_services::exports::pack::{self, Entry, LIMITS, PackPart, PackUnit, Scope, ZipStream};
+use pp_storage::accepted_artifacts::{ArtifactOpenMode, OpenedArtifact};
 use pp_storage::read_model::{Artifact, Part, ReadClient, Snapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -107,9 +108,12 @@ fn prepare(
         if opened.contains_key(&part.artifact) {
             continue;
         }
-        let index = match (client.open_artifact(&part.artifact), &part.artifact) {
+        let index = match (
+            client.open_artifact(&part.artifact, ArtifactOpenMode::Stream),
+            &part.artifact,
+        ) {
             (
-                Ok((file, length)),
+                Ok(OpenedArtifact::Stream { file, length }),
                 Artifact::Tracked {
                     expected_sha256, ..
                 },

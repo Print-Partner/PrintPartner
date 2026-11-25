@@ -29,6 +29,13 @@ pub enum ArtifactFailure {
     Empty,
     /// The bytes do not hash to the accepted SHA-256, or none is recorded.
     DigestMismatch,
+    /// The accepted file is larger than a caller's read bound.
+    TooLarge {
+        actual: u64,
+        limit: u64,
+    },
+    /// The request was dropped while the accepted file was being read.
+    Cancelled,
     /// Reading failed, or the file changed between the check and the open.
     Read(io::Error),
 }
@@ -45,6 +52,8 @@ impl ArtifactFailure {
             Self::AmbiguousCase => "ambiguous_case",
             Self::Empty => "empty",
             Self::DigestMismatch => "digest_mismatch",
+            Self::TooLarge { .. } => "too_large",
+            Self::Cancelled => "cancelled",
             Self::Read(_) => "io_error",
         }
     }
@@ -75,10 +84,108 @@ impl fmt::Display for ArtifactFailure {
 
 impl std::error::Error for ArtifactFailure {}
 
+/// How an accepted artifact is made available to an export.
+pub enum ArtifactOpenMode<'a> {
+    /// Verify and return the open file positioned at its end.
+    Stream,
+    /// Verify and buffer no more than `max_bytes`, polling `cancelled`.
+    Bounded {
+        max_bytes: u64,
+        cancelled: &'a std::sync::atomic::AtomicBool,
+    },
+}
+
+/// Verified accepted artifact contents.
+pub enum OpenedArtifact {
+    /// The accepted file and its verified length.
+    Stream { file: File, length: u64 },
+    /// The accepted bytes, read and verified within the caller's bound.
+    Bounded(Vec<u8>),
+}
+
 /// Opens `artifact` under `repos` without following links and returns the
 /// open file and its hashed length once its SHA-256 matches. The file's
 /// position is at its end.
 pub fn open_verified(repos: &Path, artifact: &Artifact) -> Result<(File, u64), ArtifactFailure> {
+    let (mut file, expected, _) = open_artifact_file(repos, artifact)?;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut hashed = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+        hashed += read as u64;
+    }
+    if hashed == 0 {
+        return Err(ArtifactFailure::Empty);
+    }
+    if hex::encode(hash.finalize()) != expected {
+        return Err(ArtifactFailure::DigestMismatch);
+    }
+    Ok((file, hashed))
+}
+
+/// Reads one accepted artifact into bounded memory, checking the accepted
+/// digest over the exact bytes returned. Oversized files are refused before
+/// their contents are hashed.
+pub fn read_verified_bounded(
+    repos: &Path,
+    artifact: &Artifact,
+    max_bytes: u64,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<u8>, ArtifactFailure> {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ArtifactFailure::Cancelled);
+    }
+    let (mut file, expected, length) = open_artifact_file(repos, artifact)?;
+    if length > max_bytes {
+        return Err(ArtifactFailure::TooLarge {
+            actual: length,
+            limit: max_bytes,
+        });
+    }
+    let capacity = usize::try_from(length).map_err(|_| ArtifactFailure::TooLarge {
+        actual: length,
+        limit: max_bytes,
+    })?;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut hash = Sha256::new();
+    loop {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(ArtifactFailure::Cancelled);
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len() as u64);
+        let read_limit = remaining.saturating_add(1).min(buffer.len() as u64) as usize;
+        let read = file.read(&mut buffer[..read_limit])?;
+        if read == 0 {
+            break;
+        }
+        if read as u64 > remaining {
+            return Err(ArtifactFailure::TooLarge {
+                actual: bytes.len() as u64 + read as u64,
+                limit: max_bytes,
+            });
+        }
+        hash.update(&buffer[..read]);
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    if bytes.is_empty() {
+        return Err(ArtifactFailure::Empty);
+    }
+    if hex::encode(hash.finalize()) != expected {
+        return Err(ArtifactFailure::DigestMismatch);
+    }
+    Ok(bytes)
+}
+
+fn open_artifact_file<'a>(
+    repos: &Path,
+    artifact: &'a Artifact,
+) -> Result<(File, &'a str, u64), ArtifactFailure> {
     let (root, relative, expected) = match artifact {
         Artifact::Unavailable { reason } => return Err(ArtifactFailure::Unavailable(reason)),
         Artifact::Tracked {
@@ -100,7 +207,7 @@ pub fn open_verified(repos: &Path, artifact: &Artifact) -> Result<(File, u64), A
         return Err(ArtifactFailure::Link);
     }
     let before = pp_os::status_nofollow(&path)?;
-    let mut file = pp_os::open_read_nofollow(&path)?;
+    let file = pp_os::open_read_nofollow(&path)?;
     let opened = pp_os::status_of(&file)?;
     if !opened.is_file() {
         return Err(ArtifactFailure::NotFile);
@@ -110,27 +217,11 @@ pub fn open_verified(repos: &Path, artifact: &Artifact) -> Result<(File, u64), A
             "file changed between check and open",
         )));
     }
-    if file.metadata()?.len() == 0 {
+    let length = file.metadata()?.len();
+    if length == 0 {
         return Err(ArtifactFailure::Empty);
     }
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut hashed = 0u64;
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-        hashed += read as u64;
-    }
-    if hashed == 0 {
-        return Err(ArtifactFailure::Empty);
-    }
-    if hex::encode(hash.finalize()) != *expected {
-        return Err(ArtifactFailure::DigestMismatch);
-    }
-    Ok((file, hashed))
+    Ok((file, expected, length))
 }
 
 fn is_link(path: &Path) -> io::Result<bool> {

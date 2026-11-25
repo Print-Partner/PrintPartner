@@ -1,5 +1,6 @@
 use super::*;
 use std::io::{Seek, SeekFrom};
+use std::sync::atomic::AtomicBool;
 
 /// A Source snapshot at `repos/1/revisions/r` in a temporary directory.
 pub(crate) struct Snapshot {
@@ -110,6 +111,44 @@ fn missing_empty_and_mismatched_files_are_refused() {
     assert!(matches!(
         snapshot.open(&snapshot.artifact("box.stl", "other")),
         Err(ArtifactFailure::DigestMismatch)
+    ));
+}
+
+#[test]
+fn bounded_read_verifies_exact_bytes_and_refuses_oversize_before_hashing() {
+    let snapshot = Snapshot::new(&[("box.stl", "solid box")]);
+    let cancelled = AtomicBool::new(false);
+    let bytes = read_verified_bounded(
+        &snapshot.repos(),
+        &snapshot.artifact("box.stl", "solid box"),
+        9,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(bytes, b"solid box");
+
+    let mismatched = snapshot.artifact("box.stl", "different expected bytes");
+    assert!(matches!(
+        read_verified_bounded(&snapshot.repos(), &mismatched, 8, &cancelled),
+        Err(ArtifactFailure::TooLarge {
+            actual: 9,
+            limit: 8
+        })
+    ));
+}
+
+#[test]
+fn bounded_read_stops_when_cancelled() {
+    let snapshot = Snapshot::new(&[("box.stl", "solid box")]);
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        read_verified_bounded(
+            &snapshot.repos(),
+            &snapshot.artifact("box.stl", "solid box"),
+            9,
+            &cancelled
+        ),
+        Err(ArtifactFailure::Cancelled)
     ));
 }
 

@@ -20,9 +20,15 @@ use axum::{
 use pp_services::exports::{self, ChecklistPart, ChecklistPlan, Colour, pack::PackRefusal};
 use pp_storage::{
     WriterFailure,
-    read_model::{AcceptedRead, Part, ReadClient, Snapshot, views},
+    accepted_artifacts::ArtifactFailure,
+    production::geometry::GeometryLimits,
+    read_model::{AcceptedRead, Artifact, Part, ReadClient, Snapshot, views},
 };
 use serde_json::{Map, json};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+const MAX_CHECKLIST_THUMBNAIL_BYTES: usize = 8 * 1024 * 1024;
+static CHECKLIST_RENDER_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 #[derive(Clone)]
 struct App {
@@ -130,6 +136,10 @@ impl ExportFailure {
 }
 
 async fn checklist(State(app): State<App>, Path(id): Path<String>, request: Request) -> Response {
+    let permit = match CHECKLIST_RENDER_PERMITS.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => return ExportFailure::Interrupted.response(),
+    };
     match accepted_snapshot(&app, &id, request).await {
         Ok(snapshot) => {
             let generated = time::OffsetDateTime::now_utc()
@@ -140,12 +150,29 @@ async fn checklist(State(app): State<App>, Path(id): Path<String>, request: Requ
                         .ok()
                 })
                 .unwrap_or_default();
-            let checklist = exports::checklist(&checklist_plan(&snapshot), &generated);
-            attachment(
-                "text/html; charset=utf-8",
-                &checklist.filename,
-                checklist.html.into_bytes(),
-            )
+            let client = app.client.clone();
+            let rendered = match app
+                .gate
+                .blocking(move |cancelled, _| {
+                    let plan = checklist_plan(&client, &snapshot, &cancelled);
+                    (plan, permit)
+                })
+                .await
+            {
+                Ok(rendered) => rendered,
+                Err(_) => return ExportFailure::Interrupted.response(),
+            };
+            match rendered {
+                (Ok(plan), _permit) => {
+                    let checklist = exports::checklist(&plan, &generated);
+                    attachment(
+                        "text/html; charset=utf-8",
+                        &checklist.filename,
+                        checklist.html.into_bytes(),
+                    )
+                }
+                (Err(failure), _permit) => failure.response(),
+            }
         }
         Err(failure) => failure.response(),
     }
@@ -189,26 +216,79 @@ async fn accepted_snapshot(
 
 /// The checklist input: included Parts, with the quantity and printed count
 /// `GET /api/v2/plans/{id}/checkoff/units` reports for each.
-fn checklist_plan(snapshot: &Snapshot) -> ChecklistPlan {
-    ChecklistPlan {
+fn checklist_plan(
+    client: &ReadClient,
+    snapshot: &Snapshot,
+    cancelled: &AtomicBool,
+) -> Result<ChecklistPlan, ExportFailure> {
+    let mut remaining_thumbnail_bytes = MAX_CHECKLIST_THUMBNAIL_BYTES;
+    let mut thumbnail_budget_exhausted = false;
+    let mut parts = Vec::new();
+    for part in snapshot.parts.iter().filter(|part| part.included) {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(ExportFailure::Interrupted);
+        }
+        let thumbnail_png = if thumbnail_budget_exhausted {
+            None
+        } else {
+            match accepted_thumbnail(client, &part.artifact, cancelled)? {
+                Some(png) => {
+                    let accepted = reserve_thumbnail(&mut remaining_thumbnail_bytes, png);
+                    if accepted.is_none() || remaining_thumbnail_bytes == 0 {
+                        thumbnail_budget_exhausted = true;
+                    }
+                    accepted
+                }
+                None => None,
+            }
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return Err(ExportFailure::Interrupted);
+        }
+        parts.push(ChecklistPart {
+            source: part.source_layer.clone(),
+            relative_path: part.relative_path.clone(),
+            filename: part.filename.clone(),
+            role: part.effective_role.clone(),
+            colour: colour(part),
+            quantity: part.units.len() as u64,
+            printed: part.units.iter().filter(|unit| unit.completed).count() as u64,
+            notes: part.notes.clone(),
+            thumbnail_png,
+        });
+    }
+    Ok(ChecklistPlan {
         build_name: snapshot.profile.name.clone(),
         order_number: snapshot.profile.order_number.clone(),
         plan_version: snapshot.plan_version,
-        parts: snapshot
-            .parts
-            .iter()
-            .filter(|part| part.included)
-            .map(|part| ChecklistPart {
-                source: part.source_layer.clone(),
-                relative_path: part.relative_path.clone(),
-                filename: part.filename.clone(),
-                role: part.effective_role.clone(),
-                colour: colour(part),
-                quantity: part.units.len() as u64,
-                printed: part.units.iter().filter(|unit| unit.completed).count() as u64,
-                notes: part.notes.clone(),
-            })
-            .collect(),
+        parts,
+    })
+}
+
+fn accepted_thumbnail(
+    client: &ReadClient,
+    artifact: &Artifact,
+    cancelled: &AtomicBool,
+) -> Result<Option<Vec<u8>>, ExportFailure> {
+    let limits = GeometryLimits::default();
+    let stl = match client.read_artifact_bounded(artifact, limits.max_bytes as u64, cancelled) {
+        Ok(stl) => stl,
+        Err(ArtifactFailure::Cancelled) => return Err(ExportFailure::Interrupted),
+        Err(_) => return Ok(None),
+    };
+    if cancelled.load(Ordering::Acquire) {
+        return Err(ExportFailure::Interrupted);
+    }
+    Ok(pp_storage::production::thumbnail::render(&stl, limits).ok())
+}
+
+fn reserve_thumbnail(remaining: &mut usize, png: Vec<u8>) -> Option<Vec<u8>> {
+    if png.len() > *remaining {
+        *remaining = 0;
+        None
+    } else {
+        *remaining -= png.len();
+        Some(png)
     }
 }
 
@@ -252,4 +332,22 @@ fn attachment(content_type: &str, filename: &str, body: Vec<u8>) -> Response {
         .header(header::CONTENT_LENGTH, body.len())
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| ExportFailure::Interrupted.response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reserve_thumbnail;
+
+    #[test]
+    fn thumbnail_budget_stops_at_the_first_image_that_does_not_fit() {
+        let mut remaining = 3;
+        assert_eq!(
+            reserve_thumbnail(&mut remaining, vec![1, 2]),
+            Some(vec![1, 2])
+        );
+        assert_eq!(remaining, 1);
+        assert_eq!(reserve_thumbnail(&mut remaining, vec![3, 4]), None);
+        assert_eq!(remaining, 0);
+        assert_eq!(reserve_thumbnail(&mut remaining, vec![5]), None);
+    }
 }

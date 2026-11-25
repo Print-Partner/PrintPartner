@@ -228,6 +228,22 @@ impl ReadClient {
         crate::accepted_artifacts::open_verified(&self.repos, artifact)
     }
 
+    /// Reads accepted bytes once, verifying their digest within `max_bytes`.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn read_artifact_bounded(
+        &self,
+        artifact: &Artifact,
+        max_bytes: u64,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<u8>, crate::accepted_artifacts::ArtifactFailure> {
+        crate::accepted_artifacts::read_verified_bounded(
+            &self.repos,
+            artifact,
+            max_bytes,
+            cancelled,
+        )
+    }
+
     #[cfg(feature = "desktop_rebuild")]
     pub fn read_plan(
         &self,

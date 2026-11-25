@@ -145,7 +145,7 @@ async fn checklist_matches_checkoff_units_and_follows_a_burst() {
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(
         headers[header::CONTENT_SECURITY_POLICY],
-        "default-src 'none'; style-src 'unsafe-inline'"
+        "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
     );
     assert!(html.contains(&format!("<dt>Plan version</dt><dd>{version}</dd>")));
     assert!(html.contains("default-src 'none'"));

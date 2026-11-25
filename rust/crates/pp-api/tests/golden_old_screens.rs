@@ -222,6 +222,7 @@ fn checklist_part(
         quantity: counts.0,
         printed: counts.1,
         notes: String::new(),
+        thumbnail_png: None,
     }
 }
 

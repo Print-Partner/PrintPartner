@@ -98,14 +98,50 @@ core 56.8 ms lower (10.2%), and median service loop 52.3 ms lower (7.0%). The
 mutation-core p95 was nearly unchanged and the service-loop p95 was 10.0 ms
 lower (1.3%). The slowest candidate service-loop sample included a 239.9 ms
 save, 290.2 ms preview, and 472.9 ms Apply; the candidate's maximum was higher.
-This is an encouraging local median result, not a tail-latency guarantee. The
-fixed run order (unchanged first, candidate second) was not interleaved or
-randomized. The loop's two refresh reads were measured sequentially to avoid
-overlapping measured requests, whereas the UI schedules them concurrently and
-does not wait for them before settling. A paired browser workflow check is
-still needed before treating this as a user-visible latency improvement. These
-are synthetic local measurements, not timings on Chad's Plan, and they set no
-performance budget or SLA.
+The median improved, but full-loop p95 moved only 10.02 ms (1.3%) and the
+candidate maximum was higher. The fixed run order (unchanged first, candidate
+second) was not interleaved or randomized. The loop's two refresh reads were
+measured sequentially to avoid overlapping measured requests, whereas the UI
+schedules them concurrently and does not wait for them before settling. These
+are synthetic service-loop timings, not user-visible measurements or timings on
+Chad's Plan; they set no performance budget or SLA.
+
+### Paired browser workflow
+
+A local browser run compared the Node UI, unchanged Rust at
+`9a4798e54f9b2ec012667e8cdd08967821247e7e`, and candidate Rust at
+`4e86df263de0390d6542c78e9c41789ab9306371`. Each series had two warmups and 30
+measured edits on the same synthetic 1,003-Part fixture; the browser retained
+each UI's normal refresh scheduling and used accepted-and-settled state as the
+completion condition. All 90 measured edits passed identity, persistence, and
+version checks. Times are milliseconds; p95 is nearest-rank.
+
+| Browser boundary | Node median / p95 / max | Unchanged Rust median / p95 / max | Candidate Rust median / p95 / max |
+| --- | ---: | ---: | ---: |
+| First input → accepted settled | 833.4 / 951.4 / 957.4 | 1,283.9 / 1,424.9 / 1,611.3 | 1,086.3 / 1,304.0 / 2,427.4 |
+| Enter → accepted settled | 803.3 / 921.5 / 931.1 | 1,241.4 / 1,388.7 / 1,575.3 | 1,055.4 / 1,274.5 / 2,356.8 |
+
+Candidate Rust improved the first-input median by 197.6 ms (15.4%) versus
+unchanged Rust, and was faster in 27/30 corresponding samples. It remained
+253.0 ms (30.4%) slower than Node at the median and slower in all 30 samples.
+Its first-input p95 was 352.6 ms higher than Node's; its maximum was 1,470.0 ms
+higher. **The local “no slower than Node” gate remains unmet.**
+
+The median phase measurements against unchanged Rust were: autosave HTTP
+244.5→165.8 ms, save-response-to-Review-enabled 149.2→99.2 ms, post-save
+four-read critical span 117.3→72.1 ms, and Accept-click-to-settled 494.3→464.9
+ms. These are browser wall-time intervals, not CPU time inside the lookup.
+
+The slowest candidate measured sample (index 29) took 2,356.8 ms from Enter to
+accepted-settled and passed the correctness checks. Its measured intervals
+included 373.2 ms autosave HTTP, a 239.8 ms post-save four-read critical span,
+471.8 ms from Review click to enabled Accept preview (426.7 ms preview HTTP),
+and 1,018.7 ms from Accept click to settled (755.9 ms Apply HTTP and 261.9 ms
+after the response). The recorded ready-action gaps totaled 178.6 ms; this is
+automation timing, not human review dwell. The two post-Accept reads overlapped
+with a 3.0 ms critical span. These intervals overlap and should not be summed.
+The outlier was not CPU-profiled, and host load was not measured, so its cause
+is unknown; do not attribute it to host load or rendering alone.
 
 ## Baseline, 2026-11-08
 

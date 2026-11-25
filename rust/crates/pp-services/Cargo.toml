@@ -11,6 +11,7 @@ default = ["desktop_rebuild"]
 desktop_rebuild = ["dep:zip", "dep:ryu-js", "dep:crc32fast"]
 
 [dependencies]
+base64 = "=0.22.1"
 icu_collator = "=2.3.1"
 plist = "=1.10.1"
 rand.workspace = true

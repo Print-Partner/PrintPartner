@@ -3727,6 +3727,7 @@ dependencies = [
 name = "pp-services"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "crc32fast",
  "hex",
  "icu_collator",

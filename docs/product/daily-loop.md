@@ -22,7 +22,7 @@ route or a merged PR is not a finished step.
 | 4 | Adds a GitHub Source, or uploads a ZIP | Its files and thumbnails appear in Library. Sync shows progress and resumes after a restart. |
 | 5 | Creates a Build, through the assistant over MCP or in the UI | The Build exists with its Sources and a first draft Plan. |
 | 6 | Edits the Plan and passes the Accept gate | A new accepted revision exists, and Required units keep their IDs. |
-| 7 | Downloads the STL pack and the HTML checklist | Both match the accepted Plan. |
+| 7 | Downloads the STL pack and the HTML checklist | Both match the accepted Plan; the checklist embeds accepted-revision thumbnails within its 8 MiB image budget and remains usable offline when images are unavailable or over budget. |
 | 8 | Sends a sliced file to a printer from Production | The printer receives it once. An unknown outcome asks him to reconcile and is never resent. |
 | 9 | Watches Farm and Today while it prints | Status follows the printer without a page reload. |
 | 10 | Checks off the finished print | The units are done in Checkoff, and Undo reverses the burst. |

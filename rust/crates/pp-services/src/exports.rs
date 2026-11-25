@@ -1,6 +1,7 @@
 //! Accepted Plan exports as pure functions. The caller reads the Plan and the
 //! clock; nothing here touches storage, files or the network.
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::BTreeMap;
 
 #[cfg(feature = "desktop_rebuild")]
@@ -28,6 +29,8 @@ pub struct ChecklistPart {
     /// Required units checked off as printed.
     pub printed: u64,
     pub notes: String,
+    /// A PNG rendered from the artifact pinned by the accepted Plan.
+    pub thumbnail_png: Option<Vec<u8>>,
 }
 
 /// A Part's filament, as text and an optional swatch colour.
@@ -44,12 +47,13 @@ pub struct Checklist {
     pub html: String,
 }
 
-/// The only thing a checklist may load: its own inline style sheet.
-pub const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
+/// A checklist may load only its inline style sheet and embedded PNG images.
+pub const CONTENT_SECURITY_POLICY: &str =
+    "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
 
 /// Renders `plan` as one self-contained HTML page. Its Content Security
-/// Policy allows only the inline style sheet, and it has no script, image or
-/// link, so opening it from disk makes no request. All Plan text is escaped.
+/// Policy allows only the inline style sheet and embedded PNG images, so
+/// opening it from disk makes no request. All Plan text is escaped.
 pub fn checklist(plan: &ChecklistPlan, generated_at: &str) -> Checklist {
     let mut groups: BTreeMap<(&str, &str), Vec<&ChecklistPart>> = BTreeMap::new();
     for part in &plan.parts {
@@ -125,8 +129,18 @@ fn row(part: &ChecklistPart) -> String {
         .and_then(swatch_hex)
         .map(|hex| format!("<span class=\"swatch\" style=\"background:{hex}\"></span>"))
         .unwrap_or_default();
+    let thumbnail = part
+        .thumbnail_png
+        .as_deref()
+        .map(|png| {
+            format!(
+                "<img width=\"48\" height=\"48\" alt=\"\" src=\"data:image/png;base64,{}\"/>",
+                STANDARD.encode(png)
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "<tr><td>{}</td><td>{}</td><td>{swatch}{}</td><td class=\"n\">{}</td>\
+        "<tr><td>{thumbnail}{}</td><td>{}</td><td>{swatch}{}</td><td class=\"n\">{}</td>\
          <td class=\"n\">{} / {}</td><td class=\"notes\">{}</td></tr>\n",
         escape(&part.filename),
         escape(&part.role),
@@ -203,6 +217,7 @@ mod tests {
             quantity: 3,
             printed: 1,
             notes: notes.into(),
+            thumbnail_png: None,
         }
     }
 
@@ -248,7 +263,21 @@ mod tests {
         ] {
             assert!(!html.contains(forbidden), "{forbidden} in output");
         }
-        assert!(html.contains("default-src 'none'; style-src 'unsafe-inline'"));
+        assert!(html.contains(CONTENT_SECURITY_POLICY));
+    }
+
+    #[test]
+    fn embeds_png_bytes_as_an_offline_data_image() {
+        let mut part = part("base:Kit", "part.stl", "", None);
+        part.thumbnail_png = Some(b"png".to_vec());
+        let html = checklist(&plan(vec![part]), "t").html;
+
+        assert!(html.contains(
+            "<img width=\"48\" height=\"48\" alt=\"\" src=\"data:image/png;base64,cG5n\"/>"
+        ));
+        assert!(html.contains("img-src data:"));
+        assert!(!html.contains("src=\"http"));
+        assert!(!html.contains("href="));
     }
 
     #[test]

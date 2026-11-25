@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, ensure};
 use rusqlite::Transaction;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The result of a reconcile request, serialized as Node's
 /// `PlanDraftWorkspaceResult`.
@@ -267,14 +267,38 @@ fn reconciliation(result: Option<&StoredResult>) -> ReconciliationView {
 
 /// Links draft Parts to base Parts by `baseRevisionPartId`, as Node's
 /// `diffPlanDraftSnapshot` does.
+fn previous_part<'a>(
+    previous: &'a [DraftPart],
+    previous_by_id: &HashMap<i64, &'a DraftPart>,
+    previous_ids_are_i64: bool,
+    part: &DraftPart,
+) -> Option<&'a DraftPart> {
+    let base_id = &part["baseRevisionPartId"];
+    if base_id.is_null() {
+        None
+    } else if previous_ids_are_i64 {
+        match base_id.as_i64() {
+            Some(id) => previous_by_id.get(&id).copied(),
+            None => previous.iter().find(|b| b["id"] == *base_id),
+        }
+    } else {
+        previous.iter().find(|b| b["id"] == *base_id)
+    }
+}
+
 fn diff(previous: &[DraftPart], parts: &[DraftPart], base_is_current: bool) -> Result<Diff> {
     let mut linked = HashSet::new();
+    let previous_ids_are_i64 = previous.iter().all(|part| part["id"].as_i64().is_some());
+    let mut previous_by_id = HashMap::with_capacity(previous.len());
+    for before in previous {
+        if let Some(id) = before["id"].as_i64() {
+            previous_by_id.entry(id).or_insert(before);
+        }
+    }
     let mut added = Vec::new();
     let mut changed = Vec::new();
     for part in parts {
-        let before = previous.iter().find(|b| {
-            !part["baseRevisionPartId"].is_null() && b["id"] == part["baseRevisionPartId"]
-        });
+        let before = previous_part(previous, &previous_by_id, previous_ids_are_i64, part);
         let Some(before) = before else {
             added.push(part);
             continue;
@@ -405,6 +429,37 @@ mod tests {
                 ["partKey", "relativePath", "filename", "quantityEffective"]
             ])
         );
+    }
+
+    #[test]
+    fn diff_uses_the_first_base_row_for_duplicate_ids() {
+        let previous = [part(2, None, 1), part(2, None, 2)];
+        let current = [part(4, Some(2), 1)];
+
+        let diff = diff(&previous, &current, true).unwrap();
+
+        assert_eq!(diff.changed.len(), 1);
+        assert!(!diff.changed[0].fields.contains(&"quantityEffective"));
+    }
+
+    #[test]
+    fn diff_falls_back_to_json_equality_for_noninteger_ids() {
+        let previous = [DraftPart::new(
+            json!({"id":"legacy"}),
+            crate::manifest_text::PartManifestMetadata::default(),
+        )];
+        let current = DraftPart::new(
+            json!({"baseRevisionPartId":"legacy"}),
+            crate::manifest_text::PartManifestMetadata::default(),
+        );
+        let previous_by_id = HashMap::new();
+        let previous_ids_are_i64 = previous.iter().all(|part| part["id"].as_i64().is_some());
+
+        assert!(!previous_ids_are_i64);
+        let found =
+            previous_part(&previous, &previous_by_id, previous_ids_are_i64, &current).unwrap();
+
+        assert!(std::ptr::eq(found, &previous[0]));
     }
 
     #[test]

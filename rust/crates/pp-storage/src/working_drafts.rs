@@ -2425,7 +2425,13 @@ mod tests {
             .unwrap();
         let error = select(&mut connection, &planning, &AtomicBool::new(false))
             .expect_err("over-cap selection must fail");
-        assert_eq!(error.to_string(), "Reconciliation row limit exceeded");
+        assert_eq!(
+            error
+                .downcast_ref::<required_units::model::AssignmentLimitExceeded>()
+                .unwrap()
+                .limit,
+            cap
+        );
         assert_eq!(inserted.load(Ordering::Relaxed), 0);
         assert_eq!(part_state(&connection), (cap + 1, planning, None));
     }
@@ -2434,6 +2440,7 @@ mod tests {
     #[test]
     fn selection_at_the_assignment_cap_inserts_every_assignment() {
         let cap = storage::ASSIGNMENT_CAP;
+        assert_eq!(cap, 2_000);
         let (_database, mut connection, planning) = single_part_draft(cap);
         let outcome = select(&mut connection, &planning, &AtomicBool::new(false)).unwrap();
         assert!(

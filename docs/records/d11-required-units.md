@@ -42,15 +42,37 @@ transaction failures surface Node's
 Authentication failures and admission outcomes (`Cancelled`, `QueueFull`,
 `Stopped`, `OutcomeUnknown`) stay typed and unwrapped.
 
-Selection refuses a draft before it expands assignments when the sum of part
-quantities is above 230. The error is "Reconciliation row limit exceeded".
-230 is ten times the largest assignment list in the checked-in fixtures:
-`edit-selected` in `working-draft-writes-node.jsonl` stores 23 assignments.
-The constant is `storage::ASSIGNMENT_CAP`. Chad checks it against plans 14–23
-before this feature is turned on. Raise that one constant if a real plan would
-be refused. Node still expands a draft of this size. A quantity above 10,000
-on one Part is still "Required-unit target quantity is invalid", which is
-checked before the cap.
+Selection refuses an autosave before it expands assignments when the sum of
+effective quantities across all Parts, included or not, would exceed
+`storage::ASSIGNMENT_CAP`. GRE-1953 sets a finite default of 2,000. The largest
+observed accepted Plan has 1,003 assignment rows; 2,000 is the smallest tested
+aggregate with substantial headroom over that workload. It is a reviewable
+bounded default, not a latency or memory SLA and not unlimited support.
+
+Local synthetic diagnostics used 1,003 Parts (150 Included and 853 excluded)
+and an Included quantity 1-to-2 autosave followed by Accept. At 2,000 total
+assignments, three operations took 1,777.075, 1,306.469, and 1,259.278 ms
+(median 1,306.469 ms; process peak RSS 95,356 KiB). At 5,000 they took
+1,900.978, 2,204.094, and 2,088.575 ms (median 2,088.575 ms; 121,536 KiB).
+At 10,000 they took 3,629.830, 3,561.715, and 3,435.058 ms (median 3,561.715
+ms; 163,300 KiB). The 5,000 and 10,000 values are diagnostics only; no
+production latency or memory budget justifies selecting them as the default.
+The timer covered the local API operation through Apply; fixture setup,
+readback, identity checks, and reset were outside it. Every diagnostic Accept
+preserved prior Required-unit identities, advanced the Plan version once, and
+matched the receipt to the persisted revision. These synthetic measurements do
+not establish real-Plan performance.
+
+The original bound was 230, ten times the largest assignment list in the
+checked-in fixtures: `edit-selected` in `working-draft-writes-node.jsonl` stores
+23 assignments. At 2,001, autosave returns HTTP 422 with stable code
+`required_unit_assignment_limit_exceeded`; its detail names the 2,000 limit and
+states that the edit was not saved. The autosave transaction rolls back draft,
+reconciliation, and assignment writes. The 1,003-to-1,004 mixed-Included
+regression is synthetic and does not verify a real Plan save. A quantity above
+10,000 on one Part remains "Required-unit target quantity is invalid", checked
+before the aggregate cap. Existing row/text bounds, cancellation checks, and
+all-or-nothing transaction behavior remain in force.
 
 - `ReconciliationRequest` has the contract's snake-case fields. It rejects
   unknown fields, a snapshot digest that is not 64 lowercase hex characters,
@@ -104,4 +126,3 @@ publication parity cases `production-active` and `running-export`.
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
   --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -E 'test(ticket_t_61_required_units) | test(reconciliation_)'
 ```
-

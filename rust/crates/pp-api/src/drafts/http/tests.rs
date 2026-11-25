@@ -2815,6 +2815,221 @@ fn accepted_rows(server: &ReadServer) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+fn quantity_override_body(draft: Value, part_key: &str, value: u32) -> Value {
+    let mut body = autosave_body(draft, value);
+    body["decisions"][0]["target"] = json!({
+        "part_key": part_key,
+        "relative_path": part_key,
+        "source_layer": "base:Fixture Source",
+    });
+    body
+}
+
+fn required_unit_mappings(server: &ReadServer, revision_id: i64) -> Vec<(String, i64, String)> {
+    let connection = server.sql();
+    let mut statement = connection
+        .prepare(
+            "SELECT p.part_key,u.unit_index,u.required_unit_token \
+             FROM plan_revision_required_units u \
+             JOIN plan_revision_parts p ON p.id=u.revision_part_id \
+             WHERE u.revision_id=? ORDER BY p.part_key,u.unit_index",
+        )
+        .unwrap();
+    statement
+        .query_map([revision_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+fn draft_assignment_count(server: &ReadServer, draft_id: i64) -> i64 {
+    server
+        .sql()
+        .query_row(
+            "SELECT sum(quantity_effective) FROM plan_draft_parts WHERE draft_id=?",
+            [draft_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn autosave_accept_preserves_mixed_included_units_at_1004_assignments() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+
+    let baseline = json_reply(
+        keyed(&server, "/plans/1/drafts/save", Some("baseline-1003")).json(
+            &quantity_override_body(observed(&json!(DIGEST)), "excluded.stl", 998),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(draft_assignment_count(&server, 2), 1_003);
+    assert_eq!(server.included(4), 1);
+    assert_eq!(server.included(5), 0);
+
+    let baseline_preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    assert_eq!(baseline_preview["kind"], "changed");
+    let baseline_accept = json_reply(
+        keyed(&server, "/plans/1/drafts/2/apply", Some("accept-1003")).json(&apply_body(
+            baseline["workspace"]["draft"]["snapshot_digest"]
+                .as_str()
+                .unwrap(),
+            0,
+        )),
+        200,
+    )
+    .await;
+    assert_eq!(baseline_accept["revision_id"], 2);
+    assert_eq!(baseline_accept["plan_version"], 2);
+    let prior_mappings = required_unit_mappings(&server, 2);
+    assert_eq!(prior_mappings.len(), 1_003);
+
+    let header = json_reply(
+        server
+            .request(Method::PUT, "/plans/1/drafts/header")
+            .header("Idempotency-Key", "header-after-1003")
+            .json(&json!({
+                "expected_base": {"revision_id": 2, "plan_version": 2},
+                "expected_draft": null,
+                "expected_header_version": null,
+                "header": {"name": "Capacity regression", "order_number": null, "customer": null, "due_date": null}
+            })),
+        200,
+    )
+    .await;
+    let new_draft_id = header["header"]["draft_id"].as_i64().unwrap();
+    let draft_path = format!("/plans/1/drafts/{new_draft_id}");
+    let draft = json_reply(server.request(Method::GET, &draft_path), 200).await;
+    let mut request = autosave_body(draft["draft"].clone(), 4);
+    request["expected_base"] = draft["draft"]["base"].clone();
+    let saved = json_reply(
+        keyed(&server, "/plans/1/drafts/save", Some("autosave-1004")).json(&request),
+        200,
+    )
+    .await;
+    assert_eq!(draft_assignment_count(&server, new_draft_id), 1_004);
+    assert_eq!(
+        saved["workspace"]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["part_key"] == "bracket.stl")
+            .unwrap()["quantity_effective"],
+        4
+    );
+    let preview = json_reply(
+        server.request(
+            Method::GET,
+            &format!("/api/v2/plans/1/drafts/{new_draft_id}/accept-preview"),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(preview["kind"], "changed");
+
+    let mut apply = preview["revision"].clone();
+    apply.as_object_mut().unwrap().remove("draft_id");
+    assert_eq!(
+        apply["expected_base"],
+        json!({"revision_id": 2, "plan_version": 2})
+    );
+    assert_eq!(apply["expected_header_version"], 1);
+    let receipt = json_reply(
+        keyed(
+            &server,
+            &format!("/plans/1/drafts/{new_draft_id}/apply"),
+            Some("accept-1004"),
+        )
+        .json(&apply),
+        200,
+    )
+    .await;
+    assert_eq!(receipt["revision_id"], 3);
+    assert_eq!(receipt["plan_version"], 3);
+    assert_eq!(
+        server
+            .sql()
+            .query_row(
+                "SELECT accepted_plan_version FROM build_profiles WHERE id=1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        server.sql().query_row(
+            "SELECT quantity_effective FROM plan_revision_parts WHERE revision_id=3 AND part_key='bracket.stl'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap(),
+        4
+    );
+    let accepted_units = required_unit_mappings(&server, 3);
+    assert_eq!(accepted_units.len(), 1_004);
+    let accepted_by_part_and_slot: std::collections::HashMap<_, _> = accepted_units
+        .iter()
+        .map(|(part, slot, token)| ((part.clone(), *slot), token))
+        .collect();
+    for (part, slot, token) in &prior_mappings {
+        assert_eq!(
+            accepted_by_part_and_slot.get(&(part.clone(), *slot)),
+            Some(&token),
+            "Required-unit identity changed for {part} unit {slot}"
+        );
+    }
+    server.close().await;
+}
+
+#[tokio::test]
+async fn autosave_refuses_2001_assignments_with_typed_error_and_full_rollback() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let baseline = json_reply(
+        keyed(&server, "/plans/1/drafts/save", Some("baseline-2000")).json(
+            &quantity_override_body(observed(&json!(DIGEST)), "excluded.stl", 1_995),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(draft_assignment_count(&server, 2), 2_000);
+    let before = logical_database(&server.sql());
+    let accepted_before = accepted_rows(&server);
+    let events_before = draft_events(&server);
+
+    let response = json_reply(
+        keyed(&server, "/plans/1/drafts/save", Some("over-limit")).json(&autosave_body(
+            observed(&baseline["receipt"]["snapshot_digest"]),
+            4,
+        )),
+        422,
+    )
+    .await;
+    assert_eq!(response["code"], "required_unit_assignment_limit_exceeded");
+    assert_eq!(response["limit"], 2_000);
+    assert_eq!(
+        response["detail"],
+        "The Required-unit assignment limit of 2000 was exceeded; this edit was not saved."
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    assert_eq!(accepted_rows(&server), accepted_before);
+    assert_eq!(draft_events(&server), events_before);
+    assert_eq!(draft_assignment_count(&server, 2), 2_000);
+    assert_eq!(
+        server.sql().query_row(
+            "SELECT quantity_effective FROM plan_draft_parts WHERE draft_id=2 AND part_key='bracket.stl'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap(),
+        3
+    );
+    server.close().await;
+}
+
 #[tokio::test]
 async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publishes() {
     let server = ReadServer::start(Some("true"), "default").await;

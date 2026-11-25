@@ -5,6 +5,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, thiserror::Error)]
+#[error("Required-unit assignment limit of {limit} exceeded")]
+pub(crate) struct AssignmentLimitExceeded {
+    pub(crate) limit: i64,
+}
+
 pub(super) const FORMAT: &str = "required-unit-reconciliation-v1";
 pub(crate) const PART_FIELDS: &[&str] = &[
     "partKey",
@@ -319,7 +325,11 @@ pub(super) fn reconcile_checked(
     for target in &targets {
         match assignments_needed.checked_add(target.quantity_effective) {
             Some(next) if next <= super::storage::ASSIGNMENT_CAP => assignments_needed = next,
-            _ => bail!("Reconciliation row limit exceeded"),
+            _ => {
+                return Err(anyhow::Error::new(AssignmentLimitExceeded {
+                    limit: super::storage::ASSIGNMENT_CAP,
+                }));
+            }
         }
     }
     let mut base_ids = HashSet::new();
@@ -1161,31 +1171,28 @@ mod tests {
     #[test]
     fn assignment_cap_refuses_the_sum_of_quantities_before_expansion() {
         let cap = super::super::storage::ASSIGNMENT_CAP;
+        assert_eq!(cap, 2_000);
         let left = cap / 2;
         let right = cap - left;
+        let mut over_parts = [part(1, None, left), part(2, None, right + 1)];
+        over_parts[1]["included"] = json!(false);
         let mut checks = 0;
-        let over = reconcile_checked(
-            &[part(1, None, left), part(2, None, right + 1)],
-            &[input()],
-            &[],
-            &[],
-            &mut || {
-                checks += 1;
-                Ok(())
-            },
-        );
+        let over = reconcile_checked(&over_parts, &[input()], &[], &[], &mut || {
+            checks += 1;
+            Ok(())
+        });
+        let error = over.err().unwrap();
         assert_eq!(
-            over.err().unwrap().to_string(),
-            "Reconciliation row limit exceeded"
+            error
+                .downcast_ref::<AssignmentLimitExceeded>()
+                .unwrap()
+                .limit,
+            cap
         );
         assert_eq!(checks, 0);
-        let ready = reconcile(
-            &[part(1, None, left), part(2, None, right)],
-            &[input()],
-            &[],
-            &[],
-        )
-        .unwrap();
+        let mut at_cap_parts = [part(1, None, left), part(2, None, right)];
+        at_cap_parts[1]["included"] = json!(false);
+        let ready = reconcile(&at_cap_parts, &[input()], &[], &[]).unwrap();
         assert_eq!(
             ready.result["assignments"].as_array().unwrap().len(),
             cap as usize

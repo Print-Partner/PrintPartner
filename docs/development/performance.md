@@ -55,6 +55,58 @@ What the numbers leave out:
 - p95 is nearest-rank. Below 20 samples it is the maximum, and the table says "(max)". Per-request rows pool samples from all rounds.
 - The four export rows time one transfer each: Node's job, its 20 ms poll and the download, or one Rust GET read to the last byte. They leave out the replacement UI's check. That check is the same GET aborted at the headers, after the core has opened and verified the files, and the browser download sends the GET again. The `check request` and `check then download` rows time that pair. They run after the four row GETs, so those files are already in the page cache. The cold time to the first byte is the `until headers` sample of the first GET.
 
+## Large Plan projection lookup (GRE-1955)
+
+`required_units::view::diff` links each draft Part to the base Part named by
+`baseRevisionPartId`. The original lookup scanned all prior Parts for every
+current Part. The 1,003-Part synthetic shape therefore performed quadratic
+JSON-field lookups in both the in-transaction reconciliation workspace and the
+autosave response workspace. The request-local index builds a map for integer
+Part IDs and keeps the first row for duplicate IDs, matching the old
+`Iterator::find` behavior. If prior IDs or a base reference are not integers,
+the lookup falls back to the old JSON equality scan. The workspace projection,
+its validation/errors, transaction rollback, reconciliation response, and
+cross-request refresh behavior remain intact; no projection is skipped or
+cached.
+
+A fresh service-harness comparison used unchanged `9a4798e54f9b2ec012667e8cdd08967821247e7e`
+and the candidate built from the same source revision plus this lookup change.
+Each had two warmups and 30 measured samples on a disposable fixture with 1,003
+Parts (150 Included, 853 excluded), 1,003 accepted assignments, and 1,003
+Required units. Each measured save changed one Included Part from quantity 1 to
+2, then Accept produced 1,004 assignments. All 30 operations and resets on each
+binary passed checks for stable prior `(Part, unit-slot, token)` identities, a
+unique new unit, quantities, one Plan-version advance, and receipt/revision
+agreement.
+
+Times below are client request durations through response-body read and JSON
+parse, in milliseconds; p95 is nearest-rank. The mutation core is autosave plus
+Apply. The service loop is autosave, Accept preview, Apply, and sequential
+draft/header refresh requests; fresh-draft setup, resets, SQLite readback, and
+browser rendering are outside the timer.
+
+| Operation (n=30 per binary) | Unchanged median / p95 / max | Indexed median / p95 / max |
+| --- | ---: | ---: |
+| Draft autosave | 223.3 / 233.3 / 235.8 | 161.6 / 177.4 / 239.9 |
+| Accept preview | 179.3 / 220.5 / 223.6 | 179.7 / 206.1 / 290.2 |
+| Apply | 333.4 / 363.7 / 377.5 | 335.9 / 422.9 / 472.9 |
+| Mutation core (save + Apply) | 558.8 / 586.2 / 607.1 | 502.0 / 583.8 / 712.8 |
+| Service loop | 743.2 / 789.6 / 811.9 | 690.9 / 779.6 / 1,007.1 |
+
+The candidate's median autosave was 61.6 ms lower (27.6%), median mutation
+core 56.8 ms lower (10.2%), and median service loop 52.3 ms lower (7.0%). The
+mutation-core p95 was nearly unchanged and the service-loop p95 was 10.0 ms
+lower (1.3%). The slowest candidate service-loop sample included a 239.9 ms
+save, 290.2 ms preview, and 472.9 ms Apply; the candidate's maximum was higher.
+This is an encouraging local median result, not a tail-latency guarantee. The
+fixed run order (unchanged first, candidate second) was not interleaved or
+randomized. The loop's two refresh reads were measured sequentially to avoid
+overlapping measured requests, whereas the UI schedules them concurrently and
+does not wait for them before settling. A paired browser workflow check is
+still needed before treating this as a user-visible latency improvement. These
+are synthetic local measurements, not timings on Chad's Plan, and they set no
+performance budget or SLA.
+
 ## Baseline, 2026-11-08
 
 Captured 2026-11-08 on a shared Linux host: Intel Xeon E5-2650 v3, 12 logical CPUs, 31 GiB, kernel 7.0.0-42. `pp-server` was a release build with `desktop_rebuild` from a checkout of main at `a71591e4c` (sha256 `87bd1e32…5bc6`). The samples record `checkout_dirty: true`: the harness and these docs (`scripts/perf-baseline/`, `scripts/local-ci.py`, `docs/`) were not yet committed. No file under `rust/` or `web/` differed from `a71591e4c`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, seed 388. Ten rounds per runtime, `--max-load 16 --quiet-timeout 180`. Other agents' builds kept the 1-minute load at run start between 8.4 and 22.1 for the whole run (Node 8.4 to 20.0, Rust 11.0 to 22.1, from `load_at_start`), so both runtimes ran on a busy machine and the spread is wide; compare medians. Raw samples and all metadata: [performance-baseline-2026-11-08.json](performance-baseline-2026-11-08.json).

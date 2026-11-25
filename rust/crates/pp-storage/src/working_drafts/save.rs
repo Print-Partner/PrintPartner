@@ -60,6 +60,9 @@ pub enum Refusal {
     DraftChanged,
     InputsChanged,
     IdempotencyConflict,
+    AssignmentLimitExceeded {
+        limit: i64,
+    },
     PartNotFound,
     PartAmbiguous,
     NoLayers,

@@ -604,6 +604,7 @@ fn present_autosave(reason: SaveRefusal) -> Response {
         SaveRefusal::DraftChanged => conflict("draft_changed", None),
         SaveRefusal::InputsChanged => conflict("inputs_changed", None),
         SaveRefusal::IdempotencyConflict => conflict("idempotency_conflict", None),
+        SaveRefusal::AssignmentLimitExceeded { limit } => assignment_limit_exceeded(limit),
         SaveRefusal::PartNotFound => domain_error("part_not_found"),
         SaveRefusal::PartAmbiguous => domain_error("part_ambiguous"),
         SaveRefusal::NoLayers => domain_error("no_layers"),
@@ -611,4 +612,19 @@ fn present_autosave(reason: SaveRefusal) -> Response {
         SaveRefusal::Reconciliation { outcome } => present_edit(outcome),
         SaveRefusal::Publication { .. } => edit_internal_error(),
     }
+}
+
+fn assignment_limit_exceeded(limit: i64) -> Response {
+    let detail = format!(
+        "The Required-unit assignment limit of {limit} was exceeded; this edit was not saved."
+    );
+    let problem = crate::problem::problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        &detail,
+        Some(ProblemCode::RequiredUnitAssignmentLimitExceeded.as_str()),
+    );
+    crate::problem::build(
+        problem,
+        [("limit".to_owned(), json!(limit))].into_iter().collect(),
+    )
 }

@@ -245,7 +245,16 @@ fn transact(
         )?,
         c.policy,
         &mut || Ok(budget.check()?),
-    )?;
+    );
+    let selection = match selection {
+        Ok(selection) => selection,
+        Err(error) => {
+            let exceeded = error.downcast::<required_units::model::AssignmentLimitExceeded>()?;
+            return Ok(Err(Refusal::AssignmentLimitExceeded {
+                limit: exceeded.limit,
+            }));
+        }
+    };
     match selection {
         required_units::Outcome::Ready { .. } => {}
         required_units::Outcome::DraftChanged { .. } => return Ok(Err(Refusal::DraftChanged)),

@@ -32,8 +32,8 @@ pub(crate) const ASSIGNMENT_COLUMNS: &str =
     "kind,target_draft_part_id,unit_index,required_unit_token";
 
 pub(crate) const ROW_LIMIT: usize = 200_000;
-/// Largest checked-in assignment list is 23 (`edit-selected`). Ten times that.
-pub(crate) const ASSIGNMENT_CAP: i64 = 230;
+/// Finite pre-expansion bound documented in D11.
+pub(crate) const ASSIGNMENT_CAP: i64 = 2_000;
 const TEXT_LIMIT: usize = 65_536;
 const TOTAL_TEXT_LIMIT: usize = 64 * 1024 * 1024;
 const UNIT_LIMIT: u16 = 10_000;

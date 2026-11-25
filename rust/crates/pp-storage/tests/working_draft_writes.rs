@@ -248,13 +248,13 @@ node_case!(
 );
 #[test]
 fn failed_selection_keeps_the_edit_after_the_base_changes() {
-    // The fixture sets one quantity to 10_000, above the assignment cap, so
-    // selection refuses before the injected insert trigger.
+    // The fixture's 10_000 quantity plus the other Parts exceeds the
+    // aggregate cap, so selection refuses before the injected insert trigger.
     compare_node_errors(
         "edit-selection-fails-then-base-changes",
         &[(
             "injected selection write failure",
-            "Reconciliation row limit exceeded",
+            "Required-unit assignment limit of 2000 exceeded",
         )],
     );
 }

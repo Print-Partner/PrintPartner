@@ -131,6 +131,7 @@ problem_codes! {
     AcceptedBaselineRequired = "accepted_baseline_required";
     RequiredUnitSetUnavailable = "required_unit_set_unavailable";
     InvalidHeader = "invalid_header";
+    RequiredUnitAssignmentLimitExceeded = "required_unit_assignment_limit_exceeded";
     DraftNotAuthor = "draft_not_author";
     CompetingDraft = "competing_draft";
     UnsupportedDraftDecisions = "unsupported_draft_decisions";

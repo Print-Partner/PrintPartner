@@ -985,12 +985,26 @@ describe("UI5-01 P, F, digits, Space and Shift pick units and preview them befor
   });
 
   it("F fills the focused unit's Part on every bed, and digits set its count from the lowest unit", async () => {
-    renderToday(fakeCore({ results: SHARED() }));
+    const core = fakeCore({ results: SHARED() });
+    renderToday(core);
     await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    const section = screen.getByRole("region", { name: /^Clear 2 beds/ });
+    const primaryActions = () =>
+      within(section)
+        .getAllByRole("button")
+        .filter((button) => button.classList.contains("pp-button-primary"));
+    const voron = within(section).getByRole("button", { name: "Confirm Voron 2.4 bed" });
+    const trident = within(section).getByRole("button", { name: "Confirm Trident bed" });
+    expect(primaryActions()).toEqual([voron]);
     const gear = within(bed("Voron 2.4")).getByRole("checkbox", { name: "gear.stl unit 1" });
     fireEvent.keyDown(gear, { key: "F" });
     expect(preview().textContent).toContain("Will mark 2 units on 2 beds (Voron 2.4 and Trident):");
     expect(previewLines()).toEqual(["gear.stl: +2 printed (units 1 and 2)"]);
+    expect(primaryActions()).toEqual([
+      within(section).getByRole("button", { name: "Confirm 2 picked units" }),
+    ]);
+    expect(within(section).getByRole("button", { name: "Confirm Voron 2.4 bed" })).toBe(voron);
+    expect(within(section).getByRole("button", { name: "Confirm Trident bed" })).toBe(trident);
     const gear2 = within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" });
     fireEvent.keyDown(gear2, { key: "1" });
     expect(previewLines()).toEqual(["gear.stl: +1 printed (unit 1)"]);
@@ -998,6 +1012,8 @@ describe("UI5-01 P, F, digits, Space and Shift pick units and preview them befor
     expect((gear2 as HTMLInputElement).checked).toBe(false);
     fireEvent.keyDown(gear2, { key: "0" });
     expect(preview().textContent).toContain("Nothing picked.");
+    expect(primaryActions()).toEqual([voron]);
+    expect(core.posts).toHaveLength(0);
   });
 
   it("Space ticks one unit and Shift picks a run from the last one ticked", async () => {

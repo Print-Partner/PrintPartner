@@ -13,6 +13,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import {
+  memo,
   useEffect,
   useId,
   useRef,
@@ -577,6 +578,19 @@ function PartRow({
   );
 }
 
+const MemoPartRow = memo(
+  PartRow,
+  (previous, next) =>
+    previous.part === next.part &&
+    previous.writes.parts.mutate === next.writes.parts.mutate &&
+    previous.writes.mutationKey[0] === next.writes.mutationKey[0] &&
+    previous.writes.mutationKey[1] === next.writes.mutationKey[1] &&
+    previous.writes.mutationKey[2] === next.writes.mutationKey[2] &&
+    previous.reasonId === next.reasonId &&
+    previous.locked === next.locked &&
+    previous.edits === next.edits,
+);
+
 function PartsTable({
   parts,
   writes,
@@ -611,7 +625,7 @@ function PartsTable({
         </thead>
         <tbody>
           {parts.map((part) => (
-            <PartRow
+            <MemoPartRow
               key={part.draft_part_id}
               part={part}
               writes={writes}

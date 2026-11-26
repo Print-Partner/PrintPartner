@@ -143,6 +143,36 @@ with a 3.0 ms critical span. These intervals overlap and should not be summed.
 The outlier was not CPU-profiled, and host load was not measured, so its cause
 is unknown; do not attribute it to host load or rendering alone.
 
+## Large Plan row-render reduction (GRE-1956)
+
+A local synthetic browser comparison used two warmups and 30 matched AB/BA
+pairs per variant on the 1,003-Part fixture. The settled boundary and
+correctness checks were unchanged; every slow sample was retained.
+
+| Boundary                      |  Control median / p95 / max | Row-memo candidate median / p95 / max |
+| ----------------------------- | --------------------------: | ------------------------------------: |
+| Input → accepted settled (ms) | 1,088.0 / 1,418.4 / 2,042.1 |           1,037.8 / 1,169.9 / 1,237.3 |
+
+The paired median change was −51.85 ms (candidate faster in 27/30 pairs;
+exploratory 95% bootstrap interval −80.2 to −33.85 ms). Input→quiet improved
+by a paired median −52.85 ms, and every sample passed the no-late-work audit.
+Apply-response→settled improved by −20.35 ms in 25/30 pairs. Accept-click→settled
+was −16.1 ms in 19/30 pairs, with interval −29.2 to +0.65 ms; that narrower
+improvement is uncertain. This is a measured synthetic UI improvement, not
+proof that the Node cutover gate is met; this run did not compare Node.
+
+`PartRow` compares `part` identity, `writes.parts.mutate`, all three entries of
+`writes.mutationKey` (`["core", "plan-draft-write", id]`), `reasonId`, `locked`,
+and `edits` Map identity. The `writes` wrapper itself is recreated; the row
+consumes only the mutation function and key. `edits` is intentionally mutable:
+`usePendingEdits` sets and deletes each row's own Map entry in place. The
+comparator checks Map identity, not contents; current supported flows have no
+external clear or overwrite, and row-local changes rerender that row. Context,
+mutation/query subscriptions, preview, errors, and freshness handling remain
+active. Browser regressions passed for changed quantity/Included state, pending
+edits and successor drafts, validation and outage/reconnect locks, stale
+two-window saves, and accepted/history/restore flows.
+
 ## Baseline, 2026-11-08
 
 Captured 2026-11-08 on a shared Linux host: Intel Xeon E5-2650 v3, 12 logical CPUs, 31 GiB, kernel 7.0.0-42. `pp-server` was a release build with `desktop_rebuild` from a checkout of main at `a71591e4c` (sha256 `87bd1e32…5bc6`). The samples record `checkout_dirty: true`: the harness and these docs (`scripts/perf-baseline/`, `scripts/local-ci.py`, `docs/`) were not yet committed. No file under `rust/` or `web/` differed from `a71591e4c`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, seed 388. Ten rounds per runtime, `--max-load 16 --quiet-timeout 180`. Other agents' builds kept the 1-minute load at run start between 8.4 and 22.1 for the whole run (Node 8.4 to 20.0, Rust 11.0 to 22.1, from `load_at_start`), so both runtimes ran on a busy machine and the spread is wide; compare medians. Raw samples and all metadata: [performance-baseline-2026-11-08.json](performance-baseline-2026-11-08.json).

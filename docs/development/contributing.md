@@ -5,17 +5,18 @@ This page describes how work moves from a ticket to a merged pull request. [Buil
 ## Sources of truth
 
 - **Goals and decisions.** The Notion page "Goals and decisions (2026-10-15)" under Print Partner Roadmap holds the product goals. Where an older document disagrees, that page wins.
-- **Plan and later decisions.** The plan is the Notion page "Print Partner: execution plan v17.1" (Chad, 2026-11-04). Chad's decisions since then are dated, newest first, on the Notion page [Agent handoff](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5). Where two pages disagree, the newer dated decision wins. If you can't tell which is newer, ask the owner. Live status is the open PR.
-- **Execution.** The Linear project "Print Partner Desktop (Rust core)". Milestones 1 to 9 are the delivery chunks. The desktop rebuild slices (D-slices) are sub-issues of GRE-595.
+- **Later decisions.** Chad records later decisions on the Notion page [Agent handoff](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5). Where two pages disagree, the newer dated decision wins. If you can't tell which is newer, ask the owner.
 - **Code and evidence.** The `main` branch of `Print-Partner/PrintPartner`.
 
 Without Notion or Linear access, work from a task brief the task owner exports for you. [Agent and contributor workflow](agent-workflow.md#start-from-a-task-brief) lists its fields and when to stop and ask. The owner moves the ticket through its states.
 
 ## Pick a ticket
 
-1. Take the highest-priority unblocked ticket in the lowest-numbered milestone.
-2. Check the ticket's blocking relations in Linear before you start.
-3. Move the ticket to In Progress.
+Use the [ordered Rust parity plan](https://app.notion.com/p/4246dd30b69881d6842ce4a163bda3ad)
+for the sequence. Use the [Rust cutover project](https://linear.app/greetz/project/rust-cutover-d28381ab0885)
+in Linear for ticket status and
+blocking relations. Check the next plan step's blockers in Linear before
+starting it through `/implement`, one ticket per fresh session.
 
 Open one PR per ticket. If you find work that belongs to another ticket, add a comment to that ticket instead of changing it in your PR.
 

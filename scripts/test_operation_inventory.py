@@ -120,7 +120,8 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("- Routes migrated to Rust: 0 of 4 (4 unmigrated)\n", report)
         self.assertIn("- Journey route misses: not measured (no "
                       "docs/parity/journey-route-misses.json)\n", report)
-        self.assertIn("Active phase: **P1**", report)
+        self.assertIn("Historical roster phase: **P1**", report)
+        self.assertIn("Report only: counts describe compatibility inputs", report)
         self.assertIn("| sqlite-schema | 34 | 35 | Rust writes a newer version", report)
         self.assertIn("| covers | 1 | none | Node only", report)
         self.assertIn("| POST /printer-send-queue current | 1 | 0 | printer.send-queue | "

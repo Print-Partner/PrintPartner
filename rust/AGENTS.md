@@ -2,8 +2,7 @@
 
 Active. Rust owns replacement behaviour; `pp-core` composes operation owners. Node still owns live compatibility operations.
 
-Read [the authority page](../docs/architecture.md) before changing behaviour.
-Follow [agent workflow](../docs/development/agent-workflow.md) for checks, evidence and handoffs.
+When composing Rust operations, read the [crate map](../docs/architecture.md#crates-and-allowed-edges).
 
 Run from the repository root:
 

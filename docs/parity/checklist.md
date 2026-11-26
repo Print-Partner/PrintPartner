@@ -1,163 +1,71 @@
-# Print Partner Desktop parity checklist (GRE-578)
+# Rust parity evidence
 
-Tracks every user-facing UI page and every MCP tool that the Rust desktop core
-must reach parity with. One row per item. Docs only; no code changes.
+[GRE-1958](https://linear.app/greetz/issue/GRE-1958) compared the checked-in
+surfaces at [`c9a3df0ab0a37f6edd8698421987c250fe653c8a`](https://github.com/Print-Partner/PrintPartner/tree/c9a3df0ab0a37f6edd8698421987c250fe653c8a).
+This is a source snapshot, not a work queue or a cutover sign-off. Node stays
+in production. For order, see [Pick a ticket](../development/contributing.md#pick-a-ticket).
 
-## Sources and limits
+- **Present:** the Rust route, handler, screen or reader exists in the stated mode.
+- **Missing:** the compared Rust surface lacks the named behavior, even if it advertises a name.
+- **Superseded:** an owner decision replaced the old parity requirement.
+- **Unverified:** the cited sources do not prove the broader parity or acceptance claim.
 
-- **GRE-542 MCP inventory golden:** not on `main` at `0f4c9ef`, so it was not used.
-- **Conversion plan section 2:** not in this repository, so it was not used.
-- **Linear (GRE-578 and related tickets):** the Linear connector is not
-  authorized in this session, so the Linear ticket and milestone columns are
-  `TBD`. Fill them from Linear before this checklist gates work.
-- The rows below come from the code on `main`:
-  - UI pages: the page components in `web/apps/web/src/pages/` and their routes
-    in `web/apps/web/src/AuthenticatedApp.tsx`.
-  - MCP tools: `ASSISTANT_TOOL_SPECS` in
-    `web/apps/server/src/assistant/tool-specs.ts`, minus the SPA-only `ui_*`
-    tools, plus the three proposal tools in `web/apps/server/src/mcp/product-mcp.ts`.
-- Owner crates are assigned from the crate names in `rust/crates/`. They are a
-  proposal, not an agreed split.
+## HTTP
 
-## Column meanings
+Compare the [Node compatibility catalog](../../rust/crates/pp-gateway/operations.json)
+with the [Rust client route catalog](../../rust/crates/pp-api/src/client_contract.rs)
+and the [Rust-only router composition](../../rust/crates/pp-core/src/rebuild_api.rs).
+The Rust client catalog covers calls made by the replacement UI, not all Rust
+routes. Comparing method and path templates (normalizing parameter names,
+leaving versions intact) gives 19 exact matches for its 66 routes among the
+781 compatibility routes. This is path overlap, not behavior parity.
 
-- **Owner crate:** the `rust/crates/pp-*` crate that would own the item.
-- **Linear ticket / Milestone:** `TBD` until read from Linear.
-- **Status:**
-  - `missing`: no Rust implementation on `main`. Every route in
-    `rust/crates/pp-gateway/operations.json` is `owner: compat` (767 of 767),
-    which means Node still serves all of them.
-  - `inflight`: work in progress on an open PR or branch. Not determined here.
-  - `on main`: implemented in Rust on `main`. No row qualifies yet.
-- **Golden/fixture:** link to a golden or fixture for the item, or `—` if none exists.
+| Status | Evidence | Decision or ticket |
+| --- | --- | --- |
+| **Present** | Rust-only mode registers Build, Plan, Checkoff, and Library operations. For example, both catalogs list `GET /api/v2/plans/{id}`; Rust also has its own backup/restore routes under `/api/v2/installation`. The [registration test](../../rust/crates/pp-core/src/rebuild_api.rs) checks the client catalog against the composed routers. | [Daily-loop contract](../product/daily-loop.md#steps), [GRE-1371](https://linear.app/greetz/issue/GRE-1371) and [GRE-1161](https://linear.app/greetz/issue/GRE-1161) for backup/restore |
+| **Missing** | Node has a webhook management surface, including `GET /api/v1/webhooks`; the Rust-only router has no webhook management route. | [Owner re-scope](../architecture.md#current-state-and-transition) defers webhooks |
+| **Superseded** | Moving all 781 compatibility routes one by one is not the delivery plan. The [operation inventory](operation-inventory.md) still reports zero migrated routes from its ownership inputs; that does not count the separate Rust-only router. | [Whole-runtime cutover](../adr/0010-whole-runtime-cutover.md) |
+| **Unverified** | The catalog comparison does not resolve the remaining Node routes one by one, establish equivalent request/response behavior, or prove a cutover on owner data. A zero-proxy count covers only the recorded journey in the inventory. | [Whole-runtime cutover](../adr/0010-whole-runtime-cutover.md) |
 
-## UI pages (15 rows)
+## MCP
 
-Redirect-only routes (`/build`, `/plans`, `/parts`, `/review`, `/checkoff`,
-`/plate`, `/print`, `/plans/:planId/studio`) are not pages and have no rows.
-They forward to the pages above.
+The Node [tool specs](../../web/apps/server/src/assistant/tool-specs.ts) and
+[`tools/list` handler](../../web/apps/server/src/mcp/product-mcp.ts) expose
+83 product tools (excluding six `ui_*` tools) plus three session tools.
+The [Node golden](../../web/apps/server/fixtures/mcp/tools-inventory.json)
+and [Rust catalog](../../rust/crates/pp-services/src/mcp_domain/catalog.json)
+have the same 86 names and input schemas. Both catalogs include the two Farm
+tools; both runtimes gate their listing on Farm access. `plan_build` is a
+prompt, not a tool.
 
-| Page | Route | Owner crate | Linear ticket | Milestone | Status | Golden/fixture |
-|---|---|---|---|---|---|---|
-| `LoginPage` | `/login, /setup` | pp-server | TBD | TBD | missing | — |
-| `ForgotPasswordPage` | `/forgot-password` | pp-server | TBD | TBD | missing | — |
-| `ResetPasswordPage` | `/reset-password` | pp-server | TBD | TBD | missing | — |
-| `SourcesPage` | `/library` | pp-source | TBD | TBD | missing | — |
-| `BuildPage` | `/sources` | pp-source | TBD | TBD | missing | — |
-| `PlansPage` | `/builds` | pp-domain | TBD | TBD | missing | — |
-| `PartsPage` | `/plan` | pp-domain | TBD | TBD | missing | — |
-| `CheckoffPage` | `/progress` | pp-domain | TBD | TBD | missing | — |
-| `GlobalProductionPage` | `/production` | pp-services | TBD | TBD | missing | — |
-| `ExportPage` | `/export` | pp-services | TBD | TBD | missing | — |
-| `BoardPage` | `/board, /board/:postId` | pp-services | TBD | TBD | missing | — |
-| `PrintersPage` | `/printers` | pp-drivers | TBD | TBD | missing | — |
-| `SettingsPage` | `/settings` | pp-server | TBD | TBD | missing | — |
-| `HelpPage` | `/help` | pp-server | TBD | TBD | missing | — |
-| `NotFoundPage` | `* (fallback)` | pp-desktop | TBD | TBD | missing | — |
+| Status | Evidence | Decision or ticket |
+| --- | --- | --- |
+| **Present** | Rust mounts authenticated MCP at `/mcp` and `/api/v1/mcp` with the rebuild gates on. The [HTTP dispatch](../../rust/crates/pp-api/src/mcp.rs), [session dispatch](../../rust/crates/pp-services/src/mcp_domain.rs) and [domain dispatch](../../rust/crates/pp-api/src/mcp/checkoff.rs) account for 23 tools with handlers: the three session tools, eight Build/Plan/Checkoff reads, ten proposals and two Farm reads. This is a handler count, not a guarantee of Node-equivalent results. | [Owner re-scope](../architecture.md#current-state-and-transition) limits Rust MCP to used tools; [GRE-1300](https://linear.app/greetz/issue/GRE-1300) covers Build input proposals |
+| **Missing** | Of the 63 other listed tools, 62 reach the `has no Rust port yet` fallback (for example, `search_source_files` and `get_plan_checkoff`). The remaining tool, `propose_add_custom_filament`, can propose, but the product MCP session gives its confirm handler no data directory. | [Owner re-scope](../architecture.md#current-state-and-transition); listing alone is not a decision to port every tool |
+| **Unverified** | No new tool calls or output comparisons were run. The name/schema comparison is against the checked-in catalogs, not a live discovery or compatibility test. | [GRE-1428](https://linear.app/greetz/issue/GRE-1428) tracks the owner’s daily loop, including Build creation with MCP or the UI |
 
-## MCP tools (86 rows)
+## UI
 
-The 83 product tools from `ASSISTANT_TOOL_SPECS` (with `ui_*` excluded) and the
-three proposal tools (`list_pending_actions`, `confirm_apply`,
-`dismiss_proposed_action`). The `plan_build` prompt is not a tool and has no row.
-`docs/assistant-mcp.md` describes the MCP surface.
+Compare the Node [sign-in routes](../../web/apps/web/src/App.tsx) and
+[authenticated routes](../../web/apps/web/src/AuthenticatedApp.tsx) with the
+[replacement router](../../web/apps/ui/src/routes.tsx).
 
-| Tool | Owner crate | Linear ticket | Milestone | Status | Golden/fixture |
-|---|---|---|---|---|---|
-| `analyze_build_request` | pp-domain | TBD | TBD | missing | — |
-| `get_build_workflow` | pp-domain | TBD | TBD | missing | — |
-| `get_build_planning_state` | pp-domain | TBD | TBD | missing | — |
-| `suggest_source_contributions` | pp-source | TBD | TBD | missing | — |
-| `list_build_differences` | pp-domain | TBD | TBD | missing | — |
-| `get_plan_draft` | pp-domain | TBD | TBD | missing | — |
-| `get_plan_option_groups` | pp-domain | TBD | TBD | missing | — |
-| `search_source_files` | pp-source | TBD | TBD | missing | — |
-| `get_source_inventory` | pp-source | TBD | TBD | missing | — |
-| `get_job_status` | pp-services | TBD | TBD | missing | — |
-| `compare_source_revisions` | pp-source | TBD | TBD | missing | — |
-| `preview_source_naming` | pp-source | TBD | TBD | missing | — |
-| `audit_source_provenance` | pp-source | TBD | TBD | missing | — |
-| `analyze_stl_mesh` | pp-server | TBD | TBD | missing | — |
-| `audit_build_coverage` | pp-domain | TBD | TBD | missing | — |
-| `check_hardware_interfaces` | pp-drivers | TBD | TBD | missing | — |
-| `propose_add_build_checklist_items` | pp-domain | TBD | TBD | missing | — |
-| `propose_add_custom_filament` | pp-domain | TBD | TBD | missing | — |
-| `propose_update_source_naming` | pp-source | TBD | TBD | missing | — |
-| `propose_create_build` | pp-domain | TBD | TBD | missing | — |
-| `propose_update_build_brief` | pp-domain | TBD | TBD | missing | — |
-| `propose_resolve_build_differences` | pp-domain | TBD | TBD | missing | — |
-| `propose_assign_role_filament` | pp-domain | TBD | TBD | missing | — |
-| `propose_import_build_inputs` | pp-domain | TBD | TBD | missing | — |
-| `propose_set_build_source_roles` | pp-domain | TBD | TBD | missing | — |
-| `propose_update_source` | pp-source | TBD | TBD | missing | — |
-| `propose_import_source_files` | pp-source | TBD | TBD | missing | — |
-| `propose_edit_plan_draft_parts` | pp-domain | TBD | TBD | missing | — |
-| `propose_rebuild_plan` | pp-domain | TBD | TBD | missing | — |
-| `propose_apply_plan_draft` | pp-domain | TBD | TBD | missing | — |
-| `find_filament_matches` | pp-domain | TBD | TBD | missing | — |
-| `get_kit_catalog` | pp-domain | TBD | TBD | missing | [golden-eval](../../web/apps/server/src/assistant/golden-eval.fixtures.ts) |
-| `list_sources` | pp-source | TBD | TBD | missing | — |
-| `list_source_categories` | pp-source | TBD | TBD | missing | — |
-| `propose_set_source_category` | pp-source | TBD | TBD | missing | — |
-| `propose_create_source_category` | pp-source | TBD | TBD | missing | — |
-| `propose_rename_source_category` | pp-source | TBD | TBD | missing | — |
-| `propose_delete_source_category` | pp-source | TBD | TBD | missing | — |
-| `list_plans` | pp-domain | TBD | TBD | missing | — |
-| `get_plan_snapshot` | pp-domain | TBD | TBD | missing | — |
-| `get_remaining` | pp-domain | TBD | TBD | missing | — |
-| `get_plan_checkoff` | pp-domain | TBD | TBD | missing | — |
-| `get_printer_checkoff` | pp-drivers | TBD | TBD | missing | — |
-| `propose_import_3mf_checkoff` | pp-domain | TBD | TBD | missing | — |
-| `propose_set_plan_progress` | pp-domain | TBD | TBD | missing | — |
-| `propose_set_plan_assembly` | pp-domain | TBD | TBD | missing | — |
-| `propose_verify_printer_checkoff` | pp-drivers | TBD | TBD | missing | — |
-| `get_plan_review` | pp-domain | TBD | TBD | missing | — |
-| `get_workflow_help` | pp-server | TBD | TBD | missing | — |
-| `list_example_builds` | pp-domain | TBD | TBD | missing | [golden-eval](../../web/apps/server/src/assistant/golden-eval.fixtures.ts) |
-| `get_source_docs` | pp-source | TBD | TBD | missing | — |
-| `propose_source_mapping` | pp-source | TBD | TBD | missing | — |
-| `apply_stack_preset` | pp-domain | TBD | TBD | missing | [golden-eval](../../web/apps/server/src/assistant/golden-eval.fixtures.ts) |
-| `set_base` | pp-domain | TBD | TBD | missing | [golden-eval](../../web/apps/server/src/assistant/golden-eval.fixtures.ts) |
-| `set_source_git_ref` | pp-source | TBD | TBD | missing | — |
-| `add_addon` | pp-domain | TBD | TBD | missing | — |
-| `remove_layer` | pp-domain | TBD | TBD | missing | — |
-| `update_kit_selections` | pp-domain | TBD | TBD | missing | — |
-| `start_sync` | pp-services | TBD | TBD | missing | — |
-| `search_plan_parts` | pp-domain | TBD | TBD | missing | — |
-| `get_plan_decisions` | pp-domain | TBD | TBD | missing | — |
-| `get_build_recipe` | pp-domain | TBD | TBD | missing | — |
-| `apply_build_recipe` | pp-domain | TBD | TBD | missing | — |
-| `list_plan_snapshots` | pp-domain | TBD | TBD | missing | — |
-| `create_plan_snapshot` | pp-domain | TBD | TBD | missing | — |
-| `propose_restore_snapshot` | pp-domain | TBD | TBD | missing | — |
-| `compare_plans` | pp-domain | TBD | TBD | missing | — |
-| `get_interaction_graph` | pp-domain | TBD | TBD | missing | — |
-| `check_stack_compatibility` | pp-domain | TBD | TBD | missing | — |
-| `ingest_guide_url` | pp-net | TBD | TBD | missing | — |
-| `web_search` | pp-net | TBD | TBD | missing | — |
-| `fetch_web_page` | pp-net | TBD | TBD | missing | — |
-| `read_source_file` | pp-source | TBD | TBD | missing | — |
-| `ingest_guide_text` | pp-net | TBD | TBD | missing | — |
-| `inspect_repo_tree` | pp-source | TBD | TBD | missing | — |
-| `detect_build_decisions` | pp-services | TBD | TBD | missing | — |
-| `propose_add_source` | pp-services | TBD | TBD | missing | — |
-| `import_guide_notes` | pp-services | TBD | TBD | missing | — |
-| `propose_exclude_replaced_parts` | pp-services | TBD | TBD | missing | — |
-| `duplicate_plan` | pp-services | TBD | TBD | missing | — |
-| `archive_plan` | pp-services | TBD | TBD | missing | — |
-| `get_farm_status` | pp-services | TBD | TBD | missing | — |
-| `get_print_stats` | pp-services | TBD | TBD | missing | — |
-| `list_pending_actions` | pp-server | TBD | TBD | missing | — |
-| `confirm_apply` | pp-server | TBD | TBD | missing | — |
-| `dismiss_proposed_action` | pp-server | TBD | TBD | missing | — |
+| Status | Evidence | Decision or ticket |
+| --- | --- | --- |
+| **Present** | Rust-backed UI registers sign-in and setup; Today, Builds, Library, Farm and Settings; and the Build workspace with Sources, Plan, Production, Checkoff and History. Node has separate Sources, Builds, Plan, Progress, Production and Printers pages. The new destinations group behavior differently. | [Accepted UI target](../product/ui-ux-target.md) |
+| **Superseded** | The old screen layout, paths and redirects are not requirements. Node's global Progress and Production pages give way to Build Checkoff, Today and Farm; the Community Board is dropped. Required exports and data are still in scope. | [Replace the old screens](../adr/0008-replace-the-old-screens.md) and [dropped screens](../product/ui-ux-target.md#dropped-from-the-old-ui) |
+| **Missing** | Node exposes `/forgot-password` and `/reset-password` pages. The replacement router has neither screen, even though Rust has the [HTTP endpoints](../../rust/crates/pp-api/src/auth/http.rs) and a [reset request parity fixture](auth-reset.md). This is a screen gap, not a finding that old screens must be ported. | [Replace the old screens](../adr/0008-replace-the-old-screens.md) |
+| **Unverified** | A registered screen is not proof that the owner can finish the workflow. The [daily-loop suite](../../web/test/daily-loop/daily-loop.spec.ts) has 12 cases; this comparison didn't run it, measure speed, or verify the owner's walk. | [GRE-1428](https://linear.app/greetz/issue/GRE-1428) and the [owner acceptance rule](../product/daily-loop.md#score) |
 
-## Counts
+## Stored formats
 
-| Section | Rows |
-|---|---|
-| UI pages | 15 |
-| MCP tools | 86 |
-| **Total** | **101** |
+Compare the [Node SQLite version](../../web/apps/server/src/db/schema.ts),
+the [Rust schema versions](../../rust/crates/pp-storage/src/schema.rs), and
+the [Node import inventory](../../rust/crates/pp-storage/src/import/inventory.rs).
+For the historical `live_formats` fields, see the [report and its limits](../development/operation-inventory.md).
 
-All 101 rows are `missing`. Four tool rows link a golden fixture
-(`golden-eval.fixtures.ts`).
+| Status | Evidence | Decision or ticket |
+| --- | --- | --- |
+| **Present** | Node writes SQLite schema 34. Rust-only writes schema 51 (the legacy feature-off constant is 35). The [import](../node-import.md) reads supported Node folders or full backups, converts to a separate Rust-owned copy and reports completeness. | [GRE-412](https://linear.app/greetz/issue/GRE-412) and [Rust owns its data formats](../adr/0016-rust-owns-its-data-formats.md) |
+| **Superseded** | Matching Node's on-disk versions or sharing a live directory is not the goal. Preserve Plan, Plate and Required-unit IDs, history, drafts, Checkoff, printers and Source revisions through import; restore the untouched Node copy for rollback. | [Rust owns its data formats](../adr/0016-rust-owns-its-data-formats.md) |
+| **Unverified** | The report's 10 live-format rows reflect compatibility manifest values, including SQLite 34/35. Neither an “in step” label nor a missing Rust writer proves whether the one-time import preserves the data. This snapshot does not verify completeness on a real installation. | [GRE-412](https://linear.app/greetz/issue/GRE-412) and the [import acceptance step](../product/daily-loop.md#steps) |

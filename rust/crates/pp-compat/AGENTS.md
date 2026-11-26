@@ -2,8 +2,7 @@
 
 Frozen, retiring at whole-runtime cutover. Rust owns Node supervision and the private channel; Node owns compatibility domain behaviour.
 
-Read [the authority page](../../../docs/architecture.md) before changing behaviour.
-Follow [agent workflow](../../../docs/development/agent-workflow.md) for checks, evidence and handoffs.
+When evaluating removal of the bridge, read [Whole-runtime cutover](../../../docs/adr/0010-whole-runtime-cutover.md).
 
 Run from the repository root:
 

@@ -2,8 +2,7 @@
 
 Active. Rust owns domain behaviour; this UI owns presentation and calls `web/packages/rust-client`.
 
-Read [the authority page](../../../docs/adr/0008-replace-the-old-screens.md) before changing behaviour.
-Follow [agent workflow](../../../docs/development/agent-workflow.md) for checks, evidence and handoffs.
+When changing a screen, read the [accepted UI target](../../../docs/product/ui-ux-target.md).
 
 Run from the repository root:
 

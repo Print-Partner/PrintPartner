@@ -2,8 +2,7 @@
 
 Retiring. Node owns live compatibility operations until whole-runtime cutover. Maintain correctness and data safety here.
 
-Read [the authority page](../../../docs/architecture.md) before changing behaviour.
-Follow [agent workflow](../../../docs/development/agent-workflow.md) for checks, evidence and handoffs.
+When changing what Node writes to disk, read the [import contract](../../../docs/adr/0016-rust-owns-its-data-formats.md).
 
 Run from the repository root:
 

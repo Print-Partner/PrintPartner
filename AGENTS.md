@@ -1,6 +1,10 @@
 # Working on Print Partner
 
-Print Partner plans and tracks layered STL kit builds for one user. The backend is moving from Node to one Rust core, served to a Tauri 2 desktop window and a headless Docker image. The old React UI in `web/apps/web` is frozen to correctness and data-safety fixes. The replacement UI in `web/apps/ui` talks only to Rust ([ADR 0008](docs/adr/0008-replace-the-old-screens.md)). Read [Architecture](docs/architecture.md) for the target, the current state, the crate map, and the 2026-11-08 re-scope. The active plan is [the daily loop](docs/product/daily-loop.md): until the owner has walked it on Rust, take only tickets labelled `daily-loop`.
+Print Partner plans and tracks layered STL kit builds for one user. The backend is moving from Node to one Rust core, served to a Tauri 2 desktop window and a headless Docker image. The old React UI in `web/apps/web` is frozen to correctness and data-safety fixes. The replacement UI in `web/apps/ui` talks only to Rust.
+
+- When choosing Rust parity work, follow the [cutover order](docs/development/contributing.md#pick-a-ticket).
+- When changing runtime ownership, read [Architecture](docs/architecture.md#operation-families-and-write-ownership).
+- When updating a task brief, use the [agent workflow](docs/development/agent-workflow.md#start-from-a-task-brief).
 
 ## Repository map
 
@@ -49,14 +53,13 @@ just guidance      # checks links in every .md, this file, the repo skills, and 
 Follow the [definition of done](docs/development/definition-of-done.md):
 
 - One job per PR. Aim for 300 to 600 changed lines; about 1,500 is the hard ceiling, or about 600 for a cross-cutting PR. Split larger work into sequential PRs, each started from `main` after the previous one merges; never stack PRs. Every PR says `Fixes GRE-xxx`. Unmet acceptance items go to a child ticket that quotes them verbatim; don't use `Refs`. `linear-pr-sync.yml` sets the ticket states that follow a PR.
-- Work comes from the Rust cutover project through `/implement`, one ticket per fresh session.
 - Rust test rename PRs record old and new paths and the ticket in their crate's page under [Test file renames](docs/records/test-renames.md). Add rows only to that crate's file; the index stays navigation.
 - Every PR needs an independent GitHub approval. For import, schema, backup and restore, Checkoff, send, or Accept and publication, record what the reviewer checked for data loss. Chad merges. See [Who merges](docs/development/definition-of-done.md#who-merges).
 - For a change to the web UI or desktop app, attach a screenshot or video. The capture steps are in [Gate evidence](docs/contributing/gate-evidence.md).
 - When you stop with work in flight, push the branch and write what is true at that head in the PR description.
 - Write docs, comments, and PR text plainly: concrete facts, commands, and numbers, active voice, no filler. Before large or risky work, write the plan, list how it could fail, and get open decisions answered.
 
-[Agent and contributor workflow](docs/development/agent-workflow.md) is the shared procedure: task briefs, checks, the safety guard, and running the app. The repo skills are [pp-verify](.claude/skills/pp-verify/SKILL.md) for screenshots and video, [pp-mission-qa](.claude/skills/pp-mission-qa/SKILL.md) for user testing of a migration slice, and [pp-send-once](.claude/skills/pp-send-once/SKILL.md) for the unknown-outcome printer send check.
+Use [pp-verify](.claude/skills/pp-verify/SKILL.md) to capture screenshots or video, [pp-mission-qa](.claude/skills/pp-mission-qa/SKILL.md) to user-test a migration slice, and [pp-send-once](.claude/skills/pp-send-once/SKILL.md) to check an unknown printer send outcome.
 
 `scripts/agent-guard.py` refuses common maintainer-only actions. Claude Code runs it through `.claude/hooks/guard.py` once you add the [hook settings](docs/development/agent-workflow.md#claude-code). Other runners must call it themselves. It does not replace review.
 

@@ -2,8 +2,6 @@
 
 Every pull request meets this bar before it merges. The [pull request template](../../.github/pull_request_template.md) repeats it as a checklist.
 
-Work comes from the Rust cutover project, one ticket per fresh session, through `/implement`.
-
 ## The bar
 
 1. **One job per PR.** Aim for 300 to 600 changed lines. About 1,500 is the hard ceiling, or about 600 for a cross-cutting PR. Split larger work into sequential PRs: each one starts from `main` after the previous one merges, never stacked on an open PR's branch. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
@@ -51,6 +49,6 @@ When some acceptance items stay unmet, split them out before the merge: create a
 
 ## One ticket at a time
 
-Until the owner has walked [the daily loop](../product/daily-loop.md) on Rust, take only a ticket labelled `daily-loop`. Two exceptions: a PR already in the merge queue or one push from it, and a fix for a red `main`. With no such ticket, stop. New tickets are for a bug on `main` or a split a `daily-loop` ticket calls for.
-
-One ticket per fresh session. Fold a small fix into the next PR that touches the same code. Aim for 300 to 600 changed lines, with about 1,500 as the hard ceiling. Cross-cutting PRs stay under about 600.
+Follow [the cutover order](contributing.md#pick-a-ticket). A PR already in the
+merge queue or one push from it, or a fix for a red `main`, can proceed
+outside that order. Fold a small fix into the next PR that touches the same code.

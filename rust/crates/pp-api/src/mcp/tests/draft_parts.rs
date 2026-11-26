@@ -274,5 +274,11 @@ async fn mcp_draft_part_edit_refused_after_it_committed_is_outcome_unknown() {
     assert_eq!(refused["outcome_unknown"], true);
     let (part, included, _) = parts(&database)[0];
     assert_eq!((part, included), (4, false), "the edit committed");
-    assert!(pending(&server, &headers).await.is_empty());
+    let (listed, failed) = tool(&server, &headers, "list_pending_actions", json!({})).await;
+    assert!(!failed, "{listed}");
+    assert_eq!(listed["actions"][0]["id"], id);
+    assert_eq!(listed["actions"][0]["state"], "unknown");
+    let (refused, failed) = tool(&server, &headers, "confirm_apply", json!({"action_id":id})).await;
+    assert!(failed, "{refused}");
+    assert_eq!(refused["code"], "outcome_unknown");
 }

@@ -226,12 +226,12 @@ fn build_name(server: &ReadServer) -> String {
         .unwrap()
 }
 
-/// Every row but `app_settings`, where each MCP request stamps the key's
-/// `lastUsedAt`.
+/// Exclude API-key usage metadata and proposal records, not the Plan writes
+/// these tests are meant to catch.
 fn plan_rows(server: &ReadServer) -> Vec<(String, Vec<String>)> {
     logical_database(&server.sql())
         .into_iter()
-        .filter(|(table, _)| table != "app_settings")
+        .filter(|(table, _)| !matches!(table.as_str(), "app_settings" | "pending_actions"))
         .collect()
 }
 
@@ -436,10 +436,8 @@ async fn gre_1236_mcp_confirm_selects_the_automatic_reconciliation_propose_write
 }
 
 /// GRE-1039: a key admits the call, but a write tool still only proposes.
-/// The proposal writes nothing; a second session on the same listener with
-/// the same key can neither see nor confirm it; only `confirm_apply` in the
-/// proposing session applies. The GRE-1236 tests above cover the Accept
-/// outcomes themselves.
+/// Staging leaves the Plan alone. Another authenticated session can confirm
+/// the proposal, but a second confirm cannot publish another revision.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confirm_apply() {
     let server = proposed_header().await;
@@ -455,13 +453,12 @@ async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confir
     let id = proposed["action"]["id"].as_str().unwrap().to_owned();
 
     let (_, pending) = other.call("list_pending_actions", json!({})).await;
-    assert_eq!(pending, json!({"actions": []}));
-    let (failed, refused) = other.confirm(&id).await;
-    assert!(failed, "{refused}");
-    assert_eq!(plan_rows(&server), before, "another session cannot confirm");
-
-    let (failed, confirmed) = mcp.confirm(&id).await;
+    assert_eq!(pending["actions"][0]["id"], id);
+    let (failed, confirmed) = other.confirm(&id).await;
     assert!(!failed, "{confirmed}");
+    let (failed, repeated) = mcp.confirm(&id).await;
+    assert!(failed, "{repeated}");
+    assert_eq!(repeated["code"], "already_applied");
     assert_eq!(build_name(&server), "Renamed by MCP");
     assert_eq!(snapshot_headers(&server), 1);
     drop((other, mcp));
@@ -471,8 +468,8 @@ async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confir
 /// GRE-1039: rmcp runs each call on its own task and only signals a
 /// cancellation, so a `confirm_apply` that the client cancels while it runs,
 /// and whose reply it stops reading, still finishes: Accept applies once and
-/// the session serves the next call. The gate holds the confirm after it took
-/// its proposal and before Accept, and is released only after rmcp has
+/// the session serves the next call. A concurrent confirm sees the claim.
+/// The gate holds before Accept and is released only after rmcp has
 /// processed the cancel and fired the request's cancellation token.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
@@ -488,6 +485,10 @@ async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
     tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
         .await
         .expect("the confirm reaches Accept");
+    let other = mcp.another_session().await;
+    let (failed, in_flight) = other.confirm(&id).await;
+    assert!(failed, "{in_flight}");
+    assert_eq!(in_flight["code"], "applying");
     let cancel = json!({"jsonrpc":"2.0","method":"notifications/cancelled",
         "params":{"requestId":7,"reason":"client cancelled"}});
     assert_eq!(mcp.send(&cancel).await.status(), 202);
@@ -499,20 +500,23 @@ async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
     gate.release.add_permits(1);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while build_name(&server) != "Renamed by MCP" {
+    loop {
+        let (failed, pending) = other.call("list_pending_actions", json!({})).await;
+        assert!(!failed, "{pending}");
+        if pending == json!({"actions": []}) {
+            break;
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "the cancelled confirm did not finish"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(snapshot_headers(&server), 1);
-    let (failed, pending) = mcp.call("list_pending_actions", json!({})).await;
-    assert!(!failed, "{pending}");
-    assert_eq!(pending, json!({"actions": []}));
+    assert_eq!(build_name(&server), "Renamed by MCP");
     let (failed, again) = mcp.confirm(&id).await;
     assert!(failed, "{again}");
+    assert_eq!(again["code"], "already_applied");
     assert_eq!(snapshot_headers(&server), 1);
-    drop(mcp);
+    drop((other, mcp));
     server.close().await;
 }

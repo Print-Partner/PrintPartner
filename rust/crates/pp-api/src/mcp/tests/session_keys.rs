@@ -6,6 +6,35 @@ use super::*;
 const ALIASES: [&str; 2] = ["/mcp", "/api/v1/mcp"];
 const NOT_FOUND: &str = "Not Found: Session not found";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_proposal_lifecycle_uses_the_node_tool_names_and_input_schemas() {
+    let (server, headers) = orders_on().await;
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../../../../web/apps/server/fixtures/mcp/tools-inventory.json"
+    ))
+    .unwrap();
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+    let (status, body, _) = server.post("/mcp", &pairs(&headers), &list).await;
+    assert_eq!(status, 200, "{body}");
+    let response = rpc(&body);
+    for name in pp_services::mcp_domain::META_TOOLS {
+        let find = |tools: &Value| {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap()["inputSchema"]
+                .clone()
+        };
+        assert_eq!(
+            find(&response["result"]["tools"]),
+            find(&golden["tools"]),
+            "{name}"
+        );
+    }
+}
+
 /// Initializes on `path` with `bearer` and sends `notifications/initialized`
 /// on the other alias. Returns the headers that continue the session.
 async fn open(server: &McpServer, path: &str, bearer: &str) -> Vec<(String, String)> {
@@ -128,8 +157,8 @@ async fn propose_build(server: &McpServer, headers: &[(String, String)]) -> Stri
 
 /// A second valid key of the same installation cannot reach the first key's
 /// session on either alias: POST, GET and DELETE get 404, the pending Build
-/// stays pending and no Build is created. The opening key then confirms it
-/// once, and its own DELETE ends the session.
+/// stays pending and no Build is created. The other key can confirm it once
+/// in its own session, and the opening key can still close its session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_session_key_other_key_cannot_use_or_confirm_a_session() {
     let (server, _) = orders_on().await;
@@ -147,16 +176,23 @@ async fn mcp_session_key_other_key_cannot_use_or_confirm_a_session() {
     assert_eq!(waiting.len(), 1);
     assert_eq!(waiting[0]["id"], action.as_str());
 
-    // The other key works in a session of its own, which sees no proposal.
+    // The other key opens its own session to see the tenant's proposal.
     let own = open(&server, "/api/v1/mcp", &other).await;
-    assert!(pending(&server, &own).await.is_empty());
+    let shared = pending(&server, &own).await;
+    assert_eq!(waiting, shared);
+    assert_eq!(shared[0]["staged_by"], "ticket-t-16");
+    assert!(shared[0]["created_at"].as_str() < shared[0]["expires_at"].as_str());
+    println!("session A list_pending_actions: {waiting:?}");
+    println!("session B list_pending_actions: {shared:?}");
 
-    let (confirmed, error) = confirm(&server, &headers, &action).await;
+    let (confirmed, error) = confirm(&server, &own, &action).await;
     assert!(!error, "{confirmed}");
     assert_eq!(confirmed["result"]["idempotent_replay"], false);
     assert_eq!(builds(&server), before + 1);
     let (again, error) = confirm(&server, &headers, &action).await;
     assert!(error, "{again}");
+    assert_eq!(again["code"], "already_applied");
+    assert!(pending(&server, &headers).await.is_empty());
     assert_eq!(builds(&server), before + 1);
 
     let (status, _) = send(&server, Method::DELETE, "/api/v1/mcp", &headers).await;
@@ -249,7 +285,7 @@ async fn mcp_session_key_credential_gate_and_rotation() {
 
 /// A restart against the same data directory forgets every session: with a
 /// key that is still valid, the old session ID gets 404 on both aliases and
-/// a fresh session works.
+/// a fresh session still sees the proposal and can dismiss it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_session_key_old_session_is_gone_after_restart() {
     let (server, _) = orders_on().await;
@@ -262,7 +298,100 @@ async fn mcp_session_key_old_session_is_gone_after_restart() {
     assert_session_hidden(&server, &before, &action).await;
     assert_eq!(builds(&server), builds_before);
     let fresh = open(&server, "/api/v1/mcp", &bearer).await;
-    assert!(pending(&server, &fresh).await.is_empty());
-    let (plans, error) = json_call(&server, &fresh, "list_plans", json!({})).await;
-    assert!(!error, "{plans}");
+    assert_eq!(pending(&server, &fresh).await[0]["id"], action);
+    let (dismissed, error) = json_call(
+        &server,
+        &fresh,
+        "dismiss_proposed_action",
+        json!({ "action_id": action }),
+    )
+    .await;
+    assert!(!error && dismissed["ok"] == true, "{dismissed}");
+    let reconnected = open(&server, "/mcp", &bearer).await;
+    assert!(pending(&server, &reconnected).await.is_empty());
+    let (refused, error) = confirm(&server, &reconnected, &action).await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["code"], "already_dismissed");
+    assert_eq!(builds(&server), builds_before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_pending_action_refuses_expiry_and_names_the_dependency_to_apply_first() {
+    use pp_storage::pending_actions::{NewAction, StagedBy};
+    use pp_storage::read_model::Credential;
+
+    let (server, headers) = orders_on().await;
+    let before = builds(&server);
+    let first = propose_build(&server, &headers).await;
+    // MCP proposal schemas are unchanged. Stage a dependency through the
+    // queue seam, as a future caller that arranges a sequence of actions would.
+    let queue = server
+        .owner
+        .accepted_reads_with_policy(policy())
+        .unwrap()
+        .pending_actions();
+    let dependent = "dependent-fixture";
+    tokio::task::spawn_blocking({
+        let first = first.clone();
+        move || {
+            queue
+                .stage(
+                    Credential::Session(Secret::new(FIXTURE_SESSION.into())),
+                    NewAction {
+                        id: dependent.into(),
+                        action_type: "propose_create_build".into(),
+                        plan_id: 0,
+                        label: "Build after the first".into(),
+                        summary: "Create a Build".into(),
+                        params: json!({"name":"Dependent Build","request":"Synthetic request"})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        depends_on: vec![first],
+                        staged_by: StagedBy::label("Fixture"),
+                    },
+                    &AtomicBool::new(false),
+                    Duration::from_secs(2),
+                )
+                .unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let waiting = pending(&server, &headers).await;
+    assert_eq!(waiting[1]["depends_on"], json!([first]));
+    let (blocked, error) = confirm(&server, &headers, dependent).await;
+    assert!(error, "{blocked}");
+    assert_eq!(blocked["code"], "dependency_blocked");
+    assert_eq!(blocked["blocked_by"]["id"], first);
+    assert_eq!(builds(&server), before);
+
+    let (confirmed, error) = confirm(&server, &headers, &first).await;
+    assert!(!error, "{confirmed}");
+    let (confirmed, error) = confirm(&server, &headers, dependent).await;
+    assert!(!error, "{confirmed}");
+    assert_eq!(builds(&server), before + 2);
+
+    let (proposal, error) = json_call(
+        &server,
+        &headers,
+        "propose_create_build",
+        json!({ "name": "Expired Build", "request": "Synthetic request" }),
+    )
+    .await;
+    assert!(!error, "{proposal}");
+    let expired = proposal["action"]["id"].as_str().unwrap();
+    database(&server)
+        .execute(
+            "UPDATE pending_actions SET expires_at=created_at WHERE id=?1",
+            [expired],
+        )
+        .unwrap();
+    let waiting = pending(&server, &headers).await;
+    assert_eq!(waiting[0]["state"], "expired");
+    let (refused, error) = confirm(&server, &headers, expired).await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["code"], "expired");
+    assert_eq!(refused["expires_at"], waiting[0]["expires_at"]);
+    assert_eq!(builds(&server), before + 2);
 }

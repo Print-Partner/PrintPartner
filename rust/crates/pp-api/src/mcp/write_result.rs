@@ -6,8 +6,7 @@
 //! A refused propose answers `{"error": detail, "code": code}` with
 //! `isError`. A refused confirm answers `{"ok": false, "code": code,
 //! "detail": detail}` and keeps the proposal pending, except for
-//! `outcome_unknown`, which also carries `"outcome_unknown": true` so the
-//! session drops the proposal instead of risking a second apply.
+//! `outcome_unknown`, which keeps the proposal visible but not confirmable.
 
 use pp_services::mcp_domain::ToolInvocation;
 use pp_storage::WriterFailure;

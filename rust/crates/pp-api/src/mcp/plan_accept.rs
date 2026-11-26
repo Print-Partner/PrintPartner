@@ -1,15 +1,17 @@
 //! `propose_apply_plan_draft` and its `confirm_apply` (GRE-1236). Both run
 //! Node's guards: the Build planning brief must select the draft and its
 //! source choices must resolve. Propose reads the same Accept preview as the
-//! Plan tab, writes nothing, and proposes exactly the revision it read; confirm
+//! Plan tab and stages exactly the revision it read; confirm
 //! accepts that revision through the same Rust Accept, so a draft header saved
 //! in the Plan tab is copied to the Build once. A draft with no Required-unit
 //! selection is proposed without a revision, and confirm selects the automatic
 //! reconciliation first, as Node's `prepareForApply` does, then accepts the
 //! revision it previews.
 
+use super::pending_actions::Decision;
 use super::*;
 use pp_services::mcp_domain::ProposedAction;
+use pp_storage::pending_actions::StagedBy;
 use pp_storage::plan_publication::{
     ApplyRequest, Outcome as AcceptOutcome, PublicationCommand,
     preview::{AcceptPreview, PreviewOutcome},
@@ -75,6 +77,7 @@ impl ProductMcp {
         &self,
         arguments: &Value,
         presented: PresentedCredential,
+        staged_by: StagedBy,
     ) -> ToolResult {
         let (Some(plan), Some(draft)) = (
             positive_id(arguments, "plan_id"),
@@ -89,7 +92,7 @@ impl ProductMcp {
             }
             Err(refusal) => return ToolResult::error(json!({ "error": refusal.detail() })),
         }
-        let (revision, read) = match self.preview(plan, draft, presented, false).await {
+        let (revision, read) = match self.preview(plan, draft, presented.clone(), false).await {
             Previewed::Ready { revision, preview } => (revision, json!({ "preview": preview })),
             Previewed::Unprepared { reason } => (
                 Value::Null,
@@ -107,54 +110,64 @@ impl ProductMcp {
         };
         let action =
             ProposedAction::new(PROPOSE, plan_id, "apply plan draft".into(), SUMMARY, params);
-        self.session.set_pending(action.clone());
         let mut content: Value =
             serde_json::from_str(&action.proposed_content()).unwrap_or_default();
         if let (Some(content), Value::Object(read)) = (content.as_object_mut(), read) {
             content.extend(read);
         }
-        ToolResult::ok(content.to_string())
+        self.stage_proposal(
+            action,
+            presented,
+            staged_by,
+            ToolResult::ok(content.to_string()),
+        )
+        .await
     }
 
     /// Accepts the revision `action` proposed, or, for a draft proposed
     /// without one, selects the automatic reconciliation and accepts the
-    /// revision it then previews. The action id is the idempotency key. A
-    /// refusal or failure leaves the action pending, as Node does.
+    /// revision it then previews. The action id is the idempotency key.
     pub(super) async fn confirm_accept(
         &self,
         action: ProposedAction,
         presented: PresentedCredential,
-    ) -> ToolResult {
+    ) -> Decision {
         let params = Value::Object(action.params.clone());
-        let refuse = |action: ProposedAction, detail: &str, result: Value| {
-            self.session.set_pending(action);
+        let refuse = |detail: &str, result: Value, outcome_unknown: bool| {
             let mut body = json!({ "ok": false, "detail": detail });
             if result.as_object().is_some_and(|fields| !fields.is_empty()) {
                 body["result"] = result;
             }
-            ToolResult::error(body)
+            if outcome_unknown {
+                body["code"] = json!("outcome_unknown");
+                body["outcome_unknown"] = json!(true);
+            }
+            Decision::confirmed(body)
         };
         let (Some(plan), Some(draft)) = (
             positive_id(&params, "plan_id"),
             positive_id(&params, "draft_id"),
         ) else {
-            return refuse(action, NOT_FOUND, Value::Null);
+            return refuse(NOT_FOUND, Value::Null, false);
         };
         if let Err(refusal) = self.guard(plan, draft, &presented).await {
-            return refuse(action, &refusal.detail(), Value::Null);
+            return refuse(&refusal.detail(), Value::Null, false);
         }
+        // Selecting an automatic reconciliation can write even if Accept
+        // later refuses. In that case, a retry needs a fresh proposal.
+        let preparing = params["revision"].is_null();
         let revision = match params["revision"].clone() {
             Value::Null => match self.preview(plan, draft, presented.clone(), true).await {
                 Previewed::Ready { revision, .. } => revision,
-                Previewed::Refused(message, fields) => return refuse(action, &message, fields),
+                Previewed::Refused(message, fields) => return refuse(&message, fields, true),
                 Previewed::Unprepared { .. } => {
-                    return refuse(action, "Working Plan preview is unavailable", Value::Null);
+                    return refuse("Working Plan preview is unavailable", Value::Null, true);
                 }
             },
             revision => revision,
         };
         let Ok(request) = serde_json::from_value::<ApplyRequest>(revision) else {
-            return refuse(action, NOT_FOUND, Value::Null);
+            return refuse(NOT_FOUND, Value::Null, preparing);
         };
         #[cfg(test)]
         if let Some(gate) = &self.reads.confirm_gate {
@@ -189,14 +202,14 @@ impl ProductMcp {
                     Some(Outcome::Workspace(workspace)) => json!(workspace),
                     _ => Value::Null,
                 };
-                ToolResult::ok(pretty(&json!({
+                Decision::confirmed(json!({
                     "ok": true,
                     "result": {
                         "apply_result": { "kind": "applied", "receipt": receipt },
                         "build_workflow": build_workflow,
                         "planning_phase": planning_phase,
                     },
-                })))
+                }))
             }
             Ok(Ok(refused)) => {
                 let kind = json!(refused)["kind"]
@@ -204,15 +217,13 @@ impl ProductMcp {
                     .unwrap_or("refused")
                     .to_owned();
                 refuse(
-                    action,
                     &format!("Working Plan acceptance failed: {kind}"),
                     json!({ "apply_result": refused }),
+                    preparing,
                 )
             }
-            _ => refuse(
-                action,
-                "Working Plan acceptance is unavailable",
-                Value::Null,
+            _ => Decision::unknown(
+                "Working Plan acceptance could not be verified. Check the Plan before proposing again.",
             ),
         }
     }
@@ -412,8 +423,4 @@ fn camel_case(value: Value) -> Value {
         (camel, value)
     });
     Value::Object(fields.collect())
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
 }

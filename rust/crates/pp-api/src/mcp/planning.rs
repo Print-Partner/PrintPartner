@@ -113,8 +113,7 @@ impl CheckoffDomain {
             Some(action.to_json()),
         ))? {
             Ok(BuildOutcome::Mcp(value)) => Ok(value),
-            // The writer may have committed before the reply was lost. The session
-            // drops the proposal so a second confirm cannot apply it twice.
+            // The writer may have committed before the reply was lost.
             Err(error) if matches!(error.downcast_ref(), Some(Failure::OutcomeUnknown)) => {
                 Ok(json!({
                     "ok": false,

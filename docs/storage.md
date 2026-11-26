@@ -546,9 +546,8 @@ database at 49.
 ## Pending MCP actions
 
 Schema 51, compiled only with `desktop_rebuild`, adds the `pending_actions` table
-and `PendingActionsClient` (GRE-475). Only the storage table and
-`PendingActionsClient` exist at this head. Nothing calls the queue yet, and MCP
-tools still keep proposals per session. Each row stores an action's id, type,
+and `PendingActionsClient` (GRE-475). Rust MCP uses this queue for staging,
+listing, confirming, and dismissing proposals. Each row stores an action's id, type,
 Build id, label, summary, and opaque JSON parameters, along with `staged_by`
 (the display label passed by the caller of `stage`, normalized and never empty),
 `depends_on` (a JSON array of action ids), `created_at`, and `expires_at`
@@ -571,6 +570,8 @@ and returns `false`. A caller settles as `End::Applied`, as `End::Released`
 (moving the row back to `pending` only for a failure positively known to have
 written nothing), or as `End::Unknown` (for any ambiguous outcome where a write
 may have committed).
+If settlement cannot be recorded, MCP reports uncertainty and keeps retrying
+the settlement in the background without rerunning the operation.
 
 Opening the database moves every `applying` row to `unknown` and clears its
 `claim_digest` before seeding and job recovery. Nothing returns `unknown` to

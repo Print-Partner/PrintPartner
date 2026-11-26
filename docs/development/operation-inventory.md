@@ -1,8 +1,11 @@
 # Operation inventory
 
 `scripts/operation-inventory.py` writes [the operation inventory report](../parity/operation-inventory.md).
-The report counts what still runs in Node and what has a Rust owner. It is the
-measure of how much has been converted.
+The report inventories the compatibility gateway and its ownership inputs.
+In report mode, `P1` is a historical roster label, not the active cutover
+phase. The report does not set work order, gate cutover, or measure how much
+of the replacement is ready. See [Rust parity evidence](../parity/checklist.md)
+for the separate Rust-only surfaces.
 
 ```sh
 python3 scripts/operation-inventory.py           # rewrite docs/parity/operation-inventory.md
@@ -62,8 +65,8 @@ Denied and gateway-owned entries have fixed classes; the roster cannot change th
 
 A route counts as migrated only when the generated inputs name Rust as its owner,
 either in its `operations.json` `owner` field or through a manifest operation
-whose owner is `rust`. A roster ticket does not make a route migrated. A route that
-the Rust-only runtime does not serve counts as unmigrated.
+whose owner is `rust`. Neither a roster ticket nor an implemented Rust-only
+route makes a compatibility route count as migrated.
 
 ## Roster
 
@@ -92,7 +95,7 @@ the Rust-only runtime does not serve counts as unmigrated.
 }
 ```
 
-- `active_phase` names the current plan phase. The report prints it.
+- `active_phase` is the historical roster label. The report prints it.
 - `family` must match a row of the architecture family table exactly.
 - `ticket` is a Linear issue ID such as `ABC-123`.
 - Each exception carries a ticket ID, an `expires` date (`YYYY-MM-DD`) and a
@@ -124,9 +127,10 @@ The rollup gives:
 - roster entries that match no inventory entry.
 
 The report also gives entry counts by kind and class, each live format's
-`node_reads` and `rust_writes` versions, exceptions by expiry, and one table per
-entry kind. Route groups and participants show the Node operation they belong to
-and whether their resource set is reviewed or unresolved.
+`node_reads` and `rust_writes` versions from the compatibility manifest,
+exceptions by expiry, and one table per entry kind. It does not read the
+current Rust-only schema or validate the import. Route groups and participants
+show their Node operation and whether their resource set is reviewed or unresolved.
 
 The output is deterministic. It ends with the SHA-256 of each input file and of
 the parsed family table, so a change to any input makes `--check` fail.

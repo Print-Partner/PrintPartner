@@ -109,15 +109,12 @@ Daily-loop plan, approved by the owner on 2026-11-12. It narrows the re-scope.
 A walk through the Rust-only runtime on that date broke at sign-in, at adding a
 printer, at importing a Source, and at moving existing data: routes were
 mounted, but the owner could not do the work. [The daily loop](product/daily-loop.md)
-lists the steps he must be able to walk and what done means for each. Until
-he has walked them, lanes take only tickets labelled `daily-loop`. Paused
-until then: Windows work, the maintainability plan under GRE-1306, CI and
-process changes that are not fixes for a red `main`, and hardware receipts.
+lists the steps he must be able to walk and what done means for each.
 
 The baseline gateway inventory has 781 compatibility routes. The operation
 manifest has eight Node-owned operations and 82 reviewed resource sets. The
-[operation inventory](development/operation-inventory.md) report tracks that
-split; it lists 0 of the 781 routes as migrated to Rust. The
+[operation inventory](development/operation-inventory.md) reports that
+split; its migration count covers compatibility ownership only. The
 per-route cutover machinery works. Whole-runtime cutover makes it unused, not
 defective; removal is scheduled retirement work after replacement evidence.
 

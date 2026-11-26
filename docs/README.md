@@ -155,7 +155,7 @@ These pages record an investigation, audit, or ticket's evidence at one point in
 
 - Audits in [`audits/`](audits/) and triage notes in [`triage/`](triage/)
 - Ticket evidence pages named `gre-*.md` in this folder and in [`development/`](development/)
-- [Desktop parity checklist](parity/checklist.md): the parity-first list of UI pages and MCP tools. [ADR 0008](adr/0008-replace-the-old-screens.md) replaced old-screen parity with new screens.
+- [Rust parity evidence](parity/checklist.md): a commit-pinned comparison of HTTP, MCP, screens and stored formats.
 - [D9 coverage audit](desktop-rebuild-d9-audit.md)
 - [Linear PR sync concurrency investigation](architecture/linear-pr-sync-concurrency.md)
 - [Accepted STL export timeout diagnosis](development/accepted-stl-export-diagnosis.md)

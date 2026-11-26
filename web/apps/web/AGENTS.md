@@ -2,8 +2,7 @@
 
 Frozen to correctness and data-safety fixes. Node owns its domain behaviour; the old UI owns presentation until cutover.
 
-Read [the authority page](../../../docs/adr/0008-replace-the-old-screens.md) before changing behaviour.
-Follow [agent workflow](../../../docs/development/agent-workflow.md) for checks, evidence and handoffs.
+When deciding whether a screen change belongs here, read [Replace the old screens](../../../docs/adr/0008-replace-the-old-screens.md).
 
 Run from the repository root:
 

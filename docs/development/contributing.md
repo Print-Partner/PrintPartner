@@ -13,8 +13,8 @@ Without Notion or Linear access, work from a task brief the task owner exports f
 ## Pick a ticket
 
 Use the [ordered Rust parity plan](https://app.notion.com/p/4246dd30b69881d6842ce4a163bda3ad)
-for the sequence. Use the Linear project **Rust cutover** (open it from
-[GRE-1958](https://linear.app/greetz/issue/GRE-1958)) for ticket status and
+for the sequence. Use the [Rust cutover project](https://linear.app/greetz/project/rust-cutover-d28381ab0885)
+in Linear for ticket status and
 blocking relations. Check the next plan step's blockers in Linear before
 starting it through `/implement`, one ticket per fresh session.
 

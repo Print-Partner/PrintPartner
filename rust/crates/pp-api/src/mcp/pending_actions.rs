@@ -2,10 +2,16 @@ use super::{ErrorData, PresentedCredential, ProductMcp, ToolResult, plan_accept}
 use pp_services::mcp_domain::{DomainPort, ProposedAction};
 use pp_storage::{
     WriterFailure,
-    pending_actions::{ActionError, End, NewAction, PendingAction, StagedBy, State},
+    pending_actions::{
+        ActionError, ClaimToken, End, NewAction, PendingAction, PendingActionsClient, StagedBy,
+        State,
+    },
 };
 use serde_json::{Value, json};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 pub(super) struct Decision {
     end: End,
@@ -207,23 +213,10 @@ impl ProductMcp {
                 _ => Decision::unknown(UNKNOWN),
             }
         };
-        let end = decision.end;
-        let settled = tokio::task::spawn_blocking(move || {
-            let cancelled = AtomicBool::new(false);
-            for _ in 0..2 {
-                match queue.settle(&token, end, &cancelled, wait) {
-                    Err(ActionError::Writer(WriterFailure::Busy | WriterFailure::QueueFull)) => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    result => return result,
-                }
-            }
-            queue.settle(&token, end, &cancelled, wait)
-        })
-        .await;
-        match settled {
-            Ok(Ok(true)) => decision.result,
-            _ => decision_unavailable(),
+        if record_decision(queue, token, decision.end, wait).await {
+            decision.result
+        } else {
+            decision_unavailable()
         }
     }
 
@@ -246,6 +239,41 @@ impl ProductMcp {
             _ => refusal(error, &id),
         }
     }
+}
+
+async fn record_decision(
+    queue: PendingActionsClient,
+    token: ClaimToken,
+    end: End,
+    wait: Duration,
+) -> bool {
+    let (reply, recorded) = tokio::sync::oneshot::channel();
+    let token = Arc::new(token);
+    // Reply after the first attempt, but keep the claim until storage can
+    // record the decision. Restore refuses while an `applying` row remains.
+    tokio::spawn(async move {
+        let mut reply = Some(reply);
+        loop {
+            let (queue, token) = (queue.clone(), token.clone());
+            let result = tokio::task::spawn_blocking(move || {
+                queue.settle(&token, end, &AtomicBool::new(false), wait)
+            })
+            .await;
+            if let Some(reply) = reply.take() {
+                let _ = reply.send(matches!(result, Ok(Ok(true))));
+            }
+            if !matches!(
+                result,
+                Ok(Err(ActionError::Writer(
+                    WriterFailure::Busy | WriterFailure::QueueFull | WriterFailure::Internal(_)
+                )))
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+    recorded.await.unwrap_or(false)
 }
 
 fn action_id(arguments: &Value) -> String {

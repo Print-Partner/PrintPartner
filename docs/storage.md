@@ -570,6 +570,8 @@ and returns `false`. A caller settles as `End::Applied`, as `End::Released`
 (moving the row back to `pending` only for a failure positively known to have
 written nothing), or as `End::Unknown` (for any ambiguous outcome where a write
 may have committed).
+If settlement cannot be recorded, MCP reports uncertainty and keeps retrying
+the settlement in the background without rerunning the operation.
 
 Opening the database moves every `applying` row to `unknown` and clears its
 `claim_digest` before seeding and job recovery. Nothing returns `unknown` to

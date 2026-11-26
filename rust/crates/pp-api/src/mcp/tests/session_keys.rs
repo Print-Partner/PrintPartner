@@ -201,6 +201,41 @@ async fn mcp_session_key_other_key_cannot_use_or_confirm_a_session() {
     assert_eq!((status, body.as_str()), (404, NOT_FOUND));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_confirmation_settles_after_storage_recovers_without_reapplying() {
+    let (server, headers) = orders_on().await;
+    let action = propose_build(&server, &headers).await;
+    let before = builds(&server);
+    database(&server)
+        .execute_batch(
+            "CREATE TRIGGER fail_settlement BEFORE UPDATE OF state ON pending_actions
+             WHEN OLD.state = 'applying'
+             BEGIN SELECT RAISE(ABORT, 'settlement unavailable'); END",
+        )
+        .unwrap();
+
+    let (result, error) = confirm(&server, &headers, &action).await;
+    assert!(error, "{result}");
+    assert_eq!(result["code"], "outcome_unknown");
+    assert_eq!(pending(&server, &headers).await[0]["state"], "applying");
+    assert_eq!(builds(&server), before + 1);
+
+    database(&server)
+        .execute_batch("DROP TRIGGER fail_settlement")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !pending(&server, &headers).await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("settlement should recover without a server restart");
+    let (again, error) = confirm(&server, &headers, &action).await;
+    assert!(error, "{again}");
+    assert_eq!(again["code"], "already_applied");
+    assert_eq!(builds(&server), before + 1);
+}
+
 /// Sets `key_id`'s expiry in the past, as a key whose lifetime ran out.
 fn expire(server: &McpServer, key_id: &str) {
     let connection = database(server);

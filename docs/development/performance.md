@@ -173,6 +173,37 @@ active. Browser regressions passed for changed quantity/Included state, pending
 edits and successor drafts, validation and outage/reconnect locks, stale
 two-window saves, and accepted/history/restore flows.
 
+## Historical mapping index (GRE-1957)
+
+`historical_mapping()` previously scanned all historical mapping rows once per
+Part. The candidate builds a `HashMap<i64, Vec<&Value>>` by integer
+`revisionPartId` while walking the already ordered mapping rows. Each bucket
+retains that row order; the original `mapped` vector remains intact for the
+canonical digest. Existing count, per-Part index, token, quantity, digest and
+error checks remain before acceptance. An unmatched text ID still returns
+`Incomplete historical mapping`.
+
+On the synthetic 1,003-Part Plan, the loopback Apply request-to-response API
+screen (two warmups, 12 pairs) improved by a paired median **46.431 ms**; the
+candidate was faster in **10/12** pairs. The browser comparison used two
+warmups and 30 matched pairs:
+
+| Boundary                                |      Paired median candidate − control | Candidate faster |
+| --------------------------------------- | -------------------------------------: | ---------------: |
+| Input → accepted-visible + 2 RAF        | −48.0 ms (95% interval −64.8 to −28.1) |            25/30 |
+| Accept-click → accepted-visible + 2 RAF |                               −48.1 ms |            29/30 |
+| Input → strict quiet                    |                               −47.3 ms |            24/30 |
+
+Both AB and BA order strata favored the candidate. Correctness passed on 65
+normal edits, History restore/reaccept, stale-save `409`, and capacity `422`
+non-persistence. Every slow sample was retained; the candidate's worst
+input-to-visible sample was **1,888.2 ms**, versus **1,738.0 ms** for control.
+This supports a typical synthetic Rust improvement, not a blanket tail claim,
+production or native-Tauri result, or Node speed/cutover claim. The browser
+run did not exercise nonzero printed/assembled progress, fault injection, or
+replay; those are covered by the separate shell storage/API regressions, not
+by this timing comparison.
+
 ## Baseline, 2026-11-08
 
 Captured 2026-11-08 on a shared Linux host: Intel Xeon E5-2650 v3, 12 logical CPUs, 31 GiB, kernel 7.0.0-42. `pp-server` was a release build with `desktop_rebuild` from a checkout of main at `a71591e4c` (sha256 `87bd1e32…5bc6`). The samples record `checkout_dirty: true`: the harness and these docs (`scripts/perf-baseline/`, `scripts/local-ci.py`, `docs/`) were not yet committed. No file under `rust/` or `web/` differed from `a71591e4c`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, seed 388. Ten rounds per runtime, `--max-load 16 --quiet-timeout 180`. Other agents' builds kept the 1-minute load at run start between 8.4 and 22.1 for the whole run (Node 8.4 to 20.0, Rust 11.0 to 22.1, from `load_at_start`), so both runtimes ran on a busy machine and the spread is wide; compare medians. Raw samples and all metadata: [performance-baseline-2026-11-08.json](performance-baseline-2026-11-08.json).

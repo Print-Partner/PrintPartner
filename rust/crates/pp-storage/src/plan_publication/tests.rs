@@ -1219,6 +1219,54 @@ mod transaction {
             .unwrap()
             .clone()
     }
+    #[test]
+    fn historical_mapping_rejects_unmatched_text_part_id_as_incomplete() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE plan_revision_required_unit_sets (
+                tenant_id TEXT, profile_id INTEGER, revision_id INTEGER,
+                format TEXT, expected_unit_count INTEGER, mapping_digest TEXT
+            );
+            CREATE TABLE plan_revision_parts (
+                tenant_id TEXT, revision_id INTEGER, id INTEGER, quantity_effective INTEGER
+            );
+            CREATE TABLE plan_revision_required_units (
+                tenant_id TEXT, revision_id INTEGER, revision_part_id INTEGER,
+                unit_index INTEGER, required_unit_token TEXT
+            );
+            CREATE TABLE required_units (
+                tenant_id TEXT, profile_id INTEGER, token TEXT, object_name TEXT
+            );",
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO plan_revision_required_unit_sets
+             VALUES ('default',1,1,'required-unit-map-v1',1,'unused')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO plan_revision_parts VALUES ('default',1,1,1)",
+            [],
+        )
+        .unwrap();
+        let token = "00000000000000000000000000000000";
+        c.execute(
+            "INSERT INTO required_units VALUES ('default',1,?1,'part__00000000000000000000000000000000')",
+            [token],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO plan_revision_required_units
+             VALUES ('default',1,'not-a-part-id',0,?1)",
+            [token],
+        )
+        .unwrap();
+
+        let tx = c.transaction().unwrap();
+        let error = super::super::historical_mapping(&tx, "default", 1, 1).unwrap_err();
+        assert_eq!(error.to_string(), "Incomplete historical mapping");
+    }
     /// The snapshot holds the replaced Plan's recorded inputs, not the working
     /// `profile_layers`: a working layer with no Source, which Accept does not
     /// publish, stays out of it.

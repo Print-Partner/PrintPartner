@@ -837,15 +837,21 @@ fn historical_mapping(
         "SELECT m.revision_part_id,m.unit_index,u.token,u.object_name FROM plan_revision_required_units m JOIN required_units u ON u.token=m.required_unit_token AND u.tenant_id=?1 AND u.profile_id=?2 WHERE m.tenant_id=?1 AND m.revision_id=?3 ORDER BY m.revision_part_id,m.unit_index",
         &[&tenant, &profile, &revision],
     )?;
+    let mut mapped_by_part: HashMap<i64, Vec<&Value>> = HashMap::new();
+    for unit in &mapped {
+        if let Some(part_id) = unit["revisionPartId"].as_i64() {
+            mapped_by_part.entry(part_id).or_default().push(unit);
+        }
+    }
     let mut expected = 0;
     let mut tokens = HashSet::new();
     for p in &parts {
         let q = num(p, "quantityEffective")?;
         ensure!((1..=10000).contains(&q), "Invalid historical quantity");
-        let units: Vec<_> = mapped
-            .iter()
-            .filter(|u| u["revisionPartId"] == p["id"])
-            .collect();
+        let units = p["id"]
+            .as_i64()
+            .and_then(|part_id| mapped_by_part.get(&part_id))
+            .map_or(&[][..], |units| units.as_slice());
         ensure!(units.len() as i64 == q, "Incomplete historical mapping");
         for (i, u) in units.iter().enumerate() {
             ensure!(

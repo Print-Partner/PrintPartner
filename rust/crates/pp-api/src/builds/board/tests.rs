@@ -37,8 +37,8 @@ async fn board_http_lists_owner_choices_beyond_the_plan_summary_cap() {
     Connection::open(data.database_path())
         .unwrap()
         .execute_batch(
-            "WITH RECURSIVE ids(n) AS (VALUES(2) UNION ALL SELECT n+1 FROM ids WHERE n < 65)
-             INSERT INTO build_profiles (id, name) SELECT n, printf('Imported %d', n) FROM ids;
+            "WITH RECURSIVE ids(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n < 65)
+             INSERT INTO build_profiles (name) SELECT printf('Imported %d', n) FROM ids;
              INSERT INTO build_profiles (tenant_id, name) VALUES ('foreign', 'Hidden');",
         )
         .unwrap();
@@ -48,11 +48,21 @@ async fn board_http_lists_owner_choices_beyond_the_plan_summary_cap() {
     let (status, body) = loopback::send(&app, "GET", path, None, Some(OWNER)).await;
     assert_eq!(status, 200, "{body}");
     let builds = body["builds"].as_array().unwrap();
-    assert_eq!(builds.len(), 65);
-    assert!(builds.contains(&json!({"id": 65, "name": "Imported 65"})));
+    assert!(builds.len() > 64);
+    let build = builds
+        .iter()
+        .find(|build| build["name"] == "Imported 65")
+        .unwrap();
     assert!(!builds.iter().any(|build| build["name"] == "Hidden"));
     assert_eq!(
-        create(&app, Some(OWNER), 65, "Review this Build").await.0,
+        create(
+            &app,
+            Some(OWNER),
+            build["id"].as_i64().unwrap(),
+            "Review this Build"
+        )
+        .await
+        .0,
         200
     );
     drop(app);

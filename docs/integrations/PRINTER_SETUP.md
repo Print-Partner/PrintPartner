@@ -39,6 +39,16 @@ The LAN connection provides status only. Print Partner does not send reverse-eng
 
 For file handoff, Production can open Bambu Connect with a staged artifact. Bambu Connect remains responsible for importing and sending the file.
 
+The Rust desktop route stages one local `.3mf`, `.gcode.3mf`, `.gcode`, or
+`.gco` file (up to 64 MiB) for a Build with Bambu enabled. It returns an
+**Open in Bambu Connect** link, not a send receipt. The operator opens the
+link, then chooses a printer and presses **Send** in Bambu Connect. Staging
+does not change Checkoff or contact a printer. A repeat of the same Build,
+file type and bytes reuses the staged file. A later handoff removes Rust's
+staged files unused for 24 hours and refuses a new file if 16 are still
+retained. The Rust route does not stage for Docker or LAN clients. The
+replacement Production screen does not expose this route yet.
+
 ## Create and link a Printer
 
 1. Open **Printers** from the main navigation.

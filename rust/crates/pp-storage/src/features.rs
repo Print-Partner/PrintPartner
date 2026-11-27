@@ -358,6 +358,45 @@ pub(crate) fn resolve_for_send(
     resolve_for_tenant(tx, tenant, plan)
 }
 
+/// Whether an authenticated Build can stage a local Bambu Connect handoff.
+#[cfg(feature = "desktop_rebuild")]
+pub enum BambuConnectAccess {
+    MissingBuild,
+    Disabled,
+    Enabled(PositiveId),
+}
+
+#[cfg(feature = "desktop_rebuild")]
+impl crate::read_model::ReadClient {
+    pub fn bambu_connect_access(
+        &self,
+        credential: &Credential,
+        build: Option<PositiveId>,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<BambuConnectAccess, crate::WriterFailure> {
+        use crate::WriterFailure;
+        self.storage
+            .read("features.bambu_connect", cancelled, wait, |tx| {
+                let installation = crate::write::authorize(tx, credential, self.policy)?;
+                let Some(id) = build else {
+                    return Ok(BambuConnectAccess::MissingBuild);
+                };
+                let tenant = installation.id();
+                if !owned(tx, tenant, id).map_err(WriterFailure::Internal)? {
+                    return Ok(BambuConnectAccess::MissingBuild);
+                }
+                let view =
+                    resolve_for_tenant(tx, tenant, build).map_err(WriterFailure::Internal)?;
+                Ok(if view.effective().enabled(Feature::Bambu) {
+                    BambuConnectAccess::Enabled(id)
+                } else {
+                    BambuConnectAccess::Disabled
+                })
+            })?
+    }
+}
+
 /// Node's `GET` and `PATCH /plans/{id}/features` in one transaction: the
 /// Plan must be the tenant's, then both layers must parse. A patch writes the
 /// Plan layer's text even when it is unchanged or empty, as Node's

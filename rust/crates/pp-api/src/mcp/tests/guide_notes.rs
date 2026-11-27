@@ -33,7 +33,7 @@ async fn guide_note_requires_apply_and_keeps_source_and_url_provenance() {
     let headers = session(&server, &bearer).await;
     let before = notes(&server);
     let args = json!({
-        "source_name": "Guide Note Fixture Source", "body_markdown": " Notes ",
+        "source_name": "Guide Note Fixture Source", "body_markdown": "    first line\n    second line",
         "guide_url": "https://example.com/guide#setup",
     });
     assert_needs_key(&server, IMPORT, args.clone()).await;
@@ -69,7 +69,7 @@ async fn guide_note_requires_apply_and_keeps_source_and_url_provenance() {
     assert_eq!(saved.len(), 2);
     assert_eq!(
         saved[0].2,
-        "Notes\n\nGuide URL: https://example.com/guide#setup"
+        "    first line\n    second line\n\nGuide URL: https://example.com/guide#setup"
     );
     assert_eq!(saved[1], before[0]);
     let (proposal, refused) = tool(&server, &headers, IMPORT, args).await;

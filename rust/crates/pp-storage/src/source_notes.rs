@@ -39,10 +39,10 @@ impl Draft {
         if title.len() > MAX_TITLE_BYTES || body.len() > MAX_BODY_BYTES {
             return None;
         }
-        let (title, body) = (title.trim(), body.trim());
+        let title = title.trim();
         if title.is_empty()
             || title.chars().any(char::is_control)
-            || body.is_empty()
+            || body.trim().is_empty()
             || body
                 .chars()
                 .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t' | '\r'))
@@ -136,7 +136,7 @@ impl Client {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             ).optional()?;
             match existing {
-                Some((_, body)) if body.trim() == draft.body_markdown => return Ok(Some(false)),
+                Some((_, body)) if body == draft.body_markdown => return Ok(Some(false)),
                 Some((id, _)) => tx.execute(
                     "UPDATE source_notes SET body_markdown=?1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                      WHERE tenant_id=?2 AND id=?3",
